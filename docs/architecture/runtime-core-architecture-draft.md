@@ -7,7 +7,7 @@ counterpart: ./runtime-core-architecture-draft.zh-CN.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-12
+last_verified: 2026-07-30
 owners:
   - maka-backend
 ---
@@ -366,6 +366,19 @@ An error is first normalized as non-terminal error content, followed by a failed
 Startup recovery does not re-execute model requests or tool side effects. It scans non-terminal Runs and RuntimeEvent ledgers, identifies stale model streams, tool tails, permission waits, and corrupt operational events, then conservatively commits failure or cancellation and repairs Session and Turn projections.
 
 This is state repair, not checkpoint resume. The current Runtime can retain partial output, recover a consistent terminal state, and provide the facts needed for future mid-run recovery. It does not automatically continue from the line after an interrupted tool call when the process restarts.
+
+## Editing policy and the ApplyPatch transaction boundary
+
+Editing-tool selection is part of the normalized per-run product-tool policy, not a host builder switch. Desktop, CLI, and Headless bind the union of editing implementations. `projectEffectiveProductToolSurface()` selects either `Write` plus `Edit`, or `ApplyPatch`, exactly once. Child-agent tool surfaces are then projected inside that effective parent surface, so a child can narrow the parent's capabilities but cannot recover a hidden editing protocol.
+
+`ApplyPatch` also has one semantic implementation:
+
+1. Core parses and canonicalizes hunks, then produces a pure mutation plan from an immutable no-follow filesystem snapshot.
+2. Runtime acquires stable locks for every referenced path, reads the snapshot, plans every mutation, and preflights every permission before the first side effect.
+3. Runtime applies the plan through minimal primitives: no-follow `lstat`, text read, no-clobber create, regular-file replace, recursive parent creation, and directory-entry delete.
+4. Desktop's filesystem worker and Headless isolation provide only those primitives. They do not reimplement patch planning.
+
+Create operations must not overwrite an existing destination. Replace and Move sources must be regular files. Delete operates on the named directory entry, while Move deletes that named regular-file source only after creating its destination; neither operation substitutes or deletes a symlink target. If an apply step fails after earlier mutations completed, Runtime returns an explicit partial result with the completed paths; it does not claim rollback that the underlying filesystem cannot guarantee.
 
 ## What this design buys—and what it costs
 

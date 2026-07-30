@@ -1,8 +1,9 @@
 /**
  * Codex-compatible ApplyPatch parse + in-memory apply (#1552 / #1383).
  *
- * Per-run editing protocol projection: hosts pass this into tool builders so
- * exactly one of Edit/Write or ApplyPatch appears on the effective surface.
+ * Per-run editing protocol projection belongs to the normalized product-tool
+ * policy. Tool builders bind implementations; the projector selects exactly
+ * one of Edit/Write or ApplyPatch for a run.
  */
 export type EditingProtocol = 'edit_write' | 'apply_patch';
 
@@ -76,15 +77,122 @@ export type ApplyContentOutcome =
   | { ok: true; content: string }
   | { ok: false; error: ApplyContentError };
 
-export interface PlannedPatchMutation {
-  operation: 'add' | 'update' | 'delete' | 'move';
-  /** Source path for update/delete; destination for pure add. */
-  path: string;
-  /** Present for move (update + Move to). */
-  fromPath?: string;
-  /** Final content after update/add; absent for delete. */
-  content?: string;
-  /** Absolute or caller-resolved path keys are filled by the tool layer. */
+export type PlannedPatchMutation =
+  | { operation: 'add'; path: string; content: string }
+  | { operation: 'update'; path: string; content: string }
+  | { operation: 'delete'; path: string }
+  | { operation: 'move'; path: string; fromPath: string; content: string };
+
+export type ApplyPatchPathState =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'file'; readonly content: string }
+  | { readonly kind: 'symlink' }
+  | { readonly kind: 'other' };
+
+/**
+ * Canonicalize lexical aliases before locking, permission planning, or state
+ * lookup. Filesystem containment remains the host adapter's responsibility.
+ */
+export function canonicalizeApplyPatchHunks(hunks: readonly ApplyPatchHunk[]): ApplyPatchHunk[] {
+  return hunks.map((hunk) => {
+    const path = canonicalApplyPatchPath(hunk.path);
+    if (hunk.kind === 'add' || hunk.kind === 'delete') return { ...hunk, path };
+    return {
+      ...hunk,
+      path,
+      ...(hunk.movePath ? { movePath: canonicalApplyPatchPath(hunk.movePath) } : {}),
+    };
+  });
+}
+
+export function canonicalApplyPatchPath(path: string): string {
+  const normalized = path.replaceAll('\\', '/').trim();
+  const segments: string[] = [];
+  for (const segment of normalized.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join('/') || '.';
+}
+
+/**
+ * Pure ApplyPatch planner.
+ *
+ * The caller snapshots every referenced directory entry under the transaction
+ * locks and passes that immutable state here. Planning never touches the
+ * filesystem, so Runtime and Headless cannot acquire different overwrite,
+ * alias, or partial-order semantics.
+ */
+export function planApplyPatchMutations(
+  hunks: readonly ApplyPatchHunk[],
+  initialState: ReadonlyMap<string, ApplyPatchPathState>,
+): PlannedPatchMutation[] {
+  const state = new Map(initialState);
+  const mutations: PlannedPatchMutation[] = [];
+
+  const current = (path: string): ApplyPatchPathState => state.get(path) ?? { kind: 'missing' };
+  const requireRegularFile = (path: string, operation: string): string => {
+    const value = current(path);
+    if (value.kind === 'missing') {
+      throw new Error(`ApplyPatch ${operation} target missing: ${path}`);
+    }
+    if (value.kind !== 'file') {
+      throw new Error(`ApplyPatch ${operation} target must be a regular file: ${path}`);
+    }
+    return value.content;
+  };
+
+  for (const hunk of hunks) {
+    if (hunk.kind === 'add') {
+      if (current(hunk.path).kind !== 'missing') {
+        throw new Error(`ApplyPatch Add File target already exists: ${hunk.path}`);
+      }
+      mutations.push({ operation: 'add', path: hunk.path, content: hunk.contents });
+      state.set(hunk.path, { kind: 'file', content: hunk.contents });
+      continue;
+    }
+
+    if (hunk.kind === 'delete') {
+      const value = current(hunk.path);
+      if (value.kind === 'missing') {
+        throw new Error(`ApplyPatch Delete File target missing: ${hunk.path}`);
+      }
+      if (value.kind !== 'file' && value.kind !== 'symlink') {
+        throw new Error(`ApplyPatch Delete File target must be a file or symlink: ${hunk.path}`);
+      }
+      mutations.push({ operation: 'delete', path: hunk.path });
+      state.set(hunk.path, { kind: 'missing' });
+      continue;
+    }
+
+    const original = requireRegularFile(hunk.path, 'Update File');
+    const applied = applyUpdateChunksToContent(original, hunk.chunks, hunk.path);
+    if (!applied.ok) throw new Error(applied.error.message);
+
+    if (hunk.movePath) {
+      if (current(hunk.movePath).kind !== 'missing') {
+        throw new Error(`ApplyPatch Move destination already exists: ${hunk.movePath}`);
+      }
+      mutations.push({
+        operation: 'move',
+        path: hunk.movePath,
+        fromPath: hunk.path,
+        content: applied.content,
+      });
+      state.set(hunk.path, { kind: 'missing' });
+      state.set(hunk.movePath, { kind: 'file', content: applied.content });
+      continue;
+    }
+
+    mutations.push({ operation: 'update', path: hunk.path, content: applied.content });
+    state.set(hunk.path, { kind: 'file', content: applied.content });
+  }
+
+  return mutations;
 }
 
 export function parseApplyPatch(input: string): ApplyPatchParseOutcome {

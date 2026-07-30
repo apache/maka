@@ -48,6 +48,7 @@ describe('Maka session driver', () => {
         llmConnectionSlug: 'anthropic',
         model: 'claude-sonnet-4-5',
         permissionMode: 'ask',
+        editingProtocol: 'edit_write',
       },
     ]);
     assert.deepEqual(runtime.sent, [

@@ -13,7 +13,7 @@ export interface NormalizedSandboxBoundaryPath {
   readonly enforcementPath: string;
   readonly access: SandboxBoundaryAccess;
   readonly scope: SandboxBoundaryScope;
-  readonly targetType: 'file' | 'directory' | 'other' | 'missing';
+  readonly targetType: 'file' | 'directory' | 'symlink' | 'other' | 'missing';
 }
 
 export async function normalizeSandboxBoundaryPath(input: {
@@ -21,6 +21,8 @@ export async function normalizeSandboxBoundaryPath(input: {
   access: SandboxBoundaryAccess;
   scope: SandboxBoundaryScope | 'auto';
   cwd: string;
+  /** Delete/lstat address a directory entry and must not follow its final link. */
+  followFinalSymlink?: boolean;
 }): Promise<NormalizedSandboxBoundaryPath> {
   if (
     !input.path ||
@@ -31,8 +33,11 @@ export async function normalizeSandboxBoundaryPath(input: {
   }
   const canonicalCwd = await fs.realpath(input.cwd);
   const displayPath = resolve(canonicalCwd, input.path);
-  const enforcementPath = await realpathAllowMissing(displayPath);
-  const targetType = await targetTypeFor(enforcementPath);
+  const followFinalSymlink = input.followFinalSymlink ?? true;
+  const enforcementPath = followFinalSymlink
+    ? await realpathAllowMissing(displayPath)
+    : await canonicalDirectoryEntryPath(displayPath);
+  const targetType = await targetTypeFor(enforcementPath, followFinalSymlink);
   const scope =
     input.scope === 'auto' ? (targetType === 'directory' ? 'subtree' : 'exact') : input.scope;
   if (scope === 'subtree' && targetType !== 'directory') {
@@ -90,9 +95,18 @@ async function realpathAllowMissing(target: string): Promise<string> {
   }
 }
 
-async function targetTypeFor(path: string): Promise<NormalizedSandboxBoundaryPath['targetType']> {
+async function canonicalDirectoryEntryPath(path: string): Promise<string> {
+  const parent = dirname(path);
+  return resolve(await realpathAllowMissing(parent), path.slice(parent.length + 1));
+}
+
+async function targetTypeFor(
+  path: string,
+  followFinalSymlink: boolean,
+): Promise<NormalizedSandboxBoundaryPath['targetType']> {
   try {
-    const stat = await fs.stat(path);
+    const stat = followFinalSymlink ? await fs.stat(path) : await fs.lstat(path);
+    if (stat.isSymbolicLink()) return 'symlink';
     if (stat.isFile()) return 'file';
     if (stat.isDirectory()) return 'directory';
     return 'other';

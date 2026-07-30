@@ -317,8 +317,6 @@ export async function createMakaCliRuntimeContext(
     backgroundTasks: shellRuns,
     ptyControls: shellRuns,
     snapshotImage: createReadImageSnapshotter(artifactStore),
-    // Bind both editing protocols; the product-tool projector selects one.
-    editingProtocol: 'all',
     ...(sandboxManager ? { sandboxManager } : {}),
     ...(filesystemWorker
       ? {
@@ -335,7 +333,6 @@ export async function createMakaCliRuntimeContext(
     ? buildChildAgentTools(
         buildBuiltinTools({
           snapshotImage: createReadImageSnapshotter(artifactStore),
-          editingProtocol: 'all',
           ...(sandboxManager ? { sandboxManager } : {}),
           ...(filesystemWorker
             ? {

@@ -210,6 +210,70 @@ describe('filesystem worker operations', () => {
     assert.equal(await readFile(target, 'utf8'), 'nested');
   });
 
+  test('create-mode writes never clobber an entry that appeared after planning', async () => {
+    const root = await temporaryDirectory('maka-worker-write-no-clobber-');
+    const target = join(root, 'target.txt');
+    await writeFile(target, 'winner', 'utf8');
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: target, content: 'stale', mode: 'create' },
+        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(await readFile(target, 'utf8'), 'winner');
+  });
+
+  test('replace-mode writes never follow a final symlink', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('file symlink creation is not reliably available on Windows CI');
+      return;
+    }
+    const root = await temporaryDirectory('maka-worker-write-replace-link-');
+    const target = join(root, 'target.txt');
+    const link = join(root, 'link.txt');
+    await writeFile(target, 'target', 'utf8');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'write', cwd: root, path: link, content: 'stale', mode: 'replace' },
+        { enforcementPath: link, access: 'write', scope: 'exact', targetType: 'symlink' },
+        link,
+      ),
+    );
+
+    assert.equal(response.ok, false);
+    assert.equal(await readFile(target, 'utf8'), 'target');
+  });
+
+  test('lstat reports the directory entry without following its final symlink', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('file symlink creation is not reliably available on Windows CI');
+      return;
+    }
+    const root = await temporaryDirectory('maka-worker-lstat-link-');
+    const target = join(root, 'target.txt');
+    const link = join(root, 'link.txt');
+    await writeFile(target, 'target', 'utf8');
+    await symlink(target, link);
+
+    const response = await executeFilesystemWorkerRequest(
+      requestFor(
+        { kind: 'lstat', cwd: root, path: link },
+        { enforcementPath: link, access: 'read', scope: 'exact', targetType: 'symlink' },
+        link,
+      ),
+    );
+
+    assert.equal(response.ok, true);
+    if (response.ok) {
+      assert.deepEqual(response.result, { kind: 'lstat', targetType: 'symlink' });
+    }
+  });
+
   test('deletes an in-workspace symlink operand without deleting its target', async (t) => {
     if (process.platform === 'win32') {
       t.skip('file symlink creation is not reliably available on Windows CI');
@@ -224,8 +288,8 @@ describe('filesystem worker operations', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'delete', cwd: root, path: link },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
-        target,
+        { enforcementPath: link, access: 'write', scope: 'exact', targetType: 'symlink' },
+        link,
       ),
     );
 
@@ -234,7 +298,7 @@ describe('filesystem worker operations', () => {
     await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
   });
 
-  test('rejects deleting a symlink whose target escapes the workspace', async (t) => {
+  test('deletes an escaping symlink entry without touching its target', async (t) => {
     if (process.platform === 'win32') {
       t.skip('file symlink creation is not reliably available on Windows CI');
       return;
@@ -249,14 +313,13 @@ describe('filesystem worker operations', () => {
     const response = await executeFilesystemWorkerRequest(
       requestFor(
         { kind: 'delete', cwd: root, path: link },
-        { enforcementPath: target, access: 'write', scope: 'exact', targetType: 'file' },
-        target,
+        { enforcementPath: link, access: 'write', scope: 'exact', targetType: 'symlink' },
+        link,
       ),
     );
 
-    assert.equal(response.ok, false);
-    if (!response.ok) assert.equal(response.error.code, 'path_denied');
-    assert.equal(await readFile(link, 'utf8'), 'keep');
+    assert.equal(response.ok, true);
+    await assert.rejects(readFile(link, 'utf8'), { code: 'ENOENT' });
     assert.equal(await readFile(target, 'utf8'), 'keep');
   });
 

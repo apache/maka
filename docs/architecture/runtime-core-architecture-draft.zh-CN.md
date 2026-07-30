@@ -7,7 +7,7 @@ counterpart: ./runtime-core-architecture-draft.md
 implementation_status: current
 document_status: draft
 translation_status: synced
-last_verified: 2026-07-12
+last_verified: 2026-07-30
 owners:
   - maka-backend
 ---
@@ -366,6 +366,19 @@ Maka 当前保护的核心不变量是：
 启动恢复不会重新执行模型请求或工具副作用。它扫描非终止 Run 与 RuntimeEvent ledger，识别 stale model stream、tool tail、permission wait、损坏的 operational event 等情况，然后保守地提交失败或取消状态，并修复 Session/Turn 投影。
 
 这是“状态修复”，不是 checkpoint resume。当前 Runtime 可以保留部分输出、恢复一致的最终状态，并为以后真正的中点恢复提供事实基础；它不会在进程重启后自动从某个工具调用的下一行继续执行。
+
+## 编辑策略与 ApplyPatch 事务边界
+
+编辑工具的选择属于规范化后的每次运行产品工具策略，而不是 Host builder 的第二个开关。Desktop、CLI 和 Headless 都先绑定全部编辑实现，再由 `projectEffectiveProductToolSurface()` 唯一一次选择 `Write` 加 `Edit`，或 `ApplyPatch`。子 Agent 的工具面随后只能在父运行的有效工具面内继续投影，因此可以进一步收窄能力，但不能重新获得父运行已隐藏的编辑协议。
+
+`ApplyPatch` 也只有一份语义实现：
+
+1. Core 解析并规范化 hunk，再根据一份不可变、且不跟随最终符号链接的文件系统快照生成纯 mutation plan。
+2. Runtime 为所有相关路径获取稳定锁，读取快照，规划全部 mutation，并在第一个副作用发生前完成全部权限预检。
+3. Runtime 只通过最小原语执行计划：不跟随链接的 `lstat`、文本读取、禁止覆盖的创建、仅限普通文件的替换、递归创建父目录，以及删除指定目录项。
+4. Desktop 文件系统 worker 和 Headless 隔离层只提供这些原语，不再各自实现 patch 规划。
+
+创建操作不得覆盖已有目标；替换操作和 Move 源都必须是普通文件。Delete 操作用户指定的目录项；Move 也只会在创建目标后删除指定的普通文件源；两者都不会把符号链接替换成其目标或删除链接目标。如果某一步执行失败而此前 mutation 已经完成，Runtime 会返回明确的 partial 结果及已完成路径；底层文件系统不能保证回滚时，Runtime 不会声称存在回滚。
 
 ## 这套设计换来了什么，又付出了什么
 

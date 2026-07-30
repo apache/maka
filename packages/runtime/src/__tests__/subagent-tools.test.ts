@@ -31,6 +31,7 @@ import {
   WEB_RESEARCH_AGENT_DEFINITION,
   WEB_RESEARCH_AGENT_PROFILE,
   assertAgentDefinitionRunnable,
+  buildToolsForAgentDefinition,
   evaluateAgentDefinitionAvailability,
   evaluateAgentDefinitionToolAccess,
   listBuiltinAgentDefinitions,
@@ -291,7 +292,7 @@ describe('subagent tools', () => {
 
   test('ApplyPatch-only parents cannot elevate implementation children to Write or Edit', () => {
     const parentScopedTools = childAgentToolsWithinEditingProtocol(
-      buildChildAgentTools(buildBuiltinTools({ editingProtocol: 'all' })),
+      buildChildAgentTools(buildBuiltinTools()),
       'apply_patch',
     );
 
@@ -302,11 +303,12 @@ describe('subagent tools', () => {
         tools: parentScopedTools,
         worktreeChildExecutorAvailable: true,
       }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability,
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'missing_tools',
-      missingTools: ['Write', 'Edit'],
-    });
+    ).toEqual({ status: 'available' });
+    expect(
+      buildToolsForAgentDefinition(parentScopedTools, IMPLEMENTATION_AGENT_DEFINITION).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(['Read', 'Glob', 'Grep', 'ApplyPatch', 'Bash']);
   });
 
   test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
@@ -420,6 +422,7 @@ describe('subagent tools', () => {
       'Write',
       'Edit',
       'Bash',
+      'ApplyPatch',
     ]);
     expect([...CHILD_AGENT_TOOL_NAMES]).toEqual([
       'Read',
@@ -429,6 +432,7 @@ describe('subagent tools', () => {
       'Write',
       'Edit',
       'Bash',
+      'ApplyPatch',
     ]);
   });
 

@@ -26,7 +26,6 @@ import {
 } from '@maka/core';
 import { computeEditedSource } from './edit-replace.js';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
-import { type EditingProtocol } from '@maka/core/apply-patch';
 export type { EditingProtocol } from '@maka/core/apply-patch';
 import {
   executeApplyPatchWithAdapter,
@@ -52,7 +51,7 @@ import {
   type WorkspaceExecResult,
   type WorkspaceExecutor,
 } from './workspace-executor.js';
-import { mkdir, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath, unlink, writeFile } from 'node:fs/promises';
 import { isPathInside } from './path-containment.js';
 
 // tool-runtime.ts is the single source of truth for the tool shape; this
@@ -101,14 +100,6 @@ export interface BuildBuiltinToolsOptions {
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
   /** Host-surface gate for Edit. Defaults to enabled. */
   includeEdit?: boolean;
-  /**
-   * Per-run editing protocol projection (#1552).
-   * - `edit_write` (default): expose Write/Edit; omit ApplyPatch.
-   * - `apply_patch`: expose ApplyPatch; omit Write and Edit.
-   * - `all`: bind Write/Edit/ApplyPatch so `projectEffectiveProductToolSurface`
-   *   can select exactly one protocol via `policy.editingProtocol`.
-   */
-  editingProtocol?: EditingProtocol | 'all';
   /** Test/embedding override. Production callers use the current process platform. */
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
@@ -628,19 +619,9 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       },
     },
   ];
-  // Host composition should prefer `projectEffectiveProductToolSurface` with
-  // `policy.editingProtocol`. The builder option remains a convenience filter
-  // for tests and callers that do not run the projector.
-  // Use `editingProtocol: 'all'` to bind every protocol for projector selection.
-  const editingProtocol = options.editingProtocol ?? 'edit_write';
-  return tools.filter((tool) => {
-    if (tool.name === 'Edit' && options.includeEdit === false) return false;
-    if (editingProtocol === 'all') return true;
-    if (editingProtocol === 'apply_patch') {
-      return tool.name !== 'Write' && tool.name !== 'Edit';
-    }
-    return tool.name !== 'ApplyPatch';
-  });
+  // Builders bind implementations only. The normalized per-run product-tool
+  // policy is the single authority that selects the editing protocol.
+  return tools.filter((tool) => tool.name !== 'Edit' || options.includeEdit !== false);
 }
 
 function filesystemWorkerForExecution(
@@ -1151,18 +1132,26 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
   const canonicalCwd = filesystemWorker ? canonicalExistingPath(cwd) : cwd;
 
   const workerExecute = async (operation: {
-    kind: 'read' | 'write' | 'delete';
+    kind: 'lstat' | 'read' | 'write' | 'delete';
     path: string;
     content?: string;
+    mode?: 'create' | 'replace';
   }) => {
     if (!filesystemWorker) throw new Error('Filesystem worker is unavailable.');
     return filesystemWorker.execute({
       operation:
         operation.kind === 'write'
-          ? { kind: 'write', path: operation.path, content: operation.content ?? '' }
+          ? {
+              kind: 'write',
+              path: operation.path,
+              content: operation.content ?? '',
+              ...(operation.mode ? { mode: operation.mode } : {}),
+            }
           : operation.kind === 'delete'
             ? { kind: 'delete', path: operation.path }
-            : { kind: 'read', path: operation.path },
+            : operation.kind === 'lstat'
+              ? { kind: 'lstat', path: operation.path }
+              : { kind: 'read', path: operation.path },
       cwd: canonicalCwd,
       ...(input.ctx.executionBoundary ? { executionBoundary: input.ctx.executionBoundary } : {}),
       mode: input.ctx.permissionMode ?? 'ask',
@@ -1179,30 +1168,27 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
       }
       return (await input.executor.writeLockKey({ cwd, path })).key;
     },
-    async pathExists(path) {
+    async lstat(path) {
+      if (filesystemWorker) {
+        const result = await workerExecute({ kind: 'lstat', path });
+        if (result.kind !== 'lstat')
+          throw new Error('Filesystem worker returned mismatched lstat.');
+        return result.targetType;
+      }
+      const target = await assertApplyPatchPathContained(cwd, path, false);
       try {
-        if (filesystemWorker) {
-          const result = await workerExecute({ kind: 'read', path });
-          return result.kind === 'read' || result.kind === 'read_image';
-        }
-        await input.executor.resolveExistingPath({
-          cwd,
-          path,
-          label: 'ApplyPatch exists',
-        });
-        return true;
+        const metadata = await lstat(target.displayPath);
+        if (metadata.isSymbolicLink()) return 'symlink';
+        if (metadata.isFile()) return 'file';
+        return 'other';
       } catch (error) {
-        if (error instanceof FilesystemWorkerClientError && error.reason === 'not_found') {
-          return false;
-        }
         if (
-          !filesystemWorker &&
           typeof error === 'object' &&
           error !== null &&
           'code' in error &&
           (error.code === 'ENOENT' || error.code === 'ENOTDIR')
         ) {
-          return false;
+          return 'missing';
         }
         throw error;
       }
@@ -1223,23 +1209,35 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
       if ('bytes' in read) throw new Error(`${label} does not support image files.`);
       return read.content;
     },
-    async writeText(path, content) {
+    async writeText(path, content, mode) {
       if (filesystemWorker) {
-        const result = await workerExecute({ kind: 'write', path, content });
+        const result = await workerExecute({ kind: 'write', path, content, mode });
         if (result.kind !== 'write') {
           throw new Error('Filesystem worker returned a mismatched write.');
         }
         return { path: result.path, bytes: result.bytes };
       }
-      const target = await assertApplyPatchPathContained(cwd, path);
+      const target = await assertApplyPatchPathContained(cwd, path, false);
       await mkdir(dirname(target.enforcementPath), { recursive: true });
-      const { path: resolvedPath } = await input.executor.resolveWritablePath({
-        cwd,
-        path,
-        label: 'ApplyPatch',
-      });
-      await mkdir(dirname(resolvedPath), { recursive: true });
-      return await input.executor.writeFile({ cwd, path: resolvedPath, content });
+      if (mode === 'create') {
+        await writeFile(target.displayPath, content, { encoding: 'utf8', flag: 'wx' });
+        return { path: target.displayPath, bytes: Buffer.byteLength(content, 'utf8') };
+      }
+      const metadata = await lstat(target.displayPath);
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new Error(`ApplyPatch Update target must be a regular file: ${path}`);
+      }
+      const handle = await open(
+        target.displayPath,
+        constants.O_NOFOLLOW === undefined ? 'r+' : constants.O_WRONLY | constants.O_NOFOLLOW,
+      );
+      try {
+        await handle.truncate(0);
+        await handle.writeFile(content, 'utf8');
+      } finally {
+        await handle.close();
+      }
+      return { path: target.displayPath, bytes: Buffer.byteLength(content, 'utf8') };
     },
     async deletePath(path) {
       if (filesystemWorker) {
@@ -1249,18 +1247,9 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
         }
         return { path: result.path };
       }
-      await input.executor.resolveExistingPath({
-        cwd,
-        path,
-        label: 'ApplyPatch Delete',
-      });
-      const { path: operandPath } = await input.executor.resolveWritablePath({
-        cwd,
-        path,
-        label: 'ApplyPatch Delete',
-      });
-      await unlink(operandPath);
-      return { path: operandPath };
+      const target = await assertApplyPatchPathContained(cwd, path, false);
+      await unlink(target.displayPath);
+      return { path: target.displayPath };
     },
     async preflightPermissions(accesses: readonly ApplyPatchAccessIntent[]) {
       await preflightApplyPatchPermissions({
@@ -1279,6 +1268,7 @@ function createRuntimeApplyPatchFs(input: RuntimeApplyPatchDeps): ApplyPatchFsAd
 async function assertApplyPatchPathContained(
   cwd: string,
   path: string,
+  followFinalSymlink = true,
 ): Promise<Awaited<ReturnType<typeof normalizeSandboxBoundaryPath>>> {
   const root = await realpath(cwd);
   const target = await normalizeSandboxBoundaryPath({
@@ -1286,6 +1276,7 @@ async function assertApplyPatchPathContained(
     access: 'write',
     scope: 'exact',
     cwd: root,
+    followFinalSymlink,
   });
   if (!isPathInside(root, target.displayPath) || !isPathInside(root, target.enforcementPath)) {
     throw new Error(`ApplyPatch path must stay inside session cwd: ${path}`);
@@ -1352,12 +1343,16 @@ async function preflightApplyPatchPermissions(input: {
       access: 'write',
       scope: 'exact',
       cwd: input.canonicalCwd,
+      followFinalSymlink: false,
     });
     const runtimeWritableRoots = filesystemWorkerRuntimeWritableRoots({
       platform,
       access: 'write',
       enforcementPath: target.enforcementPath,
       targetType: target.targetType,
+      ...(isPathInside(input.canonicalCwd, target.enforcementPath)
+        ? { workspaceRoot: input.canonicalCwd }
+        : {}),
     });
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,

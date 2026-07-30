@@ -81,7 +81,8 @@ describe('filesystem worker client permission snapshots', () => {
     await assert.rejects(lstat(link), { code: 'ENOENT' });
     assert.equal(await readFile(target, 'utf8'), 'keep me');
     assert.equal(requests[0]?.operation.path, link);
-    assert.equal(requests[0]?.expectedTarget.enforcementPath, target);
+    assert.equal(requests[0]?.expectedTarget.enforcementPath, link);
+    assert.equal(requests[0]?.expectedTarget.targetType, 'symlink');
   });
 
   for (const kind of ['bypass', 'external'] as const) {
@@ -390,7 +391,11 @@ describe('filesystem worker Linux path context', () => {
     assert.ok(hasArgTriple(processInput.argv, '--ro-bind', `/proc/self/fd/${pinned.fd}`, target));
   });
 
-  test('pins the writable parent of a missing exact target', async () => {
+  test('pins the workspace root so a missing exact target can create nested parents', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('Linux sandbox path matching requires POSIX host paths');
+      return;
+    }
     const workspace = await temporaryDirectory('maka-linux-worker-parent-pin-');
     const parent = join(workspace, 'output');
     const target = join(parent, 'new.txt');
@@ -409,7 +414,7 @@ describe('filesystem worker Linux path context', () => {
       (input): input is Extract<typeof input, { sourceFd: number }> => 'sourceFd' in input,
     );
     assert.ok(pinned);
-    assert.ok(hasArgTriple(processInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, parent));
+    assert.ok(hasArgTriple(processInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, workspace));
     assert.equal(hasArgTriple(processInput.argv, '--bind', parent, parent), false);
   });
 

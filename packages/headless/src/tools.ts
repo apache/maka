@@ -34,11 +34,7 @@ import {
 
 export interface BuildIsolatedHeadlessToolsOptions {
   agentTools?: boolean;
-  /**
-   * Per-run editing protocol projection (#1552). Default `edit_write` keeps
-   * Write/Edit; `apply_patch` exposes ApplyPatch instead. Same semantics as
-   * runtime `buildBuiltinTools({ editingProtocol })`.
-   */
+  /** Per-run editing protocol consumed only by the product-tool projector. */
   editingProtocol?: EditingProtocol;
   heavyTaskEvidence?: HeavyTaskEvidenceRecorder;
   heavyTaskProgress?: HeavyTaskProgressRecorder;
@@ -353,22 +349,20 @@ function createIsolatedApplyPatchFs(
       const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch path');
       return fileWriteKey(cwd, normalized);
     },
-    async pathExists(path) {
+    async lstat(path) {
       const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch exists path');
-      try {
-        await readIsolatedFileBytes(
+      const kind = (
+        await execFileCommand(
           executor,
           cwd,
-          normalized,
+          shellFileCommand(LSTAT_SCRIPT, [normalized]),
           abortSignal,
-          EDIT_READ_BYTES_SCRIPT,
-          'ApplyPatch exists',
-        );
-        return true;
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('does not exist:')) return false;
-        throw error;
+        )
+      ).trim();
+      if (kind === 'missing' || kind === 'file' || kind === 'symlink' || kind === 'other') {
+        return kind;
       }
+      throw new Error(`ApplyPatch lstat returned an invalid entry type for ${normalized}`);
     },
     async readText(path, label) {
       const normalized = normalizeWorkspacePath(path, cwd, label);
@@ -386,12 +380,19 @@ function createIsolatedApplyPatchFs(
       }
       return source;
     },
-    async writeText(path, content) {
+    async writeText(path, content, mode) {
       const normalized = normalizeWorkspacePath(path, cwd, 'ApplyPatch write path');
       const bytes = Buffer.from(content, 'utf8');
       // Create-capable write: Add/Move destinations must not require an existing target.
       // Edit's atomic script uses existing_target and fails new files with "does not exist".
-      await writeIsolatedFileBytes(executor, cwd, normalized, bytes, abortSignal, 'create');
+      await writeIsolatedFileBytes(
+        executor,
+        cwd,
+        normalized,
+        bytes,
+        abortSignal,
+        mode === 'create' ? 'create' : 'edit',
+      );
       return { path: normalized, bytes: bytes.length };
     },
     async deletePath(path) {
@@ -976,6 +977,47 @@ LC_ALL=C awk -v start="$offset" -v limit="$limit" '
 ' "$target"
 `;
 
+const LSTAT_SCRIPT = `${COMMON_SHELL_HELPERS}
+root=$(pwd -P) || exit 1
+input_path=$1
+parent_rel=$(dirname "$input_path")
+parent=$root
+remaining=$parent_rel
+while [ "$remaining" != "." ] && [ -n "$remaining" ]; do
+  case "$remaining" in
+    */*)
+      segment=${'${remaining%%/*}'}
+      remaining=${'${remaining#*/}'}
+      ;;
+    *)
+      segment=$remaining
+      remaining=.
+      ;;
+  esac
+  [ "$segment" = "." ] && continue
+  next=$parent/$segment
+  [ -L "$next" ] && fail 'ApplyPatch lstat parent must stay inside workspace'
+  if [ ! -e "$next" ]; then
+    printf 'missing\n'
+    exit 0
+  fi
+  [ -d "$next" ] || fail 'ApplyPatch lstat parent is not a directory'
+  parent=$(cd -P "$next" 2>/dev/null && pwd -P) ||
+    fail 'ApplyPatch lstat parent must stay inside workspace'
+  inside_workspace "$parent" || fail 'ApplyPatch lstat parent must stay inside workspace'
+done
+target=$parent/$(basename "$input_path")
+if [ -L "$target" ]; then
+  printf 'symlink\n'
+elif [ -f "$target" ]; then
+  printf 'file\n'
+elif [ -e "$target" ]; then
+  printf 'other\n'
+else
+  printf 'missing\n'
+fi
+`;
+
 const WRITE_SCRIPT = `${COMMON_SHELL_HELPERS}
 root=$(pwd -P) || exit 1
 target=$(writable_target "$1" 'Write path') || exit 1
@@ -1048,8 +1090,9 @@ created=
 trap - EXIT HUP INT TERM
 `;
 
-// Create-or-overwrite base64 write for ApplyPatch Add/Update/Move destinations.
-// Uses writable_target (parent must exist) rather than existing_target so new files work.
+// No-clobber create for ApplyPatch Add/Move destinations. The temporary file
+// is linked into place atomically so a destination that appears after planning
+// cannot be overwritten.
 const CREATE_WRITE_BYTES_SCRIPT = `${COMMON_SHELL_HELPERS}
 root=$(pwd -P) || exit 1
 target=$(writable_target "$1" 'Write path') || exit 1
@@ -1069,11 +1112,9 @@ elif printf '%s' "$payload" | base64 -D > "$tmp" 2>/dev/null; then
 else
   fail 'base64 decode failed for Write payload'
 fi
-if [ -f "$target" ]; then
-  mode=$( (stat -c '%a' "$target" 2>/dev/null || stat -f '%Lp' "$target" 2>/dev/null) | head -n 1 )
-  [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null || true
-fi
-mv "$tmp" "$target" || fail 'Write atomic rename failed'
+[ ! -e "$target" ] && [ ! -L "$target" ] || fail 'Write target already exists'
+ln "$tmp" "$target" || fail 'Write target already exists'
+rm -f "$tmp"
 created=
 trap - EXIT HUP INT TERM
 `;

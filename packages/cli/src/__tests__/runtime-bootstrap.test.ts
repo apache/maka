@@ -502,7 +502,7 @@ describe('Maka CLI runtime bootstrap', () => {
         });
         assert.deepEqual(
           runtimeDeps.childTools?.map((tool) => tool.name),
-          ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
+          ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash', 'ApplyPatch'],
         );
         assert.equal(
           runtimeDeps.childTools?.some((tool) =>

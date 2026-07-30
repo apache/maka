@@ -110,7 +110,7 @@ describe('default permission mode contract', () => {
     const src = await readSessionsIpcSource();
     assert.match(
       src,
-      /await resolveCreateSessionInput\(input, \{ readSettings: \(\) => settingsStore\.get\(\) \}\)/,
+      /await resolveCreateSessionInput\(input,\s*\{\s*readSettings: \(\) => settingsStore\.get\(\),\s*defaultEditingProtocol,\s*\}\s*\)/,
       'sessions:create must apply the extracted resolution, injecting the settings read',
     );
     assert.doesNotMatch(

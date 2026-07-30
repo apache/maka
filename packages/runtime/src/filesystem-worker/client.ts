@@ -13,6 +13,7 @@ import {
 } from '@maka/core';
 
 import { normalizeSandboxBoundaryPath } from '../sandbox-boundary-path.js';
+import { isPathInside } from '../path-containment.js';
 import { pinExistingLinuxProfilePath } from '../sandbox/linux-profile-path.js';
 import type { SandboxManager } from '../sandbox/sandbox-manager.js';
 import type { SandboxPlatform } from '../sandbox/types.js';
@@ -155,6 +156,11 @@ export class FilesystemWorkerClient {
       access,
       scope: operationScope(parsedOperation.data.kind),
       cwd: canonicalCwd,
+      ...(parsedOperation.data.kind === 'delete' ||
+      parsedOperation.data.kind === 'lstat' ||
+      (parsedOperation.data.kind === 'write' && parsedOperation.data.mode)
+        ? { followFinalSymlink: false }
+        : {}),
     }).catch(() => {
       throw clientError('invalid_operation', 'validation', requestId);
     });
@@ -177,6 +183,9 @@ export class FilesystemWorkerClient {
       access,
       enforcementPath: target.enforcementPath,
       targetType: target.targetType,
+      ...(isPathInside(canonicalCwd, target.enforcementPath)
+        ? { workspaceRoot: canonicalCwd }
+        : {}),
     });
     const pathContext = {
       workspaceRoots: compiled.workspaceRoots,
@@ -224,7 +233,10 @@ export class FilesystemWorkerClient {
       // canonical enforcement path remains pinned separately in
       // expectedTarget and operationBoundary so the worker can reject a
       // changed target without replacing a symlink operand with its target.
-      path: parsedOperation.data.kind === 'delete' ? target.displayPath : target.enforcementPath,
+      path:
+        parsedOperation.data.kind === 'delete' || parsedOperation.data.kind === 'lstat'
+          ? target.displayPath
+          : target.enforcementPath,
     });
     const request = {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -247,7 +259,7 @@ export class FilesystemWorkerClient {
     if (!launch.ok) throw clientError(launch.reason, 'launch', requestId, launch.message);
     const workerProfile = deriveWorkerProfile(effectiveProfile, operationBoundary);
     const pinnedTarget =
-      platform === 'linux' && target.targetType !== 'missing'
+      platform === 'linux' && target.targetType !== 'missing' && target.targetType !== 'symlink'
         ? (() => {
             try {
               return pinExistingLinuxProfilePath({
@@ -266,7 +278,12 @@ export class FilesystemWorkerClient {
             }
           })()
         : undefined;
-    if (platform === 'linux' && target.targetType !== 'missing' && !pinnedTarget) {
+    if (
+      platform === 'linux' &&
+      target.targetType !== 'missing' &&
+      target.targetType !== 'symlink' &&
+      !pinnedTarget
+    ) {
       throw clientError(
         'path_changed',
         'validation',
@@ -429,11 +446,15 @@ export function filesystemWorkerRuntimeWritableRoots(input: {
   access: 'read' | 'write';
   enforcementPath: string;
   targetType: FilesystemWorkerTarget['targetType'];
+  workspaceRoot?: string;
 }): readonly string[] | undefined {
   if (input.platform !== 'linux' || input.access !== 'write' || input.targetType !== 'missing') {
     return undefined;
   }
-  return [dirname(input.enforcementPath)];
+  // A create may need several parent directories. The worker still validates
+  // the exact operation boundary before mutating; this runtime-only root merely
+  // gives that one trusted worker enough kernel access to mkdir the path.
+  return [input.workspaceRoot ?? dirname(input.enforcementPath)];
 }
 
 function deriveWorkerProfile(

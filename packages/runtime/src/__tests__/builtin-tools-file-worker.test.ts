@@ -81,6 +81,8 @@ describe('builtin file tools use the sandboxed worker', () => {
         execute: async (input) => {
           calls.push(input);
           switch (input.operation.kind) {
+            case 'lstat':
+              return { kind: 'lstat', targetType: 'file' };
             case 'read':
               return { kind: 'read', content: 'worker-content' };
             case 'write':

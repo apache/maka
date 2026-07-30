@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
 import { glob as nodeGlob } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, parse, resolve } from 'node:path';
 import { isPathInside } from '../path-containment.js';
@@ -49,7 +49,13 @@ export async function executeFilesystemWorkerRequest(
   dependencies: FilesystemWorkerOperationDependencies = {},
 ): Promise<FilesystemWorkerResponse> {
   try {
-    await assertTargetUnchanged(request.operation.path, request.expectedTarget);
+    await assertTargetUnchanged(
+      request.operation.path,
+      request.expectedTarget,
+      request.operation.kind === 'delete' ||
+        request.operation.kind === 'lstat' ||
+        (request.operation.kind === 'write' && Boolean(request.operation.mode)),
+    );
     return {
       version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
       requestId: request.requestId,
@@ -77,6 +83,10 @@ export async function executeFilesystemOperation(
   dependencies: FilesystemWorkerOperationDependencies = {},
 ): Promise<FilesystemWorkerResult> {
   switch (operation.kind) {
+    case 'lstat': {
+      const path = await canonicalDirectoryEntryPath(operation.path);
+      return { kind: 'lstat', targetType: await lstatTargetTypeOf(path) };
+    }
     case 'read': {
       const path = await resolveExistingAllowed(
         operation.cwd,
@@ -109,13 +119,53 @@ export async function executeFilesystemOperation(
       return { kind: 'read', content: lines.slice(start, end).join('\n') };
     }
     case 'write': {
-      const path = await resolveWritableAllowed(
-        operation.cwd,
-        operation.path,
-        'Write',
-        operationBoundary,
-      );
+      const path = operation.mode
+        ? await resolveDirectoryEntryWritableAllowed(
+            operation.cwd,
+            operation.path,
+            'Write',
+            operationBoundary,
+          )
+        : await resolveWritableAllowed(operation.cwd, operation.path, 'Write', operationBoundary);
       await fs.mkdir(dirname(path), { recursive: true });
+      if (operation.mode === 'create') {
+        const handle = await fs.open(path, 'wx');
+        try {
+          await handle.writeFile(operation.content, 'utf8');
+        } finally {
+          await handle.close();
+        }
+        return {
+          kind: 'write',
+          ok: true,
+          path,
+          bytes: Buffer.byteLength(operation.content, 'utf8'),
+        };
+      }
+      if (operation.mode === 'replace') {
+        const metadata = await fs.lstat(path);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) {
+          throw operationError('filesystem_error', 'Write replacement requires a regular file.');
+        }
+        const handle = await fs.open(
+          path,
+          fsConstants.O_NOFOLLOW === undefined
+            ? 'r+'
+            : fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+        );
+        try {
+          await handle.truncate(0);
+          await handle.writeFile(operation.content, 'utf8');
+        } finally {
+          await handle.close();
+        }
+        return {
+          kind: 'write',
+          ok: true,
+          path,
+          bytes: Buffer.byteLength(operation.content, 'utf8'),
+        };
+      }
       await fs.writeFile(path, operation.content, 'utf8');
       return { kind: 'write', ok: true, path, bytes: Buffer.byteLength(operation.content, 'utf8') };
     }
@@ -302,15 +352,25 @@ function normalizeOperationError(error: unknown): FilesystemOperationError {
 async function assertTargetUnchanged(
   path: string,
   expected: FilesystemWorkerTarget,
+  noFollowFinalSymlink = false,
 ): Promise<void> {
-  const enforcementPath = await realpathAllowMissing(path);
-  const targetType = await targetTypeOf(enforcementPath);
+  const enforcementPath = noFollowFinalSymlink
+    ? await canonicalDirectoryEntryPath(path)
+    : await realpathAllowMissing(path);
+  const targetType = noFollowFinalSymlink
+    ? await lstatTargetTypeOf(enforcementPath)
+    : await targetTypeOf(enforcementPath);
   if (enforcementPath !== expected.enforcementPath || targetType !== expected.targetType) {
     throw operationError(
       'path_changed',
       'The approved filesystem target changed before execution.',
     );
   }
+}
+
+async function canonicalDirectoryEntryPath(path: string): Promise<string> {
+  const parent = dirname(path);
+  return resolve(await realpathAllowMissing(parent), basename(path));
 }
 
 async function resolveWritableAllowed(
@@ -339,6 +399,18 @@ async function resolveWritableAllowed(
   return enforcementPath;
 }
 
+async function resolveDirectoryEntryWritableAllowed(
+  cwd: string,
+  inputPath: string,
+  label: string,
+  permission: FilesystemWorkerRequest['operationBoundary'],
+): Promise<string> {
+  const { root, candidate } = await resolveCandidate(cwd, inputPath, label, 'write', permission);
+  const operand = await canonicalDirectoryEntryPath(candidate);
+  assertAllowed(root, operand, label, 'write', permission);
+  return operand;
+}
+
 async function resolveDeleteOperandAllowed(
   cwd: string,
   inputPath: string,
@@ -353,10 +425,6 @@ async function resolveDeleteOperandAllowed(
   const operand = resolve(parent, basename(candidate));
   const metadata = await fs.lstat(operand);
   if (metadata.isSymbolicLink()) {
-    const target = await fs.realpath(operand);
-    if (!isPathInside(root, target)) {
-      throw operationError('path_denied', `${label} symlink escaped the workspace.`);
-    }
     return operand;
   }
   const target = await fs.realpath(operand);
@@ -443,6 +511,19 @@ async function realpathAllowMissing(path: string): Promise<string> {
 async function targetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {
   try {
     const metadata = await fs.stat(path);
+    if (metadata.isFile()) return 'file';
+    if (metadata.isDirectory()) return 'directory';
+    return 'other';
+  } catch (error) {
+    if (nodeErrorCode(error) === 'ENOENT') return 'missing';
+    throw error;
+  }
+}
+
+async function lstatTargetTypeOf(path: string): Promise<FilesystemWorkerTarget['targetType']> {
+  try {
+    const metadata = await fs.lstat(path);
+    if (metadata.isSymbolicLink()) return 'symlink';
     if (metadata.isFile()) return 'file';
     if (metadata.isDirectory()) return 'directory';
     return 'other';

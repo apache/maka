@@ -33,7 +33,10 @@ export const AGENT_TOOL_NAMES = [
 ] as const;
 const CHILD_RECOVERY_TOOL_NAMES = ['ArchiveRead'] as const;
 export const CHILD_AGENT_TOOL_NAMES = [
-  ...new Set(BUILTIN_AGENT_DEFINITIONS.flatMap((definition) => definition.tools)),
+  ...new Set([
+    ...BUILTIN_AGENT_DEFINITIONS.flatMap((definition) => definition.tools),
+    'ApplyPatch',
+  ]),
 ] as readonly string[];
 const AGENT_SPAWN_WRITE_BACK_MODES = [AGENT_WRITE_BACK_SUMMARY, AGENT_WRITE_BACK_PATCH] as const;
 const AGENT_SPAWN_ISOLATION_MODES = [

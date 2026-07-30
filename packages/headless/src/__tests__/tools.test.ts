@@ -1725,7 +1725,7 @@ describe('isolated headless tools', () => {
     }
   });
 
-  test('ApplyPatch existence probes propagate symlink violations before any mutation', async (t) => {
+  test('ApplyPatch treats a symlink entry as an existing Add target before any mutation', async (t) => {
     if (process.platform === 'win32') {
       t.skip('file symlink creation is not reliably available on Windows CI');
       return;
@@ -1754,7 +1754,7 @@ describe('isolated headless tools', () => {
             },
             toolCtx(cwd),
           ),
-        /stay inside workspace/i,
+        /already exists/i,
       );
       assert.equal(await readFile(join(cwd, 'first.txt'), 'utf8'), 'before\n');
       assert.equal(await readFile(join(outside, 'secret.txt'), 'utf8'), 'secret\n');

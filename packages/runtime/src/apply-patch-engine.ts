@@ -6,13 +6,14 @@
  * Headless cannot drift.
  */
 import {
-  applyUpdateChunksToContent,
   assertSafePatchPath,
+  canonicalizeApplyPatchHunks,
   collectPatchPaths,
   parseApplyPatch,
-  type ApplyPatchHunk,
+  planApplyPatchMutations,
+  type ApplyPatchPathState,
+  type PlannedPatchMutation,
 } from '@maka/core/apply-patch';
-import { posix as pathPosix } from 'node:path';
 
 /** Write/delete intent used for permission preflight before any mutation. */
 export type ApplyPatchAccessIntent =
@@ -22,9 +23,18 @@ export type ApplyPatchAccessIntent =
 export interface ApplyPatchFsAdapter {
   /** Stable exclusive lock key for a relative path (may not exist yet). */
   lockKey(path: string): Promise<string>;
-  pathExists(path: string): Promise<boolean>;
+  /** Inspect the directory entry without following its final symlink. */
+  lstat(path: string): Promise<'missing' | 'file' | 'directory' | 'symlink' | 'other'>;
   readText(path: string, label: string): Promise<string>;
-  writeText(path: string, content: string): Promise<{ path: string; bytes: number }>;
+  /**
+   * Atomically create or replace a regular file. `create` must fail rather
+   * than clobber an entry that appeared after planning.
+   */
+  writeText(
+    path: string,
+    content: string,
+    mode: 'create' | 'replace',
+  ): Promise<{ path: string; bytes: number }>;
   deletePath(path: string): Promise<{ path: string }>;
   /**
    * Optional: assert every planned mutation path is currently permitted.
@@ -51,12 +61,6 @@ export interface ApplyPatchEngineResult {
   error?: string;
   partial?: boolean;
 }
-
-type PreparedStep =
-  | { kind: 'add'; path: string; content: string }
-  | { kind: 'update'; path: string; content: string }
-  | { kind: 'move'; path: string; fromPath: string; content: string }
-  | { kind: 'delete'; path: string };
 
 /**
  * Parse, plan, lock, revalidate, and settle a Codex ApplyPatch envelope.
@@ -87,7 +91,7 @@ export async function executeApplyPatchWithAdapter(
       throw new Error(`ApplyPatch rejected path ${JSON.stringify(path)}: ${pathError}`);
     }
   }
-  const hunks = parsed.value.hunks.map(canonicalizeHunkPaths);
+  const hunks = canonicalizeApplyPatchHunks(parsed.value.hunks);
 
   const lockKeySet = new Set<string>();
   for (const path of collectPatchPaths(hunks)) {
@@ -96,7 +100,18 @@ export async function executeApplyPatchWithAdapter(
   const orderedKeys = [...lockKeySet].sort();
 
   const run = async (): Promise<ApplyPatchEngineResult> => {
-    const prepared = await planUnderLocks(hunks, fs);
+    const state = new Map<string, ApplyPatchPathState>();
+    for (const path of collectPatchPaths(hunks)) {
+      if (state.has(path)) continue;
+      const kind = await fs.lstat(path);
+      state.set(
+        path,
+        kind === 'file'
+          ? { kind, content: await fs.readText(path, 'ApplyPatch preflight') }
+          : { kind: kind === 'directory' ? 'other' : kind },
+      );
+    }
+    const prepared = planApplyPatchMutations(hunks, state);
     if (fs.preflightPermissions) {
       await fs.preflightPermissions(collectAccessIntents(prepared));
     }
@@ -106,29 +121,14 @@ export async function executeApplyPatchWithAdapter(
   return withNestedLocks(orderedKeys, withLock, run);
 }
 
-function canonicalizeHunkPaths(hunk: ApplyPatchHunk): ApplyPatchHunk {
-  const path = canonicalPatchPath(hunk.path);
-  if (hunk.kind === 'add') return { ...hunk, path };
-  if (hunk.kind === 'delete') return { ...hunk, path };
-  return {
-    ...hunk,
-    path,
-    ...(hunk.movePath ? { movePath: canonicalPatchPath(hunk.movePath) } : {}),
-  };
-}
-
-function canonicalPatchPath(path: string): string {
-  return pathPosix.normalize(path.replaceAll('\\', '/').trim());
-}
-
-function collectAccessIntents(prepared: readonly PreparedStep[]): ApplyPatchAccessIntent[] {
+function collectAccessIntents(prepared: readonly PlannedPatchMutation[]): ApplyPatchAccessIntent[] {
   const byKey = new Map<string, ApplyPatchAccessIntent>();
   for (const step of prepared) {
-    if (step.kind === 'add' || step.kind === 'update') {
+    if (step.operation === 'add' || step.operation === 'update') {
       byKey.set(`write:${step.path}`, { access: 'write', path: step.path });
       continue;
     }
-    if (step.kind === 'delete') {
+    if (step.operation === 'delete') {
       byKey.set(`delete:${step.path}`, { access: 'delete', path: step.path });
       continue;
     }
@@ -139,89 +139,8 @@ function collectAccessIntents(prepared: readonly PreparedStep[]): ApplyPatchAcce
   return [...byKey.values()];
 }
 
-async function planUnderLocks(
-  hunks: readonly ApplyPatchHunk[],
-  fs: ApplyPatchFsAdapter,
-): Promise<PreparedStep[]> {
-  const prepared: PreparedStep[] = [];
-  // Track planned creates so later hunks in the same patch see them.
-  const plannedCreates = new Set<string>();
-  const plannedDeletes = new Set<string>();
-
-  for (const hunk of hunks) {
-    if (hunk.kind === 'add') {
-      if (plannedCreates.has(hunk.path) || (await fs.pathExists(hunk.path))) {
-        throw new Error(`ApplyPatch Add File target already exists: ${hunk.path}`);
-      }
-      prepared.push({ kind: 'add', path: hunk.path, content: hunk.contents });
-      plannedCreates.add(hunk.path);
-      continue;
-    }
-
-    if (hunk.kind === 'delete') {
-      if (plannedDeletes.has(hunk.path)) {
-        throw new Error(`ApplyPatch Delete File target missing: ${hunk.path}`);
-      }
-      if (!plannedCreates.has(hunk.path) && !(await fs.pathExists(hunk.path))) {
-        throw new Error(`ApplyPatch Delete File target missing: ${hunk.path}`);
-      }
-      prepared.push({ kind: 'delete', path: hunk.path });
-      plannedDeletes.add(hunk.path);
-      plannedCreates.delete(hunk.path);
-      continue;
-    }
-
-    // update (+ optional move)
-    if (plannedDeletes.has(hunk.path)) {
-      throw new Error(`ApplyPatch Update File target missing: ${hunk.path}`);
-    }
-    let original: string;
-    if (plannedCreates.has(hunk.path)) {
-      const prior = [...prepared]
-        .reverse()
-        .find(
-          (step) =>
-            (step.kind === 'add' || step.kind === 'update' || step.kind === 'move') &&
-            step.path === hunk.path,
-        );
-      if (!prior || prior.kind === 'delete') {
-        throw new Error(`ApplyPatch Update File target missing: ${hunk.path}`);
-      }
-      original = prior.content;
-    } else {
-      original = await fs.readText(hunk.path, 'ApplyPatch Update');
-    }
-
-    const applied = applyUpdateChunksToContent(original, hunk.chunks, hunk.path);
-    if (!applied.ok) throw new Error(applied.error.message);
-
-    if (hunk.movePath) {
-      if (
-        plannedCreates.has(hunk.movePath) ||
-        (!plannedDeletes.has(hunk.movePath) && (await fs.pathExists(hunk.movePath)))
-      ) {
-        throw new Error(`ApplyPatch Move destination already exists: ${hunk.movePath}`);
-      }
-      prepared.push({
-        kind: 'move',
-        path: hunk.movePath,
-        fromPath: hunk.path,
-        content: applied.content,
-      });
-      plannedCreates.add(hunk.movePath);
-      plannedDeletes.add(hunk.path);
-      plannedCreates.delete(hunk.path);
-    } else {
-      prepared.push({ kind: 'update', path: hunk.path, content: applied.content });
-      plannedCreates.add(hunk.path);
-    }
-  }
-
-  return prepared;
-}
-
 async function settlePrepared(
-  prepared: readonly PreparedStep[],
+  prepared: readonly PlannedPatchMutation[],
   fs: ApplyPatchFsAdapter,
 ): Promise<ApplyPatchEngineResult> {
   const operations: ApplyPatchOperationResult[] = [];
@@ -231,19 +150,23 @@ async function settlePrepared(
   for (const step of prepared) {
     if (failure) {
       operations.push({
-        operation: step.kind,
+        operation: step.operation,
         path: step.path,
-        ...(step.kind === 'move' ? { fromPath: step.fromPath } : {}),
+        ...(step.operation === 'move' ? { fromPath: step.fromPath } : {}),
         status: 'skipped',
       });
       continue;
     }
 
     try {
-      if (step.kind === 'add' || step.kind === 'update') {
-        const written = await fs.writeText(step.path, step.content);
+      if (step.operation === 'add' || step.operation === 'update') {
+        const written = await fs.writeText(
+          step.path,
+          step.content,
+          step.operation === 'add' ? 'create' : 'replace',
+        );
         operations.push({
-          operation: step.kind,
+          operation: step.operation,
           path: written.path,
           status: 'completed',
           bytes: written.bytes,
@@ -252,7 +175,7 @@ async function settlePrepared(
         continue;
       }
 
-      if (step.kind === 'delete') {
+      if (step.operation === 'delete') {
         const deleted = await fs.deletePath(step.path);
         operations.push({ operation: 'delete', path: deleted.path, status: 'completed' });
         completed.push(deleted.path);
@@ -261,7 +184,7 @@ async function settlePrepared(
 
       // move: write destination first, then delete source. A failed source
       // delete after a successful write is an explicit partial failure.
-      const written = await fs.writeText(step.path, step.content);
+      const written = await fs.writeText(step.path, step.content, 'create');
       completed.push(written.path);
       try {
         await fs.deletePath(step.fromPath);
@@ -294,9 +217,9 @@ async function settlePrepared(
       }
       failure = error instanceof Error ? error.message : String(error);
       operations.push({
-        operation: step.kind,
+        operation: step.operation,
         path: step.path,
-        ...(step.kind === 'move' ? { fromPath: step.fromPath } : {}),
+        ...(step.operation === 'move' ? { fromPath: step.fromPath } : {}),
         status: 'failed',
         error: failure,
       });

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   applyUpdateChunksToContent,
   assertSafePatchPath,
+  canonicalizeApplyPatchHunks,
   parseApplyPatch,
+  planApplyPatchMutations,
 } from '../apply-patch.js';
 
 function envelope(body: string): string {
@@ -63,6 +65,61 @@ describe('parseApplyPatch', () => {
     assert.ok(assertSafePatchPath('C:/Windows/system32'));
     assert.ok(assertSafePatchPath('../escape'));
     assert.equal(assertSafePatchPath('src/ok.ts'), null);
+  });
+});
+
+describe('planApplyPatchMutations', () => {
+  test('plans aliases and sequential updates against one immutable snapshot', () => {
+    const parsed = parseApplyPatch(
+      envelope(
+        [
+          '*** Update File: ./src/a.txt',
+          '@@',
+          '-one',
+          '+two',
+          '*** Update File: src//a.txt',
+          '@@',
+          '-two',
+          '+three',
+          '',
+        ].join('\n'),
+      ),
+    );
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    const hunks = canonicalizeApplyPatchHunks(parsed.value.hunks);
+    const plan = planApplyPatchMutations(
+      hunks,
+      new Map([['src/a.txt', { kind: 'file' as const, content: 'one\n' }]]),
+    );
+    assert.deepEqual(plan, [
+      { operation: 'update', path: 'src/a.txt', content: 'two\n' },
+      { operation: 'update', path: 'src/a.txt', content: 'three\n' },
+    ]);
+  });
+
+  test('allows deleting a symlink entry but never treats it as update content', () => {
+    assert.deepEqual(
+      planApplyPatchMutations(
+        [{ kind: 'delete', path: 'link.txt' }],
+        new Map([['link.txt', { kind: 'symlink' as const }]]),
+      ),
+      [{ operation: 'delete', path: 'link.txt' }],
+    );
+    assert.throws(
+      () =>
+        planApplyPatchMutations(
+          [
+            {
+              kind: 'update',
+              path: 'link.txt',
+              chunks: [{ oldLines: ['a'], newLines: ['b'], isEndOfFile: false }],
+            },
+          ],
+          new Map([['link.txt', { kind: 'symlink' as const }]]),
+        ),
+      /regular file/,
+    );
   });
 });
 

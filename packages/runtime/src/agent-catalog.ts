@@ -221,7 +221,11 @@ export function evaluateAgentDefinitionToolAccess(
   tool: Pick<MakaTool, 'name' | 'categoryHint'>,
 ): { category: ToolCategory; decision: PolicyDecision } {
   const category = categoryForTool(tool);
-  return { category, decision: definition.tools.includes(tool.name) ? 'allow' : 'block' };
+  const admitted =
+    definition.tools.includes(tool.name) ||
+    (tool.name === 'ApplyPatch' &&
+      (definition.tools.includes('Write') || definition.tools.includes('Edit')));
+  return { category, decision: admitted ? 'allow' : 'block' };
 }
 
 export function evaluateAgentDefinitionAvailability(input: {
@@ -243,7 +247,8 @@ export function evaluateAgentDefinitionAvailability(input: {
   }
 
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  const missingTools = definition.tools.filter((name) => !byName.has(name));
+  const requiredToolNames = projectDefinitionToolNamesToAvailableSurface(definition, byName);
+  const missingTools = requiredToolNames.filter((name) => !byName.has(name));
   if (missingTools.length > 0) {
     return { status: 'unavailable', reason: 'missing_tools', missingTools };
   }
@@ -257,12 +262,42 @@ export function buildToolsForAgentDefinition(
 ): MakaTool[] {
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const out: MakaTool[] = [];
-  for (const name of definition.tools) {
+  for (const name of projectDefinitionToolNamesToAvailableSurface(definition, byName)) {
     const tool = byName.get(name);
     if (!tool) continue;
     out.push(tool);
   }
+  const applyPatch = byName.get('ApplyPatch');
+  if (
+    applyPatch &&
+    !out.some((tool) => tool.name === 'ApplyPatch') &&
+    evaluateAgentDefinitionToolAccess(definition, applyPatch).decision === 'allow'
+  ) {
+    out.push(applyPatch);
+  }
   return out;
+}
+
+function projectDefinitionToolNamesToAvailableSurface(
+  definition: AgentRuntimeDefinition,
+  byName: ReadonlyMap<string, MakaTool>,
+): string[] {
+  const applyPatchOnly = byName.has('ApplyPatch') && !byName.has('Write') && !byName.has('Edit');
+  if (
+    !applyPatchOnly ||
+    (!definition.tools.includes('Write') && !definition.tools.includes('Edit'))
+  ) {
+    return [...definition.tools];
+  }
+  const projected: string[] = [];
+  for (const name of definition.tools) {
+    if (name === 'Write' || name === 'Edit') {
+      if (!projected.includes('ApplyPatch')) projected.push('ApplyPatch');
+      continue;
+    }
+    projected.push(name);
+  }
+  return projected;
 }
 
 export function assertAgentDefinitionRunnable(input: {

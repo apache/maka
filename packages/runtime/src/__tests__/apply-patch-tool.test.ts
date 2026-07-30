@@ -25,27 +25,34 @@ function envelope(body: string): string {
 
 describe('editingProtocol projection', () => {
   test('edit_write is the default and omits ApplyPatch', () => {
-    const names = buildBuiltinTools().map((tool) => tool.name);
-    assert.ok(names.includes('Write'));
-    assert.ok(names.includes('Edit'));
-    assert.equal(names.includes('ApplyPatch'), false);
+    const surface = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools: buildBuiltinTools(),
+      policy: { economy: false },
+    });
+    assert.ok(surface.toolNames.has('Write'));
+    assert.ok(surface.toolNames.has('Edit'));
+    assert.equal(surface.toolNames.has('ApplyPatch'), false);
   });
 
   test('apply_patch exposes ApplyPatch and omits Write/Edit', () => {
-    const names = buildBuiltinTools({ editingProtocol: 'apply_patch' }).map((tool) => tool.name);
-    assert.ok(names.includes('ApplyPatch'));
-    assert.equal(names.includes('Write'), false);
-    assert.equal(names.includes('Edit'), false);
+    const surface = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools: buildBuiltinTools(),
+      policy: { economy: false, editingProtocol: 'apply_patch' },
+    });
+    assert.ok(surface.toolNames.has('ApplyPatch'));
+    assert.equal(surface.toolNames.has('Write'), false);
+    assert.equal(surface.toolNames.has('Edit'), false);
   });
 
   test('never advertises both editing protocols', () => {
     for (const protocol of ['edit_write', 'apply_patch'] as const) {
-      const names = new Set(
-        buildBuiltinTools({
-          editingProtocol: protocol,
-          includeEdit: true,
-        }).map((tool) => tool.name),
-      );
+      const names = projectEffectiveProductToolSurface({
+        host: 'cli',
+        tools: buildBuiltinTools({ includeEdit: true }),
+        policy: { economy: false, editingProtocol: protocol },
+      }).toolNames;
       const hasClassic = names.has('Write') || names.has('Edit');
       const hasPatch = names.has('ApplyPatch');
       assert.equal(hasClassic && hasPatch, false);
@@ -60,7 +67,7 @@ describe('ApplyPatch tool integration', () => {
     try {
       await writeFile(join(root, 'existing.txt'), 'keep\n', 'utf8');
       await writeFile(join(root, 'source.txt'), 'src\n', 'utf8');
-      const tools = buildBuiltinTools({ editingProtocol: 'apply_patch' });
+      const tools = buildBuiltinTools();
       const apply = tools.find((tool) => tool.name === 'ApplyPatch');
       assert.ok(apply);
 
@@ -106,7 +113,7 @@ describe('ApplyPatch tool integration', () => {
       await mkdir(join(root, 'src'), { recursive: true });
       await writeFile(join(root, 'src', 'a.ts'), 'const x = 1;\n', 'utf8');
 
-      const tools = buildBuiltinTools({ editingProtocol: 'apply_patch' });
+      const tools = buildBuiltinTools();
       const apply = tools.find((tool) => tool.name === 'ApplyPatch');
       assert.ok(apply);
 
@@ -191,7 +198,7 @@ describe('ApplyPatch tool integration', () => {
     }
   });
 
-  test('Delete and Move unlink their symlink operands without deleting the target', async (t) => {
+  test('Delete unlinks a symlink while Update plus Move rejects one without side effects', async (t) => {
     if (process.platform === 'win32') {
       t.skip('file symlink creation is not reliably available on Windows CI');
       return;
@@ -201,9 +208,7 @@ describe('ApplyPatch tool integration', () => {
       await writeFile(join(root, 'target.txt'), 'target\n', 'utf8');
       await symlink('target.txt', join(root, 'delete-link.txt'));
       await symlink('target.txt', join(root, 'move-link.txt'));
-      const apply = buildBuiltinTools({ editingProtocol: 'apply_patch' }).find(
-        (tool) => tool.name === 'ApplyPatch',
-      );
+      const apply = buildBuiltinTools().find((tool) => tool.name === 'ApplyPatch');
       assert.ok(apply);
 
       await apply.impl(
@@ -215,24 +220,28 @@ describe('ApplyPatch tool integration', () => {
       await assert.rejects(() => lstat(join(root, 'delete-link.txt')));
       assert.equal(await readFile(join(root, 'target.txt'), 'utf8'), 'target\n');
 
-      await apply.impl(
-        {
-          patch: envelope(
-            [
-              '*** Update File: move-link.txt',
-              '*** Move to: moved.txt',
-              '@@',
-              '-target',
-              '+moved',
-              '',
-            ].join('\n'),
+      await assert.rejects(
+        async () =>
+          await apply.impl(
+            {
+              patch: envelope(
+                [
+                  '*** Update File: move-link.txt',
+                  '*** Move to: moved.txt',
+                  '@@',
+                  '-target',
+                  '+moved',
+                  '',
+                ].join('\n'),
+              ),
+            },
+            toolCtx(root),
           ),
-        },
-        toolCtx(root),
+        /regular file/i,
       );
-      await assert.rejects(() => lstat(join(root, 'move-link.txt')));
+      assert.equal((await lstat(join(root, 'move-link.txt'))).isSymbolicLink(), true);
       assert.equal(await readFile(join(root, 'target.txt'), 'utf8'), 'target\n');
-      assert.equal(await readFile(join(root, 'moved.txt'), 'utf8'), 'moved\n');
+      await assert.rejects(() => lstat(join(root, 'moved.txt')));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -241,7 +250,7 @@ describe('ApplyPatch tool integration', () => {
 
 describe('product-tool surface editingProtocol', () => {
   test('projector selects exactly one editing protocol from bound tools', () => {
-    const tools = buildBuiltinTools({ editingProtocol: 'all', includeEdit: true });
+    const tools = buildBuiltinTools({ includeEdit: true });
     const editWrite = projectEffectiveProductToolSurface({
       host: 'cli',
       tools,
@@ -263,19 +272,17 @@ describe('product-tool surface editingProtocol', () => {
     assert.equal(applyPatch.identity.policy.editingProtocol, 'apply_patch');
   });
 
-  test('builder apply_patch + default projector does not zero the editing surface', () => {
-    // Double-filter regression: builder drops Write/Edit, projector default was
-    // edit_write and also dropped ApplyPatch, leaving no editing tool.
-    const tools = buildBuiltinTools({ editingProtocol: 'apply_patch', includeEdit: true });
+  test('builder binds the union and the default projector selects edit_write once', () => {
+    const tools = buildBuiltinTools({ includeEdit: true });
     const surface = projectEffectiveProductToolSurface({
       host: 'cli',
       tools,
       policy: { economy: false },
     });
-    assert.ok(surface.toolNames.has('ApplyPatch'));
-    assert.equal(surface.toolNames.has('Write'), false);
-    assert.equal(surface.toolNames.has('Edit'), false);
-    assert.equal(surface.identity.policy.editingProtocol, 'apply_patch');
+    assert.equal(surface.toolNames.has('ApplyPatch'), false);
+    assert.ok(surface.toolNames.has('Write'));
+    assert.ok(surface.toolNames.has('Edit'));
+    assert.equal(surface.identity.policy.editingProtocol, 'edit_write');
   });
 });
 
@@ -286,8 +293,8 @@ describe('shared ApplyPatch engine partial move failure', () => {
       async lockKey(path) {
         return path;
       },
-      async pathExists(path) {
-        return files.has(path);
+      async lstat(path) {
+        return files.has(path) ? 'file' : 'missing';
       },
       async readText(path) {
         const content = files.get(path);
@@ -343,8 +350,8 @@ describe('shared ApplyPatch engine partial move failure', () => {
       async lockKey(path) {
         return path;
       },
-      async pathExists(path) {
-        return files.has(path);
+      async lstat(path) {
+        return files.has(path) ? 'file' : 'missing';
       },
       async readText(path) {
         const content = files.get(path);
@@ -411,8 +418,8 @@ describe('shared ApplyPatch engine partial move failure', () => {
       async lockKey(path) {
         return path;
       },
-      async pathExists(path) {
-        return files.has(path);
+      async lstat(path) {
+        return files.has(path) ? 'file' : 'missing';
       },
       async readText(path) {
         const content = files.get(path);
@@ -449,8 +456,8 @@ describe('shared ApplyPatch engine partial move failure', () => {
       async lockKey(path) {
         return path;
       },
-      async pathExists(path) {
-        return files.has(path);
+      async lstat(path) {
+        return files.has(path) ? 'file' : 'missing';
       },
       async readText(path) {
         const content = files.get(path);

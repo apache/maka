@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { validateSandboxBoundaryExpansion } from '@maka/core';
 
-// v5: add delete operation for ApplyPatch Move/Delete settlement (#1552).
-export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 5 as const;
+// v6: directory-entry lstat plus create-vs-replace write semantics for the
+// transactional ApplyPatch applier (#1552).
+export const FILESYSTEM_WORKER_PROTOCOL_VERSION = 6 as const;
 
 const path = z.string().min(1).max(4096);
 const cwd = z.string().min(1).max(4096);
@@ -41,7 +42,7 @@ export const FilesystemWorkerTargetSchema = z
     enforcementPath: path,
     access: z.enum(['read', 'write']),
     scope: z.enum(['exact', 'subtree']),
-    targetType: z.enum(['file', 'directory', 'other', 'missing']),
+    targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
   })
   .strict();
 
@@ -55,7 +56,16 @@ export const FilesystemWorkerOperationSchema = z.discriminatedUnion('kind', [
       limit: z.number().int().positive().optional(),
     })
     .strict(),
-  z.object({ kind: z.literal('write'), cwd, path, content: z.string() }).strict(),
+  z.object({ kind: z.literal('lstat'), cwd, path }).strict(),
+  z
+    .object({
+      kind: z.literal('write'),
+      cwd,
+      path,
+      content: z.string(),
+      mode: z.enum(['create', 'replace']).optional(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('edit'),
@@ -108,6 +118,12 @@ export const FilesystemWorkerRequestSchema = z
   .strict();
 
 export const FilesystemWorkerResultSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('lstat'),
+      targetType: z.enum(['file', 'directory', 'symlink', 'other', 'missing']),
+    })
+    .strict(),
   z.object({ kind: z.literal('read'), content: z.string() }).strict(),
   z
     .object({
