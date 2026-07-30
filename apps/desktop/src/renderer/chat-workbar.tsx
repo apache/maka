@@ -6,6 +6,7 @@ import type { SessionWorkbarTab } from './session-workbar-layout';
 import { SESSION_WORKBAR_MAX_WIDTH, SESSION_WORKBAR_MIN_WIDTH } from './session-workbar-layout';
 import { getShellCopy } from './locales/shell-copy';
 import type {
+  CompanionQuoteTarget,
   CompanionQuoteSnapshot,
   QuoteCompanionPanelState,
 } from './quote-companion-panel-state';
@@ -46,6 +47,7 @@ interface ChatWorkbarProps {
   quote?: QuoteCompanionPanelState | null;
   onClearQuote?: () => void;
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+  onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
@@ -64,6 +66,7 @@ export function ChatWorkbar({
   quote,
   onClearQuote,
   onQuotesConsumed,
+  onRemoveQuote,
   onForkVisibilityChange,
   sourceSession,
   modelChoices,
@@ -96,6 +99,7 @@ export function ChatWorkbar({
           quote={quote}
           onClearQuote={onClearQuote}
           onQuotesConsumed={onQuotesConsumed}
+          onRemoveQuote={onRemoveQuote}
           onForkVisibilityChange={onForkVisibilityChange}
           sourceSession={sourceSession}
           modelChoices={modelChoices}

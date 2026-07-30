@@ -23,6 +23,11 @@ export interface CompanionQuoteSnapshot {
   quotes: readonly QuoteRef[];
 }
 
+export interface CompanionQuoteTarget {
+  panelId: string;
+  quoteId: string;
+}
+
 export function stageCompanionQuote(
   current: QuoteCompanionPanelState | null,
   input: {
@@ -62,5 +67,14 @@ export function consumeCompanionQuoteSnapshot(
   }
   const consumed = new Set(snapshot.quoteIds);
   const quotes = current.quotes.filter((quote) => !consumed.has(quote.id));
+  return quotes.length === current.quotes.length ? current : { ...current, quotes };
+}
+
+export function removeStagedCompanionQuote(
+  current: QuoteCompanionPanelState | null,
+  target: CompanionQuoteTarget,
+): QuoteCompanionPanelState | null {
+  if (!current || current.id !== target.panelId) return current;
+  const quotes = current.quotes.filter((quote) => quote.id !== target.quoteId);
   return quotes.length === current.quotes.length ? current : { ...current, quotes };
 }

@@ -12,6 +12,7 @@ import type { SessionSummary } from '@maka/core';
 import { useQuoteCompanion } from './use-quote-companion';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import type {
+  CompanionQuoteTarget,
   CompanionQuoteSnapshot,
   StagedCompanionQuote,
 } from './quote-companion-panel-state';
@@ -36,6 +37,7 @@ export function QuoteCompanionPanel(props: {
   modelChoices: readonly ChatModelChoice[];
   onClear?: () => void;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
+  onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
 }) {
   const locale = useUiLocale();
@@ -111,6 +113,15 @@ export function QuoteCompanionPanel(props: {
         draftKey={companion.companionSession?.id ?? `quote-companion:${props.sourceSession?.id ?? 'none'}`}
         disabled={!props.sourceSession}
         pendingQuotes={props.quotes.map((quote) => quote.value)}
+        onRemoveQuote={(index) => {
+          const quote = props.quotes[index];
+          if (quote) {
+            props.onRemoveQuote?.({
+              panelId: props.panelId,
+              quoteId: quote.id,
+            });
+          }
+        }}
         // No activeSession / onModelChange → the model shows as a read-only chip
         // (the companion has no independent picker; it inherits the source model).
         modelLabel={activeModelLabel}

@@ -17,6 +17,7 @@ import type { SessionWorkbarTab } from './session-workbar-layout';
 import { useSessionTasks } from './use-session-tasks';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import type {
+  CompanionQuoteTarget,
   CompanionQuoteSnapshot,
   QuoteCompanionPanelState,
 } from './quote-companion-panel-state';
@@ -35,6 +36,7 @@ export function SessionWorkbar(props: {
   quote?: QuoteCompanionPanelState | null;
   onClearQuote?: () => void;
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+  onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   /** The main session the companion forks from (inherits context + model). */
   sourceSession?: SessionSummary;
@@ -109,6 +111,7 @@ export function SessionWorkbar(props: {
               modelChoices={props.modelChoices ?? []}
               onClear={props.onClearQuote}
               onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
+              onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
             />
           </PrimitiveTabsPanel>

@@ -56,6 +56,7 @@ import { ChatComposerRegion } from './chat-composer-region';
 import { ChatWorkbar } from './chat-workbar';
 import {
   consumeCompanionQuoteSnapshot,
+  removeStagedCompanionQuote,
   stageCompanionQuote,
   type QuoteCompanionPanelState,
 } from './quote-companion-panel-state';
@@ -2438,6 +2439,9 @@ function AppShellContent({
                 onClearQuote={() => setQuotePanel(null)}
                 onQuotesConsumed={(snapshot) =>
                   setQuotePanel((prev) => consumeCompanionQuoteSnapshot(prev, snapshot))
+                }
+                onRemoveQuote={(target) =>
+                  setQuotePanel((prev) => removeStagedCompanionQuote(prev, target))
                 }
                 onForkVisibilityChange={onCompanionForkVisibilityChange}
                 sourceSession={activeSessionForView}

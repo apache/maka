@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { QuoteRef } from '@maka/core';
 import {
   consumeCompanionQuoteSnapshot,
+  removeStagedCompanionQuote,
   snapshotCompanionQuotes,
   stageCompanionQuote,
   type QuoteCompanionPanelState,
@@ -52,5 +53,42 @@ describe('quote companion panel ownership', () => {
     });
 
     assert.equal(consumeCompanionQuoteSnapshot(replacement, stale), replacement);
+  });
+
+  it('removes one staged quote by stable panel and quote ids', () => {
+    const newId = ids('quote-a', 'panel-1', 'quote-b');
+    let panel: QuoteCompanionPanelState | null = stageCompanionQuote(null, {
+      sourceSessionId: 'source',
+      quote: quote('A'),
+      newId,
+    });
+    panel = stageCompanionQuote(panel, {
+      sourceSessionId: 'source',
+      quote: quote('B'),
+      newId,
+    });
+
+    panel = removeStagedCompanionQuote(panel, {
+      panelId: panel.id,
+      quoteId: 'quote-a',
+    });
+
+    assert.deepEqual(panel?.quotes, [{ id: 'quote-b', value: quote('B') }]);
+  });
+
+  it('ignores a stale removal from a replaced panel', () => {
+    const replacement = stageCompanionQuote(null, {
+      sourceSessionId: 'source',
+      quote: quote('B'),
+      newId: ids('quote-b', 'panel-2'),
+    });
+
+    assert.equal(
+      removeStagedCompanionQuote(replacement, {
+        panelId: 'panel-1',
+        quoteId: 'quote-b',
+      }),
+      replacement,
+    );
   });
 });
