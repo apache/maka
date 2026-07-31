@@ -447,7 +447,6 @@ function makeFactoryDeps(
     readArchivedToolResult: async () => undefined,
     runtimeCommitStore: undefined,
     safeSendToRenderer: () => {},
-    openGateway: {},
     emitSessionsChanged: () => {},
     getRuntime: () => runtime,
     getLookupPricing: () => () => null,

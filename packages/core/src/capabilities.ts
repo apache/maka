@@ -83,7 +83,6 @@ export type CapabilityId =
   | 'computer_use'
   | 'activity_recorder'
   | 'voice'
-  | 'open_gateway'
   | 'memory_write'
   | `bot:${BotProvider}`;
 

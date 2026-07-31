@@ -16,14 +16,12 @@ describe('settings IPC helpers', () => {
     settings.network.proxy.password = 'proxy-secret';
     settings.botChat.channels.telegram.token = 'telegram-secret';
     settings.botChat.channels.feishu.appSecret = 'feishu-secret';
-    settings.openGateway.token = 'gateway-secret';
 
     const masked = maskAppSettings(settings);
 
     assert.equal(masked.network.proxy.password, SENSITIVE_PLACEHOLDER);
     assert.equal(masked.botChat.channels.telegram.token, SENSITIVE_PLACEHOLDER);
     assert.equal(masked.botChat.channels.feishu.appSecret, SENSITIVE_PLACEHOLDER);
-    assert.equal(masked.openGateway.token, SENSITIVE_PLACEHOLDER);
     assert.equal(settings.network.proxy.password, 'proxy-secret');
   });
 
@@ -34,7 +32,6 @@ describe('settings IPC helpers', () => {
 
     assert.equal(masked.network.proxy.password, '');
     assert.equal(masked.botChat.channels.telegram.token, '');
-    assert.equal(masked.openGateway.token, '');
   });
 
   test('marks Tavily environment credentials as renderer-safe source without returning the key', () => {
@@ -57,18 +54,15 @@ describe('settings IPC helpers', () => {
     settings.network.proxy.password = 'new-proxy-secret';
     settings.botChat.channels.telegram.token = 'new-bot-token';
     settings.botChat.channels.feishu.appSecret = 'stored-feishu-secret';
-    settings.openGateway.token = 'new-gateway-token';
 
     const masked = maskAppSettings(settings, {
       network: { proxy: { password: 'new-proxy-secret' } },
       botChat: { channels: { telegram: { token: 'new-bot-token' } } },
-      openGateway: { token: 'new-gateway-token' },
     });
 
     assert.equal(masked.network.proxy.password, 'new-proxy-secret');
     assert.equal(masked.botChat.channels.telegram.token, 'new-bot-token');
     assert.equal(masked.botChat.channels.feishu.appSecret, SENSITIVE_PLACEHOLDER);
-    assert.equal(masked.openGateway.token, 'new-gateway-token');
   });
 
   test('never reveals Tavily API key back to renderer, even on the save response', () => {
@@ -89,7 +83,6 @@ describe('settings IPC helpers', () => {
     current.network.proxy.password = 'stored-proxy-secret';
     current.botChat.channels.telegram.token = 'stored-bot-token';
     current.botChat.channels.feishu.appSecret = 'stored-feishu-secret';
-    current.openGateway.token = 'stored-gateway-token';
 
     const patch = preserveSensitivePlaceholders(
       {
@@ -100,7 +93,6 @@ describe('settings IPC helpers', () => {
             feishu: { appSecret: SENSITIVE_PLACEHOLDER, appId: 'cli_123' },
           },
         },
-        openGateway: { token: SENSITIVE_PLACEHOLDER, enabled: true },
       },
       current,
     );
@@ -111,8 +103,6 @@ describe('settings IPC helpers', () => {
     assert.equal(patch.botChat?.channels?.telegram?.enabled, true);
     assert.equal(patch.botChat?.channels?.feishu?.appSecret, 'stored-feishu-secret');
     assert.equal(patch.botChat?.channels?.feishu?.appId, 'cli_123');
-    assert.equal(patch.openGateway?.token, 'stored-gateway-token');
-    assert.equal(patch.openGateway?.enabled, true);
   });
 
   test('maps runtime bot test results as credential checks, not operational readiness', () => {

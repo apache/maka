@@ -431,8 +431,3 @@
   overflow-wrap: anywhere;
   text-align: right;
 }
-
-.settingsRowCurlButton {
-  flex-shrink: 0;
-  white-space: nowrap;
-}

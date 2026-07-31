@@ -102,7 +102,6 @@ describe('session open routing contract', () => {
     const main = await readMainProcessCombinedSource();
     const readMessagesHandler = main.match(/ipcMain\.handle\('sessions:readMessages'[\s\S]*?\n  \}\);/)?.[0] ?? '';
     const searchHandler = main.match(/ipcMain\.handle\('search:thread'[\s\S]*?\n  \}\);/)?.[0] ?? '';
-    const gatewayDeps = main.match(/const openGateway = new OpenGatewayService\(\{[\s\S]*?\n\}\);/)?.[0] ?? '';
 
     assert.match(readMessagesHandler, /try \{[\s\S]*messages = await runtime\.getMessages\(sessionId\);[\s\S]*\} catch \(error\) \{[\s\S]*throw new Error\(sessionReadMessagesFailureMessage\(error\)\);[\s\S]*\}/);
     assert.match(
@@ -113,7 +112,5 @@ describe('session open routing contract', () => {
     assert.doesNotMatch(readMessagesHandler, /throw new Error\(sessionMarkReadFailureMessage\(error\)\)/);
     assert.doesNotMatch(readMessagesHandler, /markSessionRead\(sessionId\)\.catch/);
     assert.doesNotMatch(searchHandler, /markSessionRead/);
-    assert.match(gatewayDeps, /readMessages: \(sessionId\) => runtime\.getMessages\(sessionId\)/);
-    assert.doesNotMatch(gatewayDeps, /markSessionRead/);
   });
 });

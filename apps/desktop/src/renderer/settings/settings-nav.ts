@@ -9,7 +9,6 @@ import {
   Database,
   Info,
   Mic,
-  Network,
   Palette,
   Search,
   Settings as SettingsIcon,
@@ -69,7 +68,6 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'memory', Icon: Brain, enabled: true, group: 'ai-integrations' },
   { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'ai-integrations' },
   { id: 'voice', Icon: Mic, enabled: true, group: 'ai-integrations' },
-  { id: 'open-gateway', Icon: Network, enabled: true, group: 'ai-integrations' },
   { id: 'bot-chat', Icon: Bot, enabled: true, group: 'ai-integrations' },
   { id: 'search', Icon: Search, enabled: true, group: 'ai-integrations', badge: 'Beta' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
@@ -97,10 +95,8 @@ export function groupedNav(locale: UiLocale): Array<{ group: SettingsNavGroup; l
 export function readLastSettingsSection(): SettingsSection {
   const value = safeLocalStorageGet('maka-settings-section-v1');
   if (!value) return 'models';
-  // PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
-  // anyone whose last visit was the now-retired combined 语音与网关
-  // page lands on 语音 (the more user-frequent of the two split
-  // pages) instead of being silently bounced back to 模型.
+  // Anyone whose last visit was the retired combined voice page lands on
+  // Voice instead of being silently bounced back to Models.
   if (value === 'voice-gateway') return 'voice';
   if (value === 'mcp') return 'models';
   if (SETTINGS_NAV.some((item) => item.id === value)) {

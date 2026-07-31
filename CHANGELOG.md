@@ -2,12 +2,19 @@
 
 ## Unreleased
 
+### Open Gateway removal
+
+Removed the desktop Open Gateway HTTP/SSE server, its Settings and IPC surfaces,
+and its dedicated credential/capability types. Model providers, OpenAI-compatible
+connections, Vercel AI Gateway, and bot event gateways are unchanged. Persisted
+settings from older builds are accepted with the retired section ignored.
+
 ### Runtime kernel extraction
 
 This change set turns the runtime execution path from a large implicit
 `SessionManager` / `AiSdkBackend` flow into an internal runtime-kernel shape.
-It keeps the existing desktop, renderer, IPC, session JSONL, settings, bot, and
-gateway surfaces stable while moving model, tool, trace, run-ledger, and
+It keeps the existing desktop, renderer, IPC, session JSONL, settings, and bot
+surfaces stable while moving model, tool, trace, run-ledger, and
 startup-recovery responsibilities behind explicit internal boundaries.
 
 | Area | Summary |

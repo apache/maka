@@ -96,24 +96,6 @@ export function buildCapabilitySnapshotCollection(input: {
       },
     }),
     staticCapability({
-      id: 'open_gateway',
-      label: 'Open Gateway',
-      now,
-      feature: {
-        state: input.settings.openGateway.enabled ? 'enabled' : 'disabled',
-        source: 'settings',
-        reason: input.settings.openGateway.enabled ? undefined : '本地 Gateway 已关闭',
-      },
-      requiredPermissions: [],
-      actionApproval: { state: 'required_per_action', source: 'capability_policy' },
-      memoryAcceptance: { state: 'not_applicable', source: 'not_applicable' },
-      runtimeProbe: {
-        state: input.settings.openGateway.enabled && input.settings.openGateway.token ? 'not_run' : 'not_available',
-        source: input.settings.openGateway.enabled ? 'runtime_probe' : 'not_applicable',
-        reason: input.settings.openGateway.enabled && !input.settings.openGateway.token ? '等待生成访问 token' : undefined,
-      },
-    }),
-    staticCapability({
       id: 'memory_write',
       label: 'Memory',
       now,

@@ -91,7 +91,6 @@ import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
 import { resolveE2eFixture, seedE2eFixture } from './e2e-fixture.js';
 import { resolveBuildInfo } from './build-info.js';
 import { resolveShellEnv } from './shell-env.js';
-import { OpenGatewayService } from './open-gateway.js';
 import { LocalMemoryService } from './local-memory-service.js';
 import { createAttachmentApprovalRegistry } from './attachment-approval.js';
 import { cleanupLegacyHistoryCompactArtifacts } from '@maka/runtime';
@@ -140,7 +139,6 @@ import {
   resolveDesktopNewSessionSkillHost,
   resolveDesktopSessionSkillHost,
 } from './desktop-backend-tool-surface.js';
-import { registerGatewayIpc } from './gateway-ipc-main.js';
 import { registerSessionsIpc } from './sessions-ipc-main.js';
 import { registerAgentGraphIpc } from './agent-graph-ipc-main.js';
 import { createVoiceIpcService, registerVoiceIpc } from './voice-ipc-main.js';
@@ -651,33 +649,6 @@ const deepResearchTools = buildDeepResearchTools({
   artifactStore,
   onArtifactCreated: (event) => safeSendToRenderer('artifacts:changed', event),
 });
-const openGateway = new OpenGatewayService({
-  getSettings: () => settingsStore.get(),
-  listSessions: async () => collapseSessionRevisions(await runtime.listSessions()),
-  readMessages: (sessionId) => runtime.getMessages(sessionId),
-  sendMessage: async (sessionId, input) => {
-    await ensureSessionCanSend(sessionId);
-    const turnId = randomUUID();
-    const iterator = runtime.sendMessage(sessionId, {
-      turnId,
-      text: input.text,
-    });
-    void streamEvents(sessionId, iterator, {
-      turnId,
-      goalBoundary: 'external',
-    });
-    return { turnId };
-  },
-  searchThread: (query) =>
-    runThreadSearch({ source: 'thread', query }, {
-      listSessions: () => runtime.listSessions(),
-      readMessages: (sessionId: string) => runtime.getMessages(sessionId),
-      getPrivacyContext: getWorkspacePrivacyContext,
-    }),
-  onStatusChanged: (status) => {
-    safeSendToRenderer('gateway:statusChanged', status);
-  },
-});
 const backends = new BackendRegistry();
 const shellRuns = new ShellRunProcessManager({
   store: shellRunStore,
@@ -864,7 +835,6 @@ backends.register('ai-sdk', createAiSdkBackendFactory({
   readArchivedToolResult,
   runtimeCommitStore: runtimePersistence.runtimeCommitStore,
   safeSendToRenderer,
-  openGateway,
   emitSessionsChanged,
   getRuntime: () => runtime,
   getLookupPricing: () => lookupPricing,
@@ -1244,7 +1214,6 @@ function registerIpc(): void {
         }
       : {}),
   });
-  registerGatewayIpc({ openGateway });
   registerDailyReviewIpc({ dailyReview, dailyReviewArchiveStore, mainWindowController });
   registerUsageIpc({
     ipcMain,
@@ -1270,7 +1239,6 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
   createSettingsRuntimeEffects({
     settingsStore,
     botRegistry,
-    openGateway,
     keepSystemAwake,
     safeSendToRenderer,
   });
@@ -1278,7 +1246,6 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
 const streamEvents = createSessionStreamer({
   sessionActivities,
   goalWiring,
-  openGateway,
   computerUseOverlay,
   computerUseTools,
   safeSendToRenderer,
@@ -1458,7 +1425,6 @@ wireAppLifecycle({
   ensureUsageReady,
   keepSystemAwake,
   botRegistry,
-  openGateway,
   planReminders,
   dailyReview,
   automationWiring,

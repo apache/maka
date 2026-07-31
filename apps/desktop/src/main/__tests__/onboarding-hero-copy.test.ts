@@ -225,7 +225,6 @@ describe('getOnboardingHeroCopy — invariants', () => {
       'models',
       'usage',
       'voice-models',
-      'open-gateway',
       'bot-chat',
       'search',
       'network',

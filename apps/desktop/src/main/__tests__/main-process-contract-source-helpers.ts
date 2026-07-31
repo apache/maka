@@ -66,7 +66,6 @@ export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/daily-review-ipc-main.ts',
   'apps/desktop/src/main/daily-review-main.ts',
   'apps/desktop/src/main/desktop-backend-tool-surface.ts',
-  'apps/desktop/src/main/gateway-ipc-main.ts',
   'apps/desktop/src/main/git-ipc-main.ts',
   'apps/desktop/src/main/main-window.ts',
   'apps/desktop/src/main/memory-ipc-main.ts',

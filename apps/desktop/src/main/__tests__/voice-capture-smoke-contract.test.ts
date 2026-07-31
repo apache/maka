@@ -11,18 +11,11 @@ const CAPABILITY_SNAPSHOT = join(REPO_ROOT, 'apps', 'desktop', 'src', 'main', 'c
 
 describe('voice capture smoke Settings contract', () => {
   it('does not present voice models as a coming-soon nav item', async () => {
-    // PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
-    // 语音 and 开放网关 are now separate nav items (voice + open-
-    // gateway). Both pages stay first-class — neither is coming-soon.
     const src = await readSettingsCombinedSource();
     const voiceNav = src.match(/\{\s*id:\s*'voice'[\s\S]*?\},/);
     assert.ok(voiceNav, 'voice nav item must exist');
     assert.doesNotMatch(voiceNav![0], /comingSoon:\s*true/, 'voice nav must not be tagged as coming soon');
-    const gatewayNav = src.match(/\{\s*id:\s*'open-gateway'[\s\S]*?\},/);
-    assert.ok(gatewayNav, 'open-gateway nav item must exist');
-    assert.doesNotMatch(gatewayNav![0], /comingSoon:\s*true/, 'open-gateway nav must not be tagged as coming soon');
     assert.match(src, /case\s+'voice':\s*\n[\s\S]*?<VoiceModelsSettingsPage\b/);
-    assert.match(src, /case\s+'open-gateway':\s*\n[\s\S]*?<OpenGatewaySettingsPage\b/);
     assert.doesNotMatch(src, /'voice':\s*\{[\s\S]*当前尚未实现/, 'voice must not keep stale roadmap copy');
   });
 
@@ -353,7 +346,7 @@ describe('voice capture smoke Settings contract', () => {
     assert.ok(voiceBlock, 'voice capability block must exist');
     assert.match(voiceBlock![0], /state:\s*'partial'/, 'voice feature must be partial, not not_available');
     assert.match(voiceBlock![0], /本地麦克风录音自检已可用/, 'voice feature reason must name the shipped smoke path');
-    assert.match(voiceBlock![0], /在设置 → 语音运行本地录音自检/, 'voice capability guidance must use localized Settings navigation copy after the voice/open-gateway split');
+    assert.match(voiceBlock![0], /在设置 → 语音运行本地录音自检/, 'voice capability guidance must use localized Settings navigation copy');
     assert.doesNotMatch(voiceBlock![0], /Settings · 语音/, 'voice capability guidance must not leak English Settings prefix');
     assert.doesNotMatch(voiceBlock![0], /voice capture\/playback not implemented/, 'old placeholder reason must not return');
   });
@@ -389,9 +382,6 @@ describe('voice capture smoke Settings contract', () => {
     assert.doesNotMatch(snapshot, /not implemented|missing_token|local gateway disabled|未接入|尚未接入|helper/, 'capability reasons must not leak internal placeholder/error identifiers');
     assert.match(snapshot, /未找到通过完整性检查的 cua-driver artifact/, 'Computer Use unavailable copy must name the failed artifact integrity boundary');
     assert.match(snapshot, /按目标与动作类别授权后可操作本机应用/, 'Computer Use enabled copy must keep scoped approval visible');
-    assert.match(snapshot, /本地 Gateway 已关闭/, 'Open Gateway disabled state must use user-facing copy');
-    assert.match(snapshot, /等待生成访问 token/, 'Open Gateway missing token state must use actionable waiting copy');
-    assert.doesNotMatch(snapshot, /缺少访问 token/, 'Open Gateway missing token state should not read like a raw missing-field error');
   });
 
   it('capability center does not expose raw English implementation reasons', async () => {

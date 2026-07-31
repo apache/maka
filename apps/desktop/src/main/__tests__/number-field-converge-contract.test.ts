@@ -6,7 +6,6 @@ import { REPO_ROOT } from './css-test-helpers.js';
 
 const MIGRATED_FILES = [
   'apps/desktop/src/renderer/settings/general-settings-page.tsx',
-  'apps/desktop/src/renderer/settings/open-gateway-settings-page.tsx',
 ];
 
 const RETIRED_NUMBER_FIELD_PRIMITIVE = 'packages/ui/src/primitives/number-field.tsx';

@@ -629,18 +629,6 @@ const makaBridge = {
   health: {
     getSnapshot: async () => healthSnapshot,
   },
-  gateway: {
-    status: async () => ({
-      enabled: false,
-      running: false,
-      host: '127.0.0.1',
-      port: 0,
-      baseUrl: null,
-      tokenConfigured: false,
-      activeEventStreams: 0,
-    }),
-    subscribeStatusChanges: () => () => undefined,
-  },
   permissions: {
     getSnapshot: async () => permissionSnapshot,
     openSystemSettings: async () => ({ ok: true }),
@@ -1191,11 +1179,6 @@ export const VoicePermissionDenied: Story = {
   play: async ({ canvasElement }) => {
     await runVoiceStoryCapture(canvasElement, '麦克风权限被拒绝', '已拒绝');
   },
-};
-// Real path: 设置 → 开放网关.
-export const OpenGateway: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="open-gateway" />,
 };
 // Real path: 设置 → 远程接入.
 export const BotChat: Story = {

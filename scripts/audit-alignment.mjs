@@ -30,7 +30,6 @@ const FIXTURES = [
   ['settings-general', '.settingsSurface'],
   ['fetched-empty', '.settingsSurface'],
   ['settings-data', '.settingsSurface'],
-  ['settings-gateway', '.settingsSurface'],
   // 使用统计 restyle: the range/refresh row, underline tab bar, and stats
   // tables now sit under the alignment auditor's watch.
   ['settings-usage', '.settingsSurface'],

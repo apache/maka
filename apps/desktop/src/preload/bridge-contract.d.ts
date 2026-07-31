@@ -48,7 +48,6 @@ import type {
   ReviseBeforeTurnInput,
   TurnRecord,
   PermissionSnapshot,
-  OpenGatewayRuntimeStatus,
   LocalMemoryState,
   AuthorizationUrlPayload,
   SubscriptionAccountState,
@@ -498,10 +497,6 @@ export interface MakaBridge {
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
-  };
-  gateway: {
-    status(): Promise<OpenGatewayRuntimeStatus>;
-    subscribeStatusChanges(handler: (status: OpenGatewayRuntimeStatus) => void): () => void;
   };
   claudeSubscription: {
     isExperimentalEnabled(): Promise<boolean>;

@@ -25,7 +25,6 @@ const sourcePaths = [
   'memory-settings-labels.ts',
   'settings-error-copy.ts',
   'general-settings-page.tsx',
-  'open-gateway-settings-page.tsx',
   'bot-chat-settings-page.tsx',
   'bot-chat-shared.tsx',
   'bot-chat-overview.tsx',

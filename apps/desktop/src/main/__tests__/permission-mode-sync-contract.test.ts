@@ -14,7 +14,6 @@ function harness() {
   const effects = createSettingsRuntimeEffects({
     settingsStore: { get: async () => settings } as never,
     botRegistry: {} as never,
-    openGateway: {} as never,
     keepSystemAwake: { apply: () => {} } as never,
     safeSendToRenderer: () => {},
   });

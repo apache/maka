@@ -4,18 +4,14 @@ import type { SessionChangedReason, SessionEvent } from '@maka/core';
 import { createLinkedChildEventProjection } from '../session-stream.js';
 
 describe('linked child session observation', () => {
-  test('projects nested child events onto normal renderer and gateway channels', async () => {
+  test('projects nested child events onto the normal renderer channel', async () => {
     const rendererEvents: Array<{ channel: string; event: SessionEvent }> = [];
-    const gatewayEvents: Array<{ sessionId: string; event: SessionEvent }> = [];
     const changes: Array<{ reason: SessionChangedReason; sessionId?: string }> = [];
     const presentationEvents: SessionEvent[] = [];
     const projection = createLinkedChildEventProjection({
       lifecycle: 'created',
       safeSendToRenderer: (channel, event) => {
         rendererEvents.push({ channel, event: event as SessionEvent });
-      },
-      openGateway: {
-        publishSessionEvent: (sessionId, event) => gatewayEvents.push({ sessionId, event }),
       },
       emitSessionsChanged: (reason, sessionId) => changes.push({ reason, sessionId }),
       onEvent: (event) => presentationEvents.push(event),
@@ -53,13 +49,6 @@ describe('linked child session observation', () => {
         ['sessions:event:child-session', 'complete'],
       ],
     );
-    assert.deepEqual(
-      gatewayEvents.map(({ sessionId, event }) => [sessionId, event.id]),
-      [
-        ['child-session', 'delta'],
-        ['child-session', 'complete'],
-      ],
-    );
     assert.deepEqual(presentationEvents.map((event) => event.id), ['delta', 'complete']);
     assert.deepEqual(changes, [
       { reason: 'created', sessionId: 'child-session' },
@@ -75,7 +64,6 @@ describe('linked child session observation', () => {
     const projection = createLinkedChildEventProjection({
       lifecycle: 'continued',
       safeSendToRenderer: (...args) => rendererEvents.push(args),
-      openGateway: { publishSessionEvent: () => assert.fail('must not publish') },
       emitSessionsChanged: () => assert.fail('must not announce a child Session'),
     });
 

@@ -37,9 +37,7 @@ export type E2eFixtureScenario =
   | 'settings-data'
   // PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0: memory and
   // daily-review split back apart; appearance stays merged; network
-  // folded into general. PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg
-  // `d3ea9a33` 2026-06-26) further split voice + open-gateway into
-  // their own nav items.
+  // folded into general.
   | 'settings-appearance'
   | 'settings-bots'
   // #1233 deferral: the bot QR-onboarding modal (bot-onboarding-modal.tsx)
@@ -55,7 +53,6 @@ export type E2eFixtureScenario =
   | 'settings-daily-review'
   | 'settings-permissions'
   | 'settings-voice'
-  | 'settings-gateway'
   | 'settings-search'
   | 'settings-usage'
   | 'settings-health'

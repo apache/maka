@@ -34,7 +34,6 @@ const VALID_CREDENTIAL_KINDS: ReadonlySet<string> = new Set<CredentialKind>([
   'bot_token',
   'app_secret',
   'proxy_password',
-  'gateway_token',
   'tavily_api_key',
 ]);
 

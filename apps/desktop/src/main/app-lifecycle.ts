@@ -26,7 +26,6 @@ import { startConfigFileWatcher, type ConfigFileWatcher } from './config-file-wa
 import { toContractNetworkSettings } from './network-settings-main.js';
 import { importLegacyOAuthTokenFiles } from './oauth/shared-credential-bridge.js';
 import type { resolveE2eFixture } from './e2e-fixture.js';
-import type { OpenGatewayService } from './open-gateway.js';
 import type { KeepSystemAwakeController } from './keep-system-awake.js';
 import type { createPlanReminderMainService } from './plan-reminders-main.js';
 import type { createDailyReviewMainService } from './daily-review-main.js';
@@ -62,7 +61,6 @@ export interface AppLifecycleDeps {
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
-  openGateway: OpenGatewayService;
   planReminders: ReturnType<typeof createPlanReminderMainService>;
   dailyReview: ReturnType<typeof createDailyReviewMainService>;
   automationWiring: ReturnType<typeof createMainAutomationWiring>;
@@ -117,7 +115,6 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     ensureUsageReady,
     keepSystemAwake,
     botRegistry,
-    openGateway,
     planReminders,
     dailyReview,
     automationWiring,
@@ -290,7 +287,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
    * Non-critical startup work that must NOT block the first window paint.
    *
    * `setActiveProxy` must be applied before any network-bearing step
-   * (`botRegistry.applySettings`, `openGateway.sync`); usage readiness loads
+   * (`botRegistry.applySettings`); usage readiness loads
    * the embedded telemetry compatibility repo. Everything here is best-effort and logged on
    * failure — none of it should prevent the user from seeing and interacting
    * with the app shell.
@@ -302,8 +299,8 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     //
     // Seen for real: one telemetry record written by an older build failed
     // `decodePersistedLlmCallRecord`, `ensureUsageReady()` rejected, and
-    // session recovery, the Open Gateway sync, plan reminders, the daily
-    // review scheduler, the config watcher and the automation scheduler all
+    // session recovery, plan reminders, the daily review scheduler, the config
+    // watcher and the automation scheduler all
     // never ran. Nothing said so — the only trace was an unhandled rejection
     // warning about `contextBudget`, which names the record and not one of the
     // things that stopped working because of it.
@@ -346,7 +343,6 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
         'bot registry',
         () => botRegistry.applySettings(resolved.botChat),
       );
-      await step('open gateway', () => openGateway.sync(resolved.openGateway));
     }
     if (botRegistryReady) {
       await step('plan reminders', () => planReminders.refreshTimers());
@@ -387,7 +383,6 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       Promise.resolve().then(() => computerUseOverlay.destroyAll()),
       Promise.resolve().then(() => computerUse.backend?.dispose?.()),
       botRegistry.stopAll(),
-      openGateway.stop(),
       Promise.resolve(mainWindowController.disposeBrowserViews()),
       shellRuns.terminateAll(),
       mcpManager.close(),

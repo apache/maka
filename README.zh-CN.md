@@ -44,7 +44,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 
 - 会话创建、归档、搜索、重命名、重试、重新生成和从 Turn 分支；
 - Artifact 列表与预览、workspace instructions、模型与权限设置；
-- 本地记忆、联网搜索、开放 HTTP/SSE gateway 和机器人入口；
+- 本地记忆、联网搜索和机器人入口；
 - 不同集成需要单独配置，并非所有实验入口默认可用。
 
 ### Durable Tasks and Evolution

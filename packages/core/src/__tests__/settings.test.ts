@@ -523,68 +523,24 @@ describe('removed UI density settings contract', () => {
   });
 });
 
-describe('open gateway settings contract', () => {
-  test('createDefaultSettings seeds gateway disabled on localhost with no token', () => {
-    const defaults = createDefaultSettings();
-
-    expect(defaults.openGateway.enabled).toBe(false);
-    expect(defaults.openGateway.host).toBe('127.0.0.1');
-    expect(defaults.openGateway.port).toBe(3939);
-    expect(defaults.openGateway.token).toBe('');
-  });
-
-  test('normalizes malformed gateway fields fail-closed', () => {
-    const normalized = normalizeSettings({
-      openGateway: {
-        enabled: 'yes',
-        host: '::',
-        port: 80,
-        token: 'x'.repeat(257),
-      },
-    });
-
-    expect(normalized.openGateway.enabled).toBe(false);
-    expect(normalized.openGateway.host).toBe('127.0.0.1');
-    expect(normalized.openGateway.port).toBe(3939);
-    expect(normalized.openGateway.token).toBe('');
-  });
-
-  test('normalizes valid gateway settings without resetting unrelated fields', () => {
+describe('settings normalization compatibility', () => {
+  test('ignores retired persisted sections without resetting active settings', () => {
     const normalized = normalizeSettings({
       appearance: {
         theme: 'dark',
       },
+      // Simulates a settings.json written before Open Gateway was retired.
       openGateway: {
         enabled: true,
         host: '0.0.0.0',
         port: 4939,
         token: 'local-dev-token',
       },
-    });
+    } as unknown);
 
     expect(normalized.appearance.theme).toBe('dark');
     expect('density' in normalized.appearance).toBe(false);
-    expect(normalized.openGateway.enabled).toBe(true);
-    expect(normalized.openGateway.host).toBe('0.0.0.0');
-    expect(normalized.openGateway.port).toBe(4939);
-    expect(normalized.openGateway.token).toBe('local-dev-token');
-  });
-
-  test('mergeSettings carries partial gateway patches through update surface', () => {
-    const current = createDefaultSettings();
-    current.openGateway.token = 'stored-token';
-
-    const patched = mergeSettings(current, {
-      openGateway: {
-        enabled: true,
-        port: 4940,
-      },
-    });
-
-    expect(patched.openGateway.enabled).toBe(true);
-    expect(patched.openGateway.host).toBe('127.0.0.1');
-    expect(patched.openGateway.port).toBe(4940);
-    expect(patched.openGateway.token).toBe('stored-token');
+    expect('openGateway' in normalized).toBe(false);
   });
 
   test('delegates web search patches and persisted normalization to the web-search owner', () => {

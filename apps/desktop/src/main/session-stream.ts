@@ -44,7 +44,6 @@ import type { ToolArtifactPersistence } from './tool-artifact-persistence.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createSubscriptionModelFetch } from './subscription-model-fetch.js';
 import type { createSystemPromptMainService } from './system-prompt-main.js';
-import type { OpenGatewayService } from './open-gateway.js';
 import { startDesktopSessionTurn, type SessionGoalBoundary } from './session-turn-stream.js';
 import {
   resolveDesktopBackendToolSurface,
@@ -74,7 +73,6 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   readArchivedToolResult: ToolArtifactPersistence['readArchivedToolResult'];
   runtimeCommitStore: RuntimeCommitStore;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  openGateway: OpenGatewayService;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   getRuntime: () => SessionManager;
   getLookupPricing: () => PricingLookup;
@@ -103,7 +101,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
     readArchivedToolResult,
     runtimeCommitStore,
     safeSendToRenderer,
-    openGateway,
     emitSessionsChanged,
     getRuntime,
     getLookupPricing,
@@ -174,7 +171,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'created',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -199,7 +195,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'continued',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -214,7 +209,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'continued',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -367,8 +361,8 @@ interface LinkedChildReady {
 }
 
 /**
- * Bridge linked-child events onto the child Session's normal Desktop and Open
- * Gateway channels while the parent tool call remains the stream consumer.
+ * Bridge linked-child events onto the child Session's normal Desktop channel
+ * while the parent tool call remains the stream consumer.
  * Direct user follow-ups already use createSessionStreamer; this closes the
  * nested spawn/resume/retry observation gap without inventing a subagent-only
  * event protocol.
@@ -378,7 +372,6 @@ export function createLinkedChildEventProjection<
 >(input: {
   lifecycle: 'created' | 'continued';
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  openGateway: Pick<OpenGatewayService, 'publishSessionEvent'>;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   onReady?: (ready: Ready) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void;
@@ -403,7 +396,6 @@ export function createLinkedChildEventProjection<
     onEvent(event) {
       if (childSessionId) {
         input.safeSendToRenderer(`sessions:event:${childSessionId}`, event);
-        input.openGateway.publishSessionEvent(childSessionId, event);
         if (!messageAppendBroadcasted) {
           input.emitSessionsChanged('message-appended', childSessionId);
           messageAppendBroadcasted = true;
@@ -443,7 +435,6 @@ export type StreamEvents = (
 export interface SessionStreamerDeps {
   sessionActivities: SessionActivityRegistry;
   goalWiring: GoalWiring;
-  openGateway: OpenGatewayService;
   computerUseOverlay: AssembledTools['computerUseOverlay'];
   computerUseTools: AssembledTools['computerUseTools'];
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
@@ -473,7 +464,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
   const {
     sessionActivities,
     goalWiring,
-    openGateway,
     computerUseOverlay,
     computerUseTools,
     safeSendToRenderer,
@@ -503,7 +493,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           userAppendBroadcasted = true;
         }
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        openGateway.publishSessionEvent(sessionId, event);
         if (isStatusChangingSessionEvent(event)) {
           emitSessionsChanged('status-change', sessionId);
         }
@@ -526,7 +515,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           message: errorMessage(error),
         } satisfies SessionEvent;
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        openGateway.publishSessionEvent(sessionId, event);
         emitSessionsChanged('status-change', sessionId);
         emitSessionsChanged('turn-status-change', sessionId);
         computerUseOverlay.clearForSession(sessionId);

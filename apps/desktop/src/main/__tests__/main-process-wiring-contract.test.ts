@@ -31,7 +31,6 @@ const extractedIpcRegistrars = [
   ['registerSessionsIpc', './sessions-ipc-main'],
   ['registerPermissionsIpc', './permissions-ipc-main'],
   ['registerSettingsIpc', './settings-ipc-main'],
-  ['registerGatewayIpc', './gateway-ipc-main'],
 ] as const;
 
 function escapeRegExp(value: string): string {

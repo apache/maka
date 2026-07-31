@@ -88,35 +88,12 @@ test('voice settings expose Astryx-owned fields and persist a draft on blur', as
   await expect(settings.getByRole('textbox', { name: '语言（可选）' })).toHaveValue('en');
 });
 
-test('open gateway metric values stay contained for long addresses', async ({ window: page }) => {
-  await page.setViewportSize({ width: 900, height: 820 });
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByRole('button', { name: '设置' }).click();
-
-  const settings = page.getByRole('main', { name: '设置内容' });
-  await settings.getByRole('button', { name: '开放网关' }).click();
-  await expect(settings.getByRole('heading', { name: '开放网关' })).toBeVisible();
-
-  const addressValue = settings
-    .locator('[data-slot="stat-tile-value"]')
-    .filter({ hasText: 'http://127.0.0.1:3939' });
-  await expect(addressValue).toBeVisible();
-  await expect(addressValue).toHaveCSS('overflow-wrap', 'anywhere');
-  await expect.poll(
-    () =>
-      addressValue.evaluate((element) => ({
-        contained: element.scrollWidth <= element.clientWidth,
-        value: element.textContent,
-      })),
-  ).toEqual({ contained: true, value: 'http://127.0.0.1:3939' });
-});
-
 /**
  * #1361 — the Permissions and Health summary strips were fixed 4- and 5-track
  * grids. At the sanitized window floor (`SAFE_MIN_WIDTH` = 480) that divided the
  * narrow content column into ~30-40px slivers: the Health tiles ended up with a
  * 4px content box, so even a single digit overflowed. Same family as the #1304
- * Open Gateway overflow — #1335 taught StatTile to wrap, but a tile squeezed
+ * settings tile overflow — #1335 taught StatTile to wrap, but a tile squeezed
  * below one character wide has nothing left to wrap into.
  *
  * Locks the outcome rather than the pixels: tiles fold to fewer, readable

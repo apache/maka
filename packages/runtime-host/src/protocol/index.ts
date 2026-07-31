@@ -35,7 +35,7 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 export const RUNTIME_HOST_MAX_FRAME_BYTES = 64 * 1024;
 
-export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'open_gateway' | 'inspect';
+export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'inspect';
 
 export interface ProtocolRange {
   min: number;
@@ -284,7 +284,6 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'tui' ||
     value === 'run' ||
     value === 'bot' ||
-    value === 'open_gateway' ||
     value === 'inspect'
   )
     return value;

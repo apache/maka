@@ -25,7 +25,6 @@ const credentialKinds: CredentialKind[] = [
   'bot_token',
   'app_secret',
   'proxy_password',
-  'gateway_token',
   'tavily_api_key',
 ];
 const secretReader = null as unknown as Pick<CredentialStore, 'getSecret'>;
@@ -59,11 +58,10 @@ describe('credential store migration off safeStorage (#32)', () => {
     const helpers = await readRepo('apps/desktop/src/main/settings-ipc-helpers.ts');
 
     assert.match(main, /ipcMain\.handle\('settings:get', async \(\) => maskAppSettings\(await settingsStore\.get\(\)\)\);/);
-    assert.doesNotMatch(main, /credentialStore\.(getBotToken|getBotAppSecret|getProxyPassword|getGatewayToken|getTavilyApiKey)/);
+    assert.doesNotMatch(main, /credentialStore\.(getBotToken|getBotAppSecret|getProxyPassword|getTavilyApiKey)/);
     assert.match(helpers, /password: shouldReveal\(revealPatch\.network\?\.proxy\?\.password\)/);
     assert.match(helpers, /token: shouldReveal\(revealPatch\.botChat\?\.channels\?\.\[provider as BotProvider\]\?\.token\)/);
     assert.match(helpers, /appSecret: shouldReveal\(revealPatch\.botChat\?\.channels\?\.\[provider as BotProvider\]\?\.appSecret\)/);
-    assert.match(helpers, /token: shouldReveal\(revealPatch\.openGateway\?\.token\)/);
     assert.match(helpers, /apiKey: maskSensitive\(settings\.webSearch\.providers\.tavily\.apiKey\) \?\? ''/);
   });
 });

@@ -25,7 +25,6 @@ import { DataSettingsPage } from './data-settings-page';
 import { GeneralSettingsPage } from './general-settings-page';
 import { HealthCenterPage } from './health-center-page';
 import { MemorySettingsPage } from './memory-settings-page';
-import { OpenGatewaySettingsPage } from './open-gateway-settings-page';
 import { PermissionCenterPage } from './permission-center-page';
 import { SettingsSkeleton } from './settings-skeleton';
 import { SETTINGS_NAV, groupedNav, navLabel, readLastSettingsSection } from './settings-nav';
@@ -423,10 +422,6 @@ function SettingsPage(props: {
     case 'daily-review':
       return <DailyReviewSettingsPage connections={props.connections} onOpenDailyReview={props.onOpenDailyReview} />;
     case 'voice':
-      // PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
-      // 语音 + 网关 是两套独立的功能（一个是本地麦克风/转写管线，
-      // 一个是远程 SSE/HTTP 网关），合在一页里读起来既挤又混。
-      // 拆成两个独立的 nav 项各自独立呈现。
       return (
         <VoiceModelsSettingsPage
           settings={props.settings}
@@ -435,8 +430,6 @@ function SettingsPage(props: {
           onRefreshConnections={props.onRefreshConnections}
         />
       );
-    case 'open-gateway':
-      return <OpenGatewaySettingsPage settings={props.settings} onUpdate={props.onUpdateSettings} />;
     case 'search':
       return (
         <WebSearchSettingsPage

@@ -9,7 +9,6 @@ import { getDailyReviewSettingsCopy } from '../../renderer/locales/settings-dail
 import { getHealthCenterCopy } from '../../renderer/locales/settings-health-copy.js';
 import { getVoiceSettingsCopy } from '../../renderer/locales/settings-voice-copy.js';
 import { getDataSettingsCopy } from '../../renderer/locales/settings-data-copy.js';
-import { getOpenGatewaySettingsCopy } from '../../renderer/locales/settings-open-gateway-copy.js';
 import { getPermissionCenterCopy } from '../../renderer/locales/permission-center-copy.js';
 import { getBotSettingsCopy } from '../../renderer/locales/settings-bot-copy.js';
 import { getProviderSettingsCopy } from '../../renderer/locales/settings-provider-copy.js';
@@ -196,21 +195,6 @@ describe('Settings coming-soon cleanup contract', () => {
       settings,
       /缺少 Bot Token|缺少飞书 App ID|飞书凭据有效，但还没有事件订阅域名/,
       'Feishu credential follow-up copy should describe the next setup action, not an unfinished missing state',
-    );
-  });
-
-  it('keeps Open Gateway token setup copy action-oriented', async () => {
-    const settings = await readSettingsCombinedSource();
-    const gatewayCopy = getOpenGatewaySettingsCopy('zh');
-
-    assert.match(gatewayCopy.form.waitingNotice, /网关已开启，等待生成访问 token。生成 token 后服务会自动启动。/);
-    assert.match(gatewayCopy.status.waitingTokenDetail, /生成访问 token 后服务会自动启动/);
-    assert.match(settings, /gatewayDraft\.token \? copy\.summary\.configured : copy\.summary\.waitingToken/);
-    assert.match(settings, /if \(error === 'missing_token'\) return copy\.status\.waitingToken/);
-    assert.doesNotMatch(
-      settings,
-      /网关已开启，但还没有 token|缺少访问 token|gateway(?:Draft)?\.token \? '已配置' : '未配置'/,
-      'Open Gateway token copy should frame enabled-without-token as a pending token action, not a raw missing-field error',
     );
   });
 

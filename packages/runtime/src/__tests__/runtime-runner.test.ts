@@ -587,11 +587,11 @@ describe('RuntimeRunner', () => {
     const flow = new ScriptFlow((ctx) => [flowTextEvent(ctx, 'x')]);
     const runner = new RuntimeRunner({ flow, providers });
 
-    await runner.run(makeRequest({ source: 'gateway', text: 'hello' }));
+    await runner.run(makeRequest({ source: 'bot', text: 'hello' }));
 
     expect(flow.seen).toHaveLength(1);
     const ctx = flow.seen[0]!;
-    expect(ctx.source).toBe('gateway');
+    expect(ctx.source).toBe('bot');
     expect(ctx.request.text).toBe('hello');
     expect(ctx.sessionId).toBe('sess-1');
     expect(ctx.turnId).toBe('turn-1');

@@ -240,20 +240,18 @@ describe('Settings form accessibility labels', () => {
 
   it('lets Astryx own simple field labels and multi-field layout', async () => {
     const general = await readRepo('apps/desktop/src/renderer/settings/general-settings-page.tsx');
-    const gateway = await readRepo('apps/desktop/src/renderer/settings/open-gateway-settings-page.tsx');
     const provider = await readRepo('apps/desktop/src/renderer/settings/provider-add-form.tsx');
 
     assert.match(general, /<FormLayout className="settingsFormLayout" direction="horizontal">/);
-    assert.match(gateway, /<FormLayout className="settingsFormLayout">[\s\S]*<FormLayout direction="horizontal">/);
     assert.match(provider, /<FormLayout>/);
     assert.doesNotMatch(
-      `${general}\n${gateway}\n${provider}`,
+      `${general}\n${provider}`,
       /settingsFormGrid/,
       'Maka must not preserve a parallel grid for fields Astryx FormLayout can arrange',
     );
     assert.doesNotMatch(
-      `${general}\n${gateway}\n${provider}`,
-      /<span>\{copy\.(?:proxyProtocol|serverAddress|username|password|form\.(?:host|token|sessionId)|slug|name|apiKeyLabel)[^<]*<\/span>/,
+      `${general}\n${provider}`,
+      /<span>\{copy\.(?:proxyProtocol|serverAddress|username|password|slug|name|apiKeyLabel)[^<]*<\/span>/,
       'visible labels must be owned by their fields instead of duplicated in product markup',
     );
   });
@@ -269,9 +267,6 @@ describe('Settings form accessibility labels', () => {
       ['web-search query', /label=\{copy\.queryAria\}/],
       ['proxy server address', /label=\{copy\.serverAddress\}/],
       ['proxy port', /<NumberInput label=\{copy\.port\}/],
-      ['Open Gateway host', /label=\{copy\.form\.host\}/],
-      ['Open Gateway port', /<NumberInput label=\{copy\.form\.port\}/],
-      ['Open Gateway session ID', /label=\{copy\.form\.sessionId\}/],
       ['usage request filter', /label=\{props\.copy\.filterAria\}/],
       ['usage status filter', /label=\{props\.copy\.statusAria\}/],
       ['MEMORY.md content', /label=\{copy\.text\.fileContent\}/],

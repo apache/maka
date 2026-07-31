@@ -446,22 +446,6 @@
   gap: var(--space-1-5);
 }
 
-/* Gateway posture strip: five compact metric tiles. Reusing the usage
-   summary (exactly four columns) left the fifth tile orphaned on a second
-   row. This strip is 5-up on wide and drops to a clean 3-up (3 + 2, no lone
-   orphan) when the settings pane narrows. */
-.settingsGatewaySummary {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: var(--space-1-5);
-}
-
-@media (max-width: 760px) {
-  .settingsGatewaySummary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 /* Convergence R4: recipe lives in the StatTile primitive; this class keeps
    only the metric-strip density override. */
 .settingsMetricCard {
