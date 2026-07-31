@@ -49,9 +49,8 @@
 //     drops an `animation` rule is invisible here, because both sides are
 //     captured with animations off.
 //
-// Migration-only scaffolding. It is deliberately not wired into CI, following
-// the check:chat-visual precedent, and is removed in PR 14 together with the
-// maka.legacy layer.
+// Migration-only scaffolding. It is deliberately not wired into CI and is
+// removed in PR 14 together with the maka.legacy layer.
 import { spawn } from 'node:child_process';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

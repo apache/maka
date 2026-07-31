@@ -2,7 +2,6 @@ import React, { forwardRef } from 'react';
 import { Progress as BaseProgress } from '@base-ui/react/progress';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
-import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from './utils.js';
 
 export { cn } from './utils.js';
@@ -60,74 +59,8 @@ export function pickerTriggerClasses(appearance: PickerTriggerAppearance = 'fiel
 // this PR actually needs state-based classes; do not pre-design it.
 // ===========================================================================
 
-// #1565 PR 3: the Button COMPONENT is the Astryx primitive now (re-exported
-// from index.ts). buttonVariants stays as a LEGACY className recipe only: its
-// remaining consumers are controls owned by later slices (Dialog close /
-// Toast action / Menu trigger render-props, where composing the Astryx
-// Button into a Base UI render-prop would wrap both systems around one
-// control). Each owning slice retires its usage; PR 11 deletes the recipe.
-export const buttonVariants = cva(
-  [
-    'inline-flex shrink-0 items-center justify-center gap-2 rounded-sm',
-    'transition-[background,color,border-color,box-shadow,opacity] duration-150 ease-[var(--ease-out-strong)]',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-    'disabled:pointer-events-none disabled:opacity-45 aria-disabled:cursor-not-allowed aria-disabled:opacity-45',
-    '[&_svg]:size-[var(--icon-size,1rem)] [&_svg]:shrink-0',
-  ],
-  {
-    variants: {
-      variant: {
-        default: 'bg-primary text-primary-foreground font-medium hover:bg-[oklch(from_var(--action)_calc(l_-_0.03)_c_h)] active:bg-[oklch(from_var(--action)_calc(l_-_0.06)_c_h)]',
-        secondary: 'border border-border bg-transparent text-foreground font-normal hover:bg-[var(--state-hover-bg)] active:bg-[var(--state-selected-bg)]',
-        ghost: 'bg-transparent text-foreground font-normal hover:bg-[var(--state-hover-bg)] active:bg-[var(--state-selected-bg)]',
-        destructive: 'bg-destructive text-destructive-foreground font-medium hover:bg-[oklch(from_var(--destructive)_calc(l_-_0.04)_c_h)] active:bg-[oklch(from_var(--destructive)_calc(l_-_0.08)_c_h)]',
-        quiet: 'bg-transparent text-foreground-secondary font-normal hover:bg-[var(--state-hover-bg)] hover:text-foreground active:bg-[var(--state-selected-bg)]',
-      },
-      size: {
-        sm: 'h-7 px-2 text-sm',
-        md: 'h-8 px-3 text-sm',
-        icon: 'h-8 w-8 px-0 text-sm',
-        'icon-sm': 'h-7 w-7 px-0 text-sm',
-      },
-      // #901 follow-up: circular affordance for round icon actions (composer
-      // "+" / send). #901 retired the consumer-layer pill CSS
-      // (maka-composer-send-button & friends) onto the shared Button but
-      // offered no governed replacement for the circle, silently squaring
-      // those buttons. The `shape` axis keeps the pill tier on the governed
-      // primitive instead of in per-surface CSS. `rounded-full` resolves to
-      // --radius-pill per the radius-converge contract.
-      shape: {
-        default: '',
-        pill: 'rounded-full',
-      },
-    },
-    compoundVariants: [
-      {
-        variant: ['secondary', 'ghost', 'quiet'],
-        class: 'aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent',
-      },
-      {
-        variant: 'quiet',
-        class: 'aria-disabled:hover:text-foreground-secondary',
-      },
-      {
-        variant: 'default',
-        class: 'aria-disabled:hover:bg-primary aria-disabled:active:bg-primary',
-      },
-      {
-        variant: 'destructive',
-        class: 'aria-disabled:hover:bg-destructive aria-disabled:active:bg-destructive',
-      },
-    ],
-    defaultVariants: {
-      variant: 'default',
-      size: 'md',
-      shape: 'default',
-    },
-  },
-);
-
-// This legacy class recipe remains only for picker triggers.
+// #1565 PR 4: TextInput, TextArea, NumberInput, Switch, and CheckboxInput are
+// Astryx-owned. This legacy class recipe remains only for picker triggers.
 
 export { LayerProvider } from '@astryxdesign/core/Layer';
 

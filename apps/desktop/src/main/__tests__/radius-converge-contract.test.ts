@@ -284,9 +284,6 @@ const TIER_TOKENS: Record<Tier, Set<string>> = {
 const ALL_TIER_CLASSES = ['rounded-sm', 'rounded-md', 'rounded-lg', 'rounded-xl', 'rounded-full', 'rounded-[var(--radius-pill)]', 'rounded-[var(--radius-control)]', 'rounded-[var(--radius-surface)]', 'rounded-[var(--radius-modal)]'];
 
 const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
-  // shape="pill" (the composer "+" / send affordance) is a governed pill-tier
-  // shape on the control-tier Button — both tiers must stay present.
-  { file: 'packages/ui/src/ui.tsx', name: 'buttonVariants', tier: 'control', alsoTiers: ['pill'] },
   { file: 'packages/ui/src/ui.tsx', name: 'inputClasses', tier: 'control' },
   { file: 'packages/ui/src/ui.tsx', name: 'Toggle', tier: 'control' },
   // Dialog radius is owned by Astryx Dialog.

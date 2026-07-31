@@ -43,7 +43,6 @@
     "package:macos-arm64": "node scripts/package-macos-arm64.mjs",
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "measure:session-bundle": "node scripts/measure-session-bundle.mjs",
-    "check:chat-visual": "electron scripts/check-chat-marker-computed-style.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
     "check:visual-contract": "node scripts/check-visual-contract.mjs",
     "check:hit-test": "node scripts/check-hit-test.mjs",

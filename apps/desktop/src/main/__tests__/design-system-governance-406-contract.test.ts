@@ -233,7 +233,7 @@ describe('issue #406 design-system governance contract', () => {
     }
 
     const ui = await readUiSource();
-    assert.match(ui, /default:\s*'bg-primary text-primary-foreground/);
+    assert.doesNotMatch(ui, /buttonVariants|bg-primary text-primary-foreground/);
     const appearance = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/appearance-settings-page.tsx'), 'utf8');
     assert.match(
       appearance,
