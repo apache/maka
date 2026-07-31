@@ -5,8 +5,8 @@
  * `plan-reminder-panel.tsx`: the nine field states, editingId, the
  * submitPending single-flight owner, validation, and the close guard. The
  * panel keeps only list/runs/query state and opens this dialog with a
- * `PlanReminderFormSeed` (remounting per open via `key`, so fields always
- * initialize from the seed — same outcome as the old open-handler setters).
+ * `PlanReminderFormSeed`. It remounts the closed form session before opening,
+ * so Astryx always observes a false-to-true transition.
  *
  * Async-owner invariants (pinned by plan-reminder-panel-contract):
  *   - submit rejects re-entry synchronously via submitPendingRef before

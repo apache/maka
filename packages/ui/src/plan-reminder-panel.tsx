@@ -110,9 +110,8 @@ export function PlanReminderPanel(props: {
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const pendingReminderMenuIntentRef = useRef<(() => void) | null>(null);
   // Issue #1044: all create/edit form fields + submit moved into
-  // PlanReminderFormDialog. The panel only tracks whether the dialog is
-  // open and which seed it mounts with; `formNonce` remounts the dialog per
-  // open so the form initializes from the seed.
+  // PlanReminderFormDialog. The panel owns its open state and seed;
+  // `formNonce` remounts a closed form session before Astryx opens it.
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [openReminderMenuId, setOpenReminderMenuId] = useState<string | null>(null);
   const [formSeed, setFormSeed] = useState<PlanReminderFormSeed>(() => createPlanReminderFormSeed());
@@ -204,9 +203,12 @@ export function PlanReminderPanel(props: {
   }
 
   function openReminderDialog(seed: PlanReminderFormSeed) {
+    setFormDialogOpen(false);
     setFormSeed(seed);
     setFormNonce((nonce) => nonce + 1);
-    setFormDialogOpen(true);
+    window.requestAnimationFrame(() => {
+      if (planReminderMountedRef.current) setFormDialogOpen(true);
+    });
   }
 
   function openCreateReminderDialog() {
@@ -488,7 +490,6 @@ export function PlanReminderPanel(props: {
                             isIconOnly: true,
                             variant: 'ghost',
                             size: 'sm',
-                            isDisabled: reminderActionPending,
                           }}
                           className="maka-plan-card-menu"
                         >
@@ -521,13 +522,27 @@ export function PlanReminderPanel(props: {
                               label={pendingActionKeys.has(`${reminder.id}:snooze`) ? copy.page.snoozing : copy.page.snooze}
                             />
                             <DropdownMenuItem
-                              onClick={() => void runPlanReminderAction(`${reminder.id}:clear-runs`, () => props.onClearRunHistory?.(reminder.id))}
+                              onClick={() =>
+                                runReminderMenuIntentAfterClose(() => {
+                                  void runPlanReminderAction(
+                                    `${reminder.id}:clear-runs`,
+                                    () => props.onClearRunHistory?.(reminder.id),
+                                  );
+                                })
+                              }
                               isDisabled={reminderActionPending || reminder.runs.length === 0 || reminder.status === 'completed'}
                               icon={<ArchiveRestore size={14} aria-hidden="true" />}
                               label={pendingActionKeys.has(`${reminder.id}:clear-runs`) ? copy.page.clearing : copy.page.clearRuns}
                             />
                             <DropdownMenuItem
-                              onClick={() => void runPlanReminderAction(`${reminder.id}:delete`, () => props.onDelete?.(reminder.id))}
+                              onClick={() =>
+                                runReminderMenuIntentAfterClose(() => {
+                                  void runPlanReminderAction(
+                                    `${reminder.id}:delete`,
+                                    () => props.onDelete?.(reminder.id),
+                                  );
+                                })
+                              }
                               isDisabled={reminderActionPending}
                               icon={<Trash2 size={14} aria-hidden="true" />}
                               label={pendingActionKeys.has(`${reminder.id}:delete`) ? copy.page.deleting : copy.page.delete}
