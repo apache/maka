@@ -1,12 +1,11 @@
 import { useRef, useState } from 'react';
-import { Item } from '@astryxdesign/core';
+import { Card, Item } from '@astryxdesign/core';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
 import { Badge, Button, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { SettingsRows } from './settings-rows';
 import { statusBadgeVariant } from './settings-status-badge';
 import { useKeyedActionGuard } from './use-action-guard';
 
@@ -234,7 +233,7 @@ export function WebSearchSettingsPage(props: {
 
   return (
     <div className="settingsStructuredPage">
-      <SettingsRows className="settingsWebSearchCredentialCard">
+      <Card padding={0} className="settingsRows settingsWebSearchCredentialCard">
         <Item
           className="settingsWebSearchEnableRow"
           label={copy.enabled}
@@ -310,9 +309,9 @@ export function WebSearchSettingsPage(props: {
             )}
           </div>}
         />
-      </SettingsRows>
+      </Card>
 
-      <SettingsRows className="settingsWebSearchQueryCard">
+      <Card padding={0} className="settingsRows settingsWebSearchQueryCard">
         <Item
           className="settingsWebSearchQueryIntroRow"
           label={copy.liveTitle}
@@ -358,7 +357,7 @@ export function WebSearchSettingsPage(props: {
             )}
           </div>}
         />
-      </SettingsRows>
+      </Card>
 
       {liveQueryError && (
         <div className="settingsConnectionMeta" role="alert">

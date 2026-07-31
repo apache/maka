@@ -278,7 +278,7 @@
 
 /* PR-SETTINGS-NO-PANE-BORDER-0 (WAWQAQ msg `d0e7dfb3`): nested
    card-in-card was the previous problem — `.settingsStructuredPage`
-   was a card AND it contained `<SettingsRows>` cards AND orphan
+   was a card AND it contained grouped Astryx cards AND orphan
    `.settingsFormRow` direct children. Reference shows multiple
    GROUPED cards stacked vertically. So `.settingsStructuredPage` is
    no longer a card — it's just the vertical container with gap, and

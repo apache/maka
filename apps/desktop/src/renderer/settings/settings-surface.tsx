@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { Badge, Button, SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core';
+import { Badge, Button, Card, SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core';
 import { ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
@@ -29,7 +29,7 @@ import { PermissionCenterPage } from './permission-center-page';
 import { SettingsSkeleton } from './settings-skeleton';
 import { SETTINGS_NAV, groupedNav, navLabel, readLastSettingsSection } from './settings-nav';
 import { getSettingsNavigationCopy } from '../locales/settings-navigation-copy.js';
-import { SettingsRows, SettingRow } from './settings-rows';
+import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { UsageSettingsPage } from './usage-settings-page';
 import { VoiceModelsSettingsPage } from './voice-settings-page';
@@ -433,9 +433,9 @@ function SettingsPage(props: {
       );
     default:
       return (
-        <SettingsRows>
+        <Card padding={0} className="settingsRows">
           <SettingRow title={navLabel(props.section, locale)} detail={copy.unavailablePage} value={copy.ready} />
-        </SettingsRows>
+        </Card>
       );
   }
 }

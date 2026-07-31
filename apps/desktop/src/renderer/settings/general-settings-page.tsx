@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Item } from '@astryxdesign/core';
+import { Card, Item } from '@astryxdesign/core';
 import { PersonalizationSettingsPage } from './appearance-settings-page';
 import type {
   AppSettings,
@@ -30,7 +30,6 @@ import {
 import { ProviderBrandMark } from './provider-brand-marks';
 import { buildCatalogChatModelChoices } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
-import { SettingsRows } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard, useKeyedActionGuard } from './use-action-guard';
 import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
@@ -53,7 +52,7 @@ export function GeneralSettingsPage(props: {
           moved here from the 外观 page — they configure who you are to the
           app, not how the app looks. The component keeps its save flow. */}
       <PersonalizationSettingsPage settings={props.settings} onUpdate={props.onUpdate} />
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <Item
           label={copy.incognito}
           description={copy.incognitoHelp}
@@ -82,7 +81,7 @@ export function GeneralSettingsPage(props: {
             }}
           />}
         />
-      </SettingsRows>
+      </Card>
       <GeneralDefaultsCard
         connections={props.connections}
         defaultSlug={props.defaultSlug}
@@ -90,9 +89,9 @@ export function GeneralSettingsPage(props: {
         permissionMode={props.settings.chatDefaults.permissionMode}
         onUpdate={props.onUpdate}
       />
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <NetworkProxySection settings={props.settings} onUpdate={props.onUpdate} />
-      </SettingsRows>
+      </Card>
     </div>
   );
 }
@@ -206,7 +205,7 @@ function GeneralDefaultsCard(props: {
   }
 
   return (
-    <SettingsRows>
+    <Card padding={0} className="settingsRows">
       <Item
         label={copy.defaultModel}
         description={copy.defaultModelHelp}
@@ -239,7 +238,7 @@ function GeneralDefaultsCard(props: {
           />
         )}
       />
-    </SettingsRows>
+    </Card>
   );
 }
 

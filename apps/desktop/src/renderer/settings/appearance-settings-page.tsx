@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Item } from '@astryxdesign/core';
-import { SettingsRows } from './settings-rows';
+import { Card, Item } from '@astryxdesign/core';
 import type {
   AppSettings,
   PersonalizationSettings,
@@ -171,7 +170,7 @@ export function PersonalizationSettingsPage(props: {
       {/* These editable values stay in the same grouped Settings card as the
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <div className="settingsFormRow settingsPersonalizationDisplayName">
           <div>
             <strong>{copy.displayName}</strong>
@@ -234,7 +233,7 @@ export function PersonalizationSettingsPage(props: {
             }}
           />
         </div>
-      </SettingsRows>
+      </Card>
     </div>
   );
 }

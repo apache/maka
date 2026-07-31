@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Item } from '@astryxdesign/core';
+import { Card, Item } from '@astryxdesign/core';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
 import { Alert, AlertDescription, Button, Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { SettingsRows } from './settings-rows';
 import { useActionGuard } from './use-action-guard';
 
 /**
@@ -157,7 +156,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
         </Alert>
       ) : null}
 
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <Item
           label={copy.enabled}
           description={copy.enabledHelp}
@@ -278,7 +277,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             onChange={() => undefined}
           />}
         />
-      </SettingsRows>
+      </Card>
 
       {(props.onOpenDailyReview || hasRunOnceIpc) && (
         <div className="settingsPageFooterActions" role="toolbar" aria-label={copy.actionsAria}>

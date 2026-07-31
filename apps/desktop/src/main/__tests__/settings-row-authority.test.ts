@@ -9,6 +9,7 @@ const read = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8');
 test('read-only settings rows use Astryx Item named props', () => {
   const source = read('apps/desktop/src/renderer/settings/settings-rows.tsx');
 
+  assert.doesNotMatch(source, /export function SettingsRows/);
   assert.match(source, /import\s+\{[^}]*\bItem\b[^}]*\}\s+from '@astryxdesign\/core'/s);
   assert.match(source, /<Item\b/);
   assert.match(source, /\blabel=\{props\.title\}/);

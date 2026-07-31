@@ -1,7 +1,8 @@
 import { useEffect, useId, useState } from 'react';
+import { Card } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
 import { Alert, AlertDescription, AlertTitle, Button, PageHeader, SectionHeader, useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { SettingsRows, SettingRow } from './settings-rows';
+import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
 import { useActionGuard } from './use-action-guard';
@@ -149,7 +150,7 @@ export function AboutSettingsPage() {
         </Alert>
       </section>
 
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <SettingRow
           title={copy.runtime}
           detail={copy.runtimeDetail}
@@ -167,7 +168,7 @@ export function AboutSettingsPage() {
           detail={copy.storageDetail}
           value={copy.local}
         />
-      </SettingsRows>
+      </Card>
 
       <div className="settingsActionRow">
         <Button variant="primary" isDisabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()} label={copyingEnvSummary ? copy.copying : copy.copyEnvironment} />

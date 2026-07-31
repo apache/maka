@@ -1,8 +1,7 @@
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
-import { Item } from '@astryxdesign/core';
+import { Card, Item } from '@astryxdesign/core';
 import { Alert, AlertDescription, Badge, Button, FormLayout, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
-import { SettingsRows } from './settings-rows';
 import { MemoryEntryList } from './memory-entry-list';
 import { MemoryPromptPreviewSection, WorkspaceInstructionsSection } from './memory-settings-sections';
 import { useMemoryDocumentController } from './use-memory-settings-controller';
@@ -84,7 +83,7 @@ export function MemorySettingsPage(props: {
 
   return (
     <div className="settingsStructuredPage">
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <Item
           label={copy.text.localFile}
           description={copy.text.localFileHelp}
@@ -128,7 +127,7 @@ export function MemorySettingsPage(props: {
             onChange={(enabled) => void workspaceInstructions.setEnabled(enabled)}
           />}
         />
-      </SettingsRows>
+      </Card>
 
       <WorkspaceInstructionsSection
         copy={copy}
