@@ -34,9 +34,13 @@ export type { ConnectionsBridge } from './provider-panel-shared';
 export { ProviderLogo, providerDisplay } from './provider-display';
 
 type ProviderDialogState =
-  | { kind: 'create'; providerType: ProviderType }
-  | { kind: 'manage'; connection: LlmConnection }
+  | { kind: 'create'; providerType: ProviderType; session: number }
+  | { kind: 'manage'; connection: LlmConnection; session: number }
   | null;
+
+type ProviderDialogInput =
+  | { kind: 'create'; providerType: ProviderType }
+  | { kind: 'manage'; connection: LlmConnection };
 
 type CatalogCategory = ProviderCatalogGroup | 'accounts';
 
@@ -82,9 +86,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const copy = providerCopy.panel;
   const toast = useToast();
 
-  function releaseDialog(lifecycle: number) {
+  function restoreProductFocusAfterClose(lifecycle: number) {
     if (providerDialogLifecycleRef.current !== lifecycle) return;
-    setDialogState(null);
     if (focusProviderSearchAfterCloseRef.current) {
       focusProviderSearchAfterCloseRef.current = false;
       window.requestAnimationFrame(() => {
@@ -95,11 +98,11 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     }
   }
 
-  function openDialog(nextState: Exclude<ProviderDialogState, null>) {
+  function openDialog(nextState: ProviderDialogInput) {
     const lifecycle = providerDialogLifecycleRef.current + 1;
     providerDialogLifecycleRef.current = lifecycle;
     setIsDialogOpen(false);
-    setDialogState(nextState);
+    setDialogState({ ...nextState, session: lifecycle });
     window.requestAnimationFrame(() => {
       if (!providersPanelMountedRef.current || providerDialogLifecycleRef.current !== lifecycle) return;
       setIsDialogOpen(true);
@@ -110,7 +113,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     const lifecycle = providerDialogLifecycleRef.current + 1;
     providerDialogLifecycleRef.current = lifecycle;
     setIsDialogOpen(false);
-    window.requestAnimationFrame(() => releaseDialog(lifecycle));
+    window.requestAnimationFrame(() => restoreProductFocusAfterClose(lifecycle));
   }
 
   function handleDialogOpenChange(nextOpen: boolean) {
@@ -344,6 +347,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
       {createType && (
         <ProviderConnectionDialog
+          key={dialogState?.session}
           title={copy.connectTitle(providerDisplay(createType, locale).name)}
           subtitle={copy.createSubtitle}
           providerType={createType}
@@ -378,6 +382,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
       {selected && (
         <ProviderConnectionDialog
+          key={dialogState?.session}
           title={selected.name}
           subtitle={connectionDialogSubtitle(selected, selected.slug === defaultSlug, locale)}
           providerType={selected.providerType}
