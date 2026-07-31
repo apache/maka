@@ -18,11 +18,26 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
     dialog.getByRole('listbox', { name: '命令面板结果' }),
   ).toBeVisible();
   await expect(input).toBeFocused();
-  await input.fill('设置');
-  await expect(dialog.getByRole('option').first()).toBeVisible();
+  await input.fill('打开设置');
+  const settingsOption = dialog.getByRole('option', {
+    name: /^打开设置/,
+  });
+  await expect(settingsOption).toBeVisible();
   await page.keyboard.press('ArrowDown');
-  await expect(input).toHaveAttribute('aria-activedescendant', /.+/);
+  const activeDescendant = await input.getAttribute('aria-activedescendant');
+  expect(activeDescendant).not.toBeNull();
+  await expect(page.locator(`#${activeDescendant}`)).toHaveRole('option');
+  await expect(page.locator(`#${activeDescendant}`)).toHaveAccessibleName(
+    /^打开设置/,
+  );
 
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
+  await expect(dialog).toBeHidden();
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('main', { name: '设置内容' })).toBeHidden();
+  await openPalette();
   await page.setViewportSize({ width: 520, height: 700 });
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
@@ -67,4 +82,20 @@ test('new plan reminder command opens the existing form and applies a template',
   await expect(
     reminderDialog.getByRole('textbox', { name: '提醒时间' }),
   ).toHaveValue(/09:30$/);
+
+  const reminderTime = reminderDialog.getByRole('textbox', {
+    name: '提醒时间',
+  });
+  await reminderTime.fill('not-a-time');
+  await expect(reminderTime).toHaveAttribute('aria-invalid', 'true');
+  await expect(reminderDialog.getByText('选择有效的提醒时间。')).toBeVisible();
+  await expect(
+    reminderDialog.getByRole('button', { name: '创建提醒' }),
+  ).toBeDisabled();
+
+  await reminderTime.fill('2000-01-01T00:00');
+  await expect(reminderTime).toHaveAttribute('aria-invalid', 'true');
+  await expect(
+    reminderDialog.getByText('提醒时间必须晚于当前时间。'),
+  ).toBeVisible();
 });

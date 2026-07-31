@@ -47,6 +47,22 @@ describe('plan reminder localization', () => {
       planReminderFormValidation({
         ...input,
         title: 'Review',
+        parsedRunAt: Number.NaN,
+      }, 'zh'),
+      { field: 'time', message: '选择有效的提醒时间。' },
+    );
+    assert.deepEqual(
+      planReminderFormValidation({
+        ...input,
+        title: 'Review',
+        parsedRunAt: input.now - 1,
+      }, 'zh'),
+      { field: 'time', message: '提醒时间必须晚于当前时间。' },
+    );
+    assert.deepEqual(
+      planReminderFormValidation({
+        ...input,
+        title: 'Review',
         delivery: { channel: 'bot', platform: 'telegram', chatId: '' },
       }, 'en'),
       {

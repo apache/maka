@@ -80,7 +80,23 @@ test('daily review uses the canonical time field and persists its value', async 
 
   await settings.getByRole('button', { name: '通用', exact: true }).click();
   await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
-  await expect(settings.getByRole('textbox', { name: '每日回顾执行时间' })).toHaveValue('08:05');
+  const persistedTime = settings.getByRole('textbox', {
+    name: '每日回顾执行时间',
+  });
+  await expect(persistedTime).toHaveValue('08:05');
+
+  await persistedTime.fill('24:00');
+  await persistedTime.blur();
+  await expect(persistedTime).toHaveAttribute('aria-invalid', 'true');
+  await expect(
+    settings.getByText('请输入 24 小时制时间，例如 08:00。'),
+  ).toBeVisible();
+
+  await settings.getByRole('button', { name: '通用', exact: true }).click();
+  await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
+  await expect(
+    settings.getByRole('textbox', { name: '每日回顾执行时间' }),
+  ).toHaveValue('08:05');
 });
 
 test('model picker only exposes a rendered active descendant', async ({
@@ -156,4 +172,20 @@ test('conditionally unmounted dialogs restore their opener by default', async ({
 
   await expect(dialog).toBeHidden();
   await expect(opener).toBeFocused();
+});
+
+test('selecting a search result does not restore focus to the opener', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const opener = page.getByRole('button', { name: '搜索对话' });
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: '搜索' });
+  await dialog
+    .getByRole('combobox', { name: '搜索会话' })
+    .fill('会话 01');
+  await dialog.getByRole('option', { name: /会话 01/ }).click();
+
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('示例对话 01')).toBeVisible();
+  await expect(opener).not.toBeFocused();
 });

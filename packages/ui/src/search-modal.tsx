@@ -38,6 +38,77 @@ interface SearchItemAuxiliaryData {
 
 type SearchItem = SearchableItem<SearchItemAuxiliaryData>;
 
+interface ThreadSearchSourceInput {
+  searchThread?: SearchModalDeps['searchThread'];
+  canNavigate: boolean;
+  resultsLabel: string;
+  onQueryChange(query: string): void;
+  onErrorChange(
+    error: { reason: SearchErrorReason; message: string } | null,
+  ): void;
+  onItemsChange(items: SearchItem[]): void;
+  thrownErrorMessage(error: unknown): string;
+}
+
+export function createThreadSearchSource(
+  input: ThreadSearchSourceInput,
+): SearchSource<SearchItem> {
+  let generation = 0;
+  return {
+    bootstrap: () => [],
+    cancel: () => {
+      generation += 1;
+    },
+    search: async (query) => {
+      const requestGeneration = ++generation;
+      const trimmed = query.trim();
+      input.onQueryChange(trimmed);
+      input.onItemsChange([]);
+      if (!trimmed || !input.searchThread) {
+        input.onErrorChange(null);
+        return [];
+      }
+      try {
+        const response = await input.searchThread({
+          source: 'thread',
+          query: trimmed,
+          limit: 10,
+        });
+        if (generation !== requestGeneration) return [];
+        if (!Array.isArray(response)) {
+          input.onErrorChange({
+            reason: response.reason,
+            message: response.message,
+          });
+          return [];
+        }
+        input.onErrorChange(null);
+        const items = response.flatMap<SearchItem>((result, index) => {
+          if (!input.canNavigate || result.target?.kind !== 'thread') {
+            return [];
+          }
+          return [
+            {
+              id: `${result.target.sessionId}:${result.target.turnId ?? ''}:${index}`,
+              label: result.title ?? result.summary ?? input.resultsLabel,
+              auxiliaryData: { result },
+            },
+          ];
+        });
+        input.onItemsChange(items);
+        return items;
+      } catch (caught) {
+        if (generation !== requestGeneration) return [];
+        input.onErrorChange({
+          reason: 'provider_error',
+          message: input.thrownErrorMessage(caught),
+        });
+        return [];
+      }
+    },
+  };
+}
+
 function searchModalThrownErrorMessage(
   error: unknown,
   locale: UiLocale,
@@ -55,7 +126,7 @@ function searchModalThrownErrorMessage(
  * content.
  */
 export function SearchModal(props: {
-  onClose(): void;
+  onClose(options?: { restoreFocus?: boolean }): void;
   onNavigateToSession?(sessionId: string, turnId?: string): void;
   deps?: SearchModalDeps;
 }) {
@@ -73,63 +144,28 @@ export function SearchModal(props: {
   } | null>(null);
   const [activeQuery, setActiveQuery] = useState('');
   const itemByIdRef = useRef(new Map<string, SearchItem>());
+  const restoreFocusOnCloseRef = useRef(true);
 
   const searchSource = useMemo<SearchSource<SearchItem>>(
-    () => ({
-      bootstrap: () => [],
-      search: async (query) => {
-        const trimmed = query.trim();
-        setActiveQuery(trimmed);
-        itemByIdRef.current = new Map();
-        if (!trimmed || !props.deps?.searchThread) {
-          setError(null);
-          return [];
-        }
-        try {
-          const response = await props.deps.searchThread({
-            source: 'thread',
-            query: trimmed,
-            limit: 10,
-          });
-          if (!Array.isArray(response)) {
-            setError({
-              reason: response.reason,
-              message: response.message,
-            });
-            return [];
-          }
-          setError(null);
-          const items = response.flatMap<SearchItem>((result, index) => {
-            if (
-              !props.onNavigateToSession ||
-              result.target?.kind !== 'thread'
-            ) {
-              return [];
-            }
-            const item: SearchItem = {
-              id: `${result.target.sessionId}:${result.target.turnId ?? ''}:${index}`,
-              label: result.title ?? result.summary ?? copy.resultsLabel,
-              auxiliaryData: { result },
-            };
-            return [item];
-          });
+    () =>
+      createThreadSearchSource({
+        searchThread: props.deps?.searchThread,
+        canNavigate: Boolean(props.onNavigateToSession),
+        resultsLabel: copy.resultsLabel,
+        onQueryChange: setActiveQuery,
+        onErrorChange: setError,
+        onItemsChange: (items) => {
           itemByIdRef.current = new Map(
             items.map((item) => [item.id, item]),
           );
-          return items;
-        } catch (caught) {
-          setError({
-            reason: 'provider_error',
-            message: searchModalThrownErrorMessage(
-              caught,
-              locale,
-              copy.errorFallback,
-            ),
-          });
-          return [];
-        }
-      },
-    }),
+        },
+        thrownErrorMessage: (caught) =>
+          searchModalThrownErrorMessage(
+            caught,
+            locale,
+            copy.errorFallback,
+          ),
+      }),
     [
       copy.errorFallback,
       copy.resultsLabel,
@@ -150,7 +186,11 @@ export function SearchModal(props: {
       <AstryxCommandPalette
         isOpen
         onOpenChange={(isOpen) => {
-          if (!isOpen) props.onClose();
+          if (!isOpen) {
+            props.onClose({
+              restoreFocus: restoreFocusOnCloseRef.current,
+            });
+          }
         }}
         searchSource={searchSource}
         label={copy.title}
@@ -176,6 +216,7 @@ export function SearchModal(props: {
           const result =
             itemByIdRef.current.get(itemId)?.auxiliaryData?.result;
           if (result?.target?.kind !== 'thread') return;
+          restoreFocusOnCloseRef.current = false;
           props.onNavigateToSession?.(
             result.target.sessionId,
             result.target.turnId,

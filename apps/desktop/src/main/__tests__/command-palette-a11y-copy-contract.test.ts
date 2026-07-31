@@ -29,12 +29,15 @@ describe('Command palette accessibility and visible copy', () => {
     assert.doesNotMatch(source, /<input\b|<button\b|onKeyDown=|querySelector\(/);
   });
 
-  it('keeps only enabled product commands in the Astryx search source', async () => {
-    const source = await readRepo(
-      'apps/desktop/src/renderer/command-palette.tsx',
-    );
+  it('maps the product command catalog directly into the Astryx search source', async () => {
+    const [source, types] = await Promise.all([
+      readRepo('apps/desktop/src/renderer/command-palette.tsx'),
+      readRepo('apps/desktop/src/renderer/command-palette-types.ts'),
+    ]);
 
-    assert.match(source, /\.filter\(\(command\) => !command\.disabled\)/);
+    assert.match(source, /props\.commands\.map\(\(command\) => \(\{/);
+    assert.doesNotMatch(source, /command\.disabled/);
+    assert.doesNotMatch(types, /disabled\?: boolean/);
     assert.match(source, /bootstrap: \(\) => items/);
     assert.match(source, /if \(fuzzy\(normalized, command\.label\)\) return true/);
     assert.match(source, /command\.keywords\?\.some/);

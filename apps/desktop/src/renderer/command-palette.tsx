@@ -88,13 +88,11 @@ export function CommandPalette(props: {
   }>;
   const items = useMemo<PaletteItem[]>(
     () =>
-      props.commands
-        .filter((command) => !command.disabled)
-        .map((command) => ({
-          id: command.id,
-          label: command.label,
-          auxiliaryData: { command, group: command.group },
-        })),
+      props.commands.map((command) => ({
+        id: command.id,
+        label: command.label,
+        auxiliaryData: { command, group: command.group },
+      })),
     [props.commands],
   );
   const itemById = useMemo(

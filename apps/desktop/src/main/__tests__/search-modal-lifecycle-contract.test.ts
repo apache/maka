@@ -22,7 +22,10 @@ describe('SearchModal lifecycle and interaction contract', () => {
     ]);
 
     assert.match(searchModal, /export function SearchModal\(props: \{/);
-    assert.match(searchModal, /onClose\(\): void/);
+    assert.match(
+      searchModal,
+      /onClose\(options\?: \{ restoreFocus\?: boolean \}\): void/,
+    );
     assert.doesNotMatch(searchModal, /\bopen\s*:/);
     assert.doesNotMatch(searchModal, /if\s*\(\s*!props\.open\s*\)/);
     assert.match(
@@ -57,7 +60,7 @@ describe('SearchModal lifecycle and interaction contract', () => {
     assert.match(source, /search: async \(query\) =>/);
     assert.match(
       source,
-      /props\.deps\.searchThread\(\{[\s\S]*source: 'thread',[\s\S]*query: trimmed,[\s\S]*limit: 10/,
+      /input\.searchThread\(\{[\s\S]*source: 'thread',[\s\S]*query: trimmed,[\s\S]*limit: 10/,
     );
     assert.match(source, /if \(!Array\.isArray\(response\)\)/);
     assert.match(source, /catch \(caught\)/);
@@ -117,11 +120,24 @@ describe('SearchModal lifecycle and interaction contract', () => {
 
     assert.match(
       renderer,
-      /function closeSearchModal\(\) \{[\s\S]*setSearchModalOpen\(false\);[\s\S]*requestAnimationFrame/,
+      /function closeSearchModal\(options\?: \{ restoreFocus\?: boolean \}\) \{[\s\S]*setSearchModalOpen\(false\);[\s\S]*options\?\.restoreFocus === false[\s\S]*requestAnimationFrame/,
     );
     assert.match(
       renderer,
       /querySelector<HTMLButtonElement>\('\[data-maka-search-trigger="true"\]'\)[\s\S]*focus\(\{ preventScroll: true \}\)/,
+    );
+  });
+
+  it('leaves destination focus ownership to the selected search result', async () => {
+    const source = await readFile(searchModalPath, 'utf8');
+
+    assert.match(
+      source,
+      /restoreFocusOnCloseRef\.current = false;[\s\S]*props\.onNavigateToSession/,
+    );
+    assert.match(
+      source,
+      /props\.onClose\(\{[\s\S]*restoreFocus: restoreFocusOnCloseRef\.current/,
     );
   });
 

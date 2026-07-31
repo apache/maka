@@ -18,8 +18,9 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
     nonce: number;
   } | null>(null);
 
-  function closeSearchModal() {
+  function closeSearchModal(options?: { restoreFocus?: boolean }) {
     setSearchModalOpen(false);
+    if (options?.restoreFocus === false) return;
     window.requestAnimationFrame(() => {
       document
         .querySelector<HTMLButtonElement>('[data-maka-search-trigger="true"]')
