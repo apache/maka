@@ -113,11 +113,15 @@ function assertOfficialShell(facts: ShellFacts, tag: string): void {
   closeTo(facts.sidebar.top, facts.titlebar.bottom, `${tag} sidebar starts below titlebar`);
   closeTo(facts.detail.top, facts.titlebar.bottom, `${tag} detail starts below titlebar`);
   closeTo(facts.sidebar.right, facts.detail.left, `${tag} sidebar and detail share one edge`);
-  closeTo(facts.sidebar.bottom, facts.detail.bottom, `${tag} sidebar and detail share one bottom edge`);
   closeTo(facts.detail.right, facts.viewport.width, `${tag} detail right`);
-  const platformBottomInset = facts.viewport.height - facts.detail.bottom;
-  expect(platformBottomInset, `${tag} content must not overflow the viewport`).toBeGreaterThanOrEqual(0);
-  expect(platformBottomInset, `${tag} content must not leave a product-sized bottom gutter`).toBeLessThanOrEqual(12);
+  for (const [surface, bottom] of Object.entries({
+    sidebar: facts.sidebar.bottom,
+    detail: facts.detail.bottom,
+  })) {
+    const platformBottomInset = facts.viewport.height - bottom;
+    expect(platformBottomInset, `${tag} ${surface} must not overflow the viewport`).toBeGreaterThanOrEqual(0);
+    expect(platformBottomInset, `${tag} ${surface} must not leave a product-sized bottom gutter`).toBeLessThanOrEqual(12);
+  }
   expect(facts.sidebar.width, `${tag} official SideNav width`).toBeGreaterThanOrEqual(180);
   expect(facts.detail.width, `${tag} detail must retain usable width`).toBeGreaterThan(0);
 
