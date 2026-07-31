@@ -1,6 +1,11 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
-import { categorizeBash, classifyToolUse } from '../permission.js';
+import {
+  categorizeBash,
+  classifyToolUse,
+  isToolCategory,
+  permissionReasonForCategory,
+} from '../permission.js';
 
 describe('legacy permission payload classification', () => {
   test('keeps historical command reviews conservatively categorized', () => {
@@ -16,5 +21,10 @@ describe('legacy permission payload classification', () => {
     expect(classifyToolUse({ toolName: 'ExploreAgent', args: {}, categoryHint: 'subagent' })).toBe(
       'subagent',
     );
+  });
+
+  test('keeps Client Capabilities behind a conservative permission floor', () => {
+    expect(isToolCategory('client_capability')).toBe(true);
+    expect(permissionReasonForCategory('client_capability')).toBe('custom');
   });
 });

@@ -15,7 +15,7 @@ import type {
   createProjectCatalog,
   createSessionStore,
   createSettingsStore,
-  createTelemetryRepo,
+  createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
 import type { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -56,7 +56,7 @@ export interface AppLifecycleDeps {
   credentialStore: ReturnType<typeof createFileCredentialStore>;
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
-  telemetryRepo: ReturnType<typeof createTelemetryRepo>;
+  telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
@@ -70,6 +70,7 @@ export interface AppLifecycleDeps {
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
+  closeWorkflowStores: () => Promise<void>;
   mainWindowController: ReturnType<typeof createMainWindowController>;
   runtime: SessionManager;
   agentGraphCoordinator: AgentGraphCoordinator;
@@ -123,6 +124,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     shellRuns,
     mcpManager,
     runtimePersistence,
+    closeWorkflowStores,
     mainWindowController,
     runtime,
     agentGraphCoordinator,
@@ -349,6 +351,11 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);
+    }
+    try {
+      await closeWorkflowStores();
+    } catch (error) {
+      console.error('[shutdown] cleanup failed:', error);
     }
     runtimePersistence.close();
     agentGraphControlStore.close();

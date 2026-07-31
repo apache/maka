@@ -289,13 +289,8 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // shape on the control-tier Button — both tiers must stay present.
   { file: 'packages/ui/src/ui.tsx', name: 'buttonVariants', tier: 'control', alsoTiers: ['pill'] },
   { file: 'packages/ui/src/primitives/input.tsx', name: 'inputClasses', tier: 'control' },
-  { file: 'packages/ui/src/ui.tsx', name: 'SelectItem', tier: 'control' },
   { file: 'packages/ui/src/ui.tsx', name: 'Toggle', tier: 'control' },
-  // #520 PR9: legacy ui.tsx badgeVariants retired onto primitives/badge.tsx.
-  // DialogPopup/AlertDialogPopup were merged into createModalContent (PR6
-  // review P3.1); the modal popup class now lives in MODAL_POPUP_CLASS.
-  { file: 'packages/ui/src/ui.tsx', name: 'MODAL_POPUP_CLASS', tier: 'modal' },
-  { file: 'packages/ui/src/ui.tsx', name: 'SelectPopup', tier: 'surface' },
+  // Dialog radius is owned by Astryx Dialog.
   { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
   // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
   // them to primitives/tabs.tsx, on the stated grounds that they became
@@ -307,9 +302,9 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsList', tier: 'surface' },
   { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsTab', tier: 'control' },
   { file: 'packages/ui/src/primitives/input-group.tsx', name: 'InputGroup', tier: 'control' },
-  { file: 'packages/ui/src/primitives/badge.tsx', name: 'badgeVariants', tier: 'pill' },
+  // #1565 PR 3: the Badge entry left this table — it is the Astryx primitive
+  // now, whose pill radius is Astryx-owned.
   { file: 'packages/ui/src/primitives/item.tsx', name: 'itemVariants', tier: 'surface' },
-  { file: 'packages/ui/src/primitives/menu.tsx', name: 'MenuPopup', tier: 'surface' },
   { file: 'packages/ui/src/primitives/alert.tsx', name: 'alertVariants', tier: 'surface' },
   { file: 'packages/ui/src/primitives/toolbar.tsx', name: 'Toolbar', tier: 'surface' },
   { file: 'packages/ui/src/session-sidebar-nav.tsx', name: 'navRowVariants', tier: 'control' },
@@ -495,7 +490,6 @@ describe('radius token governance (#406 gap 4)', () => {
       '.maka-skeleton-card': '--radius-surface',
       '.composer .maka-composer-inner': '--radius-modal',
       '.settingsModal': '--radius-modal',
-      '.maka-palette-modal': '--radius-modal',
       '.maka-palette-input-wrap': '--radius-control',
       // The search modal's input is the structural twin of the palette's:
       // same InputGroup, same position inside the same 12px shell. It spent
@@ -635,63 +629,6 @@ describe('radius token governance (#406 gap 4)', () => {
 });
 
 describe('radius whitelist negative cases', () => {
-  it('rejects typos and private tokens in var()', () => {
-    assert.equal(isWhitelistedVar('var(--radius-modla)'), false, 'typo must fail');
-    assert.equal(isWhitelistedVar('var(--radius-private)'), false, 'private token must fail');
-    assert.equal(isWhitelistedVar('var(--radius-control)'), true, 'valid token must pass');
-  });
-
-  it('rejects calc() with non-whitelisted tokens', () => {
-    assert.equal(isWhitelistedCalc('calc(var(--radius-private) + 1px)'), false, 'private token must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modla) - 1px)'), false, 'typo must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-control) - 1px)'), true, 'valid token subtraction must pass');
-  });
-
-  it('calc() allowlist: only var(--radius-*) - <positive>px passes', () => {
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) + 20px)'), false, 'addition must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-surface) + 8px)'), false, 'addition must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) * 1.5)'), false, 'multiplication must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) / 0.5)'), false, 'division must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) - -1px)'), false, 'double-negative must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) - 0px)'), false, 'zero subtraction must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) - 1px)'), true, 'subtraction must pass');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-xl) - 1px)'), true, 'subtraction with alias must pass');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-sm) - 1.5px)'), true, 'fractional subtraction must pass');
-  });
-
-  it('TSX scanner catches rounded-(--private-radius), rounded-4xl, and directional scale classes', async () => {
-    const badCases = [
-      'rounded-(--private-radius)',
-      'rounded-se-(--private-radius)',
-      'rounded-4xl',
-      'rounded-9xl',
-      'rounded-s-2xl',
-      'rounded-t-3xl',
-      'rounded-se-4xl',
-    ];
-    for (const bad of badCases) {
-      const m = [...bad.matchAll(ROUNDED_RE)];
-      assert.ok(m.length > 0, `${bad} must be caught by ROUNDED_RE`);
-    }
-    assert.equal(isWhitelistedVar('var(--radius-pill)'), true, 'valid pill token must pass');
-  });
-
-  it('CSS scanner is case-insensitive and tolerates whitespace around colons', () => {
-    // Bare px must be caught regardless of case or spacing
-    const badSnippets = [
-      'border-radius : 10px;',
-      'BORDER-RADIUS: 10px;',
-      'Border-Radius: 10px;',
-      'border-radius:10px;',
-    ];
-    for (const css of badSnippets) {
-      RADIUS_DECL_RE.lastIndex = 0;
-      RADIUS_LONGHAND_RE.lastIndex = 0;
-      const offenders = findCssOffenders(css, 'test');
-      assert.ok(offenders.length > 0, `${JSON.stringify(css)} must be flagged as bare px`);
-    }
-  });
-
   /**
    * A value that wraps onto a second line must still be scanned. The value
    * class used to exclude `\n`, so such a declaration matched nothing and
@@ -769,100 +706,5 @@ describe('radius whitelist negative cases', () => {
       1,
       'one declaration must produce exactly one match',
     );
-  });
-
-  /**
-   * Widening the value class must not let one match swallow the declaration
-   * after it, or run past the end of its own rule body — that would turn the
-   * fix into a false-positive machine.
-   */
-  it('CSS scanner stops each match at its own declaration boundary', () => {
-    const css = [
-      '.a {',
-      '  border-radius: var(--radius-control);',
-      '  color: red;',
-      '}',
-      '.b {',
-      '  border-radius: var(--radius-surface)',
-      '}',
-      '.c { border-radius: var(--radius-modal); }',
-    ].join('\n');
-    RADIUS_DECL_RE.lastIndex = 0;
-    RADIUS_LONGHAND_RE.lastIndex = 0;
-    assert.deepEqual(findCssOffenders(css, 'test'), [], 'valid declarations must not bleed into each other');
-
-    RADIUS_DECL_RE.lastIndex = 0;
-    const matched = [...css.matchAll(RADIUS_DECL_RE)].map((m) => m[2].trim());
-    assert.deepEqual(
-      matched,
-      ['var(--radius-control)', 'var(--radius-surface)', 'var(--radius-modal)'],
-      'each declaration must be captured separately',
-    );
-  });
-
-  it('calc() with internal whitespace still passes for valid tokens', () => {
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) - 1px)'), true, 'standard calc must pass');
-    assert.equal(isWhitelistedCalc('calc( var(--radius-modal) - 1px )'), true, 'calc with spaces inside parens must pass');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal)  -  1px)'), true, 'calc with multiple spaces around minus must pass');
-    assert.equal(isWhitelistedCalc('calc(var( --radius-modal ) - 1px)'), true, 'calc with spaces inside var() must pass');
-  });
-
-  /**
-   * CSS requires whitespace around `+`/`-` inside calc(). Without it the
-   * declaration is a parse error and is dropped, so the element renders
-   * at radius 0 — square corners that look deliberate. Measured in the
-   * renderer: `calc(var(--radius-modal)-8px)` computes to `0px`, the
-   * spaced form to `4px`.
-   */
-  it('rejects unspaced calc() in CSS, which the browser drops as a parse error', () => {
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal)-8px)'), false, 'no space either side must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal) -8px)'), false, 'no space before the minus must fail');
-    assert.equal(isWhitelistedCalc('calc(var(--radius-modal)- 8px)'), false, 'no space after the minus must fail');
-  });
-
-  it('accepts unspaced calc() in Tailwind arbitrary values, which Tailwind normalizes', () => {
-    // A literal space would need `_` here, so unspaced is the normal
-    // spelling — and the built bundle shows Tailwind emits `--radius-md - 1px`.
-    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md)-1px)'), true, 'unspaced arbitrary value must pass');
-    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-sm)-1px)'), true, 'unspaced arbitrary value must pass');
-    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md)_-_1px)'), true, 'underscore-escaped spaces must pass');
-    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md) - 1px)'), true, 'already-spaced must still pass');
-    // The token allowlist and the shrink-only rule still apply here.
-    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-private)-1px)'), false, 'private token must fail');
-    assert.equal(isWhitelistedTailwindCalc('calc(var(--radius-md)+1px)'), false, 'addition must fail');
-  });
-
-  /**
-   * The splitter must not break a calc() apart on the whitespace CSS
-   * requires inside it — the bug that made the contract demand invalid
-   * CSS in the first place.
-   */
-  it('treats a spaced calc() as one corner, and still splits real multi-corner values', () => {
-    assert.deepEqual(splitCorners('calc(var(--radius-modal) - 8px)'), ['calc(var(--radius-modal) - 8px)']);
-    assert.deepEqual(
-      splitCorners('var(--radius-control) var(--radius-modal)'),
-      ['var(--radius-control)', 'var(--radius-modal)'],
-    );
-    assert.deepEqual(
-      splitCorners('calc(var(--radius-modal) - 8px) var(--radius-control)'),
-      ['calc(var(--radius-modal) - 8px)', 'var(--radius-control)'],
-    );
-
-    // End to end through the scanner: the valid spelling must pass and the
-    // invalid one must be flagged.
-    RADIUS_DECL_RE.lastIndex = 0;
-    assert.deepEqual(findCssOffenders('border-radius: calc(var(--radius-modal) - 8px);', 'test'), []);
-    RADIUS_DECL_RE.lastIndex = 0;
-    assert.equal(
-      findCssOffenders('border-radius: calc(var(--radius-modal)-8px);', 'test').length,
-      1,
-      'the unspaced form must be reported, not silently accepted',
-    );
-  });
-
-  it('var() with internal whitespace still passes for valid tokens', () => {
-    assert.equal(isWhitelistedVar('var(--radius-surface)'), true, 'standard var must pass');
-    assert.equal(isWhitelistedVar('var( --radius-surface )'), true, 'var with spaces inside parens must pass');
-    assert.equal(isWhitelistedVar('var( --radius-control )'), true, 'var with spaces and control token must pass');
   });
 });

@@ -69,6 +69,10 @@ test('markerVariants leaves shared Button geometry and interaction states to the
 
 // Footer actions and lineage badges are ordinary actions. Check the production
 // wiring rather than synthesizing a merge that a call site could forget to use.
+// #1565 PR 3: footer actions live inside Tooltip render-props, so they stay on
+// the legacy buttonVariants classes (a native <button>) until the floating
+// slices retire them; lineage badges are Astryx Buttons carrying the marker
+// shell via className.
 test('chat footer actions and lineage badges consume the governed Button tiers', () => {
   assert.doesNotMatch(
     chatTurnSource,
@@ -76,11 +80,11 @@ test('chat footer actions and lineage badges consume the governed Button tiers',
   );
   assert.match(
     chatTurnSource,
-    /<UiButton\b[^>]*variant="quiet"[^>]*size="icon-sm"[^>]*markerVariants\(\{ variant: 'footer-action' \}\)/,
+    /buttonVariants\(\{ variant: 'quiet', size: 'icon-sm' \}\), markerVariants\(\{ variant: 'footer-action' \}\)/,
   );
   assert.match(
     chatTurnSource,
-    /<UiButton\b[^>]*variant="quiet"[^>]*size="sm"[^>]*markerVariants\(\{ variant: 'lineage-badge' \}\)/,
+    /<UiButton\b[^>]*\n\s*key=[^]*?variant="ghost"\n\s*size="sm"\n\s*className=\{markerVariants\(\{ variant: 'lineage-badge' \}\)\}/,
   );
 });
 

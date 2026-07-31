@@ -467,14 +467,16 @@ describe('permission response IPC boundary', () => {
     );
   });
 
-  it('toast items carry role="alert" so screen readers announce them (PR-PERMISSION-UI-CLEANUP-0)', async () => {
+  it('error toasts delegate assertive announcement semantics to Astryx', async () => {
     const toastPath = fileURLToPath(new URL('../../../../../packages/ui/src/toast.tsx', import.meta.url));
     const toast = await readFile(toastPath, 'utf8');
     assert.match(
       toast,
-      /<li[^>]*role="alert"/,
-      'each toast <li> must declare role="alert" — the parent aria-live region alone is unreliable on macOS VoiceOver / NVDA',
+      /type: input\.variant === 'error' \? 'error' : 'info'/,
+      'error notifications must select Astryx Toast error semantics (role=alert/assertive)',
     );
+    assert.match(toast, /useToast as useAstryxToast/);
+    assert.doesNotMatch(toast, /role="alert"|aria-live=/, 'Maka must not duplicate Astryx Toast announcement semantics');
   });
 
   it('refreshes active messages when a sessions:changed message-appended event arrives', async () => {

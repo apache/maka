@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Plus, Search, Trash2 } from '@maka/ui/icons';
-import { Button } from '../src/ui.js';
+import { Button } from '../src/index.js';
 
 const meta = {
   title: 'Primitives/Button',
@@ -10,7 +10,13 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-const VARIANTS = ['default', 'secondary', 'ghost', 'quiet', 'destructive'] as const;
+const VARIANTS = ['primary', 'secondary', 'ghost', 'destructive'] as const;
+
+const SIZES = [
+  ['sm', 'sm · 28px'],
+  ['md', 'md · 32px'],
+  ['lg', 'lg · 36px'],
+] as const;
 
 const labelStyle: React.CSSProperties = {
   color: 'var(--foreground-secondary)',
@@ -32,10 +38,10 @@ export const VariantMatrix: Story = {
     <div style={{ display: 'grid', gap: 16, minWidth: 720 }}>
       {VARIANTS.map((variant) => (
         <Row key={variant} label={variant}>
-          <Button variant={variant}>新建任务</Button>
-          <Button variant={variant}>Create task</Button>
-          <Button variant={variant}>打开 Workspace</Button>
-          <Button variant={variant} disabled>Disabled</Button>
+          <Button variant={variant} label="新建任务" />
+          <Button variant={variant} label="Create task" />
+          <Button variant={variant} label="打开 Workspace" />
+          <Button variant={variant} isDisabled label="Disabled" />
         </Row>
       ))}
     </div>
@@ -45,37 +51,42 @@ export const VariantMatrix: Story = {
 export const SizeMatrix: Story = {
   render: () => (
     <div style={{ display: 'grid', gap: 14 }}>
-      <Row label="md · 32px">
-        <Button size="md">中文按钮</Button>
-        <Button size="md">English</Button>
-        <Button size="md"><Plus aria-hidden="true" />新建 Task</Button>
-        <Button size="icon" aria-label="搜索"><Search aria-hidden="true" /></Button>
-      </Row>
-      <Row label="sm · 28px">
-        <Button size="sm" variant="secondary">中文按钮</Button>
-        <Button size="sm" variant="secondary">English</Button>
-        <Button size="sm" variant="secondary"><Plus aria-hidden="true" />新建 Task</Button>
-        <Button size="icon-sm" variant="secondary" aria-label="删除"><Trash2 aria-hidden="true" /></Button>
-      </Row>
+      {SIZES.map(([size, rowLabel]) => (
+        <Row key={size} label={rowLabel}>
+          <Button size={size} variant="primary" label="中文按钮" />
+          <Button size={size} variant="secondary" label="English" />
+          <Button size={size} variant="secondary" icon={<Plus aria-hidden="true" />} label="新建 Task" />
+          <Button size={size} variant="secondary" isIconOnly icon={<Search aria-hidden="true" />} label="搜索" />
+        </Row>
+      ))}
     </div>
   ),
 };
 
 export const WithIcon: Story = {
   render: () => (
-    <div style={{ display: 'flex', gap: 8 }}>
-      <Button><Plus aria-hidden="true" />新建</Button>
-      <Button variant="secondary"><Search aria-hidden="true" />Search</Button>
-      <Button variant="destructive"><Trash2 aria-hidden="true" />删除</Button>
+    <div style={{ display: 'grid', gap: 14 }}>
+      <Row label="icon + label">
+        <Button variant="primary" icon={<Plus aria-hidden="true" />} label="新建" />
+        <Button variant="secondary" icon={<Search aria-hidden="true" />} label="Search" />
+        <Button variant="destructive" icon={<Trash2 aria-hidden="true" />} label="删除" />
+      </Row>
+      <Row label="isIconOnly">
+        <Button variant="secondary" isIconOnly icon={<Plus aria-hidden="true" />} label="新建" />
+        <Button variant="ghost" isIconOnly icon={<Search aria-hidden="true" />} label="搜索" />
+        <Button variant="secondary" size="sm" isIconOnly icon={<Trash2 aria-hidden="true" />} label="删除" />
+        <Button variant="secondary" isIconOnly isDisabled icon={<Trash2 aria-hidden="true" />} label="删除" />
+      </Row>
     </div>
   ),
 };
 
 export const Loading: Story = {
   render: () => (
-    <div style={{ display: 'flex', gap: 8 }}>
-      <Button disabled>提交中…</Button>
-      <Button variant="secondary" size="sm" disabled>Loading…</Button>
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <Button variant="primary" isLoading label="提交中…" />
+      <Button variant="secondary" size="sm" isLoading label="Loading…" />
+      <Button variant="destructive" isLoading label="删除中…" />
     </div>
   ),
 };

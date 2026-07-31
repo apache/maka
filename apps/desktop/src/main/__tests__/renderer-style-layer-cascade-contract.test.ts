@@ -55,6 +55,31 @@ async function assertImportedIntoMakaLegacy(specifier: string): Promise<void> {
 }
 
 describe('renderer style layer cascade contract', () => {
+  it('neutralizes every token name owned by both Maka and the mounted Astryx theme', async () => {
+    const [astryxTheme, makaTokens, astryxMount] = await Promise.all([
+      readFile('src/renderer/astryx-theme/maka.css', 'utf8'),
+      readFile('src/renderer/maka-tokens.css', 'utf8'),
+      readFile('src/renderer/styles/astryx-mount.css', 'utf8'),
+    ]);
+    const declaredTokens = (source: string): Set<string> =>
+      new Set([...stripCssComments(source).matchAll(/(--[\w-]+)\s*:/g)].map(([, token]) => token));
+    const astryxTokens = declaredTokens(astryxTheme);
+    const makaOwnedTokens = declaredTokens(makaTokens);
+    const collisions = [...astryxTokens].filter((token) => makaOwnedTokens.has(token)).sort();
+    const neutralized = [
+      ...stripCssComments(astryxMount).matchAll(/(--[\w-]+)\s*:\s*inherit\s*;/g),
+    ]
+      .map(([, token]) => token)
+      .sort();
+
+    assert.deepEqual(
+      neutralized,
+      collisions,
+      'astryx-mount.css must neutralize exactly the custom-property names owned by both themes. ' +
+        'A missing entry lets Astryx silently replace a Maka token; an extra entry is dead compatibility state.',
+    );
+  });
+
   /**
    * Regression guard for #1565 PR 1 (cascade normalization).
    *
@@ -141,13 +166,14 @@ describe('renderer style layer cascade contract', () => {
     // astryx-* layer or it outranks maka.legacy and repaints the app (#1565
     // PR 2). Exact layer per file, not "any astryx-*": reset above components
     // would flip Astryx's own internal cascade. reset.css (PR 12, with the
-    // Tailwind-preflight retirement) and theme.css (PR 3, with the first
-    // component consumer) are not imported yet; their entries pin the layer
-    // each must land in when it arrives.
+    // Tailwind-preflight retirement) is not imported yet; its entry pins the
+    // layer it must land in when it arrives. The first atom consumers activate
+    // ./astryx-theme/maka.css, an `astryx theme build` we own, so its
+    // element-typography block can be stripped at generation.
     const contractedAstryx = new Map([
       ['@astryxdesign/core/reset.css', 'astryx-reset'],
       ['@astryxdesign/core/astryx.css', 'astryx-components'],
-      ['@astryxdesign/theme-neutral/theme.css', 'astryx-tokens'],
+      ['./astryx-theme/maka.css', 'astryx-tokens'],
     ]);
     const misplaced = imports.filter(({ specifier, layer }) => {
       if (contractedUnlayered.has(specifier)) return layer !== null;
@@ -240,9 +266,13 @@ describe('renderer style layer cascade contract', () => {
       readFile('src/renderer/settings/password-input.tsx', 'utf8'),
     ]);
 
-    assert.match(permission, /<Button\s+type="button"\s+variant="secondary"\s+size="sm"[\s\S]*?>\s*\{copy\.detectAgain\}/);
-    assert.match(health, /<Button\s+type="button"\s+variant="secondary"\s+size="sm"[\s\S]*?>\s*\{copy\.refresh\}/);
-    assert.equal(password.match(/variant="quiet"\s+size="icon-sm"/g)?.length, 2);
+    // Astryx Button owns visible text; IconButton owns icon-only actions.
+    assert.match(permission, /<Button\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.detectAgain\}/);
+    assert.match(health, /<Button\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.refresh\}/);
+    assert.equal(
+      password.match(/<IconButton\s+variant="ghost"\s+size="sm"/g)?.length,
+      2,
+    );
 
     for (const legacyClass of ['settingsPermissionRefresh', 'settingsHealthRefresh', 'settingsPasswordToggle']) {
       assert.doesNotMatch(`${permission}\n${health}\n${password}`, new RegExp(`className="${legacyClass}"`));

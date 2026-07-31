@@ -57,11 +57,11 @@
   text-align: center;
 }
 
-/* Unified composer picker trigger — permission Select ([data-slot="select-trigger"])
+/* Unified composer picker trigger — permission Selector
    + both model pickers (active .maka-model-switcher-trigger, empty-state
    .maka-composer-model-chip) share ONE quiet-chip geometry so the two
    controls read identical at rest and on hover. */
-.maka-composer-left-controls [data-slot="select-trigger"],
+.maka-composer-left-controls .permissionModeSelector,
 .maka-composer-right-controls .maka-model-switcher-trigger,
 .maka-composer-model-chip,
 .maka-composer-mode-indicator {
@@ -82,7 +82,7 @@
     background-color var(--duration-base) var(--ease-out-strong),
     color var(--duration-base) var(--ease-out-strong);
 }
-.maka-composer-left-controls [data-slot="select-trigger"]:hover,
+.maka-composer-left-controls .permissionModeSelector:hover,
 .maka-composer-right-controls .maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled]),
 .maka-composer-model-chip:hover,
 .maka-composer-mode-indicator:hover:not(:disabled) {
@@ -399,15 +399,6 @@
 .maka-composer-workspace-menu {
   min-width: 220px;
   max-width: min(320px, calc(100vw - var(--space-6)));
-}
-.maka-composer-workspace-menu [data-slot="menu-item"] svg {
-  flex: 0 0 auto;
-}
-.maka-composer-workspace-menu [data-slot="menu-item"] span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .maka-composer-project-scroll {

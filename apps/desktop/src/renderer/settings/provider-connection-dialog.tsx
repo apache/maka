@@ -11,7 +11,6 @@ export function ProviderConnectionDialog(props: {
   finalFocus?(): HTMLElement | null;
   children: ReactNode;
 }) {
-  const titleId = `provider-connection-dialog-${props.providerType}`;
   const bodyRef = useRef<HTMLDivElement>(null);
   return (
     <DialogRoot
@@ -21,18 +20,17 @@ export function ProviderConnectionDialog(props: {
       }}
     >
       <DialogContent
-        className="maka-modal providerConnectionDialog"
-        aria-labelledby={titleId}
+        className="providerConnectionDialog"
+        width={520}
+        maxHeight="calc(100dvh - 80px)"
         initialFocus={() => bodyRef.current?.querySelector<HTMLElement>(
           'input:not([disabled]), button:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
         ) ?? true}
         finalFocus={props.finalFocus}
-        showClose={false}
       >
         <DialogHeader
           icon={<ProviderLogo type={props.providerType} compact />}
           title={props.title}
-          titleId={titleId}
           subtitle={props.subtitle}
           onClose={props.onClose}
         />

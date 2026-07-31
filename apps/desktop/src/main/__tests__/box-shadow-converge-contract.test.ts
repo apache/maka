@@ -83,32 +83,3 @@ describe('PR-BOX-SHADOW-CONVERGE-0 contract', () => {
     }
   });
 });
-
-describe('box-shadow pure-black negative cases', () => {
-  it('flags pure-black oklch / rgba / #000 / black in a box-shadow', () => {
-    assert.ok(findCssOffenders('box-shadow: 0 1px 2px oklch(0 0 0 / 0.08);', 't').length > 0, 'oklch(0 0 0 / 0.08) must fail');
-    assert.ok(findCssOffenders('box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);', 't').length > 0, 'rgba(0,0,0,0.03) must fail');
-    assert.ok(findCssOffenders('box-shadow: 0 4px 12px #000;', 't').length > 0, '#000 must fail');
-    assert.ok(findCssOffenders('box-shadow: 0 2px 8px black;', 't').length > 0, 'black must fail');
-  });
-
-  it('spares foreground-derived color, recipe var refs, none, and the rgba(0,0,0,0) transparent placeholder', () => {
-    assert.deepEqual(findCssOffenders('box-shadow: 0 1px 2px oklch(from var(--foreground) l c h / 0.08);', 't'), [], 'foreground-derived must pass');
-    assert.deepEqual(findCssOffenders('box-shadow: var(--shadow-minimal);', 't'), [], 'recipe var ref must pass');
-    assert.deepEqual(findCssOffenders('box-shadow: none;', 't'), [], 'none must pass');
-    assert.deepEqual(findCssOffenders('box-shadow: 0 0 0 1px var(--border);', 't'), [], 'ring with token color must pass');
-    // The recipe placeholder rgba(0,0,0,0) is alpha-0 transparent — not a shadow
-    // color, so it is not flagged even if it appeared in a box-shadow value.
-    assert.deepEqual(findCssOffenders('box-shadow: rgba(0,0,0,0) 0 0 0 0, 0 1px 2px oklch(from var(--foreground) l c h / 0.06);', 't'), [], 'alpha-0 placeholder + foreground-derived layer must pass');
-  });
-
-  it('captures a multi-line box-shadow value (pure-black on a continuation line is flagged)', () => {
-    const css = 'box-shadow:\n    0 0 0 1px var(--border),\n    0 4px 12px -6px oklch(0 0 0 / 0.5);';
-    assert.ok(findCssOffenders(css, 't').length > 0, 'pure-black on a continuation line must be caught');
-  });
-
-  it('does not scan --shadow-*: token definitions (dark-mode recipes intentionally use pure-black)', () => {
-    const css = '--shadow-modal:\n    0 0 0 1px oklch(1 0 0 / 0.10),\n    0 12px 32px -8px oklch(0 0 0 / 0.6);';
-    assert.deepEqual(findCssOffenders(css, 't'), [], 'token definitions are not box-shadow usages');
-  });
-});

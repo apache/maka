@@ -52,10 +52,13 @@ import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   BackendRegistry,
+  SessionConfigurationTransitionError,
   SessionManager,
   headerToSummary,
   type BackendFactoryContext,
+  type SessionConfigurationStoreUpdate,
   type SessionStore,
+  type VersionedSessionHeader,
 } from '../session-manager.js';
 import { RuntimeKernel, type RuntimeKernelLike } from '../runtime-kernel.js';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '../fake-backend.js';
@@ -150,6 +153,143 @@ describe('SessionManager child-session read model', () => {
 });
 
 describe('SessionManager graph operator provisioning', () => {
+  test('provisions a graph operator before its active supervisor turn returns', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const parentGate = makeGate();
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new TestBackend(ctx, parentGate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(10),
+    });
+    const parent = await manager.createSession(makeInput({ permissionMode: 'ask' }));
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'supervisor-turn', text: 'schedule graph work' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const sourceRun = (await runStore.listSessionRuns(parent.id))[0];
+    if (!sourceRun) throw new Error('Supervisor Run was not recorded');
+
+    let provisionSettled = false;
+    const provision = manager
+      .provisionAgentGraphOperator({
+        graphId: 'graph-active-supervisor',
+        workId: `graph_work_${'8'.repeat(32)}`,
+        agentId: LOCAL_READ_AGENT_ID,
+        operatorId: `graph_operator_${'9'.repeat(32)}`,
+        source: {
+          sessionId: parent.id,
+          runId: sourceRun.runId,
+          turnId: sourceRun.turnId,
+          toolCallId: 'schedule-tool',
+        },
+        edges: [],
+        expectedScheduleRevision: 1,
+      })
+      .finally(() => {
+        provisionSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(provisionSettled).toBe(true);
+    expect((await provision).created).toBe(true);
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
+  test('serializes graph operator provisioning with parent permission narrowing', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(20),
+      shellRuns: {
+        async terminateSession() {
+          return undefined;
+        },
+        async commitSessionClose() {},
+        rollbackSessionClose() {},
+        resumeSession() {},
+      } as never,
+    });
+    const parent = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+    await runStore.createRun(
+      makeRunHeader({
+        sessionId: parent.id,
+        runId: 'supervisor-run',
+        turnId: 'supervisor-turn',
+      }),
+    );
+    const provisionStarted = makeGate();
+    const releaseProvision = makeGate();
+    store.nextGraphOperatorProvisionGate = {
+      started: provisionStarted,
+      release: releaseProvision,
+    };
+
+    const provision = manager.provisionAgentGraphOperator({
+      graphId: 'graph-config-fence',
+      workId: `graph_work_${'a'.repeat(32)}`,
+      agentId: LOCAL_READ_AGENT_ID,
+      operatorId: `graph_operator_${'b'.repeat(32)}`,
+      source: {
+        sessionId: parent.id,
+        runId: 'supervisor-run',
+        turnId: 'supervisor-turn',
+        toolCallId: 'schedule-tool',
+      },
+      edges: [],
+      expectedScheduleRevision: 1,
+    });
+    await provisionStarted.promise;
+
+    let transitionSettled = false;
+    const transition = manager
+      .transitionSessionConfiguration(parent.id, {
+        expectedRevision: 1,
+        configuration: {
+          backend: parent.backend,
+          llmConnectionSlug: parent.llmConnectionSlug,
+          connectionLocked: true,
+          model: parent.model,
+          thinkingLevel: parent.thinkingLevel,
+          permissionMode: 'ask',
+          collaborationMode: parent.collaborationMode ?? 'agent',
+          orchestrationMode: parent.orchestrationMode ?? 'default',
+        },
+      })
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+      .finally(() => {
+        transitionSettled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(transitionSettled).toBe(false);
+
+    releaseProvision.release();
+    const provisioned = await provision;
+    const transitionResult = await transition;
+    expect(transitionResult.ok).toBe(false);
+    if (transitionResult.ok) throw new Error('Configuration transition unexpectedly committed');
+    assert.ok(transitionResult.error instanceof SessionConfigurationTransitionError);
+    expect(transitionResult.error.code).toBe('operation_conflict');
+    expect((await store.readHeader(parent.id)).permissionMode).toBe('bypass');
+    expect(provisioned.header.permissionMode).toBe('bypass');
+  });
+
   test('snapshots a catalog agent into a metadata-only child with reserved activation ids', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -3705,6 +3845,161 @@ describe('SessionManager manual compaction', () => {
     expect(builds).toBe(2);
   });
 
+  test('configuration transitions fence active runs and unavailable resource side effects', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const kernel = new DelegatingRuntimeKernel();
+    const manager = new SessionManager({
+      store,
+      backends: new BackendRegistry(),
+      newId: nextId(),
+      now: nextNow(26_400),
+      runtimeKernel: kernel,
+    });
+    const session = await manager.createSession(
+      makeInput({ permissionMode: 'bypass', orchestrationMode: 'default' }),
+    );
+    const baseConfiguration = {
+      backend: session.backend,
+      llmConnectionSlug: session.llmConnectionSlug,
+      connectionLocked: true,
+      model: session.model,
+      thinkingLevel: session.thinkingLevel,
+      permissionMode: session.permissionMode,
+      collaborationMode: session.collaborationMode ?? 'agent',
+      orchestrationMode: 'graph' as const,
+    };
+
+    kernel.activeRuns = true;
+    await assert.rejects(
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: 1,
+        configuration: baseConfiguration,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.equal(error.code, 'session_busy');
+        return true;
+      },
+    );
+    assert.deepEqual(kernel.disposed, []);
+
+    kernel.activeRuns = false;
+    const committed = await manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 1,
+      configuration: baseConfiguration,
+    });
+    assert.equal(committed.revision, 2);
+    assert.equal(committed.header.orchestrationMode, 'graph');
+    assert.deepEqual(kernel.disposed, [session.id]);
+
+    await assert.rejects(
+      manager.transitionSessionConfiguration(session.id, {
+        expectedRevision: 2,
+        configuration: {
+          ...baseConfiguration,
+          permissionMode: 'explore',
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof SessionConfigurationTransitionError);
+        assert.equal(error.code, 'operation_unavailable');
+        return true;
+      },
+    );
+    assert.deepEqual(kernel.disposed, [session.id]);
+  });
+
+  test('configuration transitions reject a claimed turn without waiting for it to settle', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const readStarted = makeGate();
+    const releaseRead = makeGate();
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => new TestBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      backends,
+      newId: nextId(),
+      now: nextNow(26_450),
+    });
+    const session = await manager.createSession(makeInput({ orchestrationMode: 'default' }));
+    store.nextReadHeaderGate = { started: readStarted, release: releaseRead };
+
+    const turn = drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'start' }));
+    await readStarted.promise;
+    const transitionResult = await manager
+      .transitionSessionConfiguration(session.id, {
+        expectedRevision: 1,
+        configuration: {
+          backend: session.backend,
+          llmConnectionSlug: session.llmConnectionSlug,
+          connectionLocked: true,
+          model: session.model,
+          thinkingLevel: session.thinkingLevel,
+          permissionMode: session.permissionMode,
+          collaborationMode: session.collaborationMode ?? 'agent',
+          orchestrationMode: 'graph',
+        },
+      })
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    assert.equal(transitionResult.ok, false);
+    if (transitionResult.ok) assert.fail('Configuration transition unexpectedly committed');
+    assert.ok(transitionResult.error instanceof SessionConfigurationTransitionError);
+    assert.equal(transitionResult.error.code, 'session_busy');
+    assert.equal((await store.readHeader(session.id)).orchestrationMode, 'default');
+
+    releaseRead.release();
+    await turn;
+  });
+
+  test('a claimed turn waits for an in-flight session mutation before reading its header', async () => {
+    const store = new VersionedConfigurationMemorySessionStore();
+    const updateStarted = makeGate();
+    const releaseUpdate = makeGate();
+    const activatedModels: string[] = [];
+    const backends = new BackendRegistry();
+    backends.register('fake', (ctx) => {
+      activatedModels.push(ctx.header.model);
+      return new TestBackend(ctx);
+    });
+    const manager = new SessionManager({
+      store,
+      backends,
+      newId: nextId(),
+      now: nextNow(26_475),
+    });
+    const session = await manager.createSession(makeInput({ model: 'old-model' }));
+    store.nextConfigurationUpdateGate = {
+      started: updateStarted,
+      release: releaseUpdate,
+    };
+    const transition = manager.transitionSessionConfiguration(session.id, {
+      expectedRevision: 1,
+      configuration: {
+        backend: session.backend,
+        llmConnectionSlug: session.llmConnectionSlug,
+        connectionLocked: true,
+        model: 'new-model',
+        thinkingLevel: session.thinkingLevel,
+        permissionMode: session.permissionMode,
+        collaborationMode: session.collaborationMode ?? 'agent',
+        orchestrationMode: session.orchestrationMode ?? 'default',
+      },
+    });
+    await updateStarted.promise;
+
+    const turn = drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'start' }));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(activatedModels, []);
+
+    releaseUpdate.release();
+    await transition;
+    await turn;
+    assert.deepEqual(activatedModels, ['new-model']);
+  });
+
   test('backend refresh propagates delayed disposal failure after an active turn settles', async () => {
     const store = new MemorySessionStore();
     const sendGate = makeGate();
@@ -4061,6 +4356,7 @@ describe('SessionManager permission mode updates', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(900),
+      shellRuns: noOpShellRunProcessManager(),
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
 
@@ -4083,6 +4379,7 @@ describe('SessionManager permission mode updates', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(925),
+      shellRuns: noOpShellRunProcessManager(),
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
     store.failAppends = true;
@@ -4100,6 +4397,7 @@ describe('SessionManager permission mode updates', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(950),
+      shellRuns: noOpShellRunProcessManager(),
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
 
@@ -4118,6 +4416,7 @@ describe('SessionManager permission mode updates', () => {
       backends: new BackendRegistry(),
       newId: nextId(),
       now: nextNow(975),
+      shellRuns: noOpShellRunProcessManager(),
     });
     const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
     store.forceBoundary(session.id, { kind: 'bypass', revision: 4 });
@@ -18038,6 +18337,20 @@ class DelegatingRuntimeKernel implements RuntimeKernelLike {
     };
   }
 
+  async runSessionAdmissionMutation<T>(
+    _sessionIds: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    return operation();
+  }
+
+  async runSessionQuiescentMutation<T>(
+    _sessionIds: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    return operation();
+  }
+
   async *startTurn(
     sessionId: string,
     input: Parameters<RuntimeKernelLike['startTurn']>[1],
@@ -19661,6 +19974,7 @@ class MemorySessionStore implements SessionStore {
   failAfterNextAppendMessage: ((message: StoredMessage) => boolean) | undefined;
   disposeCount = 0;
   nextReadHeaderGate: { started: Gate; release: Gate } | undefined;
+  nextGraphOperatorProvisionGate: { started: Gate; release: Gate } | undefined;
   generatedTitleAttempted: Gate | undefined;
 
   async createSubagent(
@@ -19700,6 +20014,12 @@ class MemorySessionStore implements SessionStore {
     _expectedRevision: number,
     initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
+    const gate = this.nextGraphOperatorProvisionGate;
+    if (gate) {
+      this.nextGraphOperatorProvisionGate = undefined;
+      gate.started.release();
+      await gate.release.promise;
+    }
     const header = await this.create(input, initialBoundary);
     return {
       header,
@@ -19968,6 +20288,65 @@ class MemorySessionStore implements SessionStore {
     this.headers.delete(sessionId);
     this.messages.delete(sessionId);
     this.executionBoundaries.delete(sessionId);
+  }
+}
+
+class VersionedConfigurationMemorySessionStore extends MemorySessionStore {
+  private readonly revisions = new Map<string, number>();
+  nextConfigurationUpdateGate: { started: Gate; release: Gate } | undefined;
+
+  override async create(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionHeader> {
+    const header = await super.create(input, initialBoundary);
+    this.revisions.set(header.id, 1);
+    return header;
+  }
+
+  async readHeaderRecordSnapshot(sessionId: string): Promise<VersionedSessionHeader> {
+    return {
+      header: await this.readHeader(sessionId),
+      revision: this.revisions.get(sessionId) ?? 1,
+      committedAt: 1,
+    };
+  }
+
+  async updateSessionConfiguration(
+    sessionId: string,
+    input: SessionConfigurationStoreUpdate,
+  ): Promise<VersionedSessionHeader> {
+    const gate = this.nextConfigurationUpdateGate;
+    if (gate) {
+      this.nextConfigurationUpdateGate = undefined;
+      gate.started.release();
+      await gate.release.promise;
+    }
+    const revision = this.revisions.get(sessionId) ?? 1;
+    if (revision !== input.expectedVersion) {
+      throw new Error('injected configuration revision conflict');
+    }
+    await super.setExecutionBoundaryKind(
+      sessionId,
+      input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed',
+      {
+        permissionMode: input.configuration.permissionMode,
+        labels: input.configuration.labels,
+      },
+    );
+    const header = await super.updateHeader(sessionId, {
+      ...input.configuration,
+      labels: [...input.configuration.labels],
+      ...(input.lifecycle.kind === 'clear_connection_block'
+        ? {
+            status: 'active',
+            blockedReason: undefined,
+            statusUpdatedAt: input.lifecycle.statusUpdatedAt,
+          }
+        : {}),
+    });
+    this.revisions.set(sessionId, revision + 1);
+    return { header, revision: revision + 1, committedAt: revision + 1 };
   }
 }
 
@@ -20524,6 +20903,17 @@ function hostedRootAuthority(): RuntimeHostedRootAuthority {
     stopRoot: async () => {},
     stopSession: async () => {},
   };
+}
+
+function noOpShellRunProcessManager(): ShellRunProcessManager {
+  return {
+    async terminateSession(sessionId: string) {
+      return { sessionId, token: Symbol('test') };
+    },
+    async commitSessionClose() {},
+    rollbackSessionClose() {},
+    resumeSession() {},
+  } as unknown as ShellRunProcessManager;
 }
 
 function makeInput(overrides: Partial<CreateSessionInput> = {}): CreateSessionInput {

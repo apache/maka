@@ -170,9 +170,7 @@ export function AboutSettingsPage() {
       </SettingsRows>
 
       <div className="settingsActionRow">
-        <Button type="button" disabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()}>
-          {copyingEnvSummary ? copy.copying : copy.copyEnvironment}
-        </Button>
+        <Button variant="primary" isDisabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()} label={copyingEnvSummary ? copy.copying : copy.copyEnvironment} />
       </div>
       <p id={envSummaryHelpId} className="settingsHelpText">
         {copy.copyHelp}

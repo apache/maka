@@ -17,7 +17,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core';
 import {
-  Button,
+  buttonVariants,
+  cn,
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -153,9 +154,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
     <div className="maka-browser-panel" aria-label={copy.panelAria}>
       <div className="maka-browser-toolbar">
         <Tooltip>
+          {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
           <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             aria-label={copy.backAria}
             disabled={!state.canGoBack}
             onClick={() => void window.maka.browser.back(sessionId)}
@@ -165,9 +166,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           <TooltipContent>{copy.back}</TooltipContent>
         </Tooltip>
         <Tooltip>
+          {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
           <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             aria-label={copy.forwardAria}
             disabled={!state.canGoForward}
             onClick={() => void window.maka.browser.forward(sessionId)}
@@ -177,9 +178,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           <TooltipContent>{copy.forward}</TooltipContent>
         </Tooltip>
         <Tooltip>
+          {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
           <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             aria-label={state.loading ? copy.stopAria : copy.refreshAria}
             disabled={!state.hasPage && !state.loading}
             onClick={() =>
@@ -213,9 +214,9 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           }}
         />
         <Tooltip>
+          {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
           <TooltipTrigger
-            render={<Button variant="quiet" size="icon-sm" />}
-            type="button"
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             aria-label={copy.closeAria}
             onClick={() => void window.maka.browser.close(sessionId)}
           >

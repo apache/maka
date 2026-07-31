@@ -96,7 +96,10 @@ describe('Daily Review copy feedback contract', () => {
     const css = await readRendererContractCss();
     const panelBlock = extractFunctionBlock(ui, 'DailyReviewPanel');
 
-    assert.match(panelBlock, /<UiButton[\s\S]*?variant="ghost"[\s\S]*?size="icon-sm"[\s\S]*?className="maka-daily-review-stepper"/);
+    assert.match(
+      panelBlock,
+      /<IconButton[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className="maka-daily-review-stepper"/,
+    );
     assert.match(panelBlock, /<Segmented[\s\S]*?className="maka-daily-review-range-tabs"/);
     // PR3 (#527) added min-w-[Nrem] utilities to the copy/append/save buttons
     // (text-swap width lock for 复制/已复制 feedback). Match each semantic
@@ -317,7 +320,7 @@ describe('Daily Review copy feedback contract', () => {
       /finally \{\s*if \(runModeGuard\.current === mode\) \{\s*runModeGuard\.finish\(\);\s*\}\s*if \(mountedRef\.current\) setRunningMode\(null\);/,
       'Manual run owners must be released by the matching request only',
     );
-    assert.match(pageBlock, /disabled=\{runningMode !== null\}/);
+    assert.match(pageBlock, /isDisabled=\{runningMode !== null\}/); // #1565 PR 3: Astryx Button uses isDisabled
     assert.equal(getDailyReviewSettingsCopy('zh').runSuccess.daily, '已生成每日回顾');
     assert.equal(getDailyReviewSettingsCopy('en').runSuccess.daily, 'Daily Review generated');
   });

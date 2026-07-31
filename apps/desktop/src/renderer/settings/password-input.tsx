@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type Ref } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
-import { Button, Input, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  IconButton,
+  Input,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { useActionGuard } from './use-action-guard';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -89,30 +95,26 @@ export function PasswordInput(props: {
       />
       <div className="settingsPasswordActions">
         {props.value && !props.disabled && (
-          <Button
-            type="button"
-            variant="quiet"
-            size="icon-sm"
-            disabled={copying}
+          <IconButton
+            variant="ghost"
+            size="sm"
+            isDisabled={copying}
             onClick={() => void copyValue()}
-            aria-label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
-          >
-            {justCopied
+            label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
+            icon={justCopied
               ? <Check size={16} aria-hidden="true" />
               : <Copy size={16} aria-hidden="true" />}
-          </Button>
+          />
         )}
-        <Button
-          type="button"
-          variant="quiet"
-          size="icon-sm"
+        <IconButton
+          variant="ghost"
+          size="sm"
           onClick={() => setVisible((current) => !current)}
-          disabled={props.disabled}
-          aria-label={visible ? copy.hide : copy.show}
+          isDisabled={props.disabled}
+          label={visible ? copy.hide : copy.show}
           aria-pressed={visible}
-        >
-          {visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
-        </Button>
+          icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+        />
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Plus, Search, Trash2 } from '@maka/ui/icons';
-import { Button } from '../src/ui.js';
+import { Button } from '../src/index.js';
 import { Spinner } from '../src/primitives/spinner.js';
 
 const meta = {
@@ -239,11 +239,10 @@ export const PrimaryActions: Story = {
           variant
         </h3>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <Button>Action primary</Button>
-          <Button variant="secondary">Secondary</Button>
-          <Button variant="ghost">Ghost</Button>
-          <Button variant="quiet">Quiet</Button>
-          <Button variant="destructive">Destructive</Button>
+          <Button variant="primary" label="Action primary" />
+          <Button variant="secondary" label="Secondary" />
+          <Button variant="ghost" label="Ghost" />
+          <Button variant="destructive" label="Destructive" />
         </div>
       </div>
 
@@ -252,14 +251,10 @@ export const PrimaryActions: Story = {
           disabled
         </h3>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <Button disabled>Action primary</Button>
-          <Button variant="secondary" disabled>
-            Secondary
-          </Button>
-          <Button variant="ghost" disabled>Ghost</Button>
-          <Button variant="destructive" disabled>
-            Destructive
-          </Button>
+          <Button variant="primary" isDisabled label="Action primary" />
+          <Button variant="secondary" isDisabled label="Secondary" />
+          <Button variant="ghost" isDisabled label="Ghost" />
+          <Button variant="destructive" isDisabled label="Destructive" />
         </div>
       </div>
 
@@ -268,18 +263,10 @@ export const PrimaryActions: Story = {
           size + icon
         </h3>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <Button size="sm">
-            <Plus /> Small
-          </Button>
-          <Button size="md">
-            <Search /> Medium
-          </Button>
-          <Button size="icon" aria-label="添加">
-            <Plus />
-          </Button>
-          <Button size="icon-sm" variant="secondary" aria-label="删除">
-            <Trash2 />
-          </Button>
+          <Button variant="primary" size="sm" icon={<Plus />} label="Small" />
+          <Button variant="primary" icon={<Search />} label="Medium" />
+          <Button variant="primary" isIconOnly icon={<Plus />} label="添加" />
+          <Button variant="secondary" size="sm" isIconOnly icon={<Trash2 />} label="删除" />
         </div>
       </div>
 
@@ -288,17 +275,9 @@ export const PrimaryActions: Story = {
           loading
         </h3>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <Button disabled>
-            <Spinner style={{ height: 14, width: 14 }} />
-            <span>Saving</span>
-          </Button>
-          <Button variant="secondary" disabled>
-            <Spinner style={{ height: 14, width: 14 }} />
-            <span>Syncing</span>
-          </Button>
-          <Button variant="secondary" disabled aria-label="删除">
-            <Trash2 />
-          </Button>
+          <Button variant="primary" isDisabled icon={<Spinner style={{ height: 14, width: 14 }} />} label="Saving" />
+          <Button variant="secondary" isDisabled icon={<Spinner style={{ height: 14, width: 14 }} />} label="Syncing" />
+          <Button variant="secondary" isDisabled isIconOnly icon={<Trash2 />} label="删除" />
         </div>
       </div>
     </section>

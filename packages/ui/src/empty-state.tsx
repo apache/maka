@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import type { Search } from './icons.js';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './primitives/empty.js';
-import { Button as UiButton, cn } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { cn } from './ui.js';
 
 type EmptyStateIcon = typeof Search;
 
@@ -77,23 +78,20 @@ export function EmptyState(props: EmptyStateProps) {
           {props.cta && (
             <UiButton
               className="maka-empty-state-cta"
-              type="button"
+              variant="primary"
               onClick={props.cta.onClick}
-              disabled={props.cta.disabled}
-            >
-              {props.cta.label}
-            </UiButton>
+              isDisabled={props.cta.disabled}
+              label={props.cta.label}
+            />
           )}
           {props.secondaryCta && (
             <UiButton
               variant="ghost"
               className="maka-empty-state-cta"
-              type="button"
               onClick={props.secondaryCta.onClick}
-              disabled={props.secondaryCta.disabled}
-            >
-              {props.secondaryCta.label}
-            </UiButton>
+              isDisabled={props.secondaryCta.disabled}
+              label={props.secondaryCta.label}
+            />
           )}
         </EmptyContent>
       )}

@@ -58,7 +58,7 @@ import {
   type ModelMessage,
 } from '@maka/runtime';
 import {
-  createAgentRunStore,
+  createSqliteAgentRunStore,
   createAttachmentByteReader,
   createArtifactStore,
   createAutomationStore,
@@ -70,7 +70,7 @@ import {
   createReadImageSnapshotter,
   createSessionStore,
   createSettingsStore,
-  createShellRunStore,
+  createSqliteShellRunStore,
   assertSessionBundleRootLayout,
   type ForeignSessionStore,
   persistProviderRequestCaptureArtifact,
@@ -222,16 +222,19 @@ export async function createMakaCliRuntimeContext(
   }
   await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const store = createSessionStore(stateRoot);
-  const runStore = createAgentRunStore(stateRoot);
+  const runStore = createSqliteAgentRunStore(stateRoot);
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: stateRoot,
-    // Graph execution can dispatch durable tools from both the supervisor and
-    // child agents. Those tool facts must cross the SQLite atomic boundary;
-    // the legacy JSONL event store intentionally rejects them.
-    sqliteCanonical: agentGraphEnabled || process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  const shellRunStore = createShellRunStore(stateRoot);
+  const shellRunStore = createSqliteShellRunStore(stateRoot);
+  await Promise.all([runStore.ready?.(), shellRunStore.ready()]).catch(async (error) => {
+    await store.close?.().catch(() => {});
+    runtimePersistence.close();
+    runStore.close?.();
+    shellRunStore.close();
+    throw error;
+  });
   const artifactStore = createArtifactStore(stateRoot);
   const agentGraphControlStore = agentGraphEnabled
     ? createAgentGraphControlStore(stateRoot)
@@ -1097,6 +1100,8 @@ export async function createMakaCliRuntimeContext(
       shellRunListeners.clear();
       await store.close?.();
       runtimePersistence.close();
+      runStore.close?.();
+      shellRunStore.close();
     },
   };
 }

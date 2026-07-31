@@ -9,6 +9,10 @@ import {
 import { readHostRegistration, RuntimeHostRegistrationError } from '../control/registration.js';
 import {
   decodeHostFrame,
+  isClientCapabilityHostFrameKind,
+  type ClientCapabilityHostFrame,
+  type ClientCapabilityReplaceResult,
+  type ClientCapabilityUnregisterResult,
   type ClientSurface,
   type HostOperationErrorCode,
   type HostIncompatible,
@@ -37,6 +41,8 @@ import {
   RuntimeHostSubscriptionError,
   type RuntimeHostSessionSubscription,
 } from './session-subscription.js';
+import { ClientCapabilityChannel } from './client-capability-channel.js';
+import type { ClientCapabilityProvider } from './client-capability.js';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
@@ -118,11 +124,19 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<RuntimeHostSessionSubscription>;
   close(): Promise<void>;
+  replaceClientCapabilities(
+    provider: ClientCapabilityProvider,
+    timeoutMs?: number,
+  ): Promise<ClientCapabilityReplaceResult>;
+  unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
 }
 
 export type DirectRequestOperationKey = Exclude<
   OperationKey,
-  'subscription.open' | 'subscription.close'
+  | 'subscription.open'
+  | 'subscription.close'
+  | 'client.capability.replace'
+  | 'client.capability.unregister'
 >;
 
 export class RuntimeHostOperationError extends Error {
@@ -153,6 +167,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #pendingRequests = new Map<string, PendingRequest>();
   readonly #subscriptions = new Map<string, ClientSessionSubscription>();
   readonly #retiredSubscriptionIds = new Set<string>();
+  readonly #clientCapabilities: ClientCapabilityChannel;
   #terminalError: Error | undefined;
 
   constructor(
@@ -168,6 +183,19 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.connectionId = accepted.connectionId;
     this.selectedProtocol = accepted.selectedProtocol;
     this.closed = this.#transport.closed;
+    this.#clientCapabilities = new ClientCapabilityChannel({
+      write: (frame) => this.#transport.write(frame),
+      replace: (input, timeoutMs) =>
+        this.#requestOperation('client.capability.replace', input, timeoutMs, (result) => result),
+      unregister: (input, timeoutMs) =>
+        this.#requestOperation(
+          'client.capability.unregister',
+          input,
+          timeoutMs,
+          (result) => result,
+        ),
+      onFailure: (error) => this.#fail(error),
+    });
     void this.#readResponses();
   }
 
@@ -176,6 +204,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     input: OperationInput<K>,
     timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
+    if (isClientCapabilityMutation(operation)) {
+      return Promise.reject(
+        new Error('Client Capability mutations require the dedicated capability channel'),
+      );
+    }
     return this.#requestOperation(
       operation,
       input,
@@ -228,7 +261,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         timer,
       });
     });
-    const frame = { requestId, operation, input: canonicalInput } as RequestFrame;
+    const frame = {
+      requestId,
+      operation,
+      input: canonicalInput,
+    } as RequestFrame;
     void this.#transport.write(frame).catch((error: unknown) => this.#fail(asError(error)));
     return result;
   }
@@ -288,8 +325,22 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async close(): Promise<void> {
+    this.#clientCapabilities.close(new Error('Runtime Host connection closed by Client'));
     this.#transport.destroy();
     await this.#transport.closed;
+  }
+
+  async replaceClientCapabilities(
+    provider: ClientCapabilityProvider,
+    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+  ): Promise<ClientCapabilityReplaceResult> {
+    return this.#clientCapabilities.replace(provider, timeoutMs);
+  }
+
+  async unregisterClientCapabilities(
+    timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+  ): Promise<ClientCapabilityUnregisterResult> {
+    return this.#clientCapabilities.unregister(timeoutMs);
   }
 
   async #readResponses(): Promise<void> {
@@ -297,6 +348,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       while (true) {
         const frame = decodeHostFrame(await this.#transport.read(0));
         if ('kind' in frame) {
+          if (isClientCapabilityHostFrameKind(frame.kind)) {
+            this.#clientCapabilities.accept(frame as ClientCapabilityHostFrame);
+            continue;
+          }
           switch (frame.kind) {
             case 'subscription.session_projection':
             case 'subscription.session_delta':
@@ -412,8 +467,13 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }
     this.#subscriptions.clear();
     this.#retiredSubscriptionIds.clear();
+    this.#clientCapabilities.close(error);
     this.#transport.destroy();
   }
+}
+
+function isClientCapabilityMutation(operation: unknown): boolean {
+  return operation === 'client.capability.replace' || operation === 'client.capability.unregister';
 }
 
 export async function connectRuntimeHost(
@@ -538,6 +598,13 @@ export async function connectResolvedRuntimeHost(
     const handshake = decodeHostFrame(await transport.read(0));
     if (!('kind' in handshake))
       throw new Error('Runtime Host returned an operation response before handshake');
+    if (
+      handshake.kind !== 'accepted' &&
+      handshake.kind !== 'incompatible' &&
+      handshake.kind !== 'draining'
+    ) {
+      throw new Error('Runtime Host returned a non-handshake frame before acceptance');
+    }
     if (handshake.hostEpoch !== registration.hostEpoch) {
       transport.destroy();
       return { kind: 'unavailable', reason: 'epoch_mismatch', registration };

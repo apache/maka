@@ -8,6 +8,8 @@
 export {
   SessionManager,
   BackendRegistry,
+  SessionConfigurationRevisionConflictError,
+  SessionConfigurationTransitionError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
@@ -17,6 +19,9 @@ export type {
   PlanSafeBoundaryContinuationInput,
   SessionManagerDeps,
   RuntimeContinuationLifecycleEvent,
+  SessionConfigurationStoreUpdate,
+  SessionConfigurationTransitionRequest,
+  SessionConfigurationTransitionErrorCode,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,
@@ -308,7 +313,11 @@ export type {
 } from './provider-request-telemetry.js';
 export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
-export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
+export type {
+  McpToolProvider,
+  McpToolInvocationContext,
+  BuildMcpToolsOptions,
+} from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
 export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';

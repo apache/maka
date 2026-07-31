@@ -29,7 +29,7 @@ const groups: ModelMenuGroup[] = [
 ];
 
 describe('ModelPicker filtering', () => {
-  it('matches model labels and group headings with the same Base UI item data', () => {
+  it('matches model labels and group headings with the same picker option data', () => {
     const pickerGroups = buildModelPickerGroups(groups);
     const options = pickerGroups.flatMap((group) => group.items);
 

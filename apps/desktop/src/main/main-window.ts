@@ -564,7 +564,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
         title: document.title,
         appFramePresent: Boolean(document.querySelector('.appFrame')),
         searchModalPresent: Boolean(document.querySelector('.maka-search-modal')),
-        searchModalBackdropPresent: Boolean(document.querySelector('.maka-dialog-backdrop')),
+        searchModalBackdropPresent: Boolean(document.querySelector('dialog.maka-search-modal[open]')),
         errorBoundaryPresent: Boolean(document.querySelector('.maka-error-surface')),
         bodyTextLength: document.body?.innerText?.trim().length ?? 0,
         bodyTextSample: document.body?.innerText?.trim().slice(0, 240) ?? '',

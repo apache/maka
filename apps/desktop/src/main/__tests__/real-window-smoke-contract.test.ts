@@ -54,17 +54,19 @@ describe('real Electron window smoke gate', () => {
       scripts?: Record<string, string>;
     };
     const scripts = pkg.scripts ?? {};
-    // One place defines what a launch builds; every launcher points at it.
-    // Asserting the chain here and the reference below keeps this a contract
-    // about what gets built without re-stating the chain per launcher — which
-    // is what let `e2e` drift into repeating it verbatim.
-    const chain = scripts['build:with-deps'] ?? '';
-    assert.match(chain, /npm --workspace @maka\/core run build/);
-    assert.match(chain, /npm --workspace @maka\/storage run build/);
-    assert.match(chain, /npm --workspace @maka\/runtime run build/);
-    assert.match(chain, /npm --workspace @maka\/ui run build/);
-    assert.match(chain, /&& npm run build$/, 'the chain must end by building the desktop app itself');
-    for (const launcher of ['smoke:real-window', 'smoke:programmatic-window', 'launch:fixture', 'e2e']) {
+    const workspaceBuild = scripts['build:workspace-deps'] ?? '';
+    assert.match(workspaceBuild, /npm --workspace @maka\/core run build/);
+    assert.match(workspaceBuild, /npm --workspace @maka\/storage run build/);
+    assert.match(workspaceBuild, /npm --workspace @maka\/runtime run build/);
+    assert.match(workspaceBuild, /npm --workspace @maka\/runtime-host run build/);
+    assert.match(workspaceBuild, /npm --workspace @maka\/ui run build/);
+    assert.equal(scripts['build:with-deps'], 'npm run build:workspace-deps && npm run build');
+    for (const launcher of [
+      'smoke:real-window',
+      'smoke:programmatic-window',
+      'launch:fixture',
+      'e2e',
+    ]) {
       assert.match(
         scripts[launcher] ?? '',
         /npm run build:with-deps &&/,

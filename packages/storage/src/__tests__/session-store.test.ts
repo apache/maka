@@ -192,17 +192,7 @@ describe('FileSessionStore CRUD', () => {
         () => store.list({ subagentParentSessionId: parent.id }),
         /require SQLite session metadata/,
       );
-      await assert.rejects(
-        () =>
-          store.createSubagent(
-            makeInput({
-              subagentParent: makeSubagentParent(parent.id),
-              subagentRuntime: makeSubagentRuntime(),
-              subagentSpawn: makeSubagentSpawn(),
-            }),
-          ),
-        /requires the SQLite metadata control plane/,
-      );
+      assert.equal('createSubagent' in store, false);
     });
   });
 

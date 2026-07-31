@@ -5,29 +5,41 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createBypassExecutionBoundary, type RuntimeEvent } from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
-import type { BackendFactoryContext, MakaTool, MakaToolContext, ScannedSkill } from '@maka/runtime';
+import type {
+  BackendFactoryContext,
+  MakaTool,
+  MakaToolContext,
+  RunTraceEvent,
+  ScannedSkill,
+} from '@maka/runtime';
+import { createSqliteRuntimeStore } from '@maka/storage';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
+import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
+import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 
 const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
 const RESPONSE_TEXT = 'Hosted real-model execution completed.';
 const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
+const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 
 test('backend creation aborts a stalled canonical connection read', async () => {
   const abort = new AbortController();
@@ -71,6 +83,262 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
     name: 'AbortError',
     message: 'Pricing resolution was interrupted',
   });
+});
+
+test('backend creation does not acquire Client Capabilities beyond a bound tool ceiling', async () => {
+  let snapshotCalls = 0;
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      tools: [
+        {
+          name: 'bounded_tool',
+          description: 'The exact activation ceiling.',
+          parameters: {},
+          impl: async () => 'bounded',
+        },
+      ],
+      snapshotClientCapabilities: () => {
+        snapshotCalls += 1;
+        throw new Error('Client Capability snapshot must not be acquired');
+      },
+    }),
+  );
+  try {
+    assert.equal(snapshotCalls, 0);
+  } finally {
+    await backend.dispose();
+  }
+});
+
+test('production backend creation continues after a Session Client Capability is lost', async () => {
+  const coordinator = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
+  const context: ConnectionContext = {
+    hostEpoch: 'backend-creation-epoch',
+    connectionId: 'provider-a',
+    surface: 'desktop',
+    principal: 'local_os_user',
+    acquireResidency: () => ({ release() {} }),
+  };
+  const replaced = await coordinator.handlers['client.capability.replace'](
+    {
+      registrationId: 'registration-a',
+      offers: [
+        {
+          offerId: 'browser',
+          version: '0',
+          affinity: 'session',
+          label: 'Browser',
+          tools: [
+            {
+              serverId: 'browser',
+              name: 'navigate',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        },
+      ],
+    },
+    context,
+  );
+  assert.equal(replaced.ok, true);
+  assert.deepEqual(await coordinator.bindSession('backend-creation-session', 'provider-a'), {
+    ok: true,
+  });
+  provider.close();
+
+  const backend = await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () => readyExecutionConnection(),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+      snapshotClientCapabilities: () => coordinator.snapshotForSession('backend-creation-session'),
+    }),
+  );
+  try {
+    assert.equal(coordinator.snapshotForSession('backend-creation-session'), undefined);
+  } finally {
+    await backend.dispose();
+    coordinator.close();
+  }
+});
+
+test('production backend preserves coordinator Client Capability semantics across load_tools and T1', async () => {
+  const sessionId = 'backend-creation-session';
+  const turnId = 'client-capability-turn';
+  const runId = 'client-capability-run';
+  const provider = await startProvider();
+  const store = createSqliteRuntimeStore(':memory:');
+  const trace: RunTraceEvent[] = [];
+  const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
+  const coordinator = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  let connection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    connection = coordinator.attachConnection('client-capability-provider', {
+      send: async (frame) => {
+        if (frame.kind !== 'client.capability.call') return;
+        calls.push(frame);
+        queueMicrotask(() => {
+          connection?.accept({
+            kind: 'client.capability.accepted',
+            invocationId: frame.invocationId,
+          });
+          connection?.accept({
+            kind: 'client.capability.result',
+            invocationId: frame.invocationId,
+            result: {
+              content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+            },
+          });
+        });
+      },
+    });
+    const context = {
+      hostEpoch: 'client-capability-host-epoch',
+      connectionId: 'client-capability-provider',
+      surface: 'tui',
+      principal: 'local_os_user',
+      acquireResidency: () => ({ release() {} }),
+    } satisfies ConnectionContext;
+    const registered = await coordinator.handlers['client.capability.replace'](
+      {
+        registrationId: 'client-capability-registration',
+        offers: [
+          {
+            offerId: 'hosted-browser',
+            version: '0',
+            affinity: 'session',
+            label: 'Hosted Browser',
+            tools: [
+              {
+                serverId: 'hosted_browser',
+                name: 'navigate',
+                description: 'Navigate the hosted browser.',
+                inputSchema: {
+                  type: 'object',
+                  properties: { url: { type: 'string' } },
+                  required: ['url'],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      context,
+    );
+    assert.equal(registered.ok, true);
+    assert.deepEqual(await coordinator.bindSession(sessionId, context.connectionId), { ok: true });
+    const snapshot = coordinator.snapshotForSession(sessionId);
+    assert.ok(snapshot);
+    if (!snapshot) return;
+    const group = snapshot.groups[0];
+    const tool = snapshot.tools[0];
+    snapshot.release();
+    assert.ok(group);
+    assert.ok(tool);
+    if (!group || !tool) throw new Error('Client Capability snapshot was empty');
+    provider.configureClientCapability({ groupId: group.id, toolName: tool.name });
+
+    const head: RuntimeEvent = {
+      id: 'client-capability-head',
+      invocationId: runId,
+      runId,
+      sessionId,
+      turnId,
+      ts: 1,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Use the connected Client Capability.' },
+    };
+    await store.appendRuntimeEvent(sessionId, runId, head);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        snapshotClientCapabilities: () => coordinator.snapshotForSession(sessionId),
+        executionBoundary: createBypassExecutionBoundary(0),
+        loadTurnRuntimeEvents: () => store.readImmutableRuntimeEvents(sessionId, runId),
+        recordRunTrace: (event) => {
+          trace.push(event);
+        },
+        runtimeCommitSink: store,
+      }),
+    );
+    const events = [];
+    for await (const event of backend.send({
+      invocationId: runId,
+      runId,
+      turnId,
+      headAnchorRuntimeEvent: head,
+      text: 'Use the connected Client Capability.',
+      context: [],
+      runtimeContext: [head],
+    })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      events.find((event) => event.type === 'complete')?.stopReason,
+      'end_turn',
+      JSON.stringify({ events, requests: provider.requests, trace }),
+    );
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]?.arguments, {
+      url: 'https://example.test/client-capability',
+    });
+    assert.ok(
+      trace.some(
+        (event) =>
+          event.type === 'tool_started' &&
+          event.data?.toolName === tool.name &&
+          event.data?.categoryHint === 'client_capability',
+      ),
+    );
+    const runtimeEvents = await store.readImmutableRuntimeEvents(sessionId, runId);
+    assert.ok(
+      runtimeEvents.some(
+        (event) =>
+          event.actions?.toolDispatch?.toolName === tool.name &&
+          event.actions?.toolDispatch?.recoveryMode === 'outcome_unknown',
+      ),
+    );
+    assert.ok(
+      runtimeEvents.some(
+        (event) =>
+          event.content?.kind === 'function_response' &&
+          event.content.name === tool.name &&
+          JSON.stringify(event.content.result).includes(CLIENT_CAPABILITY_RESULT_TEXT),
+      ),
+    );
+    const providerToolSets = provider.requests
+      .filter((request) => request.body.stream === true)
+      .map((request) => toolNames(request.body));
+    assert.equal(providerToolSets.length, 3);
+    assert.ok(providerToolSets[0]?.includes('load_tools'));
+    assert.equal(providerToolSets[0]?.includes(tool.name), false);
+    assert.ok(providerToolSets[1]?.includes('load_tools'));
+    assert.ok(providerToolSets[1]?.includes(tool.name));
+    assert.ok(providerToolSets[2]?.includes(tool.name));
+  } finally {
+    connection?.close();
+    await backend?.dispose();
+    coordinator.close();
+    store.close();
+    await provider.close();
+  }
 });
 
 test('production Host executes a canonical ai-sdk Session against a real provider wire', async () => {
@@ -435,6 +703,97 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
   assert.equal(inventoryReads, 2);
 });
 
+test('Client Capability tools join the existing load_tools catalog without a parallel loader', () => {
+  const capabilityTool: MakaTool = {
+    name: 'mcp__opaque__inspect',
+    description: 'Fixture Client Capability tool.',
+    parameters: {},
+    categoryHint: 'client_capability',
+    impl: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+  };
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({
+        revision: 0,
+        policy: createDefaultRuntimePolicy(),
+      }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    clientCapabilities: {
+      tools: [capabilityTool],
+      groups: [
+        {
+          id: 'client_fixture',
+          label: 'Opaque fixture',
+          description: 'Loaded through the canonical tool connector.',
+          toolNames: [capabilityTool.name],
+        },
+      ],
+    },
+  });
+
+  assert.ok(composition.tools.includes(capabilityTool));
+  assert.deepEqual(
+    composition.toolAvailability.groups?.find((group) => group.id === 'client_fixture'),
+    {
+      id: 'client_fixture',
+      label: 'Opaque fixture',
+      description: 'Loaded through the canonical tool connector.',
+      toolNames: [capabilityTool.name],
+    },
+  );
+});
+
+test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
+  const boundTool: MakaTool = {
+    name: 'bounded_tool',
+    description: 'The only tool admitted for this activation.',
+    parameters: {},
+    impl: async () => 'bounded',
+  };
+  const capabilityTool: MakaTool = {
+    name: 'mcp__opaque__inspect',
+    description: 'A dynamic capability outside the exact ceiling.',
+    parameters: {},
+    categoryHint: 'client_capability',
+    impl: async () => 'capability',
+  };
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({
+        revision: 0,
+        policy: createDefaultRuntimePolicy(),
+      }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    boundTools: [boundTool],
+    clientCapabilities: {
+      tools: [capabilityTool],
+      groups: [
+        {
+          id: 'client_fixture',
+          label: 'Opaque fixture',
+          toolNames: [capabilityTool.name],
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual(composition.tools, [boundTool]);
+  assert.equal(
+    composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
+    false,
+  );
+});
+
 function skillFixture(id: string, description: string, content: string): ScannedSkill {
   return {
     ref: `project:agents:${id}`,
@@ -553,6 +912,12 @@ function backendCreationFixture(input: {
   abortSignal: AbortSignal;
   resolveExecutionConnection: () => Promise<unknown>;
   readPricing: () => Promise<unknown>;
+  tools?: readonly MakaTool[];
+  snapshotClientCapabilities?: () => unknown;
+  executionBoundary?: unknown;
+  loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
+  recordRunTrace?: (event: RunTraceEvent) => unknown;
+  runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
 }): HostAiSdkBackendInput {
   return {
     context: {
@@ -561,28 +926,70 @@ function backendCreationFixture(input: {
       header: {
         llmConnectionSlug: 'backend-creation-connection',
         model: MODEL_ID,
+        cwd: '/workspace',
+        permissionMode: 'bypass',
       },
       abortSignal: input.abortSignal,
-    } as BackendFactoryContext,
+      ...(input.tools ? { tools: input.tools } : {}),
+      ...(input.loadTurnRuntimeEvents
+        ? { loadTurnRuntimeEvents: input.loadTurnRuntimeEvents }
+        : {}),
+      ...(input.recordRunTrace ? { recordRunTrace: input.recordRunTrace } : {}),
+      store: {
+        appendMessage: async () => undefined,
+        readExecutionBoundary: async () => input.executionBoundary,
+      },
+    } as unknown as BackendFactoryContext,
     runtimePolicy: {
       operations: {
         resolveExecutionConnection: input.resolveExecutionConnection,
       },
+      runtimePolicy: {
+        getSnapshot: async () => ({
+          revision: 0,
+          policy: createDefaultRuntimePolicy(),
+        }),
+      },
     },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    },
+    memory: {
+      readPromptProjection: async () => ({
+        policy: { revision: 0, policy: createDefaultRuntimePolicy() },
+        bundleRevision: null,
+        memoryRevision: null,
+        body: '',
+      }),
+    },
+    taskLedger: {
+      list: async () => [],
+    },
+    artifacts: {},
     usage: {
       pricing: {
         snapshot: input.readPricing,
       },
+      telemetry: {
+        recordLlmCall: async () => undefined,
+        recordToolInvocation: async () => undefined,
+      },
     },
+    requestDrain: () => undefined,
+    clientCapabilities: {
+      snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
+    },
+    ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
   } as unknown as HostAiSdkBackendInput;
 }
 
-function readyExecutionConnection() {
+function readyExecutionConnection(baseUrl?: string) {
   return {
     kind: 'ready',
     connection: {
       slug: 'backend-creation-connection',
       providerType: 'moonshot',
+      ...(baseUrl ? { baseUrl } : {}),
       enabledModelIds: [MODEL_ID],
       models: [
         {
@@ -638,11 +1045,18 @@ interface ProviderRequest {
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
+  configureClientCapability(input: { groupId: string; toolName: string }): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
+  let clientCapability:
+    | {
+        readonly groupId: string;
+        readonly toolName: string;
+      }
+    | undefined;
   const server = createServer((request, response) => {
-    void handleProviderRequest(request, response, requests).catch((error) => {
+    void handleProviderRequest(request, response, requests, clientCapability).catch((error) => {
       response.destroy(error as Error);
     });
   });
@@ -652,6 +1066,11 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
+    configureClientCapability: (input) => {
+      if (clientCapability)
+        throw new Error('Client Capability provider flow is already configured');
+      clientCapability = { ...input };
+    },
     close: () => closeServer(server),
   };
 }
@@ -660,6 +1079,12 @@ async function handleProviderRequest(
   request: IncomingMessage,
   response: ServerResponse,
   requests: ProviderRequest[],
+  clientCapability:
+    | {
+        readonly groupId: string;
+        readonly toolName: string;
+      }
+    | undefined,
 ): Promise<void> {
   assert.equal(request.method, 'POST');
   const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -688,6 +1113,21 @@ async function handleProviderRequest(
     );
     return;
   }
+  const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (clientCapability && streamRequestIndex === 1) {
+    assert.ok(toolNames(body).includes('load_tools'));
+    respondProviderToolCall(response, streamRequestIndex, 'load_tools', {
+      group: clientCapability.groupId,
+    });
+    return;
+  }
+  if (clientCapability && streamRequestIndex === 2) {
+    assert.ok(toolNames(body).includes(clientCapability.toolName));
+    respondProviderToolCall(response, streamRequestIndex, clientCapability.toolName, {
+      url: 'https://example.test/client-capability',
+    });
+    return;
+  }
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.write(
     `data: ${JSON.stringify({
@@ -712,6 +1152,51 @@ async function handleProviderRequest(
       model: MODEL_ID,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
       usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+    })}\n\n`,
+  );
+  response.end('data: [DONE]\n\n');
+}
+
+function respondProviderToolCall(
+  response: ServerResponse,
+  step: number,
+  toolName: string,
+  args: Record<string, unknown>,
+): void {
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  response.write(
+    `data: ${JSON.stringify({
+      id: `chatcmpl-hosted-tool-${step}`,
+      object: 'chat.completion.chunk',
+      created: step,
+      model: MODEL_ID,
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: `hosted-tool-call-${step}`,
+                type: 'function',
+                function: { name: toolName, arguments: JSON.stringify(args) },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    })}\n\n`,
+  );
+  response.write(
+    `data: ${JSON.stringify({
+      id: `chatcmpl-hosted-tool-${step}`,
+      object: 'chat.completion.chunk',
+      created: step,
+      model: MODEL_ID,
+      choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     })}\n\n`,
   );
   response.end('data: [DONE]\n\n');

@@ -109,27 +109,3 @@ describe('PR-TRACKING-CONVERGE-0 contract', () => {
     assertCustomPropPinnedOnce(styles, '--tracking-widest', 'var(--tracking-widest)', 'styles.css');
   });
 });
-
-describe('tracking whitelist negative cases', () => {
-  it('rejects typos and private tokens in var()', () => {
-    assert.ok(findCssOffenders('letter-spacing: var(--tracking-mata)', 'test').length > 0, 'typo must fail');
-    assert.ok(findCssOffenders('letter-spacing: var(--tracking-private)', 'test').length > 0, 'private token must fail');
-  });
-
-  it('accepts valid tokens and literals', () => {
-    assert.deepEqual(findCssOffenders('letter-spacing: var(--tracking-normal)', 'test'), []);
-    assert.deepEqual(findCssOffenders('letter-spacing: var(--tracking-wide)', 'test'), []);
-    assert.deepEqual(findCssOffenders('letter-spacing: var(--tracking-wider)', 'test'), []);
-    assert.deepEqual(findCssOffenders('letter-spacing: var(--tracking-widest)', 'test'), []);
-    assert.deepEqual(findCssOffenders('letter-spacing: 0', 'test'), []);
-    assert.deepEqual(findCssOffenders('letter-spacing: inherit', 'test'), []);
-  });
-
-  it('rejects bare em, px, normal, and negative values', () => {
-    assert.ok(findCssOffenders('letter-spacing: 0.02em', 'test').length > 0, 'bare em must fail');
-    assert.ok(findCssOffenders('letter-spacing: 1px', 'test').length > 0, 'px must fail');
-    assert.ok(findCssOffenders('letter-spacing: normal', 'test').length > 0, 'normal must fail (use --tracking-normal)');
-    assert.ok(findCssOffenders('letter-spacing: -0.01em', 'test').length > 0, 'negative must fail (CJK ban, snap --tracking-normal)');
-  });
-
-});

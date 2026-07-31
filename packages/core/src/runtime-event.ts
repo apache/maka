@@ -344,6 +344,7 @@ export type ToolRecoveryMode =
   | 'idempotent'
   | 'reconcile'
   | 'reattach'
+  | 'outcome_unknown'
   | 'never_auto_retry';
 
 // ============================================================================
@@ -725,6 +726,7 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
       value.recoveryMode === 'idempotent' ||
       value.recoveryMode === 'reconcile' ||
       value.recoveryMode === 'reattach' ||
+      value.recoveryMode === 'outcome_unknown' ||
       value.recoveryMode === 'never_auto_retry')
   );
 }

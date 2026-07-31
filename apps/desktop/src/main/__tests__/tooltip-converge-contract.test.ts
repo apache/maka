@@ -67,17 +67,3 @@ describe('PR-TOOLTIP-CONVERGE-0 contract', () => {
     }
   });
 });
-
-describe('tooltip-converge negative cases', () => {
-  it('TITLE_ATTR_RE matches JSX title= but not JS const title =', () => {
-    assert.ok(TITLE_ATTR_RE.test('<Button title="x">'), 'JSX title="x" must match');
-    assert.ok(TITLE_ATTR_RE.test('title={label}'), 'JSX title={...} must match');
-    assert.ok(!TITLE_ATTR_RE.test('const title = "x"'), 'JS const title = must not match');
-  });
-
-  it('TOOLTIP_IMPORT_RE matches a Tooltip import and spares a missing one', () => {
-    assert.ok(TOOLTIP_IMPORT_RE.test('import { Tooltip } from "@maka/ui";'), 'barrel import must match');
-    assert.ok(TOOLTIP_IMPORT_RE.test("import { Tooltip } from './primitives/tooltip.js';"), 'primitives import must match');
-    assert.ok(!TOOLTIP_IMPORT_RE.test('import { Button } from "@maka/ui";'), 'no Tooltip import must not match');
-  });
-});

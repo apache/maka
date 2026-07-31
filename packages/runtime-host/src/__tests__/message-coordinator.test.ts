@@ -72,6 +72,81 @@ test('invalidates the canonical projection after each observable queue mutation'
   await fixture.coordinator.close();
 });
 
+test('partitions a mixed-Client follow-up queue across root handoffs', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const input = (messageId: string, text: string, placement: 'current_turn' | 'next_turn') => ({
+    originHostEpoch: 'epoch-1',
+    sessionId: ROOT.sessionId,
+    messageId,
+    content: { text },
+    placement,
+  });
+
+  const steering = await fixture.coordinator.handlers['turn.message.submit'](
+    input('steering-from-b', 'first aggregate source', 'current_turn'),
+    operationContext('connection-b'),
+  );
+  const followup = await fixture.coordinator.handlers['turn.message.submit'](
+    input('followup-from-c', 'second aggregate source', 'next_turn'),
+    operationContext('connection-c'),
+  );
+  assert.equal(steering.ok, true);
+  assert.equal(followup.ok, true);
+
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    batch.sources.map((source) => source.messageId),
+    ['steering-from-b'],
+  );
+  assert.equal(batch.initiatingConnectionId, 'connection-b');
+
+  fixture.coordinator.commitNextRoot(batch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  assert.equal(fixture.liveResidencies(), 1);
+  const nextOwner = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  nextOwner.release();
+  const secondBatch = fixture.coordinator.beginTerminalTransition({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  assert.deepEqual(
+    secondBatch.sources.map((source) => source.messageId),
+    ['followup-from-c'],
+  );
+  assert.equal(secondBatch.initiatingConnectionId, 'connection-c');
+  fixture.coordinator.commitNextRoot(secondBatch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  assert.equal(fixture.liveResidencies(), 0);
+  const finalOwner = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  finalOwner.release();
+  fixture.coordinator.completeIdle(
+    fixture.coordinator.beginTerminalTransition({
+      sessionId: ROOT.sessionId,
+      turnId: 'turn-3',
+      runId: 'run-3',
+    }),
+  );
+  await fixture.coordinator.close();
+});
+
 test('binds the exact reserved Run after a pre-bind stop fence', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);

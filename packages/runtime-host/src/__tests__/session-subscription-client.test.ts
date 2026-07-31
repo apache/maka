@@ -21,6 +21,7 @@ import {
   encodeProtocolFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  SESSION_CONTINUITY_SCHEMA_VERSION,
   type RequestFrame,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -306,9 +307,10 @@ function openResult(hostEpoch: string, subscriptionId: string) {
     subscriptionId,
     nextSequence: 1,
     snapshot: {
-      schemaVersion: 1 as const,
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
       session: {
         sessionId: 'session-1',
+        metadataRevision: 1,
         status: 'running' as const,
         createdAt: 1,
         lastUsedAt: 2,

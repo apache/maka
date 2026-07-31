@@ -32,17 +32,23 @@ const MIGRATED_FILES = [
   'packages/ui/src/plan-reminder-panel.tsx',
 ];
 
-const BADGE_PRIMITIVE = 'packages/ui/src/primitives/badge.tsx';
+const PACKAGE_BARREL = 'packages/ui/src/index.ts';
 const UI_BARREL = 'packages/ui/src/ui.tsx';
 
+// Desktop files import Badge from @maka/ui; files inside packages/ui import
+// @astryxdesign/core directly (the same primitive the barrel re-exports —
+// a package cannot import its own barrel).
 const BADGE_IMPORT_RE =
-  /import\s+\{[^}]*\bBadge\b[^}]*\}\s+from\s+['"][^'"]*?(?:@maka\/ui|primitives\/badge\.js)['"]/;
+  /import\s+\{[^}]*\bBadge\b[^}]*\}\s+from\s+['"][^'"]*?(?:@maka\/ui|@astryxdesign\/core)['"]/;
 
 describe('badge converge (#520 PR9)', () => {
-  it('canonical Badge primitive carries data-slot', async () => {
-    const src = await readFile(resolve(REPO_ROOT, BADGE_PRIMITIVE), 'utf8');
-    assert.match(src, /["']?data-slot["']?\s*[:=]\s*["']badge["']/, 'Badge primitive must carry data-slot="badge"');
-    assert.match(src, /export function Badge/, 'Badge primitive must export function Badge');
+  it('re-exports the Astryx Badge from the barrel (#1565 PR 3)', async () => {
+    const barrel = await readFile(resolve(REPO_ROOT, PACKAGE_BARREL), 'utf8');
+    assert.match(
+      barrel,
+      /export\s+\{[^}]*\bBadge\b[^}]*\}\s+from\s+['"]@astryxdesign\/core['"]/,
+      'the @maka/ui Badge must be the Astryx primitive, not a local recipe',
+    );
   });
 
   it('legacy Badge + badgeVariants are gone from ui.tsx', async () => {

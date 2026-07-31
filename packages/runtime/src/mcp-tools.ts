@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
 import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
+import type { ToolCategory } from '@maka/core/permission';
+import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
 import type { MakaTool } from './tool-runtime.js';
 
@@ -18,12 +20,25 @@ export interface McpToolProvider {
     serverId: string,
     toolName: string,
     args: Record<string, unknown>,
-    options?: { signal?: AbortSignal; timeoutMs?: number },
+    options: {
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      context: McpToolInvocationContext;
+    },
   ): Promise<McpCallResult>;
+}
+
+export interface McpToolInvocationContext {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly toolCallId: string;
+  readonly cwd: string;
 }
 
 export interface BuildMcpToolsOptions {
   callTimeoutMs?: number;
+  categoryHint?: ToolCategory;
+  recoveryMode?: ToolRecoveryMode;
 }
 
 export function buildMcpTools(
@@ -46,11 +61,11 @@ export function buildMcpTools(
         `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
       displayName: descriptor.annotations?.title?.trim() || descriptor.name,
       activityKind: 'tool',
-      // MCP annotations are advisory server claims, not a security boundary.
-      // A remote or local server can mark a mutating tool read-only, so V1
-      // always uses the side-effecting network policy and fails closed in
-      // explore mode.
-      categoryHint: 'network_send',
+      // MCP annotations are advisory provider claims, not a security boundary.
+      // The trusted composition may select a stricter open-world category;
+      // ordinary MCP servers retain the side-effecting network default.
+      categoryHint: options.categoryHint ?? 'network_send',
+      ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
       parameters: jsonSchema(descriptor.inputSchema),
       permissionArgs: (args) => ({
         serverId: descriptor.serverId,
@@ -61,6 +76,12 @@ export function buildMcpTools(
         provider.callTool(descriptor.serverId, descriptor.name, asArguments(args), {
           signal: context.abortSignal,
           timeoutMs: options.callTimeoutMs,
+          context: {
+            sessionId: context.sessionId,
+            turnId: context.turnId,
+            toolCallId: context.toolCallId,
+            cwd: context.cwd,
+          },
         }),
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),
     } satisfies MakaTool;
@@ -146,7 +167,11 @@ function mcpResultToModelOutput(output: unknown): Extract<ToolResultOutput, { ty
 
 function summarizeNonVisualBlock(block: McpCallResult['content'][number]): unknown {
   if (block.type === 'audio') {
-    return { type: block.type, mimeType: block.mimeType, base64Chars: block.data.length };
+    return {
+      type: block.type,
+      mimeType: block.mimeType,
+      base64Chars: block.data.length,
+    };
   }
   if (block.type === 'resource') {
     return {

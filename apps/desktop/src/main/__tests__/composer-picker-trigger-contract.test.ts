@@ -24,8 +24,8 @@ test('composer permission and model pickers opt into quiet trigger chrome', asyn
   );
   assert.match(
     permissionMode,
-    /<SelectTrigger[\s\S]*?appearance=\{props\.appearance\}/,
-    'PermissionModeSelect must forward its trigger appearance',
+    /width=\{props\.appearance === 'quiet' \? undefined : 320\}/,
+    'PermissionModeSelect must leave quiet-trigger geometry to its owning surface',
   );
 
   const composerModelPickers = chatModelSwitcher.match(/<ModelPicker[\s\S]*?>/g) ?? [];
@@ -35,7 +35,7 @@ test('composer permission and model pickers opt into quiet trigger chrome', asyn
   }
   assert.match(
     modelPicker,
-    /<ModelPickerTrigger[\s\S]*?appearance=\{props\.triggerAppearance\}/,
+    /pickerTriggerClasses\(props\.triggerAppearance\)/,
     'ModelPicker must forward its requested trigger appearance',
   );
 });

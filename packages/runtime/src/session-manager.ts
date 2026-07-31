@@ -147,6 +147,7 @@ import {
 } from './interaction-authority.js';
 import {
   RuntimeKernel,
+  SessionQuiescentMutationBusyError,
   type BackendActivationBoundary,
   type RuntimeExecutionClaim,
   type RuntimeKernelLike,
@@ -469,6 +470,64 @@ export interface AgentOutputResult {
 
 // StoredMessage rows remain a projection/cache surface for existing public
 // shapes. RuntimeEventStore is the semantic conversation ledger.
+export interface VersionedSessionHeader {
+  readonly header: SessionHeader;
+  readonly revision: number;
+  readonly committedAt: number;
+}
+
+export interface SessionConfigurationStoreUpdate {
+  readonly expectedVersion: number;
+  readonly configuration: {
+    readonly backend: SessionHeader['backend'];
+    readonly llmConnectionSlug: string;
+    readonly connectionLocked: boolean;
+    readonly model: string;
+    readonly thinkingLevel: SessionHeader['thinkingLevel'];
+    readonly permissionMode: SessionHeader['permissionMode'];
+    readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+    readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+    readonly labels: readonly string[];
+  };
+  readonly lifecycle:
+    | { readonly kind: 'preserve' }
+    | { readonly kind: 'clear_connection_block'; readonly statusUpdatedAt: number };
+}
+
+export interface SessionConfigurationTransitionRequest {
+  readonly expectedRevision: number;
+  readonly configuration: Omit<SessionConfigurationStoreUpdate['configuration'], 'labels'>;
+}
+
+export type SessionConfigurationTransitionErrorCode =
+  | 'session_busy'
+  | 'operation_conflict'
+  | 'operation_unavailable';
+
+export class SessionConfigurationTransitionError extends Error {
+  readonly name = 'SessionConfigurationTransitionError';
+
+  constructor(
+    readonly code: SessionConfigurationTransitionErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export class SessionConfigurationRevisionConflictError extends Error {
+  readonly name = 'SessionConfigurationRevisionConflictError';
+
+  constructor(
+    readonly expectedRevision: number,
+    readonly actualRevision: number,
+  ) {
+    super(
+      `Session configuration revision conflict: expected ${expectedRevision}, actual ${actualRevision}`,
+    );
+  }
+}
+
 export interface SessionStore {
   create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
   createSubagent(
@@ -505,6 +564,11 @@ export interface SessionStore {
   appendMessage(sessionId: string, m: StoredMessage): Promise<void>;
   appendMessages(sessionId: string, ms: StoredMessage[]): Promise<void>;
   updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader>;
+  readHeaderRecordSnapshot?(sessionId: string): Promise<VersionedSessionHeader>;
+  updateSessionConfiguration?(
+    sessionId: string,
+    input: SessionConfigurationStoreUpdate,
+  ): Promise<VersionedSessionHeader>;
   markSessionReadThrough(sessionId: string, readThroughTs: number): Promise<SessionHeader>;
   archive(sessionId: string): Promise<void>;
   unarchive(sessionId: string): Promise<void>;
@@ -800,6 +864,65 @@ export class SessionManager {
   /** Invalidate backend snapshots now, or immediately after active turns settle. */
   refreshIdleBackends(): Promise<void> {
     return this.runtimeKernel.invalidateCachedBackends();
+  }
+
+  async transitionSessionConfiguration(
+    sessionId: string,
+    input: SessionConfigurationTransitionRequest,
+  ): Promise<VersionedSessionHeader> {
+    const store = this.requireSessionConfigurationStore();
+    const next = await this.commitExecutionResourceTransition(
+      sessionId,
+      input.configuration.permissionMode,
+      async () => {
+        const current = await store.readHeaderRecordSnapshot(sessionId);
+        if (current.revision !== input.expectedRevision) {
+          throw new SessionConfigurationRevisionConflictError(
+            input.expectedRevision,
+            current.revision,
+          );
+        }
+        if (current.header.isArchived || current.header.status === 'archived') {
+          throw new SessionConfigurationTransitionError(
+            'operation_conflict',
+            'Archived Session configuration cannot be changed',
+          );
+        }
+        if (current.header.status === 'waiting_for_user') {
+          throw new SessionConfigurationTransitionError(
+            'session_busy',
+            'Session has a pending Interaction',
+          );
+        }
+        await this.assertCollaborationTransition(
+          current.header,
+          input.configuration.collaborationMode,
+        );
+        const leavingDeepResearch =
+          isDeepResearchSession(current.header.labels) &&
+          input.configuration.permissionMode !== 'explore';
+        const labels = leavingDeepResearch
+          ? current.header.labels.filter((label) => label !== DEEP_RESEARCH_SESSION_LABEL)
+          : current.header.labels;
+        return () =>
+          store.updateSessionConfiguration(sessionId, {
+            expectedVersion: input.expectedRevision,
+            configuration: {
+              ...input.configuration,
+              labels,
+            },
+            lifecycle:
+              current.header.blockedReason === 'NO_REAL_CONNECTION'
+                ? {
+                    kind: 'clear_connection_block',
+                    statusUpdatedAt: this.deps.now(),
+                  }
+                : { kind: 'preserve' },
+          });
+      },
+    );
+    this.runtimeKernel.updateCachedHeader(sessionId, next.header);
+    return next;
   }
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
@@ -1199,55 +1322,134 @@ export class SessionManager {
       labels?: readonly string[];
     },
   ): Promise<ExecutionBoundary> {
-    const narrowsShellAuthority =
-      (current.kind === 'bypass' && kind === 'managed') ||
-      (current.kind === 'managed' &&
-        kind === 'managed' &&
-        projection?.permissionMode === 'explore' &&
-        current.profile.name !== 'read-only');
-    const descendantSessionIds = narrowsShellAuthority
+    const nextPermissionMode = projection?.permissionMode ?? (kind === 'bypass' ? 'bypass' : 'ask');
+    return this.commitExecutionResourceTransition(sessionId, nextPermissionMode, async () => {
+      const latest = await this.deps.store.readExecutionBoundary(sessionId);
+      if (latest.revision !== current.revision) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Session execution boundary changed before the transition',
+        );
+      }
+      return () => this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
+    });
+  }
+
+  private async commitExecutionResourceTransition<T>(
+    sessionId: string,
+    nextPermissionMode: PermissionMode,
+    prepareCommit: () => Promise<() => Promise<T>>,
+  ): Promise<T> {
+    const initialBoundary = await this.deps.store.readExecutionBoundary(sessionId);
+    const initiallyNarrows = narrowsExecutionAuthority(initialBoundary, nextPermissionMode);
+    const initialDescendants = initiallyNarrows
       ? await this.listLinkedDescendantSessionIds(sessionId)
       : [];
-    const lineageSessionIds = [sessionId, ...descendantSessionIds];
-    const descendantBoundaries = new Map<string, ExecutionBoundary>();
-    for (const descendantSessionId of descendantSessionIds) {
-      descendantBoundaries.set(
-        descendantSessionId,
-        await this.deps.store.readExecutionBoundary(descendantSessionId),
-      );
-    }
-    const shellRunCloses = [];
-    let boundary: ExecutionBoundary;
-    try {
-      if (narrowsShellAuthority) {
-        for (const lineageSessionId of lineageSessionIds) {
-          const close = await this.deps.shellRuns?.terminateSession(lineageSessionId);
-          if (close) shellRunCloses.push(close);
+    const fencedSessionIds = [sessionId, ...initialDescendants];
+
+    return this.runSessionQuiescentMutation<T>(fencedSessionIds, async () => {
+      const currentBoundary = await this.deps.store.readExecutionBoundary(sessionId);
+      const narrowsShellAuthority = narrowsExecutionAuthority(currentBoundary, nextPermissionMode);
+      const descendantSessionIds = narrowsShellAuthority
+        ? await this.listLinkedDescendantSessionIds(sessionId)
+        : [];
+      if (
+        descendantSessionIds.some(
+          (descendantSessionId) => !fencedSessionIds.includes(descendantSessionId),
+        )
+      ) {
+        throw new SessionConfigurationTransitionError(
+          'operation_conflict',
+          'Session lineage changed before the configuration transition',
+        );
+      }
+      const lineageSessionIds = [sessionId, ...descendantSessionIds];
+      if (lineageSessionIds.some((id) => this.runtimeKernel.hasActiveRuns(id))) {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session configuration cannot change while a linked Turn is active',
+        );
+      }
+      if (narrowsShellAuthority && !this.deps.shellRuns) {
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Session permission narrowing requires Runtime Resource authority',
+        );
+      }
+
+      const commit = await prepareCommit();
+      const descendantBoundaries = new Map<string, ExecutionBoundary>();
+      for (const descendantSessionId of descendantSessionIds) {
+        descendantBoundaries.set(
+          descendantSessionId,
+          await this.deps.store.readExecutionBoundary(descendantSessionId),
+        );
+      }
+      const shellRunCloses: Array<Awaited<ReturnType<ShellRunProcessManager['terminateSession']>>> =
+        [];
+      try {
+        if (narrowsShellAuthority) {
+          for (const lineageSessionId of lineageSessionIds) {
+            const close = await this.deps.shellRuns?.terminateSession(lineageSessionId);
+            if (close) shellRunCloses.push(close);
+          }
+        }
+        await Promise.all(
+          lineageSessionIds.map((lineageSessionId) =>
+            this.runtimeKernel.disposeBackend(lineageSessionId),
+          ),
+        );
+      } catch {
+        for (const close of shellRunCloses) this.deps.shellRuns?.rollbackSessionClose(close);
+        throw new SessionConfigurationTransitionError(
+          'operation_unavailable',
+          'Session execution resources could not be refreshed',
+        );
+      }
+
+      let result: T;
+      try {
+        result = await commit();
+      } catch (error) {
+        for (const close of shellRunCloses) this.deps.shellRuns?.rollbackSessionClose(close);
+        throw error;
+      }
+
+      for (const close of shellRunCloses) await this.deps.shellRuns?.commitSessionClose(close);
+      if (shellRunCloses.length > 0) {
+        const committedBoundary = await this.deps.store.readExecutionBoundary(sessionId);
+        this.deps.shellRuns?.resumeSession(sessionId);
+        for (const [descendantSessionId, descendantBoundary] of descendantBoundaries) {
+          if (executionBoundaryContains(committedBoundary, descendantBoundary)) {
+            this.deps.shellRuns?.resumeSession(descendantSessionId);
+          }
         }
       }
-      // Backends snapshot boundary-related session state at construction time.
-      // Dispose before the authority commit so a disposal failure cannot leave
-      // callers observing a rejected transition that was already committed.
-      await Promise.all(
-        lineageSessionIds.map((lineageSessionId) =>
-          this.runtimeKernel.disposeBackend(lineageSessionId),
-        ),
+      return result;
+    });
+  }
+
+  private async runSessionQuiescentMutation<T>(
+    sessionIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.runtimeKernel.runSessionQuiescentMutation) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Session execution mutation authority is unavailable',
       );
-      boundary = await this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
+    }
+    try {
+      return await this.runtimeKernel.runSessionQuiescentMutation(sessionIds, operation);
     } catch (error) {
-      for (const close of shellRunCloses) this.deps.shellRuns?.rollbackSessionClose(close);
+      if (error instanceof SessionQuiescentMutationBusyError) {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session configuration cannot change while a linked Turn is active',
+        );
+      }
       throw error;
     }
-    if (shellRunCloses.length > 0) {
-      for (const close of shellRunCloses) await this.deps.shellRuns?.commitSessionClose(close);
-      this.deps.shellRuns?.resumeSession(sessionId);
-      for (const [descendantSessionId, descendantBoundary] of descendantBoundaries) {
-        if (executionBoundaryContains(boundary, descendantBoundary)) {
-          this.deps.shellRuns?.resumeSession(descendantSessionId);
-        }
-      }
-    }
-    return boundary;
   }
 
   private async listLinkedDescendantSessionIds(sessionId: string): Promise<string[]> {
@@ -1784,6 +1986,17 @@ export class SessionManager {
    * later through the ordinary claimed graph-intent path.
    */
   async provisionAgentGraphOperator(
+    input: ProvisionAgentGraphOperatorInput,
+  ): Promise<ProvisionAgentGraphOperatorResult> {
+    if (!this.runtimeKernel.runSessionAdmissionMutation) {
+      throw new Error('Graph operator provisioning requires Runtime admission mutation authority');
+    }
+    return this.runtimeKernel.runSessionAdmissionMutation([input.source.sessionId], () =>
+      this.provisionAgentGraphOperatorFromParentSnapshot(input),
+    );
+  }
+
+  private async provisionAgentGraphOperatorFromParentSnapshot(
     input: ProvisionAgentGraphOperatorInput,
   ): Promise<ProvisionAgentGraphOperatorResult> {
     const create = this.deps.store.createAgentGraphOperator;
@@ -4352,6 +4565,48 @@ export class SessionManager {
     return this.deps.planStore;
   }
 
+  private requireSessionConfigurationStore(): SessionStore &
+    Required<Pick<SessionStore, 'readHeaderRecordSnapshot' | 'updateSessionConfiguration'>> {
+    if (!this.deps.store.readHeaderRecordSnapshot || !this.deps.store.updateSessionConfiguration) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Session configuration authority is unavailable',
+      );
+    }
+    return this.deps.store as SessionStore &
+      Required<Pick<SessionStore, 'readHeaderRecordSnapshot' | 'updateSessionConfiguration'>>;
+  }
+
+  private async assertCollaborationTransition(
+    current: SessionHeader,
+    nextMode: CollaborationMode,
+  ): Promise<void> {
+    if ((current.collaborationMode ?? 'agent') === nextMode) return;
+    const planStore = this.deps.planStore;
+    if (!planStore) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Collaboration mode changes require Plan authority',
+      );
+    }
+    const planState = await planStore.readState(current.id);
+    if (nextMode === 'plan' && planState.activeExecutionId) {
+      throw new SessionConfigurationTransitionError(
+        'session_busy',
+        'An active Plan execution prevents collaboration mode changes',
+      );
+    }
+    const latestProposal = planState.proposals.find(
+      (proposal) => proposal.proposalId === planState.latestProposalId,
+    );
+    if (nextMode === 'agent' && latestProposal?.status === 'pending_approval') {
+      throw new SessionConfigurationTransitionError(
+        'operation_conflict',
+        'A pending Plan proposal must be resolved before leaving Plan mode',
+      );
+    }
+  }
+
   private async appendTurnState(
     sessionId: string,
     turnId: string,
@@ -4932,6 +5187,15 @@ function executionBoundaryMatchesPermissionMode(
   return mode === 'explore'
     ? boundary.profile.name === 'read-only'
     : boundary.profile.name !== 'read-only';
+}
+
+function narrowsExecutionAuthority(
+  boundary: ExecutionBoundary,
+  nextPermissionMode: PermissionMode,
+): boolean {
+  if (nextPermissionMode === 'bypass') return false;
+  if (boundary.kind !== 'managed') return true;
+  return nextPermissionMode === 'explore' && boundary.profile.name !== 'read-only';
 }
 
 function agentRunStatusForSpawnResult(

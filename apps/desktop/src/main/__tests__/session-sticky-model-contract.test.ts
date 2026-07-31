@@ -172,40 +172,31 @@ describe('PR-SESSION-STICKY-MODEL-0 contract', () => {
     assert.match(ui, /aria-busy=\{pending \? 'true' : undefined\}/);
     assert.match(ui, /data-pending=\{pending \? 'true' : undefined\}/);
     assert.match(ui, /<ModelPicker[\s\S]*groups=\{grouped\}[\s\S]*value=\{currentValue\}[\s\S]*onValueChange=\{\(value\) => \{/);
-    assert.match(ui, /<BaseCombobox\.Positioner sideOffset=\{8\}/);
-    assert.match(ui, /<BaseCombobox\.List className="modelPickerList">/);
-    assert.match(ui, /inputValue=\{query\}/);
-    assert.match(ui, /filter=\{filterModelPickerOption\}/);
-    assert.match(ui, /BaseCombobox\.useFilteredItems<ModelPickerOptionGroup>\(\)/);
+    assert.match(ui, /useCombobox\(\{/);
+    assert.match(ui, /usePopover\(\{/);
+    assert.match(ui, /role="listbox"[\s\S]*className="modelPickerList"/);
+    assert.match(ui, /value=\{query\}/);
+    assert.match(ui, /filterModelPickerOption\(item, query\)/);
+    assert.doesNotMatch(ui, /@base-ui\/react\/combobox|BaseCombobox/);
     assert.match(ui, /footer=\{\(\{ open, close \}\) => \(/);
-    assert.match(ui, /props\.footer\?\.\(\{[\s\S]*open,[\s\S]*close: \(\) => \{[\s\S]*setOpen\(false\);[\s\S]*setQuery\(''\);/);
-    assert.match(ui, /data-model-picker-nested-popup=""/);
-    // The grouped menu renders provider groups from Base UI's filtered item
-    // source, each heading carrying the injected brand mark (kept out of
-    // @maka/ui via renderProviderMark), on the shared `.settingsSelectMenu*`
-    // recipe.
-    assert.match(ui, /<ModelPickerGroup key=\{group\.key\} items=\{group\.items\}>/);
+    assert.match(ui, /props\.footer\?\.\(\{ open: isOpen, close \}\)/);
+    // Maka retains only product grouping and provider marks; Astryx owns the
+    // combobox selection, keyboard, and native-popover behavior.
+    assert.match(ui, /filteredGroups\.map\(\(group\) => \{/);
     assert.match(ui, /renderProviderMark\?\.\(group\.providerType\)/);
-    assert.match(ui, /className="settingsSelectMenuGroupLogo"/);
-    assert.match(ui, /<span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">[\s\S]*<BaseCombobox\.ItemIndicator>/);
-    assert.match(ui, /<BaseCombobox\.Item[\s\S]*<span className="min-w-0">\{children\}<\/span>/);
-    assert.doesNotMatch(uiPrimitives, /BaseCombobox/, 'Combobox stays private to ModelPicker until a second real consumer appears');
+    assert.match(ui, /className="modelPickerGroupLogo"/);
+    assert.match(ui, /className="modelPickerOptionIndicator"[\s\S]*selected \? <Check/);
+    assert.match(ui, /role="option"[\s\S]*aria-selected=\{selected\}/);
+    assert.doesNotMatch(uiPrimitives, /useCombobox/, 'Combobox stays private to ModelPicker until a second real consumer appears');
     assert.doesNotMatch(ui, /<select\b[\s\S]*aria-label="切换当前会话模型"/);
     assert.match(ui, /<span className="maka-model-switcher-label">\{pending \? copy\.switching : copy\.model\}<\/span>/);
     assert.match(styles, /\.maka-model-switcher\s*\{/);
     assert.match(styles, /\.maka-model-switcher\[data-pending="true"\]\s*\{[\s\S]*cursor: progress;[\s\S]*\}/);
     assert.match(styles, /\.maka-model-switcher-trigger\s*\{/);
-    // Popup/positioner/rows now come from the shared settings-select menu recipe
-    // (the bespoke `.maka-model-switcher-popup` chrome was folded into it); the
-    // trigger above stays the composer pill.
-    assert.match(styles, /\.settingsSelectMenuPopup\s*\{/);
+    // The product-specific shell owns only grouping and its fixed footer.
     assert.match(styles, /\.modelPickerPopup\s*\{[\s\S]*display:\s*flex;[\s\S]*overflow:\s*hidden;[\s\S]*\}/);
     assert.match(styles, /\.modelPickerList\s*\{[\s\S]*overflow-y:\s*auto;[\s\S]*\}/);
     assert.match(styles, /\.maka-thinking-section\s*\{[\s\S]*flex:\s*0 0 auto;[\s\S]*\}/);
-    // [^}]* anchors inside this one rule block so the match can't drift when
-    // cross-file @import order changes (#546 PR1 relocated this rule into
-    // settings/select.css). Value is the control-lg token (= 32px), not a
-    // literal - readRendererContractCss does not inline var().
-    assert.match(styles, /\.settingsSelectMenuPopup \[role="option"\]\s*\{[^}]*min-height:\s*var\(--h-control-lg\)[^}]*\}/);
+    assert.match(styles, /\.modelPickerOption\s*\{[^}]*min-height:\s*var\(--h-control-lg\)[^}]*\}/);
   });
 });

@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentRunEvent, AgentRunHeader } from '@maka/core';
 import type { InvocationResult } from '@maka/runtime';
+import { acquireOperationalStateDatabase } from '@maka/storage';
 
 import { writeHarborTaskRunTrace } from '../harbor-cell.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
@@ -263,11 +264,7 @@ test('exports a torn AgentRun tail as incomplete provider-request evidence', asy
     await runStore.createRun(header);
     await runStore.appendEvent(identity.sessionId, identity.runId, capture as AgentRunEvent);
     await runStore.appendEvent(identity.sessionId, identity.runId, attempt as AgentRunEvent);
-    await writeFile(
-      join(storageRoot, 'sessions', identity.sessionId, 'runs', identity.runId, 'events.jsonl'),
-      '{"type":"provider_request_attempt_recorded"',
-      { flag: 'a' },
-    );
+    corruptAgentRunEvent(storageRoot, identity.sessionId, identity.runId, 1);
 
     const traceEventsPath = await writeHarborTaskRunTrace({
       outputDir,
@@ -322,10 +319,14 @@ test('also diagnoses missing provider evidence when the only run event is corrup
       updatedAt: 4,
       completedAt: 4,
     });
-    await writeFile(
-      join(storageRoot, 'sessions', identity.sessionId, 'runs', identity.runId, 'events.jsonl'),
-      '{"type":"tool_failed"',
-    );
+    await storage.executionStores.agentRunStore.appendEvent(identity.sessionId, identity.runId, {
+      type: 'tool_failed',
+      id: 'corrupt-event',
+      ...identity,
+      ts: 2,
+      message: 'will be corrupted',
+    });
+    corruptAgentRunEvent(storageRoot, identity.sessionId, identity.runId, 0);
 
     const traceEventsPath = await writeHarborTaskRunTrace({
       outputDir,
@@ -346,6 +347,27 @@ test('also diagnoses missing provider evidence when the only run event is corrup
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function corruptAgentRunEvent(
+  storageRoot: string,
+  sessionId: string,
+  runId: string,
+  sequence: number,
+): void {
+  const lease = acquireOperationalStateDatabase(storageRoot);
+  try {
+    const result = lease.database
+      .prepare(`
+        UPDATE core_agent_run_events
+        SET record_json = ?
+        WHERE session_id = ? AND run_id = ? AND sequence = ?
+      `)
+      .run('{"type":"corrupt"', sessionId, runId, sequence);
+    assert.equal(result.changes, 1);
+  } finally {
+    lease.close();
+  }
+}
 
 test('exports missing provider-request evidence for every continuation invocation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-provider-trace-export-'));

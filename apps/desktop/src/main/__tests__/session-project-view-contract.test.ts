@@ -230,10 +230,13 @@ describe('sidebar project view mode', () => {
 
     assert.match(markup, /class="maka-session-list-heading"[^>]*>会话/);
     assert.match(markup, /aria-label="会话分组方式"/);
-    assert.doesNotMatch(markup, />按状态|>按项目/);
-    assert.match(panel, /<MenuRadioGroup value=\{viewMode\}/);
-    assert.match(panel, /<MenuRadioItem value="conversation">\{copy\.groupByTime\}/);
-    assert.match(panel, /<MenuRadioItem value="project">\{copy\.groupByProject\}/);
+    const trigger = markup.match(/<button(?=[^>]*aria-label="会话分组方式")[\s\S]*?<\/button>/)?.[0] ?? '';
+    assert.ok(trigger, 'the grouping trigger must render');
+    assert.doesNotMatch(trigger, />按时间|>按项目/);
+    assert.match(markup, /role="menuitemradio"/);
+    assert.match(panel, /<MenuRadioGroup[\s\S]*?value=\{viewMode\}/);
+    assert.match(panel, /<MenuRadioItem value="conversation" label=\{copy\.groupByTime\} \/>/);
+    assert.match(panel, /<MenuRadioItem value="project" label=\{copy\.groupByProject\} \/>/);
   });
 
   it('renders lifecycle state only on non-active conversation rows', () => {
@@ -414,6 +417,36 @@ describe('sidebar project view mode', () => {
     assert.deepEqual(
       archived.roots.map((session) => session.id),
       [archivedChild.id, archivedParent.id],
+    );
+  });
+
+  it('keeps a running parent visible when preview metadata is temporarily unavailable', () => {
+    const parent = makeSessionSummary({
+      id: 'running-parent',
+      name: 'Running parent',
+      status: 'running',
+      lastMessageAt: undefined,
+    });
+    const child = makeSessionSummary({
+      id: 'completed-child',
+      name: 'Completed child',
+      status: 'active',
+      lastMessageAt: 50,
+      subagentParent: childRelation(parent.id),
+    });
+    const tree = filterLinkedSessionTree(
+      projectLinkedSessionTree([parent, child]),
+      (session) =>
+        sessionMatchesNavSelection(session, { section: 'sessions', filter: 'chats' }),
+    );
+
+    assert.deepEqual(
+      tree.roots.map((session) => session.id),
+      [parent.id],
+    );
+    assert.deepEqual(
+      tree.childrenByParentId.get(parent.id)?.map((session) => session.id),
+      [child.id],
     );
   });
 

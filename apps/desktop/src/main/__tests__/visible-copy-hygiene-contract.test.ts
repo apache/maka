@@ -546,7 +546,7 @@ describe('tool error copy feedback contract', () => {
     assert.match(block, /copyText\.copy\.failed/, 'Tool-error copy should show failure feedback.');
     assert.match(block, /data-copy-feedback=\{copyPhase \?\? undefined\}/, 'Tool-error copy should expose stable copy state for CSS and review.');
     assert.match(block, /aria-busy=\{copyPending \? 'true' : undefined\}/, 'Tool-error copy should expose busy state to assistive tech.');
-    assert.match(block, /disabled=\{copyPending\}/, 'Tool-error copy should disable while pending.');
+    assert.match(block, /isDisabled=\{copyPending\}/, 'Tool-error copy should disable while pending.'); // #1565 PR 3: Astryx Button uses isDisabled
     assert.doesNotMatch(
       block,
       /navigator\.clipboard\.writeText\(errorText\)|clipboard unavailable/,

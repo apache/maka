@@ -17,7 +17,7 @@ test('sandbox boundary request takes over the composer slot without hiding the w
     input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, draft);
-  await expect(sandboxBoundaryWindow.locator('.maka-dialog-backdrop')).toHaveCount(0);
+  await expect(sandboxBoundaryWindow.locator('dialog[open]')).toHaveCount(0);
   await expect(sandboxBoundaryWindow.locator('[role="dialog"]')).toHaveCount(0);
   await expect(sandboxBoundaryWindow.locator('.app')).not.toHaveAttribute('inert', '');
 

@@ -19,6 +19,7 @@ import {
 } from './connection-model-discovery.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { createConnectionWithCredential } from './create-connection-with-credential.js';
+import { deleteConnectionWithCredential } from './delete-connection-with-credential.js';
 import { connectionTestStatusPatch } from './connection-test-status.js';
 
 type ConnectionStore = ReturnType<typeof createConnectionStore>;
@@ -33,6 +34,7 @@ interface ConnectionsIpcDeps extends ConnectionInputNormalizerDeps {
   syncOAuthModelConnections: () => Promise<void>;
   resolveConnectionSecret: (slug: string) => Promise<string | null>;
   hasConnectionSecret: (connection: LlmConnection) => Promise<boolean>;
+  disconnectManagedOAuthConnection: (connection: LlmConnection) => Promise<void>;
   emitConnectionListChanged: () => void;
   /**
    * Override for remote model discovery. Only E2E supplies this, to keep the
@@ -140,6 +142,7 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
     syncOAuthModelConnections,
     resolveConnectionSecret,
     hasConnectionSecret,
+    disconnectManagedOAuthConnection,
     emitConnectionListChanged,
     fetchModels,
   } = deps;
@@ -205,8 +208,10 @@ export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
   });
   ipcMain.handle('connections:delete', async (_event, slug: string) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
-    await connectionStore.delete(slug);
-    await credentialStore.deleteSecret(slug);
+    await deleteConnectionWithCredential(
+      { connectionStore, credentialStore, disconnectManagedOAuthConnection },
+      slug,
+    );
     emitConnectionListChanged();
   });
   ipcMain.handle('connections:test', async (_event, slug: string, opts?: { model?: string }) => {

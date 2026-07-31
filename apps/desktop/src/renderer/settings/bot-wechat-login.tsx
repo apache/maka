@@ -168,14 +168,11 @@ export function WechatQrLoginModal(props: {
     >
       <DialogContent
         className="settingsWechatQrModal"
-        aria-labelledby="settingsWechatQrTitle"
-        showClose={false}
+        width={360}
       >
         <DialogHeader
           title={copy.title}
-          titleId="settingsWechatQrTitle"
           subtitle={copy.subtitle}
-          closeLabel={copy.close}
           onClose={props.onClose}
         />
 
@@ -191,9 +188,7 @@ export function WechatQrLoginModal(props: {
           ) : expired ? (
             <div className="settingsWechatQrState" data-tone="warning">
               {copy.expired}
-              <Button type="button" variant="secondary" size="sm" disabled={loading} onClick={reloadQrCode}>
-                {loading ? copy.refreshing : copy.refresh}
-              </Button>
+              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />
             </div>
           ) : qrDataUrl ? (
             <>
@@ -206,16 +201,12 @@ export function WechatQrLoginModal(props: {
             <div className="settingsWechatQrState" data-tone="error" role="alert">
               <strong>{error.error}</strong>
               <span>{error.hint}</span>
-              <Button type="button" variant="secondary" size="sm" disabled={loading} onClick={reloadQrCode}>
-                {loading ? copy.retrying : copy.retry}
-              </Button>
+              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />
             </div>
           ) : (
             <div className="settingsWechatQrState" data-tone="loading">
               {copy.bridgeGenerating}
-              <Button type="button" variant="secondary" size="sm" disabled={loading} onClick={reloadQrCode}>
-                {loading ? copy.fetching : copy.fetchAgain}
-              </Button>
+              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.fetching : copy.fetchAgain} />
             </div>
           )}
         </div>

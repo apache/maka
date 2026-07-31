@@ -154,23 +154,19 @@ export function PlanProposalCard(props: {
         {reviewable && (
           <div className="plan-proposal-actions">
             <UiButton
-              type="button"
               variant="secondary"
               size="sm"
-              disabled={planMode.pending}
+              isDisabled={planMode.pending}
               onClick={() => void planMode.requestRevision(proposal.proposalId)}
-            >
-              继续修改
-            </UiButton>
+              label="继续修改"
+            />
             <UiButton
-              type="button"
-              variant="default"
+              variant="primary"
               size="sm"
-              disabled={planMode.pending}
+              isDisabled={planMode.pending}
               onClick={() => void planMode.approve(proposal)}
-            >
-              执行计划
-            </UiButton>
+              label="执行计划"
+            />
           </div>
         )}
         {planMode.error && reviewable && (
@@ -244,26 +240,22 @@ export function PlanExecutionPanel(props: {
           {execution.status === 'interrupted' && (
             <div className="plan-execution-actions">
               <UiButton
-                type="button"
                 variant="secondary"
                 size="sm"
-                disabled={planMode.pending}
+                isDisabled={planMode.pending}
                 onClick={() => void planMode.resume(execution.executionId)}
-              >
-                恢复执行
-              </UiButton>
+                label="恢复执行"
+              />
               <UiButton
-                type="button"
                 variant="destructive"
                 size="sm"
-                disabled={planMode.pending}
+                isDisabled={planMode.pending}
                 onClick={() => void planMode.abandon(
                   execution.executionId,
                   proposal?.title ?? '已批准计划',
                 )}
-              >
-                放弃计划
-              </UiButton>
+                label="放弃计划"
+              />
             </div>
           )}
         </div>

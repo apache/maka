@@ -350,16 +350,16 @@ describe('Bot settings UI contract', () => {
     assert.match(onboardingModal, /settingsActionErrorMessage\(result\.error\.message, locale\)/, 'Unified onboarding Result failures must be scrubbed for the active locale before rendering');
     assert.match(onboardingModal, /Promise\.resolve\(props\.onConnected\(snapshot\)\)\.catch/, 'Connected follow-up failures must not become unhandled rejections');
     assert.doesNotMatch(onboardingContract, /secret|token|deviceCode|opaqueToken/i, 'Renderer-safe onboarding snapshots must not contain provider secrets or device codes');
-    const onboardingModalStyles = styles.match(/\.settingsBotOnboardingModal\s*\{[^}]*\}/)?.[0] ?? '';
-    assert.match(onboardingModalStyles, /position:\s*fixed;/, 'Unified onboarding modal must preserve viewport-fixed positioning');
-    assert.doesNotMatch(onboardingModalStyles, /position:\s*relative;/, 'Unified onboarding modal must not override shared viewport centering with relative positioning');
+    assert.match(onboardingModal, /<DialogContent[\s\S]*width=\{520\}/, 'Unified onboarding modal must configure its product width through Astryx');
+    assert.doesNotMatch(styles, /\.settingsBotOnboardingModal\s*\{/, 'Astryx must own onboarding dialog positioning and surface styling');
     assert.match(settings, /function WechatQrLoginModal\b/, 'WeChat scan login must render its own QR modal');
     assert.match(settings, /const loadingQrRef = useRef\(false\)/, 'WeChat bridge QR modal must keep a synchronous reload guard');
     assert.match(settings, /function reloadQrCode\(\) \{[\s\S]*if \(loadingQrRef\.current\) return;[\s\S]*loadingQrRef\.current = true;[\s\S]*setLoading\(true\);[\s\S]*setReloadNonce\(\(current\) => current \+ 1\)/, 'WeChat bridge QR refresh buttons and polling must share the reload guard');
     assert.match(settings, /window\.setInterval\(\(\) => \{[\s\S]*reloadQrCode\(\)/, 'WeChat bridge QR polling must not bypass the reload guard');
     assert.match(settings, /setResult\(\{[\s\S]*ok: false,[\s\S]*error: settingsActionErrorMessage\(error, locale\),[\s\S]*hint: copy\.readQrFailed/, 'WeChat bridge QR thrown failures must use the Settings scrubber and locale catalog before rendering');
     assert.doesNotMatch(settings, /error: error instanceof Error \? error\.message : String\(error\)/, 'WeChat bridge QR modal must not render raw thrown Error.message');
-    assert.match(settings, /variant="secondary" size="sm" disabled=\{loading\} onClick=\{reloadQrCode\}/, 'WeChat bridge QR refresh buttons must use the governed compact tier and disable while a QR reload is in flight');
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(settings, /variant="secondary" size="sm" isDisabled=\{loading\} onClick=\{reloadQrCode\}/, 'WeChat bridge QR refresh buttons must use the governed compact tier and disable while a QR reload is in flight');
     assert.doesNotMatch(styles, /\.settingsWechatQrSecondary\b/, 'WeChat QR actions must not restore consumer-owned Button states');
     assert.match(settings, /window\.maka\.settings\.bots\.wechatQrCode\(\)/, 'QR modal must call the bridge QR IPC');
     assert.match(settings, /<img src=\{qrDataUrl\} alt=\{copy\.qrAlt\}/, 'QR modal must render a visible QR image with a localized accessible name');
@@ -369,7 +369,8 @@ describe('Bot settings UI contract', () => {
     assert.match(settings, /token:\s*''[\s\S]*connected:\s*false[\s\S]*readiness:\s*'scaffolded'/, 'Disconnect must clear saved scan-login credentials and readiness');
     assert.match(settings, /const saved = await updateChannelFor\([\s\S]*token:\s*''[\s\S]*if \(!saved\) return;[\s\S]*toast\.success\(/, 'Disconnect must not report success if clearing saved credentials fails');
     assert.doesNotMatch(settings, /扫码登录由本机 wechat-bridge 处理/, 'Scan login must not be a toast-only handoff');
-    assert.match(styles, /\.settingsWechatQrModal\b/, 'QR modal styles must be present');
+    assert.match(settings, /<DialogContent[\s\S]*className="settingsWechatQrModal"[\s\S]*width=\{360\}/, 'QR modal must configure its product width through Astryx');
+    assert.doesNotMatch(styles, /\.settingsWechatQrModal\s*\{/, 'Astryx must own QR dialog surface styling');
     assert.match(styles, /\.settingsWechatQrFrame img\b/, 'QR image must have a stable frame style');
     assert.match(scanLogin, /get_bot_qrcode\?bot_type=3/, 'Main scan-login wrapper must use the iLink QR endpoint');
     assert.match(scanLogin, /get_qrcode_status\?qrcode=/, 'Main scan-login wrapper must use the iLink status endpoint');

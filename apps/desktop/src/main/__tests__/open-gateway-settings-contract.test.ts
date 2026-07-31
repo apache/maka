@@ -75,8 +75,9 @@ describe('Open Gateway Settings endpoint contract', () => {
     assert.match(gatewayBlock, /copyGatewayText\('recent-events-curl', command, copy\.toast\.recentEventsCopied/);
     assert.match(gatewayBlock, /copyGatewayText\('recent-requests-curl', command, copy\.toast\.recentRequestsCopied/);
     assert.match(gatewayBlock, /const gatewayCopyDisabled = Boolean\(copyingGatewayAction\)/);
-    assert.match(gatewayBlock, /disabled=\{gatewayCopyDisabled\}/);
-    assert.match(gatewayBlock, /disabled=\{!gatewayDraft\.token \|\| gatewayCopyDisabled\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(gatewayBlock, /isDisabled=\{gatewayCopyDisabled\}/);
+    assert.match(gatewayBlock, /isDisabled=\{!gatewayDraft\.token \|\| gatewayCopyDisabled\}/);
     assert.match(gatewayBlock, /isCopyingGatewayAction\('base-url'\) \? copy\.actions\.copying : copy\.actions\.copyAddress/);
     // Round 11: the seven page-level curl buttons collapsed into per-endpoint
     // row actions — each endpoint row carries its own 复制 curl button, so the

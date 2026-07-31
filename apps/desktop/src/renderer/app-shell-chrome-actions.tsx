@@ -12,11 +12,10 @@ import {
   SquarePen,
 } from '@maka/ui/icons';
 import {
-  Button as UiButton,
+  buttonVariants,
+  cn,
   Menu,
   MenuItem,
-  MenuPopup,
-  MenuTrigger,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -34,10 +33,12 @@ export function AppShellTopbarActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
+    // #1565 PR 3: the Tooltip/Menu render-prop buttons below stay on legacy
+    // buttonVariants until their owning slices (5/6/10) retire them.
     <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" aria-label={copy.windowActions}>
       <Tooltip>
         <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
+          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
           type="button"
           className="maka-titlebar-action"
           data-maka-search-trigger="true"
@@ -50,7 +51,7 @@ export function AppShellTopbarActions(props: {
       </Tooltip>
       <Tooltip>
         <TooltipTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
+          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
           type="button"
           className="maka-titlebar-action"
           onClick={props.sidebarCollapsed ? props.onExpandSidebar : props.onCollapseSidebar}
@@ -64,7 +65,7 @@ export function AppShellTopbarActions(props: {
       {props.sidebarCollapsed && (
         <Tooltip>
           <TooltipTrigger
-            render={<UiButton variant="quiet" size="icon-sm" />}
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             type="button"
             className="maka-titlebar-action"
             onClick={props.onCreateSession}
@@ -94,38 +95,26 @@ export function AppShellWorkspaceTopActions(props: {
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <Menu>
-        <MenuTrigger
-          render={<UiButton variant="quiet" size="icon-sm" />}
-          type="button"
-          className="maka-titlebar-action"
-          aria-label={copy.moreActions}
-        >
-          <MoreHorizontal aria-hidden="true" />
-        </MenuTrigger>
-        <MenuPopup align="end" sideOffset={4}>
-          <MenuItem onClick={props.onOpenFeedback}>
-            <MessageCircleQuestion aria-hidden="true" />
-            <span>{copy.feedback}</span>
-          </MenuItem>
-          <MenuItem onClick={props.onOpenPalette}>
-            <Grid3X3 aria-hidden="true" />
-            <span>{copy.openCommandPalette}</span>
-          </MenuItem>
-          <MenuItem onClick={props.onOpenHelp}>
-            <HelpCircle aria-hidden="true" />
-            <span>{copy.openHelp}</span>
-          </MenuItem>
-          <MenuItem onClick={props.onOpenHealth}>
-            <CircleGauge aria-hidden="true" />
-            <span>{copy.openHealth}</span>
-          </MenuItem>
-        </MenuPopup>
+      <Menu
+        button={{
+          label: copy.moreActions,
+          icon: <MoreHorizontal aria-hidden="true" />,
+          isIconOnly: true,
+          variant: 'ghost',
+          size: 'sm',
+          className: 'maka-titlebar-action',
+          style: { borderRadius: 'var(--radius-control)' },
+        }}
+      >
+          <MenuItem icon={<MessageCircleQuestion aria-hidden="true" />} label={copy.feedback} onClick={props.onOpenFeedback} />
+          <MenuItem icon={<Grid3X3 aria-hidden="true" />} label={copy.openCommandPalette} onClick={props.onOpenPalette} />
+          <MenuItem icon={<HelpCircle aria-hidden="true" />} label={copy.openHelp} onClick={props.onOpenHelp} />
+          <MenuItem icon={<CircleGauge aria-hidden="true" />} label={copy.openHealth} onClick={props.onOpenHealth} />
       </Menu>
       {props.workbarAvailable && (
         <Tooltip>
           <TooltipTrigger
-            render={<UiButton variant="quiet" size="icon-sm" />}
+            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
             type="button"
             className="maka-titlebar-action"
             onClick={props.onToggleWorkbar}

@@ -16,6 +16,7 @@
  *   - has usable secret OR provider's `authKind === 'none'`
  *   - effective model exists (caller's `requestedModel` if provided,
  *     otherwise `connection.defaultModel`)
+ *   - effective model is enabled by the user
  *   - effective model is in `connection.models` (when that list is
  *     enumerated)
  *
@@ -26,6 +27,7 @@
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
+  connectionEnabledModelIds,
   isWiredOAuthProvider,
   providerAuthRequiresSecret,
   type LlmConnection,
@@ -91,9 +93,11 @@ export interface IsConnectionReadyInput {
  *   3. unsupported OAuth provider → `oauth_subscription_not_wired`
  *   4. `authKind !== 'none' && !hasSecret` → `missing_api_key`
  *   5. effective model is empty/missing → `missing_model`
- *   6. `connection.models` is enumerated but empty → `empty_model_list`
- *   7. effective model is not in `connection.models` → `model_not_enabled`
- *   8. effective model is explicitly not chat-capable → `model_not_chat_capable`
+ *   6. no models are enabled → `empty_model_list`
+ *   7. effective model is not enabled → `model_not_enabled`
+ *   8. `connection.models` is enumerated but empty → `empty_model_list`
+ *   9. effective model is not in `connection.models` → `model_not_enabled`
+ *  10. effective model is explicitly not chat-capable → `model_not_chat_capable`
  *
  * "Effective model" = `requestedModel ?? connection.defaultModel`.
  */
@@ -116,6 +120,13 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
   const model = (requestedModel || connection.defaultModel)?.trim();
   if (!model) {
     return { ready: false, reason: 'missing_model' };
+  }
+  const enabledModelIds = new Set(connectionEnabledModelIds(connection));
+  if (enabledModelIds.size === 0) {
+    return { ready: false, reason: 'empty_model_list' };
+  }
+  if (!enabledModelIds.has(model)) {
+    return { ready: false, reason: 'model_not_enabled' };
   }
   if (connection.models) {
     const enabled = new Map<string, (typeof connection.models)[number]>();

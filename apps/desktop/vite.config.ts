@@ -38,5 +38,9 @@ export default defineConfig({
     // dist-renderer, leaving those side-files intact. See check-stale-dist.mjs.
     outDir: '../../dist-renderer',
     emptyOutDir: true,
+    // Electron 43 embeds Chromium 150. Preserve native light-dark() so Astryx
+    // tokens resolve against the nearest Theme color-scheme; downleveling the
+    // function computes both branches at :root before that scope is known.
+    cssTarget: 'chrome150',
   },
 });

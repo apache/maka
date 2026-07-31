@@ -1,18 +1,15 @@
 import type { ChatDefaultPermissionMode, PermissionMode } from '@maka/core';
 import { CHAT_DEFAULT_PERMISSION_MODES } from '@maka/core';
 import type { UiLocale } from '@maka/core';
+import {
+  Selector,
+  SelectorOption,
+  type SelectorOptionData,
+} from '@astryxdesign/core/Selector';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import {
-  SelectItem,
-  SelectPopup,
-  SelectPortal,
-  SelectPositioner,
-  SelectRoot,
-  SelectTrigger,
-  SelectValue,
-  type PickerTriggerAppearance,
-} from './ui.js';
+import type { PickerTriggerAppearance } from './ui.js';
+import { cn } from './utils.js';
 
 export interface PermissionModeMeta {
   label: string;
@@ -41,7 +38,7 @@ export function getPermissionModeMeta(locale: UiLocale): Record<PermissionMode, 
 export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_DEFAULT_PERMISSION_MODES;
 
 /**
- * The shared permission-mode picker, built on Base UI Select — the
+ * The shared permission-mode picker, built on Astryx Selector — the
  * semantically correct primitive for a single-value choice (the earlier
  * Menu + hand-styled "chip" trigger was a category error: Menu is for
  * actions, and the bespoke chip CSS existed to compensate). Both the
@@ -80,45 +77,40 @@ export function PermissionModeSelect(props: {
   // it to null — behaviour we would only be surviving, not relying on.
   // The trigger reads its label from the display state, so it stays correct
   // whether or not the Select holds a value.
-  const selectedValue: ChatDefaultPermissionMode | null = PERMISSION_MODE_ORDER.includes(
+  const selectedValue: ChatDefaultPermissionMode | undefined = PERMISSION_MODE_ORDER.includes(
     displayMode as ChatDefaultPermissionMode,
   )
     ? (displayMode as ChatDefaultPermissionMode)
-    : null;
+    : undefined;
+  const options: SelectorOptionData[] = PERMISSION_MODE_ORDER.map((mode) => ({
+    value: mode,
+    label: modeMeta[mode].label,
+  }));
+
   return (
-    <SelectRoot
+    <Selector
+      label={props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label)}
+      isLabelHidden
       value={selectedValue}
-      items={PERMISSION_MODE_ORDER.map((mode) => ({ value: mode, label: modeMeta[mode].label }))}
-      disabled={props.disabled}
-      onValueChange={(value) => {
-        if (value !== null) void props.onSelect(value as ChatDefaultPermissionMode);
-      }}
-    >
-      <SelectTrigger
-        appearance={props.appearance}
-        aria-label={props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label)}
-        title={props.disabledReason ?? meta.hint}
-        className={props.className}
-      >
-        <SelectValue>{() => meta.label}</SelectValue>
-      </SelectTrigger>
-      <SelectPortal>
-        <SelectPositioner alignItemWithTrigger={false} align={props.align ?? 'start'} sideOffset={6}>
-          <SelectPopup className="min-w-[280px] max-w-[320px]">
-            {PERMISSION_MODE_ORDER.map((mode) => {
-              const optionMeta = modeMeta[mode];
-              return (
-                <SelectItem key={mode} value={mode}>
-                  <span className="flex flex-col gap-0.5">
-                    <span className="text-sm font-medium text-foreground">{optionMeta.label}</span>
-                    <span className="text-xs leading-snug text-muted-foreground">{optionMeta.hint}</span>
-                  </span>
-                </SelectItem>
-              );
-            })}
-          </SelectPopup>
-        </SelectPositioner>
-      </SelectPortal>
-    </SelectRoot>
+      placeholder={meta.label}
+      options={options}
+      onChange={(value) =>
+        void props.onSelect(value as ChatDefaultPermissionMode)
+      }
+      isDisabled={props.disabled}
+      disabledMessage={props.disabledReason}
+      aria-description={meta.hint}
+      placement="below"
+      width={props.appearance === 'quiet' ? undefined : 320}
+      className={cn('permissionModeSelector', props.className)}
+      renderOption={(option) => (
+        <SelectorOption
+          label={option.label ?? option.value}
+          description={
+            modeMeta[option.value as ChatDefaultPermissionMode].hint
+          }
+        />
+      )}
+    />
   );
 }

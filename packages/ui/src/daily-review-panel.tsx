@@ -20,7 +20,7 @@ import {
   formatDailyReviewMarkdown,
   formatDailyReviewModelLabel,
 } from './daily-review-helpers.js';
-import { Button as UiButton } from './ui.js';
+import { Button as UiButton, IconButton } from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { Segmented } from './primitives/segmented.js';
 import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
@@ -284,7 +284,6 @@ export function DailyReviewPanel(props: {
       <div className="maka-daily-review-actions" aria-label={copy.export.ariaLabel}>
         {props.onCopyMarkdown && (
           <UiButton
-            type="button"
             variant="secondary"
             size="sm"
             className="maka-daily-review-copy min-w-[4rem]"
@@ -292,17 +291,15 @@ export function DailyReviewPanel(props: {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onCopyMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
             })}
-            disabled={dailyReviewActionBusy}
+            isDisabled={dailyReviewActionBusy}
             data-pending={pendingDailyReviewAction === 'copy' ? 'true' : undefined}
             aria-busy={pendingDailyReviewAction === 'copy' ? 'true' : undefined}
-            title={copy.export.copyTitle}
-          >
-            {pendingDailyReviewAction === 'copy' ? copy.export.copying : copy.export.copy}
-          </UiButton>
+            tooltip={copy.export.copyTitle}
+            label={pendingDailyReviewAction === 'copy' ? copy.export.copying : copy.export.copy}
+          />
         )}
         {props.onAppendMarkdown && (
           <UiButton
-            type="button"
             variant="secondary"
             size="sm"
             className="maka-daily-review-append min-w-[5rem]"
@@ -310,17 +307,15 @@ export function DailyReviewPanel(props: {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onAppendMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
             })}
-            disabled={dailyReviewActionBusy}
+            isDisabled={dailyReviewActionBusy}
             data-pending={pendingDailyReviewAction === 'append' ? 'true' : undefined}
             aria-busy={pendingDailyReviewAction === 'append' ? 'true' : undefined}
-            title={copy.export.appendTitle}
-          >
-            {pendingDailyReviewAction === 'append' ? copy.export.appending : copy.export.append}
-          </UiButton>
+            tooltip={copy.export.appendTitle}
+            label={pendingDailyReviewAction === 'append' ? copy.export.appending : copy.export.append}
+          />
         )}
         {props.onSaveMarkdown && (
           <UiButton
-            type="button"
             variant="secondary"
             size="sm"
             className="maka-daily-review-save min-w-[4rem]"
@@ -328,13 +323,12 @@ export function DailyReviewPanel(props: {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onSaveMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
             })}
-            disabled={dailyReviewActionBusy}
+            isDisabled={dailyReviewActionBusy}
             data-pending={pendingDailyReviewAction === 'save' ? 'true' : undefined}
             aria-busy={pendingDailyReviewAction === 'save' ? 'true' : undefined}
-            title={copy.export.saveTitle}
-          >
-            {pendingDailyReviewAction === 'save' ? copy.export.saving : copy.export.save}
-          </UiButton>
+            tooltip={copy.export.saveTitle}
+            label={pendingDailyReviewAction === 'save' ? copy.export.saving : copy.export.save}
+          />
         )}
       </div>
     ) : null;
@@ -367,29 +361,25 @@ export function DailyReviewPanel(props: {
               />
             )}
             <UiButton
-              type="button"
-              variant="default"
+              variant="primary"
               size="sm"
               className="maka-daily-review-quick-run min-w-[6rem]"
               onClick={() => void triggerManualRun('daily')}
-              disabled={dailyReviewActionBusy}
+              isDisabled={dailyReviewActionBusy}
               data-pending={pendingDailyReviewAction === 'run:daily' ? 'true' : undefined}
               aria-busy={pendingDailyReviewAction === 'run:daily' ? 'true' : undefined}
-            >
-              {pendingDailyReviewAction === 'run:daily' ? copy.page.generating : copy.page.generateDaily}
-            </UiButton>
+              label={pendingDailyReviewAction === 'run:daily' ? copy.page.generating : copy.page.generateDaily}
+            />
             <UiButton
-              type="button"
               variant="secondary"
               size="sm"
               className="maka-daily-review-quick-run min-w-[6rem]"
               onClick={() => void triggerManualRun('deep')}
-              disabled={dailyReviewActionBusy}
+              isDisabled={dailyReviewActionBusy}
               data-pending={pendingDailyReviewAction === 'run:deep' ? 'true' : undefined}
               aria-busy={pendingDailyReviewAction === 'run:deep' ? 'true' : undefined}
-            >
-              {pendingDailyReviewAction === 'run:deep' ? copy.page.generating : copy.page.generateDeep}
-            </UiButton>
+              label={pendingDailyReviewAction === 'run:deep' ? copy.page.generating : copy.page.generateDeep}
+            />
           </div>
         ) : undefined}
       />
@@ -409,28 +399,24 @@ export function DailyReviewPanel(props: {
           className="maka-daily-review-range-tabs"
         />
         <div className="maka-daily-review-scope-stepper">
-          <UiButton
-            type="button"
+          <IconButton
             variant="ghost"
-            size="icon-sm"
+            size="sm"
             className="maka-daily-review-stepper"
             onClick={() => setOffsetDays((n) => n - range)}
-            aria-label={copy.date.earlier(stepperLabel)}
-          >
-            <ChevronLeft aria-hidden="true" />
-          </UiButton>
+            label={copy.date.earlier(stepperLabel)}
+            icon={<ChevronLeft aria-hidden="true" />}
+          />
           <div className="maka-daily-review-day">{dayLabel}</div>
-          <UiButton
-            type="button"
+          <IconButton
             variant="ghost"
-            size="icon-sm"
+            size="sm"
             className="maka-daily-review-stepper"
             onClick={() => setOffsetDays((n) => Math.min(0, n + range))}
-            disabled={offsetDays >= 0}
-            aria-label={copy.date.later(stepperLabel)}
-          >
-            <ChevronRight aria-hidden="true" />
-          </UiButton>
+            isDisabled={offsetDays >= 0}
+            label={copy.date.later(stepperLabel)}
+            icon={<ChevronRight aria-hidden="true" />}
+          />
         </div>
       </div>
 
@@ -444,15 +430,13 @@ export function DailyReviewPanel(props: {
             <AlertDescription>{copy.overview.refreshFailed(error)}</AlertDescription>
             <AlertAction>
               <UiButton
-                type="button"
                 variant="ghost"
                 size="sm"
                 className="maka-daily-review-alert-retry"
                 onClick={() => setReloadToken((n) => n + 1)}
-                disabled={loading}
-              >
-                {copy.overview.retry}
-              </UiButton>
+                isDisabled={loading}
+                label={copy.overview.retry}
+              />
             </AlertAction>
           </Alert>
         ) : null}
@@ -561,15 +545,13 @@ export function DailyReviewPanel(props: {
               <AlertDescription>{copy.reports.readFailed(archiveError)}</AlertDescription>
               <AlertAction>
                 <UiButton
-                  type="button"
                   variant="ghost"
                   size="sm"
                   className="maka-daily-review-alert-retry"
                   onClick={() => setArchiveReloadToken((n) => n + 1)}
-                  disabled={archiveLoading}
-                >
-                  {copy.overview.retry}
-                </UiButton>
+                  isDisabled={archiveLoading}
+                  label={copy.overview.retry}
+                />
               </AlertAction>
             </Alert>
           )}

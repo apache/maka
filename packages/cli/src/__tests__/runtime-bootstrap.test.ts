@@ -8,7 +8,7 @@ import {
   createConnectionStore,
   createFileCredentialStore,
   createSessionStore,
-  createShellRunStore,
+  createSqliteShellRunStore,
 } from '@maka/storage';
 import {
   BackendRegistry,
@@ -184,7 +184,12 @@ describe('Maka CLI runtime bootstrap', () => {
         defaultModel: 'selected-model',
       });
       await connectionStore.update('selected-local', {
-        models: [{ id: 'requested-model', capabilities: { vision: true } }],
+        // Requested model must be user-enabled; discovered catalog alone is not enough.
+        enabledModelIds: ['selected-model', 'requested-model'],
+        models: [
+          { id: 'selected-model' },
+          { id: 'requested-model', capabilities: { vision: true } },
+        ],
       });
       const observed: unknown[] = [];
       const observer = (result: unknown): void => {
@@ -592,10 +597,10 @@ describe('Maka CLI runtime bootstrap', () => {
         assert.equal(detail.output?.stdout, 'start');
 
         await context.close();
-        const record = await createShellRunStore(workspaceRoot).readShellRun(
-          'session-1',
-          backgroundTaskId(result.ref),
-        );
+        const shellRuns = createSqliteShellRunStore(workspaceRoot);
+        await shellRuns.ready();
+        const record = await shellRuns.readShellRun('session-1', backgroundTaskId(result.ref));
+        shellRuns.close();
         assert.equal(record.status, 'cancelled');
         assert.equal(record.exitCode, 130);
       } finally {
@@ -744,10 +749,10 @@ describe('Maka CLI runtime bootstrap', () => {
           return snapshot?.result.status === 'completed' ? snapshot : undefined;
         });
         assert.equal(hydrated.result.status, 'completed');
-        const stored = await createShellRunStore(workspaceRoot).readShellRun(
-          'session-1',
-          backgroundTaskId(started.ref),
-        );
+        const shellRuns = createSqliteShellRunStore(workspaceRoot);
+        await shellRuns.ready();
+        const stored = await shellRuns.readShellRun('session-1', backgroundTaskId(started.ref));
+        shellRuns.close();
         assert.equal(stored.observedAt, undefined);
       } finally {
         await context.close();

@@ -248,9 +248,13 @@ export async function withInspectCommandStores<T>(
   const capability = await discoverMarkedStorageRoot({ path: storageRoot });
   if (capability.kind === 'headless') {
     const storage = await openHeadlessStorageForRead(capability);
-    return operation(
-      inspectStoresFromExecutionReader(storage.executionStores, storage.taskRunStore),
-    );
+    try {
+      return await operation(
+        inspectStoresFromExecutionReader(storage.executionStores, storage.taskRunStore),
+      );
+    } finally {
+      await storage.executionStores.sessionStore.close?.();
+    }
   }
 
   const reader = await tryAcquireInteractiveRootReader(capability);
@@ -262,7 +266,11 @@ export async function withInspectCommandStores<T>(
   }
   try {
     const executionStores = await openInteractiveExecutionStoresForRead(reader.lease);
-    return await operation(inspectStoresFromExecutionReader(executionStores));
+    try {
+      return await operation(inspectStoresFromExecutionReader(executionStores));
+    } finally {
+      await executionStores.sessionStore.close?.();
+    }
   } finally {
     await reader.close();
   }

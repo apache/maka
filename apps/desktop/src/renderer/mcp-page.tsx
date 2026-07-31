@@ -8,6 +8,7 @@ import {
   DialogHeader,
   DialogRoot,
   EmptyState,
+  IconButton,
   Input,
   InputGroup,
   InputGroupAddon,
@@ -273,14 +274,26 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         badge={props.hubHeader?.badge}
         headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
         actions={
-          <div className="maka-module-main-actions" role="group" aria-label={copy.page.actionsAria}>
-            <Button variant="secondary" onClick={() => void reload()} disabled={busy === 'load'}>
-              <RefreshCcw aria-hidden="true" /> {busy === 'load' ? copy.page.refreshing : copy.page.refresh}
-            </Button>
-            <Button variant="secondary" onClick={() => setEditor({ mode: 'json', source: exampleJson() })}>
-              <FileCode aria-hidden="true" /> {copy.page.importJson}
-            </Button>
-            <Button variant="default" onClick={() => openManual()}><Plus aria-hidden="true" /> {copy.page.add}</Button>
+          <div
+            className="maka-module-main-actions"
+            data-maka-contract="module-actions"
+            role="group"
+            aria-label={copy.page.actionsAria}
+          >
+            <Button
+              variant="secondary"
+              onClick={() => void reload()}
+              isDisabled={busy === 'load'}
+              icon={<RefreshCcw aria-hidden="true" />}
+              label={busy === 'load' ? copy.page.refreshing : copy.page.refresh}
+            />
+            <Button
+              variant="secondary"
+              onClick={() => setEditor({ mode: 'json', source: exampleJson() })}
+              icon={<FileCode aria-hidden="true" />}
+              label={copy.page.importJson}
+            />
+            <Button variant="primary" onClick={() => openManual()} icon={<Plus aria-hidden="true" />} label={copy.page.add} />
           </div>
         }
       />
@@ -408,7 +421,10 @@ function McpCatalogCard(props: {
   const installing = props.phase === 'installing';
   const cancelling = props.phase === 'cancelling';
   return (
-    <article className="maka-mcp-market-card">
+    <article
+      className="maka-mcp-market-card"
+      data-maka-contract="mcp-market-card"
+    >
       <div
         className="maka-mcp-market-icon"
         data-brand={props.entry.id}
@@ -427,7 +443,7 @@ function McpCatalogCard(props: {
         </small>
       </div>
       {props.installed ? (
-        <Button size="sm" variant="secondary" onClick={props.onManage}>{props.copy.card.manage}</Button>
+        <Button size="sm" variant="secondary" onClick={props.onManage} label={props.copy.card.manage} />
       ) : (
         <button
           type="button"
@@ -487,11 +503,16 @@ function McpServerRow(props: {
           ariaLabel={props.copy.row.enabledAria(props.serverId)}
         />
         <div className="maka-mcp-server-actions">
-          <Button size="sm" variant="secondary" onClick={props.onTest} disabled={props.busy === `test:${props.serverId}`}>
-            <RefreshCcw aria-hidden="true" /> {props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
-          </Button>
-          <Button size="icon-sm" variant="quiet" aria-label={props.copy.row.editAria(props.serverId)} title={props.copy.row.edit} onClick={props.onEdit}><Pencil aria-hidden="true" /></Button>
-          <Button size="icon-sm" variant="quiet" aria-label={props.copy.row.deleteAria(props.serverId)} title={props.copy.row.delete} onClick={props.onRemove} disabled={props.busy === `remove:${props.serverId}`}><Trash2 aria-hidden="true" /></Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={props.onTest}
+            isDisabled={props.busy === `test:${props.serverId}`}
+            icon={<RefreshCcw aria-hidden="true" />}
+            label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
+          />
+          <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
+          <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
         </div>
       </div>
       {props.status?.error && <div className="maka-mcp-server-error" role="alert">{props.status.error}</div>}
@@ -517,7 +538,6 @@ function McpEditorDialog(props: {
   onSave(event: React.FormEvent): void;
   onImport(event: React.FormEvent): void;
 }) {
-  const titleId = 'maka-mcp-editor-title';
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
   const updateDraft = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     if (props.state.mode !== 'manual') return;
@@ -525,11 +545,14 @@ function McpEditorDialog(props: {
   };
   return (
     <DialogRoot open onOpenChange={(open) => { if (!open) props.onClose(); }}>
-      <DialogContent className="maka-modal maka-mcp-editor-dialog" aria-labelledby={titleId} showClose={false}>
+      <DialogContent
+        className="maka-mcp-editor-dialog"
+        width="min(92vw, var(--maka-chat-measure))"
+        maxHeight="85dvh"
+      >
         <DialogHeader
           icon={props.state.mode === 'json' ? <FileCode /> : <Plug />}
           title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
-          titleId={titleId}
           subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
           onClose={props.onClose}
         />
@@ -547,7 +570,7 @@ function McpEditorDialog(props: {
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
             <label><span>{props.copy.editor.jsonConfig}</span><Textarea aria-label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(event) => props.onChange({ mode: 'json', source: event.currentTarget.value })} spellCheck={false} /></label>
             <p>{props.copy.editor.jsonHelp} <code>{'{ "mcpServers": { ... } }'}</code></p>
-            <div className="maka-mcp-editor-footer"><Button type="button" variant="ghost" onClick={props.onClose}>{props.copy.editor.cancel}</Button><Button type="submit" disabled={props.saving}>{props.saving ? props.copy.editor.importing : props.copy.editor.importConnect}</Button></div>
+            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={props.onClose} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.importing : props.copy.editor.importConnect} /></div>
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
@@ -576,7 +599,7 @@ function McpEditorDialog(props: {
                 </>
               )}
             </div>
-            <div className="maka-mcp-editor-footer"><Button type="button" variant="ghost" onClick={props.onClose}>{props.copy.editor.cancel}</Button><Button type="submit" disabled={props.saving}>{props.saving ? props.copy.editor.saving : props.copy.editor.saveConnect}</Button></div>
+            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={props.onClose} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.saving : props.copy.editor.saveConnect} /></div>
           </form>
         )}
       </DialogContent>

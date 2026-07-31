@@ -10,6 +10,7 @@ import {
   type SandboxBoundarySettlement,
   type SettleSandboxBoundaryRequest,
 } from '@maka/core';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
@@ -20,6 +21,7 @@ import type {
   ToolResultContent,
   ToolResultEvent,
   ToolStartEvent,
+  ToolUncertainOutcomeSignal,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
 import type { ToolCallMessage, ToolResultMessage } from '@maka/core/session';
@@ -277,6 +279,8 @@ export const LOOP_GATE_IDENTICAL_THRESHOLD = 3;
 
 const SUBAGENT_TOOL_LIMIT_MESSAGE =
   '只读探索并发过多：同一轮最多 5 个子代理。请等待已有探索完成后再继续。';
+const CLIENT_CAPABILITY_BOUNDARY_MESSAGE =
+  'Client Capability tools require the Bypass execution boundary because their client-side effects cannot be sandboxed by the Host. Switch this Session to Bypass and retry.';
 
 function composeChildAbortSignal(
   invocationSignal: AbortSignal,
@@ -714,12 +718,14 @@ export class ToolRuntime {
     queue: DurableSessionEventSink,
     sandboxDenial?: SandboxDenialSignal,
     sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
+    uncertainOutcome?: ToolUncertainOutcomeSignal,
   ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
       text: formatSyntheticToolErrorText(text),
       ...(sandboxDenial ? { sandboxDenial } : {}),
       ...(sandboxFailure ? { sandboxFailure } : {}),
+      ...(uncertainOutcome ? { uncertainOutcome } : {}),
     };
     const durableAttempt = this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
     const durableOutcome = await durableAttempt?.commitOutcome(content, true);
@@ -960,6 +966,39 @@ export class ToolRuntime {
     }
 
     this.assertCapturedRunOwner(tool.name, runId);
+    let clientCapabilityBoundary: ExecutionBoundary | undefined;
+    if (tool.categoryHint === 'client_capability') {
+      try {
+        clientCapabilityBoundary = await this.readExecutionBoundary();
+      } catch (error) {
+        const reason = formatSyntheticToolErrorText(error);
+        await this.writeSyntheticToolResult(toolUseId, turnId, reason, queue);
+        trace?.emit('tool', 'tool_failed', 'Client Capability boundary read failed', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ExecutionBoundaryUnavailable',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(reason);
+      }
+      if (clientCapabilityBoundary.kind !== 'bypass') {
+        await this.writeSyntheticToolResult(
+          toolUseId,
+          turnId,
+          CLIENT_CAPABILITY_BOUNDARY_MESSAGE,
+          queue,
+        );
+        trace?.emit('tool', 'tool_failed', 'Client Capability blocked by execution boundary', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ClientCapabilityBoundary',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(CLIENT_CAPABILITY_BOUNDARY_MESSAGE);
+      }
+    }
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
@@ -1019,7 +1058,7 @@ export class ToolRuntime {
       pauseTarget?.pause();
       try {
         const runId = this.input.getCurrentRunId?.();
-        const executionBoundary = await this.readExecutionBoundary();
+        const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
         const result = await tool.impl(structuredClone(executionArgs) as never, {
           sessionId: this.input.sessionId,
           turnId,
@@ -1184,6 +1223,8 @@ export class ToolRuntime {
       if (isInteractionControlError(err)) throw err;
       output.flush();
       const sandboxError = serializeSandboxError(err);
+      const uncertainOutcome = uncertainOutcomeSignalFromError(err);
+      const errorClass = uncertainOutcome ? 'OutcomeUnknown' : classifyError(err);
       const terminalFailure = coerceTerminalFailure(
         tool,
         this.input.header.cwd,
@@ -1242,7 +1283,7 @@ export class ToolRuntime {
           modelId: this.input.modelId,
           durationMs,
           status: 'error',
-          errorClass: classifyError(err),
+          errorClass,
           argsSummary:
             tool.categoryHint === 'computer_use'
               ? summarizePersistedArgs(persistedArgs)
@@ -1257,15 +1298,17 @@ export class ToolRuntime {
           toolName: tool.name,
           durationMs,
           status: 'error',
-          errorClass: classifyError(err),
+          errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
         return this.errorReturn(terminalFailure.message);
       }
       const msg =
         tool.categoryHint === 'computer_use'
-          ? `Computer Use failed: ${classifyError(err)}`
-          : formatSyntheticToolErrorText(err);
+          ? `Computer Use failed: ${errorClass}`
+          : uncertainOutcome
+            ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
+            : formatSyntheticToolErrorText(err);
       await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
@@ -1273,6 +1316,7 @@ export class ToolRuntime {
         queue,
         sandboxDenialSignalFromError(err),
         sandboxBoundaryFailureSignal(sandboxError),
+        uncertainOutcome,
       );
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
@@ -1283,7 +1327,7 @@ export class ToolRuntime {
         modelId: this.input.modelId,
         durationMs: Math.max(0, this.input.now() - startedAt),
         status: 'error',
-        errorClass: classifyError(err),
+        errorClass,
         argsSummary:
           tool.categoryHint === 'computer_use'
             ? summarizePersistedArgs(persistedArgs)
@@ -1297,7 +1341,7 @@ export class ToolRuntime {
         toolName: tool.name,
         durationMs: Math.max(0, this.input.now() - startedAt),
         status: 'error',
-        errorClass: classifyError(err),
+        errorClass,
         ...(sandboxError ? { sandbox: sandboxError } : {}),
       });
       return sandboxError ? { error: msg, sandbox: sandboxError } : this.errorReturn(msg);
@@ -2052,6 +2096,14 @@ function sandboxBoundaryFailureSignal(
     ...(metadata.requiredExpansion
       ? { requiredExpansion: metadata.requiredExpansion as SandboxBoundaryExpansion }
       : {}),
+  };
+}
+
+function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSignal | undefined {
+  if (!(error instanceof ToolOutcomeUnknownError)) return undefined;
+  return {
+    code: 'outcome_unknown',
+    retrySafe: false,
   };
 }
 

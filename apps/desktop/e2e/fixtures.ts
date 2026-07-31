@@ -15,7 +15,10 @@ const DESKTOP_ROOT = process.cwd();
  * backend (BackendRegistry override in main); this only satisfies the UI
  * readiness gates. Kept in the fixture so test data stays out of production main.
  */
-async function seedE2eConnection(userDataDir: string): Promise<void> {
+async function seedE2eConnection(
+  userDataDir: string,
+  extraConnectionCount = 0,
+): Promise<void> {
   const workspaceRoot = path.join(userDataDir, 'workspaces', 'default');
   const connections = createConnectionStore(workspaceRoot);
   const credentials = createFileCredentialStore(workspaceRoot);
@@ -26,6 +29,16 @@ async function seedE2eConnection(userDataDir: string): Promise<void> {
     defaultModel: 'claude-sonnet-4-5-20250929',
   });
   await credentials.setSecret('e2e', 'api_key', 'e2e-placeholder');
+  for (let index = 0; index < extraConnectionCount; index += 1) {
+    const slug = `e2e-extra-${index + 1}`;
+    await connections.create({
+      slug,
+      name: `E2E Extra ${index + 1}`,
+      providerType: 'anthropic',
+      defaultModel: `claude-e2e-${index + 1}`,
+    });
+    await credentials.setSecret(slug, 'api_key', 'e2e-placeholder');
+  }
   await connections.setDefault('e2e');
 }
 
@@ -115,7 +128,15 @@ export function e2eHomeDir(): string {
  * Electron and a leaked `maka-e2e-*` directory.
  */
 async function withE2eWindow(
-  { seed, readinessSelector, e2eFixtureScenario, locale, platform, invocableSkills }: {
+  {
+    seed,
+    readinessSelector,
+    e2eFixtureScenario,
+    locale,
+    platform,
+    invocableSkills,
+    extraConnectionCount,
+  }: {
     seed: boolean;
     readinessSelector: string;
     e2eFixtureScenario?: string;
@@ -123,6 +144,7 @@ async function withE2eWindow(
     /** #1312: force app:info's platform so the window boots natively into that platform's `data-os` cascade. */
     platform?: 'darwin' | 'win32' | 'linux';
     invocableSkills?: boolean;
+    extraConnectionCount?: number;
   },
   use: (page: Page) => Promise<void>,
 ): Promise<void> {
@@ -136,7 +158,7 @@ async function withE2eWindow(
   const mainLogs: string[] = [];
   const rendererLogs: string[] = [];
   try {
-    if (seed) await seedE2eConnection(userDataDir);
+    if (seed) await seedE2eConnection(userDataDir, extraConnectionCount);
     if (invocableSkills) await seedE2eInvocableSkills(userDataDir);
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
@@ -194,6 +216,7 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
+  modelPickerLongWindow: Page;
   emptyWindow: Page;
   longTranscriptWindow: Page;
   chatChromeDarwinWindow: Page;
@@ -218,6 +241,17 @@ export const test = base.extend<{
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: '.maka-composer-textarea', locale: 'zh' }, use);
+  },
+  modelPickerLongWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: true,
+        readinessSelector: '.maka-composer-textarea',
+        locale: 'zh',
+        extraConnectionCount: 10,
+      },
+      use,
+    );
   },
   // Empty: no connection staged — exercises the true first-run boot path.
   // Used by first-run only.

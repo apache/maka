@@ -43,8 +43,8 @@ import {
 } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
-export { isDeepResearchSession } from './explore-agent.js';
-export { isExpertTeamSession } from './expert-team.js';
+export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
+export { EXPERT_TEAM_LABEL_PREFIX, isExpertTeamSession } from './expert-team.js';
 
 export const SESSION_STATUSES = [
   'active',

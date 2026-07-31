@@ -23,19 +23,20 @@
     "build:preload": "esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --outfile=dist/preload/preload.cjs --external:electron",
     "build:overlay": "node ../../scripts/build-cursor-overlay.mjs",
     "build:renderer": "vite build && node ../../scripts/check-third-party-notices.mjs",
+    "build:workspace-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build",
     "package:macos-arm64": "electron-builder --config electron-builder.config.mjs --mac --arm64 --publish never",
     "typecheck": "tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.storybook.json --noEmit",
     "typecheck:stories": "tsc -p tsconfig.storybook.json --noEmit",
-    "pretest": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run test:checks",
+    "pretest": "npm run build:workspace-deps && npm run test:checks",
     "test": "npm run clean:main && npm run build:main && node --test \"dist/main/**/*.test.js\"",
     "test:checks": "node ../../scripts/check-console.mjs && node ../../scripts/check-a11y.mjs && node ../../scripts/check-copy.mjs",
     "test:dist": "npm run test:checks && node --test \"dist/main/**/*.test.js\"",
     "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
-    "build:with-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build",
+    "build:with-deps": "npm run build:workspace-deps && npm run build",
     "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
     "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
     "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
-    "smoke:browser": "npm --workspace @maka/core run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm run build:main && electron scripts/browser-observe-act-smoke.mjs"
+    "smoke:browser": "npm run build:workspace-deps && npm run build:main && electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {
     "@astryxdesign/core": "0.1.9",

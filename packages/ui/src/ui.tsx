@@ -1,7 +1,4 @@
 import React, { forwardRef } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
-import { Dialog as BaseDialog } from '@base-ui/react/dialog';
-import { AlertDialog as BaseAlertDialog } from '@base-ui/react/alert-dialog';
 import { Field as BaseField } from '@base-ui/react/field';
 import { Progress as BaseProgress } from '@base-ui/react/progress';
 import { Radio as BaseRadio } from '@base-ui/react/radio';
@@ -9,16 +6,22 @@ import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
 import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
-import { Select as BaseSelect } from '@base-ui/react/select';
-import { Separator as BaseSeparator } from '@base-ui/react/separator';
+import { AlertDialog as AstryxAlertDialog } from '@astryxdesign/core/AlertDialog';
+import {
+  Dialog as AstryxDialog,
+  type DialogProps as AstryxDialogProps,
+  type DialogPurpose,
+} from '@astryxdesign/core/Dialog';
 import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
+import { Selector } from '@astryxdesign/core/Selector';
 import { mergeRefs } from '@astryxdesign/core/utils';
-import { Check, ChevronDown, X } from './icons.js';
 import { cva, type VariantProps } from 'class-variance-authority';
+import {
+  useModalFocusLifecycle,
+  type ModalFocusTarget,
+} from './modal-lifecycle.js';
 import { cn } from './utils.js';
 import { inputClasses } from './primitives/input.js';
-import { useUiLocale } from './locale-context.js';
-import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export { cn } from './utils.js';
 
@@ -68,6 +71,12 @@ export function pickerTriggerClasses(appearance: PickerTriggerAppearance = 'fiel
 // this PR actually needs state-based classes; do not pre-design it.
 // ===========================================================================
 
+// #1565 PR 3: the Button COMPONENT is the Astryx primitive now (re-exported
+// from index.ts). buttonVariants stays as a LEGACY className recipe only: its
+// remaining consumers are controls owned by later slices (Dialog close /
+// Toast action / Menu trigger render-props, where composing the Astryx
+// Button into a Base UI render-prop would wrap both systems around one
+// control). Each owning slice retires its usage; PR 11 deletes the recipe.
 export const buttonVariants = cva(
   [
     'inline-flex shrink-0 items-center justify-center gap-2 rounded-sm',
@@ -129,131 +138,140 @@ export const buttonVariants = cva(
   },
 );
 
-interface ButtonProps
-  extends Omit<React.ComponentPropsWithoutRef<typeof BaseButton>, 'className'>,
-    VariantProps<typeof buttonVariants> {
-  className?: string;
-}
-
-export const Button = forwardRef<HTMLElement, ButtonProps>(function Button(
-  { className, variant, size, shape, ...props },
-  ref,
-) {
-  return (
-    <BaseButton
-      ref={ref}
-      className={cn(buttonVariants({ variant, size, shape }), className)}
-      data-slot="button"
-      {...props}
-    />
-  );
-});
-
 // #520 item 22: Input, Textarea, inputClasses, bareFieldClasses retired onto
 // packages/ui/src/primitives/input.tsx + primitives/textarea.tsx (Base UI
 // Input + ported chrome, single element, no span wrapper). Re-exported from
 // the barrel via index.ts; number-field imports inputClasses/bareFieldClasses
 // from primitives/input.js.
 
-export const Separator = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSeparator>>(function Separator(
-  { className, orientation = 'horizontal', ...props },
-  ref,
-) {
-  return (
-    <BaseSeparator
-      ref={ref}
-      orientation={orientation}
-      className={cn(
-        'shrink-0 bg-border',
-        orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px',
-        className,
-      )}
-      data-slot="separator"
-      {...props}
-    />
+interface DialogContextValue {
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+  purpose: DialogPurpose;
+}
+
+const DialogContext = React.createContext<DialogContextValue | null>(null);
+
+interface DialogRootProps {
+  open?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?(isOpen: boolean): void;
+  children?: React.ReactNode;
+}
+
+function ModalRoot({
+  open: controlledOpen,
+  defaultOpen = false,
+  onOpenChange,
+  children,
+  purpose,
+}: DialogRootProps & { purpose: DialogPurpose }) {
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen);
+  const isOpen = controlledOpen ?? uncontrolledOpen;
+  const context = React.useMemo<DialogContextValue>(
+    () => ({
+      isOpen,
+      purpose,
+      onOpenChange(nextOpen) {
+        if (controlledOpen === undefined) setUncontrolledOpen(nextOpen);
+        onOpenChange?.(nextOpen);
+      },
+    }),
+    [controlledOpen, isOpen, onOpenChange, purpose],
   );
-});
+  return <DialogContext value={context}>{children}</DialogContext>;
+}
 
-export const DialogRoot = BaseDialog.Root;
-export const DialogClose = BaseDialog.Close;
-export const AlertDialogRoot = BaseAlertDialog.Root;
+export function DialogRoot(props: DialogRootProps) {
+  return <ModalRoot {...props} purpose="info" />;
+}
 
-// Shared modal shell. Dialog and AlertDialog differ only in their Base UI
-// primitive family (Root/Portal/Backdrop/Popup/Close); the layout (backdrop
-// class, popup class, Portal+Backdrop+Popup+optional Close structure) is
-// identical. PR6 review P3.1: kills the AlertDialogBackdrop/Popup/Content
-// triple that copied Dialog's, and lets ui-tsx-design-contract's
-// the bare z-index/blur utility counts return to 1.
-//
-// `maka-dialog-backdrop` is a stable, style-free hook so tests and the
-// real-window smoke diagnostic can select the dialog backdrop; Base UI
-// renders only utility classes otherwise, which drift and aren't reliably
-// selectable.
-const MODAL_BACKDROP_CLASS = 'maka-dialog-backdrop fixed inset-0 z-40 bg-foreground/20 backdrop-blur-sm';
-const MODAL_POPUP_CLASS =
-  'fixed left-1/2 top-1/2 z-50 grid max-h-[85dvh] w-[min(92vw,640px)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl bg-popover text-popover-foreground shadow-maka-panel';
+export function AlertDialogRoot(props: DialogRootProps) {
+  return <ModalRoot {...props} purpose="form" />;
+}
 
-type ModalContentProps = React.ComponentPropsWithoutRef<typeof BaseDialog.Popup> & { showClose?: boolean };
-type ModalSlotPrefix = 'dialog' | 'alert-dialog';
+function useDialogRoot(): DialogContextValue {
+  const context = React.useContext(DialogContext);
+  if (!context) throw new Error('DialogContent must be rendered inside DialogRoot');
+  return context;
+}
 
-type ModalBackdropProps = { className?: string; 'data-slot'?: string };
-type ModalCloseProps = { className?: string; 'aria-label'?: string; 'data-slot'?: string; children?: React.ReactNode };
+interface ModalContentProps
+  extends Omit<AstryxDialogProps, 'children' | 'isOpen' | 'onOpenChange' | 'ref'> {
+  children?: React.ReactNode;
+  initialFocus?: ModalFocusTarget;
+  finalFocus?: ModalFocusTarget;
+}
 
-function createModalContent(primitives: {
-  Portal: React.ComponentType<{ children?: React.ReactNode }>;
-  Backdrop: React.ComponentType<ModalBackdropProps>;
-  Popup: React.ForwardRefExoticComponent<React.ComponentPropsWithoutRef<typeof BaseDialog.Popup> & React.RefAttributes<HTMLDivElement>>;
-  Close: React.ComponentType<ModalCloseProps>;
-  defaultShowClose: boolean;
-  slotPrefix: ModalSlotPrefix;
-}) {
-  return forwardRef<HTMLDivElement, ModalContentProps>(function ModalContent(
-    { className, children, showClose = primitives.defaultShowClose, ...props },
+type ModalRole = 'dialog' | 'alertdialog';
+
+function createModalContent(defaultRole: ModalRole, defaultPurpose?: DialogPurpose) {
+  return forwardRef<HTMLDialogElement, ModalContentProps>(function ModalContent(
+    {
+      children,
+      initialFocus,
+      finalFocus,
+      purpose,
+      role = defaultRole,
+      padding = 0,
+      ...props
+    },
     ref,
   ) {
-    const copy = getSharedUiCopy(useUiLocale()).primitives;
-    const { Portal, Backdrop, Popup, Close, slotPrefix } = primitives;
+    const root = useDialogRoot();
+    useModalFocusLifecycle({ isOpen: root.isOpen, initialFocus, finalFocus });
+
     return (
-      <Portal>
-        <Backdrop className={MODAL_BACKDROP_CLASS} data-slot={`${slotPrefix}-backdrop`} />
-        <Popup ref={ref} className={cn(MODAL_POPUP_CLASS, className)} data-slot={`${slotPrefix}-popup`} {...props}>
-          {showClose && (
-            <Close
-              className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), 'absolute right-3 top-3')}
-              aria-label={copy.close}
-              data-slot={`${slotPrefix}-close`}
-            >
-              <X aria-hidden="true" />
-            </Close>
-          )}
-          {children}
-        </Popup>
-      </Portal>
+      <AstryxDialog
+        {...props}
+        ref={ref}
+        isOpen={root.isOpen}
+        onOpenChange={root.onOpenChange}
+        purpose={purpose ?? defaultPurpose ?? root.purpose}
+        role={role}
+        padding={padding}
+      >
+        {children}
+      </AstryxDialog>
     );
   });
 }
 
-export const DialogContent = createModalContent({
-  Portal: BaseDialog.Portal,
-  Backdrop: BaseDialog.Backdrop,
-  Popup: BaseDialog.Popup,
-  Close: BaseDialog.Close,
-  defaultShowClose: true,
-  slotPrefix: 'dialog',
-});
+export const DialogContent = createModalContent('dialog');
+export const AlertDialogContent = createModalContent('alertdialog', 'form');
 
-// AlertDialog — the alert variant locks modal + disables pointer dismissal,
-// so confirmation dialogs require an explicit decision. Escape is NOT
-// auto-disabled (Base UI alert-dialog still closes on Esc); callers that must
-// not be Esc-dismissed intercept onOpenChange and cancel. PR6 (#520).
-export const AlertDialogContent = createModalContent({
-  Portal: BaseAlertDialog.Portal,
-  Backdrop: BaseAlertDialog.Backdrop,
-  Popup: BaseAlertDialog.Popup,
-  Close: BaseAlertDialog.Close,
-  defaultShowClose: false,
-  slotPrefix: 'alert-dialog',
-});
+interface DialogCloseProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  render?: React.ReactElement<Record<string, unknown>>;
+}
+
+export function DialogClose({ render, children, onClick, ...props }: DialogCloseProps) {
+  const root = useDialogRoot();
+  const handleClick: React.MouseEventHandler<HTMLButtonElement> = (event) => {
+    const renderedOnClick = render?.props.onClick as
+      | React.MouseEventHandler<HTMLButtonElement>
+      | undefined;
+    renderedOnClick?.(event);
+    onClick?.(event);
+    if (!event.defaultPrevented) root.onOpenChange(false);
+  };
+
+  if (render) {
+    return React.cloneElement(render, { ...props, onClick: handleClick, children });
+  }
+  return (
+    <button
+      {...props}
+      type={props.type ?? 'button'}
+      aria-label={props['aria-label']}
+      onClick={handleClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+export { AstryxAlertDialog as AlertDialog };
+export { LayerProvider } from '@astryxdesign/core/Layer';
 
 // Tabs: re-export the shared tab spec primitive (#499 P0-3). The tab spec
 // (maka-tab class + underline/pill variants + neutral state tokens) lives in
@@ -264,100 +282,131 @@ export const AlertDialogContent = createModalContent({
 // maka-tab + the correct data-active attribute.
 export { Tabs as TabsRoot, TabsList, TabsTab as TabsTrigger, TabsPanel } from './primitives/tabs.js';
 
-export const SelectRoot = BaseSelect.Root;
+interface LegacySelectItem {
+  value: string;
+  label?: string;
+}
+
+interface LegacySelectContextValue {
+  value: string | null;
+  items: LegacySelectItem[];
+  disabled?: boolean;
+  setValue(value: string): void;
+}
+
+const LegacySelectContext =
+  React.createContext<LegacySelectContextValue | null>(null);
+
+/**
+ * Frozen compound Select compatibility shell.
+ *
+ * All Maka call sites use SettingsSelect/PermissionModeSelect, where Astryx
+ * Selector owns the full implementation. These exports remain append-only
+ * API compatibility: the trigger renders that same Astryx authority and the
+ * retired popup marker components contribute no second listbox or layer.
+ */
+export function SelectRoot(props: {
+  children?: React.ReactNode;
+  value?: string | null;
+  defaultValue?: string | null;
+  items?: LegacySelectItem[];
+  disabled?: boolean;
+  onValueChange?(value: string | null): void;
+}) {
+  const [uncontrolledValue, setUncontrolledValue] = React.useState(
+    props.defaultValue ?? null,
+  );
+  const controlled = props.value !== undefined;
+  const value = controlled ? props.value ?? null : uncontrolledValue;
+  const context = React.useMemo<LegacySelectContextValue>(
+    () => ({
+      value,
+      items: props.items ?? [],
+      disabled: props.disabled,
+      setValue(nextValue) {
+        if (!controlled) setUncontrolledValue(nextValue);
+        props.onValueChange?.(nextValue);
+      },
+    }),
+    [controlled, props.disabled, props.items, props.onValueChange, value],
+  );
+  return (
+    <LegacySelectContext.Provider value={context}>
+      {props.children}
+    </LegacySelectContext.Provider>
+  );
+}
+
 export const SelectTrigger = forwardRef<
   HTMLButtonElement,
-  React.ComponentPropsWithoutRef<typeof BaseSelect.Trigger> & { appearance?: PickerTriggerAppearance }
+  React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    appearance?: PickerTriggerAppearance;
+  }
 >(function SelectTrigger(
-  { appearance = 'field', className, children, ...props },
-  ref,
+  { appearance: _appearance = 'field', className, children: _children, ...props },
+  _ref,
 ) {
+  const context = React.useContext(LegacySelectContext);
+  if (!context) throw new Error('SelectTrigger must be used inside SelectRoot');
+  const label =
+    props['aria-label'] ??
+    context.items.find((item) => item.value === context.value)?.label ??
+    '';
   return (
-    <BaseSelect.Trigger
-      ref={ref}
-      className={cn(pickerTriggerClasses(appearance), 'justify-between', className)}
-      data-slot="select-trigger"
-      {...props}
-    >
-      {children}
-      <BaseSelect.Icon>
-        <ChevronDown size={14} aria-hidden="true" />
-      </BaseSelect.Icon>
-    </BaseSelect.Trigger>
+    <Selector
+      label={String(props['aria-label'] ?? label)}
+      isLabelHidden
+      value={context.value ?? undefined}
+      placeholder={label}
+      options={context.items}
+      onChange={context.setValue}
+      isDisabled={context.disabled ?? props.disabled}
+      className={className}
+    />
   );
 });
 
-export const SelectValue = BaseSelect.Value;
-export const SelectPortal = BaseSelect.Portal;
-/**
- * The overlay layer belongs on the POSITIONER, not the popup.
- *
- * Base UI renders the popup `position: static` inside an absolutely
- * positioned positioner. `z-index` has no effect on a static box, so the
- * layer that used to sit on `SelectPopup` was inert; what actually kept
- * settings selects above the modal was `.settingsSelectPositioner`
- * (styles/settings/select.css), applied by hand at each call site. Any
- * call site that forgot it portalled a popup that paints *below* the
- * `.settingsModal` layer — invisible, and unclickable because the modal
- * wins the hit-test. Settings → 通用 → 默认权限模式 shipped that way and
- * read as "clicking does nothing at all".
- *
- * Carrying the layer here makes it structural: every Select consumer
- * gets it by construction instead of by remembering a class name.
- */
-export const SelectPositioner = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Positioner>>(function SelectPositioner(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Positioner ref={ref} className={cn('z-[var(--z-overlay)]', className)} data-slot="select-positioner" {...props} />;
-});
-export const SelectPopup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Popup>>(function SelectPopup(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Popup ref={ref} className={cn('min-w-40 rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel', className)} data-slot="select-popup" {...props} />;
-});
-export const SelectGroup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Group>>(function SelectGroup(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Group ref={ref} className={cn('py-1', className)} data-slot="select-group" {...props} />;
-});
-export const SelectGroupLabel = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.GroupLabel>>(function SelectGroupLabel(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.GroupLabel ref={ref} className={cn('px-2 py-1 text-xs font-medium text-foreground-secondary', className)} data-slot="select-group-label" {...props} />;
-});
-export const SelectSeparator = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Separator>>(function SelectSeparator(
-  { className, ...props },
-  ref,
-) {
-  return <BaseSelect.Separator ref={ref} className={cn('my-1 h-px bg-border', className)} data-slot="select-separator" {...props} />;
-});
+export function SelectValue(props: {
+  children?: React.ReactNode | ((value: string) => React.ReactNode);
+}) {
+  const context = React.useContext(LegacySelectContext);
+  if (!context?.value) return null;
+  return typeof props.children === 'function'
+    ? props.children(context.value)
+    : props.children;
+}
 
-export const SelectItem = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseSelect.Item>>(function SelectItem(
-  { className, children, ...props },
-  ref,
+export function SelectPortal(_props: { children?: React.ReactNode }) {
+  return null;
+}
+
+export function SelectPositioner(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectPopup(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectGroup(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectGroupLabel(
+  _props: React.HTMLAttributes<HTMLDivElement>,
 ) {
-  return (
-    <BaseSelect.Item
-      ref={ref}
-      className={cn('grid cursor-default grid-cols-[1rem_1fr] items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-muted data-[selected]:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50', className)}
-      data-slot="select-item"
-      {...props}
-    >
-      <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-        <BaseSelect.ItemIndicator>
-          <Check size={13} aria-hidden="true" />
-        </BaseSelect.ItemIndicator>
-      </span>
-      <span className="min-w-0">
-        <BaseSelect.ItemText>{children}</BaseSelect.ItemText>
-      </span>
-    </BaseSelect.Item>
-  );
-});
+  return null;
+}
+
+export function SelectSeparator(_props: React.HTMLAttributes<HTMLDivElement>) {
+  return null;
+}
+
+export function SelectItem(
+  _props: React.HTMLAttributes<HTMLDivElement> & { value: string },
+) {
+  return null;
+}
 
 /**
  * Popover — the anchored-surface primitive for pickers that are NOT a
@@ -373,9 +422,12 @@ export const SelectItem = forwardRef<HTMLDivElement, React.ComponentPropsWithout
  * pin: the top layer paints above every z-index by definition, which is
  * how the popup outranks the Settings modal that triggers it (the bug
  * fixed for Select in WAWQAQ msg `d3ea9a33`). Focus restore on close is
- * Astryx's `useFocusTrap` restore effect — the imperative `showPopover()`
- * path does NOT get the declarative Popover API focus return, so the trap
- * is the authority (see useFocusTrap.js in @astryxdesign/core).
+ * native first: the show-popover algorithm records the previously focused
+ * element even for imperative `showPopover()`, and `hidePopover()` returns
+ * focus to it. Light dismiss deliberately skips that return (focus follows
+ * the user's click), and Astryx's `useFocusTrap` restore effect backstops
+ * whatever the browser leaves behind (its guard no-ops when focus already
+ * went home — see useFocusTrap.js in @astryxdesign/core).
  *
  * Deliberate Astryx-native deviations from the Base UI predecessor, all
  * invisible to the closed-state harness: the popup gains Astryx's hidden
@@ -418,9 +470,19 @@ interface PopoverRootProps {
 export function PopoverRoot({ children, open, onOpenChange, onOpenChangeComplete, label }: PopoverRootProps): React.ReactElement {
   const callbacksRef = React.useRef({ onOpenChange, onOpenChangeComplete });
   callbacksRef.current = { onOpenChange, onOpenChangeComplete };
-  const onShow = React.useCallback(() => callbacksRef.current.onOpenChange?.(true), []);
+  // Prop-driven reconcile transitions stay silent on `onOpenChange`: the
+  // parent initiated them, so echoing them back would double-report (with
+  // `open` held true, Escape reports false and the reconcile show() would
+  // otherwise report a spurious true). `useLayer` fires these callbacks
+  // synchronously inside show()/hide(), so a flag around the calls suffices.
+  // `onOpenChangeComplete` still fires — a settle is a settle no matter who
+  // initiated the transition, and TimePicker keys its settled state on it.
+  const reconcilingRef = React.useRef(false);
+  const onShow = React.useCallback(() => {
+    if (!reconcilingRef.current) callbacksRef.current.onOpenChange?.(true);
+  }, []);
   const onHide = React.useCallback(() => {
-    callbacksRef.current.onOpenChange?.(false);
+    if (!reconcilingRef.current) callbacksRef.current.onOpenChange?.(false);
     callbacksRef.current.onOpenChangeComplete?.(false);
   }, []);
   // Auto-focus is owned here (not by Astryx) so `initialFocus` can land on a
@@ -448,8 +510,13 @@ export function PopoverRoot({ children, open, onOpenChange, onOpenChangeComplete
   const { isOpen, show, hide } = popover;
   React.useEffect(() => {
     if (open === undefined) return;
-    if (open && !isOpen) show();
-    else if (!open && isOpen) hide();
+    reconcilingRef.current = true;
+    try {
+      if (open && !isOpen) show();
+      else if (!open && isOpen) hide();
+    } finally {
+      reconcilingRef.current = false;
+    }
   }, [open, isOpen, show, hide]);
 
   return <PopoverContext.Provider value={context}>{children}</PopoverContext.Provider>;
@@ -461,10 +528,14 @@ export const PopoverTrigger = forwardRef<HTMLButtonElement, React.ButtonHTMLAttr
 ) {
   const { popover } = usePopoverContext('PopoverTrigger');
   // The trigger is an outside element to `popover="auto"`, so pressing it
-  // while open light-dismisses on pointerdown — and the same gesture's click
-  // would then re-open. Track per-gesture causality instead of a hide
-  // timestamp (Astryx's own Popover uses a 50ms window, which also swallows
-  // a genuine fast re-open after dismissing elsewhere).
+  // while open light-dismisses during the press (on pointerup per the HTML
+  // spec) — and the same gesture's click would then re-open. Track
+  // per-gesture causality instead of a hide timestamp (Astryx's own Popover
+  // uses a 50ms window, which also swallows a genuine fast re-open after
+  // dismissing elsewhere). The guard judges only pointer-sourced clicks
+  // (`event.detail > 0`): a keyboard activation has no paired pointerdown,
+  // so a flag left behind by an aborted press (drag off, pointercancel —
+  // gestures that end without a click on the trigger) must not swallow it.
   const wasOpenAtPointerDownRef = React.useRef(false);
   return (
     <button
@@ -479,10 +550,11 @@ export const PopoverTrigger = forwardRef<HTMLButtonElement, React.ButtonHTMLAttr
         onPointerDown?.(event);
       }}
       onClick={(event) => {
+        const dismissedByThisGesture =
+          event.detail > 0 && wasOpenAtPointerDownRef.current && !popover.isOpen;
+        wasOpenAtPointerDownRef.current = false;
         onClick?.(event);
         if (event.defaultPrevented) return;
-        const dismissedByThisGesture = wasOpenAtPointerDownRef.current && !popover.isOpen;
-        wasOpenAtPointerDownRef.current = false;
         if (dismissedByThisGesture) return;
         popover.toggle();
       }}
@@ -509,7 +581,8 @@ export function PopoverPositioner({ children, align, sideOffset }: PopoverPositi
   return <PopoverPositionContext.Provider value={value}>{children}</PopoverPositionContext.Provider>;
 }
 
-const POPOVER_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+const POPOVER_FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface PopoverPopupProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Lands initial focus on a specific element instead of the first focusable one. */

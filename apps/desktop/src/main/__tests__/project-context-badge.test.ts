@@ -216,7 +216,7 @@ describe('project context workspace picker', () => {
 
     assert.match(ui, /workspacePicker\?: ComposerWorkspacePicker;/);
     assert.match(ui, /<ComposerWorkspaceRow workspacePicker=\{props\.workspacePicker\} branchPicker=\{props\.branchPicker\} \/>/);
-    assert.match(workspaceRow, /className="maka-composer-workspace-picker"/);
+    assert.match(workspaceRow, /className:\s*'maka-composer-workspace-picker'/);
     assert.match(workspaceRow, /branch\?: string \| null;/);
     assert.match(workspaceRow, /pending\?: boolean;/);
     assert.match(workspaceRow, /projects:\s*readonly ProjectRecord\[\]/);
@@ -224,14 +224,15 @@ describe('project context workspace picker', () => {
     assert.match(workspaceRow, /className="maka-composer-no-project"/);
     assert.match(workspaceRow, /wp\.onRelink\(project\.id\)/);
     assert.match(workspaceRow, /wp\.onSelectNoProject\(\)/);
-    assert.match(workspaceRow, /disabled=\{wp\.pending === true\}/);
-    assert.match(workspaceRow, /aria-busy=\{wp\.pending === true \? 'true' : undefined\}/);
-    // WAWQAQ msg `28128c9e` (2026-06-20): the "选择工作目录" placeholder
-    // is only rendered when no directory has been selected yet. Once
-    // a label is set, the picker renders `.maka-composer-workspace-current`
-    // alone — no more "选择工作目录 ai ▾" doubled string.
-    assert.match(workspaceRow, /\? <span className="maka-composer-workspace-current">\{wp\.label\}<\/span>[\s\S]*?: <span>\{copy\.choose\}<\/span>/);
-    assert.match(workspaceRow, /title=\{copy\.branchTitle\(bp\.branch \?\? undefined\)\}/);
+    assert.match(workspaceRow, /isDisabled:\s*wp\.pending === true/);
+    assert.match(workspaceRow, /'aria-busy':\s*wp\.pending === true \? 'true' : undefined/);
+    // Keep icons in Astryx's native Button slots so they cannot wrap inside
+    // the text slot. The visible text still switches from the placeholder to
+    // the selected workspace without doubling the accessible label.
+    assert.match(workspaceRow, /icon:\s*<FolderOpen size=\{13\} aria-hidden="true" \/>/);
+    assert.match(workspaceRow, /endContent:\s*<ChevronDown size=\{12\} aria-hidden="true" \/>/);
+    assert.match(workspaceRow, /children:\s*wp\.label[\s\S]*?\? <span className="maka-composer-workspace-current">\{wp\.label\}<\/span>[\s\S]*?: copy\.choose/);
+    assert.match(workspaceRow, /tooltip:\s*copy\.branchTitle\(bp\.branch \?\? undefined\)/);
     // Workspace picker must track the shared chat/composer measure token,
     // not a bespoke hard-coded width, so future measure updates keep the
     // row aligned with the composer card automatically.

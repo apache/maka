@@ -140,10 +140,8 @@ export function AddProviderForm(props: {
         </label>
         {error && <p className="providerError" id={errorId} role="alert">{error}</p>}
         <div className="providerKeyDialogActions">
-          <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>{copy.cancel}</Button>
-          <Button type="submit" disabled={busy}>
-            {busy ? copy.connecting : copy.connect}
-          </Button>
+          <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
+          <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.saving : copy.save} />
         </div>
       </form>
     );
@@ -179,18 +177,39 @@ export function AddProviderForm(props: {
       )}
       <label>
         <span>{copy.slug}</span>
-        <Input value={slug} onChange={(event) => setSlug(event.currentTarget.value)} placeholder="my-provider" disabled={isExperimental || busy} aria-label={copy.slugAria} />
+        <Input
+          value={slug}
+          onChange={(event) => {
+            setSlug(event.currentTarget.value);
+            if (error) setError(null);
+          }}
+          placeholder="my-provider"
+          disabled={isExperimental || busy}
+          aria-label={copy.slugAria}
+        />
       </label>
       <label>
         <span>{copy.name}</span>
-        <Input value={name} onChange={(event) => setName(event.currentTarget.value)} placeholder={display.name} disabled={isExperimental || busy} aria-label={copy.nameAria} />
+        <Input
+          value={name}
+          onChange={(event) => {
+            setName(event.currentTarget.value);
+            if (error) setError(null);
+          }}
+          placeholder={display.name}
+          disabled={isExperimental || busy}
+          aria-label={copy.nameAria}
+        />
       </label>
       {isCloudflareWorkersAi ? (
         <label>
           <span>{copy.accountIdLabel}</span>
           <Input
             value={cloudflareAccountId}
-            onChange={(event) => setCloudflareAccountId(event.currentTarget.value)}
+            onChange={(event) => {
+              setCloudflareAccountId(event.currentTarget.value);
+              if (error) setError(null);
+            }}
             placeholder={copy.accountIdPlaceholder}
             disabled={busy}
             aria-label={copy.accountIdAria}
@@ -201,7 +220,10 @@ export function AddProviderForm(props: {
           <span>{copy.endpointLabel(requiresBaseUrl)}</span>
           <Input
             value={baseUrl}
-            onChange={(event) => setBaseUrl(event.currentTarget.value)}
+            onChange={(event) => {
+              setBaseUrl(event.currentTarget.value);
+              if (error) setError(null);
+            }}
             placeholder={defaults.baseUrl || 'https://…'}
             disabled={isExperimental || busy}
             aria-label={copy.endpointAria}
@@ -213,7 +235,10 @@ export function AddProviderForm(props: {
           <span>{copy.defaultModel}</span>
           <Input
             value={defaultModel}
-            onChange={(event) => setDefaultModel(event.currentTarget.value)}
+            onChange={(event) => {
+              setDefaultModel(event.currentTarget.value);
+              if (error) setError(null);
+            }}
             placeholder={copy.defaultModelPlaceholder}
             disabled={isExperimental || busy}
             aria-label={copy.defaultModelAria}
@@ -223,10 +248,8 @@ export function AddProviderForm(props: {
       )}
       {error && <p className="providerError" role="alert">{error}</p>}
       <div className="providerActions">
-        <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>{copy.cancel}</Button>
-        <Button type="button" disabled={busy || isExperimental} onClick={submit}>
-          {busy ? copy.saving : copy.save}
-        </Button>
+        <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
+        <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
       </div>
     </div>
   );

@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 
 import { getConversationCopy } from './conversation-copy.js';
 import { useUiLocale } from './locale-context.js';
-import { Button } from './ui.js';
+import { Button } from '@astryxdesign/core';
 import { useMountedRef } from './use-mounted-ref.js';
 
 export interface SandboxBoundaryPromptProps {
@@ -77,14 +77,16 @@ export function SandboxBoundaryPrompt({
           <Button
             ref={rejectButtonRef}
             variant="secondary"
-            disabled={responsePending}
+            isDisabled={responsePending}
             onClick={() => void respond('deny')}
-          >
-            {copy.reject}
-          </Button>
-          <Button disabled={responsePending} onClick={() => void respond('allow')}>
-            {copy.allowSession}
-          </Button>
+            label={copy.reject}
+          />
+          <Button
+            variant="primary"
+            isDisabled={responsePending}
+            onClick={() => void respond('allow')}
+            label={copy.allowSession}
+          />
         </div>
       </div>
     </section>

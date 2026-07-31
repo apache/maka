@@ -94,6 +94,14 @@ import {
 
 export interface RuntimeKernelLike {
   claimExecution(sessionId: string): RuntimeExecutionClaim;
+  runSessionAdmissionMutation?<T>(
+    sessionIds: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T>;
+  runSessionQuiescentMutation?<T>(
+    sessionIds: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T>;
   startTurn(
     sessionId: string,
     input: UserMessageInput,
@@ -131,6 +139,14 @@ export interface RuntimeKernelLike {
   invalidateBackend(sessionId: string): Promise<void>;
   invalidateCachedBackends(): Promise<void>;
   disposeBackend(sessionId: string): Promise<void>;
+}
+
+export class SessionQuiescentMutationBusyError extends Error {
+  readonly name = 'SessionQuiescentMutationBusyError';
+
+  constructor(readonly sessionIds: readonly string[]) {
+    super('Session mutation cannot start while an execution claim is active');
+  }
 }
 
 export interface TurnStartOptions {
@@ -307,6 +323,7 @@ interface PendingExecutionClaim {
   readonly sessionId: string;
   readonly abortController: AbortController;
   readonly cancellation: RuntimeExecutionCancellation;
+  readonly admissionBarrier: Promise<void>;
   readonly settled: Promise<void>;
   resolveSettled(): void;
   rejectSettled(error: unknown): void;
@@ -340,6 +357,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private readonly stopOperations = new Map<string, StopOperation>();
   private readonly stopAttempts = new Map<string, Promise<void>>();
   private readonly executionClaims = new Map<string, Set<PendingExecutionClaim>>();
+  private readonly sessionMutationTails = new Map<string, Promise<void>>();
   private readonly executionClaimStates = new WeakMap<
     RuntimeExecutionClaim,
     PendingExecutionClaim
@@ -398,6 +416,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       sessionId,
       abortController,
       cancellation,
+      admissionBarrier: this.sessionMutationTails.get(sessionId) ?? Promise.resolve(),
       settled,
       resolveSettled,
       rejectSettled,
@@ -413,6 +432,63 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return handle;
   }
 
+  async runSessionAdmissionMutation<T>(
+    sessionIds: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    const ids = this.normalizeSessionMutationIds(sessionIds);
+    return this.enqueueSessionMutation(ids, operation);
+  }
+
+  async runSessionQuiescentMutation<T>(
+    sessionIds: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    const ids = this.normalizeSessionMutationIds(sessionIds);
+    if (ids.some((sessionId) => (this.executionClaims.get(sessionId)?.size ?? 0) > 0)) {
+      throw new SessionQuiescentMutationBusyError(ids);
+    }
+    return this.enqueueSessionMutation(ids, operation);
+  }
+
+  private normalizeSessionMutationIds(sessionIds: readonly string[]): string[] {
+    const ids = [...new Set(sessionIds)].sort();
+    if (ids.length === 0 || ids.some((sessionId) => sessionId.length === 0)) {
+      throw new Error('Session mutation requires at least one valid Session identity');
+    }
+    return ids;
+  }
+
+  private async enqueueSessionMutation<T>(
+    ids: readonly string[],
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    const precedingMutations = ids.map(
+      (sessionId) => this.sessionMutationTails.get(sessionId) ?? Promise.resolve(),
+    );
+    const preceding = Promise.all(precedingMutations).then(() => undefined);
+    let complete!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    const tail = preceding.then(() => completion);
+    for (const sessionId of ids) this.sessionMutationTails.set(sessionId, tail);
+    void tail.then(() => {
+      for (const sessionId of ids) {
+        if (this.sessionMutationTails.get(sessionId) === tail) {
+          this.sessionMutationTails.delete(sessionId);
+        }
+      }
+    });
+
+    try {
+      await preceding;
+      return await operation();
+    } finally {
+      complete();
+    }
+  }
+
   private takeExecutionClaim(
     sessionId: string,
     supplied?: RuntimeExecutionClaim,
@@ -423,6 +499,15 @@ export class RuntimeKernel implements RuntimeKernelLike {
       throw new Error(`Execution claim does not own pending admission for session ${sessionId}`);
     }
     return state;
+  }
+
+  private async enterExecutionClaim(execution: PendingExecutionClaim): Promise<void> {
+    await execution.admissionBarrier;
+    if (execution.phase !== 'pending') {
+      throw new Error(
+        `Execution claim cannot enter admission from phase ${execution.phase} for session ${execution.sessionId}`,
+      );
+    }
   }
 
   private attachExecutionClaim(execution: PendingExecutionClaim, run: AgentRun): void {
@@ -535,6 +620,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     const execution = this.takeExecutionClaim(sessionId, options.execution);
     try {
+      await this.enterExecutionClaim(execution);
       const header = await this.deps.store.readHeader(sessionId);
       let workspaceIdentity: string | undefined;
       if (this.deps.safeBoundaryResumeEnabled === true && this.deps.inspectContinuationSafety) {
@@ -628,6 +714,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     continuation: RuntimeContinuation,
     execution: PendingExecutionClaim,
   ): AsyncIterable<SessionEvent> {
+    await this.enterExecutionClaim(execution);
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('Runtime continuation requires AgentRunStore and RuntimeEventStore');
     }
@@ -740,6 +827,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     input: CompactSessionInput,
     execution: PendingExecutionClaim,
   ): AsyncIterable<SessionEvent> {
+    await this.enterExecutionClaim(execution);
     if (
       input.minRecentTurns !== undefined &&
       (!Number.isSafeInteger(input.minRecentTurns) || input.minRecentTurns < 0)
@@ -888,6 +976,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     input: ChildAgentTurnInput,
     execution: PendingExecutionClaim,
   ): AsyncIterable<SessionEvent> {
+    await this.enterExecutionClaim(execution);
     const parentHeader = await this.deps.store.readHeader(sessionId);
     const definition = requireResolvedAgentDefinition(input.spec.id);
     const availableChildTools = this.deps.childTools ?? [];
@@ -978,6 +1067,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     input: ChildAgentRetryInput,
     execution: PendingExecutionClaim,
   ): AsyncIterable<SessionEvent> {
+    await this.enterExecutionClaim(execution);
     const { continuation } = input;
     if (continuation.sessionId !== sessionId) {
       throw new Error('Child retry continuation belongs to a different session');

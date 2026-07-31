@@ -16,6 +16,9 @@
     background: var(--background);
   }
 
+/* #1565 PR 3: the card face (destructive tint, border, radius, shadow) is
+   owned by the Astryx Card in error-boundary.tsx (variant="red",
+   elevation="high"); this class keeps only the icon/copy grid geometry. */
 .maka-error-card {
     display: grid;
     grid-template-columns: 32px minmax(0, 1fr);
@@ -23,9 +26,6 @@
     gap: var(--space-3);
     max-width: 520px;
     padding: var(--space-3) var(--space-4);
-    border: var(--border-width-hairline) solid oklch(from var(--destructive) l c h / 0.3);
-    background: var(--background-elevated);
-    box-shadow: var(--shadow-modal);
   }
 
 .maka-error-icon {
