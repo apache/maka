@@ -208,7 +208,7 @@ describe('issue #406 design-system governance contract', () => {
         `${selector} action/action-foreground contrast must clear 4.5:1`,
       );
       // control/foreground paints graphical objects (checkbox check, switch
-      // knob, radio dot, progress fill), not text — so the WCAG 2.1 SC 1.4.11
+      // knob, radio dot), not text — so the WCAG 2.1 SC 1.4.11
       // non-text contrast bar (3:1) applies, not the 4.5:1 text bar used for
       // action above. --control is tuned (L0.65) to clear 3:1 with a small margin.
       assert.ok(
@@ -245,8 +245,6 @@ describe('issue #406 design-system governance contract', () => {
     );
     assert.match(appearance, /<RadioListItem[\s\S]*value=\{value\}[\s\S]*description=\{option\.help\}/);
     assert.doesNotMatch(appearance, /\b(?:ChoiceCard|SelectableCard)\b/);
-    assert.match(ui, /<BaseProgress\.Indicator className="[^"]*bg-control/);
-
     const menu = await readFile(resolve(REPO_ROOT, 'packages/ui/src/composer.tsx'), 'utf8');
     const tabs = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/tabs.tsx'), 'utf8');
     assert.match(menu, /from '@astryxdesign\/core\/DropdownMenu'/);
