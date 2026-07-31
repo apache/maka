@@ -519,10 +519,6 @@
   background: var(--border);
 }
 
-.maka-artifact-toolbar-destructive:hover {
-  background: oklch(from var(--destructive) l c h / 0.10);
-}
-
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
   .maka-detail-with-artifacts {

@@ -8,7 +8,7 @@
  * needing a dedicated fixture render:
  *
  *  - back / forward buttons `:disabled` track `canGoBack` / `canGoForward`;
- *  - reload / stop icon swaps with `loading` (+ aria-label + onClick branch);
+ *  - reload / stop icon swaps with `loading` (+ accessible label + onClick branch);
  *  - address bar snaps to the live URL on blur when not editing;
  *  - empty state present when `!hasPage`.
  *
@@ -39,27 +39,27 @@ describe('BrowserPanel renderer chrome source contract (#819)', () => {
   });
 
   it('back button :disabled tracks canGoBack', () => {
-    // The back nav button must bind `disabled` to `!canGoBack` so the DOM
-    // disabled attribute reflects the browser's back-history state.
+    // The back nav button must bind Astryx's public disabled prop to
+    // `!canGoBack` so the DOM disabled attribute reflects browser history.
     // `!state.canGoBack` is unique to the back button, so the expression
     // match locks the binding without depending on attribute order/adjacency
     // (innocent JSX reformatting / attribute insertion must not false-positive).
-    assert.match(source, /disabled=\{!state\.canGoBack\}/, 'back button disabled must track !state.canGoBack');
+    assert.match(source, /isDisabled=\{!state\.canGoBack\}/, 'back button disabled must track !state.canGoBack');
   });
 
   it('forward button :disabled tracks canGoForward', () => {
     // `!state.canGoForward` is unique to the forward button.
-    assert.match(source, /disabled=\{!state\.canGoForward\}/, 'forward button disabled must track !state.canGoForward');
+    assert.match(source, /isDisabled=\{!state\.canGoForward\}/, 'forward button disabled must track !state.canGoForward');
   });
 
-  it('reload/stop icon swaps with loading (+ aria-label + onClick branch)', () => {
+  it('reload/stop icon swaps with loading (+ accessible label + onClick branch)', () => {
     // The third nav button swaps its icon (X stop vs RotateCw reload), its
-    // aria-label, and its onClick target between stop/reload based on
+    // accessible label, and its onClick target between stop/reload based on
     // state.loading — all three must branch on the same flag.
     assert.match(
       source,
-      /aria-label=\{state\.loading\s*\?\s*copy\.stopAria\s*:\s*copy\.refreshAria\}/,
-      'reload/stop aria-label must swap with state.loading',
+      /label=\{state\.loading\s*\?\s*copy\.stopAria\s*:\s*copy\.refreshAria\}/,
+      'reload/stop accessible label must swap with state.loading',
     );
     assert.match(
       source,

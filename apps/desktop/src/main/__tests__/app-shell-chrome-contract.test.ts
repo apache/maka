@@ -61,7 +61,7 @@ describe('app shell chrome contract', () => {
     assert.match(combined, /copy\.collapseWorkbar/);
     assert.match(catalog, /expandWorkbar: '展开会话工作栏'/);
     assert.match(catalog, /expandWorkbar: 'Expand conversation workbar'/);
-    assert.match(combined, /aria-label=\{workbarLabel\}/);
+    assert.match(combined, /label=\{workbarLabel\}/);
   });
 
   it('renders the workbar toggle only when a session is active', async () => {
