@@ -27,6 +27,7 @@ import {
   parseToolResultArchiveResourceRef,
 } from './tool-result-archive-resource.js';
 import {
+  deserializeToolResultArchive,
   isArchivedToolResultPlaceholder,
   type ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
@@ -83,6 +84,7 @@ export interface CloneConversationRuntimeLedgerInput {
 }
 
 export interface CloneConversationRuntimeLedgerResult {
+  readonly copiedMessages: readonly StoredMessage[];
   readonly runIdMap: readonly {
     readonly sourceRunId: string;
     readonly targetRunId: string;
@@ -186,9 +188,6 @@ export async function cloneConversationRuntimeLedger(
       input.copiedMessages.map(messageTurnId).filter((turnId): turnId is string => !!turnId),
     ),
   ];
-  if (transcriptTurnIds.length === 0) {
-    return { runIdMap: [], runtimeEventIdMap: [], providerTraceIdMap: [] };
-  }
   const sourceRuns = await input.runStore.listSessionRuns(input.referenceMap.sourceSessionId);
   const copyTurnIds =
     input.copyTurnIds ?? conversationCopyTurnClosure(sourceRuns, transcriptTurnIds);
@@ -281,49 +280,10 @@ export async function cloneConversationRuntimeLedger(
     }
   }
   const checkpointIds = new Map<string, string>();
-  const clonedPlans = flattenedPlans.map((plan) => {
+  const preparedPlans = flattenedPlans.map((plan) => {
     const runId = runIds.get(plan.run.runId)!;
     const invocationId = targetInvocationIds.get(plan.run.runId)!;
-    return {
-      plan,
-      runId,
-      clonedRun: cloneRunHeader(
-        plan.run,
-        input.referenceMap.targetSessionId,
-        runId,
-        invocationId,
-        references,
-      ),
-      clonedRuntimeEvents: plan.events.map((event) => clonedEventBySourceId.get(event.id)!),
-    };
-  });
-
-  for (const { clonedRun } of clonedPlans) {
-    await input.runStore.createRun(clonedRun);
-  }
-
-  if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
-    await input.runtimeEventStore.importConversationCopyRuntimeEvents(
-      input.referenceMap.targetSessionId,
-      clonedPlans.map(({ runId, clonedRuntimeEvents }) => ({
-        runId,
-        events: clonedRuntimeEvents,
-      })),
-    );
-  } else {
-    for (const { runId, clonedRuntimeEvents } of clonedPlans) {
-      for (const clonedEvent of clonedRuntimeEvents) {
-        await input.runtimeEventStore.appendRuntimeEvent(
-          input.referenceMap.targetSessionId,
-          runId,
-          clonedEvent,
-        );
-      }
-    }
-  }
-
-  for (const { plan, runId } of clonedPlans) {
-    for (const event of plan.operationalEvents) {
+    const clonedOperationalEvents = plan.operationalEvents.flatMap((event) => {
       const clonedEvent = cloneAgentRunEvent(
         event,
         {
@@ -338,16 +298,64 @@ export async function cloneConversationRuntimeLedger(
         operationalEventIds,
         providerTraceIds,
       );
-      if (clonedEvent) {
-        await input.runStore.appendEvent(input.referenceMap.targetSessionId, runId, clonedEvent);
+      return clonedEvent ? [clonedEvent] : [];
+    });
+    const terminalEvent =
+      plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status)
+        ? clonedEventBySourceId.get(plan.terminal.fact.terminalEvent.id)
+        : undefined;
+    if (plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status) && !terminalEvent) {
+      throw new Error(`Copied AgentRun ${plan.run.runId} lost its terminal RuntimeEvent`);
+    }
+    return {
+      plan,
+      runId,
+      clonedRun: cloneRunHeader(
+        plan.run,
+        input.referenceMap.targetSessionId,
+        runId,
+        invocationId,
+        references,
+      ),
+      clonedRuntimeEvents: plan.events.map((event) => clonedEventBySourceId.get(event.id)!),
+      clonedOperationalEvents,
+      terminalEvent,
+    };
+  });
+  const copiedMessages = input.copiedMessages.map((message) =>
+    rewriteConversationCopyMessage(message, references),
+  );
+
+  for (const { clonedRun } of preparedPlans) {
+    await input.runStore.createRun(clonedRun);
+  }
+
+  if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
+    await input.runtimeEventStore.importConversationCopyRuntimeEvents(
+      input.referenceMap.targetSessionId,
+      preparedPlans.map(({ runId, clonedRuntimeEvents }) => ({
+        runId,
+        events: clonedRuntimeEvents,
+      })),
+    );
+  } else {
+    for (const { runId, clonedRuntimeEvents } of preparedPlans) {
+      for (const clonedEvent of clonedRuntimeEvents) {
+        await input.runtimeEventStore.appendRuntimeEvent(
+          input.referenceMap.targetSessionId,
+          runId,
+          clonedEvent,
+        );
       }
     }
+  }
 
-    if (plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status)) {
-      const terminalEvent = clonedEventBySourceId.get(plan.terminal.fact.terminalEvent.id);
-      if (!terminalEvent) {
-        throw new Error(`Copied AgentRun ${plan.run.runId} lost its terminal RuntimeEvent`);
-      }
+  for (const { plan, runId, clonedOperationalEvents, terminalEvent } of preparedPlans) {
+    for (const clonedEvent of clonedOperationalEvents) {
+      await input.runStore.appendEvent(input.referenceMap.targetSessionId, runId, clonedEvent);
+    }
+
+    if (plan.terminal.kind === 'fact' && isTerminalRunStatus(plan.run.status) && terminalEvent) {
       await commitTerminalRunWithRuntimeFact({
         runStore: input.runStore,
         runtimeEventStore: input.runtimeEventStore,
@@ -374,6 +382,7 @@ export async function cloneConversationRuntimeLedger(
   }
 
   return {
+    copiedMessages,
     runIdMap: [...runIds].map(([sourceRunId, targetRunId]) => ({
       sourceRunId,
       targetRunId,
@@ -389,6 +398,43 @@ export async function cloneConversationRuntimeLedger(
       }),
     ),
   };
+}
+
+export function archivedToolResultContainsConversationOwnedReferences(
+  serializedResult: string,
+  sourceSessionId: string,
+): boolean {
+  const value = deserializeToolResultArchive(serializedResult);
+  if (isArchivedToolResultPlaceholder(value)) return true;
+
+  let content: ToolResultContent;
+  try {
+    content = decodeCanonicalToolResultContent(value);
+  } catch {
+    return false;
+  }
+
+  if (content.kind === 'archived_tool_result') return true;
+  if (content.kind === 'image') {
+    return content.ref.kind === 'session_file' && content.ref.sessionId === sourceSessionId;
+  }
+  if (content.kind === 'subagent') {
+    return (
+      content.childSessionId !== undefined ||
+      content.runId !== undefined ||
+      content.artifactIds.length > 0
+    );
+  }
+  if (content.kind === 'agent_swarm') {
+    return content.items.some(
+      (item) =>
+        item.childSessionId !== undefined ||
+        item.runId !== undefined ||
+        item.resumedFromRunId !== undefined ||
+        item.artifactIds.length > 0,
+    );
+  }
+  return false;
 }
 
 function cloneAgentRunEvent(
@@ -884,7 +930,7 @@ function rewriteToolResultContent(
   if (content.kind === 'image') {
     return { ...content, ref: rewriteStorageRef(content.ref, references) };
   }
-  if (content.kind === 'archived_tool_result' && content.artifactId) {
+  if (content.kind === 'archived_tool_result') {
     return {
       ...content,
       runtimeEventId: rewriteOwnedId(
@@ -892,7 +938,9 @@ function rewriteToolResultContent(
         references.runtimeEventIds,
         'RuntimeEvent',
       ),
-      artifactId: rewriteOwnedArtifactId(content.artifactId, references),
+      ...(content.artifactId
+        ? { artifactId: rewriteOwnedArtifactId(content.artifactId, references) }
+        : {}),
     };
   }
   if (content.kind === 'json' && isArchivedToolResultPlaceholder(content.value)) {

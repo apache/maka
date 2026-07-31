@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionConversationCopy, SessionHeader, StoredMessage } from '@maka/core/session';
 import {
+  archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
+  isArchivedToolResultPlaceholder,
   resolveConversationCopyTurnIds,
-  rewriteConversationCopyMessage,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -199,12 +201,36 @@ export class HostSessionRevisionCoordinator {
     if (!slice) {
       return copyFailure('invalid_request', 'Source turn does not exist');
     }
-    if (hasLinkedChildSessionReference(slice.messages)) {
+    let copyTurnIds: string[];
+    let sessionHeaders: SessionHeader[];
+    try {
+      [copyTurnIds, sessionHeaders] = await Promise.all([
+        resolveConversationCopyTurnIds(
+          this.#stores.agentRunStore,
+          input.sourceSessionId,
+          slice.turnIds,
+        ),
+        this.#stores.sessionStore.listHeaders(),
+      ]);
+    } catch {
+      return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
+    }
+    if (
+      hasLinkedChildSessionReference(slice.messages) ||
+      hasLinkedChildSessionMetadata(sessionHeaders, input.sourceSessionId, copyTurnIds)
+    ) {
       return copyFailure(
         'operation_unavailable',
         'Session conversation copy does not yet support linked child Session graphs',
       );
     }
+    const archivePreflight = await this.#preflightArchivedToolResults(
+      input.sourceSessionId,
+      source.events,
+      slice.messages,
+      copyTurnIds,
+    );
+    if (archivePreflight) return archivePreflight;
 
     let createInput: ConversationCopyCreateInput;
     try {
@@ -251,11 +277,6 @@ export class HostSessionRevisionCoordinator {
     }
 
     try {
-      const copyTurnIds = await resolveConversationCopyTurnIds(
-        this.#stores.agentRunStore,
-        input.sourceSessionId,
-        slice.turnIds,
-      );
       const artifactCopy = await this.#artifacts.copyConversationArtifacts({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
@@ -277,29 +298,7 @@ export class HostSessionRevisionCoordinator {
         runtimeEventStore: this.#stores.runtimeEventStore,
         newId: randomUUID,
       });
-      const copiedRunIds = new Map(
-        runtimeCopy.runIdMap.map(({ sourceRunId, targetRunId }) => [sourceRunId, targetRunId]),
-      );
-      const copiedRuntimeEventIds = new Map(
-        runtimeCopy.runtimeEventIdMap.map(({ sourceRuntimeEventId, targetRuntimeEventId }) => [
-          sourceRuntimeEventId,
-          targetRuntimeEventId,
-        ]),
-      );
-      const copiedProviderTraceIds = new Map(
-        runtimeCopy.providerTraceIdMap.map(({ sourceProviderTraceId, targetProviderTraceId }) => [
-          sourceProviderTraceId,
-          targetProviderTraceId,
-        ]),
-      );
-      const copiedMessages = slice.messages.map((message) =>
-        rewriteConversationCopyMessage(message, {
-          ...references,
-          runIds: copiedRunIds,
-          runtimeEventIds: copiedRuntimeEventIds,
-          providerTraceIds: copiedProviderTraceIds,
-        }),
-      );
+      const copiedMessages = runtimeCopy.copiedMessages;
       await this.#taskLedger.copyConversationTaskLedger({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
@@ -308,7 +307,7 @@ export class HostSessionRevisionCoordinator {
         runIdMap: runtimeCopy.runIdMap,
       });
       if (copiedMessages.length > 0) {
-        await this.#stores.sessionStore.appendMessages(input.targetSessionId, copiedMessages);
+        await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
       }
       await this.#stores.sessionStore.appendMessage(
         input.targetSessionId,
@@ -340,6 +339,43 @@ export class HostSessionRevisionCoordinator {
         'Session conversation copy could not be committed',
       );
     }
+  }
+
+  async #preflightArchivedToolResults(
+    sourceSessionId: string,
+    sourceEvents: readonly RuntimeEvent[],
+    copiedMessages: readonly StoredMessage[],
+    copyTurnIds: readonly string[],
+  ): Promise<ConversationCopyOutcome | null> {
+    const archives = collectArchivedToolResultPlaceholders(
+      sourceEvents,
+      copiedMessages,
+      copyTurnIds,
+    );
+    if (!archives) {
+      return copyFailure('persistence_failed', 'Archived tool result metadata is invalid');
+    }
+    for (const archive of archives) {
+      const read = await this.#artifacts
+        .readTextInSession(sourceSessionId, archive.artifactId, {
+          maxBytes: archive.originalBytes,
+        })
+        .catch(() => null);
+      if (
+        !read?.ok ||
+        Buffer.byteLength(read.text, 'utf8') !== archive.originalBytes ||
+        createHash('sha256').update(read.text).digest('hex') !== archive.bodySha256
+      ) {
+        return copyFailure('persistence_failed', 'Archived tool result is unavailable or corrupt');
+      }
+      if (archivedToolResultContainsConversationOwnedReferences(read.text, sourceSessionId)) {
+        return copyFailure(
+          'operation_unavailable',
+          'Session conversation copy cannot preserve owned references inside archived tool results',
+        );
+      }
+    }
+    return null;
   }
 
   async #createInput(
@@ -601,6 +637,71 @@ function hasLinkedChildSessionReference(messages: readonly StoredMessage[]): boo
       message.content.items.some((item) => item.childSessionId !== undefined)
     );
   });
+}
+
+function hasLinkedChildSessionMetadata(
+  headers: readonly SessionHeader[],
+  sourceSessionId: string,
+  copyTurnIds: readonly string[],
+): boolean {
+  const retainedTurnIds = new Set(copyTurnIds);
+  return headers.some(
+    (header) =>
+      header.subagentParent?.parentSessionId === sourceSessionId &&
+      retainedTurnIds.has(header.subagentParent.spawnedBy.parentTurnId),
+  );
+}
+
+function collectArchivedToolResultPlaceholders(
+  events: readonly RuntimeEvent[],
+  messages: readonly StoredMessage[],
+  copyTurnIds: readonly string[],
+): ArchivedToolResultCopyDescriptor[] | null {
+  const retainedTurnIds = new Set(copyTurnIds);
+  const archives = new Map<string, ArchivedToolResultCopyDescriptor>();
+  const add = (value: unknown): boolean => {
+    if (!isRecord(value) || value.kind !== 'maka.archived_tool_result') return true;
+    if (!isArchivedToolResultPlaceholder(value)) return false;
+    addDescriptor(value);
+    return true;
+  };
+  const addDescriptor = (descriptor: ArchivedToolResultCopyDescriptor): void => {
+    const key = `${descriptor.artifactId}:${descriptor.bodySha256}:${descriptor.originalBytes}`;
+    if (!archives.has(key)) archives.set(key, descriptor);
+  };
+
+  for (const event of events) {
+    if (retainedTurnIds.has(event.turnId) && event.content?.kind === 'function_response') {
+      if (!add(event.content.result)) return null;
+    }
+  }
+  for (const message of messages) {
+    if (message.type !== 'tool_result') continue;
+    if (message.content.kind === 'json') {
+      if (!add(message.content.value)) return null;
+      continue;
+    }
+    if (message.content.kind === 'archived_tool_result') {
+      if (!message.content.artifactId && !message.content.bodySha256) continue;
+      if (!message.content.artifactId || !message.content.bodySha256) return null;
+      addDescriptor({
+        artifactId: message.content.artifactId,
+        bodySha256: message.content.bodySha256,
+        originalBytes: message.content.originalBytes,
+      });
+    }
+  }
+  return [...archives.values()];
+}
+
+interface ArchivedToolResultCopyDescriptor {
+  readonly artifactId: string;
+  readonly bodySha256: string;
+  readonly originalBytes: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function copySuccess(result: SessionConversationCopyResult): ConversationCopyOutcome {

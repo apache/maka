@@ -12,6 +12,7 @@ import {
   createSqliteRuntimeStore,
 } from '@maka/storage';
 import {
+  archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
   resolveConversationCopyTurnIds,
@@ -26,6 +27,73 @@ import { isHistoryCompactContentEvent } from '../history-compact.js';
 import { RuntimeReadModel } from '../runtime-read-model.js';
 import { buildToolOperationId } from '../runtime-commit-sink.js';
 import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
+
+test('archived tool-result copy preflight detects conversation-owned references', () => {
+  const serialized = (value: unknown): string => JSON.stringify(value);
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      serialized({ kind: 'text', text: 'safe result' }),
+      'session-source',
+    ),
+    false,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      serialized({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: {
+          kind: 'session_file',
+          sessionId: 'session-source',
+          relativePath: 'session-source/image.png',
+        },
+      }),
+      'session-source',
+    ),
+    true,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      serialized({
+        kind: 'subagent',
+        agentName: 'Researcher',
+        turnId: 'turn-child',
+        runId: 'run-child',
+        status: 'completed',
+        permissionMode: 'ask',
+        summary: 'done',
+        artifactIds: [],
+      }),
+      'session-source',
+    ),
+    true,
+  );
+  assert.equal(
+    archivedToolResultContainsConversationOwnedReferences(
+      serialized({
+        kind: 'agent_swarm',
+        status: 'completed',
+        items: [
+          {
+            itemId: 'item-1',
+            index: 0,
+            profile: 'default',
+            started: true,
+            resumedFromRunId: 'run-source',
+            status: 'completed',
+            summary: 'done',
+            artifactIds: [],
+          },
+        ],
+        startedAt: 1,
+        completedAt: 2,
+        durationMs: 1,
+      }),
+      'session-source',
+    ),
+    true,
+  );
+});
 
 test('conversation copy slices exact turns on inclusive and exclusive boundaries', () => {
   const messages = [
@@ -205,6 +273,35 @@ test('conversation copy rewrites owned references without changing opaque tool p
   assert.equal(swarm?.runId, 'run-target');
   assert.equal(swarm?.resumedFromRunId, 'run-target');
   assert.deepEqual(swarm?.artifactIds, ['artifact-target']);
+  const unavailableArchive = rewriteConversationCopyMessage(
+    {
+      type: 'tool_result',
+      id: 'result-3',
+      turnId: 'turn-1',
+      ts: 5,
+      toolUseId: 'tool-3',
+      isError: false,
+      content: {
+        kind: 'archived_tool_result',
+        status: 'missing',
+        runtimeEventId: 'event-source',
+        toolCallId: 'tool-3',
+        toolName: 'opaque',
+        originalEstimatedTokens: 3,
+        originalBytes: 12,
+        rewriteVersion: 1,
+        reason: 'stale_tool_result_pruned_before_compact',
+      },
+    },
+    references,
+  );
+  assert.equal(
+    unavailableArchive.type === 'tool_result' &&
+      unavailableArchive.content.kind === 'archived_tool_result'
+      ? unavailableArchive.content.runtimeEventId
+      : undefined,
+    'event-target',
+  );
   const preserved = rewriteConversationCopyMessage(messages[0]!, {
     mode: 'preserve_external',
     sourceSessionId: 'session-source',
@@ -549,6 +646,76 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
   }
 });
 
+test('conversation copy validates operational events before persisting target ledgers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-copy-preflight-'));
+  try {
+    const runStore = createAgentRunStore(root);
+    const runtimeEventStore = createRuntimeEventStore(root);
+    await runStore.createRun(
+      agentRunHeader({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+    );
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'copy this turn' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        ts: 2,
+        status: 'completed',
+      }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'provider_request_captured',
+      id: 'capture-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 1.5,
+      data: {
+        traceId: 'trace-source',
+        captureId: 'wrong-capture-id',
+        artifactId: 'artifact-source',
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+
+    await assert.rejects(
+      () =>
+        cloneConversationRuntimeLedger({
+          source,
+          copiedMessages: source.messages,
+          referenceMap: {
+            mode: 'exact',
+            sourceSessionId: 'session-source',
+            targetSessionId: 'session-target',
+            artifactIds: new Map([['artifact-source', 'artifact-target']]),
+            relativePaths: new Map(),
+          },
+          runStore,
+          runtimeEventStore,
+          newId: () => crypto.randomUUID(),
+        }),
+      /Cannot copy invalid provider request capture capture-source/,
+    );
+    assert.deepEqual(await runStore.listSessionRuns('session-target'), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy clones one terminal Runtime ledger with new owned identities', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-runtime-copy-'));
   try {
@@ -814,6 +981,15 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     });
 
     assert.deepEqual(copied.runIdMap, [{ sourceRunId: 'run-source', targetRunId: 'run-target' }]);
+    const copiedTypedResult = copied.copiedMessages.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'subagent',
+    );
+    assert.deepEqual(
+      copiedTypedResult?.type === 'tool_result' && copiedTypedResult.content.kind === 'subagent'
+        ? copiedTypedResult.content.artifactIds
+        : undefined,
+      ['artifact-target-deleted'],
+    );
     const [targetRun] = await runStore.listSessionRuns('session-target');
     assert.equal(targetRun?.runId, 'run-target');
     assert.equal(targetRun?.invocationId, 'invocation-target');

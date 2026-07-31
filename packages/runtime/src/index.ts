@@ -46,6 +46,7 @@ export type {
   StopSessionInput,
 } from './session-manager.js';
 export {
+  archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
   resolveConversationCopyTurnIds,

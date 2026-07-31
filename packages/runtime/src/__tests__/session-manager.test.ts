@@ -10030,6 +10030,18 @@ describe('SessionManager permission mode updates', () => {
     expect(regenUser?.type === 'user' ? regenUser.text : undefined).toBe('aborted turn text');
   });
 
+  test('Host conversation copy fails closed without a side-effect-free message snapshot', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const manager = makeManagerForReadCutover(store, runStore);
+    const session = await manager.createSession(makeInput({ name: 'Parent' }));
+
+    await assert.rejects(
+      () => manager.readConversationCopySnapshot(session.id),
+      /Conversation copy requires a side-effect-free message snapshot/,
+    );
+  });
+
   test('branchFromTurn copies through the RuntimeEvent-primary message boundary', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -10262,7 +10274,7 @@ describe('SessionManager permission mode updates', () => {
     expect(childInput.runtimeContext?.[0]?.sessionId).toBe(child.id);
   });
 
-  test('branchFromTurn never leaves a terminal cloned run header without a terminal RuntimeEvent fact', async () => {
+  test('branchFromTurn removes an incomplete target when Runtime ledger copy fails', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore({ failRuntimeEventAppendAfter: 5 });
     const manager = makeManagerForReadCutover(store, runStore);
@@ -10289,10 +10301,10 @@ describe('SessionManager permission mode updates', () => {
     );
 
     const child = (await store.list()).find((summary) => summary.parentSessionId === session.id);
-    expect(child).toBeDefined();
-    const childRuns = await runStore.listSessionRuns(child!.id);
+    expect(child).toBeUndefined();
+    const childRuns = await runStore.listSessionRuns('session-2');
     for (const run of childRuns) {
-      const runtimeEvents = await runStore.readRuntimeEvents(child!.id, run.runId);
+      const runtimeEvents = await runStore.readRuntimeEvents('session-2', run.runId);
       const hasTerminalFact = runtimeEvents.some(isTerminalRuntimeEvent);
       expect(
         run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled'

@@ -4248,9 +4248,11 @@ export class SessionManager {
 
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */
   async readConversationCopySnapshot(sessionId: string): Promise<RuntimeReadModelSessionView> {
-    const readMessages =
-      this.deps.store.readMessagesSnapshot?.bind(this.deps.store) ??
-      this.deps.store.readMessages.bind(this.deps.store);
+    const readMessagesSnapshot = this.deps.store.readMessagesSnapshot;
+    if (!readMessagesSnapshot) {
+      throw new Error('Conversation copy requires a side-effect-free message snapshot');
+    }
+    const readMessages = readMessagesSnapshot.bind(this.deps.store);
     const view = await this.getSessionView(sessionId, { readMessages });
     if (view.runs.length > 0 || view.messages.length > 0) return view;
     const messages = await readMessages(sessionId);
@@ -4325,26 +4327,35 @@ export class SessionManager {
       },
       boundary,
     );
-    await this.cloneConversationRuntimeLedger(sessionId, next.id, sourceView, copied);
-    if (copied.length > 0) await this.deps.store.appendMessages(next.id, copied);
-    await this.deps.store.appendMessage(next.id, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'session_start',
-      data: {
-        revisionRootSessionId,
-        revisionParentSessionId: sessionId,
-        revisionOfTurnId: input.sourceTurnId,
-        revisionIndex,
-        revisionState: 'preparing',
-      },
-    });
-    await this.deps.store.updateHeader(next.id, {
-      isFlagged: header.isFlagged,
-      titleIsManual: header.titleIsManual,
-    });
-    return headerToSummary(await this.deps.store.readHeader(next.id));
+    try {
+      const rewritten = await this.cloneConversationRuntimeLedger(
+        sessionId,
+        next.id,
+        sourceView,
+        copied,
+      );
+      if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
+      await this.deps.store.appendMessage(next.id, {
+        type: 'system_note',
+        id: this.deps.newId(),
+        ts: this.deps.now(),
+        kind: 'session_start',
+        data: {
+          revisionRootSessionId,
+          revisionParentSessionId: sessionId,
+          revisionOfTurnId: input.sourceTurnId,
+          revisionIndex,
+          revisionState: 'preparing',
+        },
+      });
+      await this.deps.store.updateHeader(next.id, {
+        isFlagged: header.isFlagged,
+        titleIsManual: header.titleIsManual,
+      });
+      return headerToSummary(await this.deps.store.readHeader(next.id));
+    } catch (error) {
+      return this.rollbackLegacyConversationCopy(next.id, error);
+    }
   }
 
   private async createBranchSession(
@@ -4376,16 +4387,25 @@ export class SessionManager {
       },
       boundary,
     );
-    await this.cloneConversationRuntimeLedger(sessionId, next.id, sourceView, copied);
-    if (copied.length > 0) await this.deps.store.appendMessages(next.id, copied);
-    await this.deps.store.appendMessage(next.id, {
-      type: 'system_note',
-      id: this.deps.newId(),
-      ts: this.deps.now(),
-      kind: 'session_start',
-      data: { parentSessionId: sessionId, branchOfTurnId: input.sourceTurnId },
-    });
-    return headerToSummary(await this.deps.store.readHeader(next.id));
+    try {
+      const rewritten = await this.cloneConversationRuntimeLedger(
+        sessionId,
+        next.id,
+        sourceView,
+        copied,
+      );
+      if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
+      await this.deps.store.appendMessage(next.id, {
+        type: 'system_note',
+        id: this.deps.newId(),
+        ts: this.deps.now(),
+        kind: 'session_start',
+        data: { parentSessionId: sessionId, branchOfTurnId: input.sourceTurnId },
+      });
+      return headerToSummary(await this.deps.store.readHeader(next.id));
+    } catch (error) {
+      return this.rollbackLegacyConversationCopy(next.id, error);
+    }
   }
 
   async respondToSandboxBoundary(
@@ -4725,9 +4745,9 @@ export class SessionManager {
     childSessionId: string,
     sourceView: RuntimeReadModelSessionView,
     copiedMessages: readonly StoredMessage[],
-  ): Promise<void> {
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) return;
-    await cloneConversationLedger({
+  ): Promise<readonly StoredMessage[]> {
+    if (!this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
+    const copied = await cloneConversationLedger({
       source: sourceView,
       copiedMessages,
       referenceMap: {
@@ -4739,6 +4759,19 @@ export class SessionManager {
       runtimeEventStore: this.deps.runtimeEventStore,
       newId: this.deps.newId,
     });
+    return copied.copiedMessages;
+  }
+
+  private async rollbackLegacyConversationCopy(sessionId: string, error: unknown): Promise<never> {
+    try {
+      await this.deps.store.remove(sessionId);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `Conversation copy ${sessionId} failed and could not be removed`,
+      );
+    }
+    throw error;
   }
 
   private async recoverAgentRunsFromLedger(

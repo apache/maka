@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,10 +44,13 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-revision-'));
   const root = join(base, 'root');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const { sourceSessionId, busySessionId, linkedChildSourceSessionId } = await seedSource(
-    root,
-    capability,
-  );
+  const {
+    sourceSessionId,
+    busySessionId,
+    linkedChildSourceSessionId,
+    metadataLinkedSourceSessionId,
+    archivedOwnedSourceSessionId,
+  } = await seedSource(root, capability);
   let host: ExecutionHostHandle | undefined;
   try {
     host = await startHost(root, capability.rootId);
@@ -55,6 +59,8 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
       sourceSessionId,
       busySessionId,
       linkedChildSourceSessionId,
+      metadataLinkedSourceSessionId,
+      archivedOwnedSourceSessionId,
     );
     await stopHost(host);
     host = undefined;
@@ -93,6 +99,8 @@ async function verifyConcurrentRevisionAuthority(
   sourceSessionId: string,
   busySessionId: string,
   linkedChildSourceSessionId: string,
+  metadataLinkedSourceSessionId: string,
+  archivedOwnedSourceSessionId: string,
 ): Promise<void> {
   const desktop = await connectClient(root, 'desktop');
   const tui = await connectClient(root, 'tui');
@@ -115,6 +123,35 @@ async function verifyConcurrentRevisionAuthority(
       }),
       { kind: 'session', session: null },
     );
+    const metadataLinkedSource = await querySession(desktop, metadataLinkedSourceSessionId);
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: metadataLinkedSourceSessionId,
+        targetSessionId: 'metadata-linked-copy-target',
+        sourceTurnId: 'metadata-linked-turn',
+        expectedSourceRevision: metadataLinkedSource.revision,
+      }),
+      operationError('operation_unavailable'),
+    );
+    const archivedOwnedSource = await querySession(desktop, archivedOwnedSourceSessionId);
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: archivedOwnedSourceSessionId,
+        targetSessionId: 'archived-owned-copy-target',
+        sourceTurnId: 'archived-owned-turn',
+        expectedSourceRevision: archivedOwnedSource.revision,
+      }),
+      operationError('operation_unavailable'),
+    );
+    for (const sessionId of ['metadata-linked-copy-target', 'archived-owned-copy-target']) {
+      assert.deepEqual(
+        await tui.request('session.catalog.query', {
+          kind: 'get',
+          sessionId,
+        }),
+        { kind: 'session', session: null },
+      );
+    }
     const branchInput = {
       sourceSessionId,
       targetSessionId: 'branch-target',
@@ -316,6 +353,8 @@ async function seedSource(
   sourceSessionId: string;
   busySessionId: string;
   linkedChildSourceSessionId: string;
+  metadataLinkedSourceSessionId: string;
+  archivedOwnedSourceSessionId: string;
 }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -344,6 +383,22 @@ async function seedSource(
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Linked Child Source Session',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const metadataLinkedSource = await execution.sessionStore.create({
+      cwd: root,
+      name: 'Metadata-linked Source Session',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const archivedOwnedSource = await execution.sessionStore.create({
+      cwd: root,
+      name: 'Archived-owned Source Session',
       backend: 'fake',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
@@ -533,6 +588,101 @@ async function seedSource(
         },
       },
     ]);
+    await execution.sessionStore.appendMessage(metadataLinkedSource.id, {
+      type: 'user',
+      id: 'metadata-linked-user',
+      turnId: 'metadata-linked-turn',
+      ts: 1,
+      text: 'delegate without a committed result',
+    });
+    await execution.sessionStore.createSubagent({
+      cwd: root,
+      name: 'Metadata-linked Child Session',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: metadataLinkedSource.id,
+        spawnedBy: {
+          parentRunId: 'metadata-parent-run',
+          parentTurnId: 'metadata-linked-turn',
+          toolCallId: 'metadata-tool-call',
+        },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: 1,
+        agentId: 'worker',
+        agentName: 'Worker',
+        profile: 'default',
+        systemPrompt: 'Complete the delegated task.',
+        toolNames: [],
+        categoryPolicy: {},
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: 'a'.repeat(64),
+        initialTurnId: 'metadata-child-turn',
+        initialRunId: 'metadata-child-run',
+      },
+    });
+    const archivedBody = JSON.stringify({
+      kind: 'subagent',
+      agentName: 'Worker',
+      turnId: 'archived-child-turn',
+      runId: 'archived-child-run',
+      status: 'completed',
+      permissionMode: 'ask',
+      summary: 'done',
+      artifactIds: [],
+    });
+    const archivedBodySha256 = createHash('sha256').update(archivedBody).digest('hex');
+    await artifacts.create({
+      id: 'archived-owned-result',
+      sessionId: archivedOwnedSource.id,
+      turnId: 'archived-owned-turn',
+      name: 'archived-owned-result.json',
+      kind: 'file',
+      content: archivedBody,
+      mimeType: 'application/json',
+      source: 'tool_result_archive',
+      now: 1,
+    });
+    await execution.sessionStore.appendMessages(archivedOwnedSource.id, [
+      {
+        type: 'user',
+        id: 'archived-owned-user',
+        turnId: 'archived-owned-turn',
+        ts: 1,
+        text: 'reuse the archived result',
+      },
+      {
+        type: 'tool_result',
+        id: 'archived-owned-tool-result',
+        turnId: 'archived-owned-turn',
+        ts: 2,
+        toolUseId: 'archived-owned-tool-call',
+        isError: false,
+        content: {
+          kind: 'json',
+          value: {
+            kind: 'maka.archived_tool_result',
+            rewriteVersion: 1,
+            artifactId: 'archived-owned-result',
+            runtimeEventId: 'archived-owned-runtime-event',
+            toolCallId: 'archived-owned-tool-call',
+            toolName: 'subagent',
+            bodySha256: archivedBodySha256,
+            originalEstimatedTokens: 20,
+            originalBytes: Buffer.byteLength(archivedBody, 'utf8'),
+            reason: 'stale_tool_result_pruned_before_compact',
+          },
+        },
+      },
+    ]);
     await tasks.create(source.id, [{ subject: 'Retained task' }], {
       turnId: 'turn-1',
       source: 'tool',
@@ -558,6 +708,8 @@ async function seedSource(
       sourceSessionId: source.id,
       busySessionId: busy.id,
       linkedChildSourceSessionId: linkedChildSource.id,
+      metadataLinkedSourceSessionId: metadataLinkedSource.id,
+      archivedOwnedSourceSessionId: archivedOwnedSource.id,
     };
   } finally {
     await owner.close();
