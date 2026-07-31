@@ -49,8 +49,6 @@ import {
   AlertTitle,
   Badge,
   Button,
-  buttonVariants,
-  cn,
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -59,14 +57,12 @@ import {
   Toolbar,
   ToolbarGroup,
   ToolbarSeparator,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
   formatBytes,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { ArtifactPreview } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
@@ -500,36 +496,29 @@ export function ArtifactPane(props: {
               </ToolbarGroup>
               <ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" />
               <ToolbarGroup className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
-                <Tooltip>
-                  {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-                  <TooltipTrigger
-                    render={<button type="button" className={cn(buttonVariants({ variant: 'destructive', size: 'icon-sm' }))} />}
+                <Tooltip
+                  content={
+                    selected.source === 'tool_result_archive'
+                      ? copy.pane.runtimeArchiveReadOnly
+                      : pendingArtifactAction === `${selected.id}:delete`
+                        ? copy.pane.deleting
+                        : copy.pane.delete
+                  }
+                >
+                  <Button
+                    label={pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
+                    icon={<Trash2 size={14} aria-hidden="true" />}
+                    isIconOnly
+                    variant="destructive"
+                    size="sm"
                     onClick={() => void runArtifactAction(`${selected.id}:delete`, () => deleteArtifact(selected.id))}
-                    disabled={
+                    isDisabled={
                       artifactActionBusy || selected.source === 'deep_research' ||
                       selected.source === 'tool_result_archive'
                     }
                     data-pending={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
                     aria-busy={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                    {/* Icon-only at rest: the visible label wrapped the toolbar
-                        onto a second line at 1280 pane width, stranding 删除
-                        alone bottom-right. The label span stays for screen
-                        readers (visually hidden); the Tooltip mirrors it for
-                        mouse hover, replacing the native hover tooltip this
-                        button lost in the tooltip migration. */}
-                <span className="maka-artifact-toolbar-destructive-label">
-                  {pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
-                </span>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {selected.source === 'tool_result_archive'
-                      ? copy.pane.runtimeArchiveReadOnly
-                      : pendingArtifactAction === `${selected.id}:delete`
-                        ? copy.pane.deleting
-                        : copy.pane.delete}
-                  </TooltipContent>
+                  />
                 </Tooltip>
               </ToolbarGroup>
             </Toolbar>

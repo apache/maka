@@ -212,8 +212,9 @@ describe('ArtifactPane async lifecycle contract', () => {
     assert.match(toolbarBlock, /copy\.pane\.deleting/);
     assert.doesNotMatch(css, /\.maka-artifact-toolbar-button\b/, 'artifact actions must not restore consumer-owned Button states');
     assert.match(toolbarBlock, /variant="secondary"\s+size="sm"/);
-    // #1565 PR 3: the delete action is a Tooltip render-prop composition kept on
-    // legacy buttonVariants; lock the source form instead of JSX props.
-    assert.match(toolbarBlock, /buttonVariants\(\{ variant: 'destructive', size: 'icon-sm' \}\)/);
+    assert.match(
+      toolbarBlock,
+      /<Button[\s\S]*label=\{pendingArtifactAction === `\$\{selected\.id\}:delete`[\s\S]*isIconOnly[\s\S]*variant="destructive"[\s\S]*size="sm"/,
+    );
   });
 });

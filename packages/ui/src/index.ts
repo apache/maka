@@ -90,10 +90,9 @@ export {
   CollapsiblePanel,
 } from './primitives/collapsible.js';
 export {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from './primitives/tooltip.js';
+  NumberField,
+  NumberFieldInput,
+} from './primitives/number-field.js';
 export {
   Tabs as PrimitiveTabs,
   TabsList as PrimitiveTabsList,

@@ -117,7 +117,13 @@ describe('SearchModal lifecycle and interaction contract', () => {
 
   it('returns focus to the search trigger after dismissal', async () => {
     const renderer = await readRendererShellCombinedSource();
+    const shellSearchButton = renderer.match(/<IconButton[\s\S]*?data-maka-search-trigger="true"[\s\S]*?\/>/)?.[0] ?? '';
 
+    assert.match(
+      shellSearchButton,
+      /label=\{copy\.searchConversations\}[\s\S]*data-maka-search-trigger="true"/,
+      'Shell top Search trigger must be queryable for focus restoration after modal close',
+    );
     assert.match(
       renderer,
       /function closeSearchModal\(options\?: \{ restoreFocus\?: boolean \}\) \{[\s\S]*setSearchModalOpen\(false\);[\s\S]*options\?\.restoreFocus === false[\s\S]*requestAnimationFrame/,

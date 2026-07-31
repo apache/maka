@@ -11,15 +11,8 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/browser-panel.tsx'), 'utf8');
 
     assert.match(source, /import \{ normalizeBrowserAddressInput, type BrowserState \} from '@maka\/core';/);
-    // #1565 PR 3: nav controls are Base UI Tooltip trigger render-props on the
-    // intentionally retained legacy buttonVariants seam; the address bar stays
-    // on the shared TextInput primitive.
-    assert.match(source, /import \{[^}]*\bbuttonVariants\b[^}]*\bTextInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
-    assert.equal(
-      (source.match(/<button\b/g) ?? []).length,
-      (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
-      'BrowserPanel raw <button> may appear only as the legacy buttonVariants render-prop seam (#1565 PR 3)',
-    );
+    assert.match(source, /import \{[^}]*\bIconButton\b[^}]*\bTextInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
+    assert.doesNotMatch(source, /<button\b/, 'BrowserPanel controls must use Astryx buttons');
     assert.doesNotMatch(source, /<input\b/, 'BrowserPanel address bar must use shared TextInput');
     assert.doesNotMatch(source, /const full = \/\^\[a-z\]\+/, 'BrowserPanel must not keep renderer-only address prefix regex');
     assert.match(
@@ -45,18 +38,18 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     for (const label of ['backAria', 'forwardAria', 'closeAria']) {
       assert.match(
         source,
-        new RegExp(`aria-label=\\{copy\\.${label}\\}`),
+        new RegExp(`label=\\{copy\\.${label}\\}`),
         `BrowserPanel icon-only toolbar action must expose accessible name: ${label}`,
       );
     }
     assert.match(
       source,
-      /aria-label=\{state\.loading \? copy\.stopAria : copy\.refreshAria\}/,
+      /label=\{state\.loading \? copy\.stopAria : copy\.refreshAria\}/,
       'BrowserPanel reload/stop icon-only action must expose a state-specific accessible name',
     );
     assert.match(
       source,
-      /disabled=\{!state\.hasPage && !state\.loading\}[\s\S]*state\.loading \? void window\.maka\.browser\.stop\(sessionId\) : void window\.maka\.browser\.reload\(sessionId\)/,
+      /isDisabled=\{!state\.hasPage && !state\.loading\}[\s\S]*state\.loading \? void window\.maka\.browser\.stop\(sessionId\) : void window\.maka\.browser\.reload\(sessionId\)/,
       'BrowserPanel reload action must not stay clickable in the empty no-page state',
     );
     assert.match(
@@ -105,13 +98,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     assert.match(source, /import \{[^}]*\bButton\b[^}]*\bToolbar\b[^}]*\bToolbarGroup\b[^}]*\bToolbarSeparator\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
     assert.match(source, /import \{ Button as BaseButton \} from '@base-ui\/react\/button';/);
-    // #1565 PR 3: the destructive delete action is a Tooltip trigger
-    // render-prop on the intentionally retained legacy buttonVariants seam.
-    assert.equal(
-      (source.match(/<button\b/g) ?? []).length,
-      (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
-      'ArtifactPane controls must use shared Button, the semantic Base UI row seam, or the legacy buttonVariants render-prop seam (#1565 PR 3)',
-    );
+    assert.doesNotMatch(source, /<button\b/, 'ArtifactPane actions must use Astryx Button');
     assert.doesNotMatch(source, /role="toolbar"/, 'ArtifactPane toolbar semantics must come from shared primitive Toolbar');
     assert.match(source, /<Toolbar className="maka-artifact-toolbar" aria-label=\{copy\.pane\.actionsAria\}>/);
     assert.match(source, /<ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" \/>/);
@@ -286,8 +273,10 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     const artifactPane = consumers[5];
     assert.doesNotMatch(artifactPane, /className="[^"]*maka-artifact-toolbar-button/);
-    // #1565 PR 3: the delete action rides the legacy buttonVariants render-prop seam.
-    assert.match(artifactPane, /buttonVariants\(\{ variant: 'destructive', size: 'icon-sm' \}\)/);
+    assert.match(
+      artifactPane,
+      /<Button[\s\S]*label=\{pendingArtifactAction === `\$\{selected\.id\}:delete`[\s\S]*isIconOnly[\s\S]*variant="destructive"[\s\S]*size="sm"/,
+    );
     assert.doesNotMatch(rendererCss, /\.maka-artifact-toolbar-button\b/);
 
     const providers = consumers[6];
