@@ -264,7 +264,7 @@
    edge while every sibling row is inset 24px. One horizontal inset for
    everything inside a card. */
 .settingsRows > .settingsFormLayout,
-.settingsRows > .settingsFormField,
+.settingsRows > .settingsProxyBypassField,
 .settingsRows > .settingsActionRow,
 .settingsRows > [data-slot="alert"] {
   margin: var(--space-4) var(--space-6);

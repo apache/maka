@@ -378,7 +378,7 @@ function NetworkProxySection(props: {
           )}
 
           <TextInput
-            className="settingsFormField"
+            className="settingsProxyBypassField"
             value={proxyDraft.bypassList.join(', ')}
             onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
             placeholder="metaso.cn, baidu.com"
