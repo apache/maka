@@ -159,7 +159,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /const connectionDetailActionGuard = useKeyedActionGuard<[\s\S]*'save' \| 'test' \| 'fetch-models' \| 'save-enabled-models' \| 'set-default' \| 'delete'[\s\S]*>\(\)/,
+      /const connectionDetailActionGuard = useKeyedActionGuard<[\s\S]*'save' \| 'test' \| 'fetch-models' \| 'save-enabled-models' \| 'set-default-model' \| 'set-default' \| 'delete'[\s\S]*>\(\)/,
       'ConnectionDetail actions must have synchronous duplicate-action guards from the shared keyed guard, not only React state',
     );
     assert.match(
@@ -189,7 +189,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /const detailActionBusy = busy \|\| testing \|\| fetchingModels \|\| savingEnabledModels \|\| settingDefault \|\| deleting/,
+      /const detailActionBusy =[\s\S]*busy \|\|[\s\S]*testing \|\|[\s\S]*fetchingModels \|\|[\s\S]*savingEnabledModels \|\|[\s\S]*settingDefaultModel \|\|[\s\S]*settingDefault \|\|[\s\S]*deleting/,
       'ConnectionDetail must expose one visible busy state that freezes payload-affecting controls',
     );
     assert.match(
@@ -281,7 +281,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /disabled=\{isExperimental \|\| busy\} aria-label=\{copy\.slugAria\}/,
+      /value=\{slug\}[\s\S]*disabled=\{isExperimental \|\| busy\}[\s\S]*aria-label=\{copy\.slugAria\}/,
       'AddProviderForm fields must freeze while a create request is in flight so visible draft cannot drift from the submitted payload',
     );
     // #1565 PR 3: Astryx Button — `isDisabled` + `label` prop, self-closing.
@@ -683,17 +683,21 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
   });
 
-  it('connection management dialogs lead with credentials and keep model visibility in advanced settings', async () => {
+  it('keeps common model management visible and reserves advanced settings for the endpoint', async () => {
     const src = await readProviderSettingsCombinedSource();
     const detail = src.match(/function ConnectionDetailInner[\s\S]*?function GitHubCopilotReloginNotice/)?.[0] ?? '';
     const credential = detail.indexOf('<PasswordInput');
+    const modelPicker = detail.indexOf('<ModelPicker');
     const advanced = detail.indexOf('<details className="providerAdvancedSettings"');
     const models = detail.indexOf('<EnabledModelManager');
 
     assert.ok(credential >= 0, 'API-key connection detail must expose its credential field');
-    assert.ok(advanced > credential, 'credentials must remain the primary task before advanced settings');
-    assert.ok(models > advanced, 'enabled-model management must stay inside advanced settings');
-    assert.doesNotMatch(detail, /<ModelTable/, 'connection detail must not render a default-model picker');
+    assert.ok(modelPicker > credential, 'credentials must remain the primary task before model management');
+    assert.ok(models > modelPicker, 'default and enabled model management must share the visible model section');
+    assert.ok(advanced > models, 'advanced settings must follow common model management');
+    const advancedBody = detail.match(/<details className="providerAdvancedSettings"[\s\S]*?<\/details>/)?.[0] ?? '';
+    assert.match(advancedBody, /<ConnectionEndpointField/);
+    assert.doesNotMatch(advancedBody, /<ModelPicker|<EnabledModelManager|testConnection|updateModels/);
     // The last-test message goes through the display helper in the extracted
     // controller (use-connection-detail.ts); the view renders the derived value.
     assert.match(src, /connectionLastTestMessageDisplay\(connection\.lastTestMessage, locale\)/);
@@ -825,10 +829,9 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /async function remove\(\) \{[\s\S]*setDeleting\(true\);[\s\S]*let deleted = false;[\s\S]*await props\.bridge\.delete\(connection\.slug\);[\s\S]*deleted = true;[\s\S]*await props\.onDeleted\(\);[\s\S]*catch \(error\) \{[\s\S]*toast\.error\([\s\S]*deleted \? copy\.refreshFailed : copy\.deleteFailed/,
       'ConnectionDetail delete failures and post-delete refresh failures must be visible',
     );
-    // #1565 PR 3: Astryx Button — `quiet`→`ghost`, `isDisabled`, `label` prop.
     assert.match(
       detail,
-      /<Button className="providerAdvancedDanger" variant="ghost" isDisabled=\{detailActionBusy\} onClick=\{remove\} label=\{deleting \? copy\.deleting : copy\.deleteConnection\} \/>/,
+      /<Button variant="destructive" isDisabled=\{detailActionBusy\} onClick=\{remove\} label=\{deleting \? copy\.deleting : copy\.deleteConnection\} \/>/,
       'Delete should be disabled while provider detail actions are busy and show its own pending copy',
     );
   });
@@ -1273,8 +1276,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       hook,
-      /async function refresh\(\): Promise<boolean> \{[\s\S]*const next = \(await bridge\.getAccountState\(\)\) as SubscriptionSnapshot;[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*setState\(next\);[\s\S]*catch \(error\) \{[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*return true;/,
-      'shared OAuth refresh must drop late state/error writes after unmount',
+      /async function refresh\(\): Promise<boolean> \{[\s\S]*const next = \(await bridge\.getAccountState\(\)\) as SubscriptionSnapshot;[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*setState\(next\);[\s\S]*catch \(error\) \{[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*return false;[\s\S]*return true;/,
+      'shared OAuth refresh must report failure and drop late state/error writes after unmount',
     );
     assert.match(
       hook,

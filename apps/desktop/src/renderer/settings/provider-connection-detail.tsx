@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Alert,
@@ -10,7 +10,11 @@ import {
   FieldRoot,
   Input,
   Label,
+  ModelPicker,
   RelativeTime,
+  modelChoiceValue,
+  parseModelChoiceValue,
+  type ModelMenuGroup,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -97,6 +101,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
+    settingDefaultModel,
     settingDefault,
     deleting,
     detailActionBusy,
@@ -116,12 +121,35 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    updateDefaultModel,
     runTest,
     refreshModels,
     setAsDefault,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
+  const defaultModelGroups = useMemo<ModelMenuGroup[]>(() => {
+    const choices = modelChoices
+      .filter((entry) => entry.canUseAsChatDefault)
+      .map((entry) => ({
+        connectionSlug: connection.slug,
+        providerType: connection.providerType,
+        model: entry.id,
+        label: entry.displayName?.trim() || entry.id,
+      }));
+    return choices.length > 0
+      ? [{
+          connectionSlug: connection.slug,
+          providerType: connection.providerType,
+          heading: display.name,
+          choices,
+        }]
+      : [];
+  }, [connection.providerType, connection.slug, display.name, modelChoices]);
+  const selectedDefaultModelValue = modelChoiceValue(connection.slug, connection.defaultModel);
+  const selectedDefaultModelLabel =
+    defaultModelGroups[0]?.choices.find((choice) => choice.model === connection.defaultModel)?.label ??
+    connection.defaultModel;
 
   return (
     <div className="providerEditor providerConnectionManager">
@@ -208,16 +236,47 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             : copy.credentialUnknownDetail}
         </p>
       )}
+      <section className="providerModelSettings" aria-label={copy.modelManagement}>
+        <FieldRoot className="providerDefaultModelField">
+          <Label className="text-xs text-foreground-secondary">{copy.connectionDefaultModel}</Label>
+          <FieldDescription>{copy.connectionDefaultModelHelp}</FieldDescription>
+          <ModelPicker
+            groups={defaultModelGroups}
+            value={selectedDefaultModelValue}
+            ariaLabel={copy.connectionDefaultModel}
+            disabled={detailActionBusy || defaultModelGroups.length === 0}
+            searchPlaceholder={copy.searchDefaultModels}
+            emptyMessage={copy.noModels}
+            triggerClassName="providerDefaultModelTrigger"
+            onValueChange={(value) => {
+              const parsed = parseModelChoiceValue(value);
+              if (parsed?.llmConnectionSlug === connection.slug) {
+                void updateDefaultModel(parsed.model);
+              }
+            }}
+          >
+            <span className="modelPickerOptionLabel">
+              {settingDefaultModel ? copy.savingDefaultModel : selectedDefaultModelLabel}
+            </span>
+          </ModelPicker>
+        </FieldRoot>
+        <EnabledModelManager
+          modelChoices={modelChoices}
+          enabledModelIds={enabledModelIds}
+          defaultModel={connection.defaultModel}
+          disabled={detailActionBusy}
+          onChange={(next) => void updateEnabledModels(next)}
+        />
+        <div className="providerModelActions">
+          <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
+          {supportsRemoteDiscovery && (
+            <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
+          )}
+        </div>
+      </section>
       <details className="providerAdvancedSettings">
         <summary>{copy.advanced}</summary>
         <div className="providerAdvancedSettingsBody">
-          <EnabledModelManager
-            modelChoices={modelChoices}
-            enabledModelIds={enabledModelIds}
-            defaultModel={connection.defaultModel}
-            disabled={detailActionBusy}
-            onChange={(next) => void updateEnabledModels(next)}
-          />
           <div className="providerEndpointSettings">
             <ConnectionEndpointField
               baseUrl={baseUrl}
@@ -236,18 +295,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               </div>
             )}
           </div>
-          <div className="providerAdvancedActions">
-            <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
-            {supportsRemoteDiscovery && (
-              <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
-            )}
-            {!props.isDefault && connection.enabled && (
-              <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
-            )}
-            <Button className="providerAdvancedDanger" variant="ghost" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
-          </div>
         </div>
       </details>
+      <div className="providerConnectionActions">
+        {!props.isDefault && connection.enabled && (
+          <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
+        )}
+        <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
+      </div>
     </div>
   );
 }

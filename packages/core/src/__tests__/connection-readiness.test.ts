@@ -35,6 +35,7 @@ describe('isConnectionReady — model capability gate', () => {
     const verdict = isConnectionReady({
       connection: connection({
         defaultModel: 'gpt-4.1',
+        enabledModelIds: ['gpt-4.1', 'gpt-image-1'],
         models: [
           { id: 'gpt-4.1', capabilities: { chat: true, functionCalling: true } },
           { id: 'gpt-image-1', capabilities: { imageGeneration: true, chat: false } },
@@ -45,6 +46,23 @@ describe('isConnectionReady — model capability gate', () => {
     });
 
     assert.deepEqual(verdict, { ready: false, reason: 'model_not_chat_capable' });
+  });
+
+  it('rejects a discovered model after the user disables it', () => {
+    const verdict = isConnectionReady({
+      connection: connection({
+        defaultModel: 'gpt-4.1',
+        enabledModelIds: ['gpt-4.1'],
+        models: [
+          { id: 'gpt-4.1', capabilities: { chat: true } },
+          { id: 'gpt-4.1-mini', capabilities: { chat: true } },
+        ],
+      }),
+      hasSecret: true,
+      requestedModel: 'gpt-4.1-mini',
+    });
+
+    assert.deepEqual(verdict, { ready: false, reason: 'model_not_enabled' });
   });
 
   it('keeps explicit chat models send-ready even when they also support image generation', () => {

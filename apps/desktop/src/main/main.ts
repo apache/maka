@@ -366,6 +366,10 @@ function syncOAuthModelConnections(): Promise<void> {
   return oauthModelConnections.syncOAuthModelConnections();
 }
 
+function disconnectManagedOAuthConnection(connection: LlmConnection): Promise<void> {
+  return oauthModelConnections.disconnectManagedOAuthConnection(connection);
+}
+
 function resolveConnectionSecret(slug: string): Promise<string | null> {
   return oauthModelConnections.resolveConnectionSecret(slug);
 }
@@ -1138,6 +1142,7 @@ function registerIpc(): void {
     syncOAuthModelConnections,
     resolveConnectionSecret,
     hasConnectionSecret,
+    disconnectManagedOAuthConnection,
     emitConnectionListChanged,
     // Same seam as the fake-backend override above, for the other IPC that can
     // leave the machine: adding a catalog provider runs remote model discovery
