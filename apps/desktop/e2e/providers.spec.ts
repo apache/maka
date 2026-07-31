@@ -32,7 +32,7 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await page.locator('[aria-label="设置分组"]').getByText('模型', { exact: true }).click();
 
   await expect(page.getByPlaceholder('搜索服务商')).toBeVisible();
-  await page.getByRole('tab', { name: 'API', exact: true }).click();
+  await page.getByRole('button', { name: 'API', exact: true }).click();
   await page.getByPlaceholder('搜索服务商').fill('Cerebras');
 
   // A color brand asset renders as an untouched <img>: no currentColor mask, no
@@ -181,7 +181,7 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
   await page.getByRole('button', { name: '设置' }).click();
   await page.locator('[aria-label="设置分组"]').getByText('模型', { exact: true }).click();
 
-  await page.getByRole('tab', { name: 'API', exact: true }).click();
+  await page.getByRole('button', { name: 'API', exact: true }).click();
   await page.getByPlaceholder('搜索服务商').fill('Cloudflare Workers AI');
   await page.getByRole('button', { name: /添加模型供应商：Cloudflare Workers AI/ }).click();
 
@@ -222,7 +222,7 @@ test('adds a no-auth local runtime with no key field and a currentColor mask mar
   await page.getByRole('button', { name: '设置' }).click();
   await page.locator('[aria-label="设置分组"]').getByText('模型', { exact: true }).click();
 
-  await page.getByRole('tab', { name: '本地' }).click();
+  await page.getByRole('button', { name: '本地' }).click();
   await page.getByPlaceholder('搜索服务商').fill('LM Studio');
   const catalogMark = page.locator(
     '.providerCatalogRow[data-provider="lm-studio"] .providerLogo .providerAssetMask',

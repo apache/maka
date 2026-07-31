@@ -6,11 +6,11 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
 
   await settings.getByRole('button', { name: '接入 钉钉' }).click();
   await expect(settings.getByRole('heading', { name: '接入方式' })).toBeVisible();
-  await expect(settings.getByRole('button', { name: '快捷接入（推荐）' })).toHaveAttribute('data-pressed', '');
+  await expect(settings.getByRole('radio', { name: '快捷接入（推荐）' })).toBeChecked();
 
-  await settings.getByRole('button', { name: '手动配置' }).click();
+  await settings.getByRole('radio', { name: '手动配置' }).click();
   await expect(settings.getByRole('textbox', { name: '钉钉应用密钥' })).toBeVisible();
-  await settings.getByRole('button', { name: '快捷接入（推荐）' }).click();
+  await settings.getByRole('radio', { name: '快捷接入（推荐）' }).click();
   await settings.getByRole('button', { name: '使用钉钉扫码接入' }).click();
 
   const dialog = page.getByRole('dialog', { name: '配置钉钉扫码接入' });
@@ -78,7 +78,7 @@ test('关闭扫码弹窗会取消迟到结果，过期二维码可以重新生�
 
   await settings.getByRole('button', { name: '返回远程接入' }).click();
   await settings.getByRole('button', { name: '接入 飞书' }).click();
-  await settings.getByRole('button', { name: 'Lark' }).click();
+  await settings.getByRole('radio', { name: 'Lark' }).click();
   await settings.getByRole('button', { name: '使用Lark扫码接入' }).click();
   const larkDialog = page.getByRole('dialog', { name: '配置 Lark 扫码接入' });
   await expect(larkDialog.getByRole('img', { name: '配置 Lark 二维码' })).toBeVisible();
