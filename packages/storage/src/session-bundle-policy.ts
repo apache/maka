@@ -26,7 +26,10 @@ import {
   encodeExecutionBoundaryTransfer,
   EXECUTION_BOUNDARY_TRANSFER_FILE,
 } from './session-metadata-transfer.js';
-import { SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
+import {
+  LEGACY_SESSION_METADATA_DATABASE_NAME,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
 import { createSqliteSessionMetadataStore } from './sqlite-session-metadata-store.js';
 import type { SessionAuthoritySnapshot } from './sqlite-session-metadata-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
@@ -72,10 +75,10 @@ export const SESSION_BUNDLE_PROTECTED_ENTRIES = [
   'activation-input.json',
   '.maka',
   ARTIFACT_WRITER_LOCK_FILE,
-  SQLITE_SESSION_METADATA_DATABASE_NAME,
-  `${SQLITE_SESSION_METADATA_DATABASE_NAME}-wal`,
-  `${SQLITE_SESSION_METADATA_DATABASE_NAME}-shm`,
-  `${SQLITE_SESSION_METADATA_DATABASE_NAME}-journal`,
+  LEGACY_SESSION_METADATA_DATABASE_NAME,
+  `${LEGACY_SESSION_METADATA_DATABASE_NAME}-wal`,
+  `${LEGACY_SESSION_METADATA_DATABASE_NAME}-shm`,
+  `${LEGACY_SESSION_METADATA_DATABASE_NAME}-journal`,
   'runtime.sqlite-wal',
   'runtime.sqlite-shm',
   'runtime.sqlite-journal',
@@ -534,7 +537,7 @@ async function readSelectedSessionAuthoritySnapshot(
   plan: SessionBundleExportPlan,
 ): Promise<SessionAuthoritySnapshot> {
   const metadata = createSqliteSessionMetadataStore(
-    resolve(plan.stateRoot, SQLITE_SESSION_METADATA_DATABASE_NAME),
+    resolve(plan.stateRoot, OPERATIONAL_STATE_DATABASE_NAME),
   );
   try {
     return await metadata.readSessionAuthoritySnapshot(plan.sessionId);

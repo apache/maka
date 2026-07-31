@@ -68,6 +68,7 @@ import {
   migrateSqliteSessionMetadataDatabase,
   readSqliteSessionMetadataSchemaVersion,
 } from './sqlite-session-metadata-schema.js';
+import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
@@ -104,6 +105,8 @@ export type SqliteSessionMetadataStoreFailpoint =
 export interface SqliteSessionMetadataStoreOptions {
   now?: () => number;
   failpoint?: (point: SqliteSessionMetadataStoreFailpoint) => void;
+  /** @internal Repository connection supplied by the operational DB owner. */
+  databaseLease?: OperationalStateDatabaseLease;
 }
 
 export interface SessionMetadataRecord {
@@ -163,6 +166,7 @@ export function createSqliteSessionMetadataStore(
 
 export class SqliteSessionMetadataStore {
   private readonly db: DatabaseSync;
+  private readonly databaseLease?: OperationalStateDatabaseLease;
   private readonly now: () => number;
   private closed = false;
 
@@ -171,6 +175,12 @@ export class SqliteSessionMetadataStore {
     private readonly options: SqliteSessionMetadataStoreOptions = {},
   ) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    if (options.databaseLease) {
+      this.databaseLease = options.databaseLease;
+      this.db = options.databaseLease.database;
+      this.now = options.now ?? Date.now;
+      return;
+    }
     const { DatabaseSync } = loadSqliteModule();
     this.db = new DatabaseSync(path);
     configureSqliteSessionMetadataDatabase(this.db);
@@ -194,7 +204,8 @@ export class SqliteSessionMetadataStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.db.close();
+    if (this.databaseLease) this.databaseLease.close();
+    else this.db.close();
   }
 
   async backup(destinationPath: string): Promise<number> {
@@ -2675,6 +2686,7 @@ export class SqliteSessionMetadataStore {
   }
 
   private transaction<T>(operation: () => T): T {
+    if (this.databaseLease) return this.databaseLease.transaction('write', operation);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = operation();
@@ -2691,6 +2703,7 @@ export class SqliteSessionMetadataStore {
   }
 
   private readTransaction<T>(operation: () => T): T {
+    if (this.databaseLease) return this.databaseLease.transaction('read', operation);
     this.db.exec('BEGIN');
     try {
       const result = operation();

@@ -97,7 +97,7 @@ describe('default SQLite session metadata store', () => {
       assert.equal('name' in (marker ?? {}), false);
       assert.equal(message?.type, 'user');
       await stat(join(root, SQLITE_SESSION_METADATA_DATABASE_NAME));
-      await assert.rejects(() => stat(join(root, 'runtime.sqlite')), { code: 'ENOENT' });
+      await assert.rejects(() => stat(join(root, 'sessions.sqlite')), { code: 'ENOENT' });
 
       await store.close?.();
       const reopened = createSessionStore(root);

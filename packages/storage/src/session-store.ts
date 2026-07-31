@@ -20,6 +20,10 @@ import {
 } from './session-transcript.js';
 import { chainWrite } from './write-queue.js';
 import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
+import {
   DEFAULT_SESSION_NAME,
   deriveTurnRecords,
   isCollaborationMode,
@@ -52,7 +56,8 @@ import type {
 } from '@maka/core';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
-export const SQLITE_SESSION_METADATA_DATABASE_NAME = 'sessions.sqlite';
+/** @deprecated Session metadata is canonical in the operational runtime.sqlite database. */
+export const SQLITE_SESSION_METADATA_DATABASE_NAME = OPERATIONAL_STATE_DATABASE_NAME;
 
 export class SessionNotFoundError extends Error {
   readonly name = 'SessionNotFoundError';
@@ -142,8 +147,10 @@ class SqliteSessionStore implements SessionStore {
 
   constructor(workspaceRoot: string) {
     this.files = new FileSessionStore(workspaceRoot);
+    const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(
-      join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME),
+      join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+      { databaseLease },
     );
     this.ready = importLegacySessionMetadataTree({
       workspaceRoot,

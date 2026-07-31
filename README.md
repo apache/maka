@@ -191,6 +191,15 @@ write, Maka batch-idempotently imports legacy RuntimeEvent JSONL without
 rewriting it. Legacy-only workspaces remain available to read-only inspection
 until that first write.
 
+Session metadata and Agent Graph control tables now use the same process-local
+operational database owner and the same `runtime.sqlite` transaction authority.
+The first operational open copies a WAL-consistent `sessions.sqlite` source
+into `runtime.sqlite`, validates every source row, and records the source digest
+and result in `cutover_journal`. An interrupted copy resumes without partial
+rows; a legacy database changed after cutover fails closed. The old database is
+retained as migration evidence but is no longer a production writer. Session
+transcript bodies remain append-only JSONL.
+
 Runtime continuation remains opt-in:
 
 - `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn
