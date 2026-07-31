@@ -165,8 +165,6 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 .maka-skill-market-select {
   min-width: 0;
   width: auto;
-  height: var(--h-control-sm);
-  min-height: var(--h-control-sm);
 }
 
 .maka-skill-tabs {

@@ -37,6 +37,7 @@ import {
 import {
   Button as UiButton,
   DateTimeInput,
+  FormLayout,
   Selector,
   type ISODateTimeString,
 } from '@astryxdesign/core';
@@ -237,29 +238,25 @@ export function PlanReminderFormDialog(props: {
               </DialogClose>
             </div>
           </header>
-          <div className="maka-plan-form-grid">
-            <div className="maka-plan-field">
-              <TextInput
-                ref={titleRef}
-                label={copy.field.title}
-                value={title}
-                onChange={(value) => setTitle(value.slice(0, 120))}
-                data-maka-plan-title-input="true"
-                placeholder={copy.titlePlaceholder}
-                isDisabled={formInteractionDisabled}
-              />
-            </div>
-            <div className="maka-plan-field">
-              <DateTimeInput
-                label={copy.field.time}
-                value={runAtLocal as ISODateTimeString}
-                onChange={(value) => setRunAtLocal(value ?? '')}
-                hourFormat="24h"
-                timeIncrement={5}
-                isDisabled={formInteractionDisabled}
-              />
-            </div>
-          </div>
+          <FormLayout direction="horizontal">
+            <TextInput
+              ref={titleRef}
+              label={copy.field.title}
+              value={title}
+              onChange={(value) => setTitle(value.slice(0, 120))}
+              data-maka-plan-title-input="true"
+              placeholder={copy.titlePlaceholder}
+              isDisabled={formInteractionDisabled}
+            />
+            <DateTimeInput
+              label={copy.field.time}
+              value={runAtLocal as ISODateTimeString}
+              onChange={(value) => setRunAtLocal(value ?? '')}
+              hourFormat="24h"
+              timeIncrement={5}
+              isDisabled={formInteractionDisabled}
+            />
+          </FormLayout>
           <div className="maka-plan-presets" aria-label={copy.presetsAriaLabel}>
             {copy.presets.map(([preset, label]) => (
               <UiButton
@@ -273,98 +270,80 @@ export function PlanReminderFormDialog(props: {
               />
             ))}
           </div>
-          <div className="maka-plan-form-grid">
-            <label className="maka-plan-field">
-              <span>{copy.field.recurrence}</span>
-              <Selector
-                value={recurrence}
-                onChange={(value) => setRecurrence(value as PlanReminderRecurrence)}
-                isDisabled={formInteractionDisabled}
-                label={copy.field.recurrence}
-                isLabelHidden
-                width="100%"
-                options={copy.recurrenceOptions.map(([value, label]) => ({ value, label }))}
-              />
-            </label>
-            <label className="maka-plan-field">
-              <span>{copy.field.delivery}</span>
-              <Selector
-                value={deliveryChannel}
-                onChange={(value) => setDeliveryChannel(value as PlanReminderDeliveryTarget['channel'])}
-                isDisabled={formInteractionDisabled}
-                label={copy.field.delivery}
-                isLabelHidden
-                width="100%"
-                options={copy.deliveryOptions.map(([value, label]) => ({ value, label }))}
-              />
-            </label>
-          </div>
+          <FormLayout direction="horizontal">
+            <Selector
+              value={recurrence}
+              onChange={(value) => setRecurrence(value as PlanReminderRecurrence)}
+              isDisabled={formInteractionDisabled}
+              label={copy.field.recurrence}
+              width="100%"
+              options={copy.recurrenceOptions.map(([value, label]) => ({ value, label }))}
+            />
+            <Selector
+              value={deliveryChannel}
+              onChange={(value) => setDeliveryChannel(value as PlanReminderDeliveryTarget['channel'])}
+              isDisabled={formInteractionDisabled}
+              label={copy.field.delivery}
+              width="100%"
+              options={copy.deliveryOptions.map(([value, label]) => ({ value, label }))}
+            />
+          </FormLayout>
           {recurrence === 'cron' && (
-            <div className="maka-plan-field">
-              <TextInput
-                label="Cron"
-                value={cronExpression}
-                onChange={(value) => setCronExpression(value.slice(0, 80))}
-                placeholder={copy.cronPlaceholder}
-                isDisabled={formInteractionDisabled}
-              />
-            </div>
+            <TextInput
+              label="Cron"
+              value={cronExpression}
+              onChange={(value) => setCronExpression(value.slice(0, 80))}
+              placeholder={copy.cronPlaceholder}
+              isDisabled={formInteractionDisabled}
+            />
           )}
           {deliveryChannel === 'bot' && (
             <>
-              <div className="maka-plan-delivery-grid">
-                <label className="maka-plan-field">
-                  <span>{copy.field.platform}</span>
-                  <Selector
-                    value={deliveryPlatform}
-                    onChange={(value) => setDeliveryPlatform(value as BotProvider)}
-                    isDisabled={formInteractionDisabled}
-                    label={copy.field.platform}
-                    isLabelHidden
-                    width="100%"
-                    options={BOT_DELIVERY_PROVIDERS.map((provider) => {
-                      const icon = (
-                        <BotBrandLogo
-                          provider={provider}
-                          width="100%"
-                          height="100%"
-                          aria-hidden="true"
-                        />
-                      );
-                      return {
-                        value: provider,
-                        label: botDisplayLabel(provider),
-                        icon,
-                      };
-                    })}
-                  />
-                </label>
-                <div className="maka-plan-field">
-                  <TextInput
-                    label="Chat ID"
-                    value={deliveryChatId}
-                    onChange={(value) => setDeliveryChatId(value.slice(0, 160))}
-                    placeholder={copy.chatIdPlaceholder}
-                    isDisabled={formInteractionDisabled}
-                  />
-                </div>
-              </div>
+              <FormLayout direction="horizontal">
+                <Selector
+                  value={deliveryPlatform}
+                  onChange={(value) => setDeliveryPlatform(value as BotProvider)}
+                  isDisabled={formInteractionDisabled}
+                  label={copy.field.platform}
+                  width="100%"
+                  options={BOT_DELIVERY_PROVIDERS.map((provider) => {
+                    const icon = (
+                      <BotBrandLogo
+                        provider={provider}
+                        width="100%"
+                        height="100%"
+                        aria-hidden="true"
+                      />
+                    );
+                    return {
+                      value: provider,
+                      label: botDisplayLabel(provider),
+                      icon,
+                    };
+                  })}
+                />
+                <TextInput
+                  label="Chat ID"
+                  value={deliveryChatId}
+                  onChange={(value) => setDeliveryChatId(value.slice(0, 160))}
+                  placeholder={copy.chatIdPlaceholder}
+                  isDisabled={formInteractionDisabled}
+                />
+              </FormLayout>
               <p className="maka-plan-delivery-help">
                 {copy.deliveryHelp(formatPlanDeliveryProviderList())}
               </p>
             </>
           )}
-          <div className="maka-plan-field maka-plan-prompt-field">
-            <UiTextarea
-              label={copy.field.note}
-              value={note}
-              onChange={(value) => setNote(value.slice(0, 1000))}
-              maxLength={1000}
-              rows={5}
-              placeholder={copy.notePlaceholder}
-              isDisabled={formInteractionDisabled}
-            />
-          </div>
+          <UiTextarea
+            label={copy.field.note}
+            value={note}
+            onChange={(value) => setNote(value.slice(0, 1000))}
+            maxLength={1000}
+            rows={5}
+            placeholder={copy.notePlaceholder}
+            isDisabled={formInteractionDisabled}
+          />
           {validationMessage && (
             <p className="maka-plan-validation" role="status" aria-live="polite">
               {validationMessage}

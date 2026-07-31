@@ -208,24 +208,26 @@ function SkillLibraryPanel(props: {
   ];
   const marketControls = activeSkillTab === 'market' && allManagedSources.length > 0 ? (
     <div className="maka-skill-market-controls" role="group" aria-label={copy.market.controls}>
-      <Selector
-        value={marketCategory}
-        options={categoryOptions}
-        onChange={(value) => setMarketCategory(value as ManagedSkillCategory | typeof MARKET_CATEGORY_ALL)}
-        label={copy.market.categoryFilter}
-        isLabelHidden
-        width="100%"
-        className="maka-skill-market-select"
-      />
-      <Selector
-        value={marketSort}
-        options={sortOptions}
-        onChange={(value) => setMarketSort(value as MarketSort)}
-        label={copy.market.sortAriaLabel}
-        isLabelHidden
-        width="100%"
-        className="maka-skill-market-select"
-      />
+      <div className="maka-skill-market-select">
+        <Selector
+          value={marketCategory}
+          options={categoryOptions}
+          onChange={(value) => setMarketCategory(value as ManagedSkillCategory | typeof MARKET_CATEGORY_ALL)}
+          label={copy.market.categoryFilter}
+          isLabelHidden
+          width="100%"
+        />
+      </div>
+      <div className="maka-skill-market-select">
+        <Selector
+          value={marketSort}
+          options={sortOptions}
+          onChange={(value) => setMarketSort(value as MarketSort)}
+          label={copy.market.sortAriaLabel}
+          isLabelHidden
+          width="100%"
+        />
+      </div>
     </div>
   ) : null;
 

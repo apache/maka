@@ -362,7 +362,6 @@ export function DailyReviewPanel(props: {
                 onChange={setSelectedModelKey}
                 isDisabled={dailyReviewActionBusy}
                 width={140}
-                className="maka-daily-review-model-select"
               />
             )}
             <UiButton

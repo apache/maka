@@ -115,9 +115,9 @@ export function GeneralSettingsPage(props: {
  * a second picker right below 默认模型, backed by
  * `settings.chatDefaults.permissionMode` (persisted via the generic
  * `settings.update` patch, unlike the model picker's dedicated
- * `connections.setDefaultModel` IPC). Renders the shared
- * `PermissionModeSelect` (Base UI Select) so labels, hints, and markup
- * can't drift from the composer picker.
+ * `connections.setDefaultModel` IPC). Renders the shared Astryx-backed
+ * `PermissionModeSelect` so labels, hints, and markup can't drift from the
+ * composer picker.
  */
 function GeneralDefaultsCard(props: {
   connections: readonly LlmConnection[];

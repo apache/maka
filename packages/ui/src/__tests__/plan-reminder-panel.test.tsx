@@ -80,6 +80,21 @@ describe('Plan Reminder scanning hierarchy', () => {
     assert.match(markup, /aria-label="定时任务页面设置"/);
   });
 
+  it('renders list selectors with Astryx-owned visible labels', () => {
+    const markup = render(
+      Array.from({ length: 8 }, (_, index) =>
+        reminder({
+          id: `scheduled-${index}`,
+          title: `定时任务 ${index + 1}`,
+        }),
+      ),
+    );
+
+    assert.match(markup, /<label[^>]*>排序<\/label>/);
+    assert.match(markup, /<label[^>]*>状态<\/label>/);
+    assert.doesNotMatch(markup, /<label class="maka-plan-compact-select/);
+  });
+
   it('shows exceptional lifecycle and run states once instead of repeating normal state', () => {
     const markup = render([
       reminder({

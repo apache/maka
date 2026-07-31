@@ -215,7 +215,7 @@ export function PersonalizationSettingsPage(props: {
             hasSpellCheck={false}
             label={copy.assistantTone}
             isLabelHidden
-            className="min-h-21 w-full"
+            width="100%"
           />
         </div>
       </SettingsRows>

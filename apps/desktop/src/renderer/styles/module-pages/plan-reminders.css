@@ -220,20 +220,6 @@
   line-height: var(--leading-tight);
 }
 
-.maka-plan-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1-5);
-}
-
-.maka-plan-field {
-  display: grid;
-  gap: var(--space-0-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-}
-
 .maka-plan-presets {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -257,12 +243,6 @@
   font-weight: var(--font-weight-semibold);
   line-height: var(--leading-snug);
   padding: var(--space-1) var(--space-2);
-}
-
-.maka-plan-delivery-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-1-5);
 }
 
 .maka-plan-delivery-help {
@@ -457,11 +437,6 @@
   }
 
   .maka-plan-card,
-  .maka-plan-form-grid,
-  .maka-plan-delivery-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .maka-plan-card {
     gap: var(--space-2);
   }

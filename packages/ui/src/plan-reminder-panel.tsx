@@ -321,59 +321,59 @@ export function PlanReminderPanel(props: {
             {planView === 'tasks' ? (
               showListControls ? (
                 <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
-                <label className="maka-plan-compact-select maka-plan-sort-select">
-                  <span>{copy.page.sort}</span>
-                  <Selector
-                    value={listSort}
-                    onChange={(value) => setListSort(value as typeof listSort)}
-                    label={copy.page.sortAriaLabel}
-                    isLabelHidden
-                    width="100%"
-                    options={copy.page.sortOptions.map(([value, label]) => ({ value, label }))}
-                  />
-                </label>
-                <div className="maka-plan-search">
-                  <TextInput
-                    label={copy.page.searchLabel}
-                    isLabelHidden
-                    width="100%"
-                    value={listQuery}
-                    onChange={(value) => setListQuery(value.slice(0, 120))}
-                    placeholder={copy.page.searchPlaceholder}
-                  />
-                </div>
-                <label className="maka-plan-compact-select">
-                  <span>{copy.page.state}</span>
-                  <Selector
-                    value={listFilter}
-                    onChange={(value) => setListFilter(value as PlanReminderListFilter)}
-                    label={copy.page.filterAriaLabel}
-                    isLabelHidden
-                    width="100%"
-                    options={[
-                      { value: 'active', label: copy.page.filterOption(copy.page.active, filterCounts.active) },
-                      { value: 'all', label: copy.page.filterOption(copy.page.all, filterCounts.all) },
-                      { value: 'scheduled', label: copy.page.filterOption(copy.status.scheduled, filterCounts.scheduled) },
-                      { value: 'paused', label: copy.page.filterOption(copy.status.paused, filterCounts.paused) },
-                      { value: 'completed', label: copy.page.filterOption(copy.status.completed, filterCounts.completed) },
-                    ]}
-                  />
-                </label>
+                  <div className="maka-plan-compact-select maka-plan-sort-select">
+                    <Selector
+                      value={listSort}
+                      onChange={(value) => setListSort(value as typeof listSort)}
+                      label={copy.page.sort}
+                      width="100%"
+                      options={copy.page.sortOptions.map(([value, label]) => ({ value, label }))}
+                    />
+                  </div>
+                  <div className="maka-plan-search">
+                    <TextInput
+                      label={copy.page.searchLabel}
+                      isLabelHidden
+                      width="100%"
+                      value={listQuery}
+                      onChange={(value) => setListQuery(value.slice(0, 120))}
+                      placeholder={copy.page.searchPlaceholder}
+                    />
+                  </div>
+                  <div className="maka-plan-compact-select">
+                    <Selector
+                      value={listFilter}
+                      onChange={(value) => setListFilter(value as PlanReminderListFilter)}
+                      label={copy.page.state}
+                      width="100%"
+                      options={[
+                        { value: 'active', label: copy.page.filterOption(copy.page.active, filterCounts.active) },
+                        { value: 'all', label: copy.page.filterOption(copy.page.all, filterCounts.all) },
+                        {
+                          value: 'scheduled',
+                          label: copy.page.filterOption(copy.status.scheduled, filterCounts.scheduled),
+                        },
+                        { value: 'paused', label: copy.page.filterOption(copy.status.paused, filterCounts.paused) },
+                        {
+                          value: 'completed',
+                          label: copy.page.filterOption(copy.status.completed, filterCounts.completed),
+                        },
+                      ]}
+                    />
+                  </div>
                 </div>
               ) : null
             ) : (
               <div className="maka-plan-toolbar maka-plan-toolbar-compact" aria-label={copy.page.runsFilterAriaLabel}>
-                <label className="maka-plan-compact-select">
-                  <span>{copy.page.range}</span>
+                <div className="maka-plan-compact-select">
                   <Selector
                     value={runRange}
                     onChange={(value) => setRunRange(value as typeof runRange)}
-                    label={copy.page.rangeAriaLabel}
-                    isLabelHidden
+                    label={copy.page.range}
                     width="100%"
                     options={copy.page.rangeOptions.map(([value, label]) => ({ value, label }))}
                   />
-                </label>
+                </div>
               </div>
             )}
           </div>
