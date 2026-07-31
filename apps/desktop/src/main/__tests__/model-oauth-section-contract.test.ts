@@ -315,8 +315,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
         resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'settings', 'provider-add-form.tsx'),
         'utf8',
       ),
-      /label=\{copy\.apiKeyLabel\(requiresApiKey\)\}[\s\S]*data-autofocus/,
-      'API-key dialogs must expose their primary field through Astryx public data-autofocus',
+      /label=\{copy\.apiKeyLabel\(requiresApiKey\)\}[\s\S]*hasAutoFocus/,
+      'API-key dialogs must use Astryx hasAutoFocus so the rendered field exposes data-autofocus',
     );
     assert.match(src, /label=\{copy\.apiKeyLabel\(requiresApiKey\)\}/);
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);

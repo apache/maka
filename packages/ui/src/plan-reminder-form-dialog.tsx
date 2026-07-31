@@ -234,7 +234,7 @@ export function PlanReminderFormDialog(props: {
           </header>
           <FormLayout direction="horizontal">
             <TextInput
-              data-autofocus
+              hasAutoFocus
               label={copy.field.title}
               value={title}
               onChange={(value) => setTitle(value.slice(0, 120))}

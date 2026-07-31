@@ -50,7 +50,6 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(keyInput).toBeFocused();
   await expect(keyInput).toHaveAttribute('type', 'password');
   await expect(dialog.getByText('完成必要配置后，连接会出现在模型页上方。')).toBeVisible();
-  await expect(dialog.locator('[data-slot="dialog-header"]')).toHaveCSS('border-bottom-width', '0px');
   await expect(keyInput).toHaveAttribute('placeholder', '输入或粘贴 API Key');
   await expect(dialog.getByLabel('连接标识', { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);

@@ -38,7 +38,7 @@ export function PasswordInput(props: {
   isRequired?: boolean;
   isDisabled?: boolean;
   onBlur?(): void;
-  'data-autofocus'?: boolean;
+  hasAutoFocus?: boolean;
 }) {
   const copy = getSettingsPreferencesCopy(useUiLocale()).password;
   const toast = useToast();
@@ -103,7 +103,7 @@ export function PasswordInput(props: {
         isRequired={props.isRequired}
         isDisabled={props.isDisabled}
         status={props.status ? { type: props.status.type } : undefined}
-        data-autofocus={props['data-autofocus'] || undefined}
+        hasAutoFocus={props.hasAutoFocus}
       />
       {props.value && !props.isDisabled && (
         <IconButton

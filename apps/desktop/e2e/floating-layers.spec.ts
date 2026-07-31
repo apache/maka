@@ -186,7 +186,7 @@ test('search closes before navigating and focusing the matched turn', async ({
   const opener = page.getByRole('button', { name: '搜索对话' });
   await opener.click();
   const dialog = page.getByRole('dialog', { name: '搜索' });
-  const input = dialog.getByRole('combobox', { name: '搜索会话标题和内容…' });
+  const input = dialog.getByRole('combobox', { name: '搜索会话' });
   await input.fill(needle);
   const result = dialog.getByRole('option', { name: /用户消息/ });
   await expect(result).toBeVisible();

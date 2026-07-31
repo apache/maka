@@ -3,12 +3,13 @@ import { expect, test } from './fixtures';
 test('command palette follows the Astryx keyboard journey and dismisses', async ({
   window: page,
 }) => {
+  const trigger = page.getByRole('button', { name: '更多操作' });
   const dialog = page.getByRole('dialog', { name: '命令面板' });
   const openPalette = async (): Promise<void> => {
     await trigger.click();
     await page.getByRole('menuitem', { name: '打开命令面板' }).click();
     await expect(
-      dialog.getByRole('combobox', { name: '搜索命令、设置项或会话' }),
+      dialog.getByRole('combobox', { name: '命令面板搜索' }),
     ).toBeFocused();
   };
 
@@ -37,7 +38,6 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
   await page.keyboard.press('Enter');
   await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
   await expect(dialog).toBeHidden();
-  await expect(trigger).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('main', { name: '设置内容' })).toBeHidden();

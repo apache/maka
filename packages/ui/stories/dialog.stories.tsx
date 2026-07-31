@@ -125,7 +125,7 @@ function FormDialog() {
           content={
             <LayoutContent>
               <div style={{ display: 'grid', gap: 14 }}>
-                <TextInput data-autofocus label="标题" value={title} onChange={setTitle} />
+                <TextInput hasAutoFocus label="标题" value={title} onChange={setTitle} />
                 <TextArea label="描述" value={description} onChange={setDescription} />
               </div>
             </LayoutContent>

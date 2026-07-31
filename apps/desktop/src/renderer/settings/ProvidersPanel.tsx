@@ -86,18 +86,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const copy = providerCopy.panel;
   const toast = useToast();
 
-  function restoreProductFocusAfterClose(lifecycle: number) {
-    if (providerDialogLifecycleRef.current !== lifecycle) return;
-    if (focusProviderSearchAfterCloseRef.current) {
-      focusProviderSearchAfterCloseRef.current = false;
-      window.requestAnimationFrame(() => {
-        providerCatalogRef.current
-          ?.querySelector<HTMLInputElement>('[type="search"]')
-          ?.focus();
-      });
-    }
-  }
-
   function openDialog(nextState: ProviderDialogInput) {
     const lifecycle = providerDialogLifecycleRef.current + 1;
     providerDialogLifecycleRef.current = lifecycle;
@@ -110,10 +98,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   }
 
   function requestDialogClose() {
-    const lifecycle = providerDialogLifecycleRef.current + 1;
-    providerDialogLifecycleRef.current = lifecycle;
+    providerDialogLifecycleRef.current += 1;
     setIsDialogOpen(false);
-    window.requestAnimationFrame(() => restoreProductFocusAfterClose(lifecycle));
   }
 
   function handleDialogOpenChange(nextOpen: boolean) {
@@ -164,6 +150,15 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     providerCatalogRef.current?.scrollIntoView({ block: 'start' });
     providerCatalogSearchRef.current?.focus({ preventScroll: true });
   }, [initialPage, loading]);
+
+  useEffect(() => {
+    if (isDialogOpen || !focusProviderSearchAfterCloseRef.current) return;
+    focusProviderSearchAfterCloseRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      providerCatalogSearchRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isDialogOpen]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
