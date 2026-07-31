@@ -8,10 +8,10 @@ export function sessionMatchesNavSelection(
   const filter = selection.section === 'sessions' ? selection.filter : 'chats';
   switch (filter) {
     case 'flagged':
-      return Boolean(session.isFlagged && !session.isArchived && session.lastMessageAt);
+      return session.isFlagged && !session.isArchived;
     case 'archived':
       return session.isArchived;
     case 'chats':
-      return Boolean(!session.isArchived && session.lastMessageAt);
+      return !session.isArchived;
   }
 }

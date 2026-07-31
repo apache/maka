@@ -420,6 +420,36 @@ describe('sidebar project view mode', () => {
     );
   });
 
+  it('keeps a running parent visible when preview metadata is temporarily unavailable', () => {
+    const parent = makeSessionSummary({
+      id: 'running-parent',
+      name: 'Running parent',
+      status: 'running',
+      lastMessageAt: undefined,
+    });
+    const child = makeSessionSummary({
+      id: 'completed-child',
+      name: 'Completed child',
+      status: 'active',
+      lastMessageAt: 50,
+      subagentParent: childRelation(parent.id),
+    });
+    const tree = filterLinkedSessionTree(
+      projectLinkedSessionTree([parent, child]),
+      (session) =>
+        sessionMatchesNavSelection(session, { section: 'sessions', filter: 'chats' }),
+    );
+
+    assert.deepEqual(
+      tree.roots.map((session) => session.id),
+      [parent.id],
+    );
+    assert.deepEqual(
+      tree.childrenByParentId.get(parent.id)?.map((session) => session.id),
+      [child.id],
+    );
+  });
+
   it('AppShell derives only project groups and lets conversation mode use the flat list', async () => {
     const appShell = await readRepo('apps/desktop/src/renderer/app-shell.tsx');
     const panel = await readRepo('packages/ui/src/session-list-panel.tsx');
