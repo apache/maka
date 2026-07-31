@@ -244,10 +244,10 @@ describe('issue #406 design-system governance contract', () => {
     const menu = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/menu.tsx'), 'utf8');
     const tabs = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/tabs.tsx'), 'utf8');
     assert.match(menu, /from '@astryxdesign\/core\/DropdownMenu'/);
-    assert.match(tabs, /from '@astryxdesign\/core\/TabList'/);
+    assert.match(tabs, /from "@base-ui\/react\/tabs"/);
     assert.doesNotMatch(menu, /data-checked:bg-(?:control|primary)/);
-    assert.doesNotMatch(tabs, /bg-(?:foreground|control|primary)/);
-
+    assert.match(tabs, /bg-foreground data-\[orientation=horizontal\]:h-0\.5/);
+    assert.doesNotMatch(tabs, /bg-(?:control|primary) data-\[orientation=horizontal\]:h-0\.5/);
   });
 
   it('permission-mode chip text is readable across all tones (>=4.5:1)', async () => {

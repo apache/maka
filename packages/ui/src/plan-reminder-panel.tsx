@@ -310,9 +310,13 @@ export function PlanReminderPanel(props: {
           }}
         >
           <div className="maka-plan-tabs-bar">
-            <TabsList variant="underline" aria-label={copy.page.viewsAriaLabel}>
-              <TabsTrigger value="tasks" label={copy.page.tasks} />
-              <TabsTrigger value="runs" label={copy.page.runs} />
+            <TabsList variant="underline" className="maka-plan-tabs-list" aria-label={copy.page.viewsAriaLabel}>
+              <TabsTrigger className="maka-plan-tab" value="tasks">
+                {copy.page.tasks}
+              </TabsTrigger>
+              <TabsTrigger className="maka-plan-tab" value="runs">
+                {copy.page.runs}
+              </TabsTrigger>
             </TabsList>
             {planView === 'tasks' ? (
               showListControls ? (

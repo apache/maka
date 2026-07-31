@@ -67,24 +67,21 @@ export function SessionWorkbar(props: {
     >
       <PrimitiveTabs value={props.activeTab} onValueChange={(value) => props.onActiveTabChange(value as SessionWorkbarTab)} className="maka-session-workbar-tabs">
         <PrimitiveTabsList variant="underline" className="maka-session-workbar-tab-list" aria-label={copy.sectionsAriaLabel}>
-          <PrimitiveTabsTrigger
-            value="tasks"
-            label={copy.tasks}
-            endContent={<span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{taskCount}</span>}
-          />
-          <PrimitiveTabsTrigger
-            value="browser"
-            label={copy.browser}
-            aria-disabled={!props.browserLive}
-            onClick={!props.browserLive ? (event) => event.preventDefault() : undefined}
-          />
-          <PrimitiveTabsTrigger
-            value="files"
-            label={copy.files}
-            endContent={<span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>}
-          />
+          <PrimitiveTabsTrigger value="tasks">
+            <span>{copy.tasks}</span>
+            <span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{taskCount}</span>
+          </PrimitiveTabsTrigger>
+          <PrimitiveTabsTrigger value="browser" disabled={!props.browserLive}>
+            <span>{copy.browser}</span>
+          </PrimitiveTabsTrigger>
+          <PrimitiveTabsTrigger value="files">
+            <span>{copy.files}</span>
+            <span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>
+          </PrimitiveTabsTrigger>
           {props.quote && (
-            <PrimitiveTabsTrigger value="quote" label={copy.quoteTab} />
+            <PrimitiveTabsTrigger value="quote">
+              <span>{copy.quoteTab}</span>
+            </PrimitiveTabsTrigger>
           )}
         </PrimitiveTabsList>
         <PrimitiveTabsPanel value="tasks" className="maka-session-workbar-panel" keepMounted>

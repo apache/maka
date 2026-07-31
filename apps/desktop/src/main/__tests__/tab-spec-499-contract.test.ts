@@ -4,13 +4,20 @@ import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   REPO_ROOT,
+  TOKENS_FILE,
   RENDERER_STYLES_DIR,
   STYLES_FILE,
   readCssTree,
   stripCssComments,
 } from './css-test-helpers.js';
 
-// Issue #499 P0-3 — tab component governance, now converged on Astryx.
+// Issue #499 P0-3 — tab component governance.
+// One tab spec: shared `maka-tab` class + `underline`/`pill` variants on the Base
+// UI Tabs primitive, active/hover repointed to --state-selected-bg /
+// --state-hover-bg (no brand token, no per-surface hand-written tab CSS).
+//
+// This file grows one slice at a time. Slice 1 covers the primitive + the
+// first consumer (plan tabs).
 
 const TABS_FILE = resolve(REPO_ROOT, 'packages/ui/src/primitives/tabs.tsx');
 const PLAN_PANEL_FILE = resolve(REPO_ROOT, 'packages/ui/src/plan-reminder-panel.tsx');
@@ -29,36 +36,59 @@ const SKILLS_CSS_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/mod
 const DAILY_REVIEW_PANEL_FILE = resolve(REPO_ROOT, 'packages/ui/src/daily-review-panel.tsx');
 const DAILY_REVIEW_CSS_FILE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/daily-review.css');
 
+const BRAND_STATE_TOKEN_RE =
+  /var\(--nav-active\)|var\(--accent\)|var\(--toast-accent\)|var\(--bot-brand-color\)|var\(--bot-brand-default\)/;
+
 describe('issue #499 P0-3 tab spec contract', () => {
-  it('tabs delegate navigation to Astryx while preserving panel variants', async () => {
+  it('tabs primitive exposes maka-tab class on TabsTab and underline|pill variants on TabsList', async () => {
     const src = await readFile(TABS_FILE, 'utf8');
-    assert.match(src, /from '@astryxdesign\/core\/TabList'/);
-    assert.match(src, /'underline'/, 'TabsVariant must include underline');
-    assert.match(src, /'pill'/, 'TabsVariant must include pill');
-    assert.match(src, /export const TabsTab = AstryxTab/);
+    assert.match(src, /"underline"/, 'TabsVariant must include "underline"');
+    assert.match(src, /"pill"/, 'TabsVariant must include "pill" (currently only default|underline)');
+    assert.match(src, /\bmaka-tab\b/, 'TabsTab must emit the shared maka-tab class');
   });
 
-  it('retires the old global maka-tab skin', async () => {
-    const allCss = [...(await readCssTree(RENDERER_STYLES_DIR)), STYLES_FILE];
-    const staleRules: string[] = [];
+  it('.maka-tab active/hover use neutral state tokens, no brand token', async () => {
+    const allCss = [TOKENS_FILE, ...(await readCssTree(RENDERER_STYLES_DIR)), STYLES_FILE];
+    let foundMakaTab = false;
+    let foundActiveBg = false;
+    let foundHoverBg = false;
+    const brandInTab: string[] = [];
     for (const file of allCss) {
       const source = stripCssComments(await readFile(file, 'utf8'));
       for (const ruleMatch of source.matchAll(/([^{}]*)\{([^}]*)\}/g)) {
         const selector = ruleMatch[1]!;
-        if (/\.maka-tab\b/.test(selector)) staleRules.push(`${file}: ${selector.trim()}`);
+        const body = ruleMatch[2]!;
+        if (!/\.maka-tab\b/.test(selector)) continue;
+        foundMakaTab = true;
+        if ((/\[data-active\]/.test(selector) || /:active\b/.test(selector)) && /background(?:-color)?:/.test(body)) {
+          if (/var\(--state-selected-bg\)/.test(body)) foundActiveBg = true;
+        }
+        if (/:hover/.test(selector) && /background(?:-color)?:/.test(body)) {
+          if (/var\(--state-hover-bg\)/.test(body)) foundHoverBg = true;
+        }
+        if (BRAND_STATE_TOKEN_RE.test(body)) {
+          brandInTab.push(`${file}: ${selector.trim()}`);
+        }
       }
     }
-    assert.deepEqual(staleRules, [], `Astryx must be the only tab skin:\n${staleRules.join('\n')}`);
+    assert.ok(foundMakaTab, 'a .maka-tab rule must exist');
+    assert.ok(foundActiveBg, '.maka-tab active must use --state-selected-bg');
+    assert.ok(foundHoverBg, '.maka-tab hover must use --state-hover-bg');
+    assert.deepEqual(
+      brandInTab,
+      [],
+      `.maka-tab must not use brand tokens (--nav-active/--accent/--toast-accent/--bot-brand-*):\n${brandInTab.join('\n')}`,
+    );
   });
 
-  it('plan tabs consume Astryx + underline variant; no hand-written .maka-plan-tab active/under-bar CSS', async () => {
+  it('plan tabs consume maka-tab + underline variant; no hand-written .maka-plan-tab active/under-bar CSS', async () => {
     const panel = await readFile(PLAN_PANEL_FILE, 'utf8');
     assert.match(
       panel,
       /TabsList[^>]*variant="underline"/,
       'plan TabsList must pass variant="underline"',
     );
-    // Each plan tab value has a corresponding view panel.
+    // Each plan tab value has a corresponding panel (tabpanel a11y pairing).
     assert.match(
       panel,
       /TabsPanel[^>]*value="tasks"/,
@@ -70,11 +100,14 @@ describe('issue #499 P0-3 tab spec contract', () => {
       'plan must have a TabsPanel for the runs view',
     );
     const css = stripCssComments(await readFile(PLAN_CSS_FILE, 'utf8'));
-    // Astryx owns the active state and under-bar; surface layout may remain.
+    // The active state + under-bar move to .maka-tab; surface-specific layout
+    // rules (.maka-plan-tab height/padding/font-size) may remain, but the
+    // hand-written [data-state="active"] selectors (currently dead — Base UI
+    // sets data-active, not data-state) must be gone.
     assert.doesNotMatch(
       css,
       /\.maka-plan-tab\[data-state\s*=\s*"active"\]/,
-      'plan hand-written [data-state="active"] selector must stay removed',
+      'plan hand-written [data-state="active"] selector must be removed (active state moves to .maka-tab)',
     );
     assert.doesNotMatch(
       css,
@@ -83,7 +116,7 @@ describe('issue #499 P0-3 tab spec contract', () => {
     );
   });
 
-  it('catalog tabs consume Astryx + pill variant + TabsPanel; no hand-written active/hover/indicator CSS', async () => {
+  it('catalog tabs consume maka-tab + pill variant + TabsPanel; no hand-written catalogTab/catalogPillTabs active/hover/indicator CSS', async () => {
     const panel = await readFile(PROVIDERS_PANEL_FILE, 'utf8');
     assert.match(
       panel,
@@ -102,11 +135,13 @@ describe('issue #499 P0-3 tab spec contract', () => {
       /const CATALOG_TABS: CatalogCategory\[\] = \['recommended', 'accounts', 'plans', 'api', 'aggregators', 'local'\]/,
       'catalog categories must cover recommended / plans / api / aggregators / local',
     );
-    // Astryx owns active state; data-catalog-tab remains an identifier.
+    // data-active hand-written boolean removed (Base UI sets data-active on the
+    // active tab); data-catalog-tab stays (locked by model-oauth-section contract
+    // as the tab identifier, not a manual focus query).
     assert.doesNotMatch(
       panel,
       /data-active=\{catalogCategory === tab\.id\}/,
-      'catalog hand-written data-active must stay removed',
+      'catalog hand-written data-active must be removed (Base UI sets data-active)',
     );
     assert.match(
       panel,
@@ -118,40 +153,40 @@ describe('issue #499 P0-3 tab spec contract', () => {
     assert.doesNotMatch(
       modelsCss,
       /\.catalogPillTabs button\[data-active/,
-      'catalog hand-written .catalogPillTabs button[data-active] must stay removed',
+      'catalog hand-written .catalogPillTabs button[data-active] must be removed (active moves to .maka-tab)',
     );
     assert.doesNotMatch(
       modelsCss,
       /\.catalogPillTabs button:hover/,
-      'catalog hand-written .catalogPillTabs button:hover must stay removed',
+      'catalog hand-written .catalogPillTabs button:hover must be removed (hover moves to .maka-tab)',
     );
     assert.doesNotMatch(
       modelsCss,
       /\.catalogPillTabs \[data-slot="tab-indicator"\]/,
-      'catalog hand-written indicator override must stay removed',
+      'catalog hand-written indicator display:none must be removed (pill variant hides the indicator in tabs.tsx)',
     );
 
     const providerEditorCss = stripCssComments(await readFile(PROVIDER_EDITOR_CSS_FILE, 'utf8'));
     assert.doesNotMatch(
       providerEditorCss,
       /\.catalogTab\[data-active/,
-      'catalog hand-written .catalogTab[data-active] must stay removed',
+      'catalog hand-written .catalogTab[data-active] must be removed (active moves to .maka-tab)',
     );
     assert.doesNotMatch(
       providerEditorCss,
       /\.catalogTab:hover/,
-      'catalog hand-written .catalogTab:hover must stay removed',
+      'catalog hand-written .catalogTab:hover must be removed (hover moves to .maka-tab)',
     );
   });
 
-  it('skill tabs use Astryx + underline variant + TabsPanel', async () => {
+  it('skill tabs migrate from hand-rolled buttons to maka-tab + underline variant + TabsPanel', async () => {
     const panel = await readFile(SKILLS_PANEL_FILE, 'utf8');
     assert.match(
       panel,
       /TabsList[^>]*variant="underline"/,
       'skill TabsList must pass variant="underline"',
     );
-    // Each skill tab value has a corresponding view panel.
+    // Each skill tab value has a corresponding panel (tabpanel a11y pairing).
     assert.match(
       panel,
       /TabsPanel[^>]*value="market"/,
@@ -167,7 +202,8 @@ describe('issue #499 P0-3 tab spec contract', () => {
       /TabsPanel[^>]*value="installed"/,
       'skill must have a TabsPanel for the installed view',
     );
-    // Astryx replaces the old pressed-button switcher.
+    // hand-rolled tab-switcher markers removed (Base UI TabsTrigger carries the
+    // tab role + aria-selected; the aria-pressed segmented-switcher pattern goes).
     assert.doesNotMatch(
       panel,
       /aria-pressed=\{activeSkillTab === tab\}/,
@@ -182,12 +218,12 @@ describe('issue #499 P0-3 tab spec contract', () => {
     assert.doesNotMatch(
       css,
       /\.maka-skill-tab\[data-state\s*=\s*"active"\]/,
-      'skill hand-written [data-state=active] selector must stay removed',
+      'skill hand-written [data-state=active] selector must be removed (active moves to .maka-tab)',
     );
     assert.doesNotMatch(
       css,
       /\.maka-skill-tab\[data-state\s*=\s*"active"\]::after/,
-      'skill hand-written under-bar ::after must stay removed',
+      'skill hand-written under-bar ::after must be removed (underline variant uses the Base UI indicator)',
     );
   });
 

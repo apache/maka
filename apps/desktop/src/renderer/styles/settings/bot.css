@@ -327,7 +327,28 @@
   overflow-x: auto;
 }
 
-.settingsUsageTabCount {
+.settingsUsageTabs {
+  display: flex;
+  gap: var(--space-4);
+  border-bottom: 0;
+}
+
+.settingsUsageTab {
+  position: relative;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 1px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.settingsUsageTab span {
   min-width: 16px;
   height: 16px;
   display: inline-flex;

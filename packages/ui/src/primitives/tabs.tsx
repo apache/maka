@@ -1,130 +1,92 @@
-'use client';
+"use client";
 
-import {
-  Tab as AstryxTab,
-  TabList as AstryxTabList,
-  type TabListProps as AstryxTabListProps,
-} from '@astryxdesign/core/TabList';
-import {
-  createContext,
-  type HTMLAttributes,
-  type ReactNode,
-  useContext,
-  useMemo,
-  useState,
-} from 'react';
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs";
+import { cn } from "../utils.js";
+import type React from "react";
 
-export type TabsVariant = 'default' | 'underline' | 'pill';
+export type TabsVariant = "default" | "underline" | "pill";
 
-type TabsContextValue = {
-  value: string;
-  onChange: (value: string) => void;
-  orientation: 'horizontal' | 'vertical';
-};
-
-const TabsContext = createContext<TabsContextValue | null>(null);
-
-function useTabsContext(): TabsContextValue {
-  const context = useContext(TabsContext);
-  if (!context) throw new Error('Tabs components must be rendered inside Tabs');
-  return context;
-}
-
-export interface TabsProps extends Omit<HTMLAttributes<HTMLDivElement>, 'defaultValue' | 'onChange'> {
-  value?: string;
-  defaultValue?: string;
-  onValueChange?: (value: string) => void;
-  orientation?: 'horizontal' | 'vertical';
-}
-
-/**
- * Owns only Maka's active panel value. Astryx TabList owns tab navigation,
- * focus movement, selection affordances, and accessibility semantics.
- */
 export function Tabs({
-  value: controlledValue,
-  defaultValue = '',
-  onValueChange,
-  orientation = 'horizontal',
-  children,
+  className,
   ...props
-}: TabsProps) {
-  const [uncontrolledValue, setUncontrolledValue] = useState(defaultValue);
-  const value = controlledValue ?? uncontrolledValue;
-  const context = useMemo<TabsContextValue>(
-    () => ({
-      value,
-      orientation,
-      onChange: (nextValue) => {
-        if (controlledValue === undefined) setUncontrolledValue(nextValue);
-        onValueChange?.(nextValue);
-      },
-    }),
-    [controlledValue, onValueChange, orientation, value],
-  );
-
+}: TabsPrimitive.Root.Props): React.ReactElement {
   return (
-    <TabsContext value={context}>
-      <div {...props} data-slot="tabs" data-orientation={orientation}>
-        {children}
-      </div>
-    </TabsContext>
-  );
-}
-
-export interface TabsListProps
-  extends Omit<AstryxTabListProps, 'value' | 'onChange' | 'orientation'> {
-  variant?: TabsVariant;
-}
-
-export function TabsList({
-  variant = 'default',
-  hasDivider,
-  ...props
-}: TabsListProps) {
-  const tabs = useTabsContext();
-  return (
-    <AstryxTabList
+    <TabsPrimitive.Root
+      className={cn(
+        "flex flex-col gap-2 data-[orientation=vertical]:flex-row",
+        className,
+      )}
+      data-slot="tabs"
       {...props}
-      value={tabs.value}
-      onChange={tabs.onChange}
-      orientation={tabs.orientation}
-      hasDivider={hasDivider ?? variant === 'underline'}
-      data-slot="tabs-list"
-      data-variant={variant}
     />
   );
 }
 
-export const TabsTab = AstryxTab;
-
-export interface TabsPanelProps extends HTMLAttributes<HTMLDivElement> {
-  value: string;
-  keepMounted?: boolean;
-}
-
-export function TabsPanel({
-  value,
-  keepMounted = false,
+export function TabsList({
+  variant = "default",
+  className,
   children,
   ...props
-}: TabsPanelProps) {
-  const tabs = useTabsContext();
-  const isActive = tabs.value === value;
-  if (!isActive && !keepMounted) return null;
-
+}: TabsPrimitive.List.Props & {
+  variant?: TabsVariant;
+}): React.ReactElement {
   return (
-    <div {...props} data-slot="tabs-content" hidden={!isActive}>
+    <TabsPrimitive.List
+      className={cn(
+        "maka-tabs-list relative z-0 flex w-fit items-center justify-center gap-x-0.5 text-foreground-secondary",
+        "data-[orientation=vertical]:flex-col",
+        variant === "default"
+          ? "rounded-md bg-muted p-0.5 text-foreground-secondary/72"
+          : "data-[orientation=vertical]:px-1 data-[orientation=horizontal]:py-1",
+        className,
+      )}
+      data-slot="tabs-list"
+      data-variant={variant}
+      {...props}
+    >
       {children}
-    </div>
+      <TabsPrimitive.Indicator
+        className={cn(
+          "absolute bottom-0 left-0 h-(--active-tab-height) w-(--active-tab-width) translate-x-(--active-tab-left) -translate-y-(--active-tab-bottom) transition-[width,translate] duration-[var(--duration-base)] ease-[var(--ease-in-out-strong)]",
+          variant === "underline"
+            ? "z-10 bg-foreground data-[orientation=horizontal]:h-0.5 data-[orientation=vertical]:w-0.5 data-[orientation=vertical]:-translate-x-px data-[orientation=horizontal]:translate-y-px"
+            : variant === "pill"
+              ? "hidden"
+              : "-z-1 rounded-md bg-background shadow-sm/5 dark:bg-input",
+        )}
+        data-slot="tab-indicator"
+      />
+    </TabsPrimitive.List>
   );
 }
 
-export const TabsPrimitive = {
-  Root: Tabs,
-  List: TabsList,
-  Tab: TabsTab,
-  Panel: TabsPanel,
-};
+export function TabsTab({
+  className,
+  ...props
+}: TabsPrimitive.Tab.Props): React.ReactElement {
+  return (
+    <TabsPrimitive.Tab
+      className={cn(
+        "maka-tab relative flex h-9 shrink-0 grow cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-sm border border-transparent px-[calc(--spacing(2.5)-1px)] font-medium text-base outline-none transition-[color,background-color,box-shadow] hover:text-foreground-secondary focus-visible:ring-2 focus-visible:ring-ring data-disabled:pointer-events-none data-[orientation=vertical]:w-full data-[orientation=vertical]:justify-start data-active:text-foreground data-disabled:opacity-64 sm:h-8 sm:text-sm [&_svg:not([class*='size-'])]:size-4.5 sm:[&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:-mx-0.5 [&_svg]:shrink-0",
+        className,
+      )}
+      data-slot="tabs-tab"
+      {...props}
+    />
+  );
+}
 
-export { TabsTab as TabsTrigger, TabsPanel as TabsContent };
+export function TabsPanel({
+  className,
+  ...props
+}: TabsPrimitive.Panel.Props): React.ReactElement {
+  return (
+    <TabsPrimitive.Panel
+      className={cn("flex-1 outline-none", className)}
+      data-slot="tabs-content"
+      {...props}
+    />
+  );
+}
+
+export { TabsPrimitive, TabsTab as TabsTrigger, TabsPanel as TabsContent };

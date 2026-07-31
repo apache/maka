@@ -69,9 +69,10 @@
 .maka-session-workbar-tab-list {
   width: 100%;
   flex: 0 0 auto;
+  border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
-.maka-session-workbar-tab-list > [data-tab-value] { flex: 1 1 0; }
+.maka-session-workbar-tab-list > [data-slot="tabs-tab"] { flex: 1 1 0; }
 
 .maka-session-workbar-count {
   min-width: var(--space-4);

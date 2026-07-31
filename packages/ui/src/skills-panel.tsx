@@ -223,7 +223,7 @@ function SkillLibraryPanel(props: {
 
   const tabs = (
     <div className="maka-skill-tabs-bar">
-      <TabsList variant="underline" aria-label={copy.tabs.ariaLabel}>
+      <TabsList variant="underline" className="maka-skill-tabs" aria-label={copy.tabs.ariaLabel}>
         {([
           ['market', copy.tabs.market, allManagedSources.length],
           ['builtin', copy.tabs.builtin, bundledCatalog.length],
@@ -231,10 +231,12 @@ function SkillLibraryPanel(props: {
         ] as const).map(([tab, label, count]) => (
           <TabsTrigger
             key={tab}
+            className="maka-skill-tab"
             value={tab}
-            label={label}
-            endContent={<span className="maka-skill-tab-count">{count}</span>}
-          />
+          >
+            {label}
+            <span>{count}</span>
+          </TabsTrigger>
         ))}
       </TabsList>
       {/* Marketplace launch: real client-side category + sort controls on
