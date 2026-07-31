@@ -70,6 +70,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
 
   await mcp.getByRole('button', { name: '添加 MCP' }).click();
   const editor = page.getByRole('dialog', { name: '添加 MCP' });
+  await expect(editor.getByLabel('Server ID')).toBeFocused();
   if (screenshotPath) await page.screenshot({ path: variantPath(screenshotPath, 'manual') });
   await expect(editor.locator('label').filter({ hasText: '服务器 ID' })).toBeVisible();
   await expect(editor.locator('label').filter({ hasText: '命令' })).toBeVisible();
@@ -100,6 +101,15 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     command: process.execPath,
     args: [fixtureServer],
   });
+
+  const edit = mcp.getByRole('button', { name: '编辑 e2e-fixture' });
+  await edit.click();
+  const editDialog = page.getByRole('dialog', { name: '编辑 e2e-fixture' });
+  await expect(editDialog.getByLabel('Server ID')).toBeDisabled();
+  await expect(editDialog.getByLabel('Command')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(editDialog).toBeHidden();
+  await expect(edit).toBeFocused();
 
   if (screenshotPath) await page.screenshot({ path: screenshotPath });
 
