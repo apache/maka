@@ -68,9 +68,11 @@ describe('Storybook baseline contract', () => {
     const storybookDir = join(REPO_ROOT, 'apps', 'desktop', '.storybook');
     const mainPath = join(storybookDir, 'main.ts');
     const previewPath = join(storybookDir, 'preview.tsx');
+    const nodeCryptoBoundaryPath = join(storybookDir, 'node-crypto-boundary.ts');
 
     assert.ok(existsSync(mainPath), 'desktop Storybook must define .storybook/main.ts');
     assert.ok(existsSync(previewPath), 'desktop Storybook must define .storybook/preview.tsx');
+    assert.ok(existsSync(nodeCryptoBoundaryPath), 'desktop Storybook must fail closed at the Node crypto boundary');
 
     const main = readFileSync(mainPath, 'utf8');
     const preview = readFileSync(previewPath, 'utf8');
@@ -78,6 +80,11 @@ describe('Storybook baseline contract', () => {
     assert.match(main, /framework:\s*\{\s*name:\s*['"]@storybook\/react-vite['"]/);
     assert.match(main, /@maka\/ui/);
     assert.match(main, /packages\/ui\/src/);
+    assert.match(main, /find:\s*['"]node:crypto['"]/);
+    assert.match(
+      readFileSync(nodeCryptoBoundaryPath, 'utf8'),
+      /throw new Error\(['"]Node crypto is unavailable in the Storybook browser preview['"]\)/,
+    );
     assert.match(preview, /\.\.\/src\/renderer\/styles\.css/);
     assert.match(preview, /data-maka-theme/);
   });
