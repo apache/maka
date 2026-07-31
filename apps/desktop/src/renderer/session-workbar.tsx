@@ -1,9 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import {
-  PrimitiveTabs,
-  PrimitiveTabsList,
-  PrimitiveTabsPanel,
-  PrimitiveTabsTrigger,
+  Tab,
+  TabList,
   TaskLedgerPanel,
   deriveTaskLedgerPanelModel,
   useUiLocale,
@@ -65,44 +63,52 @@ export function SessionWorkbar(props: {
       aria-label={copy.ariaLabel}
       style={{ '--maka-session-workbar-width': `${props.width}px` } as CSSProperties}
     >
-      <PrimitiveTabs value={props.activeTab} onValueChange={(value) => props.onActiveTabChange(value as SessionWorkbarTab)} className="maka-session-workbar-tabs">
-        <PrimitiveTabsList variant="underline" className="maka-session-workbar-tab-list" aria-label={copy.sectionsAriaLabel}>
-          <PrimitiveTabsTrigger value="tasks">
-            <span>{copy.tasks}</span>
-            <span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{taskCount}</span>
-          </PrimitiveTabsTrigger>
-          <PrimitiveTabsTrigger value="browser" disabled={!props.browserLive}>
-            <span>{copy.browser}</span>
-          </PrimitiveTabsTrigger>
-          <PrimitiveTabsTrigger value="files">
-            <span>{copy.files}</span>
-            <span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>
-          </PrimitiveTabsTrigger>
+      <div className="maka-session-workbar-tabs">
+        <TabList
+          value={props.activeTab}
+          onChange={(value) => props.onActiveTabChange(value as SessionWorkbarTab)}
+          hasDivider
+          className="maka-session-workbar-tab-list"
+          aria-label={copy.sectionsAriaLabel}
+        >
+          <Tab
+            value="tasks"
+            label={copy.tasks}
+            endContent={<span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{taskCount}</span>}
+          />
+          <Tab
+            value="browser"
+            label={copy.browser}
+            aria-disabled={!props.browserLive ? 'true' : undefined}
+            onClick={!props.browserLive ? (event) => event.preventDefault() : undefined}
+          />
+          <Tab
+            value="files"
+            label={copy.files}
+            endContent={<span className="maka-session-workbar-count" data-maka-contract="session-workbar-count">{artifactCount}</span>}
+          />
           {props.quote && (
-            <PrimitiveTabsTrigger value="quote">
-              <span>{copy.quoteTab}</span>
-            </PrimitiveTabsTrigger>
+            <Tab value="quote" label={copy.quoteTab} />
           )}
-        </PrimitiveTabsList>
-        <PrimitiveTabsPanel value="tasks" className="maka-session-workbar-panel" keepMounted>
+        </TabList>
+        <div className="maka-session-workbar-panel" hidden={props.activeTab !== 'tasks'}>
           <TaskLedgerPanel
             tasks={sessionTasks.tasks}
             loading={sessionTasks.loading}
             error={sessionTasks.error}
             onRetry={sessionTasks.retry}
           />
-        </PrimitiveTabsPanel>
-        <PrimitiveTabsPanel value="browser" className="maka-session-workbar-panel" keepMounted>
+        </div>
+        <div className="maka-session-workbar-panel" hidden={props.activeTab !== 'browser'}>
           {props.browserLive && <BrowserPanel sessionId={props.sessionId} hidden={props.hidden || props.activeTab !== 'browser'} />}
-        </PrimitiveTabsPanel>
-        <PrimitiveTabsPanel value="files" className="maka-session-workbar-panel" keepMounted>
+        </div>
+        <div className="maka-session-workbar-panel" hidden={props.activeTab !== 'files'}>
           <ArtifactPane sessionId={props.sessionId} onCountChange={setArtifactCount} onDismiss={props.onDismiss} />
-        </PrimitiveTabsPanel>
+        </div>
         {props.quote && (
-          <PrimitiveTabsPanel
-            value="quote"
+          <div
             className="maka-session-workbar-panel maka-quote-workbar-panel"
-            keepMounted
+            hidden={props.activeTab !== 'quote'}
           >
             <QuoteCompanionPanel
               key={props.quote.id}
@@ -115,9 +121,9 @@ export function SessionWorkbar(props: {
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
             />
-          </PrimitiveTabsPanel>
+          </div>
         )}
-      </PrimitiveTabs>
+      </div>
     </aside>
   );
 }

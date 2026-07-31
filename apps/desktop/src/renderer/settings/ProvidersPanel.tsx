@@ -13,8 +13,14 @@ import {
 import {
   Badge,
   TextInput,
-  PrimitiveTabs, PrimitiveTabsList, PrimitiveTabsTrigger, PrimitiveTabsPanel,
-  Item, ItemMedia, ItemContent, ItemTitle, ItemDescription, ItemActions,
+  Tab,
+  TabList,
+  Item,
+  ItemMedia,
+  ItemContent,
+  ItemTitle,
+  ItemDescription,
+  ItemActions,
   SectionHeader,
   useMountedRef,
   useUiLocale,
@@ -288,18 +294,17 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             title={copy.add}
             subtitle={copy.addHelp}
           />
-          <PrimitiveTabs
-            className="catalogTabsRoot"
-            value={catalogCategory}
-            onValueChange={(value) => setCatalogCategory(value as CatalogCategory)}
-          >
-            <PrimitiveTabsList variant="pill" className="catalogTabs catalogPillTabs" aria-label={copy.categoriesAria}>
+          <div className="catalogTabsRoot">
+            <TabList
+              value={catalogCategory}
+              onChange={(value) => setCatalogCategory(value as CatalogCategory)}
+              className="catalogTabs catalogPillTabs"
+              aria-label={copy.categoriesAria}
+            >
               {CATALOG_TABS.map((tab) => (
-                <PrimitiveTabsTrigger key={tab} value={tab} data-catalog-tab={tab}>
-                  <strong>{copy.tabs[tab]}</strong>
-                </PrimitiveTabsTrigger>
+                <Tab key={tab} value={tab} label={copy.tabs[tab]} data-catalog-tab={tab} />
               ))}
-            </PrimitiveTabsList>
+            </TabList>
             <div className="providerCatalogSearch">
               <TextInput
                 ref={providerCatalogSearchRef}
@@ -312,7 +317,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                 width="100%"
               />
             </div>
-            <PrimitiveTabsPanel value={catalogCategory}>
+            <div>
               {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (
                 <ModelOAuthSection
                   query={catalogQuery}
@@ -336,8 +341,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   <div className="providerCatalogEmpty" role="status">{copy.noMatch}</div>
                 );
               })()}
-            </PrimitiveTabsPanel>
-          </PrimitiveTabs>
+            </div>
+          </div>
         </section>
       </section>
 

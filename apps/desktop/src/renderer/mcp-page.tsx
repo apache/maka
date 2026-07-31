@@ -12,10 +12,8 @@ import {
   Selector,
   type ModuleHubHeader,
   Switch,
-  TabsList,
-  TabsPanel,
-  TabsRoot,
-  TabsTrigger,
+  Tab,
+  TabList,
   TextArea,
   TextInput,
   useMountedRef,
@@ -353,12 +351,28 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           </div>
         </div>
 
-        <TabsRoot value={activeTab} onValueChange={(value) => setActiveTab(value as 'market' | 'installed')}>
+        <div>
           <div className="maka-mcp-tabs-bar">
-            <TabsList variant="underline" className="maka-mcp-tabs" aria-label={copy.page.categoriesAria}>
-              <TabsTrigger className="maka-mcp-tab" value="market">{copy.page.market} <span>{catalog.length}</span></TabsTrigger>
-              <TabsTrigger className="maka-mcp-tab" value="installed">{copy.page.installed} <span>{entries.length}</span></TabsTrigger>
-            </TabsList>
+            <TabList
+              value={activeTab}
+              onChange={(value) => setActiveTab(value as typeof activeTab)}
+              hasDivider
+              className="maka-mcp-tabs"
+              aria-label={copy.page.categoriesAria}
+            >
+              <Tab
+                className="maka-mcp-tab"
+                value="market"
+                label={copy.page.market}
+                endContent={<span>{catalog.length}</span>}
+              />
+              <Tab
+                className="maka-mcp-tab"
+                value="installed"
+                label={copy.page.installed}
+                endContent={<span>{entries.length}</span>}
+              />
+            </TabList>
             <div className="maka-mcp-search">
               <TextInput
                 value={query}
@@ -372,8 +386,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             </div>
           </div>
 
-          <TabsPanel className="maka-mcp-tab-panel" value="market">
-            {marketEntries.length > 0 ? (
+          {activeTab === 'market' ? (
+            <div className="maka-mcp-tab-panel">
+              {marketEntries.length > 0 ? (
               <div className="maka-mcp-market-grid">
                 {marketEntries.map((entry) => (
                   <McpCatalogCard
@@ -399,11 +414,13 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 cta={{ label: copy.page.clearSearch, onClick: () => setQuery('') }}
                 extraClassName="maka-mcp-empty"
               />
-            )}
-          </TabsPanel>
+              )}
+            </div>
+          ) : null}
 
-          <TabsPanel className="maka-mcp-tab-panel" value="installed">
-            {busy === 'load' ? (
+          {activeTab === 'installed' ? (
+            <div className="maka-mcp-tab-panel">
+              {busy === 'load' ? (
               <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
             ) : entries.length === 0 ? (
               <EmptyState
@@ -438,9 +455,10 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                 cta={{ label: copy.page.clearSearch, onClick: () => setQuery('') }}
                 extraClassName="maka-mcp-empty"
               />
-            )}
-          </TabsPanel>
-        </TabsRoot>
+              )}
+            </div>
+          ) : null}
+        </div>
       </section>
 
       {editor && (

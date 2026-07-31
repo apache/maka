@@ -34,16 +34,12 @@ import {
 } from './plan-reminder-helpers.js';
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import {
-  TabsList,
-  TabsPanel,
-  TabsRoot,
-  TabsTrigger,
-} from './ui.js';
-import {
   Badge,
   Button as UiButton,
   Selector,
   Switch,
+  Tab,
+  TabList,
 } from '@astryxdesign/core';
 import {
   DropdownMenu,
@@ -338,22 +334,20 @@ export function PlanReminderPanel(props: {
           }
         />
 
-        <TabsRoot
-          className="maka-plan-tabs"
-          value={planView}
-          onValueChange={(value) => {
-            if (value === 'tasks' || value === 'runs') setPlanView(value);
-          }}
-        >
+        <div className="maka-plan-tabs">
           <div className="maka-plan-tabs-bar">
-            <TabsList variant="underline" className="maka-plan-tabs-list" aria-label={copy.page.viewsAriaLabel}>
-              <TabsTrigger className="maka-plan-tab" value="tasks">
-                {copy.page.tasks}
-              </TabsTrigger>
-              <TabsTrigger className="maka-plan-tab" value="runs">
-                {copy.page.runs}
-              </TabsTrigger>
-            </TabsList>
+            <TabList
+              value={planView}
+              onChange={(value) => {
+                if (value === 'tasks' || value === 'runs') setPlanView(value);
+              }}
+              hasDivider
+              className="maka-plan-tabs-list"
+              aria-label={copy.page.viewsAriaLabel}
+            >
+              <Tab className="maka-plan-tab" value="tasks" label={copy.page.tasks} />
+              <Tab className="maka-plan-tab" value="runs" label={copy.page.runs} />
+            </TabList>
             {planView === 'tasks' ? (
               showListControls ? (
                 <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
@@ -414,13 +408,14 @@ export function PlanReminderPanel(props: {
             )}
           </div>
 
-          <TabsPanel className="maka-plan-tab-panel" value="tasks">
-            {normalizedListQuery && (
+          {planView === 'tasks' ? (
+            <div className="maka-plan-tab-panel">
+              {normalizedListQuery && (
               <div className="maka-plan-search-summary" role="status" aria-live="polite">
                 <span>{copy.page.searchMatches(searchMatchedReminders.length)}</span>
                 <UiButton variant="ghost" size="sm" onClick={() => setListQuery('')} label={copy.page.clearSearch} />
               </div>
-            )}
+              )}
             {props.reminders.length === 0 ? (
               <EmptyState
                 Icon={Clock}
@@ -580,10 +575,12 @@ export function PlanReminderPanel(props: {
                 })}
               </div>
             )}
-          </TabsPanel>
+            </div>
+          ) : null}
 
-          <TabsPanel className="maka-plan-tab-panel" value="runs">
-            {visibleRunEntries.length === 0 ? (
+          {planView === 'runs' ? (
+            <div className="maka-plan-tab-panel">
+              {visibleRunEntries.length === 0 ? (
               <EmptyState
                 Icon={Clock}
                 title={copy.page.noRunsTitle}
@@ -608,9 +605,10 @@ export function PlanReminderPanel(props: {
                   </article>
                 ))}
               </div>
-            )}
-          </TabsPanel>
-        </TabsRoot>
+              )}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <PlanReminderFormDialog

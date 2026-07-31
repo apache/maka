@@ -20,10 +20,8 @@ import {
   SegmentedControlItem,
   Selector,
   Switch,
-  TabsList,
-  TabsPanel,
-  TabsRoot,
-  TabsTrigger,
+  Tab,
+  TabList,
   useToast,
   useUiLocale,
 } from '@maka/ui';
@@ -151,22 +149,26 @@ export function UsageSettingsPage(props: {
         <MetricCard title={copy.cacheTokens} value={String(stats?.summary.cacheTokens ?? 0)} detail={copy.cacheDetail(stats?.summary.cacheMiss ?? 0, stats?.summary.cacheRead ?? 0, stats?.summary.cacheCreation ?? 0)} />
       </div>
 
-      <TabsRoot
-        value={usageDraft.activeTab}
-        onValueChange={(activeTab) => void updateUsage({ activeTab: activeTab as UsageActiveTab })}
-      >
+      <div>
         <div className="settingsUsageTabsBar">
-          <TabsList variant="underline" className="settingsUsageTabs" aria-label={copy.viewAria}>
-            <TabsTrigger className="settingsUsageTab" value="requests">{copy.tabs[0]} <span>{tabCounts.requests}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="providers">{copy.tabs[1]} <span>{tabCounts.providers}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="models">{copy.tabs[2]} <span>{tabCounts.models}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="tools">{copy.tabs[3]} <span>{tabCounts.tools}</span></TabsTrigger>
-            <TabsTrigger className="settingsUsageTab" value="pricing">{copy.tabs[4]} <span>{tabCounts.pricing}</span></TabsTrigger>
-          </TabsList>
+          <TabList
+            value={usageDraft.activeTab}
+            onChange={(activeTab) => void updateUsage({ activeTab: activeTab as UsageActiveTab })}
+            hasDivider
+            className="settingsUsageTabs"
+            aria-label={copy.viewAria}
+          >
+            <Tab className="settingsUsageTab" value="requests" label={copy.tabs[0]} endContent={<span>{tabCounts.requests}</span>} />
+            <Tab className="settingsUsageTab" value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
+            <Tab className="settingsUsageTab" value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
+            <Tab className="settingsUsageTab" value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
+            <Tab className="settingsUsageTab" value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
+          </TabList>
         </div>
 
-        <TabsPanel className="settingsUsageTabPanel" value="requests">
-          <UsageRequestsPanel
+        {usageDraft.activeTab === 'requests' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageRequestsPanel
             stats={stats}
             logs={showRequestDetails ? filteredLogs : []}
             showDetails={usageDraft.showDetails}
@@ -183,25 +185,34 @@ export function UsageSettingsPage(props: {
             onStatusChange={(status) => void updateUsage({ status })}
             onToggleDetails={(showDetails) => void updateUsage({ showDetails })}
             onClearFilters={clearRequestFilters}
-          />
-        </TabsPanel>
+            />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="providers">
-          <UsageProvidersPanel stats={stats} copy={copy} />
-        </TabsPanel>
+        {usageDraft.activeTab === 'providers' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageProvidersPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="models">
-          <UsageModelsPanel stats={stats} copy={copy} />
-        </TabsPanel>
+        {usageDraft.activeTab === 'models' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageModelsPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="tools">
-          <UsageToolsPanel stats={stats} copy={copy} />
-        </TabsPanel>
+        {usageDraft.activeTab === 'tools' ? (
+          <div className="settingsUsageTabPanel">
+            <UsageToolsPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
 
-        <TabsPanel className="settingsUsageTabPanel" value="pricing">
-          <UsagePricingPanel stats={stats} copy={copy} />
-        </TabsPanel>
-      </TabsRoot>
+        {usageDraft.activeTab === 'pricing' ? (
+          <div className="settingsUsageTabPanel">
+            <UsagePricingPanel stats={stats} copy={copy} />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

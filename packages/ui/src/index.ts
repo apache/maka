@@ -80,14 +80,7 @@ export * from './primitives/data-table.js';
 export * from './primitives/section-header.js';
 export { EmptyState } from './empty-state.js';
 export * from './primitives/toolbar.js';
-export {
-  Tabs as PrimitiveTabs,
-  TabsList as PrimitiveTabsList,
-  TabsTrigger as PrimitiveTabsTrigger,
-  TabsPanel as PrimitiveTabsPanel,
-  TabsContent as PrimitiveTabsContent,
-  TabsPrimitive as PrimitiveTabsPrimitive,
-} from './primitives/tabs.js';
+export { Tab, TabList, type TabProps, type TabListProps } from '@astryxdesign/core';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9
 // collapsed the legacy ui.tsx Badge onto this one. #1565 PR 3: the recipe is
 // the Astryx Badge now (label prop, status + palette variants); same barrel

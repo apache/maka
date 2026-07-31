@@ -14,8 +14,15 @@ import {
 } from './icons.js';
 import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
-import { Badge, type BadgeProps, Button as UiButton, IconButton, Switch } from '@astryxdesign/core';
-import { TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
+import {
+  Badge,
+  type BadgeProps,
+  Button as UiButton,
+  IconButton,
+  Switch,
+  Tab,
+  TabList,
+} from '@astryxdesign/core';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
 import {
@@ -232,22 +239,27 @@ function SkillLibraryPanel(props: {
 
   const tabs = (
     <div className="maka-skill-tabs-bar">
-      <TabsList variant="underline" className="maka-skill-tabs" aria-label={copy.tabs.ariaLabel}>
+      <TabList
+        value={activeSkillTab}
+        onChange={(value) => setActiveSkillTab(value as typeof activeSkillTab)}
+        hasDivider
+        className="maka-skill-tabs"
+        aria-label={copy.tabs.ariaLabel}
+      >
         {([
           ['market', copy.tabs.market, allManagedSources.length],
           ['builtin', copy.tabs.builtin, bundledCatalog.length],
           ['installed', copy.tabs.installed, installedSkills.length],
         ] as const).map(([tab, label, count]) => (
-          <TabsTrigger
+          <Tab
             key={tab}
             className="maka-skill-tab"
             value={tab}
-          >
-            {label}
-            <span>{count}</span>
-          </TabsTrigger>
+            label={label}
+            endContent={<span>{count}</span>}
+          />
         ))}
-      </TabsList>
+      </TabList>
       {/* Marketplace launch: real client-side category + sort controls on
           the tab row's right side (market tab only). The old static 全部 /
           排序：热门 pills were dead chrome; these drive marketSources. */}
@@ -677,15 +689,15 @@ function SkillLibraryPanel(props: {
   return (
     <div className="maka-skill-library" aria-busy={props.actionBusy ? 'true' : undefined}>
       {banner}
-      <TabsRoot value={activeSkillTab} onValueChange={(v) => setActiveSkillTab(v as 'market' | 'builtin' | 'installed')}>
-        {tabs}
-        <TabsPanel value="market">{market}</TabsPanel>
-        <TabsPanel value="builtin">{builtinCatalog}</TabsPanel>
-        <TabsPanel value="installed">
+      {tabs}
+      {activeSkillTab === 'market' ? market : null}
+      {activeSkillTab === 'builtin' ? builtinCatalog : null}
+      {activeSkillTab === 'installed' ? (
+        <div>
           {skillList(installedSkills, skillListEmptyTitle, skillListEmptyBody, copy.installed.sectionLabel)}
           {updateReview}
-        </TabsPanel>
-      </TabsRoot>
+        </div>
+      ) : null}
       {props.skills && props.skills.length > 0 ? (
         <span className="maka-skill-tool-summary-hidden" aria-hidden="true">
           {copy.installed.summary(skillCount, new Set((props.skills ?? []).flatMap((skill) => skill.declaredTools ?? [])).size)}
