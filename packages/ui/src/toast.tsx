@@ -235,6 +235,7 @@ function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boole
 
   return (
     <AstryxAlertDialog
+      className="maka-confirm-modal"
       isOpen
       onOpenChange={(isOpen) => {
         if (!isOpen) props.onResolve(false);

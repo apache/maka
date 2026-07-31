@@ -203,13 +203,16 @@ interface ModalContentProps
   finalFocus?: ModalFocusTarget;
 }
 
-function createModalContent(defaultPurpose?: DialogPurpose) {
+type ModalRole = 'dialog' | 'alertdialog';
+
+function createModalContent(defaultRole: ModalRole, defaultPurpose?: DialogPurpose) {
   return forwardRef<HTMLDialogElement, ModalContentProps>(function ModalContent(
     {
       children,
       initialFocus,
       finalFocus,
       purpose,
+      role = defaultRole,
       padding = 0,
       ...props
     },
@@ -225,6 +228,7 @@ function createModalContent(defaultPurpose?: DialogPurpose) {
         isOpen={root.isOpen}
         onOpenChange={root.onOpenChange}
         purpose={purpose ?? defaultPurpose ?? root.purpose}
+        role={role}
         padding={padding}
       >
         {children}
@@ -233,8 +237,8 @@ function createModalContent(defaultPurpose?: DialogPurpose) {
   });
 }
 
-export const DialogContent = createModalContent();
-export const AlertDialogContent = createModalContent('form');
+export const DialogContent = createModalContent('dialog');
+export const AlertDialogContent = createModalContent('alertdialog', 'form');
 
 interface DialogCloseProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   render?: React.ReactElement<Record<string, unknown>>;
