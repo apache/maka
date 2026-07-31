@@ -15,6 +15,12 @@ export interface CreateSqliteArtifactMetadataOptions {
   readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
 }
 
+export function artifactMetadataSourceFingerprint(source: string | undefined): string {
+  return `sha256:${createHash('sha256')
+    .update(source === undefined ? 'missing' : source)
+    .digest('hex')}`;
+}
+
 export function createSqliteArtifactMetadataRepository(
   workspaceRoot: string,
   options: CreateSqliteArtifactMetadataOptions = {},
@@ -104,9 +110,7 @@ async function importLegacyArtifactMetadata(
   const sourcePath = join(root, 'artifacts', 'metadata.jsonl');
   const source = await readOptionalText(sourcePath);
   const records = source === undefined ? [] : decodeArtifactMetadata(source);
-  const fingerprint = `sha256:${createHash('sha256')
-    .update(source === undefined ? 'missing' : source)
-    .digest('hex')}`;
+  const fingerprint = artifactMetadataSourceFingerprint(source);
   completeOperationalStoreCutover(lease, {
     storeName: 'artifact_metadata',
     sourcePath,

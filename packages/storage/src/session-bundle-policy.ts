@@ -10,7 +10,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import type { RuntimeEvent } from '@maka/core';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
@@ -33,6 +35,10 @@ import {
 import { createSqliteSessionMetadataStore } from './sqlite-session-metadata-store.js';
 import type { SessionAuthoritySnapshot } from './sqlite-session-metadata-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
+import {
+  artifactMetadataSourceFingerprint,
+  createSqliteArtifactMetadataRepository,
+} from './sqlite-artifact-metadata.js';
 
 /**
  * The first bundle slice is deliberately an uncompressed state-tree export.
@@ -88,6 +94,7 @@ const allowedEntries = new Set<string>(SESSION_BUNDLE_STATE_ENTRIES);
 const protectedEntries = new Set<string>(SESSION_BUNDLE_PROTECTED_ENTRIES);
 const portableSessionDirectories = new Set<string>(SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES);
 const portableSessionFiles = new Set<string>(SESSION_BUNDLE_PORTABLE_SESSION_FILES);
+const require = createRequire(import.meta.url);
 
 export type SessionBundleExportErrorCode =
   | 'invalid_root'
@@ -123,7 +130,6 @@ export interface SessionBundleExportPlanEntry {
     | 'copy'
     | 'selected_session_metadata'
     | 'selected_session_boundary'
-    | 'filtered_artifact_metadata'
     | 'filtered_runtime_sqlite';
 }
 
@@ -147,7 +153,6 @@ interface ArtifactMetadataSnapshot {
   metadataExists: boolean;
   canonicalText: string;
   selectedRecords: ArtifactRecord[];
-  filteredText: string;
 }
 
 interface PreparedSessionBundleExport {
@@ -203,6 +208,12 @@ async function prepareSessionBundleExport(
   const excludedEntries: string[] = [];
   const entries: SessionBundleExportPlanEntry[] = [];
   const artifactMetadata = await readArtifactMetadataSnapshot(stateRoot, input.sessionId);
+  if (!artifactMetadata.artifactRootExists && artifactMetadata.selectedRecords.length > 0) {
+    throw new SessionBundleExportError(
+      'invalid_root',
+      `Artifact metadata references a missing artifacts root for session ${input.sessionId}`,
+    );
+  }
   let sessionsClassified = false;
   let artifactsClassified = false;
   const topLevelEntries = await readdir(stateRoot, { withFileTypes: true });
@@ -330,7 +341,7 @@ export async function exportSessionBundleState(
     await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
     await exportPreparedArtifactState(current);
     await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
-    await exportPreparedNonArtifactState(current.plan);
+    await exportPreparedNonArtifactState(current.plan, current.artifactMetadata);
     await assertSessionBundleRootIdentity(preflight.stateRoot, preflight.stateRootIdentity);
     return current.plan;
   });
@@ -350,16 +361,14 @@ async function exportPreparedArtifactState(prepared: PreparedSessionBundleExport
     await mkdir(dirname(destinationPath), { recursive: true });
     await copyCheckedFile(sourcePath, destinationPath, plan.stateRoot, entry.relativePath);
   }
-  for (const entry of artifactEntries) {
-    if (entry.source === 'filtered_artifact_metadata') {
-      await exportFilteredArtifactMetadata(plan, entry, artifactMetadata);
-    }
-  }
   await assertNoCanonicalArtifactTransactionResidue(plan.stateRoot);
   await assertArtifactMetadataSnapshotUnchanged(plan.stateRoot, artifactMetadata);
 }
 
-async function exportPreparedNonArtifactState(plan: SessionBundleExportPlan): Promise<void> {
+async function exportPreparedNonArtifactState(
+  plan: SessionBundleExportPlan,
+  artifactMetadata: ArtifactMetadataSnapshot,
+): Promise<void> {
   const entries = plan.entries.filter((entry) => !isArtifactEntry(entry));
   const directories = entries.filter((entry) => entry.kind === 'directory');
   const files = entries.filter((entry) => entry.kind === 'file' && entry.source === 'copy');
@@ -387,6 +396,7 @@ async function exportPreparedNonArtifactState(plan: SessionBundleExportPlan): Pr
       await exportFilteredRuntimeSqlite(plan, entry);
     }
   }
+  await exportSqliteArtifactMetadata(plan.destinationRoot, artifactMetadata.selectedRecords);
 }
 
 function isArtifactEntry(entry: SessionBundleExportPlanEntry): boolean {
@@ -584,11 +594,7 @@ async function planSelectedArtifactTree(
     if (entry.name === 'metadata.jsonl') {
       metadataClassified = true;
       if (!artifactMetadata.metadataExists) throw artifactMetadataChanged();
-      entries.push({
-        relativePath: 'artifacts/metadata.jsonl',
-        kind: 'file',
-        source: 'filtered_artifact_metadata',
-      });
+      excludedEntries.push('artifacts/metadata.jsonl');
       continue;
     }
     if (
@@ -755,14 +761,23 @@ async function readArtifactMetadataSnapshot(
   return {
     ...source,
     selectedRecords,
-    filteredText:
-      selectedRecords.length > 0
-        ? `${selectedRecords.map((record) => JSON.stringify(record)).join('\n')}\n`
-        : '',
   };
 }
 
 async function readArtifactMetadataSource(
+  stateRoot: string,
+): Promise<
+  Pick<ArtifactMetadataSnapshot, 'artifactRootExists' | 'metadataExists' | 'canonicalText'>
+> {
+  const legacy = await readLegacyArtifactMetadataSource(stateRoot);
+  const canonicalText = await readCanonicalSqliteArtifactMetadata(
+    stateRoot,
+    legacy.metadataExists ? legacy.canonicalText : undefined,
+  );
+  return canonicalText === undefined ? legacy : { ...legacy, canonicalText };
+}
+
+async function readLegacyArtifactMetadataSource(
   stateRoot: string,
 ): Promise<
   Pick<ArtifactMetadataSnapshot, 'artifactRootExists' | 'metadataExists' | 'canonicalText'>
@@ -809,6 +824,94 @@ async function readArtifactMetadataSource(
     metadataExists: true,
     canonicalText: await readFile(metadataPath, 'utf8'),
   };
+}
+
+async function readCanonicalSqliteArtifactMetadata(
+  stateRoot: string,
+  legacySource: string | undefined,
+): Promise<string | undefined> {
+  const databasePath = resolve(stateRoot, OPERATIONAL_STATE_DATABASE_NAME);
+  let metadata;
+  try {
+    metadata = await lstat(databasePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  assertNoSymlink(metadata.isSymbolicLink(), OPERATIONAL_STATE_DATABASE_NAME);
+  await assertCanonicalPathInside(databasePath, stateRoot, OPERATIONAL_STATE_DATABASE_NAME);
+  if (!metadata.isFile()) {
+    throw new SessionBundleExportError(
+      'unsupported_entry',
+      `Session bundle runtime SQLite is not a regular file: ${databasePath}`,
+    );
+  }
+
+  const Database = loadDatabaseSync();
+  const database = new Database(databasePath, { readOnly: true });
+  let snapshotOpen = false;
+  try {
+    database.exec('PRAGMA busy_timeout = 5000; PRAGMA query_only = ON');
+    database.exec('BEGIN');
+    snapshotOpen = true;
+    if (!sqliteTableExists(database, 'cutover_journal')) return undefined;
+    const journal = database
+      .prepare(`
+        SELECT source_fingerprint, state
+        FROM cutover_journal
+        WHERE store_name = 'artifact_metadata'
+      `)
+      .get() as { source_fingerprint?: unknown; state?: unknown } | undefined;
+    if (!journal) {
+      if (sqliteTableExists(database, 'artifact_records')) {
+        const row = database.prepare('SELECT COUNT(*) AS count FROM artifact_records').get() as {
+          count?: unknown;
+        };
+        if (row.count !== 0) {
+          throw new SessionBundleExportError(
+            'unsupported_entry',
+            'Artifact SQLite rows exist without a completed cutover journal',
+          );
+        }
+      }
+      return undefined;
+    }
+    if (journal.state !== 'completed' || typeof journal.source_fingerprint !== 'string') {
+      throw new SessionBundleExportError(
+        'unsupported_entry',
+        'Artifact metadata cutover must complete before session bundle export',
+      );
+    }
+    if (journal.source_fingerprint !== artifactMetadataSourceFingerprint(legacySource)) {
+      throw artifactMetadataChanged();
+    }
+    if (!sqliteTableExists(database, 'artifact_records')) {
+      throw new SessionBundleExportError(
+        'unsupported_entry',
+        'Completed Artifact metadata cutover is missing artifact_records',
+      );
+    }
+    const rows = database
+      .prepare(`
+        SELECT record_json
+        FROM artifact_records
+        ORDER BY created_at, storage_key
+      `)
+      .all() as Array<{ record_json?: unknown }>;
+    if (rows.some((row) => typeof row.record_json !== 'string')) {
+      throw new SessionBundleExportError(
+        'unsupported_entry',
+        'Artifact SQLite metadata contains an invalid record',
+      );
+    }
+    return rows.length > 0 ? `${rows.map((row) => row.record_json as string).join('\n')}\n` : '';
+  } finally {
+    try {
+      if (snapshotOpen) database.exec('ROLLBACK');
+    } finally {
+      database.close();
+    }
+  }
 }
 
 async function assertArtifactMetadataSnapshotUnchanged(
@@ -938,16 +1041,6 @@ async function copyCheckedFile(
   await copyFile(sourcePath, destinationPath);
 }
 
-async function exportFilteredArtifactMetadata(
-  plan: SessionBundleExportPlan,
-  entry: SessionBundleExportPlanEntry,
-  snapshot: ArtifactMetadataSnapshot,
-): Promise<void> {
-  const destinationPath = resolve(plan.destinationRoot, entry.relativePath);
-  await mkdir(dirname(destinationPath), { recursive: true });
-  await writeFile(destinationPath, snapshot.filteredText);
-}
-
 async function exportFilteredRuntimeSqlite(
   plan: SessionBundleExportPlan,
   entry: SessionBundleExportPlanEntry,
@@ -983,6 +1076,38 @@ async function exportFilteredRuntimeSqlite(
     source.close();
   }
   await rename(filteredPath, destinationPath);
+}
+
+async function exportSqliteArtifactMetadata(
+  destinationRoot: string,
+  records: readonly ArtifactRecord[],
+): Promise<void> {
+  const repository = createSqliteArtifactMetadataRepository(destinationRoot);
+  try {
+    await repository.ready();
+    repository.replaceAll(records);
+    const reopened = repository.readAll();
+    if (!sameArtifactRecordSet(reopened, records)) {
+      throw new SessionBundleExportError(
+        'unsupported_entry',
+        'Exported Artifact SQLite metadata failed validation',
+      );
+    }
+  } finally {
+    repository.close();
+  }
+}
+
+function sameArtifactRecordSet(
+  left: readonly ArtifactRecord[],
+  right: readonly ArtifactRecord[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const canonical = (records: readonly ArtifactRecord[]) =>
+    records.map((record) => JSON.stringify(record)).sort((a, b) => a.localeCompare(b));
+  const leftRecords = canonical(left);
+  const rightRecords = canonical(right);
+  return leftRecords.every((record, index) => record === rightRecords[index]);
 }
 
 async function ensureEmptyDestination(requestedPath: string, canonicalPath: string): Promise<void> {
@@ -1218,4 +1343,15 @@ export function isArtifactPathForSession(relativePath: string, sessionId: string
 function isPathInside(root: string, candidate: string): boolean {
   const path = relative(root, candidate);
   return path === '' || (!path.startsWith(`..${sep}`) && path !== '..' && !isAbsolute(path));
+}
+
+function sqliteTableExists(database: DatabaseSync, table: string): boolean {
+  return (
+    database.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table) !==
+    undefined
+  );
+}
+
+function loadDatabaseSync(): typeof import('node:sqlite').DatabaseSync {
+  return (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
 }

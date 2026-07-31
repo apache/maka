@@ -230,10 +230,17 @@ staging/link protocol: recovery removes bytes whose metadata transaction did not
 commit and preserves committed bytes while cleaning staging residue. Purge
 intent recovery likewise completes against the SQLite metadata authority.
 
+Selected-session bundle export now reads that SQLite authority through a
+WAL-consistent snapshot, verifies that retained legacy evidence still matches
+its completed cutover, and writes only the selected Artifact rows into the
+bundle's `runtime.sqlite`. Payload bytes are copied under the Artifact writer
+lock, cross-session rows and payloads are excluded, and bundles no longer emit
+`artifacts/metadata.jsonl`.
+
 The remaining storage work is deliberately classified rather than implied
 complete:
 
-- session bundle, backup, restore, and trajectory export paths must consume the
+- full operational backup/restore and trajectory export paths must consume the
   SQLite artifact metadata authority while preserving payload files;
 - legacy operational writers and compatibility-only JSONL code can be removed
   only after the migration/cutover matrix is complete;
