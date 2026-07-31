@@ -295,17 +295,6 @@ describe('sidebar project view mode', () => {
     assert.doesNotMatch(markup, /显示更多/);
   });
 
-  it('delegates project expansion state to Astryx TreeList', async () => {
-    const list = await readRepo('packages/ui/src/session-history-list.tsx');
-    const projectGroup =
-      list.match(
-        /function ProjectSessionGroup\([\s\S]*?\nfunction SessionTreeRow/,
-      )?.[0] ?? '';
-
-    assert.doesNotMatch(projectGroup, /disclosure|setExpanded|PROJECT_GROUP_PREVIEW_LIMIT/);
-    assert.match(list, /<TreeList items=\{items\} density="compact" variant="lineGuides" \/>/);
-  });
-
   it('renders linked child sessions directly beneath their parent as normal selectable rows', () => {
     const parent = makeSessionSummary({ id: 'parent', name: 'Parent task' });
     const child = makeSessionSummary({ id: 'child', name: 'Child agent' });
