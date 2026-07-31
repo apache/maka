@@ -77,7 +77,7 @@ test('chat footer actions and lineage badges consume the governed Button tiers',
   );
   assert.match(
     chatTurnSource,
-    /<UiButton[\s\S]*?isIconOnly[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className=\{markerVariants\(\{ variant: 'footer-action' \}\)\}/,
+    /<UiIconButton[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className=\{markerVariants\(\{ variant: 'footer-action' \}\)\}/,
   );
   assert.match(
     chatTurnSource,
