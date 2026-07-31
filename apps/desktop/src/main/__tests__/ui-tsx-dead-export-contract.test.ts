@@ -99,7 +99,7 @@ describe('PR-UI-DEAD-EXPORT-SWEEP-0 ui.tsx dead-export contract', () => {
     const pending = new Set(ALLOWED_PENDING.map((entry) => entry.name));
     const dead: string[] = [];
     for (const name of exports) {
-      if (pending.has(name) || FROZEN_COMPATIBILITY.has(name)) continue;
+      if (pending.has(name)) continue;
       const re = new RegExp(`\\b${name}\\b`);
       const hasConsumer = allSources.some((file) => {
         if (file.path === UI_FILE) return false;

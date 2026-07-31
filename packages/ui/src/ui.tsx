@@ -4,7 +4,6 @@ import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
-import { Selector } from '@astryxdesign/core/Selector';
 import { mergeRefs } from '@astryxdesign/core/utils';
 import { cn } from './utils.js';
 
