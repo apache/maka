@@ -36,6 +36,32 @@
   container: settings-rows / inline-size;
 }
 
+.settingsReadOnlyValue,
+.settingsReadOnlyValueGroup {
+  min-width: 0;
+  max-width: min(320px, 45cqi);
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-ui);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+
+.settingsReadOnlyValueGroup {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settingsReadOnlyValue[data-mono="true"] {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-normal);
+  text-align: start;
+  word-break: break-all;
+}
+
 /* Label/value row: title + hint stack on the left, value or a single
    control on the right column.
 
