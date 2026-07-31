@@ -195,10 +195,7 @@ describe('SQLite workflow cutover', () => {
         reopenedReminders.ready(),
       ]);
       assert.equal((await reopenedTasks.get(SESSION_ID, legacyTask.id))?.status, 'in_progress');
-      assert.equal(
-        (await reopenedPlan.readState(SESSION_ID)).proposals[0]?.status,
-        'stale',
-      );
+      assert.equal((await reopenedPlan.readState(SESSION_ID)).proposals[0]?.status, 'stale');
       assert.equal((await reopenedResearch.readEvents(SESSION_ID)).length, 2);
       assert.equal(
         (
