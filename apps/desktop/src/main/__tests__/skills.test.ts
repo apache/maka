@@ -1579,14 +1579,14 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /const runtimeLabel = formatSkillRuntimeLabel\(skill, copy\)/);
     assert.match(skillPanel, /copy\.row\.hoverWithTools\(skill\.id, runtimeLabel, statusLabel, toolsLabel\)/);
     assert.match(skillPanel, /copy\.row\.hover\(skill\.id, runtimeLabel, statusLabel\)/);
-    // Detail round 6, exception-only: the runtime chip renders ONLY for
+    // Detail round 6, exception-only: the runtime badge renders ONLY for
     // state_error — enabled/disabled is already expressed by the Switch.
     // Round 1 convergence (#520 follow-up): the two status labels now render
-    // the squared Chip primitive (was a hand-rolled span). data-status is
+    // the Astryx Badge primitive (was a hand-rolled span). data-status is
     // preserved for tone derivation; the render condition is unchanged.
-    assert.match(skillPanel, /\{skill\.runtimeStatus === 'state_error' && \([\s\S]*?<Chip[\s\S]*?className="maka-skill-library-runtime-label"[\s\S]*>\{runtimeLabel\}<\/Chip>/);
-    assert.match(skillPanel, /<Chip[\s\S]*?className="maka-skill-library-status-label"[\s\S]*>\{statusLabel\}<\/Chip>/);
-    assert.match(skillPanel, /function skillStatusChipTone\(skill: SkillEntry\)/, 'status-label tone derives from data-status via skillStatusChipTone');
+    assert.match(skillPanel, /\{skill\.runtimeStatus === 'state_error' && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-runtime-label"[\s\S]*?label=\{runtimeLabel\}/);
+    assert.match(skillPanel, /<Badge[\s\S]*?className="maka-skill-library-status-label"[\s\S]*?label=\{statusLabel\}/);
+    assert.match(skillPanel, /function skillStatusBadgeVariant\(skill: SkillEntry\)/, 'status-label variant derives from data-status via skillStatusBadgeVariant');
     assert.match(ui, /function formatSkillStatusLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /function formatSkillRuntimeLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /runtimeStatus === 'state_error'\) return copy\.status\.stateError/);
