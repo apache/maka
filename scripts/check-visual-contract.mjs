@@ -815,10 +815,7 @@ export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT) {
     }
   }
   if (claimed.size > 1) {
-    const totalClaimed = [...claimed.values()].reduce(
-      (total, count) => total + count,
-      0,
-    );
+    const totalClaimed = [...claimed.values()].reduce((total, count) => total + count, 0);
     if (totalClaimed > records.length * limit) {
       violations.push({
         scope: '<declared union>',
