@@ -1672,9 +1672,9 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /className="maka-skill-library-status-label"/);
     assert.match(skillPanel, /function previewText\(content: string\): string/);
     assert.doesNotMatch(skillPanel, /maka-skill-library-action/, 'Open must be an explicit file icon button, not a status-like text pill');
-    assert.match(skillPanel, /label: props\.createPending \? copy\.installed\.createPending : copy\.installed\.createExample/);
-    assert.match(skillPanel, /label: props\.refreshPending \? copy\.installed\.refreshPending : copy\.installed\.refresh/);
-    assert.match(skillPanel, /disabled: props\.actionBusy/);
+    assert.match(skillPanel, /label=\{props\.createPending \? copy\.installed\.createPending : copy\.installed\.createExample\}/);
+    assert.match(skillPanel, /label=\{props\.refreshPending \? copy\.installed\.refreshPending : copy\.installed\.refresh\}/);
+    assert.match(skillPanel, /isDisabled=\{props\.actionBusy\}/);
     assert.match(skillPanel, /aria-busy=\{props\.actionBusy \? 'true' : undefined\}/);
     assert.match(skillPanel, /isDisabled=\{props\.actionBusy \|\| !props\.onOpenSkill\}/, 'Skill open icon button must be disabled while a Skills action is pending'); // #1565 PR 3
     assert.match(skillPanel, /opening && <span>\{copy\.row\.opening\}<\/span>/);

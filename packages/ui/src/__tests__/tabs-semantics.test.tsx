@@ -1,19 +1,24 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Tab, TabList } from '@astryxdesign/core';
+import { Tabs, TabsList, TabsPanel, TabsTab } from '../primitives/tabs.js';
 
 describe('tabs accessibility semantics', () => {
-  it('exposes Astryx navigation with the current page and roving tab stop', () => {
+  it('exposes a tablist with selected tabs and tabpanels', () => {
     const markup = renderToStaticMarkup(
-      <TabList value="activity" onChange={() => {}} aria-label="Views">
-        <Tab value="overview" label="Overview" />
-        <Tab value="activity" label="Activity" />
-      </TabList>,
+      <Tabs value="activity">
+        <TabsList aria-label="Views">
+          <TabsTab value="overview">Overview</TabsTab>
+          <TabsTab value="activity">Activity</TabsTab>
+        </TabsList>
+        <TabsPanel value="overview">Overview panel</TabsPanel>
+        <TabsPanel value="activity">Activity panel</TabsPanel>
+      </Tabs>,
     );
 
-    assert.match(markup, /<nav[^>]*aria-label="Views"/);
-    assert.match(markup, /data-tab-value="overview"[^>]*tabindex="-1"/);
-    assert.match(markup, /data-tab-value="activity"[^>]*aria-current="page"[^>]*tabindex="0"/);
+    assert.match(markup, /role="tablist"/);
+    assert.match(markup, /role="tab"[^>]*aria-selected="false"/);
+    assert.match(markup, /role="tab"[^>]*aria-selected="true"/);
+    assert.match(markup, /role="tabpanel"/);
   });
 });

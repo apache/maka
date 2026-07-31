@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
-import { Collapsible, Item } from '@astryxdesign/core';
+import { Collapsible, EmptyState, Item, Tab, TabList } from '@astryxdesign/core';
 import {
   Button,
   Badge,
-  EmptyState,
   IconButton,
   PageHeader,
   RadioList,
@@ -13,8 +12,6 @@ import {
   Selector,
   type ModuleHubHeader,
   Switch,
-  Tab,
-  TabList,
   TextArea,
   TextInput,
   useMountedRef,

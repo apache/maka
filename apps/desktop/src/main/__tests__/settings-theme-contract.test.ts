@@ -90,7 +90,7 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(themePage, /界面密度|props\.density|setDensity|onDensityChange/);
 
     // Astryx owns the segmented-control structure and keyboard behavior.
-    assert.match(src, /import \{[^}]*\bSegmentedControl\b[^}]*\} from '@maka\/ui'/);
+    assert.match(src, /import \{[^}]*\bSegmentedControl\b[^}]*\} from '@astryxdesign\/core'/);
     assert.match(src, /<SegmentedControl[\s\S]*<SegmentedControlItem/);
     assert.doesNotMatch(src, /^function Segmented</m);
   });

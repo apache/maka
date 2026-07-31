@@ -1,6 +1,7 @@
 import { ChevronRight } from '@maka/ui/icons';
 import { PROVIDER_DEFAULTS, isWiredOAuthProvider, type ProviderType } from '@maka/core';
-import { Badge, Item, useUiLocale } from '@maka/ui';
+import { Item } from '@astryxdesign/core';
+import { Badge, useUiLocale } from '@maka/ui';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 

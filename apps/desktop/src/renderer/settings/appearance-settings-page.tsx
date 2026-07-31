@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Card, Item } from '@astryxdesign/core';
+import { Card, Item, SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import type {
   AppSettings,
   PersonalizationSettings,
@@ -12,8 +12,6 @@ import {
   RadioList,
   RadioListItem,
   FormLayout,
-  SegmentedControl,
-  SegmentedControlItem,
   TextArea,
   TextInput,
   useMountedRef,

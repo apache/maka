@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight } from '@maka/ui/icons';
+import { Item } from '@astryxdesign/core';
 import {
   type ProviderType,
 } from '@maka/core';
 import {
   Button,
-  Item,
   useMountedRef,
   useToast,
   useUiLocale,

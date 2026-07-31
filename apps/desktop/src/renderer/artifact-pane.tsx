@@ -49,7 +49,11 @@ import {
   AlertTitle,
   Badge,
   Button,
-  EmptyState,
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
   Toolbar,
   ToolbarGroup,
   ToolbarSeparator,
@@ -441,12 +445,17 @@ export function ArtifactPane(props: {
                 onShowInFolder={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
               />
             ) : (
-              <EmptyState
-                className="maka-artifact-preview-empty"
-                icon={<FileText aria-hidden="true" />}
-                title={activeRecords.length > 0 ? copy.pane.notSelected : copy.pane.empty}
-                description={activeRecords.length > 0 ? copy.pane.selectHint : copy.pane.emptyHint}
-              />
+              <Empty className="maka-artifact-preview-empty py-10 md:py-12 gap-4">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <FileText aria-hidden="true" />
+                  </EmptyMedia>
+                  <EmptyTitle>{activeRecords.length > 0 ? copy.pane.notSelected : copy.pane.empty}</EmptyTitle>
+              <EmptyDescription>
+                {activeRecords.length > 0 ? copy.pane.selectHint : copy.pane.emptyHint}
+              </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
             )}
           </div>
           {selected && (

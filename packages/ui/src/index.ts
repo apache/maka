@@ -71,27 +71,38 @@ export type {
   MarkerVariant,
   MessageProps,
 } from './primitives/chat.js';
-export { Item, type ItemProps } from '@astryxdesign/core';
-export { Spinner, type SpinnerProps, type SpinnerSize, type SpinnerShade } from '@astryxdesign/core';
+export * from './primitives/empty.js';
+export * from './primitives/item.js';
+export * from './primitives/spinner.js';
 export * from './primitives/kbd.js';
 export * from './primitives/stat-tile.js';
-export {
-  Table,
-  pixel,
-  proportional,
-  type TableColumn,
-  type TableProps,
-} from '@astryxdesign/core';
+export * from './primitives/data-table.js';
 export * from './primitives/section-header.js';
-export { EmptyState, type EmptyStateProps } from '@astryxdesign/core';
+export { EmptyState } from './empty-state.js';
+export * from './primitives/segmented.js';
 export * from './primitives/toolbar.js';
-export { Tab, TabList, type TabProps, type TabListProps } from '@astryxdesign/core';
+export {
+  Tabs as PrimitiveTabs,
+  TabsList as PrimitiveTabsList,
+  TabsTrigger as PrimitiveTabsTrigger,
+  TabsPanel as PrimitiveTabsPanel,
+  TabsContent as PrimitiveTabsContent,
+  TabsPrimitive as PrimitiveTabsPrimitive,
+} from './primitives/tabs.js';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9
 // collapsed the legacy ui.tsx Badge onto this one. #1565 PR 3: the recipe is
 // the Astryx Badge now (label prop, status + palette variants); same barrel
 // slot, implementation swapped behind it. badgeVariants retired with the cva
 // recipe (no consumers).
 export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
+// PR-USE-SHADCN-BASE-UI-CHIP: squared compact status label. #520 PR9 collapsed
+// .settingsBadge + .settingsConnectionBadge CSS chips onto this one. Chip is
+// the squared (radius-control) counterpart to pill Badge, for dense settings
+// status rows. Status variants mirror StatusTone: neutral / info / success /
+// warning / destructive; `accent` is the separate brand-accent marker
+// (default-connection flags) outside the status scale.
+export { Chip, chipVariants } from './primitives/chip.js';
+export type { ChipProps } from './primitives/chip.js';
 // PageHeader — the shared page-header shell (convergence round 3). One shell
 // for the module hero (as='h2': 技能 / 定时任务) and the settings intros
 // (as='h3': permission / health / voice / about). Wrapper class + per-slot
@@ -187,10 +198,6 @@ export {
   type SelectorOptionData,
   FormLayout,
   type FormLayoutProps,
-  SegmentedControl,
-  type SegmentedControlProps,
-  SegmentedControlItem,
-  type SegmentedControlItemProps,
   CommandPalette,
   type CommandPaletteProps,
   CommandPaletteInput,

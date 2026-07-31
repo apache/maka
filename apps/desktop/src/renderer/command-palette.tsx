@@ -14,7 +14,10 @@ import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
   CommandPaletteInput,
-  EmptyState,
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
   Kbd,
   KbdGroup,
   AstryxLocaleProvider,
@@ -152,7 +155,12 @@ export function CommandPalette(props: {
           />
         )}
         emptySearchText={(
-          <EmptyState className="maka-palette-empty" isCompact title={copy.emptyTitle} description={copy.emptyDescription} />
+          <Empty className="maka-palette-empty py-8 md:py-10 gap-3">
+            <EmptyHeader>
+              <EmptyTitle>{copy.emptyTitle}</EmptyTitle>
+              <EmptyDescription>{copy.emptyDescription}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
         emptyBootstrapText={copy.emptyDescription}
         onValueChange={commit}

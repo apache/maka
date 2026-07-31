@@ -1,0 +1,98 @@
+/* Empty state — shared empty placeholder across surfaces. Relocated from onboarding.css — issue #546 PR3. */
+.maka-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1-5);
+  text-align: center;
+  color: var(--foreground-secondary);
+}
+
+/* Absolute centering is a SIDEBAR-only concern (the empty session list
+   centers inside the scroll viewport). It used to live on the base class,
+   so every module page's shared EmptyState floated at 46% of the page and
+   overlapped banners/cards (part of designer audit P0-4's "broken
+   half-loaded card" impression). Scope it to the session list. */
+.maka-session-list .maka-empty-state {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: min(205px, calc(100% - 40px));
+  transform: translate(-50%, -50%);
+}
+
+.maka-empty-state-icon {
+  width: 32px;
+  height: 32px;
+  color: var(--muted-foreground);
+  padding: 0;
+}
+
+.maka-empty-state-media .maka-empty-state-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.maka-empty-state-title {
+  color: var(--foreground);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-empty-state-body {
+  max-width: 30ch;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-ui);
+  line-height: var(--leading-snug);
+  text-wrap: pretty;
+}
+
+/* Justified: the shared EmptyState primitive is a card by default, but the
+   sidebar history fallback must collapse into lightweight inline copy instead
+   of painting a second card surface. */
+.maka-session-list .maka-session-empty-state {
+  width: calc(100% - 42px);
+  top: 34%;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  color: var(--muted-foreground);
+}
+
+.maka-session-list .maka-session-empty-state .maka-empty-state-media {
+  display: none;
+}
+
+.maka-session-list .maka-session-empty-state .maka-empty-state-title {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.maka-session-list .maka-session-empty-state .maka-empty-state-body {
+  max-width: 22ch;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}
+
+.maka-empty-state-code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-control);
+  background: var(--foreground-5);
+  color: var(--foreground-secondary);
+}
+
+.maka-empty-state-actions {
+  margin-top: var(--space-1);
+  display: grid;
+  gap: var(--space-1);
+  justify-items: center;
+}
+
+.maka-empty-state-cta {
+  min-width: 88px;
+}
+

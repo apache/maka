@@ -5,7 +5,8 @@ import type {
   HealthSnapshot,
 } from '@maka/core';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core';
-import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, Item, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
+import { Item } from '@astryxdesign/core';
+import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';

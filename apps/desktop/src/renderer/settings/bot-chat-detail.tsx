@@ -10,6 +10,7 @@ import {
 } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import {
   Alert,
   AlertDescription,
@@ -20,8 +21,6 @@ import {
   FormLayout,
   TextInput,
   RelativeTime,
-  SegmentedControl,
-  SegmentedControlItem,
   Selector,
   Switch,
   TextArea,

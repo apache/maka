@@ -4,9 +4,9 @@ import type {
   BotOnboardingProvider,
   BotOnboardingSnapshot,
 } from '@maka/core';
+import { Spinner } from '@astryxdesign/core';
 import {
   Button,
-  Spinner,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';

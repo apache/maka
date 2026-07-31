@@ -14,7 +14,7 @@ export interface ConnectionChipStatus {
 }
 
 /**
- * Status copy + tone for one connection's Chip in the 模型连接 list. One
+ * Status copy + tone for one connection's Badge in the 模型连接 list. One
  * state machine returns both so the color can never disagree with the
  * visible copy (PR #988 review: split label/tone helpers drifted — a
  * disabled connection that last errored kept the failure copy but lost the

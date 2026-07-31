@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
+import { Item, Tab, TabList } from '@astryxdesign/core';
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -13,9 +14,6 @@ import {
 import {
   Badge,
   TextInput,
-  Tab,
-  TabList,
-  Item,
   SectionHeader,
   useMountedRef,
   useUiLocale,

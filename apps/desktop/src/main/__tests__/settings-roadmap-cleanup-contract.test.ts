@@ -56,9 +56,7 @@ describe('Settings coming-soon cleanup contract', () => {
     assert.doesNotMatch(providers, /还没有供应商/, 'ProvidersPanel empty state should not read like unfinished product setup');
     assert.doesNotMatch(providerCatalog, /catalogBadge:\s*'Soon'|future phase/, 'provider catalog metadata must not keep soon/future-phase copy');
     assert.doesNotMatch(styles, /ComingSoonPage|roadmap banner|providerComingSoon|providerCatalogSoon/, 'Settings CSS must not keep stale coming-soon/provider-roadmap naming');
-    // PR-SETTINGS-NAV-REGROUP-0: `.settingsNavBadge` is reused as the Beta
-    // chip primitive. Lock it down so we don't lose it accidentally.
-    assert.match(styles, /\.settingsNavBadge\s*\{/);
+    assert.doesNotMatch(styles, /\.settingsNavBadge\s*\{/, 'Astryx SideNav and Badge own navigation status geometry');
   });
 
   it('keeps feature status pages product-scoped instead of demo-version or future-roadmap copy', async () => {

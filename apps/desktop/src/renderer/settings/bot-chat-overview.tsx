@@ -3,6 +3,7 @@ import { ChevronRight, MessageSquare } from '@maka/ui/icons';
 import type { BotChannelSettings, BotProvider } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { BOT_PROVIDERS } from '@maka/core/settings';
+import { EmptyState, Item } from '@astryxdesign/core';
 import {
   Alert,
   AlertAction,
@@ -10,8 +11,6 @@ import {
   AlertTitle,
   Button,
   Badge,
-  EmptyState,
-  Item,
   RelativeTime,
   useUiLocale,
 } from '@maka/ui';

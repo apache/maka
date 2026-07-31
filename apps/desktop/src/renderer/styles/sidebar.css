@@ -800,12 +800,3 @@
   line-height: var(--leading-normal);
   white-space: nowrap;
 }
-.maka-session-list .maka-session-empty-state {
-  position: absolute;
-  left: 50%;
-  top: 34%;
-  width: calc(100% - 42px);
-  transform: translate(-50%, -50%);
-  padding: 0;
-  color: var(--muted-foreground);
-}

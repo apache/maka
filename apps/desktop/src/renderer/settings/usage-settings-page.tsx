@@ -1,5 +1,16 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
+  EmptyState,
+  SegmentedControl,
+  SegmentedControlItem,
+  Tab,
+  TabList,
+  Table,
+  type TableColumn,
+  pixel,
+  proportional,
+} from '@astryxdesign/core';
+import {
   uiLocaleToIntlLocale,
   type AppSettings,
   type UpdateAppSettingsResult,
@@ -11,19 +22,10 @@ import {
   AlertAction,
   AlertDescription,
   Button,
-  EmptyState,
   IconButton,
   TextInput,
-  SegmentedControl,
-  SegmentedControlItem,
   Selector,
   Switch,
-  Tab,
-  TabList,
-  Table,
-  type TableColumn,
-  pixel,
-  proportional,
   useToast,
   useUiLocale,
 } from '@maka/ui';
