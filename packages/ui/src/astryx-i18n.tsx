@@ -41,6 +41,7 @@ export function astryxMessageOverrides(locale: UiLocale) {
   if (locale === 'en') return undefined;
   const shared = getSharedUiCopy(locale);
   const conversation = getConversationCopy(locale);
+  const form = shared.formControls;
   return {
     [locale]: {
       '@astryx.codeBlock.copyCode': shared.markdown.copyCode,
@@ -55,8 +56,28 @@ export function astryxMessageOverrides(locale: UiLocale) {
       '@astryx.lightbox.close': shared.primitives.close,
       '@astryx.toast.dismiss': shared.toast.closeNotification,
       '@astryx.toast.viewport': shared.toast.notifications,
-      '@astryx.selector.searchOptions': shared.modelPicker.searchAriaLabel,
-      '@astryx.selector.searchPlaceholder': shared.modelPicker.searchPlaceholder,
+      '@astryx.selector.placeholder': form.selectPlaceholder,
+      '@astryx.selector.searchPlaceholder': form.searchPlaceholder,
+      '@astryx.selector.searchOptions': form.searchOptions,
+      '@astryx.selector.clearLabel': form.clear,
+      '@astryx.multiSelector.selectPlaceholder': form.selectPlaceholder,
+      '@astryx.multiSelector.selectAll': form.selectAll,
+      '@astryx.multiSelector.searchPlaceholder': form.searchPlaceholder,
+      '@astryx.multiSelector.searchOptions': form.searchOptions,
+      '@astryx.multiSelector.clearAll': form.clearAll,
+      '@astryx.numberInput.clearLabel': form.clear,
+      '@astryx.dateInput.placeholder': form.datePlaceholder,
+      '@astryx.dateInput.dialogLabel': form.dateDialog,
+      '@astryx.dateInput.closeCalendar': form.closeCalendar,
+      '@astryx.dateInput.openCalendar': form.openCalendar,
+      '@astryx.dateInput.toggleCalendarClose': form.closeCalendar,
+      '@astryx.dateInput.clear': form.clear,
+      '@astryx.dateTimeInput.placeholder': form.dateTimePlaceholder,
+      '@astryx.dateTimeInput.dialogLabel': form.dateTimeDialog,
+      '@astryx.dateTimeInput.timePlaceholder': form.dateTimeTimePlaceholder,
+      '@astryx.dateTimeInput.timeSuffix': form.dateTimeSuffix,
+      '@astryx.timeInput.placeholder': form.timePlaceholder,
+      '@astryx.timeInput.clearLabel': form.clear,
       '@astryx.chat.composer.placeholder': conversation.composer.placeholder,
       '@astryx.chat.composerInput.label': conversation.composer.textareaAriaLabel,
       '@astryx.chatLayoutScrollButton.scrollToBottom': conversation.chat.jumpLatest,

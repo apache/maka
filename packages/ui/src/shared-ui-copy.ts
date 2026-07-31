@@ -21,6 +21,23 @@ export interface SharedUiCopy {
     copiedCode: string;
     copyCodeFailed: string;
   };
+  formControls: {
+    selectPlaceholder: string;
+    searchPlaceholder: string;
+    searchOptions: string;
+    selectAll: string;
+    clear: string;
+    clearAll: string;
+    datePlaceholder: string;
+    dateDialog: string;
+    closeCalendar: string;
+    openCalendar: string;
+    dateTimePlaceholder: string;
+    dateTimeDialog: string;
+    dateTimeTimePlaceholder: string;
+    dateTimeSuffix: string;
+    timePlaceholder: string;
+  };
   modelPicker: {
     empty: string;
     searchPlaceholder: string;
@@ -108,6 +125,23 @@ const SHARED_UI_COPY = {
       copiedCode: '已复制代码',
       copyCodeFailed: '复制代码失败',
     },
+    formControls: {
+      selectPlaceholder: '选择…',
+      searchPlaceholder: '搜索…',
+      searchOptions: '搜索选项',
+      selectAll: '全选',
+      clear: '清除{label}',
+      clearAll: '清除{label}的全部选项',
+      datePlaceholder: '选择日期',
+      dateDialog: '选择日期',
+      closeCalendar: '关闭日历',
+      openCalendar: '打开日历',
+      dateTimePlaceholder: '选择日期',
+      dateTimeDialog: '选择日期',
+      dateTimeTimePlaceholder: '选择时间',
+      dateTimeSuffix: '{label}时间',
+      timePlaceholder: '选择时间',
+    },
     modelPicker: {
       empty: '没有匹配的模型',
       searchPlaceholder: '搜索模型…',
@@ -178,6 +212,23 @@ const SHARED_UI_COPY = {
       copyingCode: 'Copying code',
       copiedCode: 'Code copied',
       copyCodeFailed: 'Failed to copy code',
+    },
+    formControls: {
+      selectPlaceholder: 'Select…',
+      searchPlaceholder: 'Search…',
+      searchOptions: 'Search options',
+      selectAll: 'Select all',
+      clear: 'Clear {label}',
+      clearAll: 'Clear all {label}',
+      datePlaceholder: 'Select a date',
+      dateDialog: 'Choose date',
+      closeCalendar: 'Close calendar',
+      openCalendar: 'Open calendar',
+      dateTimePlaceholder: 'Select a date',
+      dateTimeDialog: 'Choose date',
+      dateTimeTimePlaceholder: 'Select a time',
+      dateTimeSuffix: '{label} time',
+      timePlaceholder: 'Select a time',
     },
     modelPicker: {
       empty: 'No matching models',
