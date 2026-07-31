@@ -23,6 +23,7 @@ test('send a message and see the fake backend stream a reply', async ({ window: 
 });
 
 test('exposes the Astryx Markdown code-copy action', async ({ window: page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   const composer = page.locator('.maka-composer-textarea');
   await composer.fill([
     'show code',
@@ -41,5 +42,8 @@ test('exposes the Astryx Markdown code-copy action', async ({ window: page }) =>
   const copyButton = markdown.getByRole('button', { name: '复制代码' });
   await expect(copyButton).toBeVisible();
   await copyButton.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe('const answer = 42;\n\nreturn answer;');
   await expect(markdown.locator('[data-copy-feedback]')).toHaveCount(0);
 });
