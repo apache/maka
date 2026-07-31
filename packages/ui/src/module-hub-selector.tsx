@@ -1,12 +1,11 @@
 import type { ReactNode } from 'react';
 import {
-  DropdownMenu,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-} from '@astryxdesign/core/DropdownMenu';
+  SegmentedControl,
+  SegmentedControlItem,
+} from '@astryxdesign/core';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
-import { Blocks, CalendarCheck, ChevronDown, Plug, Sun } from './icons.js';
+import { Blocks, CalendarCheck, Plug, Sun } from './icons.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ModuleHubHeader = {
@@ -35,37 +34,17 @@ function Selector(props: {
   ariaLabel: string;
   onChange(value: string): void;
 }) {
-  const selected = props.options.find(([value]) => value === props.value) ?? props.options[0];
-  if (!selected) return null;
-
   return (
-    <span className="maka-module-hub-selector">
-      <span className="maka-module-hub-separator" aria-hidden="true">/</span>
-      <DropdownMenu
-        button={{
-          label: props.ariaLabel,
-          icon: selected[2],
-          endContent: (
-            <ChevronDown
-              className="maka-module-hub-selector-chevron"
-              size={15}
-              aria-hidden="true"
-            />
-          ),
-          variant: 'ghost',
-          size: 'sm',
-          className: 'maka-module-hub-selector-trigger',
-          children: selected[1],
-        }}
-        className="maka-module-hub-selector-menu"
-      >
-          <DropdownMenuRadioGroup value={props.value} onChange={props.onChange} aria-label={props.ariaLabel}>
-            {props.options.map(([value, label, icon]) => (
-              <DropdownMenuRadioItem key={value} value={value} icon={icon} label={label} />
-            ))}
-          </DropdownMenuRadioGroup>
-      </DropdownMenu>
-    </span>
+    <SegmentedControl
+      className="maka-module-hub-selector"
+      value={props.value}
+      label={props.ariaLabel}
+      onChange={props.onChange}
+    >
+      {props.options.map(([value, label, icon]) => (
+        <SegmentedControlItem key={value} value={value} label={label} icon={icon} />
+      ))}
+    </SegmentedControl>
   );
 }
 

@@ -6,13 +6,14 @@ import { REPO_ROOT } from './css-test-helpers.js';
 
 const read = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8');
 
-test('mode and range inputs use Astryx SegmentedControl without a Maka wrapper', () => {
+test('mode, range, and peer navigation inputs use Astryx SegmentedControl without a Maka wrapper', () => {
   assert.equal(
     existsSync(join(REPO_ROOT, 'packages/ui/src/primitives/segmented.tsx')),
     false,
   );
   assert.doesNotMatch(read('packages/ui/src/index.ts'), /primitives\/segmented|\bSegmented\b/);
   for (const rel of [
+    'packages/ui/src/module-hub-selector.tsx',
     'packages/ui/src/daily-review-panel.tsx',
     'apps/desktop/src/renderer/settings/appearance-settings-page.tsx',
     'apps/desktop/src/renderer/settings/bot-chat-detail.tsx',
@@ -22,5 +23,8 @@ test('mode and range inputs use Astryx SegmentedControl without a Maka wrapper',
     assert.match(source, /\bSegmentedControl\b/);
     assert.match(source, /\bSegmentedControlItem\b/);
     assert.doesNotMatch(source, /<Segmented\b|\bSegmented,/);
+    if (rel.endsWith('module-hub-selector.tsx')) {
+      assert.doesNotMatch(source, /DropdownMenu/);
+    }
   }
 });
