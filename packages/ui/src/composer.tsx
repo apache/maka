@@ -1147,6 +1147,7 @@ export const Composer = forwardRef<
             ) : (
               <IconButton
                 variant="primary"
+                size="sm"
                 type="submit"
                 isDisabled={sendDisabled}
                 label={copy.sendLabel}
