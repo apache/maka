@@ -7,7 +7,10 @@ import {
   EXECUTION_BOUNDARY_TRANSFER_FILE,
 } from './session-metadata-transfer.js';
 import { decodeSessionHeader } from './session-store.js';
-import { OPERATIONAL_STATE_DATABASE_NAME } from './operational-state-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
 import {
   createSqliteSessionMetadataStore,
   type SessionMetadataRecord,
@@ -155,17 +158,20 @@ export async function backupSessionMetadataDatabase(input: {
   workspaceRoot: string;
   destinationPath: string;
 }): Promise<{ destinationPath: string; pagesCopied: number }> {
-  const databasePath = join(resolve(input.workspaceRoot), OPERATIONAL_STATE_DATABASE_NAME);
   const destinationPath = resolve(input.destinationPath);
-  await assertFileExists(databasePath, 'SQLite session metadata database');
-  const metadata = createSqliteSessionMetadataStore(databasePath);
+  const workspaceRoot = resolve(input.workspaceRoot);
+  await assertFileExists(
+    join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+    'SQLite session metadata database',
+  );
+  const database = acquireOperationalStateDatabase(workspaceRoot);
   try {
     return {
       destinationPath,
-      pagesCopied: await metadata.backup(destinationPath),
+      pagesCopied: await database.backup(destinationPath),
     };
   } finally {
-    metadata.close();
+    database.close();
   }
 }
 

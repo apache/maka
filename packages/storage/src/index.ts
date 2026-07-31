@@ -53,6 +53,7 @@ export * from './automation-store.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-transfer.js';
 export * from './operational-state-store.js';
+export * from './operational-state-backup.js';
 export * from './mcp-config-store.js';
 export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';

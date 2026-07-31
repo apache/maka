@@ -65,6 +65,7 @@ export interface OperationalStateDatabaseLease {
   readonly database: DatabaseSync;
   readonly databasePath: string;
   transaction<T>(mode: 'read' | 'write', operation: () => T): T;
+  backup(destinationPath: string): Promise<number>;
   close(): void;
 }
 
@@ -156,16 +157,42 @@ class OperationalStateDatabaseOwner {
       database: this.database,
       databasePath: this.databasePath,
       transaction: (mode, operation) => this.transaction(mode, operation),
+      backup: (destinationPath) => this.backup(destinationPath),
       close: () => {
         if (released) return;
         released = true;
-        this.references -= 1;
-        if (this.references !== 0) return;
-        this.closed = true;
-        owners.delete(this.databasePath);
-        this.database.close();
+        this.releaseReference();
       },
     };
+  }
+
+  private async backup(destinationPath: string): Promise<number> {
+    if (this.closed) throw new Error('Operational state database is closed');
+    if (!destinationPath) throw new Error('Operational state backup destination is required');
+    const canonicalDestination = resolve(destinationPath);
+    if (canonicalDestination === this.databasePath) {
+      throw new Error('Operational state backup destination must differ from the source database');
+    }
+    if (existsSync(canonicalDestination)) {
+      throw new Error(
+        `Operational state backup destination already exists: ${canonicalDestination}`,
+      );
+    }
+    mkdirSync(dirname(canonicalDestination), { recursive: true });
+    this.references += 1;
+    try {
+      return await loadSqliteModule().backup(this.database, canonicalDestination);
+    } finally {
+      this.releaseReference();
+    }
+  }
+
+  private releaseReference(): void {
+    this.references -= 1;
+    if (this.references !== 0) return;
+    this.closed = true;
+    owners.delete(this.databasePath);
+    this.database.close();
   }
 
   private transaction<T>(mode: 'read' | 'write', operation: () => T): T {
@@ -580,6 +607,10 @@ function loadDatabaseSync(): typeof import('node:sqlite').DatabaseSync {
   } finally {
     process.emitWarning = emitWarning;
   }
+}
+
+function loadSqliteModule(): typeof import('node:sqlite') {
+  return require('node:sqlite') as typeof import('node:sqlite');
 }
 
 function rollback(db: DatabaseSync): void {

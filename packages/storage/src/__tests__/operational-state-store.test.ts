@@ -16,6 +16,37 @@ import {
 } from '../sqlite-session-metadata-store.js';
 
 describe('operational state database cutover', () => {
+  test('keeps the owner alive until an admitted online backup completes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-operational-backup-owner-'));
+    const backupPath = join(root, 'backup.sqlite');
+    try {
+      const lease = acquireOperationalStateDatabase(root);
+      const metadata = createSqliteSessionMetadataStore(join(root, 'runtime.sqlite'), {
+        databaseLease: lease,
+      });
+      await metadata.create(sessionHeader({ name: 'Backup session' }));
+      const backup = lease.backup(backupPath);
+      metadata.close();
+      assert.ok((await backup) > 0);
+
+      const reopened = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        assert.equal(
+          (
+            reopened.prepare('SELECT COUNT(*) AS count FROM session_metadata').get() as {
+              count: number;
+            }
+          ).count,
+          1,
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('imports sessions.sqlite into runtime.sqlite once and rejects later legacy changes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-operational-cutover-'));
     const legacyPath = join(root, 'sessions.sqlite');

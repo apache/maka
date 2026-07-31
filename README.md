@@ -237,11 +237,20 @@ bundle's `runtime.sqlite`. Payload bytes are copied under the Artifact writer
 lock, cross-session rows and payloads are excluded, and bundles no longer emit
 `artifacts/metadata.jsonl`.
 
+Full operational backup now uses the shared database owner's online SQLite
+backup API rather than copying `runtime.sqlite` or its WAL sidecars. A strict
+manifest binds the standalone database snapshot to every active session
+transcript and canonical Artifact payload by size and SHA-256. Restore verifies
+SQLite integrity, foreign keys, supported schema versions, relational identity
+sets, transcript decodability, and the exact manifested file tree before
+atomically publishing a new state root. Interrupted backup or restore staging
+is removed and can be retried without changing either source.
+
 The remaining storage work is deliberately classified rather than implied
 complete:
 
-- full operational backup/restore and trajectory export paths must consume the
-  SQLite artifact metadata authority while preserving payload files;
+- remaining trajectory export paths must consume the SQLite artifact metadata
+  authority while preserving payload files;
 - legacy operational writers and compatibility-only JSONL code can be removed
   only after the migration/cutover matrix is complete;
 - StoredMessage transcript bodies remain append-only JSONL;
