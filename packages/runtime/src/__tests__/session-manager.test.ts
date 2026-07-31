@@ -3909,7 +3909,7 @@ describe('SessionManager manual compaction', () => {
     assert.deepEqual(kernel.disposed, [session.id]);
   });
 
-  test('configuration transitions wait for a claimed turn before reading the mutable header', async () => {
+  test('configuration transitions reject a claimed turn without waiting for it to settle', async () => {
     const store = new VersionedConfigurationMemorySessionStore();
     const readStarted = makeGate();
     const releaseRead = makeGate();
@@ -3926,8 +3926,7 @@ describe('SessionManager manual compaction', () => {
 
     const turn = drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'start' }));
     await readStarted.promise;
-    let transitionSettled = false;
-    const transitionResult = manager
+    const transitionResult = await manager
       .transitionSessionConfiguration(session.id, {
         expectedRevision: 1,
         configuration: {
@@ -3944,21 +3943,15 @@ describe('SessionManager manual compaction', () => {
       .then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
-      )
-      .finally(() => {
-        transitionSettled = true;
-      });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(transitionSettled, false);
+      );
+    assert.equal(transitionResult.ok, false);
+    if (transitionResult.ok) assert.fail('Configuration transition unexpectedly committed');
+    assert.ok(transitionResult.error instanceof SessionConfigurationTransitionError);
+    assert.equal(transitionResult.error.code, 'session_busy');
+    assert.equal((await store.readHeader(session.id)).orchestrationMode, 'default');
 
     releaseRead.release();
     await turn;
-    const result = await transitionResult;
-    assert.equal(result.ok, false);
-    if (result.ok) assert.fail('Configuration transition unexpectedly committed');
-    assert.ok(result.error instanceof SessionConfigurationTransitionError);
-    assert.equal(result.error.code, 'session_busy');
-    assert.equal((await store.readHeader(session.id)).orchestrationMode, 'default');
   });
 
   test('a claimed turn waits for an in-flight session mutation before reading its header', async () => {

@@ -30,6 +30,7 @@ import {
 } from './operational-state-store.js';
 import {
   DEFAULT_SESSION_NAME,
+  DurableStoreWriteError,
   deriveTurnRecords,
   isCollaborationMode,
   isOrchestrationMode,
@@ -43,6 +44,7 @@ import {
   normalizeUserSessionName,
   subagentSessionRuntimeSummary,
 } from '@maka/core';
+import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
@@ -247,7 +249,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private closePromise: Promise<void> | null = null;
 
   constructor(workspaceRoot: string) {
-    this.files = new FileSessionStore(workspaceRoot);
+    this.files = new FileSessionStore(workspaceRoot, true);
     const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(
       join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
@@ -724,7 +726,10 @@ class FileSessionStore implements SessionStore {
   private readonly sessionsRoot: string;
   private readonly writeQueues = new Map<string, Promise<void>>();
 
-  constructor(private readonly workspaceRoot: string) {
+  constructor(
+    private readonly workspaceRoot: string,
+    private readonly durableTranscripts = false,
+  ) {
     this.sessionsRoot = join(workspaceRoot, 'sessions');
   }
 
@@ -839,10 +844,11 @@ class FileSessionStore implements SessionStore {
       const firstRecord =
         initialRecord === 'legacy-header' ? header : createSessionTranscriptMarker(header.id);
       try {
-        await writeFile(this.sessionPath(id), JSON.stringify(firstRecord) + '\n', {
-          encoding: 'utf8',
-          flag: 'wx',
-        });
+        await writeNewTranscript(
+          this.sessionPath(id),
+          JSON.stringify(firstRecord) + '\n',
+          this.durableTranscripts ? this.workspaceRoot : undefined,
+        );
       } catch (error) {
         await rm(this.sessionDir(id), { recursive: true, force: true }).catch(() => {});
         throw error;
@@ -858,7 +864,11 @@ class FileSessionStore implements SessionStore {
     const entries = await readdir(this.sessionDir(sessionId));
     if (entries.length === 0) {
       try {
-        await writeFile(path, marker, { encoding: 'utf8', flag: 'wx' });
+        await writeNewTranscript(
+          path,
+          marker,
+          this.durableTranscripts ? this.workspaceRoot : undefined,
+        );
         return;
       } catch (error) {
         if (!hasErrorCode(error, 'EEXIST')) throw error;
@@ -873,6 +883,9 @@ class FileSessionStore implements SessionStore {
       throw new Error(`Session ${sessionId}: stable transcript is not marker-only`);
     }
     decodeSessionTranscriptMarker(JSON.parse(records[0]), sessionId);
+    if (this.durableTranscripts) {
+      await stabilizeTranscript(path, this.workspaceRoot);
+    }
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -1044,6 +1057,8 @@ class FileSessionStore implements SessionStore {
     await this.withQueue(sessionId, async () => {
       const payload = messages.map((message) => JSON.stringify(message)).join('\n') + '\n';
       await appendJsonl(this.sessionPath(sessionId), payload, {
+        durable: this.durableTranscripts,
+        ...(this.durableTranscripts ? { durabilityRoot: this.workspaceRoot } : {}),
         requireExistingRecord: true,
       });
     });
@@ -1818,6 +1833,44 @@ function truncatePreview(text: string, maxLength = 96): string {
   const chars = Array.from(text);
   if (chars.length <= maxLength) return text;
   return `${chars.slice(0, maxLength - 1).join('')}…`;
+}
+
+async function writeNewTranscript(
+  path: string,
+  payload: string,
+  durabilityRoot?: string,
+): Promise<void> {
+  try {
+    const handle = await open(path, 'wx', 0o600);
+    try {
+      await handle.writeFile(payload, 'utf8');
+      if (durabilityRoot) await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (durabilityRoot) {
+      await syncDirectoryChain(dirname(path), durabilityRoot);
+    }
+  } catch (error) {
+    if (!durabilityRoot || error instanceof DurableStoreWriteError) throw error;
+    throw new DurableStoreWriteError(
+      `Durable Session transcript did not reach stable storage: ${path}`,
+      error,
+    );
+  }
+}
+
+async function stabilizeTranscript(path: string, durabilityRoot: string): Promise<void> {
+  try {
+    await syncFile(path);
+    await syncDirectoryChain(dirname(path), durabilityRoot);
+  } catch (error) {
+    if (error instanceof DurableStoreWriteError) throw error;
+    throw new DurableStoreWriteError(
+      `Session transcript durability could not be re-established: ${path}`,
+      error,
+    );
+  }
 }
 
 export function createUserMessage(input: {

@@ -5,7 +5,11 @@ import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
-import type { SessionHeader } from '@maka/core/session';
+import {
+  DEEP_RESEARCH_SESSION_LABEL,
+  EXPERT_TEAM_LABEL_PREFIX,
+  type SessionHeader,
+} from '@maka/core/session';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -245,9 +249,17 @@ export class HostSessionCatalogCoordinator {
   ): Promise<OperationOutcome<'session.metadata.update'>> {
     return this.#admission.run(input.sessionId, async (lease) => {
       try {
+        const labels =
+          input.patch.labels === undefined
+            ? undefined
+            : await this.#replaceUserLabels(
+                input.sessionId,
+                input.expectedRevision,
+                input.patch.labels,
+              );
         const patch: Partial<SessionHeader> = {
           ...(input.patch.name === undefined ? {} : normalizeSessionNamePatch(input.patch.name)),
-          ...(input.patch.labels === undefined ? {} : { labels: [...input.patch.labels] }),
+          ...(labels === undefined ? {} : { labels }),
           ...(input.patch.isFlagged === undefined ? {} : { isFlagged: input.patch.isFlagged }),
         };
         await this.#stores.updateHeaderVersioned(input.sessionId, patch, input.expectedRevision);
@@ -260,6 +272,18 @@ export class HostSessionCatalogCoordinator {
         );
       }
     });
+  }
+
+  async #replaceUserLabels(
+    sessionId: string,
+    expectedRevision: number,
+    requestedLabels: readonly string[],
+  ): Promise<string[]> {
+    const current = await this.#stores.readHeaderRecordSnapshot(sessionId);
+    if (current.revision !== expectedRevision) {
+      throw new SessionMetadataVersionConflictError(sessionId, expectedRevision, current.revision);
+    }
+    return replaceUserOwnedLabels(current.header.labels, requestedLabels);
   }
 
   #updateConfiguration(
@@ -854,6 +878,28 @@ function normalizedSessionName(name: string): string {
 
 function normalizeSessionNamePatch(name: string): Pick<SessionHeader, 'name' | 'titleIsManual'> {
   return { name: normalizedSessionName(name), titleIsManual: true };
+}
+
+function isExecutionSemanticLabel(label: string): boolean {
+  return label === DEEP_RESEARCH_SESSION_LABEL || label.startsWith(EXPERT_TEAM_LABEL_PREFIX);
+}
+
+function replaceUserOwnedLabels(
+  currentLabels: readonly string[],
+  requestedLabels: readonly string[],
+): string[] {
+  const userLabels = requestedLabels.filter((label) => !isExecutionSemanticLabel(label));
+  const labels: string[] = [];
+  let userIndex = 0;
+  for (const label of currentLabels) {
+    if (isExecutionSemanticLabel(label)) {
+      labels.push(label);
+    } else if (userIndex < userLabels.length) {
+      labels.push(userLabels[userIndex++]!);
+    }
+  }
+  labels.push(...userLabels.slice(userIndex));
+  return labels;
 }
 
 function revisionConflict(expectedRevision: number, actualRevision: number): SessionUpdateResult {

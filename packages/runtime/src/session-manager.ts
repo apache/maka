@@ -147,6 +147,7 @@ import {
 } from './interaction-authority.js';
 import {
   RuntimeKernel,
+  SessionQuiescentMutationBusyError,
   type BackendActivationBoundary,
   type RuntimeExecutionClaim,
   type RuntimeKernelLike,
@@ -1345,14 +1346,8 @@ export class SessionManager {
       ? await this.listLinkedDescendantSessionIds(sessionId)
       : [];
     const fencedSessionIds = [sessionId, ...initialDescendants];
-    if (!this.runtimeKernel.runSessionQuiescentMutation) {
-      throw new SessionConfigurationTransitionError(
-        'operation_unavailable',
-        'Session execution mutation authority is unavailable',
-      );
-    }
 
-    return this.runtimeKernel.runSessionQuiescentMutation<T>(fencedSessionIds, async () => {
+    return this.runSessionQuiescentMutation<T>(fencedSessionIds, async () => {
       const currentBoundary = await this.deps.store.readExecutionBoundary(sessionId);
       const narrowsShellAuthority = narrowsExecutionAuthority(currentBoundary, nextPermissionMode);
       const descendantSessionIds = narrowsShellAuthority
@@ -1432,6 +1427,29 @@ export class SessionManager {
       }
       return result;
     });
+  }
+
+  private async runSessionQuiescentMutation<T>(
+    sessionIds: readonly string[],
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (!this.runtimeKernel.runSessionQuiescentMutation) {
+      throw new SessionConfigurationTransitionError(
+        'operation_unavailable',
+        'Session execution mutation authority is unavailable',
+      );
+    }
+    try {
+      return await this.runtimeKernel.runSessionQuiescentMutation(sessionIds, operation);
+    } catch (error) {
+      if (error instanceof SessionQuiescentMutationBusyError) {
+        throw new SessionConfigurationTransitionError(
+          'session_busy',
+          'Session configuration cannot change while a linked Turn is active',
+        );
+      }
+      throw error;
+    }
   }
 
   private async listLinkedDescendantSessionIds(sessionId: string): Promise<string[]> {

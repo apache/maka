@@ -141,6 +141,14 @@ export interface RuntimeKernelLike {
   disposeBackend(sessionId: string): Promise<void>;
 }
 
+export class SessionQuiescentMutationBusyError extends Error {
+  readonly name = 'SessionQuiescentMutationBusyError';
+
+  constructor(readonly sessionIds: readonly string[]) {
+    super('Session mutation cannot start while an execution claim is active');
+  }
+}
+
 export interface TurnStartOptions {
   runId?: string;
   userMessageId?: string;
@@ -429,7 +437,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     operation: () => Promise<T> | T,
   ): Promise<T> {
     const ids = this.normalizeSessionMutationIds(sessionIds);
-    return this.enqueueSessionMutation(ids, [], operation);
+    return this.enqueueSessionMutation(ids, operation);
   }
 
   async runSessionQuiescentMutation<T>(
@@ -437,12 +445,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
     operation: () => Promise<T> | T,
   ): Promise<T> {
     const ids = this.normalizeSessionMutationIds(sessionIds);
-    const executionSettlements = ids.flatMap((sessionId) =>
-      [...(this.executionClaims.get(sessionId) ?? [])].map((claim) =>
-        claim.settled.catch(() => undefined),
-      ),
-    );
-    return this.enqueueSessionMutation(ids, executionSettlements, operation);
+    if (ids.some((sessionId) => (this.executionClaims.get(sessionId)?.size ?? 0) > 0)) {
+      throw new SessionQuiescentMutationBusyError(ids);
+    }
+    return this.enqueueSessionMutation(ids, operation);
   }
 
   private normalizeSessionMutationIds(sessionIds: readonly string[]): string[] {
@@ -455,7 +461,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async enqueueSessionMutation<T>(
     ids: readonly string[],
-    executionSettlements: readonly Promise<void>[],
     operation: () => Promise<T> | T,
   ): Promise<T> {
     const precedingMutations = ids.map(
@@ -477,7 +482,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     });
 
     try {
-      await Promise.all([preceding, ...executionSettlements]);
+      await preceding;
       return await operation();
     } finally {
       complete();
