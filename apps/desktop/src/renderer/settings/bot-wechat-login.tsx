@@ -81,7 +81,8 @@ export function BotWeChatFields(props: {
 }
 
 export function WechatQrLoginModal(props: {
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onRefreshStatuses(): void | Promise<unknown>;
 }) {
   const locale = useUiLocale();
@@ -89,8 +90,6 @@ export function WechatQrLoginModal(props: {
   const [result, setResult] = useState<WechatBridgeQrCodeResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [isOpen, setIsOpen] = useState(false);
-  const hasOpenedRef = useRef(false);
   const notifiedLoggedInRef = useRef(false);
   const loadingQrRef = useRef(false);
 
@@ -155,22 +154,10 @@ export function WechatQrLoginModal(props: {
   const loggedIn = result?.ok ? result.loggedIn : false;
   const error = result && !result.ok ? result : null;
 
-  useEffect(() => setIsOpen(true), []);
-
-  useEffect(() => {
-    if (isOpen) {
-      hasOpenedRef.current = true;
-      return;
-    }
-    if (!hasOpenedRef.current) return;
-    const frame = window.requestAnimationFrame(props.onClose);
-    return () => window.cancelAnimationFrame(frame);
-  }, [isOpen, props.onClose]);
-
   return (
     <Dialog
-      isOpen={isOpen}
-      onOpenChange={setIsOpen}
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
       className="settingsWechatQrModal"
       width={360}
       padding={0}
@@ -181,7 +168,7 @@ export function WechatQrLoginModal(props: {
           <DialogHeader
             title={copy.title}
             subtitle={copy.subtitle}
-            onOpenChange={setIsOpen}
+            onOpenChange={props.onOpenChange}
           />
         }
         content={

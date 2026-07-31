@@ -23,7 +23,8 @@ import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bo
 export function BotOnboardingModal(props: {
   provider: BotOnboardingProvider;
   brand?: BotOnboardingBrand;
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onConnected(snapshot: BotOnboardingSnapshot): void | Promise<void>;
 }) {
   const mountedRef = useMountedRef();
@@ -32,8 +33,6 @@ export function BotOnboardingModal(props: {
   const [snapshot, setSnapshot] = useState<BotOnboardingSnapshot | null>(null);
   const [starting, setStarting] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isOpen, setIsOpen] = useState(false);
-  const hasOpenedRef = useRef(false);
   const sessionIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
   const connectedNotifiedRef = useRef(false);
@@ -129,21 +128,8 @@ export function BotOnboardingModal(props: {
     }
   }
 
-  useEffect(() => setIsOpen(true), []);
-
-  useEffect(() => {
-    if (isOpen) {
-      hasOpenedRef.current = true;
-      return;
-    }
-    if (!hasOpenedRef.current) return;
-    cancelCurrent();
-    const frame = window.requestAnimationFrame(props.onClose);
-    return () => window.cancelAnimationFrame(frame);
-  }, [cancelCurrent, isOpen, props.onClose]);
-
   function close() {
-    setIsOpen(false);
+    props.onOpenChange(false);
   }
 
   const status = statusCopy(snapshot, starting, error, copy, locale);
@@ -155,8 +141,8 @@ export function BotOnboardingModal(props: {
 
   return (
     <Dialog
-      isOpen={isOpen}
-      onOpenChange={setIsOpen}
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
       className="settingsBotOnboardingModal"
       width={520}
       aria-label={copy.ariaLabel}
@@ -169,7 +155,7 @@ export function BotOnboardingModal(props: {
             startContent={<BotBrandLogo provider={props.provider} size="large" />}
             title={copy.title}
             subtitle={copy.subtitle}
-            onOpenChange={setIsOpen}
+            onOpenChange={props.onOpenChange}
           />
         }
         content={

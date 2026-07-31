@@ -45,6 +45,8 @@ function canEnableBotChannel(readiness: BotReadinessState): boolean {
   return readiness === 'credentials_valid' || readiness === 'operational' || readiness === 'degraded';
 }
 
+type BotDialogPhase = 'closed' | 'mounting' | 'open' | 'closing';
+
 function supportsQuickOnboarding(provider: BotProvider): provider is BotOnboardingProvider {
   return (BOT_ONBOARDING_PROVIDERS as readonly string[]).includes(provider);
 }
@@ -80,8 +82,10 @@ export function BotChatChannelDetail(props: {
   onRefreshStatuses(): Promise<boolean>;
 }) {
   const { provider, channel, status } = props;
-  const [scanLoginOpen, setScanLoginOpen] = useState(Boolean(props.autoOpenScanLogin));
-  const [wechatQrOpen, setWechatQrOpen] = useState(false);
+  const [scanLoginPhase, setScanLoginPhase] = useState<BotDialogPhase>(
+    props.autoOpenScanLogin ? 'mounting' : 'closed',
+  );
+  const [wechatQrPhase, setWechatQrPhase] = useState<BotDialogPhase>('closed');
   const [setupMode, setSetupMode] = useState<'quick' | 'manual'>('quick');
   const [feishuBrand, setFeishuBrand] = useState<BotOnboardingBrand>(
     channel.domain === 'larksuite.com' ? 'lark' : 'feishu',
@@ -99,6 +103,28 @@ export function BotChatChannelDetail(props: {
   const readinessCopy = botReadinessCopyForSupport(support, readiness, locale);
   const quickOnboarding = supportsQuickOnboarding(provider);
   const qrOnlyOnboarding = provider === 'wechat';
+
+  useEffect(() => {
+    if (scanLoginPhase === 'mounting') {
+      const frame = window.requestAnimationFrame(() => setScanLoginPhase('open'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (scanLoginPhase === 'closing') {
+      const frame = window.requestAnimationFrame(() => setScanLoginPhase('closed'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [scanLoginPhase]);
+
+  useEffect(() => {
+    if (wechatQrPhase === 'mounting') {
+      const frame = window.requestAnimationFrame(() => setWechatQrPhase('open'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (wechatQrPhase === 'closing') {
+      const frame = window.requestAnimationFrame(() => setWechatQrPhase('closed'));
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, [wechatQrPhase]);
   // PR1197 review (P1-8): the scan-login action row belongs to quick mode only.
   // WeChat has no manual mode, so it always uses the scan affordance. In manual
   // mode the runtime providers (e.g. DingTalk) must fall through to the shared
@@ -195,12 +221,12 @@ export function BotChatChannelDetail(props: {
             <div className="settingsBotActionStack" role="group" aria-label={detailCopy.actionsAria(providerPresentation.label)}>
               {inQuickOnboarding ? (
                 <>
-                  <Button variant="primary" isDisabled={props.actionBusy} onClick={() => setScanLoginOpen(true)} label={provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect} />
+                  <Button variant="primary" isDisabled={props.actionBusy} onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect} />
                   {provider === 'wechat' && (channel.token || status?.identity) && (
                     <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onDisconnectSession()} label={props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat} />
                   )}
                   {provider === 'wechat' && (
-                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => setWechatQrOpen(true)} label={detailCopy.bridgeQr} />
+                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => setWechatQrPhase('mounting')} label={detailCopy.bridgeQr} />
                   )}
                   <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test} />
                 </>
@@ -290,7 +316,7 @@ export function BotChatChannelDetail(props: {
                 onChange={setFeishuBrand}
               />
             ) : null}
-            <Button variant="primary" onClick={() => setScanLoginOpen(true)} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
+            <Button variant="primary" onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
           </section>
         )}
 
@@ -327,11 +353,12 @@ export function BotChatChannelDetail(props: {
         {/* WeChat keeps scan login as a first-class action, separate from
             connection testing, because QR generation and listener readiness
             are different states. */}
-        {scanLoginOpen && (
+        {scanLoginPhase !== 'closed' && (
           <BotOnboardingModal
             provider={provider as BotOnboardingProvider}
             brand={provider === 'feishu' ? feishuBrand : undefined}
-            onClose={() => setScanLoginOpen(false)}
+            isOpen={scanLoginPhase === 'open'}
+            onOpenChange={(isOpen) => setScanLoginPhase(isOpen ? 'open' : 'closing')}
             onConnected={async (snapshot) => {
               await props.onReload();
               if (!botDetailMountedRef.current) return;
@@ -354,9 +381,10 @@ export function BotChatChannelDetail(props: {
             }}
           />
         )}
-        {wechatQrOpen && (
+        {wechatQrPhase !== 'closed' && (
           <WechatQrLoginModal
-            onClose={() => setWechatQrOpen(false)}
+            isOpen={wechatQrPhase === 'open'}
+            onOpenChange={(isOpen) => setWechatQrPhase(isOpen ? 'open' : 'closing')}
             onRefreshStatuses={props.onRefreshStatuses}
           />
         )}
