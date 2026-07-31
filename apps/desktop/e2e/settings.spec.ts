@@ -136,8 +136,9 @@ test('voice settings expose Astryx-owned fields and persist a draft on blur', as
  * settings tile overflow — #1335 taught StatTile to wrap, but a tile squeezed
  * below one character wide has nothing left to wrap into.
  *
- * Locks the outcome rather than the pixels: tiles fold to fewer, readable
- * tracks and nothing overflows horizontally.
+ * Locks the outcome rather than a fixed column count: every rendered track
+ * remains readable and nothing overflows horizontally. The responsive
+ * SideNav may leave enough room for more tracks even at the window floor.
  */
 async function openSettings(page: import('@playwright/test').Page) {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
@@ -202,11 +203,11 @@ test('permission rows keep their text at the window floor', async ({ permissionS
   await expect.poll(async () => {
     const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(permissionSummary);
     return {
-      foldedToFewTracks: trackCount <= 2,
+      hasSummaryTracks: trackCount > 0,
       tracksStayLegible: narrowestTrack >= 96,
       valuesContained,
     };
-  }).toEqual({ foldedToFewTracks: true, tracksStayLegible: true, valuesContained: true });
+  }).toEqual({ hasSummaryTracks: true, tracksStayLegible: true, valuesContained: true });
 
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -223,11 +224,11 @@ test('health summary tiles stay readable at the window floor', async ({ window: 
   await expect.poll(async () => {
     const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(healthSummary);
     return {
-      foldedToFewTracks: trackCount <= 2,
+      hasSummaryTracks: trackCount > 0,
       tracksStayLegible: narrowestTrack >= 80,
       valuesContained,
     };
-  }).toEqual({ foldedToFewTracks: true, tracksStayLegible: true, valuesContained: true });
+  }).toEqual({ hasSummaryTracks: true, tracksStayLegible: true, valuesContained: true });
 
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -296,11 +297,6 @@ test('capability diagnostics stay contained when expanded at the window floor', 
  * into horizontal scroll, and the five-tab bar scrolls within itself the same
  * way. Web search: unbreakable tokens (env-var hint, result hostnames/URLs)
  * must wrap instead of widening the page.
- *
- * Memory is asserted per-surface (the prompt-preview header), not as a
- * whole-page containment check: its `.settingsFormRow` rows overflow at the
- * floor through the shared settings-rows primitive — routed to #1360 and in
- * #1362's row-wrapping scope, not patched per-page here.
  */
 test('usage and web search stay contained at the window floor', async ({ window: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
@@ -314,8 +310,8 @@ test('usage and web search stay contained at the window floor', async ({ window:
     const { trackCount, valuesContained } = await summaryGeometry(
       settings.locator('.settingsUsageSummary'),
     );
-    return { foldedToFewTracks: trackCount <= 2, valuesContained };
-  }).toEqual({ foldedToFewTracks: true, valuesContained: true });
+    return { hasSummaryTracks: trackCount > 0, valuesContained };
+  }).toEqual({ hasSummaryTracks: true, valuesContained: true });
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
@@ -494,17 +490,18 @@ test('remote access prioritizes a configured channel that needs attention', asyn
   const activeChannels = page.getByRole('region', { name: '正在使用' }).getByRole('button');
   await expect(activeChannels).toHaveCount(2);
   await expect(activeChannels.nth(0)).toHaveAccessibleName(/管理 Discord/);
-  await expect(activeChannels.nth(0)).toHaveAccessibleDescription(runtimeError);
+  await expect(activeChannels.nth(0)).toHaveAccessibleName(new RegExp(runtimeError));
+  await expect(settings.getByText(runtimeError, { exact: true })).toBeVisible();
   await expect(activeChannels.nth(1)).toHaveAccessibleName(/管理 Telegram/);
 
   const overview = settings.locator('.settingsRemoteAccessOverview');
-  const attentionRow = activeChannels.nth(0);
+  const attentionRow = settings.locator('.settingsRemoteAccessChannelRow').first();
   const catalogRows = settings.locator('.settingsRemoteAccessCatalogRow');
-  await expect(attentionRow.locator('[data-slot="item-title"]')).toHaveCSS('flex-wrap', 'wrap');
-  await expect(attentionRow.locator('[data-slot="item-description"]')).toHaveCSS('overflow-wrap', 'anywhere');
-  await expect(attentionRow.locator('[data-slot="item-actions"]')).toHaveCSS('display', 'none');
+  await expect(attentionRow.locator('.settingsRemoteAccessItemTitle')).toHaveCSS('flex-wrap', 'wrap');
+  await expect(attentionRow.locator('.settingsRemoteAccessItemDescription')).toHaveCSS('overflow-wrap', 'anywhere');
+  await expect(attentionRow.locator('.settingsRemoteAccessItemActions')).toHaveCSS('display', 'none');
   await expect(catalogRows.first()).toBeVisible();
-  await expect(catalogRows.first().locator('[data-slot="item-actions"]')).toHaveCSS('display', 'none');
+  await expect(catalogRows.first().locator('.settingsRemoteAccessItemActions')).toHaveCSS('display', 'none');
   await expect(settings.locator('.settingsRemoteAccessSectionHeader').first()).toHaveCSS('flex-direction', 'column');
   await expect.poll(
     () =>
@@ -588,38 +585,29 @@ test('remote access prioritizes a configured channel that needs attention', asyn
 });
 
 /**
- * #1362 — THE row-wrapping decision for the settings form-row pages. The
- * `.settingsRows` card is an inline-size query container; below 460px of
- * CARD width (not viewport width — the content column is narrower than the
- * window by the nav sidebar) label/control rows stack vertically, while the
- * proxy fields stay contained in Astryx-owned layouts. Switch rows are the exception:
- * a ~40px switch always fits beside its label. Locks both directions so
- * neither the narrow stacking nor the wide two-column layout regresses.
+ * Direct Astryx FormLayout and Item consumers remain contained at both the
+ * wide layout and the 480px window floor. This intentionally avoids locking
+ * the deleted generic row classes or reasserting their custom geometry.
  */
-test('general form rows stack at the window floor and stay two-column when wide', async ({ window: page }) => {
+test('general forms and Astryx Item controls stay contained across widths', async ({ window: page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const settings = await openSettings(page);
   await settings.getByRole('button', { name: '通用', exact: true }).click();
 
-  const displayNameRow = settings
-    .locator('.settingsFormRow')
-    .filter({ has: page.getByLabel('显示名称') });
-  const incognitoRow = settings.locator('.settingsFormRow').filter({ hasText: '隐身模式' });
-  const modelRow = settings.locator('.settingsRow').filter({ hasText: '默认模型' });
-  const rowTrackCount = () =>
-    modelRow.evaluate(
-      (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
-    );
+  const formLayout = settings.locator('.settingsFormLayout').first();
+  const incognitoRow = settings.locator('.astryx-item').filter({ hasText: '隐身模式' });
+  const modelRow = settings.locator('.astryx-item').filter({ hasText: '默认模型' });
 
-  // Wide: unchanged layout — label and control share one line.
-  await expect(displayNameRow).toHaveCSS('flex-direction', 'row');
-  await expect.poll(rowTrackCount).toBe(2);
+  await expect(formLayout).toHaveCSS('display', 'flex');
+  await expect(incognitoRow).toHaveCSS('display', 'flex');
+  await expect(modelRow).toHaveCSS('display', 'flex');
 
-  // Window floor: rows stack; switch rows keep the control beside the label.
   await page.setViewportSize({ width: 480, height: 900 });
-  await expect(displayNameRow).toHaveCSS('flex-direction', 'column');
-  await expect(incognitoRow).toHaveCSS('flex-direction', 'row');
-  await expect.poll(rowTrackCount).toBe(1);
+  for (const control of [page.getByLabel('显示名称'), page.getByLabel('助手语气偏好')]) {
+    await expect.poll(() => control.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  await expect.poll(() => incognitoRow.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect.poll(() => modelRow.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
   // The proxy sub-form only renders behind the switches. Astryx owns both
   // horizontal layouts; Maka only provides their inset within the Settings
@@ -627,9 +615,9 @@ test('general form rows stack at the window floor and stay two-column when wide'
   await settings.getByRole('switch', { name: '启用代理服务器' }).click();
   await settings.getByRole('switch', { name: '启用代理认证' }).click();
   const formLayouts = settings.locator('.settingsFormLayout');
-  await expect(formLayouts).toHaveCount(2);
-  await expect(formLayouts.nth(0)).toHaveCSS('display', 'grid');
+  await expect(formLayouts).toHaveCount(3);
   await expect(formLayouts.nth(1)).toHaveCSS('display', 'grid');
+  await expect(formLayouts.nth(2)).toHaveCSS('display', 'grid');
 
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -664,10 +652,9 @@ test('appearance palette names stay fully visible at the window floor', async ({
 });
 
 /**
- * #1363 — the three small form-row pages at the window floor. Daily Review
- * and About are covered by the #1362 row-stacking mechanism; the Data page
- * adds two page-owned surfaces: the Astryx conflict-strategy field and the
- * workspace path's wrapping mono value.
+ * Three smaller pages at the window floor. The Data page adds two page-owned
+ * surfaces: the Astryx conflict-strategy field and the workspace path's
+ * wrapping mono value.
  */
 test('data, about, and daily review stay contained at the window floor', async ({
   window: page,
@@ -686,7 +673,7 @@ test('data, about, and daily review stay contained at the window floor', async (
   expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
     settingsBox!.x + settingsBox!.width,
   );
-  const workspaceValue = settings.locator('.settingsRow span[data-mono="true"]').first();
+  const workspaceValue = settings.locator('span[data-mono="true"]').first();
   await expect(workspaceValue).toBeVisible();
   await expect.poll(
     () => workspaceValue.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -737,42 +724,30 @@ test('data config strategy stays contained at the window floor in English', asyn
 });
 
 /**
- * #1363 review: a switch row whose control side is MORE than a bare switch
- * (Memory's label + status Chip + switch) must stack on a narrow card — the
- * horizontal exception used to hold it to a 15px label with char-per-line
- * help text. The chip + switch travel as one cluster.
+ * Memory's label + status Badge + switch travel as one Astryx Item. At the
+ * floor, the cluster and the row must remain contained without reintroducing
+ * the retired form-row geometry.
  */
-test('memory status row stacks at the window floor', async ({ window: page }) => {
+test('memory status Item stays contained at the window floor', async ({ window: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
   await settings.getByRole('button', { name: '记忆', exact: true }).click();
 
-  const statusRow = settings.locator('.settingsFormRow').filter({ hasText: '本地 MEMORY.md' });
+  const statusRow = settings.locator('.astryx-item').filter({ hasText: '本地 MEMORY.md' });
   await expect(statusRow).toBeVisible();
-  await expect(statusRow).toHaveCSS('flex-direction', 'column');
   await expect.poll(
     () =>
       statusRow.evaluate((element) => {
-        const label = element.querySelector('div');
         const cluster = element.querySelector('.settingsFormRowControlCluster');
-        const rowStyle = getComputedStyle(element);
-        const contentWidth =
-          element.clientWidth -
-          Number.parseFloat(rowStyle.paddingLeft) -
-          Number.parseFloat(rowStyle.paddingRight);
         return {
-          // The label owns the full card width when stacked — not a sliver.
-          labelUsesFullRow: !!label && label.clientWidth >= contentWidth - 1,
           clusterContained: !!cluster && cluster.scrollWidth <= cluster.clientWidth,
           rowContained: element.scrollWidth <= element.clientWidth,
         };
       }),
-  ).toEqual({ labelUsesFullRow: true, clusterContained: true, rowContained: true });
+  ).toEqual({ clusterContained: true, rowContained: true });
 
-  // The whole page now: #1364 deliberately asserted Memory per-surface only,
-  // because its rows overflowed through the shared settings-rows primitive.
-  // With the stacking mechanism plus the entry-list/preview/backup track
-  // fixes there is no routed-out overflow left to carve around.
+  // Direct Item rows plus the entry-list/preview/backup tracks leave no
+  // routed-out overflow to carve around.
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);

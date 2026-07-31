@@ -18,10 +18,9 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(sidebar.getByRole('button', { name: '会话分组方式' })).toBeVisible();
   await expect(sidebar.locator('.maka-session-list')).toBeVisible();
 
-  const extensionSelector = page.locator('.maka-module-hub-selector-trigger');
+  const extensionSelector = page.locator('.maka-module-hub-selector');
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：技能');
-  await extensionSelector.click();
-  await page.getByRole('menuitemradio', { name: 'MCP' }).click();
+  await extensionSelector.getByRole('radio', { name: 'MCP' }).click();
   const mcp = page.getByRole('main', { name: '扩展' });
   await expect(mcp.getByRole('heading', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
@@ -114,7 +113,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   if (screenshotPath) await page.screenshot({ path: screenshotPath });
 
   await mcp.getByLabel('e2e-fixture 启用状态').click();
-  await expect(mcp.getByText('已停用', { exact: true })).toBeVisible();
+  await expect(mcp.getByText(/已停用 · 本地 stdio/)).toBeVisible();
   await expect.poll(async () => {
     const next = await page.evaluate(() => window.maka.mcp.getConfig());
     return next.mcpServers['e2e-fixture']?.enabled;
