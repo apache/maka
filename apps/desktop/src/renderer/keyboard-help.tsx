@@ -5,7 +5,7 @@
 // users don't need to scrape the README. Astryx Dialog owns focus trapping,
 // Esc, and focus restoration.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Keyboard } from '@maka/ui/icons';
 import { Kbd, useUiLocale } from '@maka/ui';
 import {
@@ -58,28 +58,17 @@ export function useKeyboardHelp(): [boolean, () => void, () => void] {
   return [open, () => setOpen(false), () => setOpen(true)];
 }
 
-export function KeyboardHelpModal(props: { onClose(): void }) {
+export function KeyboardHelpModal(props: {
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+}) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).keyboardHelp;
-  const [isOpen, setIsOpen] = useState(false);
-  const hasOpenedRef = useRef(false);
-
-  useEffect(() => setIsOpen(true), []);
-
-  useEffect(() => {
-    if (isOpen) {
-      hasOpenedRef.current = true;
-      return;
-    }
-    if (!hasOpenedRef.current) return;
-    const frame = window.requestAnimationFrame(props.onClose);
-    return () => window.cancelAnimationFrame(frame);
-  }, [isOpen, props.onClose]);
 
   return (
     <Dialog
-      isOpen={isOpen}
-      onOpenChange={setIsOpen}
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
       className="maka-help-modal"
       width={560}
       maxHeight="calc(100dvh - 96px)"
@@ -91,7 +80,7 @@ export function KeyboardHelpModal(props: { onClose(): void }) {
           <DialogHeader
             startContent={<Keyboard aria-hidden="true" />}
             title={copy.title}
-            onOpenChange={setIsOpen}
+            onOpenChange={props.onOpenChange}
           />
         }
         content={

@@ -123,7 +123,12 @@ export function AppShellOverlays(props: {
           />
         </Suspense>
       )}
-      {helpOpen && <KeyboardHelpModal onClose={closeHelp} />}
+      <KeyboardHelpModal
+        isOpen={helpOpen}
+        onOpenChange={(open) => {
+          if (!open) closeHelp();
+        }}
+      />
       {searchModalOpen && (
         <SearchModal
           onClose={closeSearchModal}
