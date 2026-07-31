@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  canonicalToolArgsHash,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
   type AgentRunEvent,
@@ -164,6 +165,51 @@ describe('execution stores', () => {
 
         assert.ok((await stat(join(root, 'runtime.sqlite'))).isFile());
         assert.deepEqual(await readFile(legacyPath), legacyBytes);
+      } finally {
+        await writer.sessionStore.close?.();
+      }
+    });
+  });
+
+  test('purges one incomplete conversation-copy ledger from canonical SQLite', async () => {
+    await withRoot(async ({ root }) => {
+      const capability = await resolveStorageRoot({
+        path: root,
+        kind: 'headless',
+      });
+      const writer = await openHeadlessExecutionStoresForWrite(
+        createHeadlessRootLease(capability, 'write'),
+      );
+      try {
+        const retained = await writer.sessionStore.create(sessionInput(root));
+        const copied = await writer.sessionStore.create(sessionInput(root));
+        await writer.agentRunStore.createRun(runHeader(retained.id, 'retained-run'));
+        await writer.agentRunStore.createRun(runHeader(copied.id, 'copied-run'));
+        await writer.runtimeEventStore.importConversationCopyRuntimeEvents(
+          retained.id,
+          'retained-run',
+          [runtimeEvent(retained.id, 'retained-run', 'retained-event', 1)],
+        );
+        await writer.runtimeEventStore.importConversationCopyRuntimeEvents(
+          copied.id,
+          'copied-run',
+          conversationCopyToolLedger(copied.id, 'copied-run'),
+        );
+
+        await writer.agentRunStore.purgeConversationRuntimeLedger(copied.id);
+
+        assert.deepEqual(
+          (await writer.agentRunStore.listSessionRuns(retained.id)).map((run) => run.runId),
+          ['retained-run'],
+        );
+        assert.deepEqual(await writer.agentRunStore.listSessionRuns(copied.id), []);
+        assert.deepEqual(
+          (await writer.runtimeEventStore.readSessionRuntimeEvents(retained.id)).map(
+            (event) => event.id,
+          ),
+          ['retained-event'],
+        );
+        assert.deepEqual(await writer.runtimeEventStore.readSessionRuntimeEvents(copied.id), []);
       } finally {
         await writer.sessionStore.close?.();
       }
@@ -1801,4 +1847,64 @@ function runtimeEvent(sessionId: string, runId: string, id: string, ts: number):
     author: 'user',
     content: { kind: 'text', text: 'hello' },
   };
+}
+
+function conversationCopyToolLedger(sessionId: string, runId: string): RuntimeEvent[] {
+  const operationId = `${runId}-operation`;
+  const providerToolCallId = `${runId}-provider-call`;
+  const canonicalArgsHash = canonicalToolArgsHash('Read', { path: 'README.md' });
+  const identity = {
+    invocationId: runId,
+    runId,
+    sessionId,
+    turnId: 'turn-1',
+    partial: false as const,
+  };
+  return [
+    {
+      ...identity,
+      id: `${runId}-call`,
+      ts: 2,
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'function_call',
+        id: providerToolCallId,
+        name: 'Read',
+        args: { path: 'README.md' },
+      },
+    },
+    {
+      ...identity,
+      id: `${runId}-dispatch`,
+      ts: 3,
+      role: 'system',
+      author: 'system',
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId,
+          providerToolCallId,
+          toolName: 'Read',
+          canonicalArgsHash,
+          recoveryMode: 'replay_safe',
+        },
+      },
+      refs: { operationId, toolCallId: providerToolCallId },
+    },
+    {
+      ...identity,
+      id: `${runId}-response`,
+      ts: 4,
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: providerToolCallId,
+        name: 'Read',
+        result: 'contents',
+      },
+      refs: { operationId, toolCallId: providerToolCallId },
+    },
+  ];
 }

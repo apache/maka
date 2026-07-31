@@ -317,6 +317,51 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     });
   }
 
+  async importConversationCopyRuntimeEvents(
+    sessionId: string,
+    runId: string,
+    events: readonly RuntimeEvent[],
+  ): Promise<void> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertRuntimeStorageSafeId(runId, 'Invalid run id');
+    const canonicalEvents = events.map(canonicalizeRuntimeEventForStorage);
+    for (const event of canonicalEvents) {
+      if (isPartialRuntimeEvent(event)) {
+        throw new Error('Conversation copy cannot import partial RuntimeEvents');
+      }
+      if (event.sessionId !== sessionId || event.runId !== runId) {
+        throw new Error(`RuntimeEvent store identity does not match event ${event.id}`);
+      }
+    }
+    const scan = scanToolLedger(canonicalEvents);
+    if (scan.hasCorruption) {
+      throw new Error(
+        `Conversation copy RuntimeEvent ledger is corrupt: ${scan.issues[0]?.code ?? 'unknown'}`,
+      );
+    }
+    this.transaction(() => {
+      const existing = (
+        this.db
+          .prepare(`
+            SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+            FROM runtime_events
+            WHERE session_id = ? AND run_id = ?
+            ORDER BY event_seq ASC, event_id ASC
+          `)
+          .all(sessionId, runId) as unknown as RuntimeEventStorageRow[]
+      ).map(decodeRuntimeEventStorageRow);
+      if (existing.length > 0 && !isDeepStrictEqual(existing, canonicalEvents)) {
+        throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
+      }
+      if (existing.length === 0) {
+        for (const event of canonicalEvents) this.insertRuntimeEvent(event, event.ts, true);
+      }
+      if (canonicalEvents.some(isToolLedgerBearingEvent)) {
+        this.rebuildToolProjectionsFromRuntimeEventsSync();
+      }
+    });
+  }
+
   async isRuntimeImportSourceCurrent(path: string, fingerprint: string): Promise<boolean> {
     const existing = this.db
       .prepare(`
@@ -632,158 +677,160 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
   }
 
   async rebuildToolProjectionsFromRuntimeEvents(): Promise<ToolProjectionRebuildResult> {
-    return this.transaction(() => {
-      const rows = this.db
-        .prepare(`
+    return this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync());
+  }
+
+  private rebuildToolProjectionsFromRuntimeEventsSync(): ToolProjectionRebuildResult {
+    const rows = this.db
+      .prepare(`
         SELECT event_id, session_id, invocation_id, run_id, turn_id,
           event_seq, payload_json, committed_at
         FROM runtime_events
         ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
       `)
-        .all() as unknown as Array<
-        RuntimeEventStorageRow & { event_seq: number; committed_at: number }
-      >;
-      const events = rows.map(decodeRuntimeEventStorageRow);
-      const eventOrder = new Map(events.map((event, index) => [event.id, index] as const));
-      const committedAt = new Map(
-        rows.map((row, index) => [events[index]!.id, row.committed_at] as const),
+      .all() as unknown as Array<
+      RuntimeEventStorageRow & { event_seq: number; committed_at: number }
+    >;
+    const events = rows.map(decodeRuntimeEventStorageRow);
+    const eventOrder = new Map(events.map((event, index) => [event.id, index] as const));
+    const committedAt = new Map(
+      rows.map((row, index) => [events[index]!.id, row.committed_at] as const),
+    );
+    const scan = scanToolLedger(events);
+    if (scan.hasCorruption) {
+      const first = scan.issues[0];
+      throw new Error(
+        `Corrupt tool RuntimeEvent ledger: ${first?.code ?? 'unknown'} at ${first?.eventId ?? 'unknown'}`,
       );
-      const scan = scanToolLedger(events);
-      if (scan.hasCorruption) {
-        const first = scan.issues[0];
-        throw new Error(
-          `Corrupt tool RuntimeEvent ledger: ${first?.code ?? 'unknown'} at ${first?.eventId ?? 'unknown'}`,
-        );
-      }
-      const projected = scan.operations.filter((operation) => operation.dispatchEvent);
+    }
+    const projected = scan.operations.filter((operation) => operation.dispatchEvent);
 
-      // Mainline schema 4 can contain pre-authority projections without a
-      // dispatch RuntimeEvent. They remain readable but quarantined from
-      // recovery; only projections backed by canonical T1 facts are rebuilt.
-      this.db.exec(`
+    // Mainline schema 4 can contain pre-authority projections without a
+    // dispatch RuntimeEvent. They remain readable but quarantined from
+    // recovery; only projections backed by canonical T1 facts are rebuilt.
+    this.db.exec(`
         DELETE FROM tool_journal_events
         WHERE operation_id IN (
           SELECT operation_id FROM tool_operations WHERE dispatch_event_id IS NOT NULL
         );
         DELETE FROM tool_operations WHERE dispatch_event_id IS NOT NULL;
       `);
-      let journalEvents = 0;
-      for (const operation of projected) {
-        const call = operation.callEvent;
-        const event = operation.dispatchEvent;
-        const dispatch = event?.actions?.toolDispatch;
-        if (!call || !event || !dispatch) {
-          throw new Error('Tool projection scan produced an incomplete dispatched operation');
-        }
-        const recovery = interpretScannedToolRecovery(operation, eventOrder);
-        if (recovery.kind === 'corruption') {
-          throw new Error(
-            `Corrupt tool recovery bundle for ${dispatch.operationId}: ${recovery.code}`,
-          );
-        }
-        const reconcileEvent = recovery.kind === 'valid' ? recovery.reconcileEvent : undefined;
-        const decisionEvent = recovery.kind === 'valid' ? recovery.decisionEvent : undefined;
+    let journalEvents = 0;
+    for (const operation of projected) {
+      const call = operation.callEvent;
+      const event = operation.dispatchEvent;
+      const dispatch = event?.actions?.toolDispatch;
+      if (!call || !event || !dispatch) {
+        throw new Error('Tool projection scan produced an incomplete dispatched operation');
+      }
+      const recovery = interpretScannedToolRecovery(operation, eventOrder);
+      if (recovery.kind === 'corruption') {
+        throw new Error(
+          `Corrupt tool recovery bundle for ${dispatch.operationId}: ${recovery.code}`,
+        );
+      }
+      const reconcileEvent = recovery.kind === 'valid' ? recovery.reconcileEvent : undefined;
+      const decisionEvent = recovery.kind === 'valid' ? recovery.decisionEvent : undefined;
 
-        this.db
-          .prepare(`
+      this.db
+        .prepare(`
           INSERT INTO tool_journal_events (
             journal_event_id, operation_id, invocation_id, run_id, turn_id, state,
             runtime_event_id, canonical_args_hash, recovery_mode, committed_at
           ) VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?)
         `)
-          .run(
-            `${dispatch.operationId}_prepared`,
-            dispatch.operationId,
-            event.invocationId,
-            event.runId,
-            event.turnId,
-            event.id,
-            dispatch.canonicalArgsHash,
-            dispatch.recoveryMode,
-            committedAt.get(event.id) ?? event.ts,
-          );
-        journalEvents += 1;
-        const response = operation.responseEvent;
-        const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
-        const currentState = decision
-          ? decision.disposition === 'completed'
-            ? 'recovery_completed'
-            : 'recovery_parked'
-          : response
-            ? 'outcome_committed'
-            : 'prepared';
-        const tail = [
-          ...(reconcileEvent
-            ? [{ event: reconcileEvent, state: 'reconcile_observed' as const }]
-            : []),
-          ...(response ? [{ event: response, state: 'outcome_committed' as const }] : []),
-          ...(decisionEvent
-            ? [
-                {
-                  event: decisionEvent,
-                  state:
-                    decision?.disposition === 'parked'
-                      ? ('recovery_parked' as const)
-                      : ('recovery_completed' as const),
-                },
-              ]
-            : []),
-        ].sort(
-          (a, b) =>
-            requireRuntimeEventOrder(eventOrder, a.event.id) -
-            requireRuntimeEventOrder(eventOrder, b.event.id),
+        .run(
+          `${dispatch.operationId}_prepared`,
+          dispatch.operationId,
+          event.invocationId,
+          event.runId,
+          event.turnId,
+          event.id,
+          dispatch.canonicalArgsHash,
+          dispatch.recoveryMode,
+          committedAt.get(event.id) ?? event.ts,
         );
-        this.db
-          .prepare(`
+      journalEvents += 1;
+      const response = operation.responseEvent;
+      const decision = recovery.kind === 'valid' ? recovery.decision : undefined;
+      const currentState = decision
+        ? decision.disposition === 'completed'
+          ? 'recovery_completed'
+          : 'recovery_parked'
+        : response
+          ? 'outcome_committed'
+          : 'prepared';
+      const tail = [
+        ...(reconcileEvent
+          ? [{ event: reconcileEvent, state: 'reconcile_observed' as const }]
+          : []),
+        ...(response ? [{ event: response, state: 'outcome_committed' as const }] : []),
+        ...(decisionEvent
+          ? [
+              {
+                event: decisionEvent,
+                state:
+                  decision?.disposition === 'parked'
+                    ? ('recovery_parked' as const)
+                    : ('recovery_completed' as const),
+              },
+            ]
+          : []),
+      ].sort(
+        (a, b) =>
+          requireRuntimeEventOrder(eventOrder, a.event.id) -
+          requireRuntimeEventOrder(eventOrder, b.event.id),
+      );
+      this.db
+        .prepare(`
           INSERT INTO tool_operations (
             operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
             tool_name, canonical_args_hash, recovery_mode, current_state,
             call_event_id, dispatch_event_id, result_event_id, version
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
-          .run(
-            dispatch.operationId,
-            event.invocationId,
-            event.runId,
-            event.turnId,
-            dispatch.providerToolCallId,
-            dispatch.toolName,
-            dispatch.canonicalArgsHash,
-            dispatch.recoveryMode,
-            currentState,
-            call.id,
-            event.id,
-            response?.id ?? null,
-            1 + tail.length,
-          );
-        for (const item of tail) {
-          this.db
-            .prepare(`
+        .run(
+          dispatch.operationId,
+          event.invocationId,
+          event.runId,
+          event.turnId,
+          dispatch.providerToolCallId,
+          dispatch.toolName,
+          dispatch.canonicalArgsHash,
+          dispatch.recoveryMode,
+          currentState,
+          call.id,
+          event.id,
+          response?.id ?? null,
+          1 + tail.length,
+        );
+      for (const item of tail) {
+        this.db
+          .prepare(`
             INSERT INTO tool_journal_events (
               journal_event_id, operation_id, invocation_id, run_id, turn_id, state,
               runtime_event_id, canonical_args_hash, recovery_mode, metadata_json, committed_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `)
-            .run(
-              journalEventIdFor(dispatch.operationId, item.event, item.state),
-              dispatch.operationId,
-              item.event.invocationId,
-              item.event.runId,
-              item.event.turnId,
-              item.state,
-              item.event.id,
-              dispatch.canonicalArgsHash,
-              dispatch.recoveryMode,
-              item.event.actions?.toolRecovery
-                ? JSON.stringify(item.event.actions.toolRecovery)
-                : null,
-              committedAt.get(item.event.id) ?? item.event.ts,
-            );
-          journalEvents += 1;
-        }
+          .run(
+            journalEventIdFor(dispatch.operationId, item.event, item.state),
+            dispatch.operationId,
+            item.event.invocationId,
+            item.event.runId,
+            item.event.turnId,
+            item.state,
+            item.event.id,
+            dispatch.canonicalArgsHash,
+            dispatch.recoveryMode,
+            item.event.actions?.toolRecovery
+              ? JSON.stringify(item.event.actions.toolRecovery)
+              : null,
+            committedAt.get(item.event.id) ?? item.event.ts,
+          );
+        journalEvents += 1;
       }
-      return { operations: projected.length, journalEvents };
-    });
+    }
+    return { operations: projected.length, journalEvents };
   }
 
   private commitToolOutcomeSync(input: CommitToolOutcomeInput): ToolCommitResult {

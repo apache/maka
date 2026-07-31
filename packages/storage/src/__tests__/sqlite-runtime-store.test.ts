@@ -60,6 +60,25 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
+  it('imports a conversation-copy tool ledger with its derived projections', async () => {
+    await withStore(async (store) => {
+      const events = [functionCallEvent(), toolDispatchEvent(), functionResponseEvent({ ts: 11 })];
+
+      await store.importConversationCopyRuntimeEvents('session-1', 'run-1', events);
+      await store.importConversationCopyRuntimeEvents('session-1', 'run-1', events);
+
+      assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), events);
+      assert.equal(
+        (await store.readToolOperation('operation-1'))?.currentState,
+        'outcome_committed',
+      );
+      assert.deepEqual(
+        (await store.readToolJournal('operation-1')).map((event) => event.state),
+        ['prepared', 'outcome_committed'],
+      );
+    });
+  });
+
   it('commits function_call, dispatch fact, and operation projection atomically in T1', async () => {
     await withStore(async (store) => {
       const call = functionCallEvent();

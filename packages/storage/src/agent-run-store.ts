@@ -205,6 +205,44 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     return this.#ready;
   }
 
+  async purgeConversationRuntimeLedger(sessionId: string): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      const database = this.#lease.database;
+      database
+        .prepare(`
+          DELETE FROM tool_journal_events
+          WHERE runtime_event_id IN (
+            SELECT event_id FROM runtime_events WHERE session_id = ?
+          )
+          OR operation_id IN (
+            SELECT operation_id
+            FROM tool_operations
+            WHERE call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
+              OR dispatch_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
+              OR result_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
+          )
+        `)
+        .run(sessionId, sessionId, sessionId, sessionId);
+      database
+        .prepare(`
+          DELETE FROM tool_operations
+          WHERE call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
+            OR dispatch_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
+            OR result_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
+        `)
+        .run(sessionId, sessionId, sessionId);
+      database.prepare('DELETE FROM runtime_partial_snapshots WHERE session_id = ?').run(sessionId);
+      database.prepare('DELETE FROM runtime_events WHERE session_id = ?').run(sessionId);
+      database
+        .prepare('DELETE FROM core_agent_run_projections WHERE session_id = ?')
+        .run(sessionId);
+      database.prepare('DELETE FROM core_root_turn_admissions WHERE session_id = ?').run(sessionId);
+      database.prepare('DELETE FROM core_agent_runs WHERE session_id = ?').run(sessionId);
+    });
+  }
+
   async createRun(
     header: AgentRunHeader,
     _options: { durable?: boolean } = {},
