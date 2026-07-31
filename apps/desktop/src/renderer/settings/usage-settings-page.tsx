@@ -157,14 +157,13 @@ export function UsageSettingsPage(props: {
             value={usageDraft.activeTab}
             onChange={(activeTab) => void updateUsage({ activeTab: activeTab as UsageActiveTab })}
             hasDivider
-            className="settingsUsageTabs"
             aria-label={copy.viewAria}
           >
-            <Tab className="settingsUsageTab" value="requests" label={copy.tabs[0]} endContent={<span>{tabCounts.requests}</span>} />
-            <Tab className="settingsUsageTab" value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
-            <Tab className="settingsUsageTab" value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
-            <Tab className="settingsUsageTab" value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
-            <Tab className="settingsUsageTab" value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
+            <Tab value="requests" label={copy.tabs[0]} endContent={<span>{tabCounts.requests}</span>} />
+            <Tab value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
+            <Tab value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
+            <Tab value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
+            <Tab value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
           </TabList>
         </div>
 

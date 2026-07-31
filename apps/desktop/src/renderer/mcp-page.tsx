@@ -358,17 +358,14 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               value={activeTab}
               onChange={(value) => setActiveTab(value as typeof activeTab)}
               hasDivider
-              className="maka-mcp-tabs"
               aria-label={copy.page.categoriesAria}
             >
               <Tab
-                className="maka-mcp-tab"
                 value="market"
                 label={copy.page.market}
                 endContent={<span>{catalog.length}</span>}
               />
               <Tab
-                className="maka-mcp-tab"
                 value="installed"
                 label={copy.page.installed}
                 endContent={<span>{entries.length}</span>}

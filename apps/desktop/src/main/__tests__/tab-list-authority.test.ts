@@ -45,4 +45,16 @@ test('view navigation uses Astryx TabList without a Maka tabs wrapper', () => {
     /\.maka-tabs-list|\.maka-tab(?:\b|\[)/,
     'the retired tab recipe must not remain a CSS authority',
   );
+
+  for (const rel of [
+    'apps/desktop/src/renderer/styles/module-pages/skills.css',
+    'apps/desktop/src/renderer/styles/module-pages/mcp.css',
+    'apps/desktop/src/renderer/styles/settings/bot.css',
+  ]) {
+    assert.doesNotMatch(
+      read(rel),
+      /\.(?:maka-skill-tab|maka-mcp-tab|settingsUsageTab)(?:s)?(?:\s|,|\{)/,
+      `${rel} must leave Astryx Tab geometry intact`,
+    );
+  }
 });

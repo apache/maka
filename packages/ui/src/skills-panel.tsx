@@ -240,7 +240,6 @@ function SkillLibraryPanel(props: {
         value={activeSkillTab}
         onChange={(value) => setActiveSkillTab(value as typeof activeSkillTab)}
         hasDivider
-        className="maka-skill-tabs"
         aria-label={copy.tabs.ariaLabel}
       >
         {([
@@ -250,7 +249,6 @@ function SkillLibraryPanel(props: {
         ] as const).map(([tab, label, count]) => (
           <Tab
             key={tab}
-            className="maka-skill-tab"
             value={tab}
             label={label}
             endContent={<span>{count}</span>}
