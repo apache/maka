@@ -1,0 +1,21 @@
+{
+  "slice": "pr4-form-controls",
+  "scopes": [
+    {
+      "name": "composer-textarea",
+      "selectors": ["[data-maka-contract=\"composer-inner\"]"]
+    },
+    {
+      "name": "settings-form-controls",
+      "selectors": ["[data-maka-contract=\"settings-rows\"]"]
+    },
+    {
+      "name": "provider-form-controls",
+      "selectors": ["[data-maka-contract=\"providers-panel\"]"]
+    },
+    {
+      "name": "module-form-controls",
+      "selectors": ["[data-maka-contract=\"module-main\"]"]
+    }
+  ]
+}

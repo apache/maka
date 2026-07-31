@@ -50,8 +50,8 @@ describe('Settings model provider page hierarchy', () => {
     assert.match(source, /<SectionHeader[\s\S]*titleId="provider-catalog-title"[\s\S]*title=\{copy\.add\}/);
     assert.match(
       source,
-      /<PrimitiveTabsList[\s\S]*<InputGroup className="providerCatalogSearch">[\s\S]*<InputGroupAddon>[\s\S]*<Search[\s\S]*<InputGroupInput/,
-      'category scope must precede a standard grouped search field',
+      /<PrimitiveTabsList[\s\S]*<TextInput[\s\S]*className="providerCatalogSearch"[\s\S]*startIcon=\{<Search/,
+      'category scope must precede the canonical Astryx search field',
     );
     assert.match(
       css,

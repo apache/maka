@@ -72,10 +72,8 @@ describe('Settings theme page contract', () => {
     const src = await readSettingsCombinedSource();
     const themePage = src.match(/function ThemeSettingsPage\([\s\S]*?function WebSearchSettingsPage/)?.[0] ?? '';
 
-    // PR round-c-choice-card-primitive + PR yuejing/settings-segmented-
-    // primitive: Theme/Palette via Base UI `RadioGroup`-backed
-    // `ChoiceCardGroup`; Segmented via Base UI `ToggleGroup`-backed
-    // `Segmented`. Both primitives provide arrow-key
+    // Theme/Palette use Astryx RadioList; Segmented uses the shared
+    // ToggleGroup-backed primitive. Both provide arrow-key
     // navigation, focus management, and roving tabindex for free, so
     // the hand-rolled `onSettingsRadioGroupKeyDown` /
     // `focusRadioValue` / `radioTabIndex` helpers are gone from
@@ -86,11 +84,11 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(src, /function radioTabIndex/);
     assert.doesNotMatch(src, /import \{ nextRadioId \} from '\.\/model-table-keyboard'/);
 
-    // Theme + palette pickers must use `ChoiceCardGroup` with
-    // `value` + `onValueChange` semantics, NOT the legacy keyboard
+    // Theme + palette pickers must use Astryx `RadioList` with
+    // `value` + `onChange` semantics, NOT the legacy keyboard
     // helpers or `data-radio-value` attribute.
-    assert.match(themePage, /<ChoiceCardGroup[\s\S]*aria-label=\{copy\.theme\}[\s\S]*value=\{props\.themePref\}[\s\S]*onValueChange/);
-    assert.match(themePage, /<ChoiceCardGroup[\s\S]*aria-label=\{copy\.paletteGroups\[group\.id\]\}[\s\S]*value=\{currentPalette\}[\s\S]*onValueChange/);
+    assert.match(themePage, /<RadioList[\s\S]*label=\{copy\.theme\}[\s\S]*value=\{props\.themePref\}[\s\S]*onChange/);
+    assert.match(themePage, /<RadioList[\s\S]*label=\{copy\.paletteGroups\[group\.id\]\}[\s\S]*value=\{currentPalette\}[\s\S]*onChange/);
     assert.doesNotMatch(themePage, /onSettingsRadioGroupKeyDown|radioTabIndex|data-radio-value/);
     assert.doesNotMatch(themePage, /界面密度|props\.density|setDensity|onDensityChange/);
 
@@ -100,19 +98,14 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(src, /^function Segmented</m);
   });
 
-  it('uses the ChoiceCard primitive (not native <button> or shared <Button>) for theme + palette cards', async () => {
+  it('uses Astryx RadioList primitives for theme + palette cards', async () => {
     // Regression history:
     //   1. Original `<Button>` migration (commit b40d097, WAWQAQ msg
     //      5f75daf6) baked `h-9 inline-flex bg-primary` utilities into
     //      the cards, collapsing each to a 36px black pill. Reverted
     //      to native `<button role="radio">` + manual keyboard nav.
-    //   2. Round C (PR round-c-choice-card-primitive, WAWQAQ msg
-    //      4f598b19) replaces the native `<button>` with a Base UI
-    //      `Radio.Root`-backed `ChoiceCard` primitive. The primitive
-    //      intentionally applies NO layout/background utilities so the
-    //      existing `.settingsThemeOption*` chrome rules still own the
-    //      visuals; the migration only moves semantics (data-checked,
-    //      keyboard nav, focus) into Base UI.
+    //   2. #1565 PR 4 moves selection, keyboard navigation, and focus to
+    //      Astryx RadioList while the product CSS keeps the preview-card shell.
     // This test pins step 2 and prevents regressing back to either
     // shared `<Button>` (which still has the 36px-pill problem) or
     // hand-rolled native `<button>` (which loses Base UI's keyboard
@@ -124,27 +117,27 @@ describe('Settings theme page contract', () => {
       .replace(/\/\/[^\n]*/g, '');
     const lcButtonCount = (themePageNoComments.match(/<button\b/g) ?? []).length;
     const ucButtonCount = (themePageNoComments.match(/<Button\b/g) ?? []).length;
-    const choiceCardCount = (themePageNoComments.match(/<ChoiceCard\b/g) ?? []).length;
-    const choiceCardGroupCount = (themePageNoComments.match(/<ChoiceCardGroup\b/g) ?? []).length;
+    const radioItemCount = (themePageNoComments.match(/<RadioListItem\b/g) ?? []).length;
+    const radioListCount = (themePageNoComments.match(/<RadioList\b/g) ?? []).length;
     assert.equal(
       lcButtonCount,
       0,
-      `Theme/palette cards must use the ChoiceCard primitive, not native <button> (found ${lcButtonCount} <button> occurrences in the page)`,
+      `Theme/palette cards must use RadioList, not native <button> (found ${lcButtonCount})`,
     );
     assert.equal(
       ucButtonCount,
       0,
-      `Theme/palette cards must use the ChoiceCard primitive, not the shared <Button> (found ${ucButtonCount} <Button> occurrences — see the b40d097 regression note)`,
+      `Theme/palette cards must use RadioList, not shared <Button> (found ${ucButtonCount})`,
     );
     assert.equal(
-      choiceCardCount,
+      radioItemCount,
       2,
-      `Expected exactly 2 <ChoiceCard> elements (one per .map for theme + palette), found ${choiceCardCount}`,
+      `Expected exactly 2 <RadioListItem> elements (one per map), found ${radioItemCount}`,
     );
     assert.equal(
-      choiceCardGroupCount,
+      radioListCount,
       2,
-      `Expected exactly 2 <ChoiceCardGroup> elements (theme group + palette group), found ${choiceCardGroupCount}`,
+      `Expected exactly 2 <RadioList> elements, found ${radioListCount}`,
     );
     assert.match(themePage, /className="settingsThemeOption settingsThemeOptionPreview"/);
     assert.match(themePage, /className="settingsThemeOption settingsPaletteOption"/);
@@ -163,13 +156,13 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(JSON.stringify(en), /[\u3400-\u9fff]/u);
   });
 
-  it('keeps shared Button chrome from collapsing theme choice cards', async () => {
+  it('keeps Astryx radio chrome from collapsing theme choice cards', async () => {
     const css = await readRendererContractCss();
 
     assert.match(
       css,
       /\.settingsThemeOption \{[\s\S]*height:\s*auto;[\s\S]*min-height:\s*48px;[\s\S]*justify-content:\s*stretch;[\s\S]*overflow:\s*hidden;[\s\S]*white-space:\s*normal;/,
-      'Theme option cards must reset shared Button defaults instead of inheriting h-9/centered chrome',
+      'Theme option cards must keep the product preview-card shell around Astryx radios',
     );
     assert.match(
       css,
@@ -196,19 +189,17 @@ describe('Settings theme page contract', () => {
       /settingsThemePreviewPane[\s\S]{0,260}oklch\([^)]*75\)/,
       'Theme preview tiles must not keep the old warm parchment hue after the gray-shell baseline',
     );
-    // #1362: palette names WRAP inside their cards instead of truncating —
-    // at the 480px window floor the old nowrap+ellipsis cut "Catppuccin
-    // Mocha" to "Catppucc…" with no way to recover the name. Scoped to the
-    // rule body ([^}]*, not [\s\S]*): the previous pattern crossed the
-    // closing brace and matched declarations in later, unrelated rules.
+    // #1362: palette names WRAP inside their Astryx item instead of
+    // truncating. At the 480px window floor the old nowrap+ellipsis cut
+    // "Catppuccin Mocha" to "Catppucc…" with no way to recover the name.
     assert.match(
       css,
-      /\.settingsThemeLabel strong \{[^}]*overflow-wrap:\s*anywhere;/,
+      /\.settingsThemeOption label \{[^}]*overflow-wrap:\s*anywhere;/,
       'Long palette names must wrap inside their option cards',
     );
     assert.doesNotMatch(
       css,
-      /\.settingsThemeLabel strong \{[^}]*text-overflow:\s*ellipsis;/,
+      /\.settingsThemeOption label \{[^}]*text-overflow:\s*ellipsis;/,
       'Palette names must not regress to nowrap+ellipsis truncation (#1362)',
     );
   });

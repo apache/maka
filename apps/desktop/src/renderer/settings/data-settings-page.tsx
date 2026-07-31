@@ -6,7 +6,7 @@ import {
   Button,
   SectionHeader,
   SettingsSelect,
-  SettingsSwitch as Switch,
+  Switch,
   clearGlobalInputHistory,
   useMountedRef,
   useToast,
@@ -244,8 +244,9 @@ export function DataSettingsPage() {
             return (
               <div key={id} className="settingsConfigCategoryItem">
                 <Switch
-                  ariaLabel={copy.exportCategory(option.label)}
-                  checked={checked}
+                  label={copy.exportCategory(option.label)}
+              isLabelHidden
+                  value={checked}
                   onChange={() => toggleCategory(id)}
                 />
                 <span>

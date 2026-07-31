@@ -24,6 +24,11 @@
   white-space: normal;
 }
 
+.settingsThemeOption label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .settingsThemeOptionPreview {
   grid-template-columns: 1fr;
   grid-template-rows: auto auto;
@@ -133,7 +138,7 @@
   background: var(--state-hover-bg);
 }
 
-.settingsThemeOption[data-checked] {
+.settingsThemeOption:has(input:checked) {
   border-color: var(--border-strong);
   background: var(--state-selected-bg);
 }
@@ -193,32 +198,6 @@
   font-weight: var(--font-weight-medium);
   color: var(--muted-foreground);
   letter-spacing: var(--tracking-normal);
-}
-
-.settingsThemeLabel {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-1);
-}
-
-.settingsThemeLabel strong {
-  min-width: 0;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  /* #1362: palette names wrap instead of truncating — at the 480px window
-     floor the single-column tiles are ~74px of label and the old nowrap +
-     ellipsis cut "Catppuccin Mocha" to "Catppucc…" with no way to recover
-     the name. Every label fits one line on the wide 3-column grid, so this
-     only changes the squeezed state. */
-  overflow-wrap: anywhere;
-}
-
-.settingsThemeLabel small {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  overflow-wrap: anywhere;
 }
 
 @media (max-width: 820px) {

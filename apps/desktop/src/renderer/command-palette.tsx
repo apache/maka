@@ -22,9 +22,6 @@ import {
   EmptyMedia,
   EmptyTitle,
   IconButton,
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
   Kbd,
   KbdGroup,
   useUiLocale,
@@ -204,7 +201,7 @@ export function CommandPalette(props: {
           items={combined}
         >
           <div className="maka-palette-header">
-            <InputGroup
+            <div
               className="maka-palette-input-wrap"
               aria-label={copy.searchLabel}
               onMouseDown={(event) => {
@@ -214,12 +211,12 @@ export function CommandPalette(props: {
                 inputRef.current?.focus();
               }}
             >
-              <InputGroupAddon align="inline-start" className="maka-palette-search-icon" aria-hidden="true">
+              <span className="maka-palette-search-icon" aria-hidden="true">
                 <Search />
-              </InputGroupAddon>
+              </span>
               <Autocomplete.Input
                 render={
-                  <InputGroupInput
+                  <input
                     ref={inputRef}
                     className="maka-palette-input"
                     type="text"
@@ -230,7 +227,7 @@ export function CommandPalette(props: {
                   />
                 }
               />
-            </InputGroup>
+            </div>
             <IconButton
               variant="ghost"
               size="sm"

@@ -1,16 +1,11 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { ModelCatalogEntry } from '@maka/core';
 import {
-  Input,
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemMedia,
-  ItemTitle,
+  TextInput,
+  CheckboxInput,
   OverlayScrollArea,
   useUiLocale,
 } from '@maka/ui';
-import { Check } from '@maka/ui/icons';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 /**
@@ -120,15 +115,14 @@ export function EnabledModelManager(props: {
         <strong id="provider-enabled-models-title">{copy.enabledModelsTitle(props.enabledModelIds.length)}</strong>
         <span>{copy.enabledModelsHelp}</span>
       </div>
-      <Input
-        type="search"
+      <TextInput
+        type="text"
         value={query}
-        onChange={(event) => setQuery(event.currentTarget.value)}
+        onChange={(value) => setQuery(value)}
         placeholder={copy.searchModels}
-        autoComplete="off"
-        spellCheck={false}
-        disabled={props.disabled}
-        aria-label={copy.searchModels}
+        isDisabled={props.disabled}
+              label={copy.searchModels}
+              isLabelHidden
       />
       <OverlayScrollArea className="providerModelChoiceScroll">
         <ul
@@ -147,34 +141,18 @@ export function EnabledModelManager(props: {
               const isDefault = row.id === props.defaultModel;
               return (
                 <li key={row.id}>
-                  <Item
+                  <CheckboxInput
                     className="providerModelChoiceRow"
                     size="sm"
-                    render={
-                      <button
-                        type="button"
-                        role="checkbox"
-                        aria-checked={isEnabled}
-                        data-model-id={row.id}
-                        tabIndex={row.id === resolvedActiveRowId ? 0 : -1}
-                        disabled={props.disabled || isDefault}
-                        onClick={() => toggle(row.id)}
-                        onFocus={() => setActiveRowId(row.id)}
-                      />
-                    }
-                  >
-                    <ItemMedia className="providerModelChoiceCheck" aria-hidden="true">
-                      {isEnabled ? <Check size={14} /> : null}
-                    </ItemMedia>
-                    <ItemContent>
-                      <ItemTitle className="providerModelChoiceLabel">{row.label}</ItemTitle>
-                    </ItemContent>
-                    {isDefault && (
-                      <ItemActions>
-                      <span className="providerEnabledModelMeta">{copy.defaultModel}</span>
-                      </ItemActions>
-                    )}
-                  </Item>
+                    label={row.label}
+                    description={isDefault ? copy.defaultModel : undefined}
+                    value={isEnabled}
+                    data-model-id={row.id}
+                    tabIndex={row.id === resolvedActiveRowId ? 0 : -1}
+                    isDisabled={props.disabled || isDefault}
+                    onChange={() => toggle(row.id)}
+                    onFocus={() => setActiveRowId(row.id)}
+                  />
                 </li>
               );
             })

@@ -8,7 +8,7 @@ import type {
   UiLocalePreference,
   UpdateAppSettingsResult,
 } from '@maka/core';
-import { ChoiceCard, ChoiceCardGroup, Input, Segmented, Textarea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { RadioList, RadioListItem, TextInput, Segmented, TextArea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -168,16 +168,14 @@ export function PersonalizationSettingsPage(props: {
             <strong>{copy.displayName}</strong>
             <small>{copy.displayNameHelp}</small>
           </div>
-          <Input
+          <TextInput
             type="text"
             value={displayName}
-            onChange={(event) => setDisplayName(event.currentTarget.value)}
-            onBlur={(event) => flushDisplayName(event.currentTarget.value)}
+            onChange={(value) => setDisplayName(value)}
+            onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
-            maxLength={60}
-            autoComplete="off"
-            spellCheck={false}
-            aria-label={copy.displayName}
+              label={copy.displayName}
+              isLabelHidden
           />
         </div>
 
@@ -205,18 +203,19 @@ export function PersonalizationSettingsPage(props: {
             <strong>{copy.assistantTone}</strong>
             <small>{copy.assistantToneHelp}</small>
           </div>
-          <Textarea
+          <TextArea
             value={assistantTone}
-            onChange={(event) => {
-              setAssistantTone(event.currentTarget.value);
-              scheduleToneSave(event.currentTarget.value);
+            onChange={(value) => {
+              setAssistantTone(value);
+              scheduleToneSave(value);
             }}
-            onBlur={(event) => flushTone(event.currentTarget.value)}
+            onBlur={() => flushTone(assistantTone)}
             placeholder={copy.assistantTonePlaceholder}
             rows={4}
             maxLength={500}
-            spellCheck={false}
-            aria-label={copy.assistantTone}
+            hasSpellCheck={false}
+              label={copy.assistantTone}
+              isLabelHidden
             className="min-h-21 w-full"
           />
         </div>
@@ -336,32 +335,24 @@ function ThemeSettingsPage(props: {
   return (
     <div className="settingsStructuredPage">
       <h3 className="settingsSubheading">{copy.theme}</h3>
-      <ChoiceCardGroup
+      <RadioList
         className="settingsThemeOptions settingsThemeOptionsPreview"
-        aria-label={copy.theme}
+        label={copy.theme}
+        isLabelHidden
         value={props.themePref}
-        onValueChange={(next) => void setTheme(next as typeof props.themePref)}
+        onChange={(next) => void setTheme(next as typeof props.themePref)}
       >
         {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
-          // Base UI Radio.Root via ChoiceCard primitive (Round C,
-          // PR round-c-choice-card-primitive). Keyboard arrow nav,
-          // focus management, and `data-checked` are owned by the
-          // primitive; the card chrome stays in `.settingsThemeOption*`
-          // CSS so the regression test that catches `<Button>` shrinking
-          // the card to a 36px black pill is no longer needed.
-          <ChoiceCard
+          <RadioListItem
             key={value}
             value={value}
             className="settingsThemeOption settingsThemeOptionPreview"
-          >
-            <ThemePreviewMock variant={value} />
-            <span className="settingsThemeLabel">
-              <strong>{option.label}</strong>
-              <small>{option.help}</small>
-            </span>
-          </ChoiceCard>
+            label={option.label}
+            description={option.help}
+            startContent={<ThemePreviewMock variant={value} />}
+          />
         ))}
-      </ChoiceCardGroup>
+      </RadioList>
 
       <h3 className="settingsSubheading">{copy.palette}</h3>
       {/* PR-PALETTE-PICKER-GROUPS-0: 11 palettes in a flat grid is
@@ -372,27 +363,25 @@ function ThemeSettingsPage(props: {
       {PALETTE_GROUPS.map((group) => (
         <div key={group.id} className="settingsPaletteGroup">
           <h4 className="settingsPaletteGroupHeading">{copy.paletteGroups[group.id]}</h4>
-          <ChoiceCardGroup
+          <RadioList
             className="settingsThemeOptions settingsPaletteOptions"
-            aria-label={copy.paletteGroups[group.id]}
+            label={copy.paletteGroups[group.id]}
+            isLabelHidden
             value={currentPalette}
-            onValueChange={(next) => void setPalette(next as ThemePalette)}
+            onChange={(next) => void setPalette(next as ThemePalette)}
           >
             {group.palettes.map((palette) => (
-              <ChoiceCard
+              <RadioListItem
                 key={palette}
                 value={palette}
                 data-palette={palette}
                 className="settingsThemeOption settingsPaletteOption"
-              >
-                <span className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`} aria-hidden="true" />
-                <span className="settingsThemeLabel">
-                  <strong>{copy.paletteLabels[palette]}</strong>
-                  <small>{copy.paletteHelp[palette]}</small>
-                </span>
-              </ChoiceCard>
+                label={copy.paletteLabels[palette]}
+                description={copy.paletteHelp[palette]}
+                startContent={<span className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`} aria-hidden="true" />}
+              />
             ))}
-          </ChoiceCardGroup>
+          </RadioList>
         </div>
       ))}
 

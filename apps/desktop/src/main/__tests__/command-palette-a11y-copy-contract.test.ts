@@ -69,24 +69,20 @@ describe('Command palette accessibility and visible copy', () => {
     );
   });
 
-  it('uses shared primitive InputGroup for the palette input shell without restoring the old flex wrapper', async () => {
+  it('keeps one native input shell around the Base UI autocomplete input', async () => {
     const src = await readRepo('apps/desktop/src/renderer/command-palette.tsx');
     const styles = await readRendererContractCss();
     const inputWrapStyle = styles.match(/\.maka-palette-input-wrap\s*\{[\s\S]*?\}/)?.[0] ?? '';
 
+    assert.doesNotMatch(src, /\bInputGroup(?:Input|Addon)?\b/, 'the retired InputGroup path must not return');
     assert.match(
       src,
-      /import \{[^}]*\bDialogContent\b[^}]*\bDialogRoot\b[^}]*\bInputGroup\b[^}]*\bInputGroupInput\b[^}]*\bKbd\b[^}]*\bKbdGroup\b[^}]*\} from '@maka\/ui';/,
-      'CommandPalette must consume shared primitive InputGroup + Dialog primitives from @maka/ui',
+      /<div[\s\S]*className="maka-palette-input-wrap"[\s\S]*aria-label=\{copy\.searchLabel\}[\s\S]*onMouseDown=\{\(event\) => \{[\s\S]*inputRef\.current\?\.focus\(\);[\s\S]*<Autocomplete\.Input[\s\S]*render=\{[\s\S]*<input[\s\S]*aria-label=\{copy\.placeholder\}/,
+      'CommandPalette must render the native input required by Autocomplete with an accessible label and whole-shell click focus',
     );
     assert.match(
       src,
-      /<InputGroup[\s\S]*className="maka-palette-input-wrap"[\s\S]*aria-label=\{copy\.searchLabel\}[\s\S]*onMouseDown=\{\(event\) => \{[\s\S]*inputRef\.current\?\.focus\(\);[\s\S]*<InputGroupInput[\s\S]*aria-label=\{copy\.placeholder\}/,
-      'CommandPalette input shell must be shared primitive InputGroup with an accessible input label and whole-shell click focus',
-    );
-    assert.match(
-      src,
-      /<InputGroupAddon align="inline-start" className="maka-palette-search-icon" aria-hidden="true">[\s\S]*?<Search \/>[\s\S]*?<\/InputGroupAddon>/,
+      /<span className="maka-palette-search-icon" aria-hidden="true">[\s\S]*?<Search \/>[\s\S]*?<\/span>/,
       'The primary search field keeps one leading search affordance',
     );
     // Detail round 6: the shortcut hints (↵ 执行 / Esc 关闭) live in the
@@ -97,20 +93,10 @@ describe('Command palette accessibility and visible copy', () => {
       /maka-palette-input-hint/,
       'Shortcut hints must not be duplicated in an input addon — the palette footer is the single source',
     );
-    assert.doesNotMatch(
-      src,
-      /<div className="maka-palette-input-wrap"/,
-      'CommandPalette must not regress to the previous hand-rolled input wrapper',
-    );
-    assert.doesNotMatch(
-      inputWrapStyle,
-      /display:\s*flex/,
-      'Palette input wrapper styling must not restore the old flex shell over shared primitive InputGroup',
-    );
     assert.match(
       inputWrapStyle,
       /width:\s*100%;/,
-      'Palette InputGroup should fill the search column while the header owns outer spacing',
+      'Palette input shell should fill the search column while the header owns outer spacing',
     );
     assert.match(
       inputWrapStyle,
@@ -120,11 +106,11 @@ describe('Command palette accessibility and visible copy', () => {
     assert.doesNotMatch(
       styles,
       /maka-palette-input-hint/,
-      'Input-addon hint CSS must stay deleted along with the duplicated hint markup',
+      'TextInput-addon hint CSS must stay deleted along with the duplicated hint markup',
     );
   });
 
-  it('keeps the close action beside the input group so the search shell cannot cover its hit target', async () => {
+  it('keeps the close action beside the input shell so the search shell cannot cover its hit target', async () => {
     const src = await readRepo('apps/desktop/src/renderer/command-palette.tsx');
     const styles = await readRendererContractCss();
     const headerStyle = styles.match(/\.maka-palette-header\s*\{[\s\S]*?\}/)?.[0] ?? '';
@@ -138,8 +124,8 @@ describe('Command palette accessibility and visible copy', () => {
     // its accessible name and the icon rides the `icon` prop.
     assert.match(
       src,
-      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?<IconButton[\s\S]*?icon=\{<X aria-hidden="true" \/>\}[\s\S]*?label=\{copy\.closeLabel\}[\s\S]*?onClick=\{props\.onClose\}[\s\S]*?\/>[\s\S]*?<\/div>/,
-      'the close button must be a sibling immediately to the right of the input group',
+      /<div className="maka-palette-header">[\s\S]*?<div[\s\S]*?className="maka-palette-input-wrap"[\s\S]*?<\/div>[\s\S]*?<IconButton[\s\S]*?icon=\{<X aria-hidden="true" \/>\}[\s\S]*?label=\{copy\.closeLabel\}[\s\S]*?onClick=\{props\.onClose\}[\s\S]*?\/>[\s\S]*?<\/div>/,
+      'the close button must be a sibling immediately to the right of the input shell',
     );
     assert.match(headerStyle, /grid-template-columns:\s*minmax\(0, 1fr\) var\(--h-control-md\);/);
     assert.match(headerStyle, /gap:\s*var\(--space-2\);/);

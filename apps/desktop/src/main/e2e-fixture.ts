@@ -178,8 +178,8 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // so xuan's Phase 2 modal gate has a stable fixture state.
   'sidebar-search-modal-open',
   // PR-shared primitive-COMMAND-INPUT-0: same 60-session seed; differs only in
-  // `paletteOpen: true`, which auto-opens CommandPalette so shared primitive
-  // InputGroup changes to the command input shell have a stable fixture state.
+  // `paletteOpen: true`, which auto-opens CommandPalette so command-input
+  // shell changes have a stable fixture state.
   'command-palette-open',
   // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
   // kenji `b3d156e9`): same 60-session seed; differs in

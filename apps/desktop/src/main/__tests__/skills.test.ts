@@ -1623,7 +1623,7 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /onPreviewManagedSkillUpdate\?\(skillId: string\): Promise<ManagedSkillUpdatePreview \| null>/);
     assert.match(skillPanel, /onUpdateManagedSkill\?\(skillId: string, options\?: \{ force\?: boolean; expectedCurrentSha256\?: string; expectedSourceSha256\?: string \}\): boolean \| Promise<boolean>/);
     assert.match(skillPanel, /onSetSkillEnabled\?\(skillId: string, enabled: boolean\): void \| Promise<void>/);
-    assert.match(skillPanel, /<Switch[\s\S]*checked=\{skill\.enabled\}[\s\S]*onCheckedChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next === true\)\}/);
+    assert.match(skillPanel, /<Switch[\s\S]*value=\{skill\.enabled\}[\s\S]*onChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next\)\}/);
     assert.match(skillPanel, /props\.onSetSkillPinned\?\.\(skillRef, !skill\.pinned\)/);
     assert.match(skillPanel, /className="maka-skill-context-inspector"/);
     assert.match(skillPanel, /data-context-status=\{contextStatus\}/);

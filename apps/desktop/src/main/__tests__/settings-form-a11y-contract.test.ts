@@ -137,12 +137,12 @@ describe('Settings form accessibility labels', () => {
     );
     assert.match(
       passwordInput,
-      /import \{[^}]*\bIconButton\b[^}]*\bInput\b[^}]*\buseMountedRef\b[^}]*\buseToast\b[^}]*\buseUiLocale\b[^}]*\} from '@maka\/ui';/,
+      /import \{[^}]*\bIconButton\b[^}]*\bTextInput\b[^}]*\buseMountedRef\b[^}]*\buseToast\b[^}]*\buseUiLocale\b[^}]*\} from '@maka\/ui';/,
     );
     // ProvidersPanel sources its UI from the shared @maka/ui primitives;
     // tolerant of single- vs multi-line import formatting.
     const providersPanelUiImports = providersPanel.match(/import \{[^}]*\} from '@maka\/ui';/g)?.join('\n') ?? '';
-    for (const name of ['Button', 'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger', 'Input', 'RelativeTime', 'Textarea', 'useToast']) {
+    for (const name of ['Button', 'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger', 'TextInput', 'RelativeTime', 'TextArea', 'useToast']) {
       assert.ok(providersPanelUiImports.includes(name), `Providers provider files should import ${name} from @maka/ui`);
     }
     assert.match(settingsSelect, /export function SettingsSelect<T extends string>/);
@@ -179,18 +179,18 @@ describe('Settings form accessibility labels', () => {
       ['SettingsModal.tsx (outside ThemeSettingsPage)', settingsPrimitiveButtons],
       ['password-input.tsx', passwordInput],
     ] as const) {
-      assert.doesNotMatch(source, /<input\b/, `${path} must use the shared Input primitive for Settings text fields`);
-      assert.doesNotMatch(source, /<textarea\b/, `${path} must use the shared Textarea primitive for Settings text areas`);
+      assert.doesNotMatch(source, /<input\b/, `${path} must use the shared TextInput primitive for Settings text fields`);
+      assert.doesNotMatch(source, /<textarea\b/, `${path} must use the shared TextArea primitive for Settings text areas`);
       assert.doesNotMatch(source, /<select\b/, `${path} must use the Astryx Selector primitive for Settings selects`);
       assert.doesNotMatch(source, /<button\b/, `${path} must use the shared Button primitive for Settings buttons`);
       assert.doesNotMatch(source, /className="maka-button/, `${path} must not keep legacy maka-button styling on migrated actions`);
     }
 
-    assert.doesNotMatch(providersPanel, /<input\b/, 'ProvidersPanel must use the shared Input primitive for Settings text fields');
-    assert.doesNotMatch(providersPanel, /<textarea\b/, 'ProvidersPanel must use the shared Textarea primitive for Settings text areas');
+    assert.doesNotMatch(providersPanel, /<input\b/, 'ProvidersPanel must use the shared TextInput primitive for Settings text fields');
+    assert.doesNotMatch(providersPanel, /<textarea\b/, 'ProvidersPanel must use the shared TextArea primitive for Settings text areas');
     assert.doesNotMatch(providersPanel, /<select\b/, 'ProvidersPanel must use the Astryx Selector primitive for Settings selects');
     assert.doesNotMatch(providersPanel, /className="maka-button/, 'ProvidersPanel governed Buttons must not layer the legacy maka-button class (inert under the @maka/ui Button utilities, so it is dead weight)');
-    assert.match(providersPanel, /aria-label=\{copy\.searchModels\}/);
+    assert.match(providersPanel, /label=\{copy\.searchModels\}[\s\S]*isLabelHidden/);
     assert.match(providersPanel, /className="providerModelChoiceList"\s+aria-label=\{copy\.modelListAria\}/);
     // `Item` rows become real buttons through Base UI's polymorphic
     // `render={<button .../>}` prop, which is a primitive render target rather
@@ -263,25 +263,25 @@ describe('Settings form accessibility labels', () => {
     for (const [label, pattern] of [
       ['Telegram proxy address', /ariaLabel: copy\.telegramProxyAria/],
       ['Discord proxy address', /ariaLabel: copy\.discordProxyAria/],
-      ['allowed user IDs', /aria-label=\{copy\.allowedUsersAria\}/],
-      ['web-search query', /aria-label=\{copy\.queryAria\}/],
-      ['proxy server address', /aria-label=\{copy\.proxyServerAddress\}/],
-      ['proxy port', /aria-label=\{copy\.proxyPort\}/],
+      ['allowed user IDs', /label=\{copy\.allowedUsersAria\}/],
+      ['web-search query', /label=\{copy\.queryAria\}/],
+      ['proxy server address', /label=\{copy\.proxyServerAddress\}/],
+      ['proxy port', /<NumberInput label=\{copy\.port\}/],
       ['Open Gateway host', /ariaLabel=\{copy\.form\.hostAria\}/],
-      ['Open Gateway port', /aria-label=\{copy\.form\.portAria\}/],
-      ['Open Gateway session ID', /aria-label=\{copy\.form\.sessionAria\}/],
-      ['usage request filter', /aria-label=\{props\.copy\.filterAria\}/],
+      ['Open Gateway port', /<NumberInput label=\{copy\.form\.port\}/],
+      ['Open Gateway session ID', /label=\{copy\.form\.sessionAria\}/],
+      ['usage request filter', /label=\{props\.copy\.filterAria\}/],
       ['usage status filter', /ariaLabel=\{props\.copy\.statusAria\}/],
-      ['MEMORY.md content', /aria-label=\{copy\.text\.contentEditorAria\}/],
+      ['MEMORY.md content', /label=\{copy\.text\.contentEditorAria\}/],
     ] as const) {
       assert.match(settings, pattern, `SettingsModal must label ${label}`);
     }
 
     for (const [label, pattern] of [
-      ['provider slug', /aria-label=\{copy\.slugAria\}/],
-      ['provider display name', /aria-label=\{copy\.nameAria\}/],
-      ['provider endpoint', /aria-label=\{copy\.endpointAria\}/],
-      ['model search', /aria-label=\{copy\.searchModels\}/],
+      ['provider slug', /label=\{copy\.slugAria\}/],
+      ['provider display name', /label=\{copy\.nameAria\}/],
+      ['provider endpoint', /label=\{copy\.endpointAria\}/],
+      ['model search', /label=\{copy\.searchModels\}/],
     ] as const) {
       assert.match(providers, pattern, `ProvidersPanel must label ${label}`);
     }

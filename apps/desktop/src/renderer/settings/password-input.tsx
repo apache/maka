@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type Ref } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
-  Input,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -30,6 +30,7 @@ export function PasswordInput(props: {
   onChange(next: string): void;
   placeholder?: string;
   ariaLabel?: string;
+  description?: string;
   ariaDescribedBy?: string;
   disabled?: boolean;
   inputRef?: Ref<HTMLInputElement>;
@@ -80,18 +81,18 @@ export function PasswordInput(props: {
   }
   return (
     <div className="settingsPasswordField">
-      <Input
+      <TextInput
         ref={props.inputRef}
         type={visible ? 'text' : 'password'}
         value={props.value}
-        onChange={(event) => props.onChange(event.currentTarget.value)}
+        onChange={(value) => props.onChange(value)}
         onBlur={props.onBlur}
         placeholder={props.placeholder}
-        aria-label={props.ariaLabel}
+        label={props.ariaLabel ?? props.placeholder ?? 'Password'}
+        description={props.description}
+              isLabelHidden
         aria-describedby={props.ariaDescribedBy}
-        autoComplete="off"
-        spellCheck={false}
-        disabled={props.disabled}
+        isDisabled={props.disabled}
       />
       <div className="settingsPasswordActions">
         {props.value && !props.disabled && (

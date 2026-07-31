@@ -326,7 +326,7 @@
    `<div className="settingsField" data-orient="horizontal">` on rows
    whose control is a single inline element (Input, Switch, Segmented,
    Select). Leave the default vertical stack for full-width controls
-   (Textarea, multi-line forms). The 1px hairline divider between rows
+   (TextArea, multi-line forms). The 1px hairline divider between rows
    pulls the look closer to reference's flat divider list and away from
    the previous "each row in its own implicit card" feel. */
 .settingsField[data-orient="horizontal"] {

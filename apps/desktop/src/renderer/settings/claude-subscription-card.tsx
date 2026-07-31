@@ -4,7 +4,7 @@ import {
   Chip,
   Button,
   RelativeTime,
-  Textarea,
+  TextArea,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -391,14 +391,14 @@ export function ClaudeSubscriptionCard() {
           {stateHint && (
             <small>{copy.stateHint} <code>{stateHint}</code> {copy.startsWith}</small>
           )}
-          <Textarea
+          <TextArea
             value={pasteValue}
-            onChange={(event) => setPasteValue(event.currentTarget.value)}
+            onChange={(value) => setPasteValue(value)}
             placeholder={copy.codePlaceholder}
-            aria-label={copy.codeAria}
+              label={copy.codeAria}
+              isLabelHidden
             rows={3}
-            spellCheck={false}
-            autoComplete="off"
+            hasSpellCheck={false}
           />
           {pasteError && <small className="settingsErrorText">{pasteError}</small>}
           <div className="settingsConnectionActions">

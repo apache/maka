@@ -24,7 +24,7 @@ import {
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-  Input,
+  TextInput,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -191,14 +191,14 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           </TooltipTrigger>
           <TooltipContent>{state.loading ? copy.stop : copy.refresh}</TooltipContent>
         </Tooltip>
-        <Input
+        <TextInput
           className="maka-browser-address"
           type="text"
-          spellCheck={false}
-          aria-label={copy.addressAria}
+              label={copy.addressAria}
+              isLabelHidden
           placeholder={copy.addressPlaceholder}
           value={address}
-          onChange={(e) => setAddress(e.target.value)}
+          onChange={setAddress}
           onFocus={() => {
             editingRef.current = true;
           }}

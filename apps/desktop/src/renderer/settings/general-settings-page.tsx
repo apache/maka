@@ -12,13 +12,12 @@ import {
   Alert,
   AlertDescription,
   Button,
-  Input,
-  NumberField,
-  NumberFieldInput,
+  TextInput,
+  NumberInput,
   ModelPicker,
   PermissionModeSelect,
   SettingsSelect,
-  SettingsSwitch as Switch,
+  Switch,
   modelChoiceValue,
   modelMenuGroups,
   parseModelChoiceValue,
@@ -59,8 +58,9 @@ export function GeneralSettingsPage(props: {
             <small>{copy.incognitoHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.enableIncognito}
-            checked={props.settings.privacy.incognitoActive}
+            label={copy.enableIncognito}
+              isLabelHidden
+            value={props.settings.privacy.incognitoActive}
             onChange={(incognitoActive) => {
               props.onUpdate({ privacy: { incognitoActive } }).catch((error: unknown) => {
                 toast.error(copy.incognitoFailed, settingsActionErrorMessage(error, locale));
@@ -74,8 +74,9 @@ export function GeneralSettingsPage(props: {
             <small>{copy.notificationsHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.notifications}
-            checked={props.settings.notifications.runComplete}
+            label={copy.notifications}
+              isLabelHidden
+            value={props.settings.notifications.runComplete}
             onChange={(runComplete) => {
               props.onUpdate({ notifications: { runComplete } }).catch((error: unknown) => {
                 toast.error(copy.notificationsFailed, settingsActionErrorMessage(error, locale));
@@ -316,8 +317,9 @@ function NetworkProxySection(props: {
           <small>{copy.proxyHelp}</small>
         </div>
         <Switch
-          ariaLabel={copy.enableProxy}
-          checked={proxyDraft.enabled}
+          label={copy.enableProxy}
+              isLabelHidden
+          value={proxyDraft.enabled}
           onChange={(enabled) => void updateProxy({ enabled })}
         />
       </div>
@@ -325,7 +327,7 @@ function NetworkProxySection(props: {
       {proxyDraft.enabled && (
         <>
           <div className="settingsFormGrid settingsFormGridProxy">
-            <label>
+            <div>
               <span>{copy.proxyProtocol}</span>
               <SettingsSelect
                 value={proxyDraft.protocol}
@@ -337,17 +339,18 @@ function NetworkProxySection(props: {
                 ] satisfies Array<readonly [NetworkProxySettings['protocol'], string]>}
                 onChange={(protocol) => void updateProxy({ protocol })}
               />
-            </label>
-            <label>
+            </div>
+            <div>
               <span>{copy.serverAddress}</span>
-              <Input value={proxyDraft.host} onChange={(event) => void updateProxy({ host: event.currentTarget.value })} placeholder="127.0.0.1" aria-label={copy.proxyServerAddress} />
-            </label>
-            <label>
-              <span>{copy.port}</span>
-              <NumberField value={proxyDraft.port || null} format={{ useGrouping: false }} onValueChange={(v) => void updateProxy({ port: v ?? 0 })}>
-                <NumberFieldInput placeholder="7890" aria-label={copy.proxyPort} />
-              </NumberField>
-            </label>
+              <TextInput
+                value={proxyDraft.host}
+                onChange={(value) => void updateProxy({ host: value })}
+                placeholder="127.0.0.1"
+                label={copy.proxyServerAddress}
+                isLabelHidden
+              />
+            </div>
+            <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly hasClear onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
           </div>
 
           <div className="settingsFormRow">
@@ -356,35 +359,42 @@ function NetworkProxySection(props: {
               <small>{copy.proxyAuthHelp}</small>
             </div>
             <Switch
-              ariaLabel={copy.enableProxyAuth}
-              checked={proxyDraft.authEnabled}
+              label={copy.enableProxyAuth}
+              isLabelHidden
+              value={proxyDraft.authEnabled}
               onChange={(authEnabled) => void updateProxy({ authEnabled })}
             />
           </div>
 
           {proxyDraft.authEnabled && (
             <div className="settingsFormGrid">
-              <label>
+              <div>
                 <span>{copy.username}</span>
-                <Input value={proxyDraft.username} onChange={(event) => void updateProxy({ username: event.currentTarget.value })} aria-label={copy.proxyUsername} />
-              </label>
-              <label>
+                <TextInput
+                  value={proxyDraft.username}
+                  onChange={(value) => void updateProxy({ username: value })}
+                  label={copy.proxyUsername}
+                  isLabelHidden
+                />
+              </div>
+              <div>
                 <span>{copy.password}</span>
                 <PasswordInput value={proxyDraft.password} onChange={(next) => void updateProxy({ password: next })} ariaLabel={copy.proxyPassword} />
-              </label>
+              </div>
             </div>
           )}
 
-          <label className="settingsField">
+          <div className="settingsField">
             <span>{copy.bypassList}</span>
-            <Input
+            <TextInput
               value={proxyDraft.bypassList.join(', ')}
-              onChange={(event) => void updateProxy({ bypassList: csvList(event.currentTarget.value) })}
+              onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
               placeholder="metaso.cn, baidu.com"
-              aria-label={copy.bypassList}
+              label={copy.bypassList}
+              isLabelHidden
             />
             <small>{copy.bypassHelp}</small>
-          </label>
+          </div>
 
           <Alert variant="info">
             <AlertDescription>{copy.autoBypass(proxyDraft.autoBypassDomains.length)}</AlertDescription>

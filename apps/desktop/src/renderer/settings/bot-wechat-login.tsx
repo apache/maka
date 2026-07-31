@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
-import { Alert, AlertDescription, Button, DialogContent, DialogHeader, DialogRoot, Input, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, DialogContent, DialogHeader, DialogRoot, TextInput, useUiLocale } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
@@ -29,7 +29,7 @@ export function BotWeChatFields(props: {
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(hasAdvanced);
   return (
     <>
-      <label className="settingsField">
+      <div className="settingsField">
         <span>Bot Token</span>
         <PasswordInput
           value={channel.token}
@@ -37,7 +37,7 @@ export function BotWeChatFields(props: {
           placeholder={copy.tokenPlaceholder}
           ariaLabel={copy.tokenAria}
         />
-      </label>
+      </div>
       <div className="settingsBotAdvanced">
         <BaseButton
           type="button"
@@ -49,25 +49,27 @@ export function BotWeChatFields(props: {
         </BaseButton>
         {advancedOpen && (
           <div className="settingsBotAdvancedBody">
-            <label className="settingsField">
+            <div className="settingsField">
               <span>{copy.bridgeAddress}</span>
-              <Input
+              <TextInput
                 value={channel.webhookUrl ?? ''}
-                onChange={(event) => updateChannel({ webhookUrl: event.currentTarget.value })}
+                onChange={(value) => updateChannel({ webhookUrl: value })}
                 placeholder="http://127.0.0.1:18400"
-                aria-label={copy.bridgeAria}
+              label={copy.bridgeAria}
+              isLabelHidden
               />
-            </label>
-            <label className="settingsField">
+            </div>
+            <div className="settingsField">
               <span>{copy.appId}</span>
-              <Input
+              <TextInput
                 value={channel.appId ?? ''}
-                onChange={(event) => updateChannel({ appId: event.currentTarget.value })}
+                onChange={(value) => updateChannel({ appId: value })}
                 placeholder={copy.appIdPlaceholder}
-                aria-label={copy.appIdAria}
+              label={copy.appIdAria}
+              isLabelHidden
               />
-            </label>
-            <label className="settingsField">
+            </div>
+            <div className="settingsField">
               <span>{copy.appSecret}</span>
               <PasswordInput
                 value={channel.appSecret ?? ''}
@@ -75,7 +77,7 @@ export function BotWeChatFields(props: {
                 placeholder={copy.appSecretPlaceholder}
                 ariaLabel={copy.appSecretAria}
               />
-            </label>
+            </div>
             <Alert variant="info">
               <AlertDescription>{copy.advancedNotice}</AlertDescription>
             </Alert>

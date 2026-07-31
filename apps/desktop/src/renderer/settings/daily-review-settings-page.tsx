@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
-import { Alert, AlertDescription, Button, SettingsSelect, SettingsSwitch as Switch, TimePicker, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, SettingsSelect, Switch, TimePicker, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -154,9 +154,10 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <small>{copy.enabledHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.enabled}
-            checked={effectiveConfig?.enabled ?? false}
-            disabled={formDisabled || savingKey === 'enabled'}
+            label={copy.enabled}
+              isLabelHidden
+            value={effectiveConfig?.enabled ?? false}
+            isDisabled={formDisabled || savingKey === 'enabled'}
             onChange={(enabled) => void patchConfig('enabled', { enabled })}
           />
         </div>
@@ -192,9 +193,10 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
               <small>{copy.sections[key].detail}</small>
             </div>
             <Switch
-              ariaLabel={copy.sections[key].title}
-              checked={effectiveConfig?.sections[key] ?? false}
-              disabled={formDisabled || savingKey === `section:${key}` || !(effectiveConfig?.enabled ?? false)}
+              label={copy.sections[key].title}
+              isLabelHidden
+              value={effectiveConfig?.sections[key] ?? false}
+              isDisabled={formDisabled || savingKey === `section:${key}` || !(effectiveConfig?.enabled ?? false)}
               onChange={(next) =>
                 void patchConfig(`section:${key}`, {
                   sections: {
@@ -213,9 +215,10 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <small>{copy.deepHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.deep}
-            checked={effectiveConfig?.deepEnabled ?? false}
-            disabled={formDisabled || savingKey === 'deepEnabled'}
+            label={copy.deep}
+              isLabelHidden
+            value={effectiveConfig?.deepEnabled ?? false}
+            isDisabled={formDisabled || savingKey === 'deepEnabled'}
             onChange={(deepEnabled) => void patchConfig('deepEnabled', { deepEnabled })}
           />
         </div>
@@ -244,9 +247,10 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <small>{copy.includeCliHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.includeCli}
-            checked={effectiveConfig?.includeClaudeCode ?? false}
-            disabled={formDisabled || savingKey === 'includeClaudeCode'}
+            label={copy.includeCli}
+              isLabelHidden
+            value={effectiveConfig?.includeClaudeCode ?? false}
+            isDisabled={formDisabled || savingKey === 'includeClaudeCode'}
             onChange={(includeClaudeCode) => void patchConfig('includeClaudeCode', { includeClaudeCode })}
           />
         </div>
@@ -257,9 +261,10 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <small>{copy.notifyHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.notify}
-            checked={false}
-            disabled={true}
+            label={copy.notify}
+              isLabelHidden
+            value={false}
+            isDisabled={true}
             onChange={() => undefined}
           />
         </div>

@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
-import { Button, Chip, Input, RelativeTime, SettingsSwitch as Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, Chip, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -251,9 +251,10 @@ export function WebSearchSettingsPage(props: {
               <small>{presentWebSearchCredentialSource(credentialSource, hasStoredKey, copy)}</small>
             </div>
             <Switch
-              ariaLabel={copy.enabledAria}
-              checked={webSearch.enabled}
-              disabled={!hasUsableKey || pendingWebSearchEnabled}
+              label={copy.enabledAria}
+              isLabelHidden
+              value={webSearch.enabled}
+              isDisabled={!hasUsableKey || pendingWebSearchEnabled}
               onChange={(enabled) => void setEnabled(enabled)}
             />
           </div>
@@ -319,11 +320,12 @@ export function WebSearchSettingsPage(props: {
             <strong>{copy.query}</strong>
             <small>{copy.queryHelp}</small>
           </div>
-          <Input
+          <TextInput
             value={liveQuery}
-            onChange={(event) => updateLiveQuery(event.currentTarget.value)}
+            onChange={(value) => updateLiveQuery(value)}
             placeholder={copy.queryPlaceholder}
-            aria-label={copy.queryAria}
+              label={copy.queryAria}
+              isLabelHidden
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !liveQueryRunning) {
                 event.preventDefault();

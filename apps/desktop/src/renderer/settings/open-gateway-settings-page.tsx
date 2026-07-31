@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings, OpenGatewayRuntimeStatus, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, Input, NumberField, NumberFieldInput, SettingsSelect, SettingsSwitch as Switch, Textarea, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, TextInput, NumberInput, SettingsSelect, Switch, TextArea, useToast, useUiLocale } from '@maka/ui';
 import { getOpenGatewaySettingsCopy, type OpenGatewaySettingsCopy } from '../locales/settings-open-gateway-copy';
 import { PasswordInput } from './password-input';
 import { MetricCard } from './settings-metric-card';
@@ -174,14 +174,15 @@ export function OpenGatewaySettingsPage(props: {
           <small>{copy.form.enabledHelp}</small>
         </div>
         <Switch
-          ariaLabel={copy.form.enabled}
-          checked={gatewayDraft.enabled}
+          label={copy.form.enabled}
+              isLabelHidden
+          value={gatewayDraft.enabled}
           onChange={(enabled) => void updateGateway({ enabled })}
         />
       </div>
 
       <div className="settingsFormGrid settingsFormGridProxy">
-        <label>
+        <div>
           <span>{copy.form.host}</span>
           <SettingsSelect
             value={gatewayDraft.host}
@@ -192,14 +193,9 @@ export function OpenGatewaySettingsPage(props: {
             ] satisfies Array<readonly [AppSettings['openGateway']['host'], string]>}
             onChange={(host) => void updateGateway({ host })}
           />
-        </label>
-        <label>
-          <span>{copy.form.port}</span>
-          <NumberField value={gatewayDraft.port} format={{ useGrouping: false }} onValueChange={(v) => void updateGateway({ port: v ?? 3939 })}>
-            <NumberFieldInput inputMode="numeric" aria-label={copy.form.portAria} />
-          </NumberField>
-        </label>
-        <label>
+        </div>
+        <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly hasClear onChange={(value) => void updateGateway({ port: value ?? 3939 })} />
+        <div>
           <span>{copy.form.token}</span>
           <PasswordInput
             value={tokenDraft}
@@ -211,17 +207,18 @@ export function OpenGatewaySettingsPage(props: {
             placeholder={copy.form.tokenPlaceholder}
             ariaLabel={copy.form.tokenAria}
           />
-        </label>
-        <label>
+        </div>
+        <div>
           <span>{copy.form.sessionId}</span>
-          <Input
+          <TextInput
             value={eventSessionId}
-            disabled={saving}
+            isDisabled={saving}
             placeholder={copy.form.sessionPlaceholder}
-            onChange={(event) => setEventSessionId(event.currentTarget.value)}
-            aria-label={copy.form.sessionAria}
+            onChange={(value) => setEventSessionId(value)}
+              label={copy.form.sessionAria}
+              isLabelHidden
           />
-        </label>
+        </div>
       </div>
 
       {gatewayDraft.enabled && !gatewayDraft.token && (

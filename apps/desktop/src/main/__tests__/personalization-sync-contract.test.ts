@@ -123,13 +123,13 @@ describe('Personalization form state sync (PR-PERSONALIZATION-SYNC-0)', () => {
     );
     assert.match(
       page,
-      /onBlur=\{\(event\) => flushTone\(event\.currentTarget\.value\)\}/,
+      /onBlur=\{\(\) => flushTone\(assistantTone\)\}/,
       'Tone textarea must flush on blur',
     );
     // The tone textarea change handler must schedule the debounced save.
     assert.match(
       page,
-      /onChange=\{\(event\) => \{[\s\S]*?setAssistantTone\(event\.currentTarget\.value\);[\s\S]*?scheduleToneSave\(event\.currentTarget\.value\);/,
+      /onChange=\{\(value\) => \{[\s\S]*?setAssistantTone\(value\);[\s\S]*?scheduleToneSave\(value\);/,
       'Tone textarea onChange must schedule the debounced autosave',
     );
   });
@@ -139,7 +139,7 @@ describe('Personalization form state sync (PR-PERSONALIZATION-SYNC-0)', () => {
 
     assert.match(
       page,
-      /onBlur=\{\(event\) => flushDisplayName\(event\.currentTarget\.value\)\}[\s\S]*?aria-label=\{copy\.displayName\}/,
+      /onBlur=\{\(\) => flushDisplayName\(displayName\)\}[\s\S]*?label=\{copy\.displayName\}/,
       'Display name must flush its autosave on blur',
     );
     assert.match(

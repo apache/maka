@@ -9,18 +9,15 @@ import {
   DialogRoot,
   EmptyState,
   IconButton,
-  Input,
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
+  TextInput,
   PageHeader,
   type ModuleHubHeader,
-  SettingsSwitch as Switch,
+  Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
   TabsTrigger,
-  Textarea,
+  TextArea,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -317,10 +314,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               <TabsTrigger className="maka-mcp-tab" value="market">{copy.page.market} <span>{catalog.length}</span></TabsTrigger>
               <TabsTrigger className="maka-mcp-tab" value="installed">{copy.page.installed} <span>{entries.length}</span></TabsTrigger>
             </TabsList>
-            <InputGroup className="maka-mcp-search">
-              <InputGroupAddon><Search aria-hidden="true" /></InputGroupAddon>
-              <InputGroupInput type="search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder={copy.page.searchPlaceholder} aria-label={copy.page.searchAria} />
-            </InputGroup>
+            <TextInput className="maka-mcp-search" value={query} onChange={setQuery} placeholder={copy.page.searchPlaceholder} label={copy.page.searchAria} isLabelHidden startIcon={<Search aria-hidden="true" />} />
           </div>
 
           <TabsPanel className="maka-mcp-tab-panel" value="market">
@@ -497,10 +491,11 @@ function McpServerRow(props: {
           <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
         </div>
         <Switch
-          checked={props.server.enabled !== false}
+          value={props.server.enabled !== false}
           onChange={props.onToggle}
-          disabled={props.busy === `toggle:${props.serverId}`}
-          ariaLabel={props.copy.row.enabledAria(props.serverId)}
+          isDisabled={props.busy === `toggle:${props.serverId}`}
+          label={props.copy.row.enabledAria(props.serverId)}
+              isLabelHidden
         />
         <div className="maka-mcp-server-actions">
           <Button
@@ -568,7 +563,7 @@ function McpEditorDialog(props: {
         )}
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
-            <label><span>{props.copy.editor.jsonConfig}</span><Textarea aria-label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(event) => props.onChange({ mode: 'json', source: event.currentTarget.value })} spellCheck={false} /></label>
+            <TextArea label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} />
             <p>{props.copy.editor.jsonHelp} <code>{'{ "mcpServers": { ... } }'}</code></p>
             <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={props.onClose} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.importing : props.copy.editor.importConnect} /></div>
           </form>
@@ -579,22 +574,22 @@ function McpEditorDialog(props: {
               <button type="button" aria-pressed={props.state.draft.kind === 'remote'} data-active={props.state.draft.kind === 'remote'} onClick={() => updateDraft('kind', 'remote')}><Globe aria-hidden="true" /> {props.copy.editor.remoteUrl}</button>
             </div>
             <div className="maka-mcp-form-fields">
-              <label className="settingsField"><span>Server ID</span><Input value={props.state.draft.id} onChange={(event) => updateDraft('id', event.currentTarget.value)} disabled={editing} required placeholder="filesystem" /><small>{props.copy.editor.serverIdHelp}</small></label>
+              <div className="settingsField"><TextInput label="Server ID" value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" /><small>{props.copy.editor.serverIdHelp}</small></div>
               {props.state.draft.kind === 'stdio' ? (
                 <>
-                  <label className="settingsField"><span>Command</span><Input value={props.state.draft.command} onChange={(event) => updateDraft('command', event.currentTarget.value)} required placeholder="npx" /></label>
-                  <label className="settingsField"><span>Arguments</span><Textarea value={props.state.draft.args} onChange={(event) => updateDraft('args', event.currentTarget.value)} placeholder={props.copy.editor.argumentsPlaceholder} /><small>{props.copy.editor.argumentsHelp}</small></label>
+                  <TextInput label="Command" value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" />
+                  <div className="settingsField"><TextArea label="Arguments" value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} /><small>{props.copy.editor.argumentsHelp}</small></div>
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
-                    <label className="settingsField"><span>Working directory</span><Input value={props.state.draft.cwd} onChange={(event) => updateDraft('cwd', event.currentTarget.value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} /></label>
-                    <label className="settingsField"><span>Environment</span><Textarea value={props.state.draft.env} onChange={(event) => updateDraft('env', event.currentTarget.value)} placeholder={'KEY=value\nTOKEN=secret'} /><small>{props.copy.editor.environmentHelp}</small></label>
+                    <TextInput label="Working directory" value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
+                    <div className="settingsField"><TextArea label="Environment" value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} /><small>{props.copy.editor.environmentHelp}</small></div>
                   </div></details>
                 </>
               ) : (
                 <>
-                  <label className="settingsField"><span>MCP URL</span><Input type="url" value={props.state.draft.url} onChange={(event) => updateDraft('url', event.currentTarget.value)} required placeholder="https://example.com/mcp" /></label>
+                  <TextInput label="MCP URL" type="text" value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" />
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
                     <label className="settingsField"><span>Transport</span><select value={props.state.draft.transport} onChange={(event) => updateDraft('transport', event.currentTarget.value as Draft['transport'])}><option value="auto">Auto fallback</option><option value="streamable-http">Streamable HTTP</option><option value="sse">Legacy SSE</option></select></label>
-                    <label className="settingsField"><span>HTTP headers</span><Textarea value={props.state.draft.headers} onChange={(event) => updateDraft('headers', event.currentTarget.value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} /><small>{props.copy.editor.headersHelp}</small></label>
+                    <div className="settingsField"><TextArea label="HTTP headers" value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} /><small>{props.copy.editor.headersHelp}</small></div>
                   </div></details>
                 </>
               )}

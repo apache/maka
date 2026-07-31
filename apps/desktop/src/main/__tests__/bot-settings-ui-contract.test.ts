@@ -104,7 +104,7 @@ describe('Bot settings UI contract', () => {
     const restartProviderBlock = settings.match(/async function restartBotProvider\(provider: BotProvider\)[\s\S]*?\n\s*async function restartChannel/)?.[0] ?? '';
     const restartChannelBlock = settings.match(/async function restartChannel\(\)[\s\S]*?\n\s*async function refreshBotStatuses/)?.[0] ?? '';
     const actionRowBlock = settings.match(/<div className="settingsBotActionStack"[\s\S]*?<\/div>/)?.[0] ?? '';
-    const switchBlock = settings.match(/<Switch\s+ariaLabel=\{detailCopy\.enableAria\(providerPresentation\.label\)\}[\s\S]*?\/>/)?.[0] ?? '';
+    const switchBlock = settings.match(/<Switch\s+label=\{detailCopy\.enableAria\(providerPresentation\.label\)\}[\s\S]*?\/>/)?.[0] ?? '';
 
     assert.match(settings, /type BotPendingActionName = 'test' \| 'connect' \| 'restart' \| 'disconnect'/, 'Bot async actions must use a closed pending-action enum');
     assert.match(settings, /const \[pendingBotAction, setPendingBotAction\] = useState<BotPendingAction \| null>\(null\)/, 'Bot async action pending state must be explicit');
@@ -119,8 +119,8 @@ describe('Bot settings UI contract', () => {
     assert.match(settings, /const enableSwitchHintId = `settings-bot-enable-hint-\$\{provider\}`/, 'Enable-lock hint must have a stable aria-describedby id');
     assert.match(settings, /<small id=\{enableSwitchHintId\} className="settingsBotEnableHint">/, 'Enable-lock hint must be rendered near the switch');
     assert.match(styles, /\.settingsBotEnableHint\s*\{[\s\S]*display:\s*block/, 'Enable-lock hint needs a stable visible style');
-    assert.match(switchBlock, /ariaDescribedBy=\{enableSwitchHint \? enableSwitchHintId : undefined\}/, 'Disabled enable switch must point assistive tech at the reason');
-    assert.match(switchBlock, /disabled=\{enableSwitchDisabled \|\| props\.actionBusy\}/, 'Bot enable switch must be disabled while an owned bot action is pending');
+    assert.match(switchBlock, /disabledMessage=\{enableSwitchHint\}/, 'Disabled enable switch must expose its reason through Astryx');
+    assert.match(switchBlock, /isDisabled=\{enableSwitchDisabled \|\| props\.actionBusy\}/, 'Bot enable switch must be disabled while an owned bot action is pending');
     assert.match(testChannelBlock, /const provider = selected;[\s\S]*if \(!beginBotAction\(provider, 'test'\)\) return;[\s\S]*testBotChannel\(provider\)/, 'Separate tests must capture the provider and gate duplicate clicks before IPC');
     assert.match(testAndConnectBlock, /const provider = selected;[\s\S]*const providerChannel = props\.settings\.botChat\.channels\[provider\];[\s\S]*const providerSupport = BOT_LABELS\[provider\]\.support;[\s\S]*if \(!beginBotAction\(provider, 'connect'\)\) return;[\s\S]*testBotChannel\(provider\)/, 'Combined action must capture provider/channel/support and gate duplicate clicks before IPC');
     assert.match(testChannelBlock, /catch \(error\) \{[\s\S]*toast\.error\(copy\.testError\(botCopy\.providers\[provider\]\.label\), settingsActionErrorMessage\(error, locale\)\)/, 'Separate bot credential tests must scrub thrown IPC failures against the captured provider and locale');
@@ -180,7 +180,7 @@ describe('Bot settings UI contract', () => {
     // primitive with the descriptor's accessible name.
     assert.match(settings, /function BotCredentialFields\(/);
     assert.match(settings, /<PasswordInput[\s\S]*ariaLabel=\{field\.ariaLabel\}/);
-    assert.match(settings, /<Input[\s\S]*aria-label=\{field\.ariaLabel\}/);
+    assert.match(settings, /<TextInput[\s\S]*label=\{field\.ariaLabel\}[\s\S]*isLabelHidden/);
     assert.match(settings, /<SettingsSelect[\s\S]*ariaLabel=\{field\.ariaLabel\}/);
     // WeChat keeps its bespoke fields component (collapsed advanced section),
     // so it is intentionally not part of the descriptor table.

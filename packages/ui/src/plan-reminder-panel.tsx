@@ -35,7 +35,6 @@ import {
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import { PlanReminderSelect } from './plan-reminder-select.js';
 import {
-  Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
@@ -44,10 +43,11 @@ import {
 import {
   Badge,
   Button as UiButton,
+  Switch,
 } from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
-import { Input } from './primitives/input.js';
+import { TextInput } from '@astryxdesign/core';
 import {
   Menu,
   MenuCheckboxItem,
@@ -330,15 +330,14 @@ export function PlanReminderPanel(props: {
                     options={copy.page.sortOptions}
                   />
                 </label>
-                <label className="maka-plan-search">
-                  <span>{copy.page.searchLabel}</span>
-                  <Input
+                <div className="maka-plan-search">
+                  <TextInput
+                    label={copy.page.searchLabel}
                     value={listQuery}
-                    onChange={(event) => setListQuery(event.currentTarget.value)}
-                    maxLength={120}
+                    onChange={(value) => setListQuery(value.slice(0, 120))}
                     placeholder={copy.page.searchPlaceholder}
                   />
-                </label>
+                </div>
                 <label className="maka-plan-compact-select">
                   <span>{copy.page.state}</span>
                   <PlanReminderSelect
@@ -449,10 +448,11 @@ export function PlanReminderPanel(props: {
                       <div className="maka-plan-card-controls">
                         {reminder.status !== 'completed' && (
                           <Switch
-                            checked={reminder.enabled}
-                            disabled={reminderActionPending}
-                            aria-label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
-                            onCheckedChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
+                            value={reminder.enabled}
+                            isDisabled={reminderActionPending}
+                            label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
+                            isLabelHidden
+                            onChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
                           />
                         )}
                         <Menu

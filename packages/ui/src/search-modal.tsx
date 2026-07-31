@@ -6,7 +6,6 @@ import { Autocomplete } from '@base-ui/react/autocomplete';
 import { Search, X } from './icons.js';
 import { EmptyState } from './empty-state.js';
 import { DialogHeader } from './primitives/dialog-header.js';
-import { InputGroup, InputGroupAddon, InputGroupInput } from './primitives/input-group.js';
 import { IconButton } from '@astryxdesign/core';
 import { DialogContent, DialogRoot } from './ui.js';
 import { useUiLocale } from './locale-context.js';
@@ -267,13 +266,13 @@ export function SearchModal(props: {
           itemToStringValue={(result) => result.title ?? ''}
           items={results}
         >
-          <InputGroup className="maka-search-modal-input-row" aria-label={copy.conversationsLabel}>
-            <InputGroupAddon>
+          <div className="maka-search-modal-input-row" aria-label={copy.conversationsLabel}>
+            <span className="maka-search-modal-input-addon">
               <Search size={16} aria-hidden="true" className="maka-search-modal-input-icon" />
-            </InputGroupAddon>
+            </span>
             <Autocomplete.Input
               render={
-                <InputGroupInput
+                <input
                   ref={inputRef}
                   type="search"
                   className="maka-search-modal-input"
@@ -296,7 +295,7 @@ export function SearchModal(props: {
               }
             />
             {query.length > 0 && (
-              <InputGroupAddon align="inline-end">
+              <span className="maka-search-modal-input-addon">
                 <IconButton
                   variant="ghost"
                   size="sm"
@@ -304,9 +303,9 @@ export function SearchModal(props: {
                   icon={<X size={14} aria-hidden="true" />}
                   onClick={clearSearchQuery}
                 />
-              </InputGroupAddon>
+              </span>
             )}
-          </InputGroup>
+          </div>
           <div className="maka-search-modal-body" role="region" aria-label={copy.statusRegionLabel} aria-live="polite">
             {!searchThread && <p className="maka-search-modal-placeholder">{copy.unavailable}</p>}
             {searchThread && incognitoBlocked && (

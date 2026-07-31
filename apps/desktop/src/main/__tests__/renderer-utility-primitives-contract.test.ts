@@ -7,20 +7,20 @@ import { readRendererContractCss } from './contract-css-helpers.js';
 const repoRoot = join(process.cwd(), '..', '..');
 
 describe('renderer utility surfaces use shared UI primitives', () => {
-  it('keeps browser chrome on Button/Input instead of raw form controls', async () => {
+  it('keeps browser chrome on Button/TextInput instead of raw form controls', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/browser-panel.tsx'), 'utf8');
 
     assert.match(source, /import \{ normalizeBrowserAddressInput, type BrowserState \} from '@maka\/core';/);
     // #1565 PR 3: nav controls are Base UI Tooltip trigger render-props on the
     // intentionally retained legacy buttonVariants seam; the address bar stays
-    // on the shared Input primitive.
-    assert.match(source, /import \{[^}]*\bbuttonVariants\b[^}]*\bInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
+    // on the shared TextInput primitive.
+    assert.match(source, /import \{[^}]*\bbuttonVariants\b[^}]*\bTextInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
     assert.equal(
       (source.match(/<button\b/g) ?? []).length,
       (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
       'BrowserPanel raw <button> may appear only as the legacy buttonVariants render-prop seam (#1565 PR 3)',
     );
-    assert.doesNotMatch(source, /<input\b/, 'BrowserPanel address bar must use shared Input');
+    assert.doesNotMatch(source, /<input\b/, 'BrowserPanel address bar must use shared TextInput');
     assert.doesNotMatch(source, /const full = \/\^\[a-z\]\+/, 'BrowserPanel must not keep renderer-only address prefix regex');
     assert.match(
       source,
@@ -122,22 +122,20 @@ describe('renderer utility surfaces use shared UI primitives', () => {
   it('keeps command palette search and rows on shared primitives', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/command-palette.tsx'), 'utf8');
 
-    assert.match(source, /import \{[^}]*\bDialogContent\b[^}]*\bDialogRoot\b[^}]*\bInputGroup\b[^}]*\bInputGroupInput\b[^}]*\bKbd\b[^}]*\bKbdGroup\b[^}]*\} from '@maka\/ui';/);
     assert.match(source, /import \{ Autocomplete \} from '@base-ui\/react\/autocomplete'/, 'CommandPalette must consume Base UI Autocomplete for the result list (#520 PR8)');
-    assert.doesNotMatch(source, /<input\b/, 'Command palette search must use shared Input');
+    assert.doesNotMatch(source, /\bInputGroup(?:Input|Addon)?\b/, 'Command palette must not restore the retired grouped-input seam');
     assert.doesNotMatch(source, /<button\b/, 'Command palette rows must use shared Button');
     assert.doesNotMatch(source, /<kbd\b/, 'Command palette shortcut glyphs must use shared primitive Kbd');
-    assert.match(source, /<InputGroup[\s\S]*className="maka-palette-input-wrap"[\s\S]*aria-label=\{copy\.searchLabel\}[\s\S]*onMouseDown=\{\(event\) => \{/);
-    assert.match(source, /<InputGroupInput[\s\S]*className="maka-palette-input"/);
+    assert.match(source, /<div[\s\S]*className="maka-palette-input-wrap"[\s\S]*aria-label=\{copy\.searchLabel\}[\s\S]*onMouseDown=\{\(event\) => \{/);
+    assert.match(source, /<Autocomplete\.Input[\s\S]*render=\{[\s\S]*<input[\s\S]*className="maka-palette-input"/);
     // The search affordance may lead the field. Shortcut hints stay in the
-    // footer, and the close action stays outside the InputGroup so neither
+    // footer, and the close action stays outside the input shell so neither
     // can cover the other's hit target.
-    assert.match(source, /<InputGroupAddon align="inline-start"[\s\S]*?<Search \/>[\s\S]*?<\/InputGroupAddon>/);
-    assert.doesNotMatch(source, /<InputGroupAddon align="inline-end"/, 'Palette input must not duplicate footer shortcuts inline');
+    assert.match(source, /<span className="maka-palette-search-icon"[\s\S]*?<Search \/>[\s\S]*?<\/span>/);
     assert.match(
       source,
-      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?<IconButton[\s\S]*?label=\{copy\.closeLabel\}/,
-      'Palette header must place the close action after the search InputGroup',
+      /<div className="maka-palette-header">[\s\S]*?<div[\s\S]*?className="maka-palette-input-wrap"[\s\S]*?<\/div>[\s\S]*?<IconButton[\s\S]*?label=\{copy\.closeLabel\}/,
+      'Palette header must place the close action after the search input shell',
     );
     assert.match(source, /<Autocomplete.Item[\s\S]*className="maka-palette-item"/, 'Command palette rows must be Autocomplete.Item (#520 PR8)');
     assert.match(source, /<KbdGroup>[\s\S]*<Kbd>↑<\/Kbd>[\s\S]*<Kbd>↓<\/Kbd>/);

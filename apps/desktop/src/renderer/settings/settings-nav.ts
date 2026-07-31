@@ -52,7 +52,7 @@ type AccountSecretProbeResult =
 // `focusRadioValue`, `onSettingsRadioGroupKeyDown`, `radioTabIndex` were
 // the manual roving-tabindex / arrow-key handlers for the Theme,
 // Palette, and Segmented radiogroups. Theme + Palette migrated to the
-// Base UI `RadioGroup`-backed `ChoiceCard` primitive in PR #263;
+// Astryx `RadioList` primitives in #1565 PR 4;
 // Segmented migrated to the Base UI `ToggleGroup`-backed
 // `Segmented` primitive in PR yuejing/settings-segmented-primitive.
 // Both primitives now provide the same keyboard contract for free, so

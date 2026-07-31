@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
-import postcss from 'postcss';
 import { REPO_ROOT, readCssTree, stripCssComments } from './css-test-helpers.js';
 
 type ImportantAllowance = {
@@ -122,17 +121,6 @@ function readRuleBody(source: string, anchor: string): string | null {
   return null;
 }
 
-function findFieldFocusSelector(source: string): string | null {
-  const root = postcss.parse(source);
-  let selector: string | null = null;
-  root.walkRules((rule) => {
-    if (rule.selector.includes('data-maka-field-chrome') && rule.selector.includes(':focus')) {
-      selector = rule.selector;
-    }
-  });
-  return selector;
-}
-
 describe('renderer !important audit contract', () => {
   it('keeps the e2e-fixture deterministic-render CSS hooks in sync with the renderer attribute write', async () => {
     // The renderer writes `data-maka-e2e-fixture="true"` on <html>
@@ -192,14 +180,9 @@ describe('renderer !important audit contract', () => {
     );
   });
 
-  it('keeps canonical and embedded bare fields off the legacy renderer focus rule', async () => {
-    const fieldFocus = stripCssComments(await readFile(`${REPO_ROOT}/apps/desktop/src/renderer/styles/field-focus.css`, 'utf8'));
-    const fieldFocusSelector = findFieldFocusSelector(fieldFocus);
-    assert.notEqual(fieldFocusSelector, null, 'the legacy renderer focus rule must stay discoverable');
-    assert.match(fieldFocusSelector ?? '', /\[data-maka-field-chrome="none"\]/, 'explicit bare fields delegate focus chrome to their wrapper');
-    assert.match(fieldFocusSelector ?? '', /\[data-slot="input"\]/, 'canonical Input owns its focus chrome');
-    assert.match(fieldFocusSelector ?? '', /\[data-slot="textarea"\]/, 'canonical Textarea owns its focus chrome');
-    assert.doesNotMatch(fieldFocus, /!important/, 'the legacy renderer focus rule must not override component owners');
+  it('retires the renderer-wide field focus override so each control owns focus chrome', async () => {
+    const styles = await readFile(`${REPO_ROOT}/apps/desktop/src/renderer/styles.css`, 'utf8');
+    assert.doesNotMatch(styles, /field-focus\.css/, 'Astryx and product-native controls must not share a global focus-ring authority');
 
     for (const entry of RETIRED_RING_RESET_BLOCKS) {
       const file = `${REPO_ROOT}/${entry.fileSuffix}`;
@@ -209,7 +192,7 @@ describe('renderer !important audit contract', () => {
       assert.doesNotMatch(
         body ?? '',
         /!important|--tw-ring-(?:offset-)?shadow/,
-        `${entry.anchor} must route through the explicit bare field path instead of resetting primitive ring chrome in page CSS.`,
+        `${entry.anchor} must own its focus chrome without resetting a second primitive ring.`,
       );
     }
   });

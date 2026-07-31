@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { Radio, RadioGroup } from '../src/ui.js';
+import { RadioList, RadioListItem } from '../src/index.js';
 
 const meta = {
-  title: 'Primitives/Radio',
+  title: 'Primitives/RadioList',
   parameters: {
     layout: 'centered',
   },
@@ -13,24 +13,15 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-function Option({ value, disabled, children }: { value: string; disabled?: boolean; children: React.ReactNode }) {
-  return (
-    <label style={{ alignItems: 'center', display: 'flex', gap: 8, opacity: disabled ? 0.5 : 1 }}>
-      <Radio value={value} disabled={disabled} />
-      <span style={{ fontSize: 13 }}>{children}</span>
-    </label>
-  );
-}
-
 export const Vertical: Story = {
   render: () => {
     const [value, setValue] = useState('a');
     return (
-      <RadioGroup value={value} onValueChange={(v) => setValue(v as string)}>
-        <Option value="a">选项 A</Option>
-        <Option value="b">选项 B</Option>
-        <Option value="c">选项 C</Option>
-      </RadioGroup>
+      <RadioList label="纵向选项" value={value} onChange={setValue}>
+        <RadioListItem value="a" label="选项 A" />
+        <RadioListItem value="b" label="选项 B" />
+        <RadioListItem value="c" label="选项 C" />
+      </RadioList>
     );
   },
 };
@@ -39,31 +30,30 @@ export const Horizontal: Story = {
   render: () => {
     const [value, setValue] = useState('a');
     return (
-      <RadioGroup value={value} onValueChange={(v) => setValue(v as string)} style={{ display: 'flex', flexDirection: 'row', gap: 16 }}>
-        <Option value="a">A</Option>
-        <Option value="b">B</Option>
-        <Option value="c">C</Option>
-      </RadioGroup>
+      <RadioList label="横向选项" value={value} onChange={setValue} orientation="horizontal">
+        <RadioListItem value="a" label="A" />
+        <RadioListItem value="b" label="B" />
+        <RadioListItem value="c" label="C" />
+      </RadioList>
     );
   },
 };
 
 export const Disabled: Story = {
-  render: () => (
-    <RadioGroup defaultValue="a">
-      <Option value="a">可选</Option>
-      <Option value="b" disabled>禁用项</Option>
-      <Option value="c">可选</Option>
-    </RadioGroup>
-  ),
+  render: () => <RadioListExample initial="a" disabledValue="b" />,
 };
 
 export const DefaultUncontrolled: Story = {
-  render: () => (
-    <RadioGroup defaultValue="b">
-      <Option value="a">选项 A</Option>
-      <Option value="b">选项 B（默认选中）</Option>
-      <Option value="c">选项 C</Option>
-    </RadioGroup>
-  ),
+  render: () => <RadioListExample initial="b" />,
 };
+
+function RadioListExample({ initial, disabledValue }: { initial: string; disabledValue?: string }) {
+  const [value, setValue] = useState(initial);
+  return (
+    <RadioList label="示例选项" value={value} onChange={setValue}>
+      <RadioListItem value="a" label="选项 A" />
+      <RadioListItem value="b" label="选项 B" isDisabled={disabledValue === 'b'} />
+      <RadioListItem value="c" label="选项 C" />
+    </RadioList>
+  );
+}

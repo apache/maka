@@ -35,7 +35,6 @@ import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import { Button as UiButton, IconButton } from '@astryxdesign/core';
-import { Textarea as UiTextarea } from './primitives/textarea.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Kbd } from './primitives/kbd.js';
@@ -767,9 +766,9 @@ export const Composer = forwardRef<
             ))}
           </ul>
         ) : null}
-        <UiTextarea
+        <textarea
           ref={textareaRef}
-          unstyled
+          data-maka-field-chrome="none"
           name="text"
           className="maka-composer-textarea resize-none"
           placeholder={copy.placeholder}

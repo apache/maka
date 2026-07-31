@@ -1,7 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { UserQuestionRequestEvent, UserQuestionResponse } from '@maka/core';
-import { ChoiceCard, ChoiceCardGroup } from './primitives/choice-card.js';
-import { Input } from './primitives/input.js';
+import { RadioList, RadioListItem } from '@astryxdesign/core';
 import { Pencil } from './icons.js';
 import { Button } from '@astryxdesign/core';
 import { useMountedRef } from './use-mounted-ref.js';
@@ -27,7 +26,7 @@ export function UserQuestionPrompt(props: {
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(props.request.requestId);
-  const firstOptionRef = useRef<HTMLButtonElement>(null);
+  const firstOptionRef = useRef<HTMLDivElement>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
@@ -39,7 +38,9 @@ export function UserQuestionPrompt(props: {
   }, [props.request.requestId, props.request.questions]);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => firstOptionRef.current?.focus());
+    const frame = window.requestAnimationFrame(() => {
+      firstOptionRef.current?.querySelector<HTMLInputElement>('input')?.focus();
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [questionIndex, props.request.requestId, props.request.questions]);
 
@@ -90,35 +91,31 @@ export function UserQuestionPrompt(props: {
         </header>
 
         <div className="maka-question-options">
-          <ChoiceCardGroup
-            aria-label={question.question}
+          <RadioList
+            label={question.question}
+            isLabelHidden
             className="maka-question-choice-group"
             value={selectedValue}
-            onValueChange={select}
+            onChange={select}
           >
             {question.options.map((option, optionIndex) => (
-              <ChoiceCard
+              <RadioListItem
                 ref={optionIndex === 0 ? firstOptionRef : undefined}
                 className="maka-question-option"
                 value={`option:${optionIndex}`}
                 key={`${optionIndex}:${option.label}`}
-                disabled={interactionDisabled}
-              >
-                <span className="maka-question-radio" aria-hidden="true" />
-                <span className="maka-question-option-copy">
-                  <strong>{option.label}</strong>
-                  {option.description && <small>{option.description}</small>}
-                </span>
-              </ChoiceCard>
+                isDisabled={interactionDisabled}
+                label={option.label}
+                description={option.description}
+              />
             ))}
-          </ChoiceCardGroup>
+          </RadioList>
           <label
             className="maka-question-other-field"
             data-selected={draft?.kind === 'other' ? '' : undefined}
           >
             <Pencil className="maka-question-other-icon" aria-hidden="true" />
-            <Input
-              unstyled
+            <input
               aria-label={copy.otherAriaLabel}
               className="maka-question-other-input"
               placeholder={copy.otherPlaceholder}

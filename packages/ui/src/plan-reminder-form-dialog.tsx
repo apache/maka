@@ -43,8 +43,7 @@ import {
   DialogContent,
   DialogRoot,
 } from './ui.js';
-import { Input } from './primitives/input.js';
-import { Textarea as UiTextarea } from './primitives/textarea.js';
+import { TextInput, TextArea as UiTextarea } from '@astryxdesign/core';
 import {
   Menu,
   MenuItem,
@@ -235,32 +234,27 @@ export function PlanReminderFormDialog(props: {
             </div>
           </header>
           <div className="maka-plan-form-grid">
-            <label className="maka-plan-field">
-              <span>{copy.field.title}</span>
-              <Input
+            <div className="maka-plan-field">
+              <TextInput
                 ref={titleRef}
+                label={copy.field.title}
                 value={title}
-                onChange={(event) => setTitle(event.currentTarget.value)}
-                maxLength={120}
+                onChange={(value) => setTitle(value.slice(0, 120))}
                 data-maka-plan-title-input="true"
                 placeholder={copy.titlePlaceholder}
-                disabled={formInteractionDisabled}
+                isDisabled={formInteractionDisabled}
               />
-            </label>
-            <label className="maka-plan-field">
-              <span>{copy.field.time}</span>
-              <Input
+            </div>
+            <div className="maka-plan-field">
+              <TextInput
+                label={copy.field.time}
                 value={runAtLocal}
-                onChange={(event) => setRunAtLocal(event.currentTarget.value)}
+                onChange={setRunAtLocal}
                 type="text"
-                inputMode="numeric"
-                autoComplete="off"
-                spellCheck={false}
                 placeholder="2026-06-05 13:44"
-                aria-label={copy.timeAriaLabel}
-                disabled={formInteractionDisabled}
+                isDisabled={formInteractionDisabled}
               />
-            </label>
+            </div>
           </div>
           <div className="maka-plan-presets" aria-label={copy.presetsAriaLabel}>
             {copy.presets.map(([preset, label]) => (
@@ -298,16 +292,15 @@ export function PlanReminderFormDialog(props: {
             </label>
           </div>
           {recurrence === 'cron' && (
-            <label className="maka-plan-field">
-              <span>Cron</span>
-              <Input
+            <div className="maka-plan-field">
+              <TextInput
+                label="Cron"
                 value={cronExpression}
-                onChange={(event) => setCronExpression(event.currentTarget.value)}
-                maxLength={80}
+                onChange={(value) => setCronExpression(value.slice(0, 80))}
                 placeholder={copy.cronPlaceholder}
-                disabled={formInteractionDisabled}
+                isDisabled={formInteractionDisabled}
               />
-            </label>
+            </div>
           )}
           {deliveryChannel === 'bot' && (
             <>
@@ -332,33 +325,32 @@ export function PlanReminderFormDialog(props: {
                     })}
                   />
                 </label>
-                <label className="maka-plan-field">
-                  <span>Chat ID</span>
-                  <Input
+                <div className="maka-plan-field">
+                  <TextInput
+                    label="Chat ID"
                     value={deliveryChatId}
-                    onChange={(event) => setDeliveryChatId(event.currentTarget.value)}
-                    maxLength={160}
+                    onChange={(value) => setDeliveryChatId(value.slice(0, 160))}
                     placeholder={copy.chatIdPlaceholder}
-                    disabled={formInteractionDisabled}
+                    isDisabled={formInteractionDisabled}
                   />
-                </label>
+                </div>
               </div>
               <p className="maka-plan-delivery-help">
                 {copy.deliveryHelp(formatPlanDeliveryProviderList())}
               </p>
             </>
           )}
-          <label className="maka-plan-field maka-plan-prompt-field">
-            <span>{copy.field.note}</span>
+          <div className="maka-plan-field maka-plan-prompt-field">
             <UiTextarea
+              label={copy.field.note}
               value={note}
-              onChange={(event) => setNote(event.currentTarget.value)}
+              onChange={(value) => setNote(value.slice(0, 1000))}
               maxLength={1000}
               rows={5}
               placeholder={copy.notePlaceholder}
-              disabled={formInteractionDisabled}
+              isDisabled={formInteractionDisabled}
             />
-          </label>
+          </div>
           {validationMessage && (
             <p className="maka-plan-validation" role="status" aria-live="polite">
               {validationMessage}

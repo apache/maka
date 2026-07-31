@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { Button } from '../src/index.js';
-import { DialogClose, DialogContent, DialogRoot, Label } from '../src/ui.js';
+import { Button, TextArea, TextInput } from '../src/index.js';
+import { DialogClose, DialogContent, DialogRoot } from '../src/ui.js';
 import { DialogHeader } from '../src/primitives/dialog-header.js';
-import { Input } from '../src/primitives/input.js';
-import { Textarea } from '../src/primitives/textarea.js';
 
 const meta = {
   title: 'Primitives/Dialog',
@@ -153,7 +151,7 @@ function ControlledDialogClose() {
 
 export const FormDialog: Story = {
   render: () => (
-    <DialogShell title="表单 dialog，验证 Input/Label/Textarea 在 portal 内排版">
+    <DialogShell title="表单 dialog，验证 Astryx TextInput/TextArea 在 portal 内排版">
       <ControlledDialogTriggerForm />
     </DialogShell>
   ),
@@ -161,6 +159,8 @@ export const FormDialog: Story = {
 
 function ControlledDialogTriggerForm() {
   const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState('项目周报');
+  const [description, setDescription] = useState('本周完成了 Storybook P0 组件覆盖。');
   return (
     <>
       <Button variant="primary" onClick={() => setOpen(true)} label="打开表单" />
@@ -168,14 +168,8 @@ function ControlledDialogTriggerForm() {
         <DialogContent>
           <DialogHeader title="编辑说明" onClose={() => setOpen(false)} />
           <div style={{ display: 'grid', gap: 14, padding: 24, width: 'min(92vw, 480px)' }}>
-            <div style={{ display: 'grid', gap: 6 }}>
-              <Label htmlFor="dialog-title">标题</Label>
-              <Input id="dialog-title" defaultValue="项目周报" />
-            </div>
-            <div style={{ display: 'grid', gap: 6 }}>
-              <Label htmlFor="dialog-desc">描述</Label>
-              <Textarea id="dialog-desc" defaultValue="本周完成了 Storybook P0 组件覆盖。" />
-            </div>
+            <TextInput label="标题" value={title} onChange={setTitle} />
+            <TextArea label="描述" value={description} onChange={setDescription} />
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Button variant="ghost" onClick={() => setOpen(false)} label="取消" />
               <Button variant="primary" onClick={() => setOpen(false)} label="保存" />

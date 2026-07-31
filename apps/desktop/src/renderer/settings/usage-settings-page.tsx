@@ -15,10 +15,10 @@ import {
   type DataTableColumn,
   EmptyState,
   IconButton,
-  Input,
+  TextInput,
   Segmented,
   SettingsSelect,
-  SettingsSwitch as Switch,
+  Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
@@ -244,7 +244,13 @@ function UsageRequestsPanel(props: {
   return (
     <>
       <div className="settingsUsageFilters" role="group" aria-label={props.copy.filtersAria}>
-        <Input value={props.modelFilter} onChange={(event) => props.onModelFilterChange(event.currentTarget.value)} placeholder={props.copy.filterPlaceholder} aria-label={props.copy.filterAria} />
+        <TextInput
+          value={props.modelFilter}
+          onChange={(value) => props.onModelFilterChange(value)}
+          placeholder={props.copy.filterPlaceholder}
+          label={props.copy.filterAria}
+          isLabelHidden
+        />
         <SettingsSelect
           value={props.status}
           ariaLabel={props.copy.statusAria}
@@ -255,14 +261,15 @@ function UsageRequestsPanel(props: {
           ] satisfies Array<readonly [AppSettings['usage']['status'], string]>}
           onChange={props.onStatusChange}
         />
-        <label className="settingsUsageDetailToggle">
+        <div className="settingsUsageDetailToggle">
           <span>{props.copy.details}</span>
           <Switch
-            ariaLabel={props.copy.detailsAria}
-            checked={props.showDetails}
+            label={props.copy.detailsAria}
+              isLabelHidden
+            value={props.showDetails}
             onChange={props.onToggleDetails}
           />
-        </label>
+        </div>
         <small className="settingsUsageRecordCount">{props.copy.recordCount(props.recordCount)}</small>
         <Button
           className="settingsUsageClearFilter"

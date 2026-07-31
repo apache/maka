@@ -17,8 +17,8 @@
      from the shell's top edge, and its actual side inset is 12px, not
      the 8px the formula used — that 8px was the vertical margin to the
      header. No shell corner is adjacent, so nothing was ever concentric.
-     Its structural twin, .maka-palette-input-wrap, is an InputGroup in
-     the same position inside the same 12px shell and uses the control
+     Its structural twin, .maka-palette-input-wrap, is a native autocomplete
+     shell in the same position inside the same 12px modal and uses the control
      tier; the two searches differed by 50% in roundness for no reason. */
   border-radius: var(--radius-control);
   border-color: var(--border);

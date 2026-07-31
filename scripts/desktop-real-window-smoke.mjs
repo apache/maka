@@ -430,8 +430,8 @@ function buildProgrammaticResults(args, diagnostics) {
       check: PROGRAMMATIC_SMOKE_CHECKS[4],
       // Focus must land on a control trapped inside the search modal. Check
       // this structurally (activeElement is inside `.maka-search-modal`) rather
-      // than by a class on the focused element — the search input's class is
-      // owned by InputGroup's utility classes and isn't stable.
+      // than by a class on the focused element — the autocomplete input's
+      // implementation class is not part of this diagnostic contract.
       ok:
         renderer.activeElementInSearchModal === true &&
         (renderer.activeElement?.tagName === 'INPUT' ||

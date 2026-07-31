@@ -17,12 +17,12 @@ import {
   BOT_BRAND,
   Button,
   Chip,
-  Input,
+  TextInput,
   RelativeTime,
   Segmented,
   SettingsSelect,
-  SettingsSwitch as Switch,
-  Textarea,
+  Switch,
+  TextArea,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -164,11 +164,12 @@ export function BotChatChannelDetail(props: {
           {/* Keep the detail introduction first for heading navigation, while
               placing the switch before the first focusable documentation link. */}
           <Switch
-            ariaLabel={detailCopy.enableAria(providerPresentation.label)}
-            ariaDescribedBy={enableSwitchHint ? enableSwitchHintId : undefined}
-            checked={channel.enabled}
+            label={detailCopy.enableAria(providerPresentation.label)}
+              isLabelHidden
+            disabledMessage={enableSwitchHint}
+            value={channel.enabled}
             onChange={(enabled) => props.onUpdateChannel({ enabled })}
-            disabled={enableSwitchDisabled || props.actionBusy}
+            isDisabled={enableSwitchDisabled || props.actionBusy}
           />
           {BOT_BRAND[provider].configDocUrl && (
             <a
@@ -462,19 +463,20 @@ function BotCredentialFields(props: {
         switch (field.kind) {
           case 'text':
             return (
-              <label key={field.key} className="settingsField">
+              <div key={field.key} className="settingsField">
                 <span>{field.label}</span>
-                <Input
+                <TextInput
                   value={props.channel[field.key] ?? ''}
-                  onChange={(event) => props.onUpdateChannel({ [field.key]: event.currentTarget.value })}
+                  onChange={(value) => props.onUpdateChannel({ [field.key]: value })}
                   placeholder={field.placeholder}
-                  aria-label={field.ariaLabel}
+              label={field.ariaLabel}
+              isLabelHidden
                 />
-              </label>
+              </div>
             );
           case 'password':
             return (
-              <label key={field.key} className="settingsField">
+              <div key={field.key} className="settingsField">
                 <span>{field.label}</span>
                 <PasswordInput
                   value={props.channel[field.key] ?? ''}
@@ -482,7 +484,7 @@ function BotCredentialFields(props: {
                   placeholder={field.placeholder}
                   ariaLabel={field.ariaLabel}
                 />
-              </label>
+              </div>
             );
           case 'select':
             return (
@@ -570,16 +572,17 @@ function BotAllowedUserIdsField(props: {
   };
 
   return (
-    <label className="settingsField">
+    <div className="settingsField">
       <span>{copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}</span>
-      <Textarea
+      <TextArea
         value={buffer}
-        onChange={(event) => setBuffer(event.currentTarget.value)}
+        onChange={(value) => setBuffer(value)}
         onBlur={commit}
         rows={3}
-        spellCheck={false}
+        hasSpellCheck={false}
         placeholder={copy.allowedUsersPlaceholder}
-        aria-label={copy.allowedUsersAria}
+              label={copy.allowedUsersAria}
+              isLabelHidden
       />
       <small>
         {copy.allowedUsersHelp}
@@ -591,7 +594,7 @@ function BotAllowedUserIdsField(props: {
           </span>
         )}
       </small>
-    </label>
+    </div>
   );
 }
 

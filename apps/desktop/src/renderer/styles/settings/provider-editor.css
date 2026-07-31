@@ -325,7 +325,6 @@
 }
 
 .providerEnabledModelsHeader span,
-.providerEnabledModelMeta,
 .providerModelChoiceEmpty {
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
@@ -356,18 +355,6 @@
 /* Fixed check column so enabled (checkmark) and disabled (empty) rows keep
    their labels aligned. The checkmark itself signals the enabled state and
    inherits the crisp foreground tint (matching the model-picker selected mark). */
-.providerModelChoiceCheck {
-  width: 16px;
-  color: var(--foreground);
-}
-
-.providerModelChoiceLabel {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .providerModelChoiceEmpty {
   display: block;
   padding: var(--space-3);

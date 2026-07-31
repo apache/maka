@@ -328,35 +328,21 @@ describe('SearchModal lifecycle contract (PR-SIDEBAR-IA-0 Phase 3 P0 fixup)', ()
     assert.doesNotMatch(styles, /\.maka-search-modal-clear/, 'Clear search button styling belongs to the shared Button primitive');
   });
 
-  it('search input shell uses shared primitive InputGroup instead of a hand-rolled grid wrapper', async () => {
+  it('search input shell owns only the native input required by Base UI Autocomplete', async () => {
     const searchModal = await readFile(SEARCH_MODAL_PATH, 'utf8');
     const styles = await readRendererContractCss();
     const inputRowStyle = styles.match(/\.maka-search-modal-input-row\s*\{[\s\S]*?\}/)?.[0] ?? '';
 
+    assert.doesNotMatch(searchModal, /\bInputGroup(?:Input|Addon)?\b/, 'SearchModal must not restore the retired grouped-input seam');
     assert.match(
       searchModal,
-      /import \{ InputGroup, InputGroupAddon, InputGroupInput \} from '\.\/primitives\/input-group\.js';/,
-      'SearchModal must consume the vendored shared primitive InputGroup primitives',
-    );
-    assert.match(
-      searchModal,
-      /<InputGroup className="maka-search-modal-input-row" aria-label=\{copy\.conversationsLabel\}>[\s\S]*<InputGroupAddon>[\s\S]*<InputGroupInput[\s\S]*<InputGroupAddon align="inline-end">/,
-      'SearchModal search field must be structured as shared primitive InputGroup + addons',
-    );
-    assert.doesNotMatch(
-      searchModal,
-      /<div className="maka-search-modal-input-row"/,
-      'SearchModal must not regress to the previous hand-rolled input-row wrapper',
-    );
-    assert.doesNotMatch(
-      inputRowStyle,
-      /display:\s*grid/,
-      'Search modal input row styling must not restore the old grid shell over shared primitive InputGroup',
+      /<div className="maka-search-modal-input-row" aria-label=\{copy\.conversationsLabel\}>[\s\S]*<span className="maka-search-modal-input-addon">[\s\S]*<Autocomplete\.Input[\s\S]*render=\{[\s\S]*<input[\s\S]*className="maka-search-modal-input"[\s\S]*query\.length > 0 && \([\s\S]*<span className="maka-search-modal-input-addon">/,
+      'SearchModal must compose one native autocomplete input with its leading and conditional trailing affordances',
     );
     assert.match(
       inputRowStyle,
       /margin:\s*var\(--space-2\)\s*var\(--space-3\);/,
-      'Search modal InputGroup should keep the compact modal inset spacing',
+      'Search modal input shell should keep the compact modal inset spacing',
     );
   });
 

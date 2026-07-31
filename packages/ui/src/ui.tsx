@@ -1,9 +1,5 @@
 import React, { forwardRef } from 'react';
-import { Field as BaseField } from '@base-ui/react/field';
 import { Progress as BaseProgress } from '@base-ui/react/progress';
-import { Radio as BaseRadio } from '@base-ui/react/radio';
-import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group';
-import { Switch as BaseSwitch } from '@base-ui/react/switch';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
 import { AlertDialog as AstryxAlertDialog } from '@astryxdesign/core/AlertDialog';
@@ -21,11 +17,21 @@ import {
   type ModalFocusTarget,
 } from './modal-lifecycle.js';
 import { cn } from './utils.js';
-import { inputClasses } from './primitives/input.js';
 
 export { cn } from './utils.js';
 
 export type PickerTriggerAppearance = 'field' | 'quiet';
+
+// Legacy field recipe retained only for picker/time-picker triggers until
+// their owning migration slices move to Astryx. Form controls no longer
+// consume this recipe.
+export const inputClasses = [
+  'flex min-h-9 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm text-foreground transition-[border-color,box-shadow,background-color]',
+  'placeholder:text-foreground-secondary/70',
+  'hover:not-focus-visible:border-foreground/20 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/16',
+  'aria-invalid:border-destructive/64 aria-invalid:ring-destructive/16',
+  'disabled:cursor-not-allowed disabled:opacity-50',
+].join(' ');
 
 const quietPickerTriggerClasses = [
   'inline-flex shrink-0 items-center',
@@ -46,10 +52,9 @@ export function pickerTriggerClasses(appearance: PickerTriggerAppearance = 'fiel
 // Every Base UI wrapper in this file exposes `data-slot="<name>"` so CSS can
 // target `[data-slot="..."]` (a stable hook that survives className drift);
 // the shared primitives in `./primitives/` already do this (accordion / alert /
-// badge / …), and new wrappers (Collapsible / Tooltip / NumberField / …) follow
-// the same rule. Hand-written native elements (the legacy `Input` / `Textarea`
-// below, and `Badge`) are out of this rule until they retire onto a Base UI
-// primitive.
+// badge / …), and new wrappers (Collapsible / Tooltip / …) follow
+// the same rule. Hand-written native elements such as `Badge` are out of this
+// rule until they retire onto a shared primitive.
 //
 // Boolean state hooks adopt Base UI's NATIVE attribute-presence form —
 // `[data-active]`, `[data-open]`, `[data-checked]`, `[data-selected]`,
@@ -59,9 +64,7 @@ export function pickerTriggerClasses(appearance: PickerTriggerAppearance = 'fiel
 // and avoids maintaining an override layer. Per-component map:
 //   Tabs        data-active                 (primitives/tabs.tsx)
 //   Select      data-[highlighted] / data-[selected]
-//   Switch      data-[checked] / data-[disabled]
 //   Toggle      data-[pressed] / data-[disabled]
-//   Radio       data-[checked] / data-[disabled]
 //   Dialog      data-[open]                 (open state on the root)
 //   Tooltip / Popover  data-[open]
 //   Progress    (no boolean state)
@@ -138,11 +141,8 @@ export const buttonVariants = cva(
   },
 );
 
-// #520 item 22: Input, Textarea, inputClasses, bareFieldClasses retired onto
-// packages/ui/src/primitives/input.tsx + primitives/textarea.tsx (Base UI
-// Input + ported chrome, single element, no span wrapper). Re-exported from
-// the barrel via index.ts; number-field imports inputClasses/bareFieldClasses
-// from primitives/input.js.
+// #1565 PR 4: TextInput, TextArea, NumberInput, Switch, and CheckboxInput are
+// Astryx-owned. This legacy class recipe remains only for picker triggers.
 
 interface DialogContextValue {
   isOpen: boolean;
@@ -624,52 +624,6 @@ export function PopoverPopup({ className, initialFocus, style, children, ...prop
 }
 
 // =============================================================
-// Field + Form
-// Base UI's Field handles label / control / description / error
-// association automatically via aria-describedby and aria-invalid.
-// =============================================================
-
-export const FieldRoot = BaseField.Root;
-export const FieldDescription = forwardRef<HTMLParagraphElement, React.ComponentPropsWithoutRef<typeof BaseField.Description>>(function FieldDescription(
-  { className, ...props },
-  ref,
-) {
-  return <BaseField.Description ref={ref} className={cn('text-xs text-foreground-secondary', className)} data-slot="field-description" {...props} />;
-});
-export const Label = forwardRef<HTMLLabelElement, React.ComponentPropsWithoutRef<typeof BaseField.Label>>(function Label(
-  { className, ...props },
-  ref,
-) {
-  return <BaseField.Label ref={ref} className={cn('text-sm font-medium text-foreground', className)} data-slot="label" {...props} />;
-});
-
-// =============================================================
-// Switch
-// =============================================================
-
-export const Switch = forwardRef<
-  HTMLButtonElement,
-  React.ComponentPropsWithoutRef<typeof BaseSwitch.Root>
->(function Switch({ className, ...props }, ref) {
-  return (
-    <BaseSwitch.Root
-      ref={ref}
-      className={cn(
-        'relative inline-flex h-4.5 w-8 shrink-0 items-center rounded-full bg-foreground/16 transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-        'data-[checked]:bg-control data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50',
-        'pointer-coarse:after:absolute pointer-coarse:after:left-1/2 pointer-coarse:after:top-1/2 pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 pointer-coarse:after:-translate-x-1/2 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-[" "]',
-        className,
-      )}
-      data-slot="switch"
-      {...props}
-    >
-      <BaseSwitch.Thumb className="block h-3.5 w-3.5 translate-x-0.5 rounded-full bg-background transition-transform duration-150 data-[checked]:translate-x-4 data-[checked]:bg-control-foreground" />
-    </BaseSwitch.Root>
-  );
-});
-
-// =============================================================
 // Toggle + ToggleGroup
 // =============================================================
 
@@ -704,41 +658,6 @@ export const ToggleGroup = forwardRef<
       data-slot="toggle-group"
       {...props}
     />
-  );
-});
-
-// =============================================================
-// RadioGroup + Radio
-// =============================================================
-
-export const RadioGroup = forwardRef<
-  HTMLDivElement,
-  React.ComponentPropsWithoutRef<typeof BaseRadioGroup>
->(function RadioGroup({ className, ...props }, ref) {
-  return <BaseRadioGroup ref={ref} className={cn('grid gap-2', className)} data-slot="radio-group" {...props} />;
-});
-
-export const Radio = forwardRef<
-  HTMLButtonElement,
-  React.ComponentPropsWithoutRef<typeof BaseRadio.Root>
->(function Radio({ className, ...props }, ref) {
-  return (
-    <BaseRadio.Root
-      ref={ref}
-      className={cn(
-        'relative inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-input bg-background transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20',
-        'data-[checked]:border-control data-[disabled]:cursor-not-allowed data-[disabled]:opacity-50',
-        'pointer-coarse:after:absolute pointer-coarse:after:left-1/2 pointer-coarse:after:top-1/2 pointer-coarse:after:min-h-11 pointer-coarse:after:min-w-11 pointer-coarse:after:-translate-x-1/2 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-[" "]',
-        className,
-      )}
-      data-slot="radio"
-      {...props}
-    >
-      <BaseRadio.Indicator className="grid place-items-center">
-        <span className="block h-2 w-2 rounded-full bg-control" />
-      </BaseRadio.Indicator>
-    </BaseRadio.Root>
   );
 });
 

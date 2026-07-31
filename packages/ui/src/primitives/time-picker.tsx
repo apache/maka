@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
 import { Clock } from "../icons.js";
 import { cn } from "../utils.js";
-import { inputClasses } from "./input.js";
+import { inputClasses } from "../ui.js";
 import {
   PopoverPopup,
   PopoverPortal,

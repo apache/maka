@@ -143,7 +143,7 @@ describe('local MEMORY.md Settings UI contract', () => {
     const pageBlock = src.match(/function MemorySettingsPage\([\s\S]*?function MemoryEntryList/)?.[0] ?? '';
 
     assert.match(src, /function filterLocalMemoryEntries/);
-    assert.match(src, /aria-label=\{copy\.text\.filterAria\}/);
+    assert.match(src, /label=\{copy\.text\.filterAria\}[\s\S]*isLabelHidden/);
     assert.match(src, /placeholder=\{copy\.text\.filterPlaceholder\}/);
     assert.match(src, /setMemoryEntryQuery\(''\)/);
     assert.match(src, /copy\.text\.clear/);
@@ -372,7 +372,7 @@ describe('local MEMORY.md Settings UI contract', () => {
 
     assert.match(src, /appendManualLocalMemoryEntryDraft\(draft/);
     assert.match(src, /tags:\s*newMemoryTags\.split\(', '\)|tags:\s*newMemoryTags\.split\(','/);
-    assert.match(src, /aria-label=\{copy\.text\.tagsAria\}/);
+    assert.match(src, /label=\{copy\.text\.tagsAria\}[\s\S]*isLabelHidden/);
     assert.match(src, /copy\.text\.addedDraft/);
     assert.match(src, /copy\.text\.addedDraftDetail/);
     assert.doesNotMatch(manualAddBlock, /window\.maka\.memory\.save\(result\.draft\)/);

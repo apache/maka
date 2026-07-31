@@ -1,12 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import {
-  FieldDescription,
-  FieldRoot,
-  Label,
-} from '../src/ui.js';
-import { Divider } from '../src/index.js';
-import { Input } from '../src/primitives/input.js';
-import { Textarea } from '../src/primitives/textarea.js';
+import { useState } from 'react';
+import { CheckboxInput, Divider, NumberInput, TextArea, TextInput } from '../src/index.js';
 
 const meta = {
   title: 'Primitives/Form Controls',
@@ -29,56 +23,92 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export const InputStates: Story = {
-  render: () => (
+  render: () => {
+    const [empty, setEmpty] = useState('');
+    const [filled, setFilled] = useState('已经填好的文本');
+    const [invalid, setInvalid] = useState('错误值');
+    return (
     <div style={{ display: 'grid', gap: 20, maxWidth: 440 }}>
       <Section title="默认">
-        <Input placeholder="输入内容…" aria-label="默认输入" />
+        <TextInput label="默认输入" value={empty} onChange={setEmpty} placeholder="输入内容…" />
       </Section>
       <Section title="已填值">
-        <Input defaultValue="已经填好的文本" aria-label="有值输入" />
+        <TextInput label="有值输入" value={filled} onChange={setFilled} />
       </Section>
       <Section title="禁用">
-        <Input defaultValue="禁用态" disabled aria-label="禁用输入" />
+        <TextInput label="禁用输入" value="禁用态" isDisabled />
       </Section>
       <Section title="错误态">
-        <Input defaultValue="错误值" aria-invalid="true" aria-label="错误态输入" />
+        <TextInput label="错误态输入" value={invalid} onChange={setInvalid} status={{ type: 'error' }} />
       </Section>
     </div>
-  ),
+    );
+  },
 };
 
 export const TextareaStates: Story = {
-  render: () => (
+  render: () => {
+    const [value, setValue] = useState('');
+    return (
     <div style={{ display: 'grid', gap: 20, maxWidth: 440 }}>
       <Section title="默认">
-        <Textarea placeholder="多行输入…" aria-label="默认多行" />
+        <TextArea label="默认多行" value={value} onChange={setValue} placeholder="多行输入…" />
       </Section>
       <Section title="禁用">
-        <Textarea defaultValue="禁用态多行文本" disabled aria-label="禁用多行" />
+        <TextArea label="禁用多行" value="禁用态多行文本" isDisabled />
       </Section>
     </div>
-  ),
+    );
+  },
 };
 
 export const Field: Story = {
-  render: () => (
+  render: () => {
+    const [name, setName] = useState('maka-agent');
+    const [description, setDescription] = useState('一个本地优先的 AI agent。');
+    return (
     <div style={{ display: 'grid', gap: 20, maxWidth: 440 }}>
-      <Section title="完整 Field（Label + Input + Description）">
-        <FieldRoot className="grid gap-1.5">
-          <Label>项目名称</Label>
-          <Input defaultValue="maka-agent" aria-label="项目名称" />
-          <FieldDescription>显示在侧栏和会话标题里。</FieldDescription>
-        </FieldRoot>
+      <Section title="单行输入（标签与说明）">
+        <TextInput
+          label="项目名称"
+          description="显示在侧栏和会话标题里。"
+          value={name}
+          onChange={setName}
+        />
       </Section>
-      <Section title="Field + Textarea 组合">
-        <FieldRoot className="grid gap-1.5">
-          <Label>项目说明</Label>
-          <Textarea defaultValue="一个本地优先的 AI agent。" aria-label="项目说明" />
-          <FieldDescription>支持 Markdown，最多 500 字。</FieldDescription>
-        </FieldRoot>
+      <Section title="多行输入（标签与说明）">
+        <TextArea
+          label="项目说明"
+          description="支持 Markdown，最多 500 字。"
+          value={description}
+          onChange={setDescription}
+        />
       </Section>
     </div>
-  ),
+    );
+  },
+};
+
+export const NumericAndBooleanStates: Story = {
+  render: () => {
+    const [port, setPort] = useState<number | null>(3939);
+    const [enabled, setEnabled] = useState(true);
+    return (
+      <div style={{ display: 'grid', gap: 20, maxWidth: 440 }}>
+        <Section title="数字输入">
+          <NumberInput label="端口" value={port} onChange={setPort} isIntegerOnly hasClear />
+        </Section>
+        <Section title="复选框">
+          <CheckboxInput
+            label="自动启动"
+            description="登录后启动本地服务。"
+            value={enabled}
+            onChange={setEnabled}
+          />
+        </Section>
+      </div>
+    );
+  },
 };
 
 export const DividerStates: Story = {

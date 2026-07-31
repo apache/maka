@@ -288,7 +288,7 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // shape="pill" (the composer "+" / send affordance) is a governed pill-tier
   // shape on the control-tier Button — both tiers must stay present.
   { file: 'packages/ui/src/ui.tsx', name: 'buttonVariants', tier: 'control', alsoTiers: ['pill'] },
-  { file: 'packages/ui/src/primitives/input.tsx', name: 'inputClasses', tier: 'control' },
+  { file: 'packages/ui/src/ui.tsx', name: 'inputClasses', tier: 'control' },
   { file: 'packages/ui/src/ui.tsx', name: 'Toggle', tier: 'control' },
   // Dialog radius is owned by Astryx Dialog.
   { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
@@ -301,7 +301,6 @@ const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   // changed file; re-pointing the entry is the whole fix.
   { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsList', tier: 'surface' },
   { file: 'packages/ui/src/primitives/tabs.tsx', name: 'TabsTab', tier: 'control' },
-  { file: 'packages/ui/src/primitives/input-group.tsx', name: 'InputGroup', tier: 'control' },
   // #1565 PR 3: the Badge entry left this table — it is the Astryx primitive
   // now, whose pill radius is Astryx-owned.
   { file: 'packages/ui/src/primitives/item.tsx', name: 'itemVariants', tier: 'surface' },
@@ -492,7 +491,7 @@ describe('radius token governance (#406 gap 4)', () => {
       '.settingsModal': '--radius-modal',
       '.maka-palette-input-wrap': '--radius-control',
       // The search modal's input is the structural twin of the palette's:
-      // same InputGroup, same position inside the same 12px shell. It spent
+      // same native shell, same position inside the same 12px surface. It spent
       // its life at 4px on a concentric derivation that never applied (see
       // radius-nesting-contract). Pinned here so the two stay together.
       '.maka-search-modal-input-row': '--radius-control',

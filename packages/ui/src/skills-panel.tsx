@@ -14,11 +14,11 @@ import {
 } from './icons.js';
 import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
-import { Button as UiButton, IconButton } from '@astryxdesign/core';
-import { Switch, TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
+import { Button as UiButton, IconButton, Switch } from '@astryxdesign/core';
+import { TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
-import { Input } from './primitives/input.js';
+import { TextInput } from '@astryxdesign/core';
 import { SettingsSelect, type SettingsSelectOption } from './primitives/settings-select.js';
 import { EmptyState } from './empty-state.js';
 import { SectionHeader } from './primitives/section-header.js';
@@ -567,11 +567,12 @@ function SkillLibraryPanel(props: {
                       />
                       <Switch
                         className="maka-skill-library-runtime-switch"
-                        checked={skill.enabled}
-                        disabled={props.actionBusy || !canToggleSkill}
-                        aria-label={skill.enabled ? copy.row.disableAriaLabel(skill.name) : copy.row.enableAriaLabel(skill.name)}
-                        title={skill.runtimeStatus === 'state_error' ? copy.row.stateErrorTitle : skill.enabled ? copy.row.enabledTitle : copy.row.disabledTitle}
-                        onCheckedChange={(next) => props.onSetSkillEnabled?.(skillRef, next === true)}
+                        value={skill.enabled}
+                        isDisabled={props.actionBusy || !canToggleSkill}
+                        label={skill.enabled ? copy.row.disableAriaLabel(skill.name) : copy.row.enableAriaLabel(skill.name)}
+                        isLabelHidden
+                        labelTooltip={skill.runtimeStatus === 'state_error' ? copy.row.stateErrorTitle : skill.enabled ? copy.row.enabledTitle : copy.row.disabledTitle}
+                        onChange={(next) => props.onSetSkillEnabled?.(skillRef, next)}
                       />
                     </>
                   )}
@@ -821,16 +822,16 @@ export function SkillsModuleMain(props: {
         headingRowClassName={props.hubHeader ? 'maka-module-hub-heading' : undefined}
         actions={
         <div className="maka-module-main-actions" role="group" aria-label={copy.page.actions}>
-          <label className="maka-skill-search" aria-label={copy.page.search}>
-            <Search size={15} aria-hidden="true" />
-            <Input
-              unstyled
+          <div className="maka-skill-search">
+            <TextInput
+              label={copy.page.search}
+              isLabelHidden
+              startIcon={<Search size={15} aria-hidden="true" />}
               value={skillSearchQuery}
-              onChange={(event) => setSkillSearchQuery(event.currentTarget.value)}
-              maxLength={120}
+              onChange={(value) => setSkillSearchQuery(value.slice(0, 120))}
               placeholder={copy.page.search}
             />
-          </label>
+          </div>
           <UiButton
             className="maka-skill-header-utility"
             variant="secondary"

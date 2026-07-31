@@ -11,8 +11,4 @@ export function statusBadgeVariant(tone: StatusTone): 'success' | 'warning' | 'e
   }
 }
 
-// `Switch` adapter (15+ settings toggle callsites use `ariaLabel /
-// onChange`) was moved to `packages/ui/src/primitives/settings-switch.tsx`
-// as `SettingsSwitch`. Imported above as `Switch` so the call sites
-// don't need touching. PR yuejing/switch-primitive-and-css-cleanup
-// (WAWQAQ msg `f1461d30`).
+// Toggle controls are Astryx-owned through the @maka/ui barrel (#1565 PR 4).

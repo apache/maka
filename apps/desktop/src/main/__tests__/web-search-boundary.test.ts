@@ -227,8 +227,8 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.match(page![0], /pendingCredentialAction === 'save' \? copy\.saving : copy\.saveKey/);
     assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| \(draftKey\.length === 0 && !hasUsableKey\)\}/);
     assert.match(page![0], /isDisabled=\{credentialActionBusy\}[\s\S]*pendingCredentialAction === 'clear' \? copy\.clearing : copy\.clearKey/);
-    assert.match(page![0], /onChange=\{\(event\) => updateLiveQuery\(event\.currentTarget\.value\)\}/);
-    assert.match(page![0], /disabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
+    assert.match(page![0], /onChange=\{\(value\) => updateLiveQuery\(value\)\}/);
+    assert.match(page![0], /isDisabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
   });
 
   it('Settings web-search async actions stop writing component state after unmount', async () => {

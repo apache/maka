@@ -76,7 +76,7 @@ describe('Custom relay provider setup contract', () => {
       form,
       /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(props\.providerType\);[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*await props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*if \(!isCustomRelay\) modelDiscoveryError = error/,
     );
-    assert.match(form, /aria-label=\{copy\.defaultModelAria\}/);
+    assert.match(form, /label=\{copy\.defaultModelAria\}[\s\S]*isLabelHidden/);
     assert.match(form, /<small>\{copy\.defaultModelHelp\}<\/small>/);
 
     assert.match(copy, /defaultModel: '默认模型'/);

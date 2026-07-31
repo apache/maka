@@ -62,7 +62,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       'Button',
       'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger',
       'Item', 'ItemMedia', 'ItemContent', 'ItemTitle', 'ItemDescription', 'ItemActions',
-      'Input', 'RelativeTime', 'Textarea', 'useToast',
+      'TextInput', 'RelativeTime', 'TextArea', 'useToast',
     ]) {
       assert.ok(
         uiImports.includes(name),
@@ -120,7 +120,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /onDeleted=\{async \(\) => \{[\s\S]*closeDialog\(\);[\s\S]*const reloaded = await reload\(\);[\s\S]*providerCatalogRef\.current\?\.querySelector<HTMLInputElement>\('\[type="search"\]'\)\?\.focus\(\);/,
+      /onDeleted=\{async \(\) => \{[\s\S]*closeDialog\(\);[\s\S]*const reloaded = await reload\(\);[\s\S]*providerCatalogRef\.current\?\.querySelector<HTMLInputElement>\('\[data-provider-catalog-search\] input'\)\?\.focus\(\);/,
       'Connection delete completion must restore focus to the stable provider search after refreshing the root list',
     );
   });
@@ -194,7 +194,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /<ConnectionEndpointField[\s\S]*disabled=\{detailActionBusy\}[\s\S]*function ConnectionEndpointField[\s\S]*disabled=\{props\.disabled\}/,
+      /<ConnectionEndpointField[\s\S]*disabled=\{detailActionBusy\}[\s\S]*function ConnectionEndpointField[\s\S]*isDisabled=\{props\.disabled \|\| props\.fixedOAuth\}/,
       'ConnectionDetail service-address draft must freeze while any detail action is in flight',
     );
     assert.match(
@@ -281,7 +281,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /value=\{slug\}[\s\S]*disabled=\{isExperimental \|\| busy\}[\s\S]*aria-label=\{copy\.slugAria\}/,
+      /isDisabled=\{isExperimental \|\| busy\}[\s\S]*label=\{copy\.slugAria\}[\s\S]*isLabelHidden/,
       'AddProviderForm fields must freeze while a create request is in flight so visible draft cannot drift from the submitted payload',
     );
     // #1565 PR 3: Astryx Button — `isDisabled` + `label` prop, self-closing.
@@ -478,24 +478,16 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const enabledModels = src.match(/function EnabledModelManager[\s\S]*?function modelDisplayLabel/)?.[0] ?? '';
 
     assert.match(addForm, /\{copy\.slug\}/);
-    assert.match(addForm, /aria-label=\{copy\.slugAria\}/);
+    assert.match(addForm, /label=\{copy\.slugAria\}[\s\S]*isLabelHidden/);
     assert.match(addForm, /\{copy\.endpointLabel\(requiresBaseUrl\)\}/);
-    assert.match(addForm, /aria-label=\{copy\.endpointAria\}/);
+    assert.match(addForm, /label=\{copy\.endpointAria\}[\s\S]*isLabelHidden/);
     assert.match(addForm, /copy\.duplicateSlug/);
     assert.match(addForm, /copy\.endpointRequired/);
 
-    // PR-FIELD-PRIMITIVE-PILOT: ConnectionDetail's form rows moved off the
-    // hand-written <label><span/> markup onto the governed Base UI Field
-    // primitive (FieldRoot + Label + FieldDescription). Label copy stays
-    // Chinese-first; the parenthetical state hints split into their own
-    // FieldDescription lines. AddProviderForm is intentionally left on the
-    // legacy <label><span/> markup this round (single-page pilot).
-    assert.match(detail, /<Label[^>]*>\{copy\.endpoint\}<\/Label>/);
-    assert.match(detail, /props\.fixedOAuth && <FieldDescription>\{copy\.oauthFixed\}<\/FieldDescription>/);
-    assert.match(detail, /<Label[^>]*>\{copy\.modelKey\}<\/Label>/);
+    assert.match(detail, /<TextInput[\s\S]*label=\{copy\.endpoint\}[\s\S]*description=\{props\.fixedOAuth \? copy\.oauthFixed : undefined\}/);
     // The credential hint is a single persistent line (constant dialog height);
     // its text still covers the "已设置，粘贴新值可替换" state.
-    assert.match(detail, /<FieldDescription>\{apiKeyStatusHint\}<\/FieldDescription>/);
+    assert.match(detail, /<PasswordInput[\s\S]*description=\{apiKeyStatusHint\}/);
     assert.match(detail, /hasSecret === true\s*\?\s*copy\.keySet/);
     assert.match(detail, /placeholder=\{hasSecret === true \? '••••••••' : copy\.pasteModelKey\}/);
     assert.match(detail, /ariaLabel=\{copy\.modelKeyAria\(display\.name\)\}/);
@@ -673,13 +665,13 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /readOnly=\{props\.fixedOAuth\}/,
-      'OAuth Base URL must be read-only in the provider detail sheet',
+      /isDisabled=\{props\.disabled \|\| props\.fixedOAuth\}/,
+      'OAuth Base URL must be disabled in the provider detail sheet',
     );
     assert.match(
       detail,
-      /aria-readonly=\{props\.fixedOAuth \? 'true' : undefined\}/,
-      'the fixed OAuth Base URL state must be exposed to assistive tech',
+      /disabledMessage=\{props\.fixedOAuth \? copy\.oauthFixed : undefined\}/,
+      'the fixed OAuth Base URL reason must be exposed through Astryx',
     );
   });
 
@@ -778,7 +770,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       enabledModels,
-      /role="checkbox"\s+aria-checked=\{isEnabled\}/,
+      /<CheckboxInput[\s\S]*value=\{isEnabled\}/,
       'each model row is a checkbox reflecting its enabled state',
     );
     // Roving tabindex: exactly one row is a Tab stop; the rest are -1.
@@ -810,8 +802,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     // The default model row is checked and locked (disabled), never toggled off,
     // and there is no second Save action inside the editor.
-    assert.match(enabledModels, /disabled=\{props\.disabled \|\| isDefault\}/);
-    assert.match(enabledModels, /isDefault && \([\s\S]*providerEnabledModelMeta">\{copy\.defaultModel\}/);
+    assert.match(enabledModels, /isDisabled=\{props\.disabled \|\| isDefault\}/);
+    assert.match(enabledModels, /description=\{isDefault \? copy\.defaultModel : undefined\}/);
     assert.doesNotMatch(enabledModels, /copy\.saving|copy\.saveEndpoint/);
   });
 
