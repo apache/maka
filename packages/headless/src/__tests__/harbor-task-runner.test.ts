@@ -1432,6 +1432,12 @@ describe('createHarborTaskRunner', () => {
       const output = await runner(runInput());
       assert.equal(output.harbor.reward, 1);
       assert.equal(output.harbor.verifier?.outcome, 'passed');
+      assert.equal(output.cell.status, 'failed');
+      assert.equal(output.cell.errorClass, 'budget_exhausted');
+      assert.deepEqual(output.cell.deadlineSettlement, {
+        source: 'benchmark.deadline',
+        mode: 'immediate',
+      });
       assert.deepEqual(output.cell.tokenSummary, timedCell.tokenSummary);
       assert.deepEqual(output.cell.executionIdentity, timedCell.executionIdentity);
     });

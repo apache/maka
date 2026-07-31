@@ -391,18 +391,17 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
               ...checkpointedCell,
               tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
             };
-      const cell =
-        completeTimedOutTrial && reward <= 0
-          ? {
-              ...usageCell,
-              status: 'failed' as const,
-              errorClass: 'budget_exhausted',
-              deadlineSettlement: {
-                source: 'benchmark.deadline' as const,
-                mode: 'immediate' as const,
-              },
-            }
-          : usageCell;
+      const cell = completeTimedOutTrial
+        ? {
+            ...usageCell,
+            status: 'failed' as const,
+            errorClass: 'budget_exhausted',
+            deadlineSettlement: {
+              source: 'benchmark.deadline' as const,
+              mode: 'immediate' as const,
+            },
+          }
+        : usageCell;
       const verifierStdout = await readOptionalText(join(trialDir, TRIAL_VERIFIER_STDOUT));
       const verifier = await readVerifierOutcome(
         join(trialDir, TRIAL_VERIFIER_OUTCOME),

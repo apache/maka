@@ -5,7 +5,9 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import type { RuntimeEvent } from '@maka/core';
 import type { Config } from '../contracts.js';
+import { buildHarborCellOutput } from '../cell-output.js';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
 import { contextBudgetSummary } from './helpers/ab-summary-fixtures.js';
 import {
@@ -1562,8 +1564,15 @@ describe('fixed prompt controller', () => {
           calls.push(task.id);
           return harborOutput({
             taskId: task.id,
+            reward: 0,
             status: 'failed',
             errorClass: 'provider_billing',
+            omitTokenSummary: true,
+            steps: 0,
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
           });
         },
         now: () => 100,
@@ -1574,6 +1583,50 @@ describe('fixed prompt controller', () => {
       assert.equal(String(result.stopReason), 'systemic_provider_failure');
       assert.equal(result.events[0]?.type, 'task_infra_failed');
       assert.equal(String(result.events[0]?.errorClass), 'provider_billing');
+      assert.equal(result.events[0]?.scored, false);
+    });
+  });
+
+  test('stops immediately on a pre-execution authentication failure', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const calls: string[] = [];
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [
+          { id: 'task-a', path: '/bench/task-a' },
+          { id: 'task-b', path: '/bench/task-b' },
+        ],
+        maxConcurrency: 1,
+        taskRunner: async ({ task }) => {
+          calls.push(task.id);
+          return harborOutput({
+            taskId: task.id,
+            reward: 0,
+            status: 'failed',
+            errorClass: 'auth',
+            omitTokenSummary: true,
+            steps: 0,
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          });
+        },
+        now: () => 100,
+        newId: idFactory(),
+      });
+
+      assert.deepEqual(calls, ['task-a']);
+      assert.equal(result.stopReason, 'systemic_provider_failure');
+      assert.equal(result.events[0]?.type, 'task_infra_failed');
+      assert.equal(result.events[0]?.errorClass, 'auth');
       assert.equal(result.events[0]?.scored, false);
     });
   });
@@ -2189,6 +2242,41 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('keeps a verifier-graded deadline scored when the model completed but chose no workspace tool', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireFinalUsage: true,
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'aborted',
+            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_completed');
+      assert.equal(result.events[0]?.passed, false);
+      assert.equal(result.events[0]?.scored, true);
+      assert.equal(result.events[0]?.eligible, true);
+      assert.equal(result.events[0]?.errorClass, 'budget_exhausted');
+    });
+  });
+
   test('classifies provider rate limits as infrastructure failures', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -2461,7 +2549,47 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('excludes a deadline-settled workspace attempt when no provider usage completed', async () => {
+  test('rejects a verifier-graded failed result when required final usage is missing', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireFinalUsage: true,
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'runtime_error',
+            omitTokenSummary: true,
+            toolSummary: {
+              providerVisibleToolCount: 1,
+              actualToolCalls: 1,
+              actualToolNames: ['Bash'],
+              actualToolCallCounts: { Bash: 1 },
+            },
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+      assert.equal(result.events[0]?.errorClass, 'missing_token_usage');
+      assert.equal(result.events[0]?.scored, false);
+      assert.equal(result.events[0]?.eligible, false);
+    });
+  });
+
+  test('rejects a deadline-settled workspace attempt when required provider usage is missing', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
@@ -2493,8 +2621,8 @@ describe('fixed prompt controller', () => {
         newId: idFactory(),
       });
 
-      assert.equal(result.events[0]?.type, 'task_infra_failed');
-      assert.equal(result.events[0]?.errorClass, 'infra_error');
+      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+      assert.equal(result.events[0]?.errorClass, 'missing_token_usage');
       assert.equal(result.events[0]?.eligible, false);
       assert.equal(result.events[0]?.scored, false);
     });
@@ -2774,6 +2902,40 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('keeps a verifier failure scored after a completed model step without usage', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const cell = failedCellAfterCompletedModelStepWithoutUsage('runtime_error');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () => ({
+          harbor: {
+            reward: 0,
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          },
+          cell: { ...cell, traceEventsPath: '/logs/task-a/events.jsonl' },
+        }),
+      });
+
+      assert.equal(cell.steps, 1);
+      assert.equal(cell.tokenSummary, undefined);
+      assert.equal(result.events[0]?.type, 'task_completed');
+      assert.equal(result.events[0]?.passed, false);
+      assert.equal(result.events[0]?.scored, true);
+      assert.equal(result.events[0]?.eligible, true);
+    });
+  });
+
   test('excludes a verifier failure when the agent never completed a model step or reported usage', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -2808,10 +2970,14 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('excludes a deadline verifier failure when no provider step completed or workspace tool ran', async () => {
+  test('rejects missing required usage after a completed model step', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+      const cell = failedCellAfterCompletedModelStepWithoutUsage('aborted', {
+        source: 'benchmark.deadline',
+        mode: 'immediate',
+      });
 
       const result = await runFixedPromptController({
         runId: 'run-1',
@@ -2821,24 +2987,22 @@ describe('fixed prompt controller', () => {
         resultsJsonlPath: join(dir, 'results.jsonl'),
         tasks: [{ id: 'task-a', path: '/bench/task-a' }],
         requireFinalUsage: true,
-        taskRunner: async () =>
-          harborOutput({
-            taskId: 'task-a',
+        taskRunner: async () => ({
+          harbor: {
             reward: 0,
-            status: 'failed',
-            errorClass: 'aborted',
-            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
-            steps: 1,
-            omitTokenSummary: true,
             verifier: {
               outcome: 'failed',
               attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
             },
-          }),
+          },
+          cell: { ...cell, traceEventsPath: '/logs/task-a/events.jsonl' },
+        }),
       });
 
-      assert.equal(result.events[0]?.type, 'task_infra_failed');
-      assert.equal(result.events[0]?.status, 'infra_failed');
+      assert.equal(cell.steps, 1);
+      assert.equal(cell.tokenSummary, undefined);
+      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
+      assert.equal(result.events[0]?.errorClass, 'missing_token_usage');
       assert.equal(result.events[0]?.scored, false);
       assert.equal(result.events[0]?.eligible, false);
     });
@@ -3188,6 +3352,44 @@ function harborOutput(input: {
 function idFactory(): () => string {
   let i = 0;
   return () => `id-${++i}`;
+}
+
+function completedModelEventWithoutUsage(): RuntimeEvent {
+  return {
+    id: 'model-final',
+    sessionId: 'session-task-a',
+    invocationId: 'inv-task-a',
+    runId: 'run-task-a',
+    turnId: 'turn-task-a',
+    ts: 30,
+    partial: false,
+    role: 'model',
+    author: 'agent',
+    refs: { stepId: 'step-1' },
+    content: { kind: 'text', text: 'candidate response' },
+  };
+}
+
+function failedCellAfterCompletedModelStepWithoutUsage(
+  errorClass: string,
+  deadlineSettlement?: TaskRunOutput['cell']['deadlineSettlement'],
+) {
+  return buildHarborCellOutput({
+    invocation: {
+      invocationId: 'inv-task-a',
+      sessionId: 'session-task-a',
+      runId: 'run-task-a',
+      turnId: 'turn-task-a',
+      status: 'failed',
+      failure: { class: errorClass },
+      events: [completedModelEventWithoutUsage()],
+      startedAt: 20,
+      finishedAt: 60,
+    },
+    runtimeEventsPath: '/logs/task-a/runtime-events.jsonl',
+    promptHash: hashSystemPrompt('fixed prompt\n'),
+    ...(deadlineSettlement ? { deadlineSettlement } : {}),
+  });
 }
 
 async function delay(ms: number): Promise<void> {

@@ -595,10 +595,13 @@ function taskEventFromOutput(input: {
     });
   }
   if (isPreExecutionAgentFailure(input.output) && verifierGrade !== 'passed') {
+    const errorClass = isProviderInfraFailure(input.output.cell.errorClass)
+      ? input.output.cell.errorClass
+      : 'infra_error';
     return taskInfraFailedEvent({
       ...input,
-      errorClass: 'infra_error',
-      error: 'Harbor cell failed before completing a model step or reporting token usage',
+      errorClass,
+      error: `Harbor cell failed with ${errorClass} before completing a model step or reporting token usage`,
     });
   }
   if (isProviderInfraFailure(input.output.cell.errorClass) && verifierGrade === undefined) {
@@ -629,17 +632,14 @@ function taskEventFromOutput(input: {
 
 function isPreExecutionAgentFailure(output: TaskRunOutput): boolean {
   if (output.cell.status !== 'failed') return false;
-  const completedProviderStep = output.cell.tokenSummary !== undefined;
+  const completedProviderStep = output.cell.steps > 0 || output.cell.tokenSummary !== undefined;
   const executedWorkspaceTool = output.cell.toolSummary.actualToolCalls > 0;
-  if (output.cell.deadlineSettlement?.source === 'benchmark.deadline') {
-    return !completedProviderStep || !executedWorkspaceTool;
-  }
+  if (completedProviderStep || executedWorkspaceTool) return false;
   return (
-    !completedProviderStep &&
-    !executedWorkspaceTool &&
-    (output.cell.errorClass === 'runtime_error' ||
-      output.cell.errorClass === 'aborted' ||
-      isProviderInfraFailure(output.cell.errorClass))
+    output.cell.deadlineSettlement?.source === 'benchmark.deadline' ||
+    output.cell.errorClass === 'runtime_error' ||
+    output.cell.errorClass === 'aborted' ||
+    isProviderInfraFailure(output.cell.errorClass)
   );
 }
 
@@ -826,12 +826,7 @@ function classifyPlumbingFailure(
       error: `Harbor cell prompt hash ${output.cell.promptHash} did not match ${expectedPromptHash}`,
     };
   }
-  if (
-    requireFinalUsage &&
-    (output.cell.status === 'completed' ||
-      output.cell.deadlineSettlement?.source === 'benchmark.deadline') &&
-    output.cell.tokenSummary === undefined
-  ) {
+  if (requireFinalUsage && output.cell.tokenSummary === undefined) {
     return {
       errorClass: 'missing_token_usage',
       error: 'Harbor cell did not report final token usage',
