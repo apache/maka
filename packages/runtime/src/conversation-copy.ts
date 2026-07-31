@@ -21,6 +21,7 @@ import {
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
 } from './terminal-run-commit.js';
+import { buildToolOperationId } from './runtime-commit-sink.js';
 import {
   buildToolResultArchiveResourceRef,
   parseToolResultArchiveResourceRef,
@@ -59,6 +60,7 @@ export type ConversationCopyMessageReferenceMap = ConversationCopyArtifactRefere
 
 export type ConversationCopyReferenceMap = ConversationCopyMessageReferenceMap & {
   readonly invocationIds: ReadonlyMap<string, string>;
+  readonly operationIds: ReadonlyMap<string, string>;
   readonly agentRunEventIds: ReadonlyMap<string, string>;
 };
 
@@ -71,8 +73,10 @@ export interface CloneConversationRuntimeLedgerInput {
   readonly runtimeEventStore: RuntimeEventStore & {
     importConversationCopyRuntimeEvents?(
       sessionId: string,
-      runId: string,
-      events: readonly RuntimeEvent[],
+      batches: readonly {
+        readonly runId: string;
+        readonly events: readonly RuntimeEvent[];
+      }[],
     ): Promise<void>;
   };
   readonly newId: () => string;
@@ -245,10 +249,12 @@ export async function cloneConversationRuntimeLedger(
     ),
   );
   const providerTraceIds = providerTraceIdMap(flattenedPlans, input.newId);
+  const operationIds = toolOperationIdMap(flattenedPlans, targetInvocationIds);
   const references: ConversationCopyReferenceMap = {
     ...input.referenceMap,
     runIds,
     invocationIds,
+    operationIds,
     runtimeEventIds,
     providerTraceIds,
     agentRunEventIds: operationalEventIds,
@@ -275,27 +281,37 @@ export async function cloneConversationRuntimeLedger(
     }
   }
   const checkpointIds = new Map<string, string>();
-
-  for (const plan of flattenedPlans) {
+  const clonedPlans = flattenedPlans.map((plan) => {
     const runId = runIds.get(plan.run.runId)!;
     const invocationId = targetInvocationIds.get(plan.run.runId)!;
-    const clonedRun = cloneRunHeader(
-      plan.run,
-      input.referenceMap.targetSessionId,
+    return {
+      plan,
       runId,
-      invocationId,
-      references,
-    );
-    await input.runStore.createRun(clonedRun);
-
-    const clonedRuntimeEvents = plan.events.map((event) => clonedEventBySourceId.get(event.id)!);
-    if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
-      await input.runtimeEventStore.importConversationCopyRuntimeEvents(
+      clonedRun: cloneRunHeader(
+        plan.run,
         input.referenceMap.targetSessionId,
         runId,
-        clonedRuntimeEvents,
-      );
-    } else {
+        invocationId,
+        references,
+      ),
+      clonedRuntimeEvents: plan.events.map((event) => clonedEventBySourceId.get(event.id)!),
+    };
+  });
+
+  for (const { clonedRun } of clonedPlans) {
+    await input.runStore.createRun(clonedRun);
+  }
+
+  if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
+    await input.runtimeEventStore.importConversationCopyRuntimeEvents(
+      input.referenceMap.targetSessionId,
+      clonedPlans.map(({ runId, clonedRuntimeEvents }) => ({
+        runId,
+        events: clonedRuntimeEvents,
+      })),
+    );
+  } else {
+    for (const { runId, clonedRuntimeEvents } of clonedPlans) {
       for (const clonedEvent of clonedRuntimeEvents) {
         await input.runtimeEventStore.appendRuntimeEvent(
           input.referenceMap.targetSessionId,
@@ -304,6 +320,9 @@ export async function cloneConversationRuntimeLedger(
         );
       }
     }
+  }
+
+  for (const { plan, runId } of clonedPlans) {
     for (const event of plan.operationalEvents) {
       const clonedEvent = cloneAgentRunEvent(
         event,
@@ -586,6 +605,33 @@ function providerTraceIdMap(
   return result;
 }
 
+function toolOperationIdMap(
+  plans: readonly {
+    readonly run: AgentRunHeader;
+    readonly events: readonly RuntimeEvent[];
+  }[],
+  targetInvocationIds: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const { run, events } of plans) {
+    const invocationId = requiredMappedId(targetInvocationIds, run.runId, 'target invocation');
+    for (const event of events) {
+      const dispatch = event.actions?.toolDispatch;
+      if (!dispatch) continue;
+      const targetOperationId = buildToolOperationId({
+        invocationId,
+        providerToolCallId: dispatch.providerToolCallId,
+      });
+      const existing = result.get(dispatch.operationId);
+      if (existing && existing !== targetOperationId) {
+        throw new Error(`Tool operation ${dispatch.operationId} crosses copied AgentRuns`);
+      }
+      result.set(dispatch.operationId, targetOperationId);
+    }
+  }
+  return result;
+}
+
 function isCopiedAgentRunEvent(event: AgentRunEvent): boolean {
   // Active/semantic blocks hash the exact provider-visible source. Rewriting
   // target-owned RuntimeEvent and Artifact references invalidates that
@@ -721,13 +767,22 @@ function rewriteRuntimeEventReferences(
         : event.content;
   const refs = event.refs
     ? (() => {
-        const { traceEventId: _traceEventId, ...preserved } = event.refs;
+        const { operationId: _operationId, traceEventId: _traceEventId, ...preserved } = event.refs;
         const traceEventId = event.refs.traceEventId
           ? references.agentRunEventIds.get(event.refs.traceEventId)
           : undefined;
         return {
           ...preserved,
           ...(traceEventId ? { traceEventId } : {}),
+          ...(event.refs.operationId
+            ? {
+                operationId: rewriteOwnedId(
+                  event.refs.operationId,
+                  references.operationIds,
+                  'tool operation',
+                ),
+              }
+            : {}),
           ...(event.refs.artifactId
             ? {
                 artifactId: rewriteOwnedArtifactId(event.refs.artifactId, references),
@@ -772,28 +827,52 @@ function rewriteRuntimeEventActions(
   actions: RuntimeEvent['actions'],
   references: ConversationCopyReferenceMap,
 ): RuntimeEvent['actions'] {
+  const dispatch = actions?.toolDispatch;
   const recovery = actions?.toolRecovery;
-  if (!recovery || recovery.kind !== TOOL_RECOVERY_DECISION_FACT_KIND) return actions;
-  const payload = recovery.payload;
+  if (!dispatch && !recovery) return actions;
+  const operationId = dispatch?.operationId ?? recovery?.payload.operationId;
+  const targetOperationId = operationId
+    ? rewriteOwnedId(operationId, references.operationIds, 'tool operation')
+    : undefined;
   return {
     ...actions,
-    toolRecovery: {
-      ...recovery,
-      payload: {
-        ...payload,
-        evidenceEventIds: payload.evidenceEventIds.map((eventId) =>
-          requiredMappedId(references.runtimeEventIds, eventId, 'RuntimeEvent'),
-        ),
-        ...(payload.disposition === 'completed'
-          ? {
-              outcomeEventId: requiredMappedId(
-                references.runtimeEventIds,
-                payload.outcomeEventId,
-                'RuntimeEvent',
-              ),
-            }
-          : {}),
-      },
+    ...(dispatch && targetOperationId
+      ? { toolDispatch: { ...dispatch, operationId: targetOperationId } }
+      : {}),
+    ...(recovery && targetOperationId
+      ? {
+          toolRecovery: rewriteToolRecoveryFact(recovery, targetOperationId, references),
+        }
+      : {}),
+  };
+}
+
+function rewriteToolRecoveryFact(
+  recovery: NonNullable<RuntimeEvent['actions']>['toolRecovery'],
+  operationId: string,
+  references: ConversationCopyReferenceMap,
+): NonNullable<RuntimeEvent['actions']>['toolRecovery'] {
+  if (!recovery || recovery.kind !== TOOL_RECOVERY_DECISION_FACT_KIND) {
+    return recovery ? { ...recovery, payload: { ...recovery.payload, operationId } } : recovery;
+  }
+  const payload = recovery.payload;
+  return {
+    ...recovery,
+    payload: {
+      ...payload,
+      operationId,
+      evidenceEventIds: payload.evidenceEventIds.map((eventId) =>
+        requiredMappedId(references.runtimeEventIds, eventId, 'RuntimeEvent'),
+      ),
+      ...(payload.disposition === 'completed'
+        ? {
+            outcomeEventId: requiredMappedId(
+              references.runtimeEventIds,
+              payload.outcomeEventId,
+              'RuntimeEvent',
+            ),
+          }
+        : {}),
     },
   };
 }

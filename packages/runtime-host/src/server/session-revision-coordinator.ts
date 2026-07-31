@@ -501,7 +501,7 @@ export class HostSessionRevisionCoordinator {
     const sidecars = await Promise.allSettled([
       this.#artifacts.purgeSessionArtifacts(header.id),
       this.#taskLedger.purgeConversationTaskLedger(header.id),
-      this.#stores.agentRunStore.purgeConversationRuntimeLedger(header.id),
+      this.#stores.purgeConversationOperationalState(header.id),
     ]);
     const failures = sidecars.flatMap((result) =>
       result.status === 'rejected' ? [result.reason] : [],

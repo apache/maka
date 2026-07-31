@@ -185,18 +185,20 @@ describe('execution stores', () => {
         const copied = await writer.sessionStore.create(sessionInput(root));
         await writer.agentRunStore.createRun(runHeader(retained.id, 'retained-run'));
         await writer.agentRunStore.createRun(runHeader(copied.id, 'copied-run'));
-        await writer.runtimeEventStore.importConversationCopyRuntimeEvents(
-          retained.id,
-          'retained-run',
-          [runtimeEvent(retained.id, 'retained-run', 'retained-event', 1)],
-        );
-        await writer.runtimeEventStore.importConversationCopyRuntimeEvents(
-          copied.id,
-          'copied-run',
-          conversationCopyToolLedger(copied.id, 'copied-run'),
-        );
+        await writer.runtimeEventStore.importConversationCopyRuntimeEvents(retained.id, [
+          {
+            runId: 'retained-run',
+            events: [runtimeEvent(retained.id, 'retained-run', 'retained-event', 1)],
+          },
+        ]);
+        await writer.runtimeEventStore.importConversationCopyRuntimeEvents(copied.id, [
+          {
+            runId: 'copied-run',
+            events: conversationCopyToolLedger(copied.id, 'copied-run'),
+          },
+        ]);
 
-        await writer.agentRunStore.purgeConversationRuntimeLedger(copied.id);
+        await writer.purgeConversationOperationalState(copied.id);
 
         assert.deepEqual(
           (await writer.agentRunStore.listSessionRuns(retained.id)).map((run) => run.runId),

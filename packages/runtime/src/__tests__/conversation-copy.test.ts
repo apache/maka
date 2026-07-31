@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader, RuntimeEvent, StoredMessage } from '@maka/core';
 import { canonicalToolArgsHash, decodeCanonicalToolResultContent } from '@maka/core';
-import { createAgentRunStore, createRuntimeEventStore } from '@maka/storage';
+import {
+  createAgentRunStore,
+  createRuntimeEventStore,
+  createSqliteAgentRunStore,
+  createSqliteRuntimeStore,
+} from '@maka/storage';
 import {
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
@@ -19,6 +24,7 @@ import {
 } from '../history-compact-checkpoint.js';
 import { isHistoryCompactContentEvent } from '../history-compact.js';
 import { RuntimeReadModel } from '../runtime-read-model.js';
+import { buildToolOperationId } from '../runtime-commit-sink.js';
 import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
 
 test('conversation copy slices exact turns on inclusive and exclusive boundaries', () => {
@@ -343,9 +349,10 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
 
 test('conversation copy rewrites a complete tool recovery bundle atomically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-recovery-copy-'));
+  const runStore = createSqliteAgentRunStore(root);
+  const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   try {
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    await runStore.ready?.();
     await runStore.createRun(
       agentRunHeader({
         runId: 'run-source',
@@ -453,11 +460,9 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
         status: 'completed',
       }),
     ];
-    await runtimeEventStore.importConversationCopyRuntimeEvents(
-      'session-source',
-      'run-source',
-      sourceEvents,
-    );
+    await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
+      { runId: 'run-source', events: sourceEvents },
+    ]);
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'run_completed',
       id: 'completed-source',
@@ -492,12 +497,25 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
     );
     const [targetRun] = await runStore.listSessionRuns('session-target');
     assert.ok(targetRun);
+    assert.ok(targetRun.invocationId);
+    const targetOperationId = buildToolOperationId({
+      invocationId: targetRun.invocationId,
+      providerToolCallId: 'provider-call-1',
+    });
+    assert.notEqual(targetOperationId, 'operation-1');
     const targetEvents = await runtimeEventStore.readRuntimeEvents(
       'session-target',
       targetRun.runId,
     );
+    const dispatch = targetEvents.find((event) => event.actions?.toolDispatch)?.actions
+      ?.toolDispatch;
+    const reconcile = targetEvents.find(
+      (event) => event.actions?.toolRecovery?.kind === 'maka.tool.reconcile_result',
+    )?.actions?.toolRecovery;
     const decision = targetEvents.find((event) => event.id === eventIds.get('event-decision'))
       ?.actions?.toolRecovery;
+    assert.equal(dispatch?.operationId, targetOperationId);
+    assert.equal(reconcile?.payload.operationId, targetOperationId);
     assert.equal(decision?.kind, 'maka.tool.recovery_decision');
     if (decision?.kind !== 'maka.tool.recovery_decision') {
       assert.fail('Copied recovery decision is missing');
@@ -513,7 +531,20 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
         eventIds.get(eventId),
       ),
     );
+    assert.equal(decision.payload.operationId, targetOperationId);
+    assert.ok(
+      targetEvents
+        .filter((event) => event.refs?.operationId)
+        .every((event) => event.refs?.operationId === targetOperationId),
+    );
+    assert.equal((await runtimeEventStore.readToolOperation('operation-1'))?.runId, 'run-source');
+    assert.equal(
+      (await runtimeEventStore.readToolOperation(targetOperationId))?.runId,
+      targetRun.runId,
+    );
   } finally {
+    runtimeEventStore.close();
+    runStore.close?.();
     await rm(root, { recursive: true, force: true });
   }
 });

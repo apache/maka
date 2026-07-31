@@ -64,8 +64,8 @@ describe('SqliteRuntimeStore', () => {
     await withStore(async (store) => {
       const events = [functionCallEvent(), toolDispatchEvent(), functionResponseEvent({ ts: 11 })];
 
-      await store.importConversationCopyRuntimeEvents('session-1', 'run-1', events);
-      await store.importConversationCopyRuntimeEvents('session-1', 'run-1', events);
+      await store.importConversationCopyRuntimeEvents('session-1', [{ runId: 'run-1', events }]);
+      await store.importConversationCopyRuntimeEvents('session-1', [{ runId: 'run-1', events }]);
 
       assert.deepEqual(await store.readImmutableRuntimeEvents('session-1', 'run-1'), events);
       assert.equal(

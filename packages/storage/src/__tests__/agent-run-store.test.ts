@@ -69,38 +69,6 @@ describe('AgentRunStore', () => {
     });
   });
 
-  it('purges only an incomplete conversation-copy Runtime ledger', async () => {
-    await withStores(async (runStore, runtimeEventStore, root) => {
-      await runStore.createRun(makeHeader());
-      await runStore.createRun(
-        makeHeader({
-          sessionId: 'session-copy',
-          runId: 'run-copy',
-          invocationId: 'invocation-copy',
-        }),
-      );
-      await runtimeEventStore.appendRuntimeEvent(
-        'session-copy',
-        'run-copy',
-        makeRuntimeEvent({
-          sessionId: 'session-copy',
-          runId: 'run-copy',
-          invocationId: 'invocation-copy',
-        }),
-      );
-
-      await runStore.purgeConversationRuntimeLedger('session-copy');
-
-      assert.equal((await runStore.listSessionRuns('session-1')).length, 1);
-      assert.deepEqual(await runStore.listSessionRuns('session-copy'), []);
-      assert.deepEqual(await runtimeEventStore.readSessionRuntimeEvents('session-copy'), []);
-      await assert.rejects(
-        () => readdir(join(root, 'sessions', 'session-copy', 'projections')),
-        (error: NodeJS.ErrnoException) => error.code === 'ENOENT',
-      );
-    });
-  });
-
   it('rejects malformed run headers instead of returning partial records', async () => {
     await withStore(async (store, root) => {
       await store.createRun(makeHeader());

@@ -122,7 +122,6 @@ export interface RootTurnAdmissionStore {
 }
 
 export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionStore {
-  purgeConversationRuntimeLedger(sessionId: string): Promise<void>;
   listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
@@ -140,11 +139,15 @@ export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionSt
   close?(): void;
 }
 
+export interface ConversationCopyRuntimeEventBatch {
+  readonly runId: string;
+  readonly events: readonly RuntimeEvent[];
+}
+
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
   importConversationCopyRuntimeEvents(
     sessionId: string,
-    runId: string,
-    events: readonly RuntimeEvent[],
+    batches: readonly ConversationCopyRuntimeEventBatch[],
   ): Promise<void>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readImmutableSteeringMessageProof(
@@ -203,44 +206,6 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   ready(): Promise<void> {
     return this.#ready;
-  }
-
-  async purgeConversationRuntimeLedger(sessionId: string): Promise<void> {
-    assertSafeId(sessionId, 'Invalid session id');
-    await this.#ready;
-    this.#lease.transaction('write', () => {
-      const database = this.#lease.database;
-      database
-        .prepare(`
-          DELETE FROM tool_journal_events
-          WHERE runtime_event_id IN (
-            SELECT event_id FROM runtime_events WHERE session_id = ?
-          )
-          OR operation_id IN (
-            SELECT operation_id
-            FROM tool_operations
-            WHERE call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-              OR dispatch_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-              OR result_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-          )
-        `)
-        .run(sessionId, sessionId, sessionId, sessionId);
-      database
-        .prepare(`
-          DELETE FROM tool_operations
-          WHERE call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-            OR dispatch_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-            OR result_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)
-        `)
-        .run(sessionId, sessionId, sessionId);
-      database.prepare('DELETE FROM runtime_partial_snapshots WHERE session_id = ?').run(sessionId);
-      database.prepare('DELETE FROM runtime_events WHERE session_id = ?').run(sessionId);
-      database
-        .prepare('DELETE FROM core_agent_run_projections WHERE session_id = ?')
-        .run(sessionId);
-      database.prepare('DELETE FROM core_root_turn_admissions WHERE session_id = ?').run(sessionId);
-      database.prepare('DELETE FROM core_agent_runs WHERE session_id = ?').run(sessionId);
-    });
   }
 
   async createRun(
@@ -554,17 +519,6 @@ class FileAgentRunStore implements DurableAgentRunStore {
   constructor(workspaceRoot: string) {
     this.durabilityRoot = resolve(workspaceRoot);
     this.sessionsRoot = join(this.durabilityRoot, 'sessions');
-  }
-
-  async purgeConversationRuntimeLedger(sessionId: string): Promise<void> {
-    assertSafeId(sessionId, 'Invalid session id');
-    const sessionRoot = join(this.sessionsRoot, sessionId);
-    const messageProofsRoot = join(sessionRoot, 'message-proofs');
-    await rm(this.runsRoot(sessionId), { recursive: true, force: true });
-    await rm(join(sessionRoot, 'projections'), { recursive: true, force: true });
-    await rm(join(messageProofsRoot, 'steering'), { recursive: true, force: true });
-    await syncDirectoryIfPresent(messageProofsRoot);
-    await syncDirectoryIfPresent(sessionRoot);
   }
 
   async createRun(
@@ -1829,12 +1783,17 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
 
   async importConversationCopyRuntimeEvents(
     sessionId: string,
-    runId: string,
-    events: readonly RuntimeEvent[],
+    batches: readonly ConversationCopyRuntimeEventBatch[],
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
-    assertSafeId(runId, 'Invalid run id');
-    const canonicalEvents = events.map(canonicalizeRuntimeEventForStorage);
+    const canonicalBatches = batches.map(({ runId, events }) => {
+      assertSafeId(runId, 'Invalid run id');
+      return {
+        runId,
+        events: events.map(canonicalizeRuntimeEventForStorage),
+      };
+    });
+    const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
     if (canonicalEvents.some((event) => event.partial)) {
       throw new Error('Conversation copy cannot import partial RuntimeEvents');
     }
@@ -1844,32 +1803,35 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
         `Conversation copy RuntimeEvent ledger is corrupt: ${scan.issues[0]?.code ?? 'unknown'}`,
       );
     }
-    await this.withQueue(sessionId, runId, async () => {
-      const header = await this.readRunHeader(sessionId, runId);
-      for (const event of canonicalEvents) decodeRuntimeEvent(event, header);
-      const path = this.runtimeEventsPath(sessionId, runId);
-      const existing = await readRuntimeEventJsonl(path, header);
-      if (existing.length > 0) {
-        if (!isDeepStrictEqual(existing, canonicalEvents)) {
-          throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
+
+    for (const { runId, events } of canonicalBatches) {
+      await this.withQueue(sessionId, runId, async () => {
+        const header = await this.readRunHeader(sessionId, runId);
+        for (const event of events) decodeRuntimeEvent(event, header);
+        const path = this.runtimeEventsPath(sessionId, runId);
+        const existing = await readRuntimeEventJsonl(path, header);
+        if (existing.length > 0) {
+          if (!isDeepStrictEqual(existing, events)) {
+            throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
+          }
+        } else if (events.length > 0) {
+          await appendJsonl(
+            path,
+            `${events.map((event) => encodeCanonicalRuntimeEvent(event).json).join('\n')}\n`,
+            { durable: true, durabilityRoot: this.durabilityRoot },
+          );
         }
-      } else if (canonicalEvents.length > 0) {
-        await appendJsonl(
-          path,
-          `${canonicalEvents.map((event) => encodeCanonicalRuntimeEvent(event).json).join('\n')}\n`,
-          { durable: true, durabilityRoot: this.durabilityRoot },
-        );
-      }
-      for (const event of canonicalEvents) {
-        await this.settleImmutableRuntimeEventPostEffects({
-          sessionId,
-          runId,
-          event,
-          path,
-          ensureDurability: false,
-        });
-      }
-    });
+        for (const event of events) {
+          await this.settleImmutableRuntimeEventPostEffects({
+            sessionId,
+            runId,
+            event,
+            path,
+            ensureDurability: false,
+          });
+        }
+      });
+    }
   }
 
   private async appendRuntimeEventForRun(

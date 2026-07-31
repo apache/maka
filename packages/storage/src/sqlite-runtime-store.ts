@@ -33,7 +33,10 @@ import {
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
-import type { ImmutableSteeringMessageProof } from './agent-run-store.js';
+import type {
+  ConversationCopyRuntimeEventBatch,
+  ImmutableSteeringMessageProof,
+} from './agent-run-store.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 
@@ -319,18 +322,30 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
 
   async importConversationCopyRuntimeEvents(
     sessionId: string,
-    runId: string,
-    events: readonly RuntimeEvent[],
+    batches: readonly ConversationCopyRuntimeEventBatch[],
   ): Promise<void> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    assertRuntimeStorageSafeId(runId, 'Invalid run id');
-    const canonicalEvents = events.map(canonicalizeRuntimeEventForStorage);
-    for (const event of canonicalEvents) {
-      if (isPartialRuntimeEvent(event)) {
-        throw new Error('Conversation copy cannot import partial RuntimeEvents');
+    const runIds = new Set<string>();
+    const canonicalBatches = batches.map(({ runId, events }) => {
+      assertRuntimeStorageSafeId(runId, 'Invalid run id');
+      if (runIds.has(runId)) {
+        throw new Error(`Conversation copy contains duplicate run ${runId}`);
       }
-      if (event.sessionId !== sessionId || event.runId !== runId) {
-        throw new Error(`RuntimeEvent store identity does not match event ${event.id}`);
+      runIds.add(runId);
+      return {
+        runId,
+        events: events.map(canonicalizeRuntimeEventForStorage),
+      };
+    });
+    const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
+    for (const { runId, events } of canonicalBatches) {
+      for (const event of events) {
+        if (isPartialRuntimeEvent(event)) {
+          throw new Error('Conversation copy cannot import partial RuntimeEvents');
+        }
+        if (event.sessionId !== sessionId || event.runId !== runId) {
+          throw new Error(`RuntimeEvent store identity does not match event ${event.id}`);
+        }
       }
     }
     const scan = scanToolLedger(canonicalEvents);
@@ -340,24 +355,26 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
       );
     }
     this.transaction(() => {
-      const existing = (
-        this.db
-          .prepare(`
-            SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-            FROM runtime_events
-            WHERE session_id = ? AND run_id = ?
-            ORDER BY event_seq ASC, event_id ASC
-          `)
-          .all(sessionId, runId) as unknown as RuntimeEventStorageRow[]
-      ).map(decodeRuntimeEventStorageRow);
-      if (existing.length > 0 && !isDeepStrictEqual(existing, canonicalEvents)) {
-        throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
-      }
-      if (existing.length === 0) {
-        for (const event of canonicalEvents) this.insertRuntimeEvent(event, event.ts, true);
+      for (const { runId, events } of canonicalBatches) {
+        const existing = (
+          this.db
+            .prepare(`
+              SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+              FROM runtime_events
+              WHERE session_id = ? AND run_id = ?
+              ORDER BY event_seq ASC, event_id ASC
+            `)
+            .all(sessionId, runId) as unknown as RuntimeEventStorageRow[]
+        ).map(decodeRuntimeEventStorageRow);
+        if (existing.length > 0 && !isDeepStrictEqual(existing, events)) {
+          throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
+        }
+        if (existing.length === 0) {
+          for (const event of events) this.insertRuntimeEvent(event, event.ts, true);
+        }
       }
       if (canonicalEvents.some(isToolLedgerBearingEvent)) {
-        this.rebuildToolProjectionsFromRuntimeEventsSync();
+        this.rebuildToolProjectionsFromRuntimeEventsSync(sessionId);
       }
     });
   }
@@ -680,15 +697,19 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     return this.transaction(() => this.rebuildToolProjectionsFromRuntimeEventsSync());
   }
 
-  private rebuildToolProjectionsFromRuntimeEventsSync(): ToolProjectionRebuildResult {
-    const rows = this.db
-      .prepare(`
+  private rebuildToolProjectionsFromRuntimeEventsSync(
+    sessionId?: string,
+  ): ToolProjectionRebuildResult {
+    const statement = this.db.prepare(`
         SELECT event_id, session_id, invocation_id, run_id, turn_id,
           event_seq, payload_json, committed_at
         FROM runtime_events
+        ${sessionId === undefined ? '' : 'WHERE session_id = ?'}
         ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
-      `)
-      .all() as unknown as Array<
+      `);
+    const rows = (sessionId === undefined
+      ? statement.all()
+      : statement.all(sessionId)) as unknown as Array<
       RuntimeEventStorageRow & { event_seq: number; committed_at: number }
     >;
     const events = rows.map(decodeRuntimeEventStorageRow);
@@ -708,13 +729,38 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     // Mainline schema 4 can contain pre-authority projections without a
     // dispatch RuntimeEvent. They remain readable but quarantined from
     // recovery; only projections backed by canonical T1 facts are rebuilt.
-    this.db.exec(`
+    if (sessionId === undefined) {
+      this.db.exec(`
         DELETE FROM tool_journal_events
         WHERE operation_id IN (
           SELECT operation_id FROM tool_operations WHERE dispatch_event_id IS NOT NULL
         );
         DELETE FROM tool_operations WHERE dispatch_event_id IS NOT NULL;
       `);
+    } else {
+      this.db
+        .prepare(`
+          DELETE FROM tool_journal_events
+          WHERE operation_id IN (
+            SELECT operation_id
+            FROM tool_operations
+            WHERE dispatch_event_id IS NOT NULL
+              AND call_event_id IN (
+                SELECT event_id FROM runtime_events WHERE session_id = ?
+              )
+          )
+        `)
+        .run(sessionId);
+      this.db
+        .prepare(`
+          DELETE FROM tool_operations
+          WHERE dispatch_event_id IS NOT NULL
+            AND call_event_id IN (
+              SELECT event_id FROM runtime_events WHERE session_id = ?
+            )
+        `)
+        .run(sessionId);
+    }
     let journalEvents = 0;
     for (const operation of projected) {
       const call = operation.callEvent;
