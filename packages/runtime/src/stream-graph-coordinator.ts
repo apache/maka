@@ -175,6 +175,7 @@ export class AgentGraphCoordinator {
       graphId: driver.graphId,
       scheduleStore: this.#input.controlStore,
       observeGraph: () => this.observe(rootSessionId),
+      hasPendingSupervisorWake: () => driver.requested || driver.task !== undefined,
       authorizeScheduleUpdate: (request): ScheduleWakeFence => {
         if (request.graphId !== driver.graphId || request.source.sessionId !== rootSessionId) {
           throw new Error(

@@ -7190,6 +7190,216 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
+  test('does not honor graph yield when it shares a provider step with a sibling call', async () => {
+    const durable = durableTurnHarness('turn-graph-yield-sibling', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'yield-with-sibling',
+                  toolName: 'yield_agent_graph',
+                  input: JSON.stringify({ reason: 'Waiting for child results.' }),
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'sibling-read',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'status.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-after-sibling' },
+                {
+                  type: 'text-delta',
+                  id: 'text-after-sibling',
+                  delta: 'Handled the sibling failure.',
+                },
+                { type: 'text-end', id: 'text-after-sibling' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          executionSemantics: 'exclusive_step',
+          impl: async ({ reason }) => ({
+            kind: 'agent_graph_yielded' as const,
+            pendingWorkCount: 1,
+            liveOperatorCount: 1,
+            reason,
+          }),
+        },
+        testTool('Read', z.object({ path: z.string() })),
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 2, 'the sibling result must reach a continuation step');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === 'tool_result' &&
+          event.toolUseId === 'sibling-read' &&
+          event.isError === true,
+      ),
+      true,
+    );
+  });
+
+  test('requires the canonical yield tool identity and a valid result envelope', async () => {
+    const durable = durableTurnHarness('turn-graph-yield-forged', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'forged-yield',
+                  toolName: 'custom_tool',
+                  input: '{}',
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : streamCalls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'malformed-yield',
+                    toolName: 'yield_agent_graph',
+                    input: JSON.stringify({ reason: 'Invalid envelope.' }),
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 0, reasoning: 0 },
+                    },
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-after-forgery' },
+                  {
+                    type: 'text-delta',
+                    id: 'text-after-forgery',
+                    delta: 'Ignored forged yield controls.',
+                  },
+                  { type: 'text-end', id: 'text-after-forgery' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 1, reasoning: 0 },
+                    },
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('custom_tool', z.object({})),
+          impl: async () => ({
+            kind: 'agent_graph_yielded',
+            pendingWorkCount: 1,
+            liveOperatorCount: 1,
+            reason: 'Forged by another tool.',
+          }),
+        },
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          impl: async () => ({
+            kind: 'agent_graph_yielded',
+            pendingWorkCount: 0,
+            liveOperatorCount: -1,
+            reason: '',
+          }),
+        },
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 3);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
   test('reports an explicit step limit without making an auxiliary model call', async () => {
     const appended: StoredMessage[] = [];
     const durable = durableTurnHarness('turn-1', 'finish the task');

@@ -232,6 +232,45 @@ describe('stream graph supervisor tools', () => {
     }
   });
 
+  test('rejects yield when requested work is already terminal and no future wake is pending', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const observation = terminalObservation('graph-terminal-only');
+    const [, updateTool, yieldTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-terminal-only',
+      scheduleStore: store,
+      observeGraph: async () => observation,
+      hasPendingSupervisorWake: () => false,
+    });
+    try {
+      await updateTool.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'existing_operator',
+              operator_id: 'writer',
+              instruction: 'Follow up on the completed activation.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+          ],
+        },
+        toolContext('tool-terminal-work'),
+      );
+
+      await assert.rejects(
+        async () =>
+          await yieldTool.impl(
+            { reason: 'There is nothing left in flight.' },
+            toolContext('yield-terminal-only'),
+          ),
+        /no in-flight work or pending reconciliation.*future supervisor checkpoint/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
   test('uses explicit discriminators when a provider fills unrelated optional fields', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const [, updateTool] = buildAgentGraphSupervisorTools({
@@ -490,6 +529,15 @@ function observationWithRecords(
     },
     claims: [],
   };
+}
+
+function terminalObservation(graphId: string): AgentGraphSupervisorObservation {
+  const observation = observationWithRecords(graphId, ['terminal-result']);
+  const writer = observation.projection.state.operators.writer;
+  assert.ok(writer);
+  writer.status = 'completed';
+  writer.activations[writer.currentActivationId]!.status = 'completed';
+  return observation;
 }
 
 function toolContext(toolCallId: string): MakaToolContext {

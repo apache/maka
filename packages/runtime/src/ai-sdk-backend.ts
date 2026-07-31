@@ -63,7 +63,10 @@ import {
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
 import type { PlanToolResult } from './plan-tools.js';
-import type { YieldAgentGraphToolResult } from './stream-graph-supervisor-tools.js';
+import {
+  YIELD_AGENT_GRAPH_TOOL_NAME,
+  type YieldAgentGraphToolResult,
+} from './stream-graph-supervisor-tools.js';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
@@ -1572,14 +1575,23 @@ export class AiSdkBackend implements AgentBackend {
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
             );
             if (rejectedSettlement) throw rejectedSettlement.reason;
-            const settlements = settlementOutcomes.flatMap((outcome) =>
-              outcome.status === 'fulfilled' ? [outcome.value] : [],
-            );
-            for (const settlement of settlements) {
+            const settlements = settlementOutcomes.map((outcome) => {
+              // A rejected settlement was handled above, so preserving the
+              // original array shape also preserves tool-call identity by index.
+              if (outcome.status === 'rejected') throw outcome.reason;
+              return outcome.value;
+            });
+            for (let index = 0; index < settlements.length; index += 1) {
+              const settlement = settlements[index]!;
+              const toolCall = returnedToolCalls[index];
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, turnId, queue);
               }
-              if (isAgentGraphYieldToolResult(settlement.result)) {
+              if (
+                returnedToolCalls.length === 1 &&
+                toolCall?.toolName === YIELD_AGENT_GRAPH_TOOL_NAME &&
+                isAgentGraphYieldToolResult(settlement.result)
+              ) {
                 this.handleAgentGraphYieldToolResult(settlement.result);
               }
             }
@@ -3033,10 +3045,21 @@ function isPlanToolResult(output: unknown): output is PlanToolResult {
 }
 
 function isAgentGraphYieldToolResult(output: unknown): output is YieldAgentGraphToolResult {
+  if (output === null || typeof output !== 'object' || Array.isArray(output)) return false;
+  const result = output as Record<string, unknown>;
   return (
-    output !== null &&
-    typeof output === 'object' &&
-    (output as { kind?: unknown }).kind === 'agent_graph_yielded'
+    Object.keys(result).length === 4 &&
+    result.kind === 'agent_graph_yielded' &&
+    typeof result.pendingWorkCount === 'number' &&
+    Number.isSafeInteger(result.pendingWorkCount) &&
+    result.pendingWorkCount > 0 &&
+    typeof result.liveOperatorCount === 'number' &&
+    Number.isSafeInteger(result.liveOperatorCount) &&
+    result.liveOperatorCount >= 0 &&
+    typeof result.reason === 'string' &&
+    result.reason.length > 0 &&
+    result.reason.length <= 4_000 &&
+    result.reason.trim() === result.reason
   );
 }
 
