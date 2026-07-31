@@ -1059,6 +1059,33 @@ describe('Harbor adapter contract', () => {
     ]);
   });
 
+  test('process scope isolates transport descriptors from background descendants', (t) => {
+    const result = spawnSync('python3', ['-c', pythonBackgroundDescriptorSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
+    assert.equal(result.stdout, 'foreground\n');
+  });
+
+  test('process scope cleanup settles buffered transport wrappers', (t) => {
+    const result = spawnSync('python3', ['-c', pythonBufferedWrapperCleanupSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
+  });
+
   test('opencode_agent.py bridges credentials and estimates trial cost without Harbor installed', (t: TestContext) => {
     const result = spawnSync('python3', ['-c', pythonOpenCodeAdapterSmokeScript(repoRoot)], {
       cwd: repoRoot,
@@ -1671,6 +1698,97 @@ finally:
         scope_dir.rmdir()
 
 print(json.dumps(results))
+`;
+}
+
+function pythonBackgroundDescriptorSmokeScript(root: string): string {
+  return String.raw`
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cleanup_command
+
+scope = f"background-descriptor-test-{os.getpid()}"
+scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+with tempfile.TemporaryDirectory() as tmp:
+    child_pid_path = Path(tmp) / "child.pid"
+    command = (
+        f"printf 'foreground\\n'; sleep 30 & "
+        f"printf '%s\\n' $! > {child_pid_path}"
+    )
+    process = subprocess.Popen(
+        ["bash", "-lc", scoped_command(command, scope, "command")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=1)
+        assert process.returncode == 0, (process.returncode, stderr)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+        os.kill(child_pid, 0)
+        assert stdout == "foreground" + chr(10), repr(stdout)
+        assert stderr == "", stderr
+        print("foreground")
+    finally:
+        subprocess.run(
+            ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.poll() is None:
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=1)
+`;
+}
+
+function pythonBufferedWrapperCleanupSmokeScript(root: string): string {
+  return String.raw`
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cleanup_command
+
+scope = f"buffered-wrapper-cleanup-{os.getpid()}"
+scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+process = subprocess.Popen(
+    ["bash", "-lc", scoped_command("head -c 1048576 /dev/zero; sleep 30", scope, "command")],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+try:
+    stdout_path = scope_dir / "command.stdout"
+    deadline = time.time() + 2
+    while (not stdout_path.exists() or stdout_path.stat().st_size < 1048576) and time.time() < deadline:
+        time.sleep(0.01)
+    assert stdout_path.exists() and stdout_path.stat().st_size == 1048576
+    subprocess.run(
+        ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process.wait(timeout=1)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait()
 `;
 }
 
