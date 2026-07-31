@@ -23,16 +23,11 @@ describe('Astryx form-control localization', () => {
     assert.deepEqual(
       {
         selectorPlaceholder: messages?.['@astryx.selector.placeholder'],
-        selectorSearchPlaceholder:
-          messages?.['@astryx.selector.searchPlaceholder'],
-        selectorSearchOptions: messages?.['@astryx.selector.searchOptions'],
         selectorClear: messages?.['@astryx.selector.clearLabel'],
         numberClear: messages?.['@astryx.numberInput.clearLabel'],
       },
       {
         selectorPlaceholder: '选择…',
-        selectorSearchPlaceholder: '搜索…',
-        selectorSearchOptions: '搜索选项',
         selectorClear: '清除{label}',
         numberClear: '清除{label}',
       },

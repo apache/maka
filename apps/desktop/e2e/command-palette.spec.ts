@@ -98,4 +98,27 @@ test('new plan reminder command opens the existing form and applies a template',
   await expect(
     reminderDialog.getByText('提醒时间必须晚于当前时间。'),
   ).toBeVisible();
+
+  await reminderDialog.getByRole('button', { name: '1 小时后' }).click();
+  await expect(
+    reminderDialog.getByText('提醒时间必须晚于当前时间。'),
+  ).toBeHidden();
+  const createReminder = reminderDialog.getByRole('button', { name: '创建提醒' });
+  await expect(createReminder).toBeEnabled();
+  await createReminder.click();
+  await expect(reminderDialog).toBeHidden();
+
+  const reminder = await page.evaluate(async () => {
+    const reminders = await window.maka.plans.list();
+    return reminders.find((entry) => entry.title === '每日新闻摘要');
+  });
+  expect(reminder).toMatchObject({
+    title: '每日新闻摘要',
+    schedule: {
+      kind: 'cron',
+      expression: '30 9 * * *',
+    },
+    delivery: { channel: 'local' },
+    enabled: true,
+  });
 });

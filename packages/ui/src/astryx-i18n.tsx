@@ -68,8 +68,6 @@ export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined 
       '@astryx.toast.dismiss': shared.toast.closeNotification,
       '@astryx.toast.viewport': shared.toast.notifications,
       '@astryx.selector.placeholder': form.selectPlaceholder,
-      '@astryx.selector.searchPlaceholder': form.searchPlaceholder,
-      '@astryx.selector.searchOptions': form.searchOptions,
       '@astryx.selector.clearLabel': form.clear,
       '@astryx.numberInput.clearLabel': form.clear,
       '@astryx.chat.composer.placeholder': conversation.composer.placeholder,

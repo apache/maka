@@ -137,8 +137,7 @@ export const buttonVariants = cva(
   },
 );
 
-// #1565 PR 4: TextInput, TextArea, NumberInput, Switch, and CheckboxInput are
-// Astryx-owned. This legacy class recipe remains only for picker triggers.
+// This legacy class recipe remains only for picker triggers.
 
 interface DialogContextValue {
   isOpen: boolean;

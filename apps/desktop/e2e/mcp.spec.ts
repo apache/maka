@@ -88,6 +88,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await editor.getByRole('button', { name: '保存并连接' }).click();
 
   await expect(mcp.getByText('e2e-fixture', { exact: true })).toBeVisible();
+  await expect(mcp.getByText(/^本地 stdio ·/)).toBeVisible();
   await expect(mcp.getByText('4 个工具', { exact: true }).first()).toBeVisible();
   await mcp.getByText('4 个工具', { exact: true }).last().click();
   await expect(mcp.getByText('echo', { exact: true })).toBeVisible();

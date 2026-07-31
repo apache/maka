@@ -61,6 +61,17 @@ function harness(initial: Draft) {
 }
 
 describe('createOptimisticDraftController last-write-wins', () => {
+  it('edits the local draft without persisting', () => {
+    const h = harness({ v: 0 });
+
+    h.controller.edit({ v: 4 });
+
+    assert.deepEqual(h.controller.draftRef.current, { v: 4 });
+    assert.deepEqual(h.drafts, [{ v: 4 }]);
+    assert.equal(h.pending.length, 0, 'editing alone must not start a save');
+    assert.deepEqual(h.savingChanges, [], 'editing alone must not enter the saving state');
+  });
+
   it('drops a stale save response so it cannot clobber a newer draft', async () => {
     const h = harness({ v: 0 });
 

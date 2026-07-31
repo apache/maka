@@ -27,6 +27,7 @@ import { AddProviderForm } from './provider-add-form';
 import { ProviderConnectionDialog } from './provider-connection-dialog';
 import { providerPanelActionErrorMessage } from './provider-panel-shared';
 import { useActionGuard } from './use-action-guard';
+import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
 import { VoiceRecognitionConnectionForm } from './voice-recognition-connection-form';
 import { startVoiceCapture, type ActiveVoiceCapture } from '../voice-audio-capture';
 
@@ -47,6 +48,7 @@ export function VoiceModelsSettingsPage(props: {
 }) {
   const locale = useUiLocale();
   const copy = getVoiceSettingsCopy(locale);
+  const toast = useToast();
   const [permission, setPermission] = useState<VoicePermissionStatus>('unknown');
   const [smoke, setSmoke] = useState<VoiceSmokeState>({ status: 'idle' });
   const [isBusy, setIsBusy] = useState(false);
@@ -54,13 +56,25 @@ export function VoiceModelsSettingsPage(props: {
   const [recognitionTesting, setRecognitionTesting] = useState(false);
   const [creatingRecognitionConnection, setCreatingRecognitionConnection] = useState(false);
   const [editingRecognitionConnection, setEditingRecognitionConnection] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [recognitionDraft, setRecognitionDraft] = useState(
-    () => props.settings.voice.recognition,
+  const {
+    draft: voiceDraft,
+    draftRef: voiceDraftRef,
+    saving,
+    edit: editVoiceDraft,
+    update: updateVoiceDraft,
+  } = useOptimisticSettingsDraft<AppSettings['voice']>(
+    props.settings.voice,
+    async (patch) => {
+      const result = await props.onUpdate({ voice: patch });
+      return result.settings.voice;
+    },
+    {
+      onError: (error) =>
+        toast.error(copy.saveFailed, error instanceof Error ? error.message : copy.failed),
+    },
   );
-  const [realtimeDraft, setRealtimeDraft] = useState(
-    () => props.settings.voice.realtime,
-  );
+  const recognitionDraft = voiceDraft.recognition;
+  const realtimeDraft = voiceDraft.realtime;
   const captureSmokeGuard = useActionGuard<'smoke'>();
   const recognitionTestGuard = useActionGuard<'recognition'>();
   const voicePageMountedRef = useMountedRef();
@@ -71,7 +85,6 @@ export function VoiceModelsSettingsPage(props: {
   } | undefined>(undefined);
   const createRecognitionConnectionButtonRef = useRef<HTMLButtonElement | null>(null);
   const editRecognitionConnectionButtonRef = useRef<HTMLButtonElement | null>(null);
-  const toast = useToast();
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
   const enabledConnections = props.connections.filter((connection) => connection.enabled);
@@ -91,24 +104,30 @@ export function VoiceModelsSettingsPage(props: {
       realtime?: Partial<AppSettings['voice']['realtime']>;
     },
   ): Promise<boolean> {
-    if (patch.recognition) {
-      setRecognitionDraft((current) => ({ ...current, ...patch.recognition }));
-    }
-    if (patch.realtime) {
-      setRealtimeDraft((current) => ({ ...current, ...patch.realtime }));
-    }
-    setSaving(true);
-    try {
-      await props.onUpdate({
-        voice: patch,
-      });
-      return true;
-    } catch (error) {
-      toast.error(copy.saveFailed, error instanceof Error ? error.message : copy.failed);
-      return false;
-    } finally {
-      if (voicePageMountedRef.current) setSaving(false);
-    }
+    return updateVoiceDraft({
+      ...(patch.recognition
+        ? { recognition: { ...voiceDraftRef.current.recognition, ...patch.recognition } }
+        : {}),
+      ...(patch.realtime
+        ? { realtime: { ...voiceDraftRef.current.realtime, ...patch.realtime } }
+        : {}),
+    });
+  }
+
+  function editVoice(
+    patch: {
+      recognition?: Partial<AppSettings['voice']['recognition']>;
+      realtime?: Partial<AppSettings['voice']['realtime']>;
+    },
+  ): void {
+    editVoiceDraft({
+      ...(patch.recognition
+        ? { recognition: { ...voiceDraftRef.current.recognition, ...patch.recognition } }
+        : {}),
+      ...(patch.realtime
+        ? { realtime: { ...voiceDraftRef.current.realtime, ...patch.realtime } }
+        : {}),
+    });
   }
 
   async function finishCreatingRecognitionConnection(slug: string): Promise<void> {
@@ -402,7 +421,7 @@ export function VoiceModelsSettingsPage(props: {
         />
         <TextInput
           value={recognitionDraft.model}
-          onChange={(model) => setRecognitionDraft((current) => ({ ...current, model }))}
+          onChange={(model) => editVoice({ recognition: { model } })}
           isDisabled={saving}
           placeholder="gpt-4o-mini-transcribe"
           label={copy.model}
@@ -412,9 +431,7 @@ export function VoiceModelsSettingsPage(props: {
         />
         <TextInput
           value={recognitionDraft.language}
-          onChange={(language) =>
-            setRecognitionDraft((current) => ({ ...current, language }))
-          }
+          onChange={(language) => editVoice({ recognition: { language } })}
           isDisabled={saving}
           placeholder="zh"
           label={copy.language}
@@ -424,7 +441,7 @@ export function VoiceModelsSettingsPage(props: {
         />
         <TextArea
           value={recognitionDraft.prompt}
-          onChange={(prompt) => setRecognitionDraft((current) => ({ ...current, prompt }))}
+          onChange={(prompt) => editVoice({ recognition: { prompt } })}
           isDisabled={saving}
           label={copy.prompt}
           onBlur={() =>
@@ -517,7 +534,7 @@ export function VoiceModelsSettingsPage(props: {
         />
         <TextInput
           value={realtimeDraft.model}
-          onChange={(model) => setRealtimeDraft((current) => ({ ...current, model }))}
+          onChange={(model) => editVoice({ realtime: { model } })}
           isDisabled={saving}
           placeholder="gpt-realtime"
           label={copy.model}
@@ -525,7 +542,7 @@ export function VoiceModelsSettingsPage(props: {
         />
         <TextInput
           value={realtimeDraft.voice}
-          onChange={(voice) => setRealtimeDraft((current) => ({ ...current, voice }))}
+          onChange={(voice) => editVoice({ realtime: { voice } })}
           isDisabled={saving}
           placeholder="marin"
           label={copy.voice}

@@ -49,21 +49,6 @@ type AccountSecretProbeResult =
   | { slug: string; status: boolean }
   | { slug: string; status: 'error'; message: string };
 
-// `focusRadioValue`, `onSettingsRadioGroupKeyDown`, `radioTabIndex` were
-// the manual roving-tabindex / arrow-key handlers for the Theme,
-// Palette, and Segmented radiogroups. Theme + Palette migrated to the
-// Astryx `RadioList` primitives in #1565 PR 4;
-// Segmented migrated to the Base UI `ToggleGroup`-backed
-// `Segmented` primitive in PR yuejing/settings-segmented-primitive.
-// Both primitives now provide the same keyboard contract for free, so
-// these helpers are gone. The provider detail dialog also dropped its
-// hand-rolled default-model radiogroup in favor of a native enabled-model list.
-
-// Form selectors use Astryx Selector directly at each consumer. The Plan
-// Reminder platform select uses the same primitive, so option shape,
-// selected-trigger icon rendering, and chrome contract have one source
-// of truth.
-
 // `SettingsNavGroup` + `NAV_GROUP_ORDER` moved to `nav-group-summary.ts`
 // (PR-HEALTH-1) so the H1/H2 group-summary assertions can be pinned with
 // node:test without a DOM / React.

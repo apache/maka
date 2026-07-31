@@ -791,8 +791,11 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       detail,
       /<Selector[\s\S]*label=\{copy\.connectionDefaultModel\}[\s\S]*description=\{copy\.connectionDefaultModelHelp\}[\s\S]*options=\{defaultModelOptions\}[\s\S]*value=\{connection\.defaultModel\}/,
     );
-    assert.match(detail, /<Selector[\s\S]*hasSearch/);
-    assert.match(detail, /searchPlaceholder=\{copy\.searchDefaultModels\}/);
+    assert.doesNotMatch(
+      detail,
+      /<Selector[\s\S]*(?:hasSearch|searchPlaceholder=)/,
+      'the default-model field must not expose Astryx search states that Maka cannot localize',
+    );
     assert.match(detail, /onChange=\{\(model\) => void updateDefaultModel\(model\)\}/);
     assert.doesNotMatch(
       detail,

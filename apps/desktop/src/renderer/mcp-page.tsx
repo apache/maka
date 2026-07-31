@@ -530,7 +530,9 @@ function McpServerRow(props: {
 }) {
   const state = presentStatus(props.status, props.server.enabled !== false, props.copy);
   const endpoint = endpointFor(props.server);
-  const transportLabel = isMcpStdioConfig(props.server) ? 'Local stdio' : props.server.transport ?? 'auto';
+  const transportLabel = isMcpStdioConfig(props.server)
+    ? props.copy.page.localStdio
+    : props.server.transport ?? 'auto';
   return (
     <li className="maka-mcp-server-row">
       <div className="maka-mcp-server-summary">

@@ -21,6 +21,8 @@ export interface OptimisticDraftController<T> {
   activate(): void;
   /** Sync immediately when idle, or defer until the final pending save settles. */
   syncPersisted(persisted: T): void;
+  /** Apply a local edit without persisting it. */
+  edit(patch: Partial<T>): void;
   /** Optimistically apply `patch`, persist it, and reconcile last-write-wins. */
   update(patch: Partial<T>): Promise<boolean>;
   /** Invalidate any in-flight save's late write (call on unmount). */
@@ -76,6 +78,11 @@ export function createOptimisticDraftController<T>(
     deps.onSavingChange?.(false);
   }
 
+  function edit(patch: Partial<T>): void {
+    if (disposed) return;
+    commit({ ...draftRef.current, ...patch } as T);
+  }
+
   async function update(patch: Partial<T>): Promise<boolean> {
     if (disposed) return false;
     const nextDraft = { ...draftRef.current, ...patch } as T;
@@ -127,6 +134,7 @@ export function createOptimisticDraftController<T>(
     draftRef,
     activate,
     syncPersisted,
+    edit,
     update,
     dispose,
   };

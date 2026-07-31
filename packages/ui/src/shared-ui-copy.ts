@@ -23,8 +23,6 @@ export interface SharedUiCopy {
   };
   formControls: {
     selectPlaceholder: string;
-    searchPlaceholder: string;
-    searchOptions: string;
     clear: string;
   };
   modelPicker: {
@@ -116,8 +114,6 @@ const SHARED_UI_COPY = {
     },
     formControls: {
       selectPlaceholder: '选择…',
-      searchPlaceholder: '搜索…',
-      searchOptions: '搜索选项',
       clear: '清除{label}',
     },
     modelPicker: {
@@ -193,8 +189,6 @@ const SHARED_UI_COPY = {
     },
     formControls: {
       selectPlaceholder: 'Select…',
-      searchPlaceholder: 'Search…',
-      searchOptions: 'Search options',
       clear: 'Clear {label}',
     },
     modelPicker: {

@@ -245,9 +245,8 @@ function GeneralDefaultsCard(props: {
               hint — the shared popup already shows every option's hint). */}
           <small>{copy.defaultPermissionHelp}</small>
         </div>
-        {/* Shared Base UI Select picker with the composer (PermissionModeSelect)
-            — same component, so option markup can't drift between the two
-            surfaces. Every option shows its label + hint before picking. */}
+        {/* Shared permission picker with the composer, so option labels and
+            hints cannot drift between the two surfaces. */}
         <PermissionModeSelect
           activeMode={props.permissionMode}
           onSelect={(mode) => {

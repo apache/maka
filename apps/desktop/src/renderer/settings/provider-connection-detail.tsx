@@ -230,8 +230,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           isDisabled={detailActionBusy || defaultModelOptions.length === 0}
           disabledMessage={defaultModelOptions.length === 0 ? copy.noModels : undefined}
           isLoading={settingDefaultModel}
-          hasSearch
-          searchPlaceholder={copy.searchDefaultModels}
           placeholder={copy.noModels}
           width="100%"
         />

@@ -31,6 +31,7 @@ export interface OptimisticSettingsDraft<T> {
   draftRef: { current: T };
   mountedRef: RefObject<boolean>;
   saving: boolean;
+  edit(patch: Partial<T>): void;
   update(patch: Partial<T>): Promise<boolean>;
 }
 
@@ -83,6 +84,7 @@ export function useOptimisticSettingsDraft<T>(
     draftRef: controller.draftRef,
     mountedRef,
     saving,
+    edit: controller.edit,
     update: controller.update,
   };
 }
