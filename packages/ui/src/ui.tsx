@@ -3,8 +3,6 @@ import { Progress as BaseProgress } from '@base-ui/react/progress';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
 import { cva, type VariantProps } from 'class-variance-authority';
-import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
-import { mergeRefs } from '@astryxdesign/core/utils';
 import { cn } from './utils.js';
 
 export { cn } from './utils.js';

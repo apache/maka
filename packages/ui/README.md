@@ -40,7 +40,7 @@ Renderer CSS owns product layout containers only. It must not target Astryx inte
 
 Acknowledged transitional states — not TODOs; track actual work in issues/PRs.
 
-- `ui.tsx` ↔ `primitives/`: end state is one primitive layer in `primitives/`. Wrappers in `ui.tsx` move over when touched (Badge is the precedent). `buttonVariants` has external consumers, so its move is a coordinated rename, not a silent one.
+- `ui.tsx` ↔ `primitives/`: end state is one Maka-owned primitive layer in `primitives/`; Astryx components are consumed directly instead of being reshaped behind compatibility APIs.
 
 ## Contracts & guardrails
 
