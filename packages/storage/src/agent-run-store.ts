@@ -22,6 +22,7 @@ import {
 } from './execution-record-codec.js';
 import { classifyJsonRecord } from './json-prefix.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
 import {
@@ -1735,6 +1736,7 @@ function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
 }
 
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
     throw new Error('Continuation start facts require SQLite continuation authority');
   }
@@ -1818,6 +1820,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       };
     });
     const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
+    for (const event of canonicalEvents) assertNoReservedWorkspaceAuthorityAppend(event);
     if (canonicalEvents.some((event) => event.partial)) {
       throw new Error('Conversation copy cannot import partial RuntimeEvents');
     }

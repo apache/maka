@@ -162,6 +162,42 @@ export {
   createRuntimeEventId,
 } from './runtime-event.js';
 
+export type {
+  RuntimeEventWorkspaceFactEnvelope,
+  ScannedWorkspaceBaselineAuthority,
+  WorkspaceAuthorityIdentity,
+  WorkspaceAuthorityIssue,
+  WorkspaceAuthorityIssueCode,
+  WorkspaceAuthorityLedgerRow,
+  WorkspaceBaselineAuthorityEvents,
+  WorkspaceBaselineAuthorityInput,
+  WorkspaceBaselineAuthorityScanResult,
+  WorkspaceBaselineDescriptorV1,
+  WorkspaceBaselineVersionAcceptedV1,
+  WorkspaceEpochDescriptorV1,
+  WorkspaceEpochOpenedV1,
+  WorkspaceEpochRecordV1,
+  WorkspaceFactEventLaneValidation,
+  WorkspaceGitObjectFormat,
+  WorkspaceHeadRecordV1,
+  WorkspaceBaselineCommitResult,
+  WorkspaceProjectionRebuildResult,
+  WorkspaceVersionRecordV1,
+} from './workspace-version-authority.js';
+export {
+  WORKSPACE_AUTHORITY_SESSION_ID,
+  WORKSPACE_EPOCH_OPENED_FACT_KIND,
+  WORKSPACE_FACT_VERSION,
+  WORKSPACE_MATERIALIZATION_SEMANTICS_V1,
+  WORKSPACE_VERSION_ACCEPTED_FACT_KIND,
+  WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
+  buildWorkspaceBaselineAuthorityEvents,
+  isRuntimeEventWorkspaceFactEnvelope,
+  scanWorkspaceBaselineAuthority,
+  validateWorkspaceFactEventLane,
+  workspaceAuthorityIdentity,
+} from './workspace-version-authority.js';
+
 // execution-evidence.ts — shared cross-ledger identity and source coverage.
 // This contract references canonical facts; it does not create another fact
 // authority. Subpath `@maka/core/execution-evidence` is preferred.
@@ -198,6 +234,7 @@ export type {
   RuntimeContinuationAuthorityStore,
   RuntimeRecoveryBundleCommit,
   RuntimeRecoveryBundleStore,
+  RuntimeWorkspaceVersionAuthorityStore,
 } from './runtime-event-store.js';
 export {
   RUNTIME_CONTINUATION_AUTHORITY_V1,

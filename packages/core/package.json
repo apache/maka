@@ -16,6 +16,7 @@
     "./tool-ledger-scanner": "./dist/tool-ledger-scanner.js",
     "./tool-recovery-fact": "./dist/tool-recovery-fact.js",
     "./tool-recovery-bundle": "./dist/tool-recovery-bundle.js",
+    "./workspace-version-authority": "./dist/workspace-version-authority.js",
     "./runtime-policy": "./dist/runtime-policy.js",
     "./execution-evidence": "./dist/execution-evidence.js",
     "./events": "./dist/events.js",
