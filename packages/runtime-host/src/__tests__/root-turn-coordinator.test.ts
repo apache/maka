@@ -717,8 +717,8 @@ test('successor admission failure retains the terminal transition and its confir
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
     registerBackend: (backends) => {
-      backends.register('fake', () => {
-        backend = new LinkedChildAuthorityBackend('terminal-admission-failure');
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
         return backend;
       });
     },
