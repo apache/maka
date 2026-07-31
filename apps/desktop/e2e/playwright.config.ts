@@ -5,21 +5,26 @@ import { defineConfig } from '@playwright/test';
  *
  * Each test launches a real Electron window backed by the deterministic fake
  * backend (MAKA_E2E=1) against its OWN throwaway userData dir (the fixture
- * mkdtemps one per test), so windows share no state and can run side by side.
- * The suite used to pin `workers: 1` on the theory that parallel windows would
- * fight over the same screen/IPC; with per-test isolation they do not, and the
- * wall clock is dominated by Electron boot — which is exactly what overlaps.
- * Measured on the full 94-test suite: 1 worker ≈ 7min, 4 workers ≈ 2.4min.
+ * mkdtemps one per test), so windows share no *state*. The wall clock is
+ * dominated by Electron boot, which overlaps well: measured on the full
+ * 94-test suite, 1 worker ≈ 7min and 4 workers ≈ 2.4min.
  *
- * CI stays at 2 to leave headroom on a shared runner (a saturated host shows
- * up as timeout flake, and this suite deliberately keeps `retries: 0`).
+ * What parallel windows DO share is OS focus. A run at 2 workers showed it:
+ * composer-mode-indicator compares hover backgrounds and plan-reminders
+ * asserts `toBeFocused()`, and both fail when another window steals activation
+ * mid-assertion — Chromium blurs the document when its window deactivates.
+ *
+ * So CI stays at 1 until those two specs are hardened (bring the window to
+ * front before asserting hover/focus, or assert without needing activation).
+ * Local runs take the parallel win now, where the dev loop feels it most; a
+ * local hover/focus failure is reproducible by re-running that spec alone.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */
 export default defineConfig({
   testDir: '.',
   fullyParallel: true,
-  workers: process.env.CI ? 2 : 4,
+  workers: process.env.CI ? 1 : 4,
   // No retries: flakes should fail loudly. The fixture waits for the composer
   // to mount (the cold-start convergence point — connection seed, onboarding
   // clear, renderer hydrated), so cold-start variance never reaches the test.
