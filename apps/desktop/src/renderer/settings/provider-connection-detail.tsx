@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Collapsible } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Alert,
@@ -247,8 +248,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           )}
         </div>
       </section>
-      <details className="providerAdvancedSettings">
-        <summary>{copy.advanced}</summary>
+      <Collapsible
+        className="providerAdvancedSettings"
+        defaultIsOpen={false}
+        trigger={copy.advanced}
+      >
         <div className="providerAdvancedSettingsBody">
           <div className="providerEndpointSettings">
             <ConnectionEndpointField
@@ -269,7 +273,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             )}
           </div>
         </div>
-      </details>
+      </Collapsible>
       <div className="providerConnectionActions">
         {!props.isDefault && connection.enabled && (
           <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />

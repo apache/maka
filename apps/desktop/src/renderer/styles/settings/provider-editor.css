@@ -135,16 +135,9 @@
   padding-top: var(--space-3);
 }
 
-.providerAdvancedSettings summary {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
 .providerAdvancedSettingsBody {
   display: grid;
   gap: var(--space-3);
-  padding-top: var(--space-3);
 }
 
 .providerModelSettings {
