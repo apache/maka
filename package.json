@@ -21,6 +21,7 @@
     "apps/desktop"
   ],
   "scripts": {
+    "postinstall": "install-electron",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "format:check": "biome format .",

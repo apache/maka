@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const repoRoot = new URL('../', import.meta.url);
 const desktopRoot = new URL('../apps/desktop/', import.meta.url);
+const rootManifest = JSON.parse(await readFile(new URL('package.json', repoRoot), 'utf8'));
 const desktopManifest = JSON.parse(await readFile(new URL('package.json', desktopRoot), 'utf8'));
 const signingEnvironment = {
   CSC_LINK: 'base64-certificate',
@@ -58,6 +59,7 @@ test('macOS release declares the privacy copy and hardened-runtime permissions i
 test('Electron is a build tool rather than a packaged application dependency', async () => {
   assert.equal(desktopManifest.dependencies.electron, undefined);
   assert.match(desktopManifest.devDependencies.electron, /^\d+\.\d+\.\d+$/);
+  assert.equal(rootManifest.scripts.postinstall, 'install-electron');
 });
 
 test('renderer build inputs are not duplicated in the packaged Node runtime', async () => {
@@ -187,6 +189,8 @@ test('release package script runs the single arm64 pipeline in order', async () 
   assert.deepEqual(
     asserted.map((path) => path.replaceAll('\\', '/')),
     [
+      `${repoRoot.pathname.replace(/\/$/, '')}/node_modules/electron/dist/LICENSE`,
+      `${repoRoot.pathname.replace(/\/$/, '')}/node_modules/electron/dist/LICENSES.chromium.html`,
       `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.dmg`,
       `${desktopRoot.pathname.replace(/\/$/, '')}/release/Maka-${desktopManifest.version}-mac-arm64.zip`,
       `${desktopRoot.pathname.replace(/\/$/, '')}/release/latest-mac.yml`,
