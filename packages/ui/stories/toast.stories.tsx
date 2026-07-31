@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast, type ToastVariant } from '../src/toast.js';
 import { Button } from '../src/index.js';
 
@@ -108,5 +109,78 @@ export const ConfirmPlain: Story = {
         />
       </div>
     );
+  },
+};
+
+function ConfirmQueueExample() {
+  const toast = useToast();
+  const [results, setResults] = useState<boolean[]>([]);
+  return (
+    <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
+      <span>结果：{results.map(String).join(',')}</span>
+      <Button
+        variant="secondary"
+        label="连续确认"
+        onClick={() => {
+          const first = toast.confirm({
+            title: '确认 A？',
+            confirmLabel: '确认 A',
+          });
+          const second = toast.confirm({
+            title: '确认 B？',
+            confirmLabel: '确认 B',
+          });
+          void Promise.all([first, second]).then(setResults);
+        }}
+      />
+    </div>
+  );
+}
+
+export const ConfirmQueued: Story = {
+  render: () => <ConfirmQueueExample />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(document.body);
+    const calls: string[] = [];
+    const originalShowModal = HTMLDialogElement.prototype.showModal;
+    const originalClose = HTMLDialogElement.prototype.close;
+    HTMLDialogElement.prototype.showModal = function showModal() {
+      calls.push(`show:${this.textContent?.includes('确认 A？') ? 'A' : 'B'}`);
+      return originalShowModal.call(this);
+    };
+    HTMLDialogElement.prototype.close = function close() {
+      calls.push(`close:${this.textContent?.includes('确认 A？') ? 'A' : 'B'}`);
+      return originalClose.call(this);
+    };
+
+    try {
+      const opener = canvas.getByRole('button', { name: '连续确认' });
+      await userEvent.click(opener);
+
+      const first = await page.findByRole('alertdialog', { name: '确认 A？' });
+      const firstCancel = within(first).getByRole('button', { name: '取消' });
+      await expect(firstCancel).toHaveFocus();
+      await userEvent.click(firstCancel);
+
+      const second = await page.findByRole('alertdialog', { name: '确认 B？' });
+      const secondCancel = within(second).getByRole('button', { name: '取消' });
+      await expect(secondCancel).toHaveFocus();
+      await userEvent.click(
+        within(second).getByRole('button', { name: '确认 B' }),
+      );
+
+      await waitFor(() => expect(canvas.getByText('结果：false,true')).toBeInTheDocument());
+      await expect(opener).toHaveFocus();
+      await expect(calls).toEqual([
+        'show:A',
+        'close:A',
+        'show:B',
+        'close:B',
+      ]);
+    } finally {
+      HTMLDialogElement.prototype.showModal = originalShowModal;
+      HTMLDialogElement.prototype.close = originalClose;
+    }
   },
 };
