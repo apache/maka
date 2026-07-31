@@ -28,7 +28,7 @@ test('session grouping menu switches between flat conversations and project disc
 }) => {
   const sidebar = await expandedSidebar(page);
   const grouping = sidebar.getByRole('button', { name: '会话分组方式' });
-  const popup = page.locator('[data-slot="menu-popup"]');
+  const popup = page.getByRole('menu', { name: '会话分组方式' });
 
   await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
   await expect(sidebar.locator('.maka-list-row').first()).toBeVisible();
@@ -47,7 +47,7 @@ test('session grouping menu switches between flat conversations and project disc
   // old popup is still on screen is swallowed as an outside-press.
   await grouping.click();
   await expect(popup).toBeHidden();
-  await grouping.click();
+  await grouping.press('Enter');
   await expect(popup).toBeVisible();
   await expect(page.getByRole('menuitemradio', { name: '按项目' })).toHaveAttribute('aria-checked', 'true');
   await expect(page.getByRole('menuitemradio', { name: '按时间' })).toHaveAttribute('aria-checked', 'false');
@@ -59,7 +59,7 @@ test('session grouping menu fits its Chinese labels instead of inheriting the ge
   const sidebar = await expandedSidebar(page);
   await sidebar.getByRole('button', { name: '会话分组方式' }).click();
 
-  const popup = page.locator('[data-slot="menu-popup"]');
+  const popup = page.getByRole('menu', { name: '会话分组方式' });
   await expect(popup).toBeVisible();
   const width = await popup.evaluate((element) => element.getBoundingClientRect().width);
   expect(width).toBeLessThan(128);

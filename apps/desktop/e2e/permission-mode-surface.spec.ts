@@ -54,7 +54,9 @@ test('a read-only session names its boundary and can still be raised to full acc
   // widening the window it is allowed to be wrong in (measured: 2/25 failures
   // without this line, 25/25 clean with it).
   await expect(page.getByRole('listbox')).toBeVisible();
-  await page.keyboard.press('ArrowDown');
+  const activeDescendant = await trigger.getAttribute('aria-activedescendant');
+  expect(activeDescendant).not.toBeNull();
+  await expect(page.locator(`[id="${activeDescendant}"]`)).toContainText('自动');
   await page.keyboard.press('Enter');
   await expect(trigger).toHaveText('自动');
 });
