@@ -16,6 +16,10 @@ import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
 import { Selector } from '@astryxdesign/core/Selector';
 import { mergeRefs } from '@astryxdesign/core/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
+import {
+  useModalFocusLifecycle,
+  type ModalFocusTarget,
+} from './modal-lifecycle.js';
 import { cn } from './utils.js';
 import { inputClasses } from './primitives/input.js';
 
@@ -192,48 +196,27 @@ function useDialogRoot(): DialogContextValue {
   return context;
 }
 
-type FocusTarget =
-  | React.RefObject<HTMLElement | null>
-  | (() => HTMLElement | boolean | null | undefined)
-  | boolean;
-
-function resolveFocusTarget(target: FocusTarget | undefined): HTMLElement | null {
-  if (typeof target === 'function') {
-    const resolved = target();
-    return resolved instanceof HTMLElement ? resolved : null;
-  }
-  if (typeof target === 'object' && target) return target.current;
-  return null;
-}
-
 interface ModalContentProps
   extends Omit<AstryxDialogProps, 'children' | 'isOpen' | 'onOpenChange' | 'ref'> {
   children?: React.ReactNode;
-  initialFocus?: FocusTarget;
-  finalFocus?: FocusTarget;
+  initialFocus?: ModalFocusTarget;
+  finalFocus?: ModalFocusTarget;
 }
 
 function createModalContent(defaultPurpose?: DialogPurpose) {
   return forwardRef<HTMLDialogElement, ModalContentProps>(function ModalContent(
-    { children, initialFocus, finalFocus, purpose, padding = 0, ...props },
+    {
+      children,
+      initialFocus,
+      finalFocus,
+      purpose,
+      padding = 0,
+      ...props
+    },
     ref,
   ) {
     const root = useDialogRoot();
-    const wasOpenRef = React.useRef(false);
-
-    React.useEffect(() => {
-      const wasOpen = wasOpenRef.current;
-      wasOpenRef.current = root.isOpen;
-      if (root.isOpen && !wasOpen) {
-        const frame = requestAnimationFrame(() => resolveFocusTarget(initialFocus)?.focus());
-        return () => cancelAnimationFrame(frame);
-      }
-      if (!root.isOpen && wasOpen && finalFocus) {
-        const frame = requestAnimationFrame(() => resolveFocusTarget(finalFocus)?.focus());
-        return () => cancelAnimationFrame(frame);
-      }
-      return undefined;
-    }, [finalFocus, initialFocus, root.isOpen]);
+    useModalFocusLifecycle({ isOpen: root.isOpen, initialFocus, finalFocus });
 
     return (
       <AstryxDialog

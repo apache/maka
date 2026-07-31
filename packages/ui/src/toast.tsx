@@ -33,6 +33,7 @@ import {
 } from '@astryxdesign/core/Toast';
 import { AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
 import { useUiLocale } from './locale-context.js';
+import { useModalFocusLifecycle } from './modal-lifecycle.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ToastVariant = 'info' | 'success' | 'warning' | 'error';
@@ -222,6 +223,7 @@ function ToastBody({ input }: { input: ToastInput }) {
 }
 
 function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boolean): void }) {
+  useModalFocusLifecycle({ isOpen: true });
   const copy = getSharedUiCopy(useUiLocale()).toast;
   const {
     title,

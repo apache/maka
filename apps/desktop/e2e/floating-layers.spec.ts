@@ -209,3 +209,18 @@ test('model picker keeps keyboard highlight inside the scroll viewport', async (
     )
     .toBe(true);
 });
+
+test('conditionally unmounted dialogs restore their opener by default', async ({
+  window: page,
+}) => {
+  const opener = page.getByRole('button', { name: '搜索对话' });
+  await opener.focus();
+  await page.keyboard.press('Control+/');
+
+  const dialog = page.getByRole('dialog', { name: '键盘快捷键' });
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+});
