@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import { AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION } from '@maka/core';
-import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
+import {
+  createSqliteSessionMetadataStore,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+} from '../sqlite-session-metadata-store.js';
 
 describe('SQLite Agent Graph supervisor wakes', () => {
   test('tracks retry attempts separately and marks delivery only after completion', async () => {
@@ -167,14 +170,17 @@ describe('SQLite Agent Graph supervisor wakes', () => {
       initial.close();
 
       const v11 = new DatabaseSync(path);
-      v11.exec('DROP TABLE sandbox_boundary_log');
+      v11.exec(`
+        DROP TABLE session_create_claims;
+        DROP TABLE sandbox_boundary_log;
+      `);
       v11
         .prepare(`UPDATE session_metadata_schema SET version = 11 WHERE scope = 'session_metadata'`)
         .run();
       v11.close();
 
       const migrated = createSqliteSessionMetadataStore(path);
-      assert.equal(migrated.schemaVersion(), 14);
+      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.equal(
         (await migrated.readAgentGraphSupervisorWake('graph-1', 'wake-1'))?.status,
         'running',

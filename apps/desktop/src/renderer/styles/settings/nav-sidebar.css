@@ -547,7 +547,4 @@
   .settingsNavItem {
     transition: none !important;
   }
-  .settingsModal [role="switch"] > span {
-    transition: none;
-  }
 }

@@ -36,6 +36,16 @@ test('MCP market ships the requested first-party catalog and cancellable install
 
   assert.match(page, /data-phase=\{props\.phase \?\? 'idle'\}/);
   assert.match(page, /onClick=\{installing \? props\.onCancel : props\.onInstall\}/);
+  assert.match(
+    page,
+    /<div className="maka-mcp-search">\s*<TextInput[\s\S]*width="100%"/,
+    'MCP search geometry must live on a wrapper around the Astryx field',
+  );
+  assert.doesNotMatch(
+    styles,
+    /\.maka-mcp-search\s*\{[^}]*(?:height|min-height|border|box-shadow):/,
+    'module CSS must not restyle Astryx search-field chrome',
+  );
   assert.match(styles, /data-phase="installing"[^}]*:hover \.maka-mcp-install-spinner/s);
   assert.match(styles, /\.maka-mcp-install-cancel/);
   assert.match(preload, /cancelInstall\(serverId: string\)/);

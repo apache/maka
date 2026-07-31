@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type {
   BackendKind,
@@ -51,6 +52,7 @@ import {
   HARBOR_CELL_CONTEXT_ENV_KEYS,
   HARBOR_CELL_OUTPUT_FILENAME,
   HARBOR_CELL_RUNTIME_EVENTS_FILENAME,
+  HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY,
   HARBOR_CELL_USAGE_CHECKPOINT_FILENAME,
   resolveHarborCellAiSdkEnv,
   runHarborCellFromEnv,
@@ -937,6 +939,96 @@ describe('runHarborCell', () => {
         JSON.parse(await readFile(result.outputPath, 'utf8')).tokenSummary,
         result.output.tokenSummary,
       );
+    });
+  });
+
+  test('publishes image trajectory evidence from a frozen SQLite session export', async () => {
+    await withDirs(async ({ outputDir, storageRoot, workspaceDir, artifactStore }) => {
+      const sessions = createSessionStore(storageRoot);
+      const session = await sessions.create({
+        cwd: workspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'execute',
+        name: 'trajectory-session',
+      });
+      await sessions.close?.();
+      await mkdir(join(storageRoot, 'task-runs'));
+      await writeFile(join(storageRoot, 'task-runs', 'headless-ledger.jsonl'), 'excluded\n');
+      const image = await artifactStore.create({
+        id: 'trajectory-image',
+        sessionId: session.id,
+        turnId: 'turn-1',
+        name: 'screen.png',
+        kind: 'image',
+        content: Buffer.from('\x89PNG\r\n\x1a\nfixture'),
+        mimeType: 'image/png',
+        source: 'tool_result',
+        now: 100,
+      });
+      const imageEvent: RuntimeEvent = {
+        id: 'image-result',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        sessionId: session.id,
+        turnId: 'turn-1',
+        ts: 100,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'read-image',
+          name: 'Read',
+          result: {
+            kind: 'image',
+            mimeType: 'image/png',
+            ref: { kind: 'session_file', sessionId: session.id, relativePath: image.id },
+          },
+        },
+      };
+      const invocation: InvocationResult = {
+        invocationId: 'invocation-1',
+        sessionId: session.id,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        status: 'completed',
+        events: [imageEvent],
+        startedAt: 100,
+        finishedAt: 200,
+      };
+
+      await writeHarborCellArtifacts({ invocation, outputDir, storageRoot });
+
+      const trajectoryRoot = join(outputDir, HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY);
+      await assert.rejects(lstat(join(trajectoryRoot, 'artifacts', 'metadata.jsonl')), {
+        code: 'ENOENT',
+      });
+      await assert.rejects(lstat(join(trajectoryRoot, 'runtime.sqlite-wal')), { code: 'ENOENT' });
+      await assert.rejects(lstat(join(trajectoryRoot, 'task-runs')), { code: 'ENOENT' });
+      const database = new DatabaseSync(join(trajectoryRoot, 'runtime.sqlite'), {
+        readOnly: true,
+      });
+      try {
+        const row = database
+          .prepare('SELECT record_json FROM artifact_records WHERE artifact_id = ?')
+          .get(image.id) as { record_json?: unknown } | undefined;
+        assert.equal(row?.record_json, JSON.stringify(image));
+      } finally {
+        database.close();
+      }
+      assert.deepEqual(
+        await readFile(join(trajectoryRoot, 'artifacts', image.relativePath)),
+        Buffer.from('\x89PNG\r\n\x1a\nfixture'),
+      );
+
+      await writeHarborCellArtifacts({
+        invocation: { ...invocation, events: [] },
+        outputDir,
+        storageRoot,
+      });
+      await assert.rejects(lstat(trajectoryRoot), { code: 'ENOENT' });
     });
   });
 

@@ -8,7 +8,7 @@ import type {
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
 } from '@maka/core';
-import type { SettingsSelectOption } from './primitives/settings-select.js';
+import type { SelectorOptionData } from '@astryxdesign/core/Selector';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -164,7 +164,7 @@ export interface DailyReviewBridge {
    * panel still works as the MVP telemetry view.
    */
   runOnce?(opts: { mode: DailyReviewMode; modelKey?: string }): Promise<{ archiveId: string }>;
-  modelOptions?: ReadonlyArray<SettingsSelectOption<string>>;
+  modelOptions?: SelectorOptionData[];
   listArchives?(): Promise<DailyReviewArchiveSummary[]>;
   getArchive?(archiveId: string): Promise<DailyReviewArchive>;
   deleteArchive?(archiveId: string): Promise<void>;

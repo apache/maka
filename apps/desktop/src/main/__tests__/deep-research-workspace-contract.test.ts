@@ -28,7 +28,7 @@ describe('Deep Research durable workspace wiring', () => {
       'utf8',
     );
 
-    assert.match(main, /const deepResearchStore = createDeepResearchStore\(workspaceRoot\)/);
+    assert.match(main, /const deepResearchStore = createSqliteDeepResearchStore\(workspaceRoot\)/);
     assert.match(main, /const deepResearchTools = buildDeepResearchTools\(\{/);
     assert.match(main, /onArtifactCreated: \(event\) => safeSendToRenderer\('artifacts:changed', event\)/);
     assert.match(

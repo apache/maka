@@ -95,6 +95,7 @@ export {
   isStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
+  ToolOutcomeUnknownError,
   TOOL_ACTIVITY_KINDS,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
@@ -356,6 +357,32 @@ export {
   decodeAgentRunHeader,
   isSessionInlineRun,
 } from './agent-run.js';
+
+// model-call-attempt.ts
+export type {
+  ModelCallAttempt,
+  ModelCallAttemptStatus,
+  ModelCallCostBasis,
+  ModelCallCoverage,
+  ModelCallGroup,
+  ModelCallKind,
+  ModelCallUsageBasis,
+} from './model-call-attempt.js';
+export {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  MODEL_CALL_ATTEMPT_STATUSES,
+  MODEL_CALL_COST_BASES,
+  MODEL_CALL_KINDS,
+  MODEL_CALL_USAGE_BASES,
+  decodeModelCallAttempt,
+  dedupeModelCallAttempts,
+  groupModelCallAttempts,
+  isModelCallAttempt,
+  settledAttempt,
+  sumModelCallCostUsd,
+  summarizeModelCallCoverage,
+} from './model-call-attempt.js';
 
 // shell-run.ts
 export type {
@@ -1219,6 +1246,22 @@ export type {
   VoiceTtsPolicy,
   VoiceTtsProvider,
   VoiceTtsRequest,
+  VoiceIntent,
+  VoiceAudioFormat,
+  EphemeralVoiceAudio,
+  VoiceModelRouteCapability,
+  VoiceRecognitionConfig,
+  VoiceRealtimeConfig,
+  VoiceSettings,
+  VoiceRoutePlan,
+  ResolveVoiceRouteInput,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
+  VoiceCoordinatorToolName,
+  VoiceCoordinatorToolCall,
 } from './voice.js';
 export {
   VOICE_MAX_AUDIO_BYTES,
@@ -1230,6 +1273,10 @@ export {
   defaultVoiceCapabilitySnapshot,
   defaultVoiceCaptureCaps,
   defaultVoicePrivacyFlags,
+  defaultVoiceSettings,
+  normalizeVoiceSettings,
+  resolveVoiceRoute,
+  normalizeVoiceCoordinatorToolCall,
   normalizeVoiceInputMode,
   normalizeVoiceTranscriptText,
   normalizeVoiceTtsPolicy,
@@ -1412,7 +1459,7 @@ export {
 } from './model-catalog.js';
 
 // model-metadata.ts
-export { resolveModelVisionSupport } from './model-metadata.js';
+export { resolveModelVisionSupport, resolveModelVoiceMetadata } from './model-metadata.js';
 
 // settings.ts
 export type {

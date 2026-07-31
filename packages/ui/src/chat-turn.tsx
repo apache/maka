@@ -7,8 +7,14 @@ import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
-import { Button as UiButton } from '@astryxdesign/core';
-import { buttonVariants, cn, DialogContent, DialogRoot } from './ui.js';
+import {
+  Button as UiButton,
+  IconButton as UiIconButton,
+} from '@astryxdesign/core';
+import { Dialog } from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { cn } from './ui.js';
 import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
@@ -16,7 +22,6 @@ import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/collapsible.js';
 import { Bubble, Marker, markerVariants, Message, TextShimmer } from './primitives/chat.js';
-import { Tooltip, TooltipTrigger, TooltipContent } from './primitives/tooltip.js';
 import { SETTLE_FADE, ToolKindIcon, ToolTrow, useToolDisclosure } from './tool-activity.js';
 import {
   isProcessingRunning,
@@ -93,15 +98,24 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
       >
         <img className="h-32 w-32 object-cover transition group-hover:opacity-90" src={src} alt={props.attachment.name} />
       </button>
-      <DialogRoot open={lightboxOpen} onOpenChange={setLightboxOpen}>
-        <DialogContent
-          width="auto"
-          maxHeight="90vh"
-          aria-label={copy.imageAriaLabel(props.attachment.name)}
-        >
-          <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
-        </DialogContent>
-      </DialogRoot>
+      <Dialog
+        isOpen={lightboxOpen}
+        onOpenChange={setLightboxOpen}
+        padding={0}
+        purpose="info"
+        width="auto"
+        maxHeight="90vh"
+        aria-label={copy.imageAriaLabel(props.attachment.name)}
+      >
+        <Layout
+          height="auto"
+          content={
+            <LayoutContent padding={0} isScrollable={false}>
+              <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
+            </LayoutContent>
+          }
+        />
+      </Dialog>
     </>
   );
 }
@@ -177,26 +191,20 @@ const MessageBody = memo(function MessageBody(props: {
           )}
           <MessageCopyButton text={props.text} footerStyle />
           {props.onEditUserMessage && (
-            <Tooltip>
-              {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
-                    aria-label={editActionLabel}
-                    aria-disabled={props.editDisabled === true ? 'true' : undefined}
-                    data-action="edit"
-                    onClick={() => {
-                      if (props.editDisabled) return;
-                      props.onEditUserMessage?.();
-                    }}
-                  />
-                }
-              >
-                <Pencil size={12} aria-hidden="true" />
-              </TooltipTrigger>
-              <TooltipContent>{editActionLabel}</TooltipContent>
+            <Tooltip content={editActionLabel}>
+              <UiIconButton
+                label={editActionLabel}
+                icon={<Pencil size={12} aria-hidden="true" />}
+                variant="ghost"
+                size="sm"
+                className={markerVariants({ variant: 'footer-action' })}
+                aria-disabled={props.editDisabled === true ? 'true' : undefined}
+                data-action="edit"
+                onClick={() => {
+                  if (props.editDisabled) return;
+                  props.onEditUserMessage?.();
+                }}
+              />
             </Tooltip>
           )}
         </div>
@@ -248,26 +256,20 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     // icon-only + tooltip, matching the assistant footer copy action (#546)
     // so the user-message copy and the assistant copy read as one button.
     return (
-      <Tooltip>
-        {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
-              aria-label={baseLabel}
-              aria-busy={copyPending ? 'true' : undefined}
-              disabled={copyPending}
-              data-copied={copied}
-              data-copy-feedback={copyPhase ?? undefined}
-              data-pending={copyPending ? 'true' : undefined}
-              onClick={() => void copy()}
-            />
-          }
-        >
-          {icon}
-        </TooltipTrigger>
-        <TooltipContent>{actionLabel}</TooltipContent>
+      <Tooltip content={actionLabel}>
+        <UiIconButton
+          label={baseLabel}
+          icon={icon}
+          variant="ghost"
+          size="sm"
+          className={markerVariants({ variant: 'footer-action' })}
+          aria-busy={copyPending ? 'true' : undefined}
+          isDisabled={copyPending}
+          data-copied={copied}
+          data-copy-feedback={copyPhase ?? undefined}
+          data-pending={copyPending ? 'true' : undefined}
+          onClick={() => void copy()}
+        />
       </Tooltip>
     );
   }
@@ -746,26 +748,20 @@ function TurnFooterActions(props: {
           ? <Check size={12} aria-hidden="true" />
           : STATUS_FOOTER_ICON[action.id];
         return (
-          <Tooltip key={action.id}>
-            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
-                  aria-label={action.label}
-                  data-action={action.id}
-                  data-pending={isActionPending || undefined}
-                  data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                  aria-disabled={!action.enabled || copyIsPending}
-                  aria-busy={isActionPending || undefined}
-                  onClick={() => void handleClick(action)}
-                />
-              }
-            >
-              {icon}
-            </TooltipTrigger>
-            <TooltipContent>{tooltipText}</TooltipContent>
+          <Tooltip key={action.id} content={tooltipText}>
+            <UiIconButton
+              label={action.label}
+              icon={icon}
+              variant="ghost"
+              size="sm"
+              className={markerVariants({ variant: 'footer-action' })}
+              data-action={action.id}
+              data-pending={isActionPending || undefined}
+              data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
+              aria-disabled={!action.enabled || copyIsPending}
+              aria-busy={isActionPending || undefined}
+              onClick={() => void handleClick(action)}
+            />
           </Tooltip>
         );
       })}

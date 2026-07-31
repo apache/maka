@@ -46,7 +46,6 @@ export const PR2_TARGET_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/settings/settings-surface.tsx',
   'apps/desktop/src/renderer/settings/password-input.tsx',
   'apps/desktop/src/renderer/use-shell-memory-pill.ts',
-  'packages/ui/src/primitives/dialog-header.tsx',
   'apps/desktop/src/renderer/use-onboarding-snapshot.ts',
   'packages/ui/src/search-modal.tsx',
   'packages/ui/src/session-sidebar-nav.tsx',
@@ -86,7 +85,6 @@ export const PR2_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/settings/settings-surface.tsx',
   'apps/desktop/src/renderer/settings/password-input.tsx',
   'apps/desktop/src/renderer/use-shell-memory-pill.ts',
-  'packages/ui/src/primitives/dialog-header.tsx',
   'packages/ui/src/search-modal.tsx',
   'packages/ui/src/session-sidebar-nav.tsx',
 ] as const;

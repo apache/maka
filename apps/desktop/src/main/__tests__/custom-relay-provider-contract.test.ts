@@ -68,16 +68,25 @@ describe('Custom relay provider setup contract', () => {
     assert.match(form, /const requiresBaseUrl = !defaults\.baseUrl && !isCloudflareWorkersAi;/);
     assert.match(form, /const showsDefaultModel = recommendedDefaultModel\.trim\(\) === '';/);
     assert.match(form, /const isCustomRelay = defaults\.category === 'custom';/);
-    assert.match(form, /if \(requiresBaseUrl && !baseUrl\.trim\(\)\) return setError\(copy\.endpointRequired\);/);
-    assert.match(form, /if \(isCustomRelay && !normalizedDefaultModel\) return setError\(copy\.defaultModelRequired\);/);
+    assert.match(
+      form,
+      /if \(requiresBaseUrl && !baseUrl\.trim\(\)\) \{[\s\S]*field: 'baseUrl',[\s\S]*message: copy\.endpointRequired/,
+    );
+    assert.match(
+      form,
+      /if \(isCustomRelay && !normalizedDefaultModel\) \{[\s\S]*field: 'defaultModel',[\s\S]*message: copy\.defaultModelRequired/,
+    );
     assert.match(form, /baseUrl: resolvedBaseUrl,/);
     assert.match(form, /defaultModel: normalizedDefaultModel \|\| recommendedDefaultModel,/);
     assert.match(
       form,
       /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(props\.providerType\);[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*await props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*if \(!isCustomRelay\) modelDiscoveryError = error/,
     );
-    assert.match(form, /aria-label=\{copy\.defaultModelAria\}/);
-    assert.match(form, /<small>\{copy\.defaultModelHelp\}<\/small>/);
+    assert.match(form, /label=\{copy\.defaultModel\}[\s\S]*description=\{copy\.defaultModelHelp\}[\s\S]*isRequired=\{isCustomRelay\}/);
+    assert.match(
+      form,
+      /error\?\.field === 'defaultModel'[\s\S]*type: 'error', message: error\.message/,
+    );
 
     assert.match(copy, /defaultModel: '默认模型'/);
     assert.match(copy, /defaultModelRequired: '请填写默认模型 ID。保存后仍会自动拉取模型目录。'/);

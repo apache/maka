@@ -19,7 +19,7 @@ import { cn } from "../utils.js";
  * Visual chrome lives in the renderer's `styles/segmented.css` under
  * `.maka-segmented` — one home for every consumer (sidebar view-mode
  * toggle, daily-review range tabs, usage and appearance settings),
- * the same way `ChoiceCard` / `SettingsSelect` are layered.
+ * the same way `RadioList` is layered.
  */
 export interface SegmentedProps<T extends string> {
   value: T;

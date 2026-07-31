@@ -70,14 +70,12 @@ describe('Settings form accessibility labels', () => {
     // table cells which carry the same border-radius family.
     const providerIcon = '';
     const providerCatalogBadge = styles.match(/\.providerCatalogBadge\s*\{[\s\S]*?\}/)?.[0] ?? '';
-    const modelChoiceList = styles.match(/\.providerModelChoiceList\s*\{[\s\S]*?\}/)?.[0] ?? '';
-    const modelChoiceScroll = styles.match(/\.providerModelChoiceScroll\s*\{[\s\S]*?\}/)?.[0] ?? '';
     // #1362: TWO .settingsRow rules exist now — the base label/value grid
     // and the narrow-card stacking override inside the @container block.
     // The base rule is the one that declares its own display.
     const settingsRowRules = styles.match(/\.settingsRow\s*\{[\s\S]*?\}/g) ?? [];
     const settingsRow = settingsRowRules.find((rule) => /display:\s*grid;/.test(rule)) ?? '';
-    const settingsRowStacked = settingsRowRules.find((rule) => !/display:/.test(rule)) ?? '';
+    const settingsRowStacked = settingsRowRules.find((rule) => /grid-template-columns:\s*minmax\(0,\s*1fr\);/.test(rule)) ?? '';
     const settingsRowValue = styles.match(/\.settingsRow > span\s*\{[\s\S]*?\}/)?.[0] ?? '';
     // #1362: the title tier is one comma-grouped rule for both row kinds.
     const settingsRowTitle = styles.match(/\.settingsRow strong,\s*\.settingsFormRow strong\s*\{[\s\S]*?\}/)?.[0] ?? '';
@@ -91,16 +89,10 @@ describe('Settings form accessibility labels', () => {
     assert.match(providerMarketGridRule, /grid-template-columns:\s*1fr;/, 'Settings provider catalog should render as a seamless single-column row list, not a card grid');
     assert.ok(providerCatalogRow, 'Settings provider catalog rows should be governed by the shared .providerCatalogRow (Item) class');
     // PR-DELETE-ORPHAN-CSS: providerIcon assertion removed (orphan).
-    assert.match(modelChoiceList, /display:\s*grid;/, 'The model list should group plain rows with layout, not per-row container chrome');
-    assert.match(modelChoiceList, /gap:\s*var\(--space-0-5\);/, 'Model rows should use whitespace as their persistent grouping cue');
-    assert.doesNotMatch(modelChoiceList, /border-(?:top|bottom):/, 'Model rows should not add separators inside the already-bordered scroll region');
-    assert.match(modelChoiceScroll, /border-radius:\s*var\(--radius-surface\);/, 'The model scroll region uses the standard secondary-surface radius');
-    assert.match(modelChoiceScroll, /height:\s*\d+px;/, 'The model scroll region is a fixed height so filtering never resizes the dialog');
     assert.match(providerCatalogBadge, /border-radius:\s*var\(--radius-control\);/, 'Provider catalog badges (category / preview / login) should use compact squared target-layout style corners, not pills');
     assert.match(connectionBadge, /rounded-\[var\(--radius-control\)\]/, 'Settings status badges (Chip primitive) should use compact squared target-layout style corners, not pills');
     assert.match(settingsBadge, /rounded-\[var\(--radius-control\)\]/, 'Generic Settings badges (Chip primitive) should use compact squared target-layout style corners, not pills');
     assert.doesNotMatch(providerCatalogBadge, /border-radius:\s*var\(--radius-pill\);/, 'Provider catalog badges must not regress to pill-shaped chrome');
-    assert.doesNotMatch(modelChoiceList, /border-radius|box-shadow|background:/, 'Model rows must stay visually flat inside the bordered scroll region');
     assert.doesNotMatch(connectionBadge, /rounded-\[var\(--radius-pill\)\]/, 'Settings connection badges (Chip primitive) must not regress to pill-shaped chrome');
     assert.doesNotMatch(settingsBadge, /rounded-\[var\(--radius-pill\)\]/, 'Generic Settings badges (Chip primitive) must not regress to pill-shaped chrome');
     assert.match(settingsRow, /display:\s*grid;/, 'Settings rows should use a stable label/value grid instead of flex auto sizing');
@@ -125,73 +117,50 @@ describe('Settings form accessibility labels', () => {
 
   it('keeps migrated Settings text fields and action buttons on shared UI primitives', async () => {
     const settings = await readSettingsCombinedSource();
-    const settingsSelect = await readRepo('packages/ui/src/primitives/settings-select.tsx');
     const passwordInput = await readRepo('apps/desktop/src/renderer/settings/password-input.tsx');
     const providersPanel = await readProviderSettingsCombinedSource();
     const styles = await readRendererContractCss();
 
-    assert.match(settings, /SettingsSelect,/);
-    assert.match(
-      settingsSelect,
-      /import \{[\s\S]*\bSelector\b[\s\S]*\bSelectorOption\b[\s\S]*\} from '@astryxdesign\/core\/Selector';/,
-    );
+    assert.match(settings, /\bSelector,/);
+    assert.doesNotMatch(settings, /\bSettingsSelect\b/);
     assert.match(
       passwordInput,
-      /import \{[^}]*\bIconButton\b[^}]*\bInput\b[^}]*\buseMountedRef\b[^}]*\buseToast\b[^}]*\buseUiLocale\b[^}]*\} from '@maka\/ui';/,
+      /import \{[^}]*\bIconButton\b[^}]*\bTextInput\b[^}]*\buseMountedRef\b[^}]*\buseToast\b[^}]*\buseUiLocale\b[^}]*\} from '@maka\/ui';/,
     );
     // ProvidersPanel sources its UI from the shared @maka/ui primitives;
     // tolerant of single- vs multi-line import formatting.
     const providersPanelUiImports = providersPanel.match(/import \{[^}]*\} from '@maka\/ui';/g)?.join('\n') ?? '';
-    for (const name of ['Button', 'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger', 'Input', 'RelativeTime', 'Textarea', 'useToast']) {
+    for (const name of ['Button', 'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger', 'TextInput', 'RelativeTime', 'TextArea', 'useToast']) {
       assert.ok(providersPanelUiImports.includes(name), `Providers provider files should import ${name} from @maka/ui`);
     }
-    assert.match(settingsSelect, /export function SettingsSelect<T extends string>/);
-    assert.match(settingsSelect, /<Selector[\s\S]*isLabelHidden[\s\S]*options=\{options\}/);
-    assert.doesNotMatch(settingsSelect, /SelectPositioner|SelectPortal|@base-ui\/react/);
-
-    // ThemeSettingsPage uses native <button> on purpose for the radio-card
-    // pickers (mode / palette): the cards are a custom grid with a preview
-    // tile + label, and the shared <Button>'s baked-in Tailwind
-    // utilities (`h-9 inline-flex bg-primary text-primary-foreground`) collapse
-    // the card to a 36px-tall black pill. See `settings-theme-contract.test.ts`
-    // which pins the inverse direction (radio cards must stay native).
-    // For the general SettingsModal coverage we strip that block out before
-    // asserting `no <button>` so the form-primitive rule still bites everywhere
-    // else (action buttons, header buttons, etc.).
-    const themeBlockRange = (() => {
-      const start = settings.indexOf('function ThemeSettingsPage(');
-      const end = settings.indexOf('function WebSearchSettingsPage(', start);
-      return { start, end };
-    })();
-    assert.ok(themeBlockRange.start >= 0 && themeBlockRange.end > themeBlockRange.start, 'ThemeSettingsPage block must exist for the radio-card exception window');
-    const settingsExceptTheme =
-      settings.slice(0, themeBlockRange.start) + settings.slice(themeBlockRange.end);
     // Item's Base UI `render` target is the semantic element the primitive
     // enhances, not a separate hand-rolled control. Keep the same exception
     // already used for ProvidersPanel below so Settings pages can adopt Item
     // without layering Button chrome onto full-row navigation targets.
-    const settingsPrimitiveButtons = settingsExceptTheme.replace(
+    const settingsPrimitiveButtons = settings.replace(
       /render=\{\s*\(\s*<button[\s\S]*?\/>\s*\)\s*\}/g,
       'render={<primitiveTarget/>}',
     );
 
     for (const [path, source] of [
-      ['SettingsModal.tsx (outside ThemeSettingsPage)', settingsPrimitiveButtons],
+      ['SettingsModal.tsx', settingsPrimitiveButtons],
       ['password-input.tsx', passwordInput],
     ] as const) {
-      assert.doesNotMatch(source, /<input\b/, `${path} must use the shared Input primitive for Settings text fields`);
-      assert.doesNotMatch(source, /<textarea\b/, `${path} must use the shared Textarea primitive for Settings text areas`);
+      assert.doesNotMatch(source, /<input\b/, `${path} must use the shared TextInput primitive for Settings text fields`);
+      assert.doesNotMatch(source, /<textarea\b/, `${path} must use the shared TextArea primitive for Settings text areas`);
       assert.doesNotMatch(source, /<select\b/, `${path} must use the Astryx Selector primitive for Settings selects`);
       assert.doesNotMatch(source, /<button\b/, `${path} must use the shared Button primitive for Settings buttons`);
       assert.doesNotMatch(source, /className="maka-button/, `${path} must not keep legacy maka-button styling on migrated actions`);
     }
 
-    assert.doesNotMatch(providersPanel, /<input\b/, 'ProvidersPanel must use the shared Input primitive for Settings text fields');
-    assert.doesNotMatch(providersPanel, /<textarea\b/, 'ProvidersPanel must use the shared Textarea primitive for Settings text areas');
+    assert.doesNotMatch(providersPanel, /<input\b/, 'ProvidersPanel must use the shared TextInput primitive for Settings text fields');
+    assert.doesNotMatch(providersPanel, /<textarea\b/, 'ProvidersPanel must use the shared TextArea primitive for Settings text areas');
     assert.doesNotMatch(providersPanel, /<select\b/, 'ProvidersPanel must use the Astryx Selector primitive for Settings selects');
     assert.doesNotMatch(providersPanel, /className="maka-button/, 'ProvidersPanel governed Buttons must not layer the legacy maka-button class (inert under the @maka/ui Button utilities, so it is dead weight)');
-    assert.match(providersPanel, /aria-label=\{copy\.searchModels\}/);
-    assert.match(providersPanel, /className="providerModelChoiceList"\s+aria-label=\{copy\.modelListAria\}/);
+    assert.match(
+      providersPanel,
+      /<CheckboxList[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*description=\{copy\.enabledModelsHelp\}/,
+    );
     // `Item` rows become real buttons through Base UI's polymorphic
     // `render={<button .../>}` prop, which is a primitive render target rather
     // than a hand-rolled control. Strip those before asserting no raw <button>
@@ -227,6 +196,19 @@ describe('Settings form accessibility labels', () => {
     assert.match(passwordInput, /isDisabled=\{copying\}/);
     assert.match(passwordInput, /label=\{copying \? copy\.copying : justCopied \? copy\.copied : copy\.copy\}/);
     assert.match(passwordInput, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
+    assert.match(
+      passwordInput,
+      /<InputGroup[\s\S]*isLabelHidden=\{props\.isLabelHidden\}[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.status\}/,
+      'the visible credential field must own required and error presentation',
+    );
+    assert.match(
+      passwordInput,
+      /<TextInput[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.status \? \{ type: props\.status\.type \} : undefined\}/,
+      'required and invalid semantics must reach the actual credential input',
+    );
+    assert.doesNotMatch(passwordInput, /isLabelHidden \?\? true/);
+    assert.doesNotMatch(passwordInput, /<div className="settingsPasswordField">/);
+    assert.doesNotMatch(passwordInput, /settingsPasswordField/);
     assert.doesNotMatch(
       passwordInput,
       /const copyingRef = useRef\(false\)/,
@@ -256,32 +238,52 @@ describe('Settings form accessibility labels', () => {
     }
   });
 
+  it('lets Astryx own simple field labels and multi-field layout', async () => {
+    const general = await readRepo('apps/desktop/src/renderer/settings/general-settings-page.tsx');
+    const gateway = await readRepo('apps/desktop/src/renderer/settings/open-gateway-settings-page.tsx');
+    const provider = await readRepo('apps/desktop/src/renderer/settings/provider-add-form.tsx');
+
+    assert.match(general, /<FormLayout className="settingsFormLayout" direction="horizontal">/);
+    assert.match(gateway, /<FormLayout className="settingsFormLayout">[\s\S]*<FormLayout direction="horizontal">/);
+    assert.match(provider, /<FormLayout>/);
+    assert.doesNotMatch(
+      `${general}\n${gateway}\n${provider}`,
+      /settingsFormGrid/,
+      'Maka must not preserve a parallel grid for fields Astryx FormLayout can arrange',
+    );
+    assert.doesNotMatch(
+      `${general}\n${gateway}\n${provider}`,
+      /<span>\{copy\.(?:proxyProtocol|serverAddress|username|password|form\.(?:host|token|sessionId)|slug|name|apiKeyLabel)[^<]*<\/span>/,
+      'visible labels must be owned by their fields instead of duplicated in product markup',
+    );
+  });
+
   it('names the high-risk Settings fields found by the real app AX sweep', async () => {
     const settings = await readSettingsCombinedSource();
     const providers = await readProviderSettingsCombinedSource();
 
     for (const [label, pattern] of [
-      ['Telegram proxy address', /ariaLabel: copy\.telegramProxyAria/],
-      ['Discord proxy address', /ariaLabel: copy\.discordProxyAria/],
-      ['allowed user IDs', /aria-label=\{copy\.allowedUsersAria\}/],
-      ['web-search query', /aria-label=\{copy\.queryAria\}/],
-      ['proxy server address', /aria-label=\{copy\.proxyServerAddress\}/],
-      ['proxy port', /aria-label=\{copy\.proxyPort\}/],
-      ['Open Gateway host', /ariaLabel=\{copy\.form\.hostAria\}/],
-      ['Open Gateway port', /aria-label=\{copy\.form\.portAria\}/],
-      ['Open Gateway session ID', /aria-label=\{copy\.form\.sessionAria\}/],
-      ['usage request filter', /aria-label=\{props\.copy\.filterAria\}/],
-      ['usage status filter', /ariaLabel=\{props\.copy\.statusAria\}/],
-      ['MEMORY.md content', /aria-label=\{copy\.text\.contentEditorAria\}/],
+      ['Telegram proxy address', /label: copy\.telegramProxyAria/],
+      ['Discord proxy address', /label: copy\.discordProxyAria/],
+      ['allowed user IDs', /label=\{copy\.allowedUsersLabel\(parsed\.length, MAX_ALLOWED_USER_IDS\)\}/],
+      ['web-search query', /label=\{copy\.queryAria\}/],
+      ['proxy server address', /label=\{copy\.serverAddress\}/],
+      ['proxy port', /<NumberInput label=\{copy\.port\}/],
+      ['Open Gateway host', /label=\{copy\.form\.host\}/],
+      ['Open Gateway port', /<NumberInput label=\{copy\.form\.port\}/],
+      ['Open Gateway session ID', /label=\{copy\.form\.sessionId\}/],
+      ['usage request filter', /label=\{props\.copy\.filterAria\}/],
+      ['usage status filter', /label=\{props\.copy\.statusAria\}/],
+      ['MEMORY.md content', /label=\{copy\.text\.fileContent\}/],
     ] as const) {
       assert.match(settings, pattern, `SettingsModal must label ${label}`);
     }
 
     for (const [label, pattern] of [
-      ['provider slug', /aria-label=\{copy\.slugAria\}/],
-      ['provider display name', /aria-label=\{copy\.nameAria\}/],
-      ['provider endpoint', /aria-label=\{copy\.endpointAria\}/],
-      ['model search', /aria-label=\{copy\.searchModels\}/],
+      ['provider slug', /label=\{copy\.slug\}/],
+      ['provider display name', /label=\{copy\.name\}/],
+      ['provider endpoint', /label=\{copy\.endpointLabel\(requiresBaseUrl\)\}/],
+      ['enabled model selector', /label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}/],
     ] as const) {
       assert.match(providers, pattern, `ProvidersPanel must label ${label}`);
     }
@@ -329,8 +331,7 @@ describe('Settings form accessibility labels', () => {
     const settingsRow = styles.match(/\.settingsRow\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
     const settingsFormRow = styles.match(/\.settingsFormRow\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
     const rowTitle = styles.match(/\.settingsRow strong,\s*\.settingsFormRow strong\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    const fieldLabel = styles.match(/\.settingsField span,\s*\.settingsFormGrid label span\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    const hint = styles.match(/\.settingsRow small,\s*\.settingsFormRow small,\s*\.settingsField small\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
+    const hint = styles.match(/\.settingsRow small,\s*\.settingsFormRow small\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
 
     for (const [name, block] of [['.settingsRow', settingsRow], ['.settingsFormRow', settingsFormRow]] as const) {
       assert.ok(block, `${name} base rule must exist in the aggregated renderer CSS (rows.css import reachable)`);
@@ -339,28 +340,19 @@ describe('Settings form accessibility labels', () => {
     assert.ok(rowTitle, 'row titles must stay on ONE comma-grouped rule for both row kinds');
     assert.match(rowTitle, /font-size:\s*var\(--font-size-heading\);/, 'row titles sit on the heading tier for both row kinds');
     assert.match(rowTitle, /font-weight:\s*var\(--font-weight-medium\);/, 'row titles are medium weight');
-    assert.ok(fieldLabel, 'field labels must stay on ONE comma-grouped rule');
-    assert.match(fieldLabel, /font-size:\s*var\(--font-size-ui\);/, 'field labels sit one tier BELOW row titles (ui, not heading)');
-    assert.ok(hint, 'hints must stay on ONE comma-grouped rule across row kinds and fields');
+    assert.ok(hint, 'row hints must stay on ONE comma-grouped rule across row kinds');
     assert.match(hint, /font-size:\s*var\(--font-size-base\);/, 'hints sit on the body tier');
   });
 
-  // Alignment-governance round (maintainer report: 每日回顾 switches sat
-  // mid-page while every other row control hugs the right rail). The
-  // original end-align rule was tag-qualified (`button[role="switch"]`)
-  // but Base UI renders the Switch root as a SPAN — the selector matched
-  // nothing and rotted silently for weeks. Two pins: the rule exists in
-  // tag-agnostic form, and no settings CSS ever tag-qualifies role
-  // selectors again (role is the contract; the rendered tag is not).
-  it('end-aligns settings row switches with a tag-agnostic role selector', async () => {
+  it('end-aligns settings row switches through an explicit product layout hook', async () => {
     const styles = await readRendererContractCss();
-    const alignRule = styles.match(/\.settingsRow\s*>\s*\[role="switch"\]\s*\{[\s\S]*?\}/)?.[0] ?? '';
-    assert.ok(alignRule, '.settingsRow > [role="switch"] rule must exist');
+    const alignRule = styles.match(/\.settingsRow\[data-control="switch"\]\s*>\s*:last-child\s*\{[\s\S]*?\}/)?.[0] ?? '';
+    assert.ok(alignRule, 'switch rows must use the explicit data-control layout hook');
     assert.match(alignRule, /justify-self:\s*end;/, 'settings row switches must end-align like every other row control');
     assert.doesNotMatch(
       styles,
-      /button\[role="switch"\]/,
-      'never tag-qualify role selectors — Base UI renders the Switch root as a span, so button[role="switch"] silently matches nothing',
+      /\[role="switch"\]|\[data-slot="switch"\]/,
+      'renderer layout CSS must not depend on Astryx switch internals',
     );
   });
 });

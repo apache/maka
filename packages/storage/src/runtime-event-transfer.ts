@@ -5,8 +5,12 @@ import { createRuntimeEventStore, type DurableRuntimeEventStore } from './agent-
 import { classifyJsonRecord } from './json-prefix.js';
 import type { SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
 
-export const SQLITE_RUNTIME_DATABASE_NAME = 'runtime.sqlite';
+export const SQLITE_RUNTIME_DATABASE_NAME = OPERATIONAL_STATE_DATABASE_NAME;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export type RuntimeEventPersistence = {
@@ -37,7 +41,8 @@ export async function openRuntimeEventPersistence(input: {
   workspaceRoot: string;
 }): Promise<RuntimeEventPersistence> {
   const databasePath = join(input.workspaceRoot, SQLITE_RUNTIME_DATABASE_NAME);
-  const store = createSqliteRuntimeStore(databasePath);
+  const databaseLease = acquireOperationalStateDatabase(input.workspaceRoot);
+  const store = createSqliteRuntimeStore(databasePath, { databaseLease });
   try {
     const importReport = await importLegacyRuntimeEventJsonlTree({
       workspaceRoot: input.workspaceRoot,

@@ -826,6 +826,8 @@ describe('default session target resolver', () => {
       slug: 'local',
       providerType: 'ollama',
       defaultModel: 'qwen2.5-coder',
+      // Requested model must be user-enabled; discovered catalog alone is not enough.
+      enabledModelIds: ['qwen2.5-coder', 'llama3.2'],
       models: [{ id: 'qwen2.5-coder' }, { id: 'llama3.2' }],
     });
 

@@ -33,7 +33,6 @@ import {
 } from '@astryxdesign/core/Toast';
 import { AlertCircle, AlertTriangle, CheckCircle2, Info } from './icons.js';
 import { useUiLocale } from './locale-context.js';
-import { useModalFocusLifecycle } from './modal-lifecycle.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ToastVariant = 'info' | 'success' | 'warning' | 'error';
@@ -75,6 +74,12 @@ interface PendingConfirm extends ConfirmInput {
   resolve(result: boolean): void;
 }
 
+interface ActiveConfirm {
+  request: PendingConfirm;
+  phase: 'mounting' | 'open' | 'closing';
+  result?: boolean;
+}
+
 const DEFAULT_DURATION = 4000;
 const ToastContext = createContext<ToastApi | null>(null);
 
@@ -88,7 +93,7 @@ export function ToastProvider(props: { children: ReactNode }) {
 
 function ToastController(props: { children: ReactNode }) {
   const showToast = useAstryxToast();
-  const [confirmState, setConfirmState] = useState<PendingConfirm | null>(null);
+  const [confirmState, setConfirmState] = useState<ActiveConfirm | null>(null);
   const activeConfirmRef = useRef<PendingConfirm | null>(null);
   const confirmQueueRef = useRef<PendingConfirm[]>([]);
   const dismissByIdRef = useRef(new Map<string, ToastDismissFn>());
@@ -138,22 +143,55 @@ function ToastController(props: { children: ReactNode }) {
         return;
       }
       activeConfirmRef.current = request;
-      setConfirmState(request);
+      setConfirmState({ request, phase: 'mounting' });
     });
   }, []);
 
-  const resolveConfirm = useCallback(
+  const requestConfirmResult = useCallback(
     (result: boolean) => {
       const current = activeConfirmRef.current;
       if (!current) return;
-      activeConfirmRef.current = null;
-      current.resolve(result);
-      const next = confirmQueueRef.current.shift() ?? null;
-      activeConfirmRef.current = next;
-      setConfirmState(next);
+      setConfirmState((state) => {
+        if (
+          !state ||
+          state.request !== current ||
+          state.phase !== 'open'
+        ) {
+          return state;
+        }
+        return { ...state, phase: 'closing', result };
+      });
     },
     [],
   );
+
+  useEffect(() => {
+    if (!confirmState) return;
+    if (confirmState.phase === 'mounting') {
+      const frame = window.requestAnimationFrame(() => {
+        setConfirmState((state) =>
+          state?.request === confirmState.request &&
+          state.phase === 'mounting'
+            ? { ...state, phase: 'open' }
+            : state,
+        );
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (confirmState.phase !== 'closing') return;
+    const frame = window.requestAnimationFrame(() => {
+      const current = activeConfirmRef.current;
+      if (!current || current !== confirmState.request) return;
+      activeConfirmRef.current = null;
+      current.resolve(confirmState.result ?? false);
+      const next = confirmQueueRef.current.shift() ?? null;
+      activeConfirmRef.current = next;
+      setConfirmState(
+        next ? { request: next, phase: 'mounting' } : null,
+      );
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [confirmState]);
 
   useEffect(() => {
     return () => {
@@ -184,7 +222,12 @@ function ToastController(props: { children: ReactNode }) {
     <ToastContext.Provider value={api}>
       {props.children}
       {confirmState && (
-        <ConfirmDialog key={confirmState.id} request={confirmState} onResolve={resolveConfirm} />
+        <ConfirmDialog
+          key={confirmState.request.id}
+          request={confirmState.request}
+          isOpen={confirmState.phase === 'open'}
+          onResolve={requestConfirmResult}
+        />
       )}
     </ToastContext.Provider>
   );
@@ -222,8 +265,11 @@ function ToastBody({ input }: { input: ToastInput }) {
   );
 }
 
-function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boolean): void }) {
-  useModalFocusLifecycle({ isOpen: true });
+function ConfirmDialog(props: {
+  request: PendingConfirm;
+  isOpen: boolean;
+  onResolve(result: boolean): void;
+}) {
   const copy = getSharedUiCopy(useUiLocale()).toast;
   const {
     title,
@@ -236,7 +282,7 @@ function ConfirmDialog(props: { request: PendingConfirm; onResolve(result: boole
   return (
     <AstryxAlertDialog
       className="maka-confirm-modal"
-      isOpen
+      isOpen={props.isOpen}
       onOpenChange={(isOpen) => {
         if (!isOpen) props.onResolve(false);
       }}

@@ -73,16 +73,15 @@ describe('model thinking-level picker contract', () => {
   it('renders the side flyout as an Astryx DropdownMenu anchored to the row', async () => {
     const source = await readModelPickerSources();
 
-    assert.match(source, /<Menu[\s\S]*isMenuOpen=\{open\}[\s\S]*onOpenChange=\{setOpen\}/, 'flyout must be a controlled Astryx DropdownMenu');
+    assert.match(source, /<DropdownMenu[\s\S]*isMenuOpen=\{open\}[\s\S]*onOpenChange=\{setOpen\}/, 'flyout must be a controlled Astryx DropdownMenu');
     assert.match(
       source,
       /placement="end"[\s\S]*className:\s*'maka-thinking-section-row'[\s\S]*className="maka-thinking-flyout"/,
       'flyout must use Astryx logical end placement and preserve the product layout hooks',
     );
-    assert.match(source, /<MenuItem[\s\S]*?onClick=\{\(\) => choose\([\s\S]*?label=/, 'levels render as Astryx MenuItems that call choose');
-    assert.doesNotMatch(source, /onPointerDownCapture/, 'no pointerdown commit hack — Menu handles dismiss');
+    assert.match(source, /<DropdownMenuItem[\s\S]*?onClick=\{\(\) => choose\([\s\S]*?label=/, 'levels render as Astryx DropdownMenuItems that call choose');
+    assert.doesNotMatch(source, /onPointerDownCapture/, 'no pointerdown commit hack — DropdownMenu handles dismiss');
     assert.doesNotMatch(source, /THINKING_FLYOUT_VIEWPORT_MARGIN/, 'no hand-rolled viewport clamp — floating-ui positions');
-    assert.doesNotMatch(source, /MenuPopup|createPortal/, 'no compatibility popup or manual portal — Astryx owns the layer');
   });
 
   it('uses native light-dismiss without retaining the Base UI outside-press patch', async () => {
@@ -105,7 +104,7 @@ describe('model thinking-level picker contract', () => {
     assert.match(
       source,
       /const choose = \(level: ThinkingLevel \| undefined\) => \{[\s\S]*props\.onCommit\?\.\(\);[\s\S]*void props\.onChange\?\.\(level\);[\s\S]*\};/,
-      'choose commits then dispatches the change; the Menu closes itself via onOpenChange',
+      'choose commits then dispatches the change; DropdownMenu closes itself via onOpenChange',
     );
 
     const sections = source.match(/<ThinkingLevelSection[\s\S]*?\/>/g) ?? [];
@@ -125,7 +124,7 @@ describe('model thinking-level picker contract', () => {
     assert.match(
       source,
       /if \(!props\.parentOpen\) setOpen\(false\)/,
-      'flyout must close when the host ModelPicker closes so the portaled Menu is not orphaned',
+      'flyout must close when the host ModelPicker closes so the portaled DropdownMenu is not orphaned',
     );
   });
 });

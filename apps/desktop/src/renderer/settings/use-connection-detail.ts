@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
+  isWiredOAuthProvider,
   type ConnectionTestResult,
   type LlmConnection,
   type ModelInfo,
@@ -98,10 +99,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
+  const [settingDefaultModel, setSettingDefaultModel] = useState(false);
   const [settingDefault, setSettingDefault] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'set-default' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'set-default-model' | 'set-default' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -136,7 +138,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         : hasSecret === 'error'
           ? copy.credentialUnknown
           : copy.keyMissing;
-  const detailActionBusy = busy || testing || fetchingModels || savingEnabledModels || settingDefault || deleting;
+  const detailActionBusy =
+    busy ||
+    testing ||
+    fetchingModels ||
+    savingEnabledModels ||
+    settingDefaultModel ||
+    settingDefault ||
+    deleting;
   const issue = connectionChipStatus(connection, locale);
   const lastTestMessage = connectionLastTestMessageDisplay(connection.lastTestMessage, locale);
   const lastTestAtMs = connection.lastTestAt ? Date.parse(connection.lastTestAt) : NaN;
@@ -298,6 +307,33 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
+  async function updateDefaultModel(nextModel: string) {
+    const model = nextModel.trim();
+    if (!model || model === connection.defaultModel) return;
+    const releaseSetDefaultModel = connectionDetailActionGuard.beginExclusive('set-default-model');
+    if (!releaseSetDefaultModel) return;
+    const lifecycle = connectionDetailLifecycleRef.current;
+    setSettingDefaultModel(true);
+    let saved = false;
+    try {
+      await props.bridge.update(connection.slug, { defaultModel: model });
+      saved = true;
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      await props.onChanged();
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      toast.success(copy.defaultModelSet(model));
+    } catch (error) {
+      if (!isConnectionDetailCurrent(lifecycle)) return;
+      toast.error(
+        saved ? copy.refreshFailed : copy.defaultModelSaveFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
+    } finally {
+      releaseSetDefaultModel();
+      if (isConnectionDetailCurrent(lifecycle)) setSettingDefaultModel(false);
+    }
+  }
+
   async function runTest() {
     const releaseTest = connectionDetailActionGuard.beginExclusive('test');
     if (!releaseTest) return;
@@ -339,11 +375,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseFetch) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setFetchingModels(true);
+    let fetched = false;
     try {
       // Backend returns a `ModelDiscoveryResult` envelope and rejects empty or
       // malformed catalogs before persistence. Trust its explicit source
       // instead of reconstructing cache provenance in the renderer.
       const result = await props.bridge.fetchModels(connection.slug);
+      fetched = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setModels(result.models);
       setModelSource(result.source);
@@ -359,11 +397,15 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // doesn't suddenly empty out), but downgrade the source label back to
       // 'fallback' if we have nothing fresh to show — the failed fetch
       // means whatever's on screen is not from the latest probe.
-      if (models.length === 0) setModelSource('fallback');
-      toast.error(
-        copy.modelsFetchFailed(connection.name),
-        copy.modelsFetchFailedDetail(message, credentialTroubleshootingCopy),
-      );
+      if (!fetched && models.length === 0) setModelSource('fallback');
+      if (fetched) {
+        toast.error(copy.refreshFailed, message);
+      } else {
+        toast.error(
+          copy.modelsFetchFailed(connection.name),
+          copy.modelsFetchFailedDetail(message, credentialTroubleshootingCopy),
+        );
+      }
     } finally {
       releaseFetch();
       if (isConnectionDetailCurrent(lifecycle)) setFetchingModels(false);
@@ -401,9 +443,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
     const ok = await toast.confirm({
-      title: copy.deleteProviderTitle(connection.name),
-      description: copy.deleteDescription,
-      confirmLabel: copy.delete,
+      title: copy.deleteConnectionTitle(connection.name),
+      description: copy.deleteDescription(
+        props.isDefault,
+        isWiredOAuthProvider(connection.providerType),
+      ),
+      confirmLabel: isWiredOAuthProvider(connection.providerType)
+        ? copy.disconnectAndDelete
+        : copy.delete,
       cancelLabel: copy.cancel,
       destructive: true,
     });
@@ -459,6 +506,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
+    settingDefaultModel,
     settingDefault,
     deleting,
     detailActionBusy,
@@ -478,6 +526,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    updateDefaultModel,
     runTest,
     refreshModels,
     setAsDefault,

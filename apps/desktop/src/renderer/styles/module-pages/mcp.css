@@ -130,7 +130,6 @@
 
 .maka-mcp-search {
   width: min(300px, 38vw);
-  height: var(--h-control-sm);
   margin-bottom: var(--space-2);
   flex: 0 0 auto;
 }
@@ -385,8 +384,7 @@
 
 .maka-mcp-server-identity code,
 .maka-mcp-tool-list code,
-.maka-mcp-server-details pre,
-.maka-mcp-json-form textarea {
+.maka-mcp-server-details pre {
   font-family: var(--font-mono);
 }
 
@@ -456,40 +454,8 @@
   text-align: center;
 }
 
-.maka-mcp-editor-mode {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4) 0;
-}
-
-.maka-mcp-editor-mode button,
-.maka-mcp-kind-picker button {
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground-secondary);
-  font: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.maka-mcp-editor-mode button[data-active="true"],
-.maka-mcp-kind-picker button[data-active="true"] {
-  border-color: var(--border-strong);
-  background: var(--state-selected-bg);
-  color: var(--foreground);
-}
-
-.maka-mcp-editor-mode svg,
-.maka-mcp-kind-picker svg {
-  width: 16px;
-  height: 16px;
+.maka-mcp-editor-choice {
+  padding-inline: var(--space-4);
 }
 
 .maka-mcp-manual-form,
@@ -502,13 +468,6 @@
   padding-top: var(--space-4);
 }
 
-.maka-mcp-kind-picker {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-  padding-inline: var(--space-4);
-}
-
 .maka-mcp-form-fields {
   min-height: 0;
   display: grid;
@@ -516,11 +475,6 @@
   gap: var(--space-4);
   overflow: auto;
   padding: 0 var(--space-4) var(--space-1);
-}
-
-.maka-mcp-form-fields textarea {
-  min-height: 96px;
-  font-family: var(--font-mono);
 }
 
 .maka-mcp-advanced {
@@ -534,34 +488,9 @@
   padding-top: var(--space-4);
 }
 
-.maka-mcp-advanced select {
-  width: 100%;
-  min-height: var(--h-control-md);
-  padding-inline: var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-}
-
-.maka-mcp-json-form > label {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(260px, 1fr);
-  gap: var(--space-2);
+.maka-mcp-json-field {
+  overflow: auto;
   padding-inline: var(--space-4);
-}
-
-.maka-mcp-json-form > label > span {
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.maka-mcp-json-form textarea {
-  min-height: 260px;
-  resize: none;
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-json-form > p {

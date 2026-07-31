@@ -21,7 +21,11 @@ import {
 } from '@maka/core';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { createSessionStore, openRuntimeEventReadPersistence } from '@maka/storage';
+import {
+  createSessionStore,
+  createSqliteAgentRunStore,
+  openRuntimeEventReadPersistence,
+} from '@maka/storage';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import type { Config, Task } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
@@ -1160,8 +1164,13 @@ async function readAgentRunHeader(
   sessionId: string,
   runId: string,
 ): Promise<AgentRunHeader> {
-  const runPath = join(storageRoot, 'sessions', sessionId, 'runs', runId, 'run.json');
-  return JSON.parse(await readFile(runPath, 'utf8')) as AgentRunHeader;
+  const store = createSqliteAgentRunStore(storageRoot);
+  try {
+    await store.ready?.();
+    return await store.readRun(sessionId, runId);
+  } finally {
+    store.close?.();
+  }
 }
 
 describe('runTaskOnce', () => {

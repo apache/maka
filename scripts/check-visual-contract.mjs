@@ -49,9 +49,8 @@
 //     drops an `animation` rule is invisible here, because both sides are
 //     captured with animations off.
 //
-// Migration-only scaffolding. It is deliberately not wired into CI, following
-// the check:chat-visual precedent, and is removed in PR 14 together with the
-// maka.legacy layer.
+// Migration-only scaffolding. It is deliberately not wired into CI and is
+// removed in PR 14 together with the maka.legacy layer.
 import { spawn } from 'node:child_process';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -797,8 +796,8 @@ export function partitionChanges(changes, declaredNames) {
  * selector like `#root *` or a top-level frame class declares essentially
  * everything without touching those roots — which is indistinguishable from
  * disabling the gate. #1565 scopes are components (a workbar, a panel, a
- * rail); none of them legitimately claims most of a route's boxes, on either
- * side of the comparison.
+ * rail); neither one scope nor the union of several scopes may legitimately
+ * claim most of a route's boxes on either side of the comparison.
  */
 export const SCOPE_COVERAGE_LIMIT = 0.5;
 
@@ -812,6 +811,16 @@ export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT) {
   for (const [scope, count] of claimed) {
     if (count > records.length * limit) {
       violations.push({ scope, claimed: count, total: records.length });
+    }
+  }
+  if (claimed.size > 1) {
+    const totalClaimed = [...claimed.values()].reduce((total, count) => total + count, 0);
+    if (totalClaimed > records.length * limit) {
+      violations.push({
+        scope: '<declared union>',
+        claimed: totalClaimed,
+        total: records.length,
+      });
     }
   }
   return violations;

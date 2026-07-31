@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
-import { Button, Chip, Input, RelativeTime, SettingsSwitch as Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, Chip, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -251,9 +251,10 @@ export function WebSearchSettingsPage(props: {
               <small>{presentWebSearchCredentialSource(credentialSource, hasStoredKey, copy)}</small>
             </div>
             <Switch
-              ariaLabel={copy.enabledAria}
-              checked={webSearch.enabled}
-              disabled={!hasUsableKey || pendingWebSearchEnabled}
+              label={copy.enabledAria}
+              isLabelHidden
+              value={webSearch.enabled}
+              isDisabled={!hasUsableKey || pendingWebSearchEnabled}
               onChange={(enabled) => void setEnabled(enabled)}
             />
           </div>
@@ -268,13 +269,16 @@ export function WebSearchSettingsPage(props: {
                 : <>{copy.savedKeyHelp} <a href="https://tavily.com" target="_blank" rel="noreferrer noopener">tavily.com</a></>}
             </small>
           </div>
-          <PasswordInput
-            value={draftKey}
-            onChange={setDraftKey}
-            disabled={usingEnvKey || credentialActionBusy}
-            placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
-            ariaLabel={copy.keyAria}
-          />
+          <div className="settingsWebSearchKeyField">
+            <PasswordInput
+              value={draftKey}
+              onChange={setDraftKey}
+              isDisabled={usingEnvKey || credentialActionBusy}
+              placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
+              label={copy.keyAria}
+              isLabelHidden
+            />
+          </div>
         </div>
 
         <div className="settingsRow settingsWebSearchCredentialActionRow">
@@ -319,18 +323,22 @@ export function WebSearchSettingsPage(props: {
             <strong>{copy.query}</strong>
             <small>{copy.queryHelp}</small>
           </div>
-          <Input
-            value={liveQuery}
-            onChange={(event) => updateLiveQuery(event.currentTarget.value)}
-            placeholder={copy.queryPlaceholder}
-            aria-label={copy.queryAria}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !liveQueryRunning) {
-                event.preventDefault();
-                void runLiveQuery();
-              }
-            }}
-          />
+          <div className="settingsWebSearchQueryField">
+            <TextInput
+              value={liveQuery}
+              onChange={(value) => updateLiveQuery(value)}
+              placeholder={copy.queryPlaceholder}
+              label={copy.queryAria}
+              isLabelHidden
+              width="100%"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !liveQueryRunning) {
+                  event.preventDefault();
+                  void runLiveQuery();
+                }
+              }}
+            />
+          </div>
         </div>
         <div className="settingsRow settingsWebSearchSearchRow">
           <div>

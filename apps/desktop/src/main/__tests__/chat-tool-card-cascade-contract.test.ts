@@ -10,11 +10,8 @@ import { REPO_ROOT, TOKENS_FILE, readAllRendererCss, stripCssComments } from './
  * header row + status dot, the body / intent, and the args `<pre>` override)
  * moved onto the `@maka/ui` chat substrate's `toolVariants` literalize table.
  *
- * The SHELL halves of "zero visual change" are proven by the computed-style diff
- * harness (`npm run check:chat-visual`): each retired `.maka-tool*` / `.toolInline`
- * / `.toolItem` / `.toolArgs` declaration compiles 1:1 to its literal utility, so
- * this test does NOT re-assert those literals — that would only mirror the
- * implementation. It locks the three things the diff cannot cover:
+ * The retired shell declarations compiled 1:1 to literal utilities. This
+ * contract locks the invariants that remain meaningful in the current tree:
  *   1. the ABSENCE of the retired selectors (a diff of computed styles can't show
  *      a selector is gone), scoped so the still-bespoke `.maka-tool-error*`
  *      (PR3c), `.maka-tool-diff*` / `.maka-tool-terminal*` (result previews, out
@@ -107,39 +104,6 @@ describe('chat tool-card migration contract (#332 PR3b)', () => {
       assert.ok(
         tokens.includes(residue),
         `tool-card residue must keep "${residue}" on the [data-slot="tool"] hook`,
-      );
-    }
-  });
-
-  it('keeps the computed-style fixture covering every production tool status', async () => {
-    // The zero-visual proof is only as complete as the statuses it renders. The
-    // truth source is the locale-aware object returned by `toolStatusLabel`.
-    // Its keys cover the full `ToolActivityItem['status']` union. The harness
-    // must render a card for each: a new status that
-    // escapes the fixture would have NO diffed row, so its tint could drift
-    // unseen (the `pending` gap this guard was added to close). No card-level
-    // exclusions — even `running` renders a card; only its animated DOT id is
-    // left out of IDS.
-    const componentsSrc = await readFile(
-      resolve(REPO_ROOT, 'packages', 'ui', 'src', 'tool-activity', 'result-projection.ts'),
-      'utf8',
-    );
-    const labelBlock = componentsSrc.match(
-      /export function toolStatusLabel[\s\S]*?return \{([\s\S]*?)\}\[item\.status\];/,
-    )?.[1] ?? '';
-    const statuses = [...labelBlock.matchAll(/^\s*(\w+):/gm)].map((m) => m[1]);
-    assert.ok(statuses.length >= 5, 'failed to parse toolStatusLabel keys from tool-activity/result-projection.ts');
-
-    const harnessSrc = await readFile(
-      resolve(REPO_ROOT, 'scripts', 'check-chat-marker-computed-style.mjs'),
-      'utf8',
-    );
-    const statBlock = harnessSrc.slice(harnessSrc.indexOf('const STAT ='));
-    const stat = [...statBlock.slice(0, statBlock.indexOf(']')).matchAll(/'([^']+)'/g)].map((m) => m[1]);
-    for (const status of statuses) {
-      assert.ok(
-        stat.includes(status),
-        `computed-style fixture STAT must render the "${status}" card so its zero-visual proof has a diffed row`,
       );
     }
   });

@@ -49,6 +49,11 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'is-untested',
   'is-verified',
   'is-warn',
+  // Astryx renders these stable component classes through themeProps at
+  // runtime. Responsive page CSS targets them for layout overrides, but they
+  // do not appear as className literals in Maka source.
+  'astryx-button',
+  'astryx-badge',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in

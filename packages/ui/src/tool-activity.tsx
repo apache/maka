@@ -14,7 +14,6 @@ import {
   ShieldAlert,
   SquarePen,
   Terminal,
-  X,
   type LucideProps,
 } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -51,7 +50,7 @@ import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
 import { Button as UiButton } from '@astryxdesign/core';
-import { cn, DialogContent, DialogRoot } from './ui.js';
+import { cn } from './ui.js';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
   formatDuration,
@@ -737,36 +736,6 @@ export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
         {children}
       </CollapsiblePanel>
     </Collapsible>
-  );
-}
-
-export function OverlayHost(props: { content?: ToolResultContent; onClose(): void }) {
-  const copy = getToolActivityCopy(useUiLocale()).output;
-  if (!props.content) return null;
-  return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
-    >
-      <DialogContent
-        aria-label={copy.closeAriaLabel}
-        width="min(92vw, 720px)"
-        maxHeight="85dvh"
-      >
-        <UiButton
-          className={previewVariants({ part: 'close' })}
-          variant="ghost"
-          size="sm"
-          onClick={props.onClose}
-          aria-label={copy.closeAriaLabel}
-          icon={<X size={14} aria-hidden="true" />}
-          label={copy.close}
-        />
-        <ToolResultPreview content={props.content} />
-      </DialogContent>
-    </DialogRoot>
   );
 }
 

@@ -41,7 +41,11 @@ describe('session startup recovery contract', () => {
       '';
 
     assert.match(src, /async function recoverInterruptedSessionsOnStartup\(\): Promise<void>/);
-    assert.match(backgroundBlock, /await recoverInterruptedSessionsOnStartup\(\);/, 'recovery must run inside background startup');
+    assert.match(
+      backgroundBlock,
+      /step\('session recovery', \(\) => recoverInterruptedSessionsOnStartup\(\)\)/,
+      'recovery must run inside background startup, and as a step that survives an earlier failure',
+    );
     assert.match(
       src,
       /backgroundStartup = runBackgroundStartup\(\);[\s\S]*?await mainWindowController\.createWindow\(initialWindowSignal\);[\s\S]*?await backgroundStartup;/,
@@ -71,7 +75,27 @@ describe('session startup recovery contract', () => {
       )?.[0] ?? '';
 
     assert.doesNotMatch(main, /^await migrateSessionProjects\(/m);
-    assert.match(backgroundBlock, /await migrateSessionProjectsOnStartup\(\);/);
+    // The test's own name is "keeps startup fail-soft", and a bare `await` in a
+    // sequence is the opposite of that: the first rejection skips every step
+    // after it. That is not hypothetical — one unreadable telemetry record took
+    // session recovery, the Open Gateway sync, plan reminders, the daily review
+    // scheduler, the config watcher and the automation scheduler with it, and
+    // said nothing.
+    //
+    // So assert the property rather than the shape: the migration still runs in
+    // background startup, and it runs through the wrapper that logs its own
+    // failure and lets the rest continue.
+    assert.match(backgroundBlock, /migrateSessionProjectsOnStartup\(\)/);
+    assert.match(
+      backgroundBlock,
+      /step\('project migration', \(\) => migrateSessionProjectsOnStartup\(\)\)/,
+      'each startup step must fail on its own rather than ending the sequence',
+    );
+    assert.match(
+      backgroundBlock,
+      /botRegistryReady = await step\([\s\S]*?'bot registry'[\s\S]*?if \(botRegistryReady\) \{[\s\S]*?planReminders\.refreshTimers\(\)/,
+      'due reminders must not be consumed before bot delivery is ready',
+    );
     assert.match(migration, /await runProjectStartupMigration\(/);
   });
 });

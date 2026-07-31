@@ -35,10 +35,12 @@ import {
   type BackendFactoryContext,
   type MakaTool,
   type ProxiedFetchProxy,
+  type RuntimeCommitSink,
   type ScannedSkill,
   type SkillCatalogBudgetOptions,
   type SkillInventoryResolver,
   type ToolAvailabilityConfig,
+  type ToolGroup,
 } from '@maka/runtime';
 import {
   createAttachmentByteReader,
@@ -52,6 +54,10 @@ import type {
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import type { HostMemoryCoordinator } from './memory-coordinator.js';
 import type { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
+import type {
+  ClientCapabilitySnapshot,
+  HostClientCapabilityCoordinator,
+} from './client-capability-coordinator.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
   'A child agent inherits the current session permission, privacy, workspace, and skill constraints.',
@@ -85,6 +91,7 @@ export interface HostExecutionModelCompositionInput {
   readonly platform?: NodeJS.Platform;
   readonly shell?: string;
   readonly now?: () => Date;
+  readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -100,11 +107,21 @@ export function createHostExecutionModelComposition(
     tools: defaultTools,
     policy: { economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS },
   });
+  // A bound tool list is an exact child/local activation ceiling. Dynamic
+  // capabilities must be included by the authority that constructs that list,
+  // never appended here.
+  const clientCapabilityTools = input.boundTools ? [] : (input.clientCapabilities?.tools ?? []);
+  const tools = [...productSurface.tools, ...clientCapabilityTools];
+  assertUniqueToolNames(tools);
+  const toolAvailability = mergeToolAvailability(
+    productSurface.toolAvailability,
+    input.boundTools ? [] : (input.clientCapabilities?.groups ?? []),
+  );
   const childInstruction = input.childInstruction?.trim();
 
   return Object.freeze({
-    tools: productSurface.tools,
-    toolAvailability: productSurface.toolAvailability,
+    tools,
+    toolAvailability,
     systemPrompt: async (context: HostModelPromptContext) => {
       const [promptState, inventory] = await Promise.all([
         readPromptState(input, context.sessionId, Boolean(childInstruction)),
@@ -170,6 +187,8 @@ export interface HostAiSdkBackendInput {
   readonly artifacts: InteractiveArtifactStoreWriter;
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
+  readonly clientCapabilities: HostClientCapabilityCoordinator;
+  readonly runtimeCommitSink?: RuntimeCommitSink;
 }
 
 /** Builds one real provider backend from canonical Host state. */
@@ -191,17 +210,31 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     target.model,
     input.context.header.thinkingLevel,
   );
-  const modelComposition = createHostExecutionModelComposition({
-    policy: input.runtimePolicy.runtimePolicy,
-    skills: input.skills,
-    memory: input.memory,
-    taskLedger: input.taskLedger,
-    ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
-    ...(input.context.tools ? { boundTools: input.context.tools } : {}),
-    skillBudget: {
-      contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
-    },
-  });
+  const clientCapabilities = input.context.tools
+    ? undefined
+    : input.clientCapabilities.snapshotForSession(input.context.sessionId);
+  let modelComposition: HostExecutionModelComposition;
+  try {
+    modelComposition = createHostExecutionModelComposition({
+      policy: input.runtimePolicy.runtimePolicy,
+      skills: input.skills,
+      memory: input.memory,
+      taskLedger: input.taskLedger,
+      ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
+      ...(input.context.tools ? { boundTools: input.context.tools } : {}),
+      ...(clientCapabilities ? { clientCapabilities } : {}),
+      skillBudget: {
+        contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
+      },
+    });
+  } catch (error) {
+    try {
+      await transport.close();
+    } finally {
+      clientCapabilities?.release();
+    }
+    throw error;
+  }
   const modelFactory = (
     modelInput: Parameters<typeof getAIModel>[0],
   ): ReturnType<typeof getAIModel> => getAIModel({ ...modelInput, fetch: transport.fetch });
@@ -337,6 +370,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         lookupPricing: pricing,
         recordLlmCall: recordLlmUsage,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
+        ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
         ...(providerRequestCapture
           ? {
               recordProviderRequestCapture: providerRequestCapture,
@@ -351,9 +385,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         now: Date.now,
       },
       transport.close,
+      () => clientCapabilities?.release(),
     );
   } catch (error) {
-    await transport.close();
+    try {
+      await transport.close();
+    } finally {
+      clientCapabilities?.release();
+    }
     throw error;
   }
 }
@@ -390,6 +429,7 @@ class HostAiSdkBackend extends AiSdkBackend {
   constructor(
     input: ConstructorParameters<typeof AiSdkBackend>[0],
     private readonly closeTransport: () => Promise<void>,
+    private readonly releaseClientCapabilities: () => void,
   ) {
     super(input);
   }
@@ -398,8 +438,40 @@ class HostAiSdkBackend extends AiSdkBackend {
     try {
       await super.dispose();
     } finally {
-      await this.closeTransport();
+      try {
+        await this.closeTransport();
+      } finally {
+        this.releaseClientCapabilities();
+      }
     }
+  }
+}
+
+function mergeToolAvailability(
+  product: ToolAvailabilityConfig,
+  clientGroups: readonly ToolGroup[],
+): ToolAvailabilityConfig {
+  if (clientGroups.length === 0) return product;
+  const groupIds = new Set((product.groups ?? []).map((group) => group.id));
+  for (const group of clientGroups) {
+    if (groupIds.has(group.id)) {
+      throw new Error(`Client Capability tool group collision: ${group.id}`);
+    }
+    groupIds.add(group.id);
+  }
+  return {
+    economy: product.economy,
+    groups: [...(product.groups ?? []), ...clientGroups],
+  };
+}
+
+function assertUniqueToolNames(tools: readonly MakaTool[]): void {
+  const names = new Set<string>();
+  for (const tool of tools) {
+    if (names.has(tool.name)) {
+      throw new Error(`Client Capability tool name collision: ${tool.name}`);
+    }
+    names.add(tool.name);
   }
 }
 

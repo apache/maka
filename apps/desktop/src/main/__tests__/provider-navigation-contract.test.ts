@@ -50,13 +50,18 @@ describe('Settings model provider page hierarchy', () => {
     assert.match(source, /<SectionHeader[\s\S]*titleId="provider-catalog-title"[\s\S]*title=\{copy\.add\}/);
     assert.match(
       source,
-      /<PrimitiveTabsList[\s\S]*<InputGroup className="providerCatalogSearch">[\s\S]*<InputGroupAddon>[\s\S]*<Search[\s\S]*<InputGroupInput/,
-      'category scope must precede a standard grouped search field',
+      /<PrimitiveTabsList[\s\S]*<div className="providerCatalogSearch">\s*<TextInput[\s\S]*startIcon=\{<Search[\s\S]*width="100%"/,
+      'category scope must precede the canonical Astryx search field',
     );
     assert.match(
       css,
-      /\.providerCatalogSearch\s*\{[^}]*width:\s*min\(100%, 360px\);[^}]*min-height:\s*var\(--h-control-lg\);/,
-      'catalog search must stay compact without collapsing below the standard control height',
+      /\.providerCatalogSearch\s*\{[^}]*width:\s*min\(100%, 360px\);[^}]*margin-top:\s*var\(--space-3\);/,
+      'catalog search wrapper owns only its product layout',
+    );
+    assert.doesNotMatch(
+      css,
+      /\.providerCatalogSearch\s*\{[^}]*(?:height|min-height|border|box-shadow):/,
+      'product CSS must not restyle Astryx search-field chrome',
     );
   });
 

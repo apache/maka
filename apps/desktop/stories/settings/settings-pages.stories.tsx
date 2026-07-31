@@ -781,9 +781,9 @@ const withWebSearchConfiguredBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-/** #1362: the proxy form (protocol/host/port grid, auth grid, bypass field)
+/** #1362: the proxy form (protocol/host/port layout, auth layout, bypass field)
  *  only renders behind two enabled switches — without this fixture no story
- *  ever exercised `.settingsFormGridProxy` or the auth `.settingsFormGrid`.
+ *  exercises either horizontal Astryx FormLayout.
  *  Hostile widths: a long internal proxy hostname, a service-account
  *  username, and identity fields with long CJK content. */
 const generalProxySettings = mergeSettings(createDefaultSettings(), {

@@ -45,15 +45,15 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
 
   await page.getByRole('button', { name: /添加模型供应商：Cerebras/ }).click();
   const dialog = page.getByRole('dialog', { name: '连接 Cerebras' });
+  const keyInput = dialog.getByRole('textbox', { name: /API Key/ });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByLabel('API Key')).toBeFocused();
-  await expect(dialog.getByLabel('API Key')).toHaveAttribute('type', 'password');
+  await expect(keyInput).toBeFocused();
+  await expect(keyInput).toHaveAttribute('type', 'password');
   await expect(dialog.getByText('完成必要配置后，连接会出现在模型页上方。')).toBeVisible();
-  await expect(dialog.locator('[data-slot="dialog-header"]')).toHaveCSS('border-bottom-width', '0px');
-  await expect(dialog.getByLabel('API Key')).toHaveAttribute('placeholder', '输入或粘贴 API Key');
-  await expect(dialog.getByLabel('模型供应商连接标识')).toHaveCount(0);
-  await expect(dialog.getByLabel('模型供应商服务地址')).toHaveCount(0);
-  await expect(dialog.getByLabel('模型供应商默认模型')).toHaveCount(0);
+  await expect(keyInput).toHaveAttribute('placeholder', '输入或粘贴 API Key');
+  await expect(dialog.getByLabel('连接标识', { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel('默认模型', { exact: true })).toHaveCount(0);
   await dialog.evaluate((element) =>
     Promise.all(element.getAnimations().map((animation) => animation.finished)),
   );
@@ -61,7 +61,6 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect(dialogBox?.width).toBeLessThanOrEqual(520);
   await expect(dialog.locator('.providerLogo')).toHaveCSS('width', '24px');
   await expect(dialog.locator('.providerLogo')).toHaveCSS('height', '24px');
-  const keyInput = dialog.getByLabel('API Key');
   const inputBox = await keyInput.boundingBox();
   await keyInput.fill(`sk-${'a'.repeat(300)}`);
   const longKeyLayout = await keyInput.evaluate((input) => ({
@@ -76,7 +75,7 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect((await dialog.boundingBox())?.width).toBe(dialogBox?.width);
   expect((await dialog.boundingBox())?.height).toBe(dialogBox?.height);
   await keyInput.fill('e2e-cerebras-key');
-  await dialog.getByRole('button', { name: '连接并使用', exact: true }).click();
+  await dialog.getByRole('button', { name: '保存供应商', exact: true }).click();
 
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('button', { name: /添加模型供应商：Cerebras/ })).toBeFocused();
@@ -102,68 +101,42 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect((await detailDialog.boundingBox())?.height).toBe(detailHeightBefore);
   await detailKeyField.fill('');
 
-  await expect(detailDialog.getByText('GPT OSS 120B', { exact: true })).toBeHidden();
-  await detailDialog.getByText('高级设置', { exact: true }).click();
+  const modelManagement = detailDialog.getByRole('region', { name: '模型管理' });
+  await expect(modelManagement).toBeVisible();
 
-  // The full candidate catalog is shown persistently as one checkbox list; the
-  // default model is checked and locked, and toggling a candidate flows through
-  // the shared enabledModelIds path (no search-only "add" surface).
-  const modelList = detailDialog.getByRole('list', { name: '模型列表' });
-  await expect(modelList).toBeVisible();
-  const defaultRow = modelList.getByRole('checkbox', { name: /GPT OSS 120B/ });
-  await expect(defaultRow).toBeChecked();
-  await expect(defaultRow).toBeDisabled();
+  // Astryx CheckboxList owns the collection label, checkbox semantics,
+  // disabled state, and focus. Search/popup behavior is intentionally absent.
+  const modelList = modelManagement.getByRole('group', { name: /启用模型/ });
+  const defaultModel = modelList.getByRole('checkbox', {
+    name: /GPT OSS 120B · 默认/,
+  });
+  await expect(defaultModel).toBeChecked();
+  await expect(defaultModel).toBeDisabled();
 
-  const gemmaRow = modelList.getByRole('checkbox', { name: /Gemma/ }).first();
-  await expect(gemmaRow).not.toBeChecked();
-  // Dialog height stays fixed as the list is filtered to a subset.
-  const advancedHeightBefore = (await detailDialog.boundingBox())?.height;
-  await detailDialog.getByLabel('搜索模型').fill('gemma');
-  expect((await detailDialog.boundingBox())?.height).toBe(advancedHeightBefore);
-  await gemmaRow.click();
-  await expect(gemmaRow).toBeChecked();
+  const gemmaModel = detailDialog
+    .getByRole('checkbox', { name: /Gemma/ })
+    .first();
+  await expect(gemmaModel).not.toBeChecked();
+  await gemmaModel.check();
+  await expect(gemmaModel).toBeChecked();
 
-  // Roving tabindex: the whole model list is ONE Tab stop. Tab from the search
-  // field lands on the active row, a second Tab leaves the list entirely (no
-  // per-row Tab stops even with hundreds of rows), and ArrowDown + Space move
-  // activity and toggle the focused row.
-  await detailDialog.getByLabel('搜索模型').fill('');
-  await detailDialog.getByLabel('搜索模型').click();
-  await page.keyboard.press('Tab');
-  const firstStop = await page.evaluate(() => ({
-    role: document.activeElement?.getAttribute('role') ?? null,
-    inList: Boolean(document.activeElement?.closest('.providerModelChoiceList')),
-  }));
-  expect(firstStop).toEqual({ role: 'checkbox', inList: true });
-  await page.keyboard.press('Tab');
-  expect(await page.evaluate(() => Boolean(document.activeElement?.closest('.providerModelChoiceList')))).toBe(false);
-  await page.keyboard.press('Shift+Tab');
-  const beforeArrow = await page.evaluate(() => document.activeElement?.getAttribute('data-model-id') ?? null);
-  await page.keyboard.press('ArrowDown');
-  const afterArrow = await page.evaluate(() => ({
-    id: document.activeElement?.getAttribute('data-model-id') ?? null,
-    checked: document.activeElement?.getAttribute('aria-checked') ?? null,
-  }));
-  expect(afterArrow.id).not.toBeNull();
-  expect(afterArrow.id).not.toBe(beforeArrow);
-  await page.keyboard.press('Space');
-  const toggledRow = detailDialog.locator(`[data-model-id="${afterArrow.id}"]`);
-  await expect(toggledRow).toHaveAttribute('aria-checked', afterArrow.checked === 'true' ? 'false' : 'true');
-  // Restore the row's original state (rows freeze while the save is in
-  // flight — the existing busy-freeze contract — so wait until re-enabled).
-  await expect(toggledRow).toBeEnabled();
-  await toggledRow.click();
-  await expect(toggledRow).toHaveAttribute('aria-checked', afterArrow.checked!);
+  // Default-model management stays in the connection detail. Selecting an
+  // already enabled model persists immediately and locks that row as the new
+  // default.
+  const defaultModelSelector = modelManagement.getByRole('combobox', {
+    name: '此连接的默认模型',
+    exact: true,
+  });
+  await defaultModelSelector.click();
+  await page.getByRole('option', { name: /Gemma/ }).first().click();
+  await expect(defaultModelSelector).toContainText(/Gemma/);
+  await expect(modelList.getByRole('checkbox', { name: /Gemma/ }).first()).toBeDisabled();
 
   await expect(detailDialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
-
-  // Short-viewport invariant: when the expanded detail content outgrows the
-  // popup's 85dvh cap, the dialog must stay within the viewport and the BODY
-  // must take over scrolling (grid-template-rows: auto minmax(0, 1fr)),
-  // keeping the bottom actions reachable. Without the row constraint the body
-  // row sizes to content, overflows the popup box under overflow-hidden, and
-  // its own overflow-y:auto never engages — 删除连接 sits unreachable below
-  // the viewport.
+  await detailDialog.getByText('高级设置', { exact: true }).click();
+  // Short-viewport invariant: Astryx keeps the dialog inside its height cap
+  // and makes the bottom action reachable. The test intentionally does not
+  // prescribe which internal Layout node owns scrolling.
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setDeviceMetricsOverride', {
     width: 1000,
@@ -174,13 +147,9 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   const shortViewportBox = await detailDialog.boundingBox();
   expect(shortViewportBox!.height).toBeLessThanOrEqual(500 * 0.85);
   expect(shortViewportBox!.y + shortViewportBox!.height).toBeLessThanOrEqual(500);
-  const dialogBody = detailDialog.locator('.providerConnectionDialogBody');
-  const scrollable = await dialogBody.evaluate((body) => body.scrollHeight > body.clientHeight);
-  expect(scrollable).toBe(true);
   const deleteButton = detailDialog.getByRole('button', { name: '删除连接', exact: true });
-  // Scrolling the body must bring the bottom action into the viewport, and the
-  // click's actionability check (visible, stable, hit-testable) must pass —
-  // a clipped/unreachable button fails both.
+  // The actionability check locks visibility and hit testing without coupling
+  // the product test to Astryx's internal scroll-container hierarchy.
   await deleteButton.scrollIntoViewIfNeeded();
   await expect(deleteButton).toBeInViewport();
   await deleteButton.click();
@@ -188,6 +157,18 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(confirm).toBeVisible();
   await confirm.getByRole('button', { name: '取消', exact: true }).click();
   await expect(confirm).toBeHidden();
+
+  // Confirming deletion refreshes the backing list before the detail session
+  // closes. The session must retain its content until Astryx observes false,
+  // then hand product-navigation focus to the provider search.
+  await deleteButton.click();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: '删除', exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(detailDialog).toBeHidden();
+  const providerSearch = page.getByPlaceholder('搜索服务商');
+  await expect(providerSearch).toBeFocused();
+  await expect(connection).toHaveCount(0);
   await cdp.send('Emulation.clearDeviceMetricsOverride');
 });
 
@@ -206,29 +187,35 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
 
   const accountId = 'account-123';
   const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
-  await expect(page.getByLabel('模型供应商连接标识')).toHaveValue('cloudflare-workers-ai');
+  await expect(page.getByLabel('连接标识', { exact: true })).toHaveValue('cloudflare-workers-ai');
   // The plain base-URL input is replaced by the account-id field; the endpoint
   // is derived, not typed.
-  await expect(page.getByLabel('Cloudflare 账户 ID')).toHaveValue('');
-  await expect(page.getByLabel('Cloudflare Workers AI API Key')).toBeVisible();
-  await expect(page.getByLabel('模型供应商服务地址')).toHaveCount(0);
-  await page.getByLabel('Cloudflare 账户 ID').fill(accountId);
+  const dialog = page.getByRole('dialog', { name: '连接 Cloudflare Workers AI' });
+  const accountIdInput = dialog.getByRole('textbox', {
+    name: /Cloudflare Account ID/,
+  });
+  await expect(accountIdInput).toHaveValue('');
+  const cloudflareKey = dialog.getByRole('textbox', { name: /API Key/ });
+  await expect(cloudflareKey).toBeVisible();
+  await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);
+  await accountIdInput.fill(accountId);
   await page.getByRole('button', { name: '保存供应商' }).click();
   await expect(page.getByRole('alert')).toHaveText('请填写 Cloudflare Workers AI API Key');
 
-  await page.getByLabel('Cloudflare Workers AI API Key').fill('e2e-cloudflare-key');
+  await cloudflareKey.fill('e2e-cloudflare-key');
   await page.getByRole('button', { name: '保存供应商' }).click();
 
   const connection = page.getByRole('button', { name: /模型连接：Cloudflare Workers AI/ });
   await connection.click();
-  const dialog = page.getByRole('dialog', { name: 'Cloudflare Workers AI' });
-  await dialog.getByText('高级设置', { exact: true }).click();
-  await expect(dialog.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
-  await expect(dialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
+  const detailDialog = page.getByRole('dialog', { name: 'Cloudflare Workers AI' });
+  await detailDialog.getByText('高级设置', { exact: true }).click();
+  await expect(detailDialog.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
+  await expect(detailDialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
 });
 
 // Distinct form behavior: a no-auth local runtime shows no API-key field at all
-// and ships no default model. Also the representative currentColor-mask render
+// and offers an empty bootstrap model because it ships no fallback catalog.
+// Also the representative currentColor-mask render
 // contract (monochrome brand asset), the counterpart to the color-<img> path.
 test('adds a no-auth local runtime with no key field and a currentColor mask mark', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
@@ -244,10 +231,11 @@ test('adds a no-auth local runtime with no key field and a currentColor mask mar
   expect(await catalogMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
   await page.getByRole('button', { name: /添加模型供应商：LM Studio/ }).click();
 
-  await expect(page.getByLabel('模型供应商连接标识')).toHaveValue('lm-studio');
-  await expect(page.getByLabel('模型供应商服务地址')).toHaveValue('http://127.0.0.1:1234/v1');
-  await expect(page.getByLabel('模型供应商默认模型')).toHaveCount(0);
-  await expect(page.getByLabel(/LM Studio 模型密钥/)).toHaveCount(0);
+  const addDialog = page.getByRole('dialog', { name: '连接 LM Studio' });
+  await expect(addDialog.getByLabel('连接标识', { exact: true })).toHaveValue('lm-studio');
+  await expect(addDialog.getByLabel('服务地址', { exact: true })).toHaveValue('http://127.0.0.1:1234/v1');
+  await expect(addDialog.getByLabel('默认模型', { exact: true })).toHaveValue('');
+  await expect(addDialog.getByRole('textbox', { name: /API Key/ })).toHaveCount(0);
   await page.getByRole('button', { name: '保存供应商' }).click();
 
   const connection = page.getByRole('button', { name: /模型连接：LM Studio/ });
@@ -268,7 +256,7 @@ test('restores keyboard focus across provider dialogs', async ({ window: page })
   const siliconFlow = page.getByRole('button', { name: /添加模型供应商：SiliconFlow/ });
   await siliconFlow.focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByLabel('API Key')).toBeFocused();
+  await expect(page.getByRole('textbox', { name: /API Key/ })).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(siliconFlow).toBeFocused();

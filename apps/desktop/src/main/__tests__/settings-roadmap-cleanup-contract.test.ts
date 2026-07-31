@@ -121,7 +121,7 @@ describe('Settings coming-soon cleanup contract', () => {
 
   it('keeps Voice settings boundary copy in current-policy language', async () => {
     const settings = await readSettingsCombinedSource();
-    const voicePage = settings.match(/function VoiceModelsSettingsPage\(\)[\s\S]*?async function readBrowserMicrophonePermission/);
+    const voicePage = settings.match(/function VoiceModelsSettingsPage\([\s\S]*?async function readBrowserMicrophonePermission/);
     const voiceCopy = getVoiceSettingsCopy('zh');
 
     assert.ok(voicePage, 'Voice settings page block must exist');

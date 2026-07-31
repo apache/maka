@@ -97,14 +97,12 @@ const PR4_DESKTOP_PRESENTATION_FILES = [
   'apps/desktop/src/renderer/settings/bot-onboarding-modal.tsx',
   'apps/desktop/src/renderer/settings/bot-wechat-login.tsx',
   'apps/desktop/src/renderer/app-shell-plan-actions.ts',
-  'apps/desktop/src/renderer/command-palette-content-search.ts',
   'apps/desktop/src/renderer/app-shell-effects.ts',
   'apps/desktop/src/renderer/app-shell-overlays.tsx',
   'apps/desktop/src/renderer/daily-review-actions.ts',
   'apps/desktop/src/renderer/app-shell-daily-review-bridge.ts',
   'apps/desktop/src/renderer/use-shell-connections.ts',
   'apps/desktop/src/renderer/use-session-tasks.ts',
-  'apps/desktop/src/renderer/use-thread-search.ts',
   'apps/desktop/src/renderer/session-project-grouping.ts',
   'apps/desktop/src/renderer/model-catalog-choices.ts',
   'apps/desktop/src/renderer/conversation-markdown.ts',
@@ -143,6 +141,17 @@ describe('PR4 remaining shared UI copy contract', () => {
     assert.equal(getDailyReviewCopy('en').page.title, 'Daily review');
     assert.equal(getPlanReminderCopy('zh').page.title, '定时任务');
     assert.equal(getPlanReminderCopy('en').page.title, 'Scheduled tasks');
+    assert.deepEqual(
+      [
+        getPlanReminderCopy('zh').form.field.cron,
+        getPlanReminderCopy('zh').form.field.chatId,
+        getPlanReminderCopy('zh').form.field.time,
+        getPlanReminderCopy('en').form.field.cron,
+        getPlanReminderCopy('en').form.field.chatId,
+        getPlanReminderCopy('en').form.field.time,
+      ],
+      ['Cron', 'Chat ID', '提醒时间', 'Cron', 'Chat ID', 'Reminder time'],
+    );
     assert.equal(getSkillsCopy('zh').page.title, '技能');
     assert.equal(getSkillsCopy('en').page.title, 'Skills');
     assert.match(applyAssistantComplete('x'.repeat(100), { maxTotalChars: 40, locale: 'en' }).text, /remaining output truncated/);
@@ -174,6 +183,50 @@ describe('PR4 remaining desktop copy contract', () => {
     assert.equal(getArtifactCopy('zh').pane.empty, '暂无生成文件');
     assert.equal(getArtifactCopy('en').pane.empty, 'No generated files');
     assert.equal(getMcpCopy('en').page.market, 'Marketplace');
+    assert.deepEqual(
+      {
+        serverId: getMcpCopy('zh').editor.serverId,
+        command: getMcpCopy('zh').editor.command,
+        arguments: getMcpCopy('zh').editor.arguments,
+        workingDirectory: getMcpCopy('zh').editor.workingDirectory,
+        environment: getMcpCopy('zh').editor.environment,
+        url: getMcpCopy('zh').editor.url,
+        headers: getMcpCopy('zh').editor.headers,
+        transport: getMcpCopy('zh').editor.transportLabel,
+      },
+      {
+        serverId: '服务器 ID',
+        command: '命令',
+        arguments: '参数',
+        workingDirectory: '工作目录',
+        environment: '环境变量',
+        url: 'MCP URL',
+        headers: 'HTTP 请求头',
+        transport: '传输协议',
+      },
+    );
+    assert.deepEqual(
+      {
+        serverId: getMcpCopy('en').editor.serverId,
+        command: getMcpCopy('en').editor.command,
+        arguments: getMcpCopy('en').editor.arguments,
+        workingDirectory: getMcpCopy('en').editor.workingDirectory,
+        environment: getMcpCopy('en').editor.environment,
+        url: getMcpCopy('en').editor.url,
+        headers: getMcpCopy('en').editor.headers,
+        transport: getMcpCopy('en').editor.transportLabel,
+      },
+      {
+        serverId: 'Server ID',
+        command: 'Command',
+        arguments: 'Arguments',
+        workingDirectory: 'Working directory',
+        environment: 'Environment',
+        url: 'MCP URL',
+        headers: 'HTTP headers',
+        transport: 'Transport',
+      },
+    );
     assert.equal(getMcpCatalog('zh').find((entry) => entry.id === 'filesystem')?.name, '本地文件');
     assert.equal(getMcpCatalog('en').find((entry) => entry.id === 'filesystem')?.name, 'Local files');
     assert.equal(getPermissionCenterCopy('zh').title, '权限与能力');
@@ -196,8 +249,6 @@ describe('PR4 remaining desktop copy contract', () => {
     assert.equal(getBotSettingsCopy('zh').overview.active, '正在使用');
     assert.equal(getBotSettingsCopy('en').overview.active, 'In use');
     assert.equal(getBotSettingsCopy('en').onboarding.privacy, 'Credentials stay on this device and are never sent to the renderer or Maka cloud.');
-    assert.equal(getShellRemainingCopy('zh').contentSearch.group, '内容搜索');
-    assert.equal(getShellRemainingCopy('en').contentSearch.group, 'Content search');
     assert.equal(getShellRemainingCopy('en').projects.ungrouped, 'No project');
   });
 

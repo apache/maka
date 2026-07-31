@@ -26,7 +26,7 @@ import {
 import type { SessionEvent } from '@maka/core/events';
 import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
 import type { RunTraceEvent } from './run-trace.js';
-import type { SessionStore, StopSessionInput } from './session-manager.js';
+import type { StopSessionInput } from './session-manager.js';
 import type { ActiveFullCompactBlock } from './active-full-compact.js';
 import type { SemanticCompactBlock } from './semantic-compact.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
@@ -113,7 +113,7 @@ export interface AgentRunInput {
   runId?: string;
   userMessageId?: string;
   durability?: AgentRunDurability;
-  store: SessionStore;
+  store: AgentRunSessionStore;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
   repairRunRuntimeLedger?: (sessionId: string, runId: string) => Promise<boolean>;
@@ -132,6 +132,11 @@ export interface AgentRunInput {
   effectiveOrchestration?: EffectiveOrchestration;
   /** Set only when this run's backend tool path is guarded by canonical T1. */
   toolBoundaryProtocol?: ToolBoundaryProtocol;
+}
+
+export interface AgentRunSessionStore {
+  appendMessage(sessionId: string, message: StoredMessage): Promise<void>;
+  readMessages(sessionId: string): Promise<StoredMessage[]>;
 }
 
 export type RuntimeContinuationFailpoint =
@@ -427,6 +432,7 @@ export class AgentRun {
         turnId: this.turnId,
         orchestration: this.effectiveOrchestration,
         text: this.input.userInput.text,
+        ...(this.input.userInput.voiceAudio ? { voiceAudio: this.input.userInput.voiceAudio } : {}),
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),

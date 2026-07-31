@@ -17,11 +17,11 @@ Create a GitHub Environment named `release`. Add required reviewers if the repos
 1. Confirm the intended commit is on `main`, CI is green, and `apps/desktop/package.json` contains a version that has never been released.
 2. In GitHub Actions, run `Release macOS arm64` against `main`.
 3. Confirm every workflow step passes and a draft release named `v<version>` exists.
-4. Confirm the draft records the intended commit SHA and contains exactly the DMG and its `.sha256` file.
+4. Confirm the draft records the intended commit SHA and contains the DMG, its `.sha256` file, the ZIP, and `latest-mac.yml`.
 
 ## Acceptance on another Apple Silicon Mac
 
-Download both draft assets through the GitHub UI. This download path applies the real browser quarantine metadata that CI intentionally does not simulate.
+Download the DMG and its `.sha256` file through the GitHub UI. This download path applies the real browser quarantine metadata that CI intentionally does not simulate.
 
 1. From the download directory, run `shasum -a 256 -c Maka-<version>-mac-arm64.dmg.sha256`.
 2. Open the DMG in Finder, drag Maka to Applications, and launch it from Finder.
@@ -29,7 +29,6 @@ Download both draft assets through the GitHub UI. This download path applies the
 4. Run `spctl --assess --type execute --verbose=4 /Applications/Maka.app` and confirm it is accepted with a Developer ID origin.
 5. Configure a model connection, send one basic prompt, and run one representative file-tool task.
 6. Install `ripgrep` with `brew install ripgrep`, then confirm a task using `Grep` works.
-7. Run one representative Office task and confirm OfficeCLI starts without an update prompt.
-8. Confirm the known limitation is accurate: Computer Use is not included.
+7. Confirm the known limitation is accurate: Computer Use is not included.
 
 Publish the draft only after all checks pass. If acceptance fails, keep the draft unpublished, fix the issue, increment the desktop version, and run the workflow again; do not replace an existing release identity.

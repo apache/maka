@@ -3,31 +3,23 @@ import { useCallback, useMemo, useState } from 'react';
 type OpenSessionInChat = (sessionId: string, turnId?: string) => void;
 
 /**
- * Owns the search-modal slice (issue #1043): the open flag, the funnel-bridge
- * initial query (handed from the palette's 查看全部结果 row), the scroll-target
- * anchor handed to ChatView, the close handler (restores focus to the sidebar
- * trigger), and the stable search-thread dep + navigate callback.
+ * Owns the search-modal slice (issue #1043): the open flag, the scroll-target
+ * anchor handed to ChatView, the close handler, and the stable search-thread
+ * dep + navigate callback. Astryx restores the opener for ordinary closes.
  *
  * `openSessionInChatRef` is AppShell's stable ref so the navigate callback
  * stays memoized across renders while always calling the latest opener.
  */
 export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef: { current: OpenSessionInChat } }) {
   const [searchModalOpen, setSearchModalOpen] = useState(false);
-  const [searchModalInitialQuery, setSearchModalInitialQuery] = useState('');
   const [searchScrollTarget, setSearchScrollTarget] = useState<{
     sessionId: string;
     turnId: string;
     nonce: number;
   } | null>(null);
 
-  function closeSearchModal(options?: { restoreFocus?: boolean }) {
+  function closeSearchModal() {
     setSearchModalOpen(false);
-    if (options?.restoreFocus === false) return;
-    window.requestAnimationFrame(() => {
-      document
-        .querySelector<HTMLButtonElement>('[data-maka-search-trigger="true"]')
-        ?.focus({ preventScroll: true });
-    });
   }
 
   const searchModalDeps = useMemo(
@@ -42,8 +34,6 @@ export function useShellSearch({ openSessionInChatRef }: { openSessionInChatRef:
   return {
     searchModalOpen,
     setSearchModalOpen,
-    searchModalInitialQuery,
-    setSearchModalInitialQuery,
     searchScrollTarget,
     setSearchScrollTarget,
     closeSearchModal,

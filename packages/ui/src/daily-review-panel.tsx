@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
 import { CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
-import { SettingsSelect } from './primitives/settings-select.js';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -20,7 +19,12 @@ import {
   formatDailyReviewMarkdown,
   formatDailyReviewModelLabel,
 } from './daily-review-helpers.js';
-import { Button as UiButton, IconButton } from '@astryxdesign/core';
+import {
+  Button as UiButton,
+  IconButton,
+  Selector,
+  type SelectorOptionData,
+} from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { Segmented } from './primitives/segmented.js';
 import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
@@ -37,7 +41,7 @@ import { getDailyReviewCopy } from './daily-review-copy.js';
 
 type DailyReviewArchiveSectionKey = keyof DailyReviewArchive['sections'];
 
-const EMPTY_MODEL_OPTIONS: ReadonlyArray<readonly [string, string]> = [];
+const EMPTY_MODEL_OPTIONS: SelectorOptionData[] = [];
 
 // Archive-status Chip tone. ok = generated cleanly (success), failed /
 // no_model = the run could not produce a report (destructive). no_data /
@@ -79,7 +83,7 @@ export function DailyReviewPanel(props: {
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveReloadToken, setArchiveReloadToken] = useState(0);
   const modelOptions = useMemo(() => props.bridge.modelOptions ?? EMPTY_MODEL_OPTIONS, [props.bridge.modelOptions]);
-  const [selectedModelKey, setSelectedModelKey] = useState<string>(modelOptions[0]?.[0] ?? '');
+  const [selectedModelKey, setSelectedModelKey] = useState<string>(modelOptions[0]?.value ?? '');
   const dailyReviewMountedRef = useMountedRef();
   const summaryScopeKeyRef = useRef<string | null>(null);
   const pendingDailyReviewActionRef = useRef<string | null>(null);
@@ -206,8 +210,8 @@ export function DailyReviewPanel(props: {
       return;
     }
     setSelectedModelKey((current) => {
-      if (modelOptions.some(([value]) => value === current)) return current;
-      return modelOptions[0]?.[0] ?? '';
+      if (modelOptions.some((option) => option.value === current)) return current;
+      return modelOptions[0]?.value ?? '';
     });
   }, [modelOptions]);
 
@@ -350,14 +354,14 @@ export function DailyReviewPanel(props: {
         actions={canManualRun ? (
           <div className="maka-daily-review-generate" role="group" aria-label={copy.page.generateAriaLabel}>
             {modelOptions.length > 0 && (
-              <SettingsSelect
+              <Selector
                 value={selectedModelKey}
-                ariaLabel={copy.page.analysisModel}
+                label={copy.page.analysisModel}
+                isLabelHidden
                 options={modelOptions}
                 onChange={setSelectedModelKey}
-                disabled={dailyReviewActionBusy}
-                width="compact"
-                className="maka-daily-review-model-select"
+                isDisabled={dailyReviewActionBusy}
+                width={140}
               />
             )}
             <UiButton
@@ -461,7 +465,7 @@ export function DailyReviewPanel(props: {
               <DailyReviewTotalsCell label={copy.overview.conversations} value={visibleSummary.totals.sessionCount.toString()} />
               <DailyReviewTotalsCell label={copy.overview.requests} value={visibleSummary.totals.requestCount.toString()} />
               <DailyReviewTotalsCell
-                label="Token"
+                label={copy.overview.tokens}
                 value={visibleSummary.totals.totalTokens.toLocaleString(intlLocale)}
               />
               <DailyReviewTotalsCell

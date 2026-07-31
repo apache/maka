@@ -46,17 +46,17 @@ describe('Settings network and gateway persistence contract', () => {
     );
     assert.match(
       networkBlock,
-      /value=\{proxyDraft\.host\}[\s\S]*onChange=\{\(event\) => void updateProxy\(\{ host: event\.currentTarget\.value \}\)\}/,
+      /value=\{proxyDraft\.host\}[\s\S]*onChange=\{\(value\) => void updateProxy\(\{ host: value \}\)\}/,
       'Network proxy host input must render from the local draft while persisting in the background',
     );
     assert.match(
       networkBlock,
-      /value=\{proxyDraft\.port \|\| null\}[\s\S]*onValueChange=\{\(v\) => void updateProxy\(\{ port: v \?\? 0 \}\)\}/,
+      /value=\{proxyDraft\.port \|\| null\}[\s\S]*onChange=\{\(value\) => void updateProxy\(\{ port: value \?\? 0 \}\)\}/,
       'Network proxy port input must render from the local draft while persisting in the background',
     );
     assert.match(
       networkBlock,
-      /value=\{proxyDraft\.bypassList\.join\(', '\)\}[\s\S]*onChange=\{\(event\) => void updateProxy\(\{ bypassList: csvList\(event\.currentTarget\.value\) \}\)\}/,
+      /value=\{proxyDraft\.bypassList\.join\(', '\)\}[\s\S]*onChange=\{\(value\) => void updateProxy\(\{ bypassList: csvList\(value\) \}\)\}/,
       'Network proxy bypass-list input must render from the local draft while persisting in the background',
     );
     assert.doesNotMatch(
@@ -212,17 +212,17 @@ describe('Settings network and gateway persistence contract', () => {
     );
     assert.match(
       gatewayBlock,
-      /<SettingsSelect[\s\S]*value=\{gatewayDraft\.host\}[\s\S]*ariaLabel=\{copy\.form\.hostAria\}[\s\S]*onChange=\{\(host\) => void updateGateway\(\{ host \}\)\}/,
+      /<Selector[\s\S]*value=\{gatewayDraft\.host\}[\s\S]*label=\{copy\.form\.host\}[\s\S]*onChange=\{\(host\) => void updateGateway\(\{ host: host as AppSettings\['openGateway'\]\['host'\] \}\)\}/,
       'Open Gateway host select must render from the local draft while persisting in the background',
     );
     assert.match(
       gatewayBlock,
-      /value=\{gatewayDraft\.port\}[\s\S]*onValueChange=\{\(v\) => void updateGateway\(\{ port: v \?\? 3939 \}\)\}/,
+      /value=\{gatewayDraft\.port\}[\s\S]*onChange=\{\(value\) => void updateGateway\(\{ port: value \?\? 3939 \}\)\}/,
       'Open Gateway port input must render from the local draft while persisting in the background',
     );
     assert.doesNotMatch(
       gatewayBlock,
-      /aria-label=\{copy\.form\.portAria\}[\s\S]{0,180}disabled=\{saving\}/,
+      /<NumberInput label=\{copy\.form\.port\}[\s\S]{0,240}isDisabled=\{saving\}/,
       'Open Gateway port input must not lock after each digit while background save is pending',
     );
     assert.match(

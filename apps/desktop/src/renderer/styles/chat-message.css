@@ -155,14 +155,15 @@
    packages/ui/src/primitives/chat.tsx); the layout is now location-
    independent instead of keyed on a `[data-role="assistant"]` descendant. */
 
-[data-slot="message"] pre:not(.astryx-codeblock) {
+[data-slot="message"] pre:not([data-maka-contract="markdown"] pre) {
   margin: 0;
   font: inherit;
 }
 
-/* System-note pill. Astryx code blocks are explicitly excluded so the shared
-   raw-pre treatment cannot become a second styling authority. */
-[data-slot="message"][data-role="system"] pre:not(.astryx-codeblock) {
+/* System-note pill. Markdown descendants are excluded through Maka's product
+   boundary so raw-pre treatment cannot become a second code-block authority. */
+[data-slot="message"][data-role="system"]
+  pre:not([data-maka-contract="markdown"] pre) {
   display: inline-flex;
   border-radius: var(--radius-pill);
   background: oklch(from var(--info) l c h / 0.08);

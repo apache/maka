@@ -67,15 +67,11 @@ export type OpenGatewaySettingsCopy = {
     enabled: string;
     enabledHelp: string;
     host: string;
-    hostAria: string;
     port: string;
-    portAria: string;
     token: string;
     tokenPlaceholder: string;
-    tokenAria: string;
     sessionId: string;
     sessionPlaceholder: string;
-    sessionAria: string;
     waitingNotice: string;
   };
   actions: {
@@ -156,9 +152,9 @@ const SETTINGS_OPEN_GATEWAY_COPY = {
     },
     form: {
       enabled: '开放本机 API 网关', enabledHelp: '启动一个本机 HTTP 服务，让外部工具读取会话、消息和本地搜索结果。',
-      host: '监听地址', hostAria: '开放网关监听地址', port: '端口', portAria: '开放网关端口', token: '访问 token',
-      tokenPlaceholder: '生成或输入 token', tokenAria: '开放网关访问 token', sessionId: '会话 sessionId',
-      sessionPlaceholder: '留空则复制 <SESSION_ID> 模板', sessionAria: '开放网关会话 sessionId',
+      host: '监听地址', port: '端口', token: '访问 token',
+      tokenPlaceholder: '生成或输入 token', sessionId: '会话 sessionId',
+      sessionPlaceholder: '留空则复制 <SESSION_ID> 模板',
       waitingNotice: '网关已开启，等待生成访问 token。生成 token 后服务会自动启动。',
     },
     actions: { aria: '开放网关操作', generateToken: '生成 token', clearToken: '清空 token', copying: '复制中…', copyAddress: '复制地址', copyCurl: '复制 curl' },
@@ -217,9 +213,9 @@ const SETTINGS_OPEN_GATEWAY_COPY = {
     },
     form: {
       enabled: 'Enable local API gateway', enabledHelp: 'Start a local HTTP service so external tools can read sessions, messages, and local search results.',
-      host: 'Listening address', hostAria: 'Open Gateway listening address', port: 'Port', portAria: 'Open Gateway port', token: 'Access token',
-      tokenPlaceholder: 'Generate or enter a token', tokenAria: 'Open Gateway access token', sessionId: 'Session ID',
-      sessionPlaceholder: 'Leave blank to copy a <SESSION_ID> template', sessionAria: 'Open Gateway session ID',
+      host: 'Listening address', port: 'Port', token: 'Access token',
+      tokenPlaceholder: 'Generate or enter a token', sessionId: 'Session ID',
+      sessionPlaceholder: 'Leave blank to copy a <SESSION_ID> template',
       waitingNotice: 'The gateway is enabled and waiting for an access token. It starts automatically after you generate one.',
     },
     actions: { aria: 'Open Gateway actions', generateToken: 'Generate token', clearToken: 'Clear token', copying: 'Copying…', copyAddress: 'Copy address', copyCurl: 'Copy curl' },

@@ -58,6 +58,13 @@ import type {
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
   DailyReviewArchive,
+  QueueEnqueueOutcome,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceCoordinatorToolCall,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
   DailyReviewMode,
@@ -252,6 +259,8 @@ export interface MakaBridge {
             type: 'send';
             turnId: string;
             text: string;
+            displayText?: string;
+            voiceOperationId?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
@@ -271,6 +280,7 @@ export interface MakaBridge {
         }
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
+    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
     readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
     listActiveSandboxBoundaryRequests(
@@ -393,6 +403,17 @@ export interface MakaBridge {
         openInBrowser(sessionId: string): Promise<Result<void>>;
       };
     };
+  };
+  voice: {
+    begin(input: VoiceBeginRequest): Promise<VoiceBeginResult>;
+    finishCapture(
+      operationId: string,
+      audio: VoiceCapturedAudio,
+    ): Promise<VoiceFinishCaptureResult>;
+    cancel(operationId: string): Promise<void>;
+    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession>;
+    closeRealtimeSession(sessionId: string): Promise<void>;
+    validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall>;
   };
   notifications: {
     /** Fire-and-forget: report that an agent turn reached a terminal

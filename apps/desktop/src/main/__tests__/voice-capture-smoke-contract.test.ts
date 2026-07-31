@@ -21,7 +21,7 @@ describe('voice capture smoke Settings contract', () => {
     const gatewayNav = src.match(/\{\s*id:\s*'open-gateway'[\s\S]*?\},/);
     assert.ok(gatewayNav, 'open-gateway nav item must exist');
     assert.doesNotMatch(gatewayNav![0], /comingSoon:\s*true/, 'open-gateway nav must not be tagged as coming soon');
-    assert.match(src, /case\s+'voice':\s*\n[\s\S]*?<VoiceModelsSettingsPage\s*\/>/);
+    assert.match(src, /case\s+'voice':\s*\n[\s\S]*?<VoiceModelsSettingsPage\b/);
     assert.match(src, /case\s+'open-gateway':\s*\n[\s\S]*?<OpenGatewaySettingsPage\b/);
     assert.doesNotMatch(src, /'voice':\s*\{[\s\S]*当前尚未实现/, 'voice must not keep stale roadmap copy');
   });
@@ -37,6 +37,127 @@ describe('voice capture smoke Settings contract', () => {
     assert.match(zhCopy.idle, /等待运行本机录音自检/, 'voice idle state should read as an actionable local check');
     assert.doesNotMatch(zhCopy.idle, /尚未运行本机录音自检/, 'voice idle state should not read like unfinished implementation copy');
     assert.doesNotMatch(src, /localStorage\.setItem\([^)]*voice/i, 'voice smoke must not persist audio state in localStorage');
+  });
+
+  it('creates a recognition connection in Voice and selects its ASR model', async () => {
+    const src = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-settings-page.tsx'),
+      'utf8',
+    );
+    const zhCopy = getVoiceSettingsCopy('zh');
+
+    assert.match(src, /<AddProviderForm[\s\S]*providerType="openai-compatible"/);
+    assert.match(
+      src,
+      /onClick=\{\(\) => setRecognitionDialog\(\{ kind: 'create', phase: 'mounting' \}\)\}/,
+      'Voice must expose the create-recognition-connection action in place',
+    );
+    assert.match(
+      src,
+      /type RecognitionDialogSession =[\s\S]*phase: 'mounting' \| 'open' \| 'closing'[\s\S]*if \(!recognitionDialog \|\| recognitionDialog\.phase === 'open'\) return;[\s\S]*phase === 'mounting' \? \{ \.\.\.current, phase: 'open' \} : null/,
+      'Voice must keep a provider dialog mounted through an Astryx-observable close before releasing its session',
+    );
+    assert.match(
+      src,
+      /const created = connections\.find\(\(connection\) => connection\.slug === slug\);[\s\S]*recognition:\s*\{[\s\S]*connectionSlug: created\.slug,[\s\S]*model: created\.defaultModel/,
+      'a newly created connection must become the selected recognition connection and model',
+    );
+    assert.match(
+      src,
+      /await props\.onRefreshConnections\(\);[\s\S]*requestRecognitionDialogClose\(\)/,
+      'Voice must refresh the shared connection list before closing the create dialog',
+    );
+    assert.equal(zhCopy.createRecognitionConnection, '新建识别连接');
+    assert.match(zhCopy.createRecognitionConnectionSubtitle, /ASR 模型 ID/);
+  });
+
+  it('edits the selected recognition connection in Voice without exposing its saved API key', async () => {
+    const pageSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-settings-page.tsx'),
+      'utf8',
+    );
+    const formSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-recognition-connection-form.tsx'),
+      'utf8',
+    );
+    const zhCopy = getVoiceSettingsCopy('zh');
+
+    assert.match(
+      pageSource,
+      /useOptimisticSettingsDraft<AppSettings\['voice'\]>\([\s\S]*return result\.settings\.voice;[\s\S]*const recognitionDraft = voiceDraft\.recognition;[\s\S]*const selectedRecognitionConnection = enabledConnections\.find\([\s\S]*recognitionDraft\.connectionSlug/,
+      'the edit action must target the currently selected recognition connection',
+    );
+    assert.match(pageSource, /<VoiceRecognitionConnectionForm[\s\S]*onSaved=\{finishEditingRecognitionConnection\}/);
+    assert.match(
+      formSource,
+      /bridge\.update\(props\.connection\.slug,\s*\{[\s\S]*baseUrl: normalizedBaseUrl,[\s\S]*defaultModel: normalizedModel,[\s\S]*apiKey: apiKey\.trim\(\)/,
+      'the editor must save endpoint, ASR model, and an explicitly entered replacement key',
+    );
+    assert.match(
+      formSource,
+      /apiKey\.trim\(\) \? \{ apiKey: apiKey\.trim\(\) \} : \{\}/,
+      'an empty API key field must preserve the stored secret',
+    );
+    assert.doesNotMatch(
+      formSource,
+      /resolveConnectionSecret|credentialStore|apiKey:\s*props\.connection/,
+      'the renderer editor must never read the stored API key back',
+    );
+    assert.match(zhCopy.recognitionConnectionEndpointHelp, /不要包含 \/audio\/transcriptions/);
+    assert.match(zhCopy.recognitionConnectionApiKeyHelp, /只有填写新值时才会替换/);
+  });
+
+  it('keeps realtime secrets in main and binds coordinator calls to their own task session', async () => {
+    const hookSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/use-voice-input.ts'),
+      'utf8',
+    );
+    const shellSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/app-shell.tsx'),
+      'utf8',
+    );
+    const preloadSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/preload/preload.ts'),
+      'utf8',
+    );
+
+    assert.match(
+      hookSource,
+      /createRealtimeSession\(offer\.sdp \?\? ''\)/,
+      'renderer must send only its SDP offer through the trusted bridge',
+    );
+    assert.match(hookSource, /sdp:\s*session\.answerSdp/);
+    assert.doesNotMatch(hookSource, /session\.(?:clientSecret|endpoint)/);
+    assert.doesNotMatch(hookSource, /fetch\(session\./);
+    assert.match(
+      preloadSource,
+      /createRealtimeSession\(offerSdp: string\)[\s\S]*ipcRenderer\.invoke\('voice:createRealtimeSession', offerSdp\)/,
+      'preload must not expose the endpoint or ephemeral credential',
+    );
+    assert.match(hookSource, /taskSessionId\?: string/);
+    assert.match(
+      hookSource,
+      /inputRef\.current\.runCoordinatorTool\(call,\s*\{[\s\S]*taskSessionId: active\.taskSessionId/,
+      'the live DataChannel handler must use current callbacks and its voice-session-owned task',
+    );
+
+    const coordinatorBlock = shellSource.slice(
+      shellSource.indexOf('runCoordinatorTool: async'),
+      shellSource.indexOf('onBlocked:', shellSource.indexOf('runCoordinatorTool: async')),
+    );
+    assert.match(coordinatorBlock, /onSessionResolved/);
+    assert.match(coordinatorBlock, /const sessionId = context\.taskSessionId/);
+    assert.match(
+      coordinatorBlock,
+      /const authoritativeSessions = await refreshSessions\(\)/,
+      'coordinator status checks must refresh through the session workspace owner',
+    );
+    assert.match(coordinatorBlock, /window\.maka\.sessions\.readMessages\(sessionId\)/);
+    assert.doesNotMatch(
+      coordinatorBlock,
+      /sessions\.find|const lastAssistant = \[\.\.\.messages\]/,
+      'status and summaries must not read the render that opened the DataChannel',
+    );
   });
 
   it('keeps success and permission states as deterministic stories', async () => {

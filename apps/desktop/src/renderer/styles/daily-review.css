@@ -50,12 +50,6 @@
   }
 }
 
-.maka-daily-review-model-select {
-  /* Keep the follow-settings label from stretching the header actions row;
-     the primitive's compact bucket already caps it, this just holds shape. */
-  flex: 0 1 auto;
-}
-
 .maka-daily-review-quick-run {
   white-space: nowrap;
 }

@@ -7,20 +7,13 @@ import { readRendererContractCss } from './contract-css-helpers.js';
 const repoRoot = join(process.cwd(), '..', '..');
 
 describe('renderer utility surfaces use shared UI primitives', () => {
-  it('keeps browser chrome on Button/Input instead of raw form controls', async () => {
+  it('keeps browser chrome on Button/TextInput instead of raw form controls', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/browser-panel.tsx'), 'utf8');
 
     assert.match(source, /import \{ normalizeBrowserAddressInput, type BrowserState \} from '@maka\/core';/);
-    // #1565 PR 3: nav controls are Base UI Tooltip trigger render-props on the
-    // intentionally retained legacy buttonVariants seam; the address bar stays
-    // on the shared Input primitive.
-    assert.match(source, /import \{[^}]*\bbuttonVariants\b[^}]*\bInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
-    assert.equal(
-      (source.match(/<button\b/g) ?? []).length,
-      (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
-      'BrowserPanel raw <button> may appear only as the legacy buttonVariants render-prop seam (#1565 PR 3)',
-    );
-    assert.doesNotMatch(source, /<input\b/, 'BrowserPanel address bar must use shared Input');
+    assert.match(source, /import \{[^}]*\bIconButton\b[^}]*\bTextInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
+    assert.doesNotMatch(source, /<button\b/, 'BrowserPanel controls must use Astryx buttons');
+    assert.doesNotMatch(source, /<input\b/, 'BrowserPanel address bar must use shared TextInput');
     assert.doesNotMatch(source, /const full = \/\^\[a-z\]\+/, 'BrowserPanel must not keep renderer-only address prefix regex');
     assert.match(
       source,
@@ -45,18 +38,18 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     for (const label of ['backAria', 'forwardAria', 'closeAria']) {
       assert.match(
         source,
-        new RegExp(`aria-label=\\{copy\\.${label}\\}`),
+        new RegExp(`label=\\{copy\\.${label}\\}`),
         `BrowserPanel icon-only toolbar action must expose accessible name: ${label}`,
       );
     }
     assert.match(
       source,
-      /aria-label=\{state\.loading \? copy\.stopAria : copy\.refreshAria\}/,
+      /label=\{state\.loading \? copy\.stopAria : copy\.refreshAria\}/,
       'BrowserPanel reload/stop icon-only action must expose a state-specific accessible name',
     );
     assert.match(
       source,
-      /disabled=\{!state\.hasPage && !state\.loading\}[\s\S]*state\.loading \? void window\.maka\.browser\.stop\(sessionId\) : void window\.maka\.browser\.reload\(sessionId\)/,
+      /isDisabled=\{!state\.hasPage && !state\.loading\}[\s\S]*state\.loading \? void window\.maka\.browser\.stop\(sessionId\) : void window\.maka\.browser\.reload\(sessionId\)/,
       'BrowserPanel reload action must not stay clickable in the empty no-page state',
     );
     assert.match(
@@ -105,13 +98,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     assert.match(source, /import \{[^}]*\bButton\b[^}]*\bToolbar\b[^}]*\bToolbarGroup\b[^}]*\bToolbarSeparator\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
     assert.match(source, /import \{ Button as BaseButton \} from '@base-ui\/react\/button';/);
-    // #1565 PR 3: the destructive delete action is a Tooltip trigger
-    // render-prop on the intentionally retained legacy buttonVariants seam.
-    assert.equal(
-      (source.match(/<button\b/g) ?? []).length,
-      (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
-      'ArtifactPane controls must use shared Button, the semantic Base UI row seam, or the legacy buttonVariants render-prop seam (#1565 PR 3)',
-    );
+    assert.doesNotMatch(source, /<button\b/, 'ArtifactPane actions must use Astryx Button');
     assert.doesNotMatch(source, /role="toolbar"/, 'ArtifactPane toolbar semantics must come from shared primitive Toolbar');
     assert.match(source, /<Toolbar className="maka-artifact-toolbar" aria-label=\{copy\.pane\.actionsAria\}>/);
     assert.match(source, /<ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" \/>/);
@@ -122,24 +109,14 @@ describe('renderer utility surfaces use shared UI primitives', () => {
   it('keeps command palette search and rows on shared primitives', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/command-palette.tsx'), 'utf8');
 
-    assert.match(source, /import \{[^}]*\bDialogContent\b[^}]*\bDialogRoot\b[^}]*\bInputGroup\b[^}]*\bInputGroupInput\b[^}]*\bKbd\b[^}]*\bKbdGroup\b[^}]*\} from '@maka\/ui';/);
-    assert.match(source, /import \{ Autocomplete \} from '@base-ui\/react\/autocomplete'/, 'CommandPalette must consume Base UI Autocomplete for the result list (#520 PR8)');
-    assert.doesNotMatch(source, /<input\b/, 'Command palette search must use shared Input');
-    assert.doesNotMatch(source, /<button\b/, 'Command palette rows must use shared Button');
+    assert.match(source, /CommandPalette as AstryxCommandPalette/);
+    assert.match(source, /<AstryxCommandPalette[\s\S]*searchSource=\{searchSource\}/);
+    assert.match(source, /<CommandPaletteInput[\s\S]*label=\{copy\.searchLabel\}/);
+    assert.match(source, /<CommandPaletteFooter>/);
+    assert.doesNotMatch(source, /@base-ui\/react\/autocomplete/);
+    assert.doesNotMatch(source, /\bInputGroup(?:Input|Addon)?\b/);
+    assert.doesNotMatch(source, /<button\b|<input\b/);
     assert.doesNotMatch(source, /<kbd\b/, 'Command palette shortcut glyphs must use shared primitive Kbd');
-    assert.match(source, /<InputGroup[\s\S]*className="maka-palette-input-wrap"[\s\S]*aria-label=\{copy\.searchLabel\}[\s\S]*onMouseDown=\{\(event\) => \{/);
-    assert.match(source, /<InputGroupInput[\s\S]*className="maka-palette-input"/);
-    // The search affordance may lead the field. Shortcut hints stay in the
-    // footer, and the close action stays outside the InputGroup so neither
-    // can cover the other's hit target.
-    assert.match(source, /<InputGroupAddon align="inline-start"[\s\S]*?<Search \/>[\s\S]*?<\/InputGroupAddon>/);
-    assert.doesNotMatch(source, /<InputGroupAddon align="inline-end"/, 'Palette input must not duplicate footer shortcuts inline');
-    assert.match(
-      source,
-      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?<IconButton[\s\S]*?label=\{copy\.closeLabel\}/,
-      'Palette header must place the close action after the search InputGroup',
-    );
-    assert.match(source, /<Autocomplete.Item[\s\S]*className="maka-palette-item"/, 'Command palette rows must be Autocomplete.Item (#520 PR8)');
     assert.match(source, /<KbdGroup>[\s\S]*<Kbd>↑<\/Kbd>[\s\S]*<Kbd>↓<\/Kbd>/);
     assert.doesNotMatch(source, /PALETTE_DELIM/, 'Palette footer shortcut groups should be separated by spacing, not dots');
   });
@@ -162,22 +139,20 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     for (const css of [paletteCss, composerCss, navCss]) {
       assert.doesNotMatch(css, /\.maka-shortcut-(?:kbd|group)\b/, 'Renderer CSS must not maintain a parallel keycap recipe');
     }
-    assert.doesNotMatch(tokens, /^\s*kbd\s*\{/m, 'Global element CSS must not add a third outer keycap or override MenuShortcut');
+    assert.doesNotMatch(tokens, /^\s*kbd\s*\{/m, 'Global element CSS must not override component-owned keycaps');
   });
 
-  it('keeps keyboard help on the shared DialogHeader with a single title', async () => {
+  it('keeps keyboard help on Astryx DialogHeader with a single title', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/keyboard-help.tsx'), 'utf8');
 
-    // Modal-header unification: keyboard-help consumes the shared DialogHeader
-    // primitive (single title row + quiet icon-sm close), not an ad-hoc
-    // eyebrow + second-title + boxed close stack.
-    assert.match(source, /import \{[^}]*\bDialogContent\b[^}]*\bDialogHeader\b[^}]*\bDialogRoot\b[^}]*\bKbd\b[^}]*\} from '@maka\/ui';/);
+    assert.match(source, /import \{ Kbd, useUiLocale \} from '@maka\/ui';/);
+    assert.match(source, /Dialog,[\s\S]*DialogHeader,[\s\S]*from '@astryxdesign\/core\/Dialog'/);
     assert.doesNotMatch(source, /<button\b/, 'KeyboardHelpModal close action must use shared Button');
     assert.doesNotMatch(source, /<kbd\b/, 'KeyboardHelpModal shortcut glyphs must use shared primitive Kbd');
     assert.match(
       source,
-      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=\{props\.onClose\}/,
-      'KeyboardHelpModal must render the shared DialogHeader with 键盘快捷键 as THE title',
+      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onOpenChange=\{props\.onOpenChange\}/,
+      'KeyboardHelpModal must render Astryx DialogHeader with 键盘快捷键 as THE title',
     );
     // The redundant second title and eyebrow are gone.
     assert.doesNotMatch(source, /所有可用快捷键/, 'The redundant second title must be dropped');
@@ -186,26 +161,21 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.match(source, /<Kbd>\{key\}<\/Kbd>/);
   });
 
-  it('unifies titled DialogContent modals onto the shared DialogHeader primitive', async () => {
-    // Modal-header unification contract: every titled DialogContent modal
-    // consumes the shared DialogHeader (single title row + one quiet icon-sm
-    // close button) instead of an ad-hoc header. The command palette is
-    // intentionally headerless (its input row IS the header) and is excluded.
-    const header = await readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8');
-    assert.match(header, /DialogHeader as AstryxDialogHeader/);
-    assert.match(header, /<AstryxDialogHeader/);
-    assert.doesNotMatch(header, /<Button|<button|<X\b/, 'Astryx must own the header close affordance');
-    assert.match(header, /export function DialogHeader/, 'DialogHeader must be exported');
+  it('uses Astryx DialogHeader directly for titled modals', async () => {
+    await assert.rejects(
+      readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8'),
+    );
 
-    // Both titled modals import + render the shared DialogHeader.
+    // Titled hand-composed modals use the shared header.
     const keyboardHelp = await readFile(join(process.cwd(), 'src/renderer/keyboard-help.tsx'), 'utf8');
-    assert.match(keyboardHelp, /import \{[^}]*\bDialogHeader\b[^}]*\} from '@maka\/ui';/);
+    assert.match(keyboardHelp, /from '@astryxdesign\/core\/Dialog'/);
     assert.match(keyboardHelp, /<DialogHeader\b/);
 
+    // Search is a complete Astryx CommandPalette, not a hand-composed Dialog.
     const searchModal = await readFile(join(repoRoot, 'packages/ui/src/search-modal.tsx'), 'utf8');
-    assert.match(searchModal, /import \{ DialogHeader \} from '\.\/primitives\/dialog-header\.js';/);
-    assert.match(searchModal, /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=/);
-    // The old ad-hoc header language is gone.
+    assert.match(searchModal, /CommandPalette as AstryxCommandPalette/);
+    assert.match(searchModal, /<AstryxCommandPalette\b/);
+    assert.doesNotMatch(searchModal, /DialogHeader|DialogContent|DialogRoot/);
     assert.doesNotMatch(searchModal, /maka-search-modal-header/, 'Search modal must drop the ad-hoc header class');
     assert.doesNotMatch(searchModal, /maka-search-modal-close/, 'Search modal must drop the ad-hoc close class');
   });
@@ -295,8 +265,10 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     const artifactPane = consumers[5];
     assert.doesNotMatch(artifactPane, /className="[^"]*maka-artifact-toolbar-button/);
-    // #1565 PR 3: the delete action rides the legacy buttonVariants render-prop seam.
-    assert.match(artifactPane, /buttonVariants\(\{ variant: 'destructive', size: 'icon-sm' \}\)/);
+    assert.match(
+      artifactPane,
+      /<Button[\s\S]*label=\{pendingArtifactAction === `\$\{selected\.id\}:delete`[\s\S]*isIconOnly[\s\S]*variant="destructive"[\s\S]*size="sm"/,
+    );
     assert.doesNotMatch(rendererCss, /\.maka-artifact-toolbar-button\b/);
 
     const providers = consumers[6];

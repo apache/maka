@@ -14,38 +14,12 @@ import { REPO_ROOT, TOKENS_FILE, readAllRendererCss, stripCssComments } from './
  * path. The separate `maka-tool-pulse` keyframe (the `ToolActivity` card's ring
  * dot) is a different concern and stays.
  *
- * What stays guarded here: the computed-style fixture stays aligned with the
- * quiet production panel + its disclosure defaults, the retired bespoke
+ * What stays guarded here: the retired bespoke
  * `.maka-tool-output-stream-*` selectors + `maka-tool-output-stream-pulse`
  * keyframe stay absent, and the removed PR3 substrate (`streamVariants` /
  * `LiveIndicator` / `@keyframes maka-pulse`) stays removed.
  */
 describe('chat tool-output stream migration contract (#332 PR3)', () => {
-  it('keeps the computed-style fixture aligned with the quiet tool-output panel', async () => {
-    const harness = await readFile(
-      resolve(REPO_ROOT, 'scripts', 'check-chat-marker-computed-style.mjs'),
-      'utf8',
-    );
-
-    // Stream variants are no longer the production tool body; the quiet panel is.
-    assert.match(harness, /TOOL_OUTPUT_PANEL_CLASS/);
-    assert.match(harness, /TOOL_OUTPUT_BODY_CLASS/);
-    assert.match(harness, /data-slot="tool-output"/);
-    assert.doesNotMatch(harness, /toolOutputPanel[\s\S]*maka-tool-output-stream|sv\s*\(/);
-  });
-
-  it('keeps the computed-style fixture aligned with production disclosure defaults', async () => {
-    const harness = await readFile(
-      resolve(REPO_ROOT, 'scripts', 'check-chat-marker-computed-style.mjs'),
-      'utf8',
-    );
-
-    assert.match(
-      harness,
-      /const openByDefault = \(s\) => s === 'waiting_permission';/,
-    );
-  });
-
   it('retires the bespoke stream shell selectors + the per-feature pulse keyframe', async () => {
     const css = stripCssComments(await readAllRendererCss());
     for (const selector of [

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
-import { Alert, AlertDescription, Button, SettingsSelect, SettingsSwitch as Switch, TimePicker, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -22,15 +22,17 @@ function buildDailyReviewModelOptions(
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
   locale: 'zh' | 'en',
-): Array<readonly [string, string]> {
-  const options: Array<readonly [string, string]> = [
-    [DAILY_REVIEW_DEFAULT_MODEL_VALUE, copy.defaultModel],
+): Array<{ value: string; label: string }> {
+  const options: Array<{ value: string; label: string }> = [
+    { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },
   ];
-  options.push(...buildCatalogDailyReviewModelOptions(
-    connections,
-    currentModelKey.trim() === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : currentModelKey,
-    locale,
-  ));
+  options.push(
+    ...buildCatalogDailyReviewModelOptions(
+      connections,
+      currentModelKey.trim() === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : currentModelKey,
+      locale,
+    ).map(([value, label]) => ({ value, label })),
+  );
   return options;
 }
 
@@ -47,6 +49,8 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
   const [loadError, setLoadError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [runningMode, setRunningMode] = useState<DailyReviewMode | null>(null);
+  const [executeTimeDraft, setExecuteTimeDraft] = useState('08:00');
+  const [executeTimeInvalid, setExecuteTimeInvalid] = useState(false);
   const mountedRef = useMountedRef();
   const saveConfigGuard = useActionGuard<string>();
   const runModeGuard = useActionGuard<DailyReviewMode>();
@@ -78,6 +82,11 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       cancelled = true;
     };
   }, [hasConfigIpc, dailyReviewIpc, locale]);
+
+  useEffect(() => {
+    setExecuteTimeDraft(config?.executeTime ?? '08:00');
+    setExecuteTimeInvalid(false);
+  }, [config?.executeTime]);
 
   async function patchConfig(key: string, patch: Partial<DailyReviewConfig>) {
     if (!dailyReviewIpc.setConfig || !config || saveConfigGuard.current !== null) return;
@@ -148,15 +157,16 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       ) : null}
 
       <SettingsRows>
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.enabled}</strong>
             <small>{copy.enabledHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.enabled}
-            checked={effectiveConfig?.enabled ?? false}
-            disabled={formDisabled || savingKey === 'enabled'}
+            label={copy.enabled}
+            isLabelHidden
+            value={effectiveConfig?.enabled ?? false}
+            isDisabled={formDisabled || savingKey === 'enabled'}
             onChange={(enabled) => void patchConfig('enabled', { enabled })}
           />
         </div>
@@ -166,35 +176,47 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <strong>{copy.executeTime}</strong>
             <small>{copy.executeTimeHelp}</small>
           </div>
-          {/* Was a native time field. WebKit draws that control's popup
-              itself — platform-blue columns, platform metrics, no dark
-              mode — and no `::-webkit-*` selector reaches it, so the only
-              way onto the design system was to own the popup. TimePicker
-              keeps the same `HH:MM` value contract, so the persisted
-              config shape is unchanged. */}
-          <TimePicker
-            ariaLabel={copy.executeTimeAria}
-            className="settingsTimeInput"
-            value={effectiveConfig?.executeTime ?? '08:00'}
-            disabled={formDisabled || savingKey === 'executeTime'}
-            hourLabel={copy.executeTimeHour}
-            minuteLabel={copy.executeTimeMinute}
+          <TextInput
+            label={copy.executeTimeAria}
+            isLabelHidden
+            value={executeTimeDraft}
+            isDisabled={formDisabled || savingKey === 'executeTime'}
+            placeholder={copy.executeTimePlaceholder}
+            width={140}
+            status={
+              executeTimeInvalid
+                ? { type: 'error', message: copy.executeTimeInvalid }
+                : undefined
+            }
             onChange={(executeTime) => {
-              void patchConfig('executeTime', { executeTime });
+              setExecuteTimeDraft(executeTime);
+              setExecuteTimeInvalid(false);
+            }}
+            onBlur={() => {
+              if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(executeTimeDraft)) {
+                setExecuteTimeInvalid(true);
+                return;
+              }
+              if (executeTimeDraft !== effectiveConfig?.executeTime) {
+                void patchConfig('executeTime', {
+                  executeTime: executeTimeDraft,
+                });
+              }
             }}
           />
         </div>
 
         {DAILY_REVIEW_SECTION_KEYS.map((key) => (
-          <div key={key} className="settingsRow">
+          <div key={key} className="settingsRow" data-control="switch">
             <div>
               <strong>{copy.sections[key].title}</strong>
               <small>{copy.sections[key].detail}</small>
             </div>
             <Switch
-              ariaLabel={copy.sections[key].title}
-              checked={effectiveConfig?.sections[key] ?? false}
-              disabled={formDisabled || savingKey === `section:${key}` || !(effectiveConfig?.enabled ?? false)}
+              label={copy.sections[key].title}
+              isLabelHidden
+              value={effectiveConfig?.sections[key] ?? false}
+              isDisabled={formDisabled || savingKey === `section:${key}` || !(effectiveConfig?.enabled ?? false)}
               onChange={(next) =>
                 void patchConfig(`section:${key}`, {
                   sections: {
@@ -207,15 +229,16 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           </div>
         ))}
 
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.deep}</strong>
             <small>{copy.deepHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.deep}
-            checked={effectiveConfig?.deepEnabled ?? false}
-            disabled={formDisabled || savingKey === 'deepEnabled'}
+            label={copy.deep}
+            isLabelHidden
+            value={effectiveConfig?.deepEnabled ?? false}
+            isDisabled={formDisabled || savingKey === 'deepEnabled'}
             onChange={(deepEnabled) => void patchConfig('deepEnabled', { deepEnabled })}
           />
         </div>
@@ -225,11 +248,13 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <strong>{copy.model}</strong>
             <small>{copy.modelHelp}</small>
           </div>
-          <SettingsSelect
+          <Selector
             value={selectedModelValue}
-            ariaLabel={copy.modelAria}
+            label={copy.modelAria}
+            isLabelHidden
             options={modelOptions}
-            disabled={formDisabled || savingKey === 'modelKey' || modelOptions.length === 0}
+            isDisabled={formDisabled || savingKey === 'modelKey' || modelOptions.length === 0}
+            width={320}
             onChange={(value) => {
               void patchConfig('modelKey', {
                 modelKey: value === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : value,
@@ -238,28 +263,30 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           />
         </div>
 
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.includeCli}</strong>
             <small>{copy.includeCliHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.includeCli}
-            checked={effectiveConfig?.includeClaudeCode ?? false}
-            disabled={formDisabled || savingKey === 'includeClaudeCode'}
+            label={copy.includeCli}
+            isLabelHidden
+            value={effectiveConfig?.includeClaudeCode ?? false}
+            isDisabled={formDisabled || savingKey === 'includeClaudeCode'}
             onChange={(includeClaudeCode) => void patchConfig('includeClaudeCode', { includeClaudeCode })}
           />
         </div>
 
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.notify}</strong>
             <small>{copy.notifyHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.notify}
-            checked={false}
-            disabled={true}
+            label={copy.notify}
+            isLabelHidden
+            value={false}
+            isDisabled={true}
             onChange={() => undefined}
           />
         </div>

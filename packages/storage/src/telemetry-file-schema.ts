@@ -294,7 +294,8 @@ export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRe
   }
   if (
     input.contextBudget !== undefined &&
-    (!isContextBudgetDiagnostic(input.contextBudget) || !hasNoNegativeNumbers(input.contextBudget))
+    (!isContextBudgetDiagnostic(input.contextBudget) ||
+      !contextBudgetCountsAreNonNegative(input.contextBudget))
   ) {
     throw invalid('invalid contextBudget');
   }
@@ -493,6 +494,23 @@ function hasNoNegativeNumbers(value: unknown): boolean {
   if (Array.isArray(value)) return value.every(hasNoNegativeNumbers);
   if (isRecord(value)) return Object.values(value).every(hasNoNegativeNumbers);
   return true;
+}
+
+function contextBudgetCountsAreNonNegative(value: unknown): boolean {
+  if (!isRecord(value)) return hasNoNegativeNumbers(value);
+  return Object.entries(value).every(([key, entry]) =>
+    key === 'compactionDecisions'
+      ? entry === undefined ||
+        (Array.isArray(entry) && entry.every(compactionDecisionCountsAreNonNegative))
+      : hasNoNegativeNumbers(entry),
+  );
+}
+
+function compactionDecisionCountsAreNonNegative(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return Object.entries(value).every(
+    ([key, entry]) => key === 'estimatedTokensSaved' || hasNoNegativeNumbers(entry),
+  );
 }
 
 function cloneAndFreeze<T>(value: T): T {

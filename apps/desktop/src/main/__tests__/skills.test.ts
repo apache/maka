@@ -1591,6 +1591,16 @@ description: Exercise workspace-contained open paths.
     assert.match(ui, /function formatSkillRuntimeLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /runtimeStatus === 'state_error'\) return copy\.status\.stateError/);
     assert.match(ui, /skill\.enabled \? copy\.status\.enabled : copy\.status\.disabled/);
+    assert.match(
+      skillPanel,
+      /disabledMessage=\{skill\.runtimeStatus === 'state_error'[\s\S]*copy\.row\.stateErrorTitle/,
+      'A state-error Switch must expose its disabled reason through Astryx',
+    );
+    assert.doesNotMatch(
+      skillPanel,
+      /<Switch[\s\S]{0,500}labelTooltip=/,
+      'A visually hidden Switch label must not own an unreachable tooltip',
+    );
     assert.match(ui, /validationStatus === 'metadata_error'\) return copy\.status\.metadataError/);
     assert.match(ui, /userModified\) return copy\.status\.modified/);
     assert.match(ui, /sourceType === 'bundled'\) return copy\.status\.bundled/);
@@ -1623,7 +1633,7 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /onPreviewManagedSkillUpdate\?\(skillId: string\): Promise<ManagedSkillUpdatePreview \| null>/);
     assert.match(skillPanel, /onUpdateManagedSkill\?\(skillId: string, options\?: \{ force\?: boolean; expectedCurrentSha256\?: string; expectedSourceSha256\?: string \}\): boolean \| Promise<boolean>/);
     assert.match(skillPanel, /onSetSkillEnabled\?\(skillId: string, enabled: boolean\): void \| Promise<void>/);
-    assert.match(skillPanel, /<Switch[\s\S]*checked=\{skill\.enabled\}[\s\S]*onCheckedChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next === true\)\}/);
+    assert.match(skillPanel, /<Switch[\s\S]*value=\{skill\.enabled\}[\s\S]*onChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next\)\}/);
     assert.match(skillPanel, /props\.onSetSkillPinned\?\.\(skillRef, !skill\.pinned\)/);
     assert.match(skillPanel, /className="maka-skill-context-inspector"/);
     assert.match(skillPanel, /data-context-status=\{contextStatus\}/);

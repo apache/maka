@@ -5,8 +5,8 @@ import {
   AlertDescription,
   Button,
   SectionHeader,
-  SettingsSelect,
-  SettingsSwitch as Switch,
+  Selector,
+  Switch,
   clearGlobalInputHistory,
   useMountedRef,
   useToast,
@@ -242,39 +242,36 @@ export function DataSettingsPage() {
             const option = copy.categories[id];
             const checked = selectedCategories.has(id);
             return (
-              <div key={id} className="settingsConfigCategoryItem">
-                <Switch
-                  ariaLabel={copy.exportCategory(option.label)}
-                  checked={checked}
-                  onChange={() => toggleCategory(id)}
-                />
-                <span>
-                  <strong>{option.label}</strong>
-                  <small>{option.detail}</small>
-                  {option.sensitive && checked ? (
-                    <small role="alert" data-tone="destructive">
-                      {copy.sensitiveWarning}
-                    </small>
-                  ) : null}
-                </span>
-              </div>
+              <Switch
+                key={id}
+                label={option.label}
+                description={option.detail}
+                value={checked}
+                width="100%"
+                labelPosition="start"
+                labelSpacing="spread"
+                status={
+                  option.sensitive && checked
+                    ? { type: 'warning', message: copy.sensitiveWarning }
+                    : undefined
+                }
+                onChange={() => toggleCategory(id)}
+              />
             );
           })}
         </div>
-        <div className="settingsConfigStrategy">
-          <span className="settingsHelpText">{copy.importConflict}</span>
-          <SettingsSelect
-            value={importStrategy}
-            ariaLabel={copy.conflictAria}
-            options={
-              [
-              ['skip', copy.skip],
-              ['overwrite', copy.overwrite],
-              ] satisfies Array<readonly [typeof importStrategy, string]>
-            }
-            onChange={(strategy) => setImportStrategy(strategy)}
-          />
-        </div>
+        <Selector
+          value={importStrategy}
+          label={copy.conflictAria}
+          options={
+            [
+              { value: 'skip', label: copy.skip },
+              { value: 'overwrite', label: copy.overwrite },
+            ]
+          }
+          width="100%"
+          onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
+        />
         <div className="settingsActionRow">
           <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
           <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />

@@ -9,8 +9,8 @@ test('settings switches keep the compact shared control geometry', async ({ wind
   await expect(privacySwitch).toBeVisible();
   const box = await privacySwitch.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.width).toBe(32);
-  expect(box!.height).toBe(18);
+  expect(box!.width).toBe(40);
+  expect(box!.height).toBe(24);
   await expect.poll(
     () => privacySwitch.evaluate((element) => getComputedStyle(element).boxShadow),
   ).toBe('none');
@@ -30,53 +30,62 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   await expect(page.getByLabel('设置内容')).toBeVisible();
 
   await page.locator('[aria-label="设置分组"]').getByText('外观').click();
-  await page.getByRole('radio', { name: '深色 始终使用深色界面。' }).click();
+  const themeGroup = page.getByRole('radiogroup', { name: '主题' });
+  const lightTheme = themeGroup.getByRole('radio', { name: '浅色' });
+  const darkTheme = themeGroup.getByRole('radio', { name: '深色' });
+  await lightTheme.focus();
+  await lightTheme.press('ArrowDown');
+  await expect(darkTheme).toBeChecked();
 
   await expect.poll(
     async () => page.evaluate(() => document.documentElement.classList.contains('dark')),
   ).toBe(true);
 });
 
-test('settings textarea grows with content and scrolls only at its shared cap', async ({ window: page }) => {
+test('settings textareas use Astryx native resizing and persist edits across section re-entry', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
 
   const textarea = page.getByRole('textbox', { name: '助手语气偏好' });
   await expect(textarea).toBeVisible();
-  await expect(textarea).toHaveCSS('resize', 'none');
-  await expect(textarea).toHaveCSS('field-sizing', 'content');
-
-  const initialHeight = await textarea.evaluate((element) => element.getBoundingClientRect().height);
-  await textarea.fill(Array.from({ length: 7 }, (_, index) => `偏好 ${index + 1}`).join('\n'));
-  const grownHeight = await textarea.evaluate((element) => element.getBoundingClientRect().height);
-  expect(grownHeight).toBeGreaterThan(initialHeight);
-
-  await textarea.fill(Array.from({ length: 30 }, (_, index) => `偏好 ${index + 1}`).join('\n'));
-  const capped = await textarea.evaluate((element) => ({
-    height: element.getBoundingClientRect().height,
-    clientHeight: element.clientHeight,
-    scrollHeight: element.scrollHeight,
-  }));
-  expect(capped.height).toBeLessThanOrEqual(320);
-  expect(capped.scrollHeight).toBeGreaterThan(capped.clientHeight);
+  await expect(textarea).toHaveCSS('resize', 'vertical');
+  const edited = Array.from({ length: 7 }, (_, index) => `偏好 ${index + 1}`).join('\n');
+  await textarea.fill(edited);
+  await expect(textarea).toHaveValue(edited);
 
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '记忆', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'none');
-  await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'none');
+  await expect(page.locator('label').filter({ hasText: '记忆标题' })).toBeVisible();
+  await expect(page.locator('label').filter({ hasText: '记忆标签' })).toBeVisible();
+  await expect(page.locator('label').filter({ hasText: '记忆内容' })).toBeVisible();
+  await expect(page.locator('label').filter({ hasText: 'MEMORY.md 内容' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'vertical');
+  await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'vertical');
+
+  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '数据', exact: true }).click();
+  await expect(page.locator('label').filter({ hasText: '导入时同名连接的处理方式' })).toBeVisible();
+
+  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toHaveValue(edited);
 });
 
-test('shared settings input owns its desktop focus chrome', async ({ window: page }) => {
+test('voice settings expose Astryx-owned fields and persist a draft on blur', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await settings.getByRole('button', { name: '语音', exact: true }).click();
 
-  const displayName = page.getByRole('textbox', { name: '显示名称' });
-  await expect(displayName).toHaveCSS('box-shadow', 'none');
-  await displayName.focus();
-  const focusShadow = await displayName.evaluate((element) => getComputedStyle(element).boxShadow);
-  expect(focusShadow).not.toBe('none');
-  expect(focusShadow).not.toContain('inset');
+  await expect(settings.getByRole('combobox', { name: '模型连接' })).toHaveCount(2);
+  await expect(settings.getByRole('textbox', { name: '模型 ID' })).toHaveCount(2);
+  const language = settings.getByRole('textbox', { name: '语言（可选）' });
+  await expect(language).toBeVisible();
+  await expect(settings.getByRole('textbox', { name: '识别提示词（可选）' })).toBeVisible();
+
+  await language.fill('en');
+  await language.press('Tab');
+  await settings.getByRole('button', { name: '通用', exact: true }).click();
+  await settings.getByRole('button', { name: '语音', exact: true }).click();
+  await expect(settings.getByRole('textbox', { name: '语言（可选）' })).toHaveValue('en');
 });
 
 test('open gateway metric values stay contained for long addresses', async ({ window: page }) => {
@@ -409,7 +418,7 @@ test('remote access opens a channel detail from the overview and returns', async
   const backButton = settings.getByRole('button', { name: '返回远程接入' });
   await expect(backButton).toBeVisible();
   await expect(settings.getByRole('heading', { name: '连接配置' })).toBeVisible();
-  const tokenInput = settings.getByLabel('Telegram Bot Token');
+  const tokenInput = settings.getByRole('textbox', { name: /Telegram Bot Token/ });
   await expect(tokenInput).toBeVisible();
 
   const detailHeadings = await settings.getByRole('heading').allTextContents();
@@ -421,6 +430,8 @@ test('remote access opens a channel detail from the overview and returns', async
   await expect(disabledSwitch).toBeDisabled();
   await expect(disabledSwitch).toHaveAccessibleDescription('先测试并连接后才能启用。');
   await backButton.focus();
+  await page.keyboard.press('Tab');
+  await expect(disabledSwitch).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(configDocs).toBeFocused();
   await page.keyboard.press('Tab');
@@ -520,7 +531,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
           return body.getBoundingClientRect().width >= expectedWidth - 1;
         })(),
         switchPrecedesDocs: (() => {
-          const toggle = element.querySelector<HTMLElement>('[data-slot="switch"]');
+          const toggle = element.querySelector<HTMLElement>('.settingsBotDetailSwitch');
           const docs = element.querySelector<HTMLElement>('.settingsBotConfigDocLink');
           return toggle && docs
             ? Boolean(toggle.compareDocumentPosition(docs) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -528,7 +539,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
         })(),
         headingPrecedesSwitch: (() => {
           const heading = element.querySelector<HTMLElement>('h3');
-          const toggle = element.querySelector<HTMLElement>('[data-slot="switch"]');
+          const toggle = element.querySelector<HTMLElement>('.settingsBotDetailSwitch');
           return heading && toggle
             ? Boolean(heading.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING)
             : false;
@@ -563,8 +574,8 @@ test('remote access prioritizes a configured channel that needs attention', asyn
  * #1362 — THE row-wrapping decision for the settings form-row pages. The
  * `.settingsRows` card is an inline-size query container; below 460px of
  * CARD width (not viewport width — the content column is narrower than the
- * window by the nav sidebar) label/control rows stack vertically, and the
- * proxy form grids collapse to one column. Switch rows are the exception:
+ * window by the nav sidebar) label/control rows stack vertically, while the
+ * proxy fields stay contained in Astryx-owned layouts. Switch rows are the exception:
  * a ~40px switch always fits beside its label. Locks both directions so
  * neither the narrow stacking nor the wide two-column layout regresses.
  */
@@ -593,24 +604,15 @@ test('general form rows stack at the window floor and stay two-column when wide'
   await expect(incognitoRow).toHaveCSS('flex-direction', 'row');
   await expect.poll(rowTrackCount).toBe(1);
 
-  // The proxy sub-form only renders behind the switches: the 3-column
-  // protocol/host/port grid (150px + 84px floors) was the widest thing on
-  // the page, and the auth username/password grid is the plain 2-column
-  // `.settingsFormGrid` — both must fold to one column on a narrow card
-  // (they are separate CSS selectors; either could regress alone).
+  // The proxy sub-form only renders behind the switches. Astryx owns both
+  // horizontal layouts; Maka only provides their inset within the Settings
+  // card, so the product must remain scroll-free at the window floor.
   await settings.getByRole('switch', { name: '启用代理服务器' }).click();
   await settings.getByRole('switch', { name: '启用代理认证' }).click();
-  const gridTrackCounts = () =>
-    settings
-      .locator('.settingsFormGrid')
-      .evaluateAll((elements) =>
-        elements.map(
-          (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
-        ),
-      );
-  await expect(settings.locator('.settingsFormGridProxy')).toBeVisible();
-  // Both grids rendered (proxy + auth), each folded to one column.
-  await expect.poll(gridTrackCounts).toEqual([1, 1]);
+  const formLayouts = settings.locator('.settingsFormLayout');
+  await expect(formLayouts).toHaveCount(2);
+  await expect(formLayouts.nth(0)).toHaveCSS('display', 'grid');
+  await expect(formLayouts.nth(1)).toHaveCSS('display', 'grid');
 
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -629,9 +631,7 @@ test('appearance palette names stay fully visible at the window floor', async ({
   const settings = await openSettings(page);
   await settings.getByRole('button', { name: '外观', exact: true }).click();
 
-  const label = settings
-    .locator('.settingsThemeLabel strong')
-    .filter({ hasText: 'Catppuccin Mocha' });
+  const label = settings.getByText('Catppuccin Mocha', { exact: true });
   await expect(label).toBeVisible();
   // Wrapping, not clipping: nothing hides past the box in either axis.
   await expect.poll(
@@ -649,9 +649,8 @@ test('appearance palette names stay fully visible at the window floor', async ({
 /**
  * #1363 — the three small form-row pages at the window floor. Daily Review
  * and About are covered by the #1362 row-stacking mechanism; the Data page
- * adds two page-owned surfaces: the config strategy row (nowrap label +
- * select, one-line minimum wider than the floor column) now wraps, and the
- * workspace path renders as a wrapping mono value.
+ * adds two page-owned surfaces: the Astryx conflict-strategy field and the
+ * workspace path's wrapping mono value.
  */
 test('data, about, and daily review stay contained at the window floor', async ({
   window: page,
@@ -660,14 +659,16 @@ test('data, about, and daily review stay contained at the window floor', async (
   const settings = await openSettings(page);
 
   await settings.getByRole('button', { name: '数据', exact: true }).click();
-  const strategy = settings.locator('.settingsConfigStrategy');
+  const strategy = settings.getByRole('combobox', { name: '导入时同名连接的处理方式' });
   await expect(strategy).toBeVisible();
-  await expect(strategy).toHaveCSS('flex-wrap', 'wrap');
-  // The section itself, not just the page: the page-level assertion below
-  // passes even when a child overflows into clipped space (#1363 review).
-  await expect.poll(
-    () => strategy.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
+  const strategyBox = await strategy.boundingBox();
+  const settingsBox = await settings.boundingBox();
+  expect(strategyBox).not.toBeNull();
+  expect(settingsBox).not.toBeNull();
+  expect(strategyBox!.x).toBeGreaterThanOrEqual(settingsBox!.x);
+  expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
+    settingsBox!.x + settingsBox!.width,
+  );
   const workspaceValue = settings.locator('.settingsRow span[data-mono="true"]').first();
   await expect(workspaceValue).toBeVisible();
   await expect.poll(
@@ -691,10 +692,9 @@ test('data, about, and daily review stay contained at the window floor', async (
 });
 
 /**
- * #1363 review: the English strategy label ("Connections with the same
- * name:") is wider than the 480px floor's content column — with the old
- * `white-space: nowrap` the section overflowed into clipped space that the
- * page-level containment assertion could not see. The label wraps now.
+ * #1363 review: the full English field label is wider than the 480px floor's
+ * content column, so the field and label must remain contained without a
+ * product-owned wrapper.
  */
 test('data config strategy stays contained at the window floor in English', async ({
   enLocaleWindow: page,
@@ -705,16 +705,18 @@ test('data config strategy stays contained at the window floor in English', asyn
   const settings = page.getByRole('main', { name: 'Settings content' });
   await settings.getByRole('button', { name: 'Data', exact: true }).click();
 
-  const strategy = settings.locator('.settingsConfigStrategy');
+  const strategy = settings.getByRole('combobox', {
+    name: 'How to handle connections with the same name during import',
+  });
   await expect(strategy).toBeVisible();
-  await expect.poll(
-    () =>
-      strategy.evaluate((element) => ({
-        sectionContained: element.scrollWidth <= element.clientWidth,
-        labelWraps:
-          getComputedStyle(element.querySelector('.settingsHelpText')!).whiteSpace !== 'nowrap',
-      })),
-  ).toEqual({ sectionContained: true, labelWraps: true });
+  const strategyBox = await strategy.boundingBox();
+  const settingsBox = await settings.boundingBox();
+  expect(strategyBox).not.toBeNull();
+  expect(settingsBox).not.toBeNull();
+  expect(strategyBox!.x).toBeGreaterThanOrEqual(settingsBox!.x);
+  expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
+    settingsBox!.x + settingsBox!.width,
+  );
 });
 
 /**

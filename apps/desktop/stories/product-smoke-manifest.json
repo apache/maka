@@ -82,6 +82,16 @@
       "productionHost": "AppShellDetailPanel > DailyReviewPage",
       "state": "Loaded daily review summary",
       "viewports": ["wide", "compact", "floor"]
+    },
+    "toastConfirmQueue": {
+      "storyId": "primitives-toast--confirm-queued",
+      "productionHost": "ToastProvider",
+      "state": "Two queued confirmations close and resolve in order",
+      "viewports": ["wide"],
+      "viewportOptOuts": {
+        "compact": "The queue contract is independent of viewport geometry.",
+        "floor": "The queue contract is independent of viewport geometry."
+      }
     }
   }
 }

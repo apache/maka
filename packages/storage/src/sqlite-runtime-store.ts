@@ -47,6 +47,7 @@ import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
 import type { ImmutableSteeringMessageProof } from './agent-run-store.js';
+import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -84,6 +85,8 @@ export type SqliteRuntimeStoreFailpoint =
 export interface SqliteRuntimeStoreOptions {
   failpoint?: (point: SqliteRuntimeStoreFailpoint) => void;
   readOnly?: boolean;
+  /** @internal Repository connection supplied by the operational DB owner. */
+  databaseLease?: OperationalStateDatabaseLease;
 }
 
 export interface CommitToolPreparedInput {
@@ -166,13 +169,23 @@ export class SqliteRuntimeStore
   readonly recoveryBundleCapability = TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
   readonly continuationAuthorityCapability = RUNTIME_CONTINUATION_AUTHORITY_V1;
   private readonly db: DatabaseSync;
+  private readonly databaseLease?: OperationalStateDatabaseLease;
   private closed = false;
 
   constructor(
     path: string,
     private readonly options: SqliteRuntimeStoreOptions = {},
   ) {
+    if (options.readOnly && options.databaseLease) {
+      throw new Error('Operational state database leases cannot be opened read-only');
+    }
     if (path !== ':memory:' && !options.readOnly) mkdirSync(dirname(path), { recursive: true });
+    if (options.databaseLease) {
+      this.databaseLease = options.databaseLease;
+      this.db = options.databaseLease.database;
+      assertRecoveryAuthorityCapability(this.db);
+      return;
+    }
     const DatabaseSync = loadDatabaseSync();
     this.db = options.readOnly
       ? new DatabaseSync(path, { readOnly: true })
@@ -220,7 +233,8 @@ export class SqliteRuntimeStore
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.db.close();
+    if (this.databaseLease) this.databaseLease.close();
+    else this.db.close();
   }
 
   async appendRuntimeEvent(
@@ -889,9 +903,8 @@ export class SqliteRuntimeStore
     return this.readToolOperationSync(operationId);
   }
 
-  async listUnsettledToolOperations(): Promise<ToolOperationRecord[]> {
-    const rows = this.db
-      .prepare(`
+  async listUnsettledToolOperations(sessionId?: string): Promise<ToolOperationRecord[]> {
+    const query = `
       SELECT operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
         tool_name, canonical_args_hash, recovery_mode, current_state,
         call_event_id, dispatch_event_id, result_event_id, version
@@ -899,9 +912,17 @@ export class SqliteRuntimeStore
       WHERE current_state = 'prepared'
         AND result_event_id IS NULL
         AND dispatch_event_id IS NOT NULL
+        ${
+          sessionId === undefined
+            ? ''
+            : 'AND call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)'
+        }
       ORDER BY invocation_id ASC, operation_id ASC
-    `)
-      .all() as unknown as ToolOperationRow[];
+    `;
+    const statement = this.db.prepare(query);
+    const rows = (sessionId === undefined
+      ? statement.all()
+      : statement.all(sessionId)) as unknown as ToolOperationRow[];
     return rows.map(toolOperationFromRow);
   }
 
@@ -1226,6 +1247,7 @@ export class SqliteRuntimeStore
   }
 
   private transaction<T>(operation: () => T): T {
+    if (this.databaseLease) return this.databaseLease.transaction('write', operation);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = operation();

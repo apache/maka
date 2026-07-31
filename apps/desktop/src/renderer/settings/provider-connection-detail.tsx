@@ -6,11 +6,9 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
-  FieldDescription,
-  FieldRoot,
-  Input,
-  Label,
   RelativeTime,
+  Selector,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -97,6 +95,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
+    settingDefaultModel,
     settingDefault,
     deleting,
     detailActionBusy,
@@ -116,28 +115,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    updateDefaultModel,
     runTest,
     refreshModels,
     setAsDefault,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
+  const defaultModelOptions = modelChoices
+    .filter((entry) => entry.canUseAsChatDefault)
+    .map((entry) => ({
+      value: entry.id,
+      label: entry.displayName?.trim() || entry.id,
+    }));
+  if (
+    connection.defaultModel &&
+    !defaultModelOptions.some((option) => option.value === connection.defaultModel)
+  ) {
+    defaultModelOptions.push({
+      value: connection.defaultModel,
+      label: connection.defaultModel,
+    });
+  }
 
   return (
     <div className="providerEditor providerConnectionManager">
       {supportsApiKey && (
         <div className="providerCredentialTask">
-          <FieldRoot className="grid gap-1.5">
-            <Label className="text-xs text-foreground-secondary">{copy.modelKey}</Label>
-            <FieldDescription>{apiKeyStatusHint}</FieldDescription>
-            <PasswordInput
-              value={apiKey}
-              onChange={setApiKey}
-              placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-              ariaLabel={copy.modelKeyAria(display.name)}
-              disabled={detailActionBusy}
-            />
-          </FieldRoot>
+          <PasswordInput
+            value={apiKey}
+            onChange={setApiKey}
+            placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
+            label={copy.modelKeyAria(display.name)}
+            description={apiKeyStatusHint}
+            isDisabled={detailActionBusy}
+          />
           <div className="providerCredentialActions">
             {defaults.signupUrl && (
               <a
@@ -208,16 +220,36 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             : copy.credentialUnknownDetail}
         </p>
       )}
+      <section className="providerModelSettings" aria-label={copy.modelManagement}>
+        <Selector
+          label={copy.connectionDefaultModel}
+          description={copy.connectionDefaultModelHelp}
+          options={defaultModelOptions}
+          value={connection.defaultModel}
+          onChange={(model) => void updateDefaultModel(model)}
+          isDisabled={detailActionBusy || defaultModelOptions.length === 0}
+          disabledMessage={defaultModelOptions.length === 0 ? copy.noModels : undefined}
+          isLoading={settingDefaultModel}
+          placeholder={copy.noModels}
+          width="100%"
+        />
+        <EnabledModelManager
+          modelChoices={modelChoices}
+          enabledModelIds={enabledModelIds}
+          defaultModel={connection.defaultModel}
+          disabled={detailActionBusy}
+          onChange={(next) => void updateEnabledModels(next)}
+        />
+        <div className="providerModelActions">
+          <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
+          {supportsRemoteDiscovery && (
+            <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
+          )}
+        </div>
+      </section>
       <details className="providerAdvancedSettings">
         <summary>{copy.advanced}</summary>
         <div className="providerAdvancedSettingsBody">
-          <EnabledModelManager
-            modelChoices={modelChoices}
-            enabledModelIds={enabledModelIds}
-            defaultModel={connection.defaultModel}
-            disabled={detailActionBusy}
-            onChange={(next) => void updateEnabledModels(next)}
-          />
           <div className="providerEndpointSettings">
             <ConnectionEndpointField
               baseUrl={baseUrl}
@@ -236,18 +268,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               </div>
             )}
           </div>
-          <div className="providerAdvancedActions">
-            <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
-            {supportsRemoteDiscovery && (
-              <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
-            )}
-            {!props.isDefault && connection.enabled && (
-              <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
-            )}
-            <Button className="providerAdvancedDanger" variant="ghost" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
-          </div>
         </div>
       </details>
+      <div className="providerConnectionActions">
+        {!props.isDefault && connection.enabled && (
+          <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
+        )}
+        <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
+      </div>
     </div>
   );
 }
@@ -261,19 +289,15 @@ function ConnectionEndpointField(props: {
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   return (
-    <FieldRoot className="grid gap-1.5">
-      <Label className="text-xs text-foreground-secondary">{copy.endpoint}</Label>
-      {props.fixedOAuth && <FieldDescription>{copy.oauthFixed}</FieldDescription>}
-      <Input
-        value={props.baseUrl}
-        onChange={(event) => props.onChange(event.currentTarget.value)}
-        placeholder={props.defaultsBaseUrl}
-        readOnly={props.fixedOAuth}
-        disabled={props.disabled}
-        aria-readonly={props.fixedOAuth ? 'true' : undefined}
-        aria-label={props.fixedOAuth ? copy.endpointFixedAria : copy.endpointAria}
-      />
-    </FieldRoot>
+    <TextInput
+      label={copy.endpoint}
+      description={props.fixedOAuth ? copy.oauthFixed : undefined}
+      value={props.baseUrl}
+      onChange={(value) => props.onChange(value)}
+      placeholder={props.defaultsBaseUrl}
+      isDisabled={props.disabled || props.fixedOAuth}
+      disabledMessage={props.fixedOAuth ? copy.oauthFixed : undefined}
+    />
   );
 }
 

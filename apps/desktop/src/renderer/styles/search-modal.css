@@ -1,164 +1,45 @@
-/* Search modal input + local thread-search results. Astryx owns the dialog
- * surface; this file only styles product content. */
-/* PR-UX-POLISH-1 commit 5: real search modal layout.
- * - input-row: text input + leading magnifier icon, sits below the
- *   header band.
- * - body: results list OR empty/loading/error/incognito state. Max
- *   height capped so long result lists scroll inside the modal.
- */
-.maka-search-modal-input-row {
-  width: auto;
-  min-height: 32px;
-  margin: var(--space-2) var(--space-3);
-  /* Control tier, like every other input — NOT a concentric derivation.
-     This used to be `calc(var(--radius-modal) - 8px)` = 4px, justified
-     as concentric nesting inside the 12px shell. It is not: this row is
-     the middle of a 3-row grid (header band above, results below), 57px
-     from the shell's top edge, and its actual side inset is 12px, not
-     the 8px the formula used — that 8px was the vertical margin to the
-     header. No shell corner is adjacent, so nothing was ever concentric.
-     Its structural twin, .maka-palette-input-wrap, is an InputGroup in
-     the same position inside the same 12px shell and uses the control
-     tier; the two searches differed by 50% in roundness for no reason. */
-  border-radius: var(--radius-control);
-  border-color: var(--border);
-  /* P-INSET: inset step-down on the elevated modal surface. */
-  background: oklch(from var(--foreground) l c h / 0.03);
-}
-.maka-search-modal-input-icon {
-  color: var(--muted-foreground);
-}
-.maka-search-modal-input {
-  width: 100%;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-}
-.maka-search-modal-input::placeholder {
-  color: var(--muted-foreground);
-}
-.maka-search-modal-input::-webkit-search-cancel-button {
-  display: none;
-}
-.maka-search-modal-body {
-  display: block;
-  border-top: var(--border-width-hairline) solid var(--border);
-  padding: var(--space-2-5) var(--space-2-5) var(--space-3);
-  min-height: 180px;
-  max-height: calc(70vh - 110px);
-  overflow-y: auto;
-  text-align: left;
-}
-.maka-search-modal-placeholder {
-  margin: var(--space-3) var(--space-2);
-  font-size: var(--font-size-ui);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-/* PR-UX-POLISH-1 commit 5: state cards for incognito / error.
- * Distinct tone (info / warning) from regular placeholder. */
-.maka-search-modal-state {
-  display: grid;
-  gap: var(--space-0-5);
-  padding: var(--space-2-5) var(--space-3);
-  border-radius: var(--radius-control);
-  background: oklch(from var(--foreground) l c h / 0.03);
-  margin: var(--space-1-5) var(--space-1);
-}
-.maka-search-modal-state[data-tone="info"] {
-  background: oklch(from var(--info, var(--status-running)) l c h / 0.06);
-}
-.maka-search-modal-state[data-tone="warning"] {
-  background: oklch(from var(--warning, var(--info)) l c h / 0.08);
-}
-.maka-search-modal-state p {
-  margin: 0;
-  font-size: var(--font-size-ui);
-  color: var(--foreground);
-}
-.maka-search-modal-state .maka-search-modal-state-detail {
-  font-size: var(--font-size-caption);
-  color: var(--foreground-secondary);
-}
+/* Astryx owns the search palette surface, input, listbox, rows, states, and
+ * footer. Maka styles only the thread result content. */
 
-.maka-search-modal-result-summary {
-  font-variant-numeric: tabular-nums;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 0 var(--space-1-5) var(--space-1-5);
-  font-size: var(--font-size-caption);
-  color: var(--muted-foreground);
-}
-
-.maka-search-modal-results {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: var(--space-0-5);
-}
 .maka-search-modal-result {
   display: grid;
   gap: var(--space-0-5);
-  width: 100%;
+  min-width: 0;
   text-align: left;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground);
-  padding: var(--space-1-5) var(--space-2-5);
-  transition:
-    background var(--duration-base) var(--ease-out-strong),
-    transform var(--duration-emphasized) var(--ease-out-strong);
 }
-.maka-search-modal-result:hover:not([disabled]) {
-  background: var(--state-hover-bg);
-  transform: translateX(1px);
-}
-/* #520 PR8: Autocomplete.Item exposes the active (highlighted) item via
-   data-highlighted (activedescendant mode — the input keeps focus, so the
-   item itself is no longer :focus-visible). */
-.maka-search-modal-result[data-highlighted]:not([disabled]) {
-  background: var(--state-selected-bg);
-}
-.maka-search-modal-result[disabled] {
-  cursor: default;
-  opacity: var(--opacity-muted);
-}
+
 .maka-search-modal-result-title {
   min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-  color: var(--foreground);
-  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .maka-search-modal-result-meta {
   min-width: 0;
-  font-size: var(--font-size-caption);
-  color: var(--muted-foreground);
   overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .maka-search-modal-result-snippet {
-  font-size: var(--font-size-caption);
-  color: var(--foreground-secondary);
-  line-height: var(--leading-normal);
-  /* Plain text snippet — backend redacts secrets + bounds to
-   * SNIPPET_MAX_CODE_POINTS. We cap visual lines at 3 so very
-   * long snippets don't blow up the row height. */
   display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
   overflow: hidden;
+  color: var(--foreground-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--leading-normal);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
+
 .maka-search-modal-snippet-hit {
-  color: var(--foreground);
-  background: oklch(from var(--link) l c h / 0.14);
-  border-radius: var(--radius-control);
   padding: 0 var(--space-0-5);
+  border-radius: var(--radius-control);
+  background: oklch(from var(--link) l c h / 0.14);
+  color: var(--foreground);
 }

@@ -33,9 +33,7 @@ import {
   runStatusLabel,
 } from './plan-reminder-helpers.js';
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
-import { PlanReminderSelect } from './plan-reminder-select.js';
 import {
-  Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
@@ -44,16 +42,18 @@ import {
 import {
   Badge,
   Button as UiButton,
+  Selector,
+  Switch,
 } from '@astryxdesign/core';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Divider } from '@astryxdesign/core/Divider';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
-import { Input } from './primitives/input.js';
-import {
-  Menu,
-  MenuCheckboxItem,
-  MenuItem,
-  MenuSeparator,
-} from './primitives/menu.js';
+import { TextInput } from '@astryxdesign/core';
 import { EmptyState } from './empty-state.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
@@ -108,11 +108,12 @@ export function PlanReminderPanel(props: {
   const planReminderMountedRef = useMountedRef();
   const refreshPendingRef = useRef(false);
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
+  const pendingReminderMenuIntentRef = useRef<(() => void) | null>(null);
   // Issue #1044: all create/edit form fields + submit moved into
-  // PlanReminderFormDialog. The panel only tracks whether the dialog is
-  // open and which seed it mounts with; `formNonce` remounts the dialog per
-  // open so the form initializes from the seed.
+  // PlanReminderFormDialog. The panel owns its open state and seed;
+  // `formNonce` remounts a closed form session before Astryx opens it.
   const [formDialogOpen, setFormDialogOpen] = useState(false);
+  const [openReminderMenuId, setOpenReminderMenuId] = useState<string | null>(null);
   const [formSeed, setFormSeed] = useState<PlanReminderFormSeed>(() => createPlanReminderFormSeed());
   const [formNonce, setFormNonce] = useState(0);
   const [planView, setPlanView] = useState<PlanReminderView>('tasks');
@@ -202,9 +203,12 @@ export function PlanReminderPanel(props: {
   }
 
   function openReminderDialog(seed: PlanReminderFormSeed) {
+    setFormDialogOpen(false);
     setFormSeed(seed);
     setFormNonce((nonce) => nonce + 1);
-    setFormDialogOpen(true);
+    window.requestAnimationFrame(() => {
+      if (planReminderMountedRef.current) setFormDialogOpen(true);
+    });
   }
 
   function openCreateReminderDialog() {
@@ -217,6 +221,22 @@ export function PlanReminderPanel(props: {
 
   function duplicateReminder(reminder: PlanReminder) {
     openReminderDialog(planReminderDuplicateSeed(reminder, locale));
+  }
+
+  function runReminderMenuIntentAfterClose(intent: () => void) {
+    pendingReminderMenuIntentRef.current = intent;
+  }
+
+  function handleReminderMenuOpenChange(reminderId: string, open: boolean) {
+    setOpenReminderMenuId(open ? reminderId : null);
+    if (open) return;
+    const intent = pendingReminderMenuIntentRef.current;
+    pendingReminderMenuIntentRef.current = null;
+    if (intent) {
+      window.requestAnimationFrame(() => {
+        if (planReminderMountedRef.current) intent();
+      });
+    }
   }
 
   async function runPlanReminderAction(
@@ -270,7 +290,7 @@ export function PlanReminderPanel(props: {
                 icon={<Plus size={15} aria-hidden="true" />}
                 label={copy.page.create}
               />
-              <Menu
+              <DropdownMenu
                 button={{
                   label: copy.page.pageSettings,
                   icon: <MoreHorizontal size={16} aria-hidden="true" />,
@@ -280,7 +300,7 @@ export function PlanReminderPanel(props: {
                 }}
                 className="maka-plan-page-menu"
               >
-                  <MenuItem
+                  <DropdownMenuItem
                     onClick={() => void refreshFromPanel()}
                     isDisabled={!props.onRefresh || refreshPending}
                     icon={<RefreshCcw size={14} aria-hidden="true" />}
@@ -288,8 +308,8 @@ export function PlanReminderPanel(props: {
                   />
                   {keepSystemAwakeSupported && (
                     <>
-                      <MenuSeparator />
-                      <MenuCheckboxItem
+                      <Divider orientation="horizontal" />
+                      <DropdownMenuCheckboxItem
                         label={copy.page.keepAwake}
                         value={keepSystemAwakeChecked}
                         isDisabled={keepSystemAwakePending}
@@ -297,7 +317,7 @@ export function PlanReminderPanel(props: {
                       />
                     </>
                   )}
-              </Menu>
+              </DropdownMenu>
             </div>
           }
         />
@@ -321,52 +341,59 @@ export function PlanReminderPanel(props: {
             {planView === 'tasks' ? (
               showListControls ? (
                 <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
-                <label className="maka-plan-compact-select maka-plan-sort-select">
-                  <span>{copy.page.sort}</span>
-                  <PlanReminderSelect
-                    value={listSort}
-                    onChange={(value) => setListSort(value)}
-                    ariaLabel={copy.page.sortAriaLabel}
-                    options={copy.page.sortOptions}
-                  />
-                </label>
-                <label className="maka-plan-search">
-                  <span>{copy.page.searchLabel}</span>
-                  <Input
-                    value={listQuery}
-                    onChange={(event) => setListQuery(event.currentTarget.value)}
-                    maxLength={120}
-                    placeholder={copy.page.searchPlaceholder}
-                  />
-                </label>
-                <label className="maka-plan-compact-select">
-                  <span>{copy.page.state}</span>
-                  <PlanReminderSelect
-                    value={listFilter}
-                    onChange={(value) => setListFilter(value)}
-                    ariaLabel={copy.page.filterAriaLabel}
-                    options={[
-                      ['active', copy.page.filterOption(copy.page.active, filterCounts.active)],
-                      ['all', copy.page.filterOption(copy.page.all, filterCounts.all)],
-                      ['scheduled', copy.page.filterOption(copy.status.scheduled, filterCounts.scheduled)],
-                      ['paused', copy.page.filterOption(copy.status.paused, filterCounts.paused)],
-                      ['completed', copy.page.filterOption(copy.status.completed, filterCounts.completed)],
-                    ] satisfies ReadonlyArray<readonly [PlanReminderListFilter, string]>}
-                  />
-                </label>
+                  <div className="maka-plan-compact-select maka-plan-sort-select">
+                    <Selector
+                      value={listSort}
+                      onChange={(value) => setListSort(value as typeof listSort)}
+                      label={copy.page.sort}
+                      width="100%"
+                      options={copy.page.sortOptions.map(([value, label]) => ({ value, label }))}
+                    />
+                  </div>
+                  <div className="maka-plan-search">
+                    <TextInput
+                      label={copy.page.searchLabel}
+                      isLabelHidden
+                      width="100%"
+                      value={listQuery}
+                      onChange={(value) => setListQuery(value.slice(0, 120))}
+                      placeholder={copy.page.searchPlaceholder}
+                    />
+                  </div>
+                  <div className="maka-plan-compact-select">
+                    <Selector
+                      value={listFilter}
+                      onChange={(value) => setListFilter(value as PlanReminderListFilter)}
+                      label={copy.page.state}
+                      width="100%"
+                      options={[
+                        { value: 'active', label: copy.page.filterOption(copy.page.active, filterCounts.active) },
+                        { value: 'all', label: copy.page.filterOption(copy.page.all, filterCounts.all) },
+                        {
+                          value: 'scheduled',
+                          label: copy.page.filterOption(copy.status.scheduled, filterCounts.scheduled),
+                        },
+                        { value: 'paused', label: copy.page.filterOption(copy.status.paused, filterCounts.paused) },
+                        {
+                          value: 'completed',
+                          label: copy.page.filterOption(copy.status.completed, filterCounts.completed),
+                        },
+                      ]}
+                    />
+                  </div>
                 </div>
               ) : null
             ) : (
               <div className="maka-plan-toolbar maka-plan-toolbar-compact" aria-label={copy.page.runsFilterAriaLabel}>
-                <label className="maka-plan-compact-select">
-                  <span>{copy.page.range}</span>
-                  <PlanReminderSelect
+                <div className="maka-plan-compact-select">
+                  <Selector
                     value={runRange}
-                    onChange={(value) => setRunRange(value)}
-                    ariaLabel={copy.page.rangeAriaLabel}
-                    options={copy.page.rangeOptions}
+                    onChange={(value) => setRunRange(value as typeof runRange)}
+                    label={copy.page.range}
+                    width="100%"
+                    options={copy.page.rangeOptions.map(([value, label]) => ({ value, label }))}
                   />
-                </label>
+                </div>
               </div>
             )}
           </div>
@@ -449,61 +476,83 @@ export function PlanReminderPanel(props: {
                       <div className="maka-plan-card-controls">
                         {reminder.status !== 'completed' && (
                           <Switch
-                            checked={reminder.enabled}
-                            disabled={reminderActionPending}
-                            aria-label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
-                            onCheckedChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
+                            value={reminder.enabled}
+                            isDisabled={reminderActionPending}
+                            label={`${reminder.enabled ? copy.page.pause : copy.page.enable}: ${reminder.title}`}
+                            isLabelHidden
+                            onChange={() => void runPlanReminderAction(`${reminder.id}:toggle`, () => props.onToggle?.(reminder.id, !reminder.enabled))}
                           />
                         )}
-                        <Menu
+                        <DropdownMenu
+                          isMenuOpen={openReminderMenuId === reminder.id}
+                          onOpenChange={(open) =>
+                            handleReminderMenuOpenChange(reminder.id, open)
+                          }
                           button={{
                             label: `${copy.page.reminderActions}: ${reminder.title}`,
                             icon: <MoreHorizontal size={16} aria-hidden="true" />,
                             isIconOnly: true,
                             variant: 'ghost',
                             size: 'sm',
-                            isDisabled: reminderActionPending,
                           }}
                           className="maka-plan-card-menu"
                         >
-                            <MenuItem
-                              onClick={() => editReminder(reminder)}
+                            <DropdownMenuItem
+                              onClick={() =>
+                                runReminderMenuIntentAfterClose(() => editReminder(reminder))
+                              }
                               isDisabled={reminderActionPending || reminder.status === 'completed'}
                               icon={<Pencil size={14} aria-hidden="true" />}
                               label={copy.page.edit}
                             />
-                            <MenuItem
-                              onClick={() => duplicateReminder(reminder)}
+                            <DropdownMenuItem
+                              onClick={() =>
+                                runReminderMenuIntentAfterClose(() => duplicateReminder(reminder))
+                              }
                               isDisabled={reminderActionPending}
                               icon={<Copy size={14} aria-hidden="true" />}
                               label={copy.page.duplicate}
                             />
-                            <MenuItem
+                            <DropdownMenuItem
                               onClick={() => void runPlanReminderAction(`${reminder.id}:trigger`, () => props.onTriggerNow?.(reminder.id))}
                               isDisabled={reminderActionPending || !reminder.enabled}
                               icon={<RefreshCcw size={14} aria-hidden="true" />}
                               label={pendingActionKeys.has(`${reminder.id}:trigger`) ? copy.page.triggering : copy.page.triggerNow}
                             />
-                            <MenuItem
+                            <DropdownMenuItem
                               onClick={() => void runPlanReminderAction(`${reminder.id}:snooze`, () => props.onSnooze?.(reminder.id))}
                               isDisabled={reminderActionPending || !reminder.enabled || reminder.status !== 'scheduled' || typeof reminder.nextRunAt !== 'number'}
                               icon={<Clock size={14} aria-hidden="true" />}
                               label={pendingActionKeys.has(`${reminder.id}:snooze`) ? copy.page.snoozing : copy.page.snooze}
                             />
-                            <MenuItem
-                              onClick={() => void runPlanReminderAction(`${reminder.id}:clear-runs`, () => props.onClearRunHistory?.(reminder.id))}
+                            <DropdownMenuItem
+                              onClick={() =>
+                                runReminderMenuIntentAfterClose(() => {
+                                  void runPlanReminderAction(
+                                    `${reminder.id}:clear-runs`,
+                                    () => props.onClearRunHistory?.(reminder.id),
+                                  );
+                                })
+                              }
                               isDisabled={reminderActionPending || reminder.runs.length === 0 || reminder.status === 'completed'}
                               icon={<ArchiveRestore size={14} aria-hidden="true" />}
                               label={pendingActionKeys.has(`${reminder.id}:clear-runs`) ? copy.page.clearing : copy.page.clearRuns}
                             />
-                            <MenuItem
-                              onClick={() => void runPlanReminderAction(`${reminder.id}:delete`, () => props.onDelete?.(reminder.id))}
+                            <DropdownMenuItem
+                              onClick={() =>
+                                runReminderMenuIntentAfterClose(() => {
+                                  void runPlanReminderAction(
+                                    `${reminder.id}:delete`,
+                                    () => props.onDelete?.(reminder.id),
+                                  );
+                                })
+                              }
                               isDisabled={reminderActionPending}
                               icon={<Trash2 size={14} aria-hidden="true" />}
                               label={pendingActionKeys.has(`${reminder.id}:delete`) ? copy.page.deleting : copy.page.delete}
                               style={{ color: 'var(--destructive-text)' }}
                             />
-                        </Menu>
+                        </DropdownMenu>
                       </div>
                     </article>
                   );

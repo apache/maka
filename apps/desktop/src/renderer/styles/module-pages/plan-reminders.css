@@ -220,34 +220,6 @@
   line-height: var(--leading-tight);
 }
 
-.maka-plan-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1-5);
-}
-
-.maka-plan-field {
-  display: grid;
-  gap: var(--space-0-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-plan-field input,
-.maka-plan-field textarea {
-  width: 100%;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  padding: var(--space-1-5) var(--space-2);
-  outline: none;
-}
-
 .maka-plan-presets {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -259,24 +231,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.maka-plan-validation {
-  margin: 0;
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.34);
-  border-radius: var(--radius-control);
-  background: oklch(from var(--warning) l c h / 0.08);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
-  padding: var(--space-1) var(--space-2);
-}
-
-.maka-plan-delivery-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--space-1-5);
 }
 
 .maka-plan-delivery-help {
@@ -307,27 +261,6 @@
 
 .maka-plan-sort-select {
   width: 168px;
-}
-
-/* PR-UI-ALIGN-1 (2026-06-21): the reference's task toolbar is a single bare
-   sort control on the right of the tabs — not a form. Hide the stacked field
-   labels (排序 / 搜索计划提醒 / 状态) so the controls read as light inline chips,
-   and let the bar sit on the tabs row instead of wrapping to its own block. */
-.maka-plan-toolbar label > span:first-child {
-  display: none;
-}
-
-.maka-plan-search input {
-  width: 100%;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  outline: none;
-  padding: var(--space-1-5) var(--space-2);
 }
 
 .maka-plan-search-summary {
@@ -492,11 +425,6 @@
   }
 
   .maka-plan-card,
-  .maka-plan-form-grid,
-  .maka-plan-delivery-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .maka-plan-card {
     gap: var(--space-2);
   }

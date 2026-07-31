@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 import {
   createPlanReminderSchedule,
   isPlanReminderDue,
@@ -14,6 +15,12 @@ import {
   type PlanReminder,
   type PlanReminderRunRecord,
 } from '@maka/core/plan-reminders';
+import {
+  acquireOperationalStateDatabase,
+  completeOperationalStoreCutover,
+  type OperationalStateDatabaseLease,
+  type OperationalStoreCutoverFailpoint,
+} from './operational-state-store.js';
 
 export interface PlanReminderStore {
   list(): Promise<PlanReminder[]>;
@@ -36,6 +43,22 @@ export interface PlanReminderStore {
 
 export function createPlanReminderStore(workspaceRoot: string): PlanReminderStore {
   return new FilePlanReminderStore(workspaceRoot);
+}
+
+export interface SqlitePlanReminderStore extends PlanReminderStore {
+  ready(): Promise<void>;
+  close(): void;
+}
+
+export interface CreateSqlitePlanReminderStoreOptions {
+  failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
+}
+
+export function createSqlitePlanReminderStore(
+  workspaceRoot: string,
+  options: CreateSqlitePlanReminderStoreOptions = {},
+): SqlitePlanReminderStore {
+  return new SqlitePlanReminderStoreImpl(workspaceRoot, options);
 }
 
 class FilePlanReminderStore implements PlanReminderStore {
@@ -276,6 +299,8 @@ class FilePlanReminderStore implements PlanReminderStore {
   }
 
   private async read(): Promise<PlanReminder[]> {
+    const canonical = await this.readCanonical();
+    if (canonical) return canonical;
     try {
       const text = await readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(text) as unknown;
@@ -300,11 +325,130 @@ class FilePlanReminderStore implements PlanReminderStore {
   }
 
   private async write(reminders: PlanReminder[]): Promise<void> {
+    if (await this.writeCanonical(reminders)) return;
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tempPath, JSON.stringify(reminders, null, 2) + '\n', 'utf8');
     await rename(tempPath, this.filePath);
   }
+
+  protected async readCanonical(): Promise<PlanReminder[] | undefined> {
+    return undefined;
+  }
+
+  protected async writeCanonical(_reminders: PlanReminder[]): Promise<boolean> {
+    return false;
+  }
+}
+
+class SqlitePlanReminderStoreImpl extends FilePlanReminderStore implements SqlitePlanReminderStore {
+  readonly #lease: OperationalStateDatabaseLease;
+  readonly #ready: Promise<void>;
+
+  constructor(workspaceRoot: string, options: CreateSqlitePlanReminderStoreOptions) {
+    super(workspaceRoot);
+    const root = resolve(workspaceRoot);
+    this.#lease = acquireOperationalStateDatabase(root);
+    this.#ready = importLegacyPlanReminders(root, this.#lease, options.failpoint);
+  }
+
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  close(): void {
+    this.#lease.close();
+  }
+
+  protected override async readCanonical(): Promise<PlanReminder[]> {
+    await this.#ready;
+    return readSqlitePlanReminders(this.#lease.database);
+  }
+
+  protected override async writeCanonical(reminders: PlanReminder[]): Promise<boolean> {
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      this.#lease.database.prepare('DELETE FROM workflow_plan_reminders').run();
+      for (const reminder of reminders) insertPlanReminder(this.#lease.database, reminder);
+    });
+    return true;
+  }
+}
+
+async function importLegacyPlanReminders(
+  root: string,
+  lease: OperationalStateDatabaseLease,
+  failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
+): Promise<void> {
+  let reminders: PlanReminder[] = [];
+  const sourcePath = join(root, 'plan-reminders.json');
+  try {
+    const parsed = JSON.parse(await readFile(sourcePath, 'utf8')) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error('Invalid plan reminders file: expected an array');
+    }
+    reminders = parsed.map((value, index) => normalizePersistedPlanReminder(value, index));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const fingerprint = `sha256:${createHash('sha256')
+    .update(JSON.stringify(reminders))
+    .digest('hex')}`;
+  completeOperationalStoreCutover(lease, {
+    storeName: 'workflow_plan_reminders',
+    sourcePath,
+    sourceFingerprint: fingerprint,
+    failpoint,
+    importAndValidate: (database) => {
+      for (const reminder of reminders) insertOrValidatePlanReminder(database, reminder);
+      const persisted = database
+        .prepare('SELECT COUNT(*) AS count FROM workflow_plan_reminders')
+        .get() as { count?: unknown };
+      if (persisted.count !== reminders.length) {
+        throw new Error('Plan reminder cutover row-count validation failed');
+      }
+      return { reminders: reminders.length };
+    },
+  });
+}
+
+function readSqlitePlanReminders(database: DatabaseSync): PlanReminder[] {
+  const rows = database
+    .prepare(`
+      SELECT record_json
+      FROM workflow_plan_reminders
+      ORDER BY created_at, reminder_id
+    `)
+    .all() as Array<{ record_json?: unknown }>;
+  return rows.map((row, index) => {
+    if (typeof row.record_json !== 'string') {
+      throw new Error(`Invalid SQLite plan reminder at row ${index + 1}`);
+    }
+    return normalizePersistedPlanReminder(JSON.parse(row.record_json), index);
+  });
+}
+
+function insertPlanReminder(database: DatabaseSync, reminder: PlanReminder): void {
+  database
+    .prepare(`
+      INSERT INTO workflow_plan_reminders(
+        reminder_id, created_at, updated_at, record_json
+      ) VALUES (?, ?, ?, ?)
+    `)
+    .run(reminder.id, reminder.createdAt, reminder.updatedAt, JSON.stringify(reminder));
+}
+
+function insertOrValidatePlanReminder(database: DatabaseSync, reminder: PlanReminder): void {
+  const existing = database
+    .prepare('SELECT record_json FROM workflow_plan_reminders WHERE reminder_id = ?')
+    .get(reminder.id) as { record_json?: unknown } | undefined;
+  if (existing) {
+    if (existing.record_json !== JSON.stringify(reminder)) {
+      throw new Error(`Plan reminder cutover conflict: ${reminder.id}`);
+    }
+    return;
+  }
+  insertPlanReminder(database, reminder);
 }
 
 function comparePlanRemindersForList(a: PlanReminder, b: PlanReminder): number {

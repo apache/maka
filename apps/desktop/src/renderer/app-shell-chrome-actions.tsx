@@ -12,15 +12,15 @@ import {
   SquarePen,
 } from '@maka/ui/icons';
 import {
-  buttonVariants,
-  cn,
-  Menu,
-  MenuItem,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+  IconButton,
   useUiLocale,
 } from '@maka/ui';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { useRef, useState } from 'react';
 import { getShellCopy } from './locales/shell-copy';
 
 export function AppShellTopbarActions(props: {
@@ -33,47 +33,39 @@ export function AppShellTopbarActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   return (
-    // #1565 PR 3: the Tooltip/Menu render-prop buttons below stay on legacy
-    // buttonVariants until their owning slices (5/6/10) retire them.
     <div className="maka-shell-topbar-rail" data-maka-contract="shell-topbar-rail" aria-label={copy.windowActions}>
-      <Tooltip>
-        <TooltipTrigger
-          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
-          type="button"
+      <Tooltip content={copy.searchConversations}>
+        <IconButton
+          label={copy.searchConversations}
+          icon={<Search aria-hidden="true" />}
+          variant="ghost"
+          size="sm"
           className="maka-titlebar-action"
           data-maka-search-trigger="true"
           onClick={props.onOpenSearchModal}
-          aria-label={copy.searchConversations}
-        >
-          <Search aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent>{copy.searchConversations}</TooltipContent>
+        />
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger
-          render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
-          type="button"
+      <Tooltip content={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}>
+        <IconButton
+          label={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}
+          icon={props.sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
+          variant="ghost"
+          size="sm"
           className="maka-titlebar-action"
           onClick={props.sidebarCollapsed ? props.onExpandSidebar : props.onCollapseSidebar}
-          aria-label={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}
           aria-expanded={!props.sidebarCollapsed}
-        >
-          {props.sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
-        </TooltipTrigger>
-        <TooltipContent>{props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}</TooltipContent>
+        />
       </Tooltip>
       {props.sidebarCollapsed && (
-        <Tooltip>
-          <TooltipTrigger
-            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
-            type="button"
+        <Tooltip content={copy.newTask}>
+          <IconButton
+            label={copy.newTask}
+            icon={<SquarePen aria-hidden="true" />}
+            variant="ghost"
+            size="sm"
             className="maka-titlebar-action"
             onClick={props.onCreateSession}
-            aria-label={copy.newTask}
-          >
-            <SquarePen aria-hidden="true" />
-          </TooltipTrigger>
-          <TooltipContent>{copy.newTask}</TooltipContent>
+          />
         </Tooltip>
       )}
     </div>
@@ -92,10 +84,24 @@ export function AppShellWorkspaceTopActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   const workbarLabel = props.workbarCollapsed ? copy.expandWorkbar : copy.collapseWorkbar;
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const scheduleAfterMenuClose = (intent: () => void) => {
+    pendingMenuIntentRef.current = intent;
+  };
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <Menu
+      <DropdownMenu
+        isMenuOpen={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) return;
+          const intent = pendingMenuIntentRef.current;
+          pendingMenuIntentRef.current = null;
+          if (intent) window.requestAnimationFrame(intent);
+        }}
         button={{
           label: copy.moreActions,
           icon: <MoreHorizontal aria-hidden="true" />,
@@ -103,27 +109,24 @@ export function AppShellWorkspaceTopActions(props: {
           variant: 'ghost',
           size: 'sm',
           className: 'maka-titlebar-action',
-          style: { borderRadius: 'var(--radius-control)' },
         }}
       >
-          <MenuItem icon={<MessageCircleQuestion aria-hidden="true" />} label={copy.feedback} onClick={props.onOpenFeedback} />
-          <MenuItem icon={<Grid3X3 aria-hidden="true" />} label={copy.openCommandPalette} onClick={props.onOpenPalette} />
-          <MenuItem icon={<HelpCircle aria-hidden="true" />} label={copy.openHelp} onClick={props.onOpenHelp} />
-          <MenuItem icon={<CircleGauge aria-hidden="true" />} label={copy.openHealth} onClick={props.onOpenHealth} />
-      </Menu>
+          <DropdownMenuItem icon={<MessageCircleQuestion aria-hidden="true" />} label={copy.feedback} onClick={() => scheduleAfterMenuClose(props.onOpenFeedback)} />
+          <DropdownMenuItem icon={<Grid3X3 aria-hidden="true" />} label={copy.openCommandPalette} onClick={() => scheduleAfterMenuClose(props.onOpenPalette)} />
+          <DropdownMenuItem icon={<HelpCircle aria-hidden="true" />} label={copy.openHelp} onClick={() => scheduleAfterMenuClose(props.onOpenHelp)} />
+          <DropdownMenuItem icon={<CircleGauge aria-hidden="true" />} label={copy.openHealth} onClick={() => scheduleAfterMenuClose(props.onOpenHealth)} />
+      </DropdownMenu>
       {props.workbarAvailable && (
-        <Tooltip>
-          <TooltipTrigger
-            render={<button type="button" className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }))} />}
-            type="button"
+        <Tooltip content={workbarLabel}>
+          <IconButton
+            label={workbarLabel}
+            icon={props.workbarCollapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
+            variant="ghost"
+            size="sm"
             className="maka-titlebar-action"
             onClick={props.onToggleWorkbar}
-            aria-label={workbarLabel}
             aria-expanded={!props.workbarCollapsed}
-          >
-            {props.workbarCollapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
-          </TooltipTrigger>
-          <TooltipContent>{workbarLabel}</TooltipContent>
+          />
         </Tooltip>
       )}
     </div>

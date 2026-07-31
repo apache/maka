@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings, OpenGatewayRuntimeStatus, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, Input, NumberField, NumberFieldInput, SettingsSelect, SettingsSwitch as Switch, Textarea, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, FormLayout, TextInput, NumberInput, Selector, Switch, TextArea, useToast, useUiLocale } from '@maka/ui';
 import { getOpenGatewaySettingsCopy, type OpenGatewaySettingsCopy } from '../locales/settings-open-gateway-copy';
 import { PasswordInput } from './password-input';
 import { MetricCard } from './settings-metric-card';
@@ -168,61 +168,53 @@ export function OpenGatewaySettingsPage(props: {
         </Alert>
       )}
 
-      <div className="settingsFormRow">
+      <div className="settingsFormRow" data-control="switch">
         <div>
           <strong>{copy.form.enabled}</strong>
           <small>{copy.form.enabledHelp}</small>
         </div>
         <Switch
-          ariaLabel={copy.form.enabled}
-          checked={gatewayDraft.enabled}
+          label={copy.form.enabled}
+          isLabelHidden
+          value={gatewayDraft.enabled}
           onChange={(enabled) => void updateGateway({ enabled })}
         />
       </div>
 
-      <div className="settingsFormGrid settingsFormGridProxy">
-        <label>
-          <span>{copy.form.host}</span>
-          <SettingsSelect
+      <FormLayout className="settingsFormLayout">
+        <FormLayout direction="horizontal">
+          <Selector
             value={gatewayDraft.host}
-            ariaLabel={copy.form.hostAria}
+            label={copy.form.host}
             options={[
-              ['127.0.0.1', '127.0.0.1'],
-              ['0.0.0.0', '0.0.0.0'],
-            ] satisfies Array<readonly [AppSettings['openGateway']['host'], string]>}
-            onChange={(host) => void updateGateway({ host })}
+              { value: '127.0.0.1', label: '127.0.0.1' },
+              { value: '0.0.0.0', label: '0.0.0.0' },
+            ]}
+            width="100%"
+            onChange={(host) => void updateGateway({ host: host as AppSettings['openGateway']['host'] })}
           />
-        </label>
-        <label>
-          <span>{copy.form.port}</span>
-          <NumberField value={gatewayDraft.port} format={{ useGrouping: false }} onValueChange={(v) => void updateGateway({ port: v ?? 3939 })}>
-            <NumberFieldInput inputMode="numeric" aria-label={copy.form.portAria} />
-          </NumberField>
-        </label>
-        <label>
-          <span>{copy.form.token}</span>
+          <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly onChange={(value) => void updateGateway({ port: value ?? 3939 })} />
+        </FormLayout>
+        <FormLayout direction="horizontal">
           <PasswordInput
             value={tokenDraft}
             onChange={setTokenDraft}
-            disabled={saving}
+            isDisabled={saving}
             onBlur={() => {
               if (tokenDraft !== gatewayDraft.token) void saveToken();
             }}
             placeholder={copy.form.tokenPlaceholder}
-            ariaLabel={copy.form.tokenAria}
+            label={copy.form.token}
           />
-        </label>
-        <label>
-          <span>{copy.form.sessionId}</span>
-          <Input
+          <TextInput
             value={eventSessionId}
-            disabled={saving}
+            isDisabled={saving}
             placeholder={copy.form.sessionPlaceholder}
-            onChange={(event) => setEventSessionId(event.currentTarget.value)}
-            aria-label={copy.form.sessionAria}
+            onChange={(value) => setEventSessionId(value)}
+            label={copy.form.sessionId}
           />
-        </label>
-      </div>
+        </FormLayout>
+      </FormLayout>
 
       {gatewayDraft.enabled && !gatewayDraft.token && (
         <Alert variant="passive">

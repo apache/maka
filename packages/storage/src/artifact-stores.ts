@@ -1,6 +1,6 @@
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
-  createArtifactStoreWriteAuthority,
+  createSqliteArtifactStoreWriteAuthority,
   type ArtifactAuthorityStore,
   type ArtifactStoreWriteAuthority,
   type CreateArtifactInput,
@@ -36,13 +36,14 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readTextInSession: ArtifactAuthorityStore['readTextInSession'];
   readBinaryInSession: ArtifactAuthorityStore['readBinaryInSession'];
   deleteUserArtifactInSession: ArtifactAuthorityStore['deleteUserArtifactInSession'];
+  close(): void;
 }
 
 export type HeadlessArtifactStoreWriter = Readonly<
   Pick<
     ArtifactAuthorityStore,
     'create' | 'list' | 'get' | 'readText' | 'readBinary' | 'readDurableAttachmentBinary'
-  >
+  > & { close(): void }
 >;
 
 export function authenticateInteractiveArtifactStoreWriter(
@@ -67,7 +68,7 @@ export async function openInteractiveArtifactStoreForWrite(
       'interactive',
     );
     const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'interactive', 'write');
-    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath, {
+    const authority = createSqliteArtifactStoreWriteAuthority(lease.canonicalPath, {
       assertAuthority,
       leaseBoundWriterLockAuthority,
     });
@@ -102,7 +103,7 @@ export async function openHeadlessArtifactStoreForWrite(
       'headless',
     );
     const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'headless', 'write');
-    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath, {
+    const authority = createSqliteArtifactStoreWriteAuthority(lease.canonicalPath, {
       assertAuthority,
       leaseBoundWriterLockAuthority,
     });
@@ -132,7 +133,7 @@ function createHeadlessWriterFacade(
   const { store } = authority;
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, 'headless', 'write', operation);
-  return Object.freeze({
+  const facade: HeadlessArtifactStoreWriter = Object.freeze({
     create: (input) => {
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
@@ -142,7 +143,12 @@ function createHeadlessWriterFacade(
     readText: (artifactId, options) => run(() => store.readText(artifactId, options)),
     readBinary: (artifactId, options) => run(() => store.readBinary(artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
+    close: () => {
+      if (headlessWriterByLease.get(lease) === facade) headlessWriterByLease.delete(lease);
+      authority.close();
+    },
   });
+  return facade;
 }
 
 function createWriterFacade(
@@ -170,6 +176,10 @@ function createWriterFacade(
     },
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
+    close: () => {
+      if (writerByLease.get(lease) === facade) writerByLease.delete(lease);
+      authority.close();
+    },
   };
   return Object.freeze(facade);
 }

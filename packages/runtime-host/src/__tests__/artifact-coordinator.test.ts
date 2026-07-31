@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -34,9 +34,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
       now: 1,
     });
 
-    const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-    await rm(metadataPath);
-    await mkdir(metadataPath);
+    store.close();
     let drainRequests = 0;
     const coordinator = new HostArtifactCoordinator(store, () => {
       drainRequests += 1;

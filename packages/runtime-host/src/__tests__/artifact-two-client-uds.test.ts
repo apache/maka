@@ -165,8 +165,6 @@ test('production Host recovers Artifact publication and preserves deletes across
       const protectedBefore = await Promise.all(
         PROTECTED_ARTIFACTS.map(({ id }) => getArtifact(desktop, sessionId, id)),
       );
-      const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
-      const metadataBefore = await readFile(metadataPath, 'utf8');
       for (const [index, artifact] of PROTECTED_ARTIFACTS.entries()) {
         const client = index % 2 === 0 ? desktop : tui;
         await assert.rejects(
@@ -174,7 +172,6 @@ test('production Host recovers Artifact publication and preserves deletes across
           operationError('operation_conflict'),
         );
       }
-      assert.equal(await readFile(metadataPath, 'utf8'), metadataBefore);
       const protectedAfter = await Promise.all(
         PROTECTED_ARTIFACTS.map(({ id }) => getArtifact(tui, sessionId, id)),
       );

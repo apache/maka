@@ -1,41 +1,47 @@
-import { useRef, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import type { ProviderType } from '@maka/core';
-import { DialogContent, DialogHeader, DialogRoot } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { ProviderLogo } from './provider-display';
 
 export function ProviderConnectionDialog(props: {
   title: string;
   subtitle: string;
   providerType: ProviderType;
-  onClose(): void;
-  finalFocus?(): HTMLElement | null;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   children: ReactNode;
 }) {
-  const bodyRef = useRef<HTMLDivElement>(null);
   return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
+      className="providerConnectionDialog"
+      width={520}
+      maxHeight="calc(100dvh - 80px)"
+      padding={0}
+      purpose="form"
     >
-      <DialogContent
-        className="providerConnectionDialog"
-        width={520}
-        maxHeight="calc(100dvh - 80px)"
-        initialFocus={() => bodyRef.current?.querySelector<HTMLElement>(
-          'input:not([disabled]), button:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
-        ) ?? true}
-        finalFocus={props.finalFocus}
-      >
-        <DialogHeader
-          icon={<ProviderLogo type={props.providerType} compact />}
-          title={props.title}
-          subtitle={props.subtitle}
-          onClose={props.onClose}
-        />
-        <div ref={bodyRef} className="providerConnectionDialogBody">{props.children}</div>
-      </DialogContent>
-    </DialogRoot>
+      <Layout
+        header={
+          <DialogHeader
+            startContent={<ProviderLogo type={props.providerType} compact />}
+            title={props.title}
+            subtitle={props.subtitle}
+            onOpenChange={props.onOpenChange}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
+            <div className="providerConnectionDialogBody">
+              {props.children}
+            </div>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }

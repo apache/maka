@@ -15,10 +15,10 @@ import {
   type DataTableColumn,
   EmptyState,
   IconButton,
-  Input,
+  TextInput,
   Segmented,
-  SettingsSelect,
-  SettingsSwitch as Switch,
+  Selector,
+  Switch,
   TabsList,
   TabsPanel,
   TabsRoot,
@@ -244,25 +244,37 @@ function UsageRequestsPanel(props: {
   return (
     <>
       <div className="settingsUsageFilters" role="group" aria-label={props.copy.filtersAria}>
-        <Input value={props.modelFilter} onChange={(event) => props.onModelFilterChange(event.currentTarget.value)} placeholder={props.copy.filterPlaceholder} aria-label={props.copy.filterAria} />
-        <SettingsSelect
+        <div className="settingsUsageModelFilter">
+          <TextInput
+            value={props.modelFilter}
+            onChange={(value) => props.onModelFilterChange(value)}
+            placeholder={props.copy.filterPlaceholder}
+            label={props.copy.filterAria}
+            isLabelHidden
+            width="100%"
+          />
+        </div>
+        <Selector
           value={props.status}
-          ariaLabel={props.copy.statusAria}
+          label={props.copy.statusAria}
+          isLabelHidden
           options={[
-            ['all', props.copy.statuses[0]],
-            ['success', props.copy.statuses[1]],
-            ['error', props.copy.statuses[2]],
-          ] satisfies Array<readonly [AppSettings['usage']['status'], string]>}
-          onChange={props.onStatusChange}
+            { value: 'all', label: props.copy.statuses[0] },
+            { value: 'success', label: props.copy.statuses[1] },
+            { value: 'error', label: props.copy.statuses[2] },
+          ]}
+          width={320}
+          onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
         />
-        <label className="settingsUsageDetailToggle">
+        <div className="settingsUsageDetailToggle">
           <span>{props.copy.details}</span>
           <Switch
-            ariaLabel={props.copy.detailsAria}
-            checked={props.showDetails}
+            label={props.copy.detailsAria}
+            isLabelHidden
+            value={props.showDetails}
             onChange={props.onToggleDetails}
           />
-        </label>
+        </div>
         <small className="settingsUsageRecordCount">{props.copy.recordCount(props.recordCount)}</small>
         <Button
           className="settingsUsageClearFilter"

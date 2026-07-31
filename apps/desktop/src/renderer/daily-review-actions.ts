@@ -1,4 +1,5 @@
 import type { LlmConnection, UiLocale } from '@maka/core';
+import type { SelectorOptionData } from '@astryxdesign/core/Selector';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core';
 import { buildCatalogDailyReviewModelOptions } from './model-catalog-choices.js';
 import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
@@ -31,12 +32,17 @@ export function dailyReviewActionErrorMessage(error: unknown, fallback: string, 
 export function buildDailyReviewRunModelOptions(
   connections: readonly LlmConnection[],
   locale: UiLocale = 'zh',
-): Array<readonly [string, string]> {
+): SelectorOptionData[] {
   const copy = getShellRemainingCopy(locale).dailyReview;
   return [
     // Compact default option for the panel's inline 分析模型 picker — a run
     // with no explicit override falls back to the model configured in Settings.
-    [DAILY_REVIEW_CONFIG_MODEL_VALUE, copy.followSettings],
-    ...buildCatalogDailyReviewModelOptions(connections, '', locale),
+    {
+      value: DAILY_REVIEW_CONFIG_MODEL_VALUE,
+      label: copy.followSettings,
+    },
+    ...buildCatalogDailyReviewModelOptions(connections, '', locale).map(
+      ([value, label]) => ({ value, label }),
+    ),
   ];
 }

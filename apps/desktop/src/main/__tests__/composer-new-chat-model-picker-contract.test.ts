@@ -9,7 +9,7 @@
  * forwarded to `sessions.create`, so the next new chat starts on the chosen
  * model. This locks:
  *   - the no-session branch renders the interactive picker (not a dead chip);
- *   - the picker does NOT hand-add a second chevron (SelectTrigger owns it);
+ *   - the picker does NOT hand-add a second chevron (Astryx owns it);
  *   - both pickers share one `ModelChoiceOptions` list (no duplicated JSX);
  *   - main.tsx wires the pick and forwards it to sessions.create.
  */

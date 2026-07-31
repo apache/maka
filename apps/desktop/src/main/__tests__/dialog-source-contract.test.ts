@@ -4,16 +4,8 @@
  *
  * Astryx Dialog / AlertDialog set `role="dialog"` / `role="alertdialog"` /
  * `aria-modal="true"` themselves via native `<dialog>`. Hand-writing these
- * attributes in JSX means a component is bypassing the shared
- * `<DialogContent>` / `<AlertDialogContent>` shell and the focus-trap /
- * restore / Esc handling Base UI provides — which is exactly the regression
- * `useModalA11y` existed to paper over.
- *
- * Files still hand-writing `role="dialog"` because they are right-side
- * sheets pending migration to Base UI Drawer (commit 2) are temporarily
- * allowlisted under PENDING_DRAWER_MIGRATION. Each entry must move off this
- * list when its follow-up commit lands; never add a new entry without a
- * migration plan.
+ * attributes in JSX bypasses Astryx's focus, restore, Escape, and top-layer
+ * ownership.
  */
 import { strict as assert } from 'node:assert';
 import { readFile, readdir } from 'node:fs/promises';
@@ -25,11 +17,6 @@ const SCAN_ROOTS = [
   join(REPO_ROOT, 'apps', 'desktop', 'src'),
   join(REPO_ROOT, 'packages', 'ui', 'src'),
 ];
-
-// Files still hand-writing dialog semantics, pending Base UI Drawer migration
-// (commit 2 of this PR). Each entry must move off this list when its
-// follow-up commit lands; never add a new entry here without a migration plan.
-const PENDING_DRAWER_MIGRATION = new Set<string>([]);
 
 const FORBIDDEN_PATTERNS: Array<{ name: string; re: RegExp }> = [
   // role="dialog" / role = "dialog" (literal, tolerant of spaces around =)
@@ -113,12 +100,11 @@ describe('FORBIDDEN_PATTERNS coverage (#520 PR7)', () => {
 });
 
 describe('dialog source contract (#520 PR7)', () => {
-  it('no tsx/ts outside the Drawer-migration allowlist hand-writes role="dialog" / aria-modal', async () => {
+  it('no production tsx/ts hand-writes role="dialog" / aria-modal', async () => {
     const offenders: Array<{ file: string; pattern: string }> = [];
     for (const root of SCAN_ROOTS) {
       for await (const file of walk(root)) {
         const rel = relative(REPO_ROOT, file).split(sep).join('/');
-        if (PENDING_DRAWER_MIGRATION.has(rel)) continue;
         if (file.endsWith('.test.ts') || file.endsWith('.test.tsx')) continue;
         const src = stripCommentLines(await readFile(file, 'utf8'));
         for (const pattern of FORBIDDEN_PATTERNS) {
@@ -131,7 +117,7 @@ describe('dialog source contract (#520 PR7)', () => {
     assert.deepEqual(
       offenders,
       [],
-      'hand-writing role="dialog" / role="alertdialog" / aria-modal="true" bypasses Astryx Dialog focus/Esc handling — route through <DialogContent> / <AlertDialogContent>. Files pending Drawer migration must be added to PENDING_DRAWER_MIGRATION with a plan.',
+      'hand-writing role="dialog" / role="alertdialog" / aria-modal="true" bypasses Astryx Dialog focus/Esc handling — route through direct Astryx Dialog / AlertDialog.',
     );
   });
 });

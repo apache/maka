@@ -4,34 +4,7 @@
    36px/6px read as two misaligned controls. */
 .maka-skill-search {
   width: min(280px, 30vw);
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--muted-foreground);
-  padding: 0 var(--space-2-5);
-}
-
-.maka-skill-search input {
-  /* The visible search chrome belongs to `.maka-skill-search`; the inner
-     `Input` owns bare field reset through the shared UI component. */
   min-width: 0;
-  width: 100%;
-  height: 30px;
-  min-height: 0;
-  font-size: var(--font-size-ui);
-}
-
-.maka-skill-search input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.maka-skill-search:focus-within {
-  border-color: oklch(from var(--foreground) l c h / 0.16);
-  box-shadow: 0 0 0 2px oklch(from var(--foreground) l c h / 0.055);
 }
 
 /* Skills page
@@ -180,10 +153,8 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
-/* Marketplace launch: category + sort dropdowns ride the tab row's right
-   edge (market tab only). Two quiet SettingsSelect triggers sized down to
-   the tab-row rhythm; the SettingsSelect trigger chrome itself is owned by
-   its own stylesheet — here we only constrain width + height. */
+/* Category and sort selectors ride the market tab row's right edge. Astryx
+   owns their chrome; this product class only constrains toolbar geometry. */
 .maka-skill-market-controls {
   display: flex;
   align-items: center;
@@ -194,8 +165,6 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 .maka-skill-market-select {
   min-width: 0;
   width: auto;
-  height: var(--h-control-sm);
-  min-height: var(--h-control-sm);
 }
 
 .maka-skill-tabs {

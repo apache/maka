@@ -6,7 +6,11 @@ import {
   encodeExecutionBoundaryTransfer,
   EXECUTION_BOUNDARY_TRANSFER_FILE,
 } from './session-metadata-transfer.js';
-import { decodeSessionHeader, SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
+import { decodeSessionHeader } from './session-store.js';
+import {
+  acquireOperationalStateDatabase,
+  OPERATIONAL_STATE_DATABASE_NAME,
+} from './operational-state-store.js';
 import {
   createSqliteSessionMetadataStore,
   type SessionMetadataRecord,
@@ -42,7 +46,7 @@ export async function exportLegacySessionTree(input: {
   now?: () => number;
 }): Promise<LegacySessionTreeExportReport> {
   const workspaceRoot = resolve(input.workspaceRoot);
-  const databasePath = join(workspaceRoot, SQLITE_SESSION_METADATA_DATABASE_NAME);
+  const databasePath = join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME);
   await assertFileExists(databasePath, 'SQLite session metadata database');
   const metadata = createSqliteSessionMetadataStore(databasePath);
   try {
@@ -154,17 +158,20 @@ export async function backupSessionMetadataDatabase(input: {
   workspaceRoot: string;
   destinationPath: string;
 }): Promise<{ destinationPath: string; pagesCopied: number }> {
-  const databasePath = join(resolve(input.workspaceRoot), SQLITE_SESSION_METADATA_DATABASE_NAME);
   const destinationPath = resolve(input.destinationPath);
-  await assertFileExists(databasePath, 'SQLite session metadata database');
-  const metadata = createSqliteSessionMetadataStore(databasePath);
+  const workspaceRoot = resolve(input.workspaceRoot);
+  await assertFileExists(
+    join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
+    'SQLite session metadata database',
+  );
+  const database = acquireOperationalStateDatabase(workspaceRoot);
   try {
     return {
       destinationPath,
-      pagesCopied: await metadata.backup(destinationPath),
+      pagesCopied: await database.backup(destinationPath),
     };
   } finally {
-    metadata.close();
+    database.close();
   }
 }
 

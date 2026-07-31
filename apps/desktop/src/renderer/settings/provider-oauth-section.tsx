@@ -44,6 +44,8 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const cards = modelOAuthCards(copy);
   const [openModal, setOpenModal] = useState<OAuthServiceId | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const modalLifecycleRef = useRef(0);
   const [claudeCatalogEnabled, setClaudeCatalogEnabled] = useState<boolean | null>(null);
   const toast = useToast();
   const modelOAuthMountedRef = useMountedRef();
@@ -132,10 +134,37 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
     }
   }
 
+  function openOAuthModal(service: OAuthServiceId) {
+    const lifecycle = modalLifecycleRef.current + 1;
+    modalLifecycleRef.current = lifecycle;
+    setIsModalOpen(false);
+    setOpenModal(service);
+    window.requestAnimationFrame(() => {
+      if (!modelOAuthMountedRef.current || modalLifecycleRef.current !== lifecycle) return;
+      setIsModalOpen(true);
+    });
+  }
+
+  function handleModalOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setIsModalOpen(true);
+      return;
+    }
+    const lifecycle = modalLifecycleRef.current + 1;
+    modalLifecycleRef.current = lifecycle;
+    setIsModalOpen(false);
+    window.requestAnimationFrame(() => {
+      if (!modelOAuthMountedRef.current || modalLifecycleRef.current !== lifecycle) return;
+      setOpenModal(null);
+      void refreshAfterOAuthChange();
+    });
+  }
+
   useEffect(() => {
     void refreshAllCards();
     return () => {
       modelOAuthRefreshTicketRef.current += 1;
+      modalLifecycleRef.current += 1;
     };
   }, []);
 
@@ -169,7 +198,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
               data-oauth-status={card.status}
               data-logged-in={isLoggedIn ? 'true' : undefined}
               aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}
-              render={<button type="button" onClick={() => setOpenModal(card.id)} />}
+              render={<button type="button" onClick={() => openOAuthModal(card.id)} />}
             >
               <ItemMedia>
                 <ProviderLogo type={card.providerType} />
@@ -188,40 +217,30 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
       </div>
       {openModal === 'claude' && (
         <ClaudeSubscriptionModal
-          onClose={() => {
-            setOpenModal(null);
-            void refreshAfterOAuthChange();
-          }}
+          isOpen={isModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
       {openModal === 'github-copilot' && (
         <GitHubCopilotSubscriptionModal
-          onClose={() => {
-            setOpenModal(null);
-            void refreshAfterOAuthChange();
-          }}
+          isOpen={isModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
       {openModal === 'codex' && (
         <SubscriptionLoginModal
           service="codex"
           onLoginSuccess={refreshAfterOAuthChange}
-          onClose={() => {
-            setOpenModal(null);
-            // Always re-fetch after the modal closes — the user may
-            // have logged in, logged out, or cancelled.
-            void refreshAfterOAuthChange();
-          }}
+          isOpen={isModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
       {openModal === 'xai' && (
         <SubscriptionLoginModal
           service="xai"
           onLoginSuccess={refreshAfterOAuthChange}
-          onClose={() => {
-            setOpenModal(null);
-            void refreshAfterOAuthChange();
-          }}
+          isOpen={isModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
     </div>
@@ -237,14 +256,18 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
   ];
 }
 
-function ClaudeSubscriptionModal(props: { onClose(): void }) {
+function ClaudeSubscriptionModal(props: {
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+}) {
   const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
   return (
     <ProviderConnectionDialog
       title={copy.claudeTitle}
       subtitle={copy.claudeSubtitle}
       providerType="claude-subscription"
-      onClose={props.onClose}
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
     >
       <ClaudeSubscriptionCard />
     </ProviderConnectionDialog>
@@ -253,7 +276,8 @@ function ClaudeSubscriptionModal(props: { onClose(): void }) {
 
 function SubscriptionLoginModal(props: {
   service: 'codex' | 'xai';
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onLoginSuccess(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
@@ -286,7 +310,8 @@ function SubscriptionLoginModal(props: {
       title={copy.connectTitle(display.name)}
       subtitle={display.detail}
       providerType={isXai ? 'xai-oauth' : 'openai-codex'}
-      onClose={props.onClose}
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
     >
         <div className="settingsConnectionRow" data-status={flow.runtimeState}>
           <p className="settingsConnectionDetail">
@@ -342,7 +367,10 @@ async function getSubscriptionSnapshot(serviceId: OAuthServiceId): Promise<Subsc
   return (await window.maka.openAiCodex.getAccountState()) as SubscriptionSnapshot;
 }
 
-function GitHubCopilotSubscriptionModal(props: { onClose(): void }) {
+function GitHubCopilotSubscriptionModal(props: {
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
+}) {
   const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
   // The shared login-flow controller owns the snapshot refresh, the
   // synchronous one-shot pending guard, and the unmount safety; Copilot
@@ -364,7 +392,8 @@ function GitHubCopilotSubscriptionModal(props: { onClose(): void }) {
       title={copy.copilotTitle}
       subtitle={copy.copilotSubtitle}
       providerType="github-copilot"
-      onClose={props.onClose}
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
     >
       <div className="settingsConnectionRow" data-status={flow.runtimeState}>
         <p className="settingsConnectionDetail">

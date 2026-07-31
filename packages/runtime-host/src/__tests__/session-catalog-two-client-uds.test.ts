@@ -1,0 +1,844 @@
+import assert from 'node:assert/strict';
+import { fork, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readdir, mkdtemp, rm } from 'node:fs/promises';
+import { connect, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import {
+  resolveRootControlNamespace,
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+  type StorageRootCapability,
+} from '@maka/storage/root-authority';
+import {
+  connectRuntimeHost,
+  RuntimeHostOperationError,
+  type RuntimeHostConnection,
+} from '../client/index.js';
+import {
+  decodeHostFrame,
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type SessionCatalogItem,
+  type SessionCatalogProjection,
+  type SessionCreateInput,
+  type SubscriptionFrame,
+} from '../protocol/index.js';
+import { FramedTransport } from '../transport/framed-transport.js';
+
+const CURRENT_PROTOCOL = {
+  min: RUNTIME_HOST_PROTOCOL_VERSION,
+  max: RUNTIME_HOST_PROTOCOL_VERSION,
+} as const;
+const PROCESS_TIMEOUT_MS = 10_000;
+const WIRE_OVERSIZED_MODEL_ID = '😀'.repeat(256);
+
+test('two UDS Clients share stable Session creation, CAS configuration, and catalog continuity', {
+  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-catalog-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const { connectionId, largeLabelSessionId, oversizedSessionId, unreadSessionId } =
+    await seedAuthority(root, capability);
+  let host: ExecutionHostHandle | undefined;
+  try {
+    host = await startHost(root, capability.rootId);
+    const desktop = await connectClient(root, 'desktop');
+    const tui = await connectClient(root, 'tui');
+    try {
+      const createInput: SessionCreateInput = {
+        sessionId: 'stable-session',
+        cwd: root,
+        name: 'Stable Session',
+        labels: ['catalog'],
+        modelTarget: { kind: 'default' },
+      };
+      const created = requireSessionProjection(
+        await desktop.request('session.create', createInput),
+      );
+      assert.equal(created.id, createInput.sessionId);
+      assert.equal(created.permissionMode, 'ask');
+      assert.equal(created.labelsTruncated, false);
+      const largeLabels = await querySession(desktop, largeLabelSessionId);
+      assert.equal(largeLabels.labels.length, 32);
+      assert.equal(largeLabels.labelsTruncated, true);
+      assert.deepEqual(largeLabels.labels.slice(0, 2), ['visible', 'label-0']);
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: oversizedSessionId,
+        }),
+        {
+          kind: 'session',
+          session: {
+            kind: 'unsupported_legacy_record',
+            id: oversizedSessionId,
+            revision: 1,
+            reason: 'not_wire_representable',
+          },
+        },
+      );
+      assert.deepEqual(
+        await desktop.request('session.metadata.update', {
+          sessionId: oversizedSessionId,
+          expectedRevision: 1,
+          patch: { isFlagged: true },
+        }),
+        {
+          kind: 'committed',
+          session: {
+            kind: 'unsupported_legacy_record',
+            id: oversizedSessionId,
+            revision: 2,
+            reason: 'not_wire_representable',
+          },
+        },
+      );
+      await assert.rejects(
+        desktop.request('session.create', {
+          sessionId: 'relative-session',
+          cwd: '.',
+          modelTarget: { kind: 'default' },
+        }),
+        operationError('invalid_request'),
+      );
+      await assert.rejects(
+        desktop.request('session.create', {
+          sessionId: 'unsupported-plan-session',
+          cwd: root,
+          modelTarget: { kind: 'default' },
+          collaborationMode: 'plan',
+        }),
+        operationError('operation_unavailable'),
+      );
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: 'unsupported-plan-session',
+        }),
+        { kind: 'session', session: null },
+      );
+
+      const policy = await tui.request('runtime.policy.query', {});
+      const changedPolicy = await tui.request('runtime.policy.mutate', {
+        expectedRevision: policy.revision,
+        operation: {
+          kind: 'set_chat_defaults',
+          value: { permissionMode: 'bypass' },
+        },
+      });
+      assert.equal(changedPolicy.kind, 'committed');
+      assert.deepEqual(await tui.request('session.create', createInput), created);
+
+      const subscription = await tui.openSessionSubscription({
+        sessionId: created.id,
+      });
+      const iterator = subscription[Symbol.asyncIterator]();
+      assert.equal(subscription.snapshot.session.metadataRevision, created.revision);
+      await assert.rejects(
+        desktop.request('session.metadata.update', {
+          sessionId: created.id,
+          expectedRevision: created.revision,
+          patch: { name: '\u200d' },
+        }),
+        operationError('invalid_request'),
+      );
+
+      const renamed = await desktop.request('session.metadata.update', {
+        sessionId: created.id,
+        expectedRevision: created.revision,
+        patch: { name: 'Renamed Session', isFlagged: true },
+      });
+      assert.equal(renamed.kind, 'committed');
+      if (renamed.kind !== 'committed') assert.fail('Session rename must commit');
+      const renamedSession = requireSessionProjection(renamed.session);
+      assert.equal(renamedSession.revision, created.revision + 1);
+      assert.equal(renamedSession.name, 'Renamed Session');
+      const continuity = await nextProjection(iterator);
+      assert.equal(continuity.snapshot.session.metadataRevision, renamedSession.revision);
+
+      const configurationRevision = renamedSession.revision;
+      const configurationOutcomes = await Promise.all([
+        desktop.request('session.configuration.update', {
+          sessionId: created.id,
+          expectedRevision: configurationRevision,
+          configuration: {
+            modelTarget: { kind: 'default' },
+            thinkingLevel: null,
+            permissionMode: 'bypass',
+            collaborationMode: 'agent',
+            orchestrationMode: 'graph',
+          },
+        }),
+        tui.request('session.configuration.update', {
+          sessionId: created.id,
+          expectedRevision: configurationRevision,
+          configuration: {
+            modelTarget: { kind: 'default' },
+            thinkingLevel: null,
+            permissionMode: 'bypass',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+          },
+        }),
+      ]);
+      assert.deepEqual(configurationOutcomes.map((outcome) => outcome.kind).sort(), [
+        'committed',
+        'revision_conflict',
+      ]);
+      const committedConfiguration = configurationOutcomes.find(
+        (outcome) => outcome.kind === 'committed',
+      );
+      assert.ok(committedConfiguration);
+      if (committedConfiguration?.kind !== 'committed') {
+        assert.fail('One Session configuration must commit');
+      }
+      const configuredSession = requireSessionProjection(committedConfiguration.session);
+      assert.deepEqual(await querySession(desktop, created.id), configuredSession);
+      const unchangedConfiguration = await desktop.request('session.configuration.update', {
+        sessionId: configuredSession.id,
+        expectedRevision: configuredSession.revision,
+        configuration: {
+          modelTarget: {
+            kind: 'explicit',
+            connectionSlug: configuredSession.llmConnectionSlug,
+            model: configuredSession.model,
+          },
+          thinkingLevel: configuredSession.thinkingLevel ?? null,
+          permissionMode: configuredSession.permissionMode,
+          collaborationMode: configuredSession.collaborationMode,
+          orchestrationMode: configuredSession.orchestrationMode,
+        },
+      });
+      assert.deepEqual(unchangedConfiguration, {
+        kind: 'committed',
+        session: configuredSession,
+      });
+      await assert.rejects(
+        desktop.request('session.configuration.update', {
+          sessionId: configuredSession.id,
+          expectedRevision: configuredSession.revision,
+          configuration: {
+            modelTarget: {
+              kind: 'explicit',
+              connectionSlug: configuredSession.llmConnectionSlug,
+              model: configuredSession.model,
+            },
+            thinkingLevel: configuredSession.thinkingLevel ?? null,
+            permissionMode: 'explore',
+            collaborationMode: configuredSession.collaborationMode,
+            orchestrationMode: configuredSession.orchestrationMode,
+          },
+        }),
+        operationError('operation_unavailable'),
+      );
+
+      await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
+      const rejectedSessionId = 'wire-oversized-default-model';
+      await assert.rejects(
+        desktop.request('session.create', {
+          sessionId: rejectedSessionId,
+          cwd: root,
+          modelTarget: { kind: 'default' },
+        }),
+        operationError('invalid_request'),
+      );
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: rejectedSessionId,
+        }),
+        { kind: 'session', session: null },
+      );
+      await assert.rejects(
+        desktop.request('session.configuration.update', {
+          sessionId: configuredSession.id,
+          expectedRevision: configuredSession.revision,
+          configuration: {
+            modelTarget: { kind: 'default' },
+            thinkingLevel: null,
+            permissionMode: configuredSession.permissionMode,
+            collaborationMode: configuredSession.collaborationMode,
+            orchestrationMode: configuredSession.orchestrationMode,
+          },
+        }),
+        operationError('invalid_request'),
+      );
+      assert.deepEqual(await querySession(desktop, configuredSession.id), configuredSession);
+      await setDefaultModel(tui, connectionId, 'gpt-5');
+
+      const read = requireSessionProjection(
+        await desktop.request('session.read_marker.set', {
+          sessionId: unreadSessionId,
+          readThroughMessageId: 'message-2',
+        }),
+      );
+      assert.equal(read.hasUnread, false);
+      assert.equal(read.lastReadMessageId, 'message-2');
+      const readFromTui = await querySession(tui, unreadSessionId);
+      assert.equal(readFromTui.hasUnread, false);
+      assert.equal(readFromTui.lastReadMessageId, 'message-2');
+
+      const bulk = (
+        await Promise.all(
+          Array.from({ length: 34 }, (_, index) =>
+            desktop.request('session.create', {
+              sessionId: `bulk-${String(index).padStart(2, '0')}`,
+              cwd: root,
+              labels: ['paged'],
+              modelTarget: { kind: 'default' },
+            }),
+          ),
+        )
+      ).map(requireSessionProjection);
+      const firstPage = await desktop.request('session.catalog.query', {
+        kind: 'list_start',
+      });
+      assert.equal(firstPage.kind, 'page');
+      if (firstPage.kind !== 'page') assert.fail('Session catalog must return a page');
+      assert.equal(firstPage.sessions.length, 32);
+      assert.ok(firstPage.nextCursor);
+      const continuation = await tui.request('session.catalog.query', {
+        kind: 'list_continue',
+        revision: firstPage.revision,
+        cursor: firstPage.nextCursor,
+      });
+      assert.equal(continuation.kind, 'page');
+      if (continuation.kind !== 'page') {
+        assert.fail('Stable Session catalog continuation must return a page');
+      }
+      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 4);
+
+      const filteredStart = await desktop.request('session.catalog.query', {
+        kind: 'list_start',
+        filter: { labelSlug: 'paged' },
+      });
+      assert.equal(filteredStart.kind, 'page');
+      if (filteredStart.kind !== 'page' || !filteredStart.nextCursor) {
+        assert.fail('Filtered Session catalog must provide a continuation');
+      }
+      assert.equal(filteredStart.sessions.length, 32);
+      const filteredContinuation = await tui.request('session.catalog.query', {
+        kind: 'list_continue',
+        revision: filteredStart.revision,
+        cursor: filteredStart.nextCursor,
+      });
+      assert.equal(filteredContinuation.kind, 'page');
+      if (filteredContinuation.kind !== 'page') {
+        assert.fail('Filtered Session catalog continuation must return a page');
+      }
+      assert.equal(filteredContinuation.sessions.length, 2);
+      assert.equal(
+        [...filteredStart.sessions, ...filteredContinuation.sessions].every((session) =>
+          requireSessionProjection(session).labels.includes('paged'),
+        ),
+        true,
+      );
+      await assert.rejects(
+        desktop.request('session.catalog.query', {
+          kind: 'list_continue',
+          filter: { isFlagged: true },
+          revision: filteredStart.revision,
+          cursor: filteredStart.nextCursor,
+        }),
+        operationError('invalid_request'),
+      );
+
+      const staleStart = await desktop.request('session.catalog.query', {
+        kind: 'list_start',
+      });
+      assert.equal(staleStart.kind, 'page');
+      if (staleStart.kind !== 'page' || !staleStart.nextCursor) {
+        assert.fail('Session catalog must provide a continuation');
+      }
+      const bulkSession = bulk[0]!;
+      const pinned = await tui.request('session.metadata.update', {
+        sessionId: bulkSession.id,
+        expectedRevision: bulkSession.revision,
+        patch: { isFlagged: true },
+      });
+      assert.equal(pinned.kind, 'committed');
+      const staleContinuation = await desktop.request('session.catalog.query', {
+        kind: 'list_continue',
+        revision: staleStart.revision,
+        cursor: staleStart.nextCursor,
+      });
+      assert.equal(staleContinuation.kind, 'revision_changed');
+      const flagged = await tui.request('session.catalog.query', {
+        kind: 'list_start',
+        filter: { isFlagged: true },
+      });
+      assert.equal(flagged.kind, 'page');
+      if (flagged.kind !== 'page') assert.fail('Flagged Session query must return a page');
+      assert.deepEqual(
+        flagged.sessions.map((session) => session.id).sort(),
+        [created.id, bulkSession.id, oversizedSessionId].sort(),
+      );
+
+      await subscription.close();
+    } finally {
+      await Promise.allSettled([desktop.close(), tui.close()]);
+    }
+    await stopHost(host);
+    host = undefined;
+  } finally {
+    await terminateHost(host);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await removePosixEndpointDirectories(capability.rootId);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('stable Session creation survives response loss and Host restart', {
+  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-create-retry-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  await seedAuthority(root, capability);
+  let host: ExecutionHostHandle | undefined;
+  let dropped: FramedTransport | undefined;
+  try {
+    host = await startHost(root, capability.rootId);
+    const input: SessionCreateInput = {
+      sessionId: 'response-loss-session',
+      cwd: root,
+      name: 'Response Loss Session',
+      labels: ['catalog'],
+      modelTarget: { kind: 'default' },
+    };
+    dropped = await sendCreateWithoutReadingResponse(host.endpoint, input);
+    const observer = await connectClient(root, 'tui');
+    const committed = await waitForSession(observer, input.sessionId);
+    dropped.destroy();
+    dropped = undefined;
+    await observer.close();
+
+    await terminateHost(host);
+    host = await startHost(root, capability.rootId);
+    const retrying = await connectClient(root, 'desktop');
+    try {
+      assert.deepEqual(
+        requireSessionProjection(await retrying.request('session.create', input)),
+        committed,
+      );
+    } finally {
+      await retrying.close();
+    }
+    await stopHost(host);
+    host = undefined;
+  } finally {
+    dropped?.destroy();
+    await terminateHost(host);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await removePosixEndpointDirectories(capability.rootId);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+async function seedAuthority(
+  root: string,
+  capability: StorageRootCapability<'interactive'>,
+): Promise<{
+  readonly connectionId: string;
+  readonly largeLabelSessionId: string;
+  readonly oversizedSessionId: string;
+  readonly unreadSessionId: string;
+}> {
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire execution root for Session setup');
+  try {
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const unread = await execution.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    await execution.sessionStore.appendMessages(unread.id, [
+      { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'one' },
+      {
+        type: 'assistant',
+        id: 'message-2',
+        turnId: 'turn-1',
+        ts: 2,
+        text: 'two',
+        modelId: 'fake-model',
+      },
+      {
+        type: 'tool_call',
+        id: 'tool-1',
+        turnId: 'turn-1',
+        ts: 3,
+        toolName: 'Read',
+        args: {},
+      },
+    ]);
+    await execution.sessionStore.updateHeader(unread.id, {
+      hasUnread: true,
+      lastMessageAt: 2,
+    });
+    const largeLabels = await execution.sessionStore.create({
+      cwd: root,
+      labels: [
+        'visible',
+        ' invalid ',
+        'x'.repeat(129),
+        'visible',
+        ...Array.from({ length: 700 }, (_, index) => `label-${index}`),
+      ],
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const oversized = await execution.sessionStore.create({
+      cwd: root,
+      projectId: 'p'.repeat(257),
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const initial = await policy.connectionCatalog.getSnapshot();
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: initial.revision,
+      connection: {
+        slug: 'session-catalog-openai',
+        name: 'Session Catalog OpenAI',
+        providerType: 'openai',
+        enabled: true,
+        enabledModelIds: ['gpt-5', WIRE_OVERSIZED_MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') throw new Error('Connection setup did not commit');
+    const connection = created.snapshot.connections.find(
+      (candidate) => candidate.slug === 'session-catalog-openai',
+    );
+    assert.ok(connection);
+    if (!connection) throw new Error('Connection setup omitted its connection');
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'session-catalog-test-key',
+    });
+    assert.equal(credential.kind, 'committed');
+    const fetch = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') throw new Error('Model discovery setup was not ready');
+    const discovered = await policy.operations.completeModelFetch(fetch.ticket, {
+      models: [
+        { id: 'gpt-5', apiProtocol: 'openai-responses' },
+        { id: WIRE_OVERSIZED_MODEL_ID, apiProtocol: 'openai-responses' },
+      ],
+      source: 'fetched',
+      fetchedAt: 1,
+    });
+    assert.equal(discovered.kind, 'committed');
+    if (discovered.kind !== 'committed') {
+      throw new Error('Model discovery setup did not commit');
+    }
+    const target = await policy.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: discovered.snapshot.revision,
+      target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
+    });
+    assert.equal(target.kind, 'committed');
+    return {
+      connectionId: connection.connectionId,
+      largeLabelSessionId: largeLabels.id,
+      oversizedSessionId: oversized.id,
+      unreadSessionId: unread.id,
+    };
+  } finally {
+    await owner.close();
+  }
+}
+
+async function setDefaultModel(
+  connection: RuntimeHostConnection,
+  connectionId: string,
+  modelId: string,
+): Promise<void> {
+  const catalog = await connection.request('connection.catalog.query', { kind: 'start' });
+  assert.equal(catalog.kind, 'page');
+  if (catalog.kind !== 'page') assert.fail('Connection catalog must return a page');
+  const result = await connection.request('connection.catalog.set-default-target', {
+    expectedCatalogRevision: catalog.revision,
+    target: { connectionId, modelId },
+  });
+  assert.equal(result.kind, 'committed');
+  if (result.kind !== 'committed') assert.fail('Default model update must commit');
+}
+
+async function querySession(
+  connection: RuntimeHostConnection,
+  sessionId: string,
+): Promise<SessionCatalogProjection> {
+  const result = await connection.request('session.catalog.query', {
+    kind: 'get',
+    sessionId,
+  });
+  assert.equal(result.kind, 'session');
+  if (result.kind !== 'session' || !result.session) {
+    assert.fail('Session catalog get must return the Session');
+  }
+  return requireSessionProjection(result.session);
+}
+
+async function waitForSession(
+  connection: RuntimeHostConnection,
+  sessionId: string,
+): Promise<SessionCatalogProjection> {
+  const deadline = Date.now() + PROCESS_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await connection.request('session.catalog.query', {
+      kind: 'get',
+      sessionId,
+    });
+    if (result.kind === 'session' && result.session) {
+      return requireSessionProjection(result.session);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Session creation did not become durable before the deadline');
+}
+
+function requireSessionProjection(item: SessionCatalogItem): SessionCatalogProjection {
+  if ('kind' in item) {
+    assert.fail(`Expected a representable Session, received ${item.kind}`);
+  }
+  return item;
+}
+
+async function nextProjection(
+  iterator: AsyncIterator<SubscriptionFrame>,
+): Promise<Extract<SubscriptionFrame, { kind: 'subscription.session_projection' }>> {
+  const result = await withTimeout(
+    iterator.next(),
+    PROCESS_TIMEOUT_MS,
+    'Session continuity projection did not arrive',
+  );
+  assert.equal(result.done, false);
+  assert.equal(result.value?.kind, 'subscription.session_projection');
+  if (result.value?.kind !== 'subscription.session_projection') {
+    assert.fail('Expected a Session continuity projection');
+  }
+  return result.value;
+}
+
+interface ExecutionHostHandle {
+  readonly child: ChildProcess;
+  readonly hostEpoch: string;
+  readonly endpoint: string;
+}
+
+async function startHost(root: string, rootId: string): Promise<ExecutionHostHandle> {
+  const child = fork(
+    new URL('./fixtures/execution-host.js', import.meta.url),
+    [root, rootId, '60000'],
+    { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+  );
+  try {
+    return { child, ...(await waitForHostReady(child)) };
+  } catch (error) {
+    await terminateChild(child);
+    throw error;
+  }
+}
+
+async function stopHost(host: ExecutionHostHandle): Promise<void> {
+  if (host.child.exitCode === null && host.child.signalCode === null) {
+    host.child.kill('SIGTERM');
+  }
+  const exit = await withTimeout(
+    waitForExit(host.child),
+    PROCESS_TIMEOUT_MS,
+    'execution Host did not stop',
+  );
+  assert.deepEqual(exit, { code: 0, signal: null });
+}
+
+async function terminateHost(host: ExecutionHostHandle | undefined): Promise<void> {
+  if (host) await terminateChild(host.child);
+}
+
+async function terminateChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  await withTimeout(waitForExit(child), PROCESS_TIMEOUT_MS, 'execution Host did not exit').then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+async function connectClient(
+  rootPath: string,
+  surface: 'desktop' | 'tui',
+): Promise<RuntimeHostConnection> {
+  const result = await connectRuntimeHost({
+    rootPath,
+    surface,
+    protocol: CURRENT_PROTOCOL,
+  });
+  assert.equal(result.kind, 'connected');
+  if (result.kind !== 'connected') throw new Error('Runtime Host did not accept the Client');
+  return result.connection;
+}
+
+async function sendCreateWithoutReadingResponse(
+  endpoint: string,
+  input: SessionCreateInput,
+): Promise<FramedTransport> {
+  const transport = new FramedTransport(await openSocket(endpoint));
+  await transport.write({
+    kind: 'hello',
+    clientInstanceId: randomUUID(),
+    surface: 'desktop',
+    protocolMin: CURRENT_PROTOCOL.min,
+    protocolMax: CURRENT_PROTOCOL.max,
+  });
+  const handshake = decodeHostFrame(await transport.read(2_000));
+  assert.ok('kind' in handshake);
+  assert.equal(handshake.kind, 'accepted');
+  await transport.write({
+    requestId: randomUUID(),
+    operation: 'session.create',
+    input,
+  });
+  return transport;
+}
+
+function openSocket(path: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(path);
+    const onError = (error: Error) => {
+      socket.off('connect', onConnect);
+      reject(error);
+    };
+    const onConnect = () => {
+      socket.off('error', onError);
+      resolve(socket);
+    };
+    socket.once('error', onError);
+    socket.once('connect', onConnect);
+  });
+}
+
+function waitForHostReady(child: ChildProcess): Promise<{
+  hostEpoch: string;
+  endpoint: string;
+}> {
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      const cleanup = () => {
+        child.off('error', onError);
+        child.off('exit', onExit);
+        child.off('message', onMessage);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        cleanup();
+        reject(new Error(`execution Host exited before readiness: ${code ?? signal}`));
+      };
+      const onMessage = (message: unknown) => {
+        if (!isHostReadyMessage(message)) return;
+        cleanup();
+        resolve({ hostEpoch: message.hostEpoch, endpoint: message.endpoint });
+      };
+      child.once('error', onError);
+      child.once('exit', onExit);
+      child.on('message', onMessage);
+    }),
+    PROCESS_TIMEOUT_MS,
+    'execution Host did not become ready',
+  );
+}
+
+function isHostReadyMessage(
+  value: unknown,
+): value is { type: 'ready'; hostEpoch: string; endpoint: string } {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Record<string, unknown>;
+  return (
+    message.type === 'ready' &&
+    typeof message.hostEpoch === 'string' &&
+    typeof message.endpoint === 'string'
+  );
+}
+
+function waitForExit(
+  child: ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      child.off('error', onError);
+      child.off('exit', onExit);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      cleanup();
+      resolve({ code, signal });
+    };
+    child.once('error', onError);
+    child.once('exit', onExit);
+  });
+}
+
+async function removePosixEndpointDirectories(rootId: string): Promise<void> {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
+  const prefix = `m-${process.getuid()}-${Buffer.from(rootId, 'hex').toString('base64url')}-`;
+  const entries = await readdir('/tmp', { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (entry.isDirectory() && entry.name.startsWith(prefix)) {
+        await rm(join('/tmp', entry.name), { recursive: true, force: true });
+      }
+    }),
+  );
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function operationError(code: RuntimeHostOperationError['code']) {
+  return (error: unknown): boolean =>
+    error instanceof RuntimeHostOperationError && error.code === code;
+}

@@ -468,7 +468,7 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: '[role="dialog"]',
+        readinessSelector: 'dialog[open]',
         e2eFixtureScenario: 'oauth-relogin',
         locale: 'zh',
       },

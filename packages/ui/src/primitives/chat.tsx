@@ -118,7 +118,7 @@ export function Bubble({
  * so the layout is location-independent instead of coupled to a
  * `[data-role="assistant"]` descendant selector.
  *
- * `markerVariants` is exported from THIS module (shadcn `buttonVariants` style)
+ * `markerVariants` is exported from THIS module as a local variant recipe
  * so the lineage badge + footer action — which render as `UiButton` and can't
  * be wrapped — apply the shell via `className`; `Button` runs it through
  * `cn`/tailwind-merge last, so it wins over the button's own variant utilities.

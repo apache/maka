@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type Ref } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
-  Input,
+  InputGroup,
+  type InputGroupProps,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -29,11 +31,14 @@ export function PasswordInput(props: {
   value: string;
   onChange(next: string): void;
   placeholder?: string;
-  ariaLabel?: string;
-  ariaDescribedBy?: string;
-  disabled?: boolean;
-  inputRef?: Ref<HTMLInputElement>;
+  label: string;
+  isLabelHidden?: boolean;
+  description?: string;
+  status?: InputGroupProps['status'];
+  isRequired?: boolean;
+  isDisabled?: boolean;
   onBlur?(): void;
+  hasAutoFocus?: boolean;
 }) {
   const copy = getSettingsPreferencesCopy(useUiLocale()).password;
   const toast = useToast();
@@ -79,43 +84,48 @@ export function PasswordInput(props: {
     }
   }
   return (
-    <div className="settingsPasswordField">
-      <Input
-        ref={props.inputRef}
+    <InputGroup
+      label={props.label}
+      description={props.description}
+      isLabelHidden={props.isLabelHidden}
+      isRequired={props.isRequired}
+      isDisabled={props.isDisabled}
+      status={props.status}
+    >
+      <TextInput
         type={visible ? 'text' : 'password'}
         value={props.value}
-        onChange={(event) => props.onChange(event.currentTarget.value)}
+        onChange={(value) => props.onChange(value)}
         onBlur={props.onBlur}
         placeholder={props.placeholder}
-        aria-label={props.ariaLabel}
-        aria-describedby={props.ariaDescribedBy}
-        autoComplete="off"
-        spellCheck={false}
-        disabled={props.disabled}
+        label={copy.value}
+        isLabelHidden
+        isRequired={props.isRequired}
+        isDisabled={props.isDisabled}
+        status={props.status ? { type: props.status.type } : undefined}
+        hasAutoFocus={props.hasAutoFocus}
       />
-      <div className="settingsPasswordActions">
-        {props.value && !props.disabled && (
-          <IconButton
-            variant="ghost"
-            size="sm"
-            isDisabled={copying}
-            onClick={() => void copyValue()}
-            label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
-            icon={justCopied
-              ? <Check size={16} aria-hidden="true" />
-              : <Copy size={16} aria-hidden="true" />}
-          />
-        )}
+      {props.value && !props.isDisabled && (
         <IconButton
           variant="ghost"
           size="sm"
-          onClick={() => setVisible((current) => !current)}
-          isDisabled={props.disabled}
-          label={visible ? copy.hide : copy.show}
-          aria-pressed={visible}
-          icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+          isDisabled={copying}
+          onClick={() => void copyValue()}
+          label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
+          icon={justCopied
+            ? <Check size={16} aria-hidden="true" />
+            : <Copy size={16} aria-hidden="true" />}
         />
-      </div>
-    </div>
+      )}
+      <IconButton
+        variant="ghost"
+        size="sm"
+        onClick={() => setVisible((current) => !current)}
+        isDisabled={props.isDisabled}
+        label={visible ? copy.hide : copy.show}
+        aria-pressed={visible}
+        icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+      />
+    </InputGroup>
   );
 }

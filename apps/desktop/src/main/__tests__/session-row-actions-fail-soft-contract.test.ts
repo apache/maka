@@ -79,6 +79,7 @@ describe('session row actions fail soft', () => {
 
   it('keeps sidebar menu actions single-flight while a row action is pending', async () => {
     const ui = await readRenderedSessionHistorySource();
+    const menuButton = ui.match(/button=\{\{[\s\S]*?\}\}\s*>/)?.[0] ?? '';
 
     assert.match(ui, /type SessionRowActionId = 'flag' \| 'archive' \| 'rename' \| 'delete';/);
     assert.match(ui, /onToggleFlag\(sessionId: string, next: boolean\): void \| Promise<void>;/);
@@ -100,11 +101,12 @@ describe('session row actions fail soft', () => {
       /pendingActionRef\.current = null;[\s\S]*if \(rowMountedRef\.current\) setPendingAction\(null\);/,
       'SessionRow action cleanup must not write pending state after the row unmounts',
     );
-    assert.match(
-      ui,
-      /<Menu[\s\S]*?button=\{\{[\s\S]*?isDisabled:\s*actionBusy[\s\S]*?<MenuItem[\s\S]*?isDisabled=\{actionBusy\}/,
-      'the overflow trigger and its menu actions must be disabled while the row owns an action',
+    assert.doesNotMatch(
+      menuButton,
+      /isDisabled:\s*actionBusy/,
+      'the opener must remain focusable while a confirm Promise is pending so Astryx can restore focus',
     );
+    assert.match(ui, /<DropdownMenuItem[\s\S]*?isDisabled=\{actionBusy\}/);
     assert.doesNotMatch(ui, /aria-busy=\{pendingAction ===/);
     assert.doesNotMatch(ui, /data-pending=\{pendingAction ===/);
   });

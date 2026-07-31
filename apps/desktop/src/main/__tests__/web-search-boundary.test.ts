@@ -221,14 +221,14 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
       'Live query verification must have a guard-backed duplicate-submit guard.',
     );
     assert.match(page![0], /const credentialActionBusy = pendingCredentialAction !== null \|\| testing/);
-    assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
+    assert.match(page![0], /isDisabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
     // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
     assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| usingEnvKey \|\| draftKey\.length === 0\}/);
     assert.match(page![0], /pendingCredentialAction === 'save' \? copy\.saving : copy\.saveKey/);
     assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| \(draftKey\.length === 0 && !hasUsableKey\)\}/);
     assert.match(page![0], /isDisabled=\{credentialActionBusy\}[\s\S]*pendingCredentialAction === 'clear' \? copy\.clearing : copy\.clearKey/);
-    assert.match(page![0], /onChange=\{\(event\) => updateLiveQuery\(event\.currentTarget\.value\)\}/);
-    assert.match(page![0], /disabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
+    assert.match(page![0], /onChange=\{\(value\) => updateLiveQuery\(value\)\}/);
+    assert.match(page![0], /isDisabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
   });
 
   it('Settings web-search async actions stop writing component state after unmount', async () => {
@@ -365,7 +365,7 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
       /settingsFormRow|settingsFormGrid|style=\{\{/,
       'Web search Settings must not regress to naked form rows/grids or inline layout styles',
     );
-    assert.match(styles, /\.settingsWebSearchKeyRow > \.settingsPasswordField/);
+    assert.match(styles, /\.settingsWebSearchKeyField/);
     assert.match(styles, /\.settingsWebSearchQueryIntroRow\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
     assert.match(styles, /\.settingsWebSearchDisabledReason\s*\{[\s\S]*?color:\s*var\(--muted-foreground\);/);
   });
@@ -406,7 +406,7 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.match(page![0], /copy\.envPlaceholder/);
     assert.match(page![0], /copy\.envKeyHelp/);
     assert.match(getWebSearchSettingsCopy('zh').envKeyHelp, /TAVILY_API_KEY \/ MAKA_TAVILY_API_KEY/);
-    assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/);
+    assert.match(page![0], /isDisabled=\{usingEnvKey \|\| credentialActionBusy\}/);
     assert.doesNotMatch(page![0], /process\.env|TAVILY_API_KEY[\s\S]{0,40}apiKey/);
   });
 

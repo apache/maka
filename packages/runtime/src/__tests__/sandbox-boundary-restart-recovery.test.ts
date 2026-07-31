@@ -16,7 +16,7 @@ import {
   createSessionStore,
   type DurableAgentRunStore,
   type DurableRuntimeEventStore,
-  type SessionStore,
+  type SessionAuthorityStore,
 } from '@maka/storage';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 
@@ -152,7 +152,7 @@ describe('sandbox boundary restart recovery on durable stores', () => {
 });
 
 interface DurableStores {
-  sessions: SessionStore;
+  sessions: SessionAuthorityStore;
   runs: DurableAgentRunStore;
   runtimeEvents: DurableRuntimeEventStore;
 }
@@ -183,7 +183,7 @@ function manager(stores: DurableStores): SessionManager {
 }
 
 async function seedInterruptedTurn(
-  sessions: SessionStore,
+  sessions: SessionAuthorityStore,
   runs: DurableAgentRunStore,
   sessionId: string,
 ): Promise<void> {

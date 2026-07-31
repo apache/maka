@@ -5,10 +5,11 @@ import {
 
 export interface RuntimeHostProcessLifecycleOptions {
   closeOnDisconnect?: boolean;
+  onReady?: () => void;
 }
 
 export async function runRuntimeHostProcessLifecycle(
-  host: RuntimeHostKernel,
+  host: Pick<RuntimeHostKernel, 'close' | 'closed'>,
   options: RuntimeHostProcessLifecycleOptions = {},
 ): Promise<void> {
   let closing = false;
@@ -22,6 +23,7 @@ export async function runRuntimeHostProcessLifecycle(
   process.once('SIGTERM', close);
   if (options.closeOnDisconnect) process.once('disconnect', close);
   try {
+    options.onReady?.();
     await host.closed;
   } catch (error) {
     if (error instanceof RuntimeHostProcessTerminationRequiredError) process.exit(1);

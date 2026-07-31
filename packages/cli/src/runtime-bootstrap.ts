@@ -58,9 +58,9 @@ import {
   type ModelMessage,
 } from '@maka/runtime';
 import {
-  createAgentRunStore,
+  createSqliteAgentRunStore,
   createAttachmentByteReader,
-  createArtifactStore,
+  createSqliteArtifactStore,
   createAutomationStore,
   createConnectionStore,
   createFileCredentialStore,
@@ -70,7 +70,7 @@ import {
   createReadImageSnapshotter,
   createSessionStore,
   createSettingsStore,
-  createShellRunStore,
+  createSqliteShellRunStore,
   assertSessionBundleRootLayout,
   type ForeignSessionStore,
   persistProviderRequestCaptureArtifact,
@@ -222,13 +222,20 @@ export async function createMakaCliRuntimeContext(
   }
   await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const store = createSessionStore(stateRoot);
-  const runStore = createAgentRunStore(stateRoot);
+  const runStore = createSqliteAgentRunStore(stateRoot);
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: stateRoot,
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  const shellRunStore = createShellRunStore(stateRoot);
-  const artifactStore = createArtifactStore(stateRoot);
+  const shellRunStore = createSqliteShellRunStore(stateRoot);
+  await Promise.all([runStore.ready?.(), shellRunStore.ready()]).catch(async (error) => {
+    await store.close?.().catch(() => {});
+    runtimePersistence.close();
+    runStore.close?.();
+    shellRunStore.close();
+    throw error;
+  });
+  const artifactStore = createSqliteArtifactStore(stateRoot);
   const agentGraphControlStore = agentGraphEnabled
     ? createAgentGraphControlStore(stateRoot)
     : undefined;
@@ -1093,6 +1100,9 @@ export async function createMakaCliRuntimeContext(
       shellRunListeners.clear();
       await store.close?.();
       runtimePersistence.close();
+      runStore.close?.();
+      shellRunStore.close();
+      artifactStore.close?.();
     },
   };
 }

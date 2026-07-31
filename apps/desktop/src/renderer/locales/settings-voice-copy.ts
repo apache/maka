@@ -31,6 +31,43 @@ export type VoiceSettingsCopy = {
   permissions: Record<VoicePermissionStatus, string>;
   validation: Record<'duration_exceeded' | 'audio_too_large' | 'invalid_audio_shape' | 'permission_not_granted' | 'default', string>;
   duration(seconds: string): string;
+  recognitionTitle: string;
+  realtimeTitle: string;
+  connection: string;
+  model: string;
+  language: string;
+  prompt: string;
+  voice: string;
+  notConfigured: string;
+  testRecognition: string;
+  recognitionTesting: string;
+  recognitionSuccess: string;
+  recognitionFailed: string;
+  createRecognitionConnection: string;
+  createRecognitionConnectionTitle: string;
+  createRecognitionConnectionSubtitle: string;
+  recognitionConnectionCreated: string;
+  recognitionConnectionCreatedDetail(connection: string, model: string): string;
+  recognitionConnectionCreateFailed: string;
+  recognitionConnectionModelMissing: string;
+  editRecognitionConnection: string;
+  editRecognitionConnectionTitle: string;
+  editRecognitionConnectionSubtitle(connection: string): string;
+  recognitionConnectionEndpoint: string;
+  recognitionConnectionEndpointHelp: string;
+  recognitionConnectionEndpointMissing: string;
+  recognitionConnectionApiKey: string;
+  recognitionConnectionApiKeyPlaceholder: string;
+  recognitionConnectionApiKeyHelp: string;
+  recognitionConnectionModel: string;
+  recognitionConnectionModelPlaceholder: string;
+  recognitionConnectionSave: string;
+  recognitionConnectionSaving: string;
+  recognitionConnectionUpdated: string;
+  recognitionConnectionUpdatedDetail(connection: string, model: string): string;
+  recognitionConnectionUpdateFailed: string;
+  cancel: string;
+  saveFailed: string;
 };
 
 const SETTINGS_VOICE_COPY = {
@@ -82,6 +119,43 @@ const SETTINGS_VOICE_COPY = {
       default: '语音采集自检未通过。',
     },
     duration: (seconds) => `${seconds} 秒`,
+    recognitionTitle: '语音识别',
+    realtimeTitle: '实时语音协调器',
+    connection: '模型连接',
+    model: '模型 ID',
+    language: '语言（可选）',
+    prompt: '识别提示词（可选）',
+    voice: '音色',
+    notConfigured: '未配置',
+    testRecognition: '录音 4 秒并测试识别',
+    recognitionTesting: '正在录音并调用所配置的识别模型…',
+    recognitionSuccess: '语音识别测试通过',
+    recognitionFailed: '语音识别测试失败',
+    createRecognitionConnection: '新建识别连接',
+    createRecognitionConnectionTitle: '新建语音识别连接',
+    createRecognitionConnectionSubtitle: '填写 OpenAI 兼容的语音识别服务地址、API Key 和 ASR 模型 ID。创建后会自动选中该连接和模型。',
+    recognitionConnectionCreated: '语音识别连接已创建',
+    recognitionConnectionCreatedDetail: (connection, model) => `已选择 ${connection} · ${model}`,
+    recognitionConnectionCreateFailed: '新建语音识别连接失败',
+    recognitionConnectionModelMissing: 'ASR 模型 ID 不能为空。',
+    editRecognitionConnection: '修改当前配置',
+    editRecognitionConnectionTitle: '修改语音识别连接',
+    editRecognitionConnectionSubtitle: (connection) => `直接修改 ${connection} 的服务地址、API Key 和 ASR 模型；保存后继续使用该连接。`,
+    recognitionConnectionEndpoint: '服务地址',
+    recognitionConnectionEndpointHelp: '填写 API 根地址，例如 https://api.siliconflow.cn/v1；不要包含 /audio/transcriptions。',
+    recognitionConnectionEndpointMissing: '服务地址不能为空。',
+    recognitionConnectionApiKey: 'API Key',
+    recognitionConnectionApiKeyPlaceholder: '留空则保留现有 API Key',
+    recognitionConnectionApiKeyHelp: '只有填写新值时才会替换现有 API Key。',
+    recognitionConnectionModel: 'ASR 模型 ID',
+    recognitionConnectionModelPlaceholder: '例如 FunAudioLLM/SenseVoiceSmall',
+    recognitionConnectionSave: '保存配置',
+    recognitionConnectionSaving: '保存中…',
+    recognitionConnectionUpdated: '语音识别配置已更新',
+    recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
+    recognitionConnectionUpdateFailed: '修改语音识别连接失败',
+    cancel: '取消',
+    saveFailed: '保存语音设置失败',
   },
   en: {
     idle: 'Ready to run a local recording check.',
@@ -131,6 +205,43 @@ const SETTINGS_VOICE_COPY = {
       default: 'The voice capture check did not pass.',
     },
     duration: (seconds) => `${seconds} seconds`,
+    recognitionTitle: 'Speech recognition',
+    realtimeTitle: 'Realtime voice coordinator',
+    connection: 'Model connection',
+    model: 'Model ID',
+    language: 'Language (optional)',
+    prompt: 'Recognition prompt (optional)',
+    voice: 'Voice',
+    notConfigured: 'Not configured',
+    testRecognition: 'Record for four seconds and test',
+    recognitionTesting: 'Recording and calling the configured recognition model…',
+    recognitionSuccess: 'Speech recognition test passed',
+    recognitionFailed: 'Speech recognition test failed',
+    createRecognitionConnection: 'New recognition connection',
+    createRecognitionConnectionTitle: 'New speech recognition connection',
+    createRecognitionConnectionSubtitle: 'Enter an OpenAI-compatible speech recognition endpoint, API key, and ASR model ID. The new connection and model will be selected automatically.',
+    recognitionConnectionCreated: 'Speech recognition connection created',
+    recognitionConnectionCreatedDetail: (connection, model) => `Selected ${connection} · ${model}`,
+    recognitionConnectionCreateFailed: 'Could not create speech recognition connection',
+    recognitionConnectionModelMissing: 'The ASR model ID is required.',
+    editRecognitionConnection: 'Edit current configuration',
+    editRecognitionConnectionTitle: 'Edit speech recognition connection',
+    editRecognitionConnectionSubtitle: (connection) => `Edit the endpoint, API key, and ASR model for ${connection}. This connection remains selected after saving.`,
+    recognitionConnectionEndpoint: 'Endpoint',
+    recognitionConnectionEndpointHelp: 'Enter the API root, such as https://api.siliconflow.cn/v1. Do not include /audio/transcriptions.',
+    recognitionConnectionEndpointMissing: 'The endpoint is required.',
+    recognitionConnectionApiKey: 'API Key',
+    recognitionConnectionApiKeyPlaceholder: 'Leave blank to keep the existing API key',
+    recognitionConnectionApiKeyHelp: 'The existing API key is replaced only when a new value is entered.',
+    recognitionConnectionModel: 'ASR model ID',
+    recognitionConnectionModelPlaceholder: 'For example, FunAudioLLM/SenseVoiceSmall',
+    recognitionConnectionSave: 'Save configuration',
+    recognitionConnectionSaving: 'Saving…',
+    recognitionConnectionUpdated: 'Speech recognition configuration updated',
+    recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
+    recognitionConnectionUpdateFailed: 'Could not update speech recognition connection',
+    cancel: 'Cancel',
+    saveFailed: 'Could not save voice settings',
   },
 } satisfies UiCatalog<VoiceSettingsCopy>;
 

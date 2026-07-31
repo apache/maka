@@ -1,5 +1,5 @@
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, Chip, Input, RelativeTime, SettingsSwitch as Switch, Textarea, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, Chip, FormLayout, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { SettingsRows } from './settings-rows';
 import { MemoryEntryList } from './memory-entry-list';
@@ -83,7 +83,7 @@ export function MemorySettingsPage(props: {
   return (
     <div className="settingsStructuredPage">
       <SettingsRows>
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="cluster">
           <div>
             <strong>{copy.text.localFile}</strong>
             <small>{copy.text.localFileHelp}</small>
@@ -97,36 +97,39 @@ export function MemorySettingsPage(props: {
               {memoryStatusLabel(effective.status, copy)}
             </Chip>
             <Switch
-              ariaLabel={copy.text.enableLocalFile}
-              checked={effective.enabled}
-              disabled={memoryControlsDisabled}
+              label={copy.text.enableLocalFile}
+              isLabelHidden
+              value={effective.enabled}
+              isDisabled={memoryControlsDisabled}
               onChange={(enabled) => void setEnabled(enabled)}
             />
           </span>
         </div>
 
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="switch">
           <div>
             <strong>{copy.text.agentReadable}</strong>
             <small>{copy.text.agentReadableHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.text.enableAgentRead}
-            checked={effective.agentReadEnabled}
-            disabled={memoryControlsDisabled || !effective.enabled}
+            label={copy.text.enableAgentRead}
+            isLabelHidden
+            value={effective.agentReadEnabled}
+            isDisabled={memoryControlsDisabled || !effective.enabled}
             onChange={(enabled) => void setAgentReadEnabled(enabled)}
           />
         </div>
 
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="switch">
           <div>
             <strong>{copy.text.instructions}</strong>
             <small>{copy.text.instructionsHelp}</small>
           </div>
           <Switch
-            ariaLabel={copy.text.enableInstructions}
-            checked={props.settings.workspaceInstructions.enabled}
-            disabled={memoryControlsDisabled}
+            label={copy.text.enableInstructions}
+            isLabelHidden
+            value={props.settings.workspaceInstructions.enabled}
+            isDisabled={memoryControlsDisabled}
             onChange={(enabled) => void workspaceInstructions.setEnabled(enabled)}
           />
         </div>
@@ -248,12 +251,14 @@ export function MemorySettingsPage(props: {
       {visibleMemoryEntries.entries.length > 0 && (
         <>
           <div className="settingsMemoryFilter">
-            <Input
-              type="search"
+            <TextInput
+              type="text"
               value={memoryEntryQuery}
-              onChange={(event) => setMemoryEntryQuery(event.currentTarget.value)}
-              aria-label={copy.text.filterAria}
+              onChange={(value) => setMemoryEntryQuery(value)}
+              label={copy.text.filterAria}
+              isLabelHidden
               placeholder={copy.text.filterPlaceholder}
+              width="100%"
             />
             {normalizedMemoryEntryQuery ? (
               <Button
@@ -320,32 +325,35 @@ export function MemorySettingsPage(props: {
           <strong>{copy.text.manualAdd}</strong>
           <small>{copy.text.manualAddHelp}</small>
         </div>
-        <div className="settingsMemoryManualAddGrid">
-          <Input
+        <FormLayout>
+          <TextInput
             type="text"
             value={newMemoryTitle}
-            onChange={(event) => setNewMemoryTitle(event.currentTarget.value)}
-            aria-label={copy.text.titleAria}
+            onChange={(value) => setNewMemoryTitle(value)}
+            label={copy.text.title}
             placeholder={copy.text.titlePlaceholder}
-            disabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            width="100%"
           />
-          <Input
+          <TextInput
             type="text"
             value={newMemoryTags}
-            onChange={(event) => setNewMemoryTags(event.currentTarget.value)}
-            aria-label={copy.text.tagsAria}
+            onChange={(value) => setNewMemoryTags(value)}
+            label={copy.text.tags}
             placeholder={copy.text.tagsPlaceholder}
-            disabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            width="100%"
           />
-          <Textarea
+          <TextArea
             value={newMemoryContent}
-            onChange={(event) => setNewMemoryContent(event.currentTarget.value)}
-            aria-label={copy.text.contentAria}
+            onChange={(value) => setNewMemoryContent(value)}
+            label={copy.text.content}
             placeholder={copy.text.contentPlaceholder}
             rows={3}
-            disabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            width="100%"
           />
-        </div>
+        </FormLayout>
         <Button
           variant="secondary"
           isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
@@ -361,18 +369,16 @@ export function MemorySettingsPage(props: {
         </div>
       )}
 
-      <label className="settingsMemoryEditor">
-        <span>{copy.text.fileContent}</span>
-        <Textarea
-          ref={editorRef}
-          value={draft}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          disabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
-          rows={12}
-          spellCheck={false}
-          aria-label={copy.text.contentEditorAria}
-        />
-      </label>
+      <TextArea
+        ref={editorRef}
+        value={draft}
+        onChange={(value) => setDraft(value)}
+        isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+        rows={12}
+        hasSpellCheck={false}
+        label={copy.text.fileContent}
+        width="100%"
+      />
 
       {effective.reason && (
         <Alert variant="passive" role="status">

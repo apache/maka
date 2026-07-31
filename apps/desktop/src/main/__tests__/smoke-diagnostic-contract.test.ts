@@ -4,9 +4,8 @@
  *
  * The diagnostic detects the open search dialog and focus state by
  * querying the renderer. Those selectors silently drifted once the modal
- * migrated across dialog implementations: the old backdrop hook disappeared,
- * and the focused input lost the
- * `maka-search-modal-input` class to InputGroup's own utility classes — so
+ * migrated across dialog and form-control implementations: the old backdrop
+ * hook disappeared and the focused input's implementation class changed, so
  * the `programmatic-search-modal-open` and `programmatic-focus-target` smoke
  * checks failed on a clean tree (reproduced identically on `main`).
  *

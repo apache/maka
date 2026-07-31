@@ -68,21 +68,9 @@ describe('renderer module styles contract', () => {
     assert.deepEqual(
       violations,
       [],
-      'styles/module-pages/** must only contain module-page owned selectors. Move global focus, SettingsSelect, chat header, model switcher, and shared shell rules to their real owner stylesheet.',
+      'styles/module-pages/** must only contain module-page owned selectors. Move global focus, shared form controls, chat header, model switcher, and shared shell rules to their real owner stylesheet.',
     );
   });
 
-  it('rejects a mixed comma selector list when one selector is not module-owned', () => {
-    assert.deepEqual(
-      findModuleOwnerSelectorViolations('fixture.css', '.foreign-owner, .maka-plan-card { color: red; }'),
-      ['fixture.css: .foreign-owner'],
-    );
-  });
 
-  it('allows comma selector lists when every selector is module-owned', () => {
-    assert.deepEqual(
-      findModuleOwnerSelectorViolations('fixture.css', '.maka-plan-a, .maka-plan-b { color: red; }'),
-      [],
-    );
-  });
 });

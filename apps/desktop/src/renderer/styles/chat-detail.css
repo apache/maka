@@ -121,16 +121,9 @@
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
-.maka-browser-address {
+.maka-browser-address-field {
   flex: 1 1 auto;
   min-width: 0;
-  height: 26px;
-  padding: 0 var(--space-2-5);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-canvas);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
 }
 
 .maka-browser-strip {
@@ -524,24 +517,6 @@
   border-radius: 0;
   min-height: 22px;
   background: var(--border);
-}
-
-/* Visually hidden, still announced: the 删除/删除中… label only exists
-   for assistive tech. Keeping it in-flow reintroduces the toolbar wrap
-   this exists to prevent. */
-.maka-artifact-toolbar-destructive-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.maka-artifact-toolbar-destructive:hover {
-  background: oklch(from var(--destructive) l c h / 0.10);
 }
 
 /* Narrow windows place the single workbar below the conversation. */

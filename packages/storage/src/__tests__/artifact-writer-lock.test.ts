@@ -18,7 +18,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { openHeadlessArtifactStoreForWrite } from '../artifact-stores.js';
-import { createArtifactStore, type CreateArtifactInput } from '../artifact-store.js';
+import {
+  createArtifactStore,
+  createSqliteArtifactStore,
+  type CreateArtifactInput,
+} from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import { createHeadlessRootLease, resolveStorageRoot } from '../root-authority.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
@@ -344,10 +348,15 @@ test('bundle export excludes a mutation queued behind the same child-held writer
       await withTimeout(bundleExport, OPERATION_TIMEOUT_MS, 'bundle export');
       await withTimeout(mutation, OPERATION_TIMEOUT_MS, 'Store mutation');
 
-      assert.deepEqual(
-        (await createArtifactStore(destinationRoot).list(session.id)).map((record) => record.id),
-        ['seed'],
-      );
+      const exportedStore = createSqliteArtifactStore(destinationRoot);
+      try {
+        assert.deepEqual(
+          (await exportedStore.list(session.id)).map((record) => record.id),
+          ['seed'],
+        );
+      } finally {
+        exportedStore.close?.();
+      }
       assert.deepEqual(
         (await createArtifactStore(stateRoot).list(session.id)).map((record) => record.id).sort(),
         ['after-export', 'seed'],

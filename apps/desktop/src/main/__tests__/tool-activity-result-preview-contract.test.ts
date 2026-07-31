@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ToolResultContent } from '@maka/core';
-import { LocaleProvider, OverlayHost } from '@maka/ui';
+import { LocaleProvider, ToolActivity } from '@maka/ui';
 
 const SECRET = 'sk-1234567890abcdefghi';
 
@@ -185,7 +185,7 @@ describe('ToolActivity result preview contract', () => {
     assert.match(text, /已隐藏 1 行/);
 
     const json = renderPreview({ kind: 'json', value: { token: SECRET, ok: true } });
-    assert.match(json, /data-kind="json"/);
+    assert.match(json, /data-slot="tool-output"/);
     // Quiet panel: plain key:value lines, not pretty-printed JSON quotes.
     assert.match(json, /ok:\s*true/);
     assert.doesNotMatch(json, /&quot;ok&quot;:\s*true/);
@@ -240,9 +240,16 @@ describe('ToolActivity result preview contract', () => {
 });
 
 function renderPreview(content: ToolResultContent): string {
+  const item: Parameters<typeof ToolActivity>[0]['items'][number] = {
+    toolUseId: 'preview',
+    toolName: 'Preview',
+    status: 'completed',
+    args: {},
+    result: content,
+  };
   return renderToStaticMarkup(createElement(LocaleProvider, {
     locale: 'zh',
-    children: createElement(OverlayHost, { content, onClose: () => {} }),
+    children: createElement(ToolActivity, { items: [item], open: true }),
   }));
 }
 

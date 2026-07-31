@@ -54,6 +54,10 @@ const STORY_INDEX = {
       id: 'product-module-hubs--scheduled-daily-review',
       type: 'story',
     },
+    'primitives-toast--confirm-queued': {
+      id: 'primitives-toast--confirm-queued',
+      type: 'story',
+    },
   },
 };
 
@@ -160,7 +164,7 @@ describe('Product Storybook coverage manifest', () => {
     );
 
     const jobs = validateCoverageManifest(manifest, STORY_INDEX);
-    assert.equal(jobs.length, 26);
+    assert.equal(jobs.length, 27);
     assert.deepEqual(
       jobs
         .filter((job) => job.surface === 'planReminders')

@@ -62,7 +62,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       'Button',
       'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger',
       'Item', 'ItemMedia', 'ItemContent', 'ItemTitle', 'ItemDescription', 'ItemActions',
-      'Input', 'RelativeTime', 'Textarea', 'useToast',
+      'TextInput', 'RelativeTime', 'TextArea', 'useToast',
     ]) {
       assert.ok(
         uiImports.includes(name),
@@ -80,7 +80,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
 
   it('ProvidersPanel surfaces model connection reload failures instead of sticking on loading', async () => {
     const src = await readProviderSettingsCombinedSource();
-    const panel = src.match(/export function ProvidersPanel[\s\S]*?const selected = useMemo/)?.[0] ?? '';
+    const panel = src.match(/export function ProvidersPanel[\s\S]*?function chipTitle/)?.[0] ?? '';
     const reloadMatch = src.match(/async function reload\(\): Promise<boolean> \{[\s\S]*?\n  \}/);
     assert.ok(reloadMatch, 'ProvidersPanel reload() must exist');
     assert.match(
@@ -110,18 +110,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /function closeDialog\(\) \{[\s\S]*providerDialogLifecycleRef\.current \+= 1;[\s\S]*setDialogState\(null\);[\s\S]*\}/,
-      'closing a dialog must invalidate pending dialog-scoped continuations',
-    );
-    assert.match(
-      src,
-      /onCreated=\{async \(_slug, modelDiscoveryError\) => \{[\s\S]*const lifecycle = providerDialogLifecycleRef\.current;[\s\S]*const reloaded = await reload\(\);[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*\) return;[\s\S]*closeDialog\(\);/,
+      /onCreated=\{async \(_slug, modelDiscoveryError\) => \{[\s\S]*const lifecycle = providerDialogLifecycleRef\.current;[\s\S]*const reloaded = await reload\(\);[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*\) return;[\s\S]*requestDialogClose\(\);/,
       'AddProviderForm completion must not close a newer dialog after the original dialog was dismissed',
-    );
-    assert.match(
-      src,
-      /onDeleted=\{async \(\) => \{[\s\S]*closeDialog\(\);[\s\S]*const reloaded = await reload\(\);[\s\S]*providerCatalogRef\.current\?\.querySelector<HTMLInputElement>\('\[type="search"\]'\)\?\.focus\(\);/,
-      'Connection delete completion must restore focus to the stable provider search after refreshing the root list',
     );
   });
 
@@ -159,7 +149,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /const connectionDetailActionGuard = useKeyedActionGuard<[\s\S]*'save' \| 'test' \| 'fetch-models' \| 'save-enabled-models' \| 'set-default' \| 'delete'[\s\S]*>\(\)/,
+      /const connectionDetailActionGuard = useKeyedActionGuard<[\s\S]*'save' \| 'test' \| 'fetch-models' \| 'save-enabled-models' \| 'set-default-model' \| 'set-default' \| 'delete'[\s\S]*>\(\)/,
       'ConnectionDetail actions must have synchronous duplicate-action guards from the shared keyed guard, not only React state',
     );
     assert.match(
@@ -189,17 +179,17 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /const detailActionBusy = busy \|\| testing \|\| fetchingModels \|\| savingEnabledModels \|\| settingDefault \|\| deleting/,
+      /const detailActionBusy =[\s\S]*busy \|\|[\s\S]*testing \|\|[\s\S]*fetchingModels \|\|[\s\S]*savingEnabledModels \|\|[\s\S]*settingDefaultModel \|\|[\s\S]*settingDefault \|\|[\s\S]*deleting/,
       'ConnectionDetail must expose one visible busy state that freezes payload-affecting controls',
     );
     assert.match(
       detail,
-      /<ConnectionEndpointField[\s\S]*disabled=\{detailActionBusy\}[\s\S]*function ConnectionEndpointField[\s\S]*disabled=\{props\.disabled\}/,
+      /<ConnectionEndpointField[\s\S]*disabled=\{detailActionBusy\}[\s\S]*function ConnectionEndpointField[\s\S]*isDisabled=\{props\.disabled \|\| props\.fixedOAuth\}/,
       'ConnectionDetail service-address draft must freeze while any detail action is in flight',
     );
     assert.match(
       detail,
-      /<PasswordInput[\s\S]*disabled=\{detailActionBusy\}/,
+      /<PasswordInput[\s\S]*isDisabled=\{detailActionBusy\}/,
       'ConnectionDetail API key draft must freeze while any detail action is in flight',
     );
     assert.match(
@@ -251,7 +241,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /catch \(err\) \{[\s\S]*setError\(providerPanelActionErrorMessage\(err, locale\)\)/,
+      /catch \(err\) \{[\s\S]*field: 'form',[\s\S]*message: providerPanelActionErrorMessage\(err, locale\)/,
       'AddProviderForm create failures must use the shared localized action-error helper',
     );
     assert.match(
@@ -276,12 +266,12 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /catch \(err\) \{[\s\S]*if \(addProviderMountedRef\.current\) setError\(providerPanelActionErrorMessage\(err, locale\)\);[\s\S]*\} finally \{[\s\S]*submitGuard\.finish\(\);[\s\S]*if \(addProviderMountedRef\.current\) setBusy\(false\);[\s\S]*\}/,
+      /catch \(err\) \{[\s\S]*if \(addProviderMountedRef\.current\) \{[\s\S]*field: 'form',[\s\S]*providerPanelActionErrorMessage\(err, locale\),[\s\S]*\}[\s\S]*\} finally \{[\s\S]*submitGuard\.finish\(\);[\s\S]*if \(addProviderMountedRef\.current\) setBusy\(false\);[\s\S]*\}/,
       'AddProviderForm create guard must release without setting React state after sheet unmount',
     );
     assert.match(
       addForm,
-      /disabled=\{isExperimental \|\| busy\} aria-label=\{copy\.slugAria\}/,
+      /isDisabled=\{isExperimental \|\| busy\}[\s\S]*label=\{copy\.slug\}/,
       'AddProviderForm fields must freeze while a create request is in flight so visible draft cannot drift from the submitted payload',
     );
     // #1565 PR 3: Astryx Button — `isDisabled` + `label` prop, self-closing.
@@ -319,9 +309,16 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /const supportsApiKey = providerAuthSupportsApiKey\(props\.providerType\)/);
     assert.match(src, /const requiresApiKey = providerAuthRequiresSecret\(props\.providerType\) && supportsApiKey/);
     assert.match(src, /<ProviderConnectionDialog[\s\S]*<AddProviderForm/);
-    assert.match(src, /<DialogContent[\s\S]*className="providerConnectionDialog"[\s\S]*width=\{520\}/);
-    assert.match(src, /initialFocus=\{\(\) =>[\s\S]*summary[\s\S]*\?\? true\}/, 'connection dialogs must focus the visible Advanced summary when no form control precedes it');
-    assert.match(src, /ariaLabel="API Key"/);
+    assert.match(src, /<Dialog[\s\S]*className="providerConnectionDialog"[\s\S]*width=\{520\}/);
+    assert.match(
+      await readFile(
+        resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'settings', 'provider-add-form.tsx'),
+        'utf8',
+      ),
+      /label=\{copy\.apiKeyLabel\(requiresApiKey\)\}[\s\S]*hasAutoFocus/,
+      'API-key dialogs must use Astryx hasAutoFocus so the rendered field exposes data-autofocus',
+    );
+    assert.match(src, /label=\{copy\.apiKeyLabel\(requiresApiKey\)\}/);
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
     assert.match(
       src,
@@ -382,7 +379,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /function SubscriptionLoginModal[\s\S]*<ProviderConnectionDialog/);
     assert.match(src, /function GitHubCopilotSubscriptionModal[\s\S]*<ProviderConnectionDialog/);
     assert.doesNotMatch(src, /ProviderSheet|providerConfigSheet/, 'the retired right-sheet path must be deleted');
-    assert.match(src, /DialogRoot[\s\S]*DialogContent[\s\S]*DialogHeader/, 'the shared dialog must retain modal focus and labelling primitives');
+    assert.match(src, /<Dialog[\s\S]*<Layout[\s\S]*<DialogHeader/, 'the shared dialog must directly compose Astryx modal focus and labelling primitives');
   });
 
   it('does not auto-open the first provider detail page after loading connections', async () => {
@@ -394,8 +391,6 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const src = await readProviderSettingsCombinedSource();
     const reloadBlock = src.match(/async function reload\(\)[\s\S]*?^\s*\}/m)?.[0] ?? '';
 
-    assert.match(reloadBlock, /setDialogState\(\(current\) => current\?\.kind === 'manage' && !list\.some\(\(connection\) => connection\.slug === current\.slug\)/);
-    assert.match(reloadBlock, /\? null\s*:\s*current/);
     assert.doesNotMatch(reloadBlock, /list\[0\]\?\.slug/, 'reload must not auto-select the first provider');
   });
 
@@ -478,33 +473,24 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const enabledModels = src.match(/function EnabledModelManager[\s\S]*?function modelDisplayLabel/)?.[0] ?? '';
 
     assert.match(addForm, /\{copy\.slug\}/);
-    assert.match(addForm, /aria-label=\{copy\.slugAria\}/);
-    assert.match(addForm, /\{copy\.endpointLabel\(requiresBaseUrl\)\}/);
-    assert.match(addForm, /aria-label=\{copy\.endpointAria\}/);
+    assert.match(addForm, /label=\{copy\.slug\}/);
+    assert.match(addForm, /label=\{copy\.endpointLabel\(requiresBaseUrl\)\}/);
+    assert.match(addForm, /isRequired=\{requiresBaseUrl\}/);
     assert.match(addForm, /copy\.duplicateSlug/);
     assert.match(addForm, /copy\.endpointRequired/);
 
-    // PR-FIELD-PRIMITIVE-PILOT: ConnectionDetail's form rows moved off the
-    // hand-written <label><span/> markup onto the governed Base UI Field
-    // primitive (FieldRoot + Label + FieldDescription). Label copy stays
-    // Chinese-first; the parenthetical state hints split into their own
-    // FieldDescription lines. AddProviderForm is intentionally left on the
-    // legacy <label><span/> markup this round (single-page pilot).
-    assert.match(detail, /<Label[^>]*>\{copy\.endpoint\}<\/Label>/);
-    assert.match(detail, /props\.fixedOAuth && <FieldDescription>\{copy\.oauthFixed\}<\/FieldDescription>/);
-    assert.match(detail, /<Label[^>]*>\{copy\.modelKey\}<\/Label>/);
+    assert.match(detail, /<TextInput[\s\S]*label=\{copy\.endpoint\}[\s\S]*description=\{props\.fixedOAuth \? copy\.oauthFixed : undefined\}/);
     // The credential hint is a single persistent line (constant dialog height);
     // its text still covers the "已设置，粘贴新值可替换" state.
-    assert.match(detail, /<FieldDescription>\{apiKeyStatusHint\}<\/FieldDescription>/);
+    assert.match(detail, /<PasswordInput[\s\S]*description=\{apiKeyStatusHint\}/);
     assert.match(detail, /hasSecret === true\s*\?\s*copy\.keySet/);
     assert.match(detail, /placeholder=\{hasSecret === true \? '••••••••' : copy\.pasteModelKey\}/);
-    assert.match(detail, /ariaLabel=\{copy\.modelKeyAria\(display\.name\)\}/);
+    assert.match(detail, /label=\{copy\.modelKeyAria\(display\.name\)\}/);
     assert.match(detail, /\{copy\.getModelKey\}/);
     assert.match(detail, /copy\.keyTroubleshooting/);
 
     assert.match(enabledModels, /copy\.enabledModelsTitle/);
     assert.match(enabledModels, /copy\.enabledModelsHelp/);
-    assert.match(enabledModels, /copy\.searchModels/);
     assert.match(src, /getProviderSettingsCopy\(locale\)/);
     // Provider descriptions are version-agnostic (provider + access path,
     // never a model generation that goes stale).
@@ -673,27 +659,31 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /readOnly=\{props\.fixedOAuth\}/,
-      'OAuth Base URL must be read-only in the provider detail sheet',
+      /isDisabled=\{props\.disabled \|\| props\.fixedOAuth\}/,
+      'OAuth Base URL must be disabled in the provider detail sheet',
     );
     assert.match(
       detail,
-      /aria-readonly=\{props\.fixedOAuth \? 'true' : undefined\}/,
-      'the fixed OAuth Base URL state must be exposed to assistive tech',
+      /disabledMessage=\{props\.fixedOAuth \? copy\.oauthFixed : undefined\}/,
+      'the fixed OAuth Base URL reason must be exposed through Astryx',
     );
   });
 
-  it('connection management dialogs lead with credentials and keep model visibility in advanced settings', async () => {
+  it('keeps common model management visible and reserves advanced settings for the endpoint', async () => {
     const src = await readProviderSettingsCombinedSource();
     const detail = src.match(/function ConnectionDetailInner[\s\S]*?function GitHubCopilotReloginNotice/)?.[0] ?? '';
     const credential = detail.indexOf('<PasswordInput');
+    const defaultModelSelector = detail.indexOf('<Selector');
     const advanced = detail.indexOf('<details className="providerAdvancedSettings"');
     const models = detail.indexOf('<EnabledModelManager');
 
     assert.ok(credential >= 0, 'API-key connection detail must expose its credential field');
-    assert.ok(advanced > credential, 'credentials must remain the primary task before advanced settings');
-    assert.ok(models > advanced, 'enabled-model management must stay inside advanced settings');
-    assert.doesNotMatch(detail, /<ModelTable/, 'connection detail must not render a default-model picker');
+    assert.ok(defaultModelSelector > credential, 'credentials must remain the primary task before model management');
+    assert.ok(models > defaultModelSelector, 'default and enabled model management must share the visible model section');
+    assert.ok(advanced > models, 'advanced settings must follow common model management');
+    const advancedBody = detail.match(/<details className="providerAdvancedSettings"[\s\S]*?<\/details>/)?.[0] ?? '';
+    assert.match(advancedBody, /<ConnectionEndpointField/);
+    assert.doesNotMatch(advancedBody, /<Selector|<ModelPicker|<EnabledModelManager|testConnection|updateModels/);
     // The last-test message goes through the display helper in the extracted
     // controller (use-connection-detail.ts); the view renders the derived value.
     assert.match(src, /connectionLastTestMessageDisplay\(connection\.lastTestMessage, locale\)/);
@@ -761,37 +751,51 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
   });
 
-  it('renders the full model catalog as one named checkbox list', async () => {
+  it('delegates enabled-model selection to Astryx CheckboxList', async () => {
     const src = await readProviderSettingsCombinedSource();
     const enabledModels = src.match(/function EnabledModelManager[\s\S]*?function modelDisplayLabel/)?.[0] ?? '';
 
-    // One persistent list of every candidate model; enabled state is a checkbox
-    // reflecting `enabledModelIds`, not a separate search-only "add" surface.
     assert.match(
       enabledModels,
-      /<ul\s+ref=\{modelListRef\}\s+className="providerModelChoiceList"\s+aria-label=\{copy\.modelListAria\}\s+onKeyDown=\{onModelListKeyDown\}\s*>/,
-      'the model catalog must use a single named native list with the roving-tabindex keyboard handler',
+      /<CheckboxList[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*description=\{copy\.enabledModelsHelp\}/,
+      'Astryx must own the visible field label and description',
     );
     assert.match(
       enabledModels,
-      /role="checkbox"\s+aria-checked=\{isEnabled\}/,
-      'each model row is a checkbox reflecting its enabled state',
-    );
-    // Roving tabindex: exactly one row is a Tab stop; the rest are -1.
-    assert.match(
-      enabledModels,
-      /tabIndex=\{row\.id === resolvedActiveRowId \? 0 : -1\}/,
-      'model rows must rove a single tabIndex=0 so the list is one Tab stop',
+      /value=\{props\.enabledModelIds\}[\s\S]*onChange=\{props\.onChange\}/,
+      'the canonical checklist must read and write the existing enabledModelIds authority directly',
     );
     assert.match(
       enabledModels,
-      /<OverlayScrollArea className="providerModelChoiceScroll">/,
-      'the list scrolls inside a fixed-height region so filtering never resizes the dialog',
+      /<CheckboxListItem[\s\S]*value=\{row\.id\}[\s\S]*isDisabled=\{row\.id === props\.defaultModel\}/,
+      'the default model must remain selected and locked through the Astryx item',
     );
     assert.doesNotMatch(
       enabledModels,
-      /role="radio"|role="list"|role="listitem"/,
-      'native list markup must not add redundant or incorrect ARIA roles',
+      /MultiSelector|TextInput|OverlayScrollArea|modelListRef|activeRowId|onModelListKeyDown|visibleRows|query/,
+      'Maka must not retain search or duplicate Astryx focus and checkbox behavior',
+    );
+  });
+
+  it('delegates connection-default selection to Astryx Selector', async () => {
+    const src = await readProviderSettingsCombinedSource();
+    const detail =
+      src.match(/function ConnectionDetailInner[\s\S]*?function GitHubCopilotReloginNotice/)?.[0] ?? '';
+
+    assert.match(
+      detail,
+      /<Selector[\s\S]*label=\{copy\.connectionDefaultModel\}[\s\S]*description=\{copy\.connectionDefaultModelHelp\}[\s\S]*options=\{defaultModelOptions\}[\s\S]*value=\{connection\.defaultModel\}/,
+    );
+    assert.doesNotMatch(
+      detail,
+      /<Selector[\s\S]*(?:hasSearch|searchPlaceholder=)/,
+      'the default-model field must not expose Astryx search states that Maka cannot localize',
+    );
+    assert.match(detail, /onChange=\{\(model\) => void updateDefaultModel\(model\)\}/);
+    assert.doesNotMatch(
+      detail,
+      /ModelPicker|modelChoiceValue|parseModelChoiceValue|ModelMenuGroup/,
+      'the single-connection field must use Astryx directly instead of the cross-provider product picker',
     );
   });
 
@@ -804,10 +808,13 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       detail,
       /async function updateEnabledModels\(nextIds: string\[\]\)[\s\S]*connectionEnabledModelIds\([\s\S]*props\.bridge\.update\(connection\.slug, \{ enabledModelIds: next \}\)[\s\S]*await props\.onChanged\(\)/,
     );
-    // The default model row is checked and locked (disabled), never toggled off,
-    // and there is no second Save action inside the editor.
-    assert.match(enabledModels, /disabled=\{props\.disabled \|\| isDefault\}/);
-    assert.match(enabledModels, /isDefault && \([\s\S]*providerEnabledModelMeta">\{copy\.defaultModel\}/);
+    // The default model option is selected and locked (disabled), never toggled
+    // off, and there is no second Save action inside the editor.
+    assert.match(
+      enabledModels,
+      /isDisabled=\{row\.id === props\.defaultModel\}/,
+    );
+    assert.match(enabledModels, /description=\{copy\.enabledModelsHelp\}/);
     assert.doesNotMatch(enabledModels, /copy\.saving|copy\.saveEndpoint/);
   });
 
@@ -825,10 +832,9 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       /async function remove\(\) \{[\s\S]*setDeleting\(true\);[\s\S]*let deleted = false;[\s\S]*await props\.bridge\.delete\(connection\.slug\);[\s\S]*deleted = true;[\s\S]*await props\.onDeleted\(\);[\s\S]*catch \(error\) \{[\s\S]*toast\.error\([\s\S]*deleted \? copy\.refreshFailed : copy\.deleteFailed/,
       'ConnectionDetail delete failures and post-delete refresh failures must be visible',
     );
-    // #1565 PR 3: Astryx Button — `quiet`→`ghost`, `isDisabled`, `label` prop.
     assert.match(
       detail,
-      /<Button className="providerAdvancedDanger" variant="ghost" isDisabled=\{detailActionBusy\} onClick=\{remove\} label=\{deleting \? copy\.deleting : copy\.deleteConnection\} \/>/,
+      /<Button variant="destructive" isDisabled=\{detailActionBusy\} onClick=\{remove\} label=\{deleting \? copy\.deleting : copy\.deleteConnection\} \/>/,
       'Delete should be disabled while provider detail actions are busy and show its own pending copy',
     );
   });
@@ -869,6 +875,17 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(detail, /const supportsApiKey = providerAuthSupportsApiKey\(connection\.providerType\)/);
     assert.match(detail, /const requiresCredential = providerAuthRequiresSecret\(connection\.providerType\)/);
     assert.match(detail, /\{supportsApiKey && \([\s\S]*<PasswordInput/);
+  });
+
+  it('marks provider credentials required only when the provider requires them', async () => {
+    const src = await readProviderSettingsCombinedSource();
+    const addForm = src.match(/function AddProviderForm[\s\S]*?function ConnectionDetail/)?.[0] ?? '';
+
+    assert.equal(
+      addForm.match(/isRequired=\{requiresApiKey\}/g)?.length,
+      2,
+      'both the quick and full provider forms must expose the provider credential requirement',
+    );
   });
 
   it('provider detail async actions stop writing UI after the detail sheet is closed or switched', async () => {
@@ -983,7 +1000,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /setOpenModal\(card\.id\)/,
+      /openOAuthModal\(card\.id\)/,
       'all OAuth cards must open a modal from the grid',
     );
   });
@@ -1029,8 +1046,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /onClose=\{\(\)\s*=>\s*\{[\s\S]*?void refreshAfterOAuthChange\(\)/,
-      'modal onClose must call the fail-soft refresh helper',
+      /function handleModalOpenChange\(nextOpen: boolean\)[\s\S]*setIsModalOpen\(false\);[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*setOpenModal\(null\);[\s\S]*void refreshAfterOAuthChange\(\)/,
+      'closing Astryx must commit false before releasing the OAuth session and calling the fail-soft refresh helper',
     );
     assert.match(
       src,
@@ -1191,7 +1208,9 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
   it('GitHub Copilot modal rides the shared login flow through the direct account flow (#1042)', async () => {
     const src = await readProviderSettingsCombinedSource();
     const hook = await readFile(OAUTH_LOGIN_FLOW_HOOK_SOURCE, 'utf8');
-    const copilotModal = src.match(/function GitHubCopilotSubscriptionModal[\s\S]*?\n\}/)?.[0] ?? '';
+    const copilotModal = src.match(
+      /function GitHubCopilotSubscriptionModal[\s\S]*?interface SubscriptionDisplay/,
+    )?.[0] ?? '';
 
     // The modal consumes the shared controller instead of owning a separate
     // pending-action state machine.
@@ -1273,8 +1292,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       hook,
-      /async function refresh\(\): Promise<boolean> \{[\s\S]*const next = \(await bridge\.getAccountState\(\)\) as SubscriptionSnapshot;[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*setState\(next\);[\s\S]*catch \(error\) \{[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*return true;/,
-      'shared OAuth refresh must drop late state/error writes after unmount',
+      /async function refresh\(\): Promise<boolean> \{[\s\S]*const next = \(await bridge\.getAccountState\(\)\) as SubscriptionSnapshot;[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*setState\(next\);[\s\S]*catch \(error\) \{[\s\S]*if \(!oauthLoginFlowMountedRef\.current\) return false;[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*return false;[\s\S]*return true;/,
+      'shared OAuth refresh must report failure and drop late state/error writes after unmount',
     );
     assert.match(
       hook,
@@ -1322,6 +1341,11 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(browserModal, /flow\.pendingAction === 'logout' \? copy\.loggingOut : copy\.logout/, 'browser OAuth logout must expose locale-specific progress feedback');
     assert.match(claudeCard, /const refresh = async \(\) => \{[\s\S]*catch \(error\) \{[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth state refresh must surface thrown failures');
     assert.match(claudeCard, /settingsErrorText" role="alert"\>\{pasteError\}/, 'Claude OAuth refresh failures must be visible in the modal body');
+    assert.match(
+      claudeCard,
+      /<TextArea[\s\S]*status=\{pasteError \? \{ type: 'error', message: pasteError \} : undefined\}/,
+      'the active paste field must own its validation status and message',
+    );
     assert.match(claudeCard, /catch \(error\) \{[\s\S]*toast\.error\(copy\.startFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth start must toast thrown failures');
     assert.match(claudeCard, /catch \(error\) \{[\s\S]*toast\.error\(copy\.submitFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth paste submit must toast thrown failures');
     assert.match(claudeCard, /catch \(error\) \{[\s\S]*toast\.error\(copy\.cancelFailed, subscriptionActionErrorMessage\(error, locale\)\);/, 'Claude OAuth cancel must toast thrown failures');

@@ -8,7 +8,6 @@ import type {
 } from '@maka/core/usage-stats/types';
 import { throwDeduplicatedFailures } from './failure-utils.js';
 import {
-  createPricingStore,
   PricingCommitUnknownError,
   PricingRevisionConflictError,
   PricingStoreClosedError,
@@ -26,7 +25,6 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 import {
-  createTelemetryRepo,
   TelemetryQueryValidationError,
   TelemetryRepoClosedError,
   TelemetryRepoNotLoadedError,
@@ -36,6 +34,7 @@ import {
   type TelemetryRepo,
   type ToolUsageQuery,
 } from './telemetry-repo.js';
+import { createSqlitePricingStore, createSqliteTelemetryRepo } from './sqlite-usage-store.js';
 
 const readerBrand: unique symbol = Symbol('InteractiveUsageStoresReader');
 const writerBrand: unique symbol = Symbol('InteractiveUsageStoresWriter');
@@ -251,15 +250,14 @@ async function openRepos(
   root: string,
   createIfMissing: boolean,
 ): Promise<{ telemetry: TelemetryRepo; pricing: PricingStore }> {
-  const telemetry = createTelemetryRepo(root, { createIfMissing, managePricing: false });
+  const telemetry = createSqliteTelemetryRepo(root, { createIfMissing, managePricing: false });
   await telemetry.load();
-  const pricing = createPricingStore(root, {
+  const pricing = createSqlitePricingStore(root, {
     createIfMissing,
     initialOverrides: telemetry.legacyPricingOverrides(),
   });
   try {
     await pricing.load();
-    if (createIfMissing) await telemetry.publishCanonical();
     return { telemetry, pricing };
   } catch (error) {
     const closed = await Promise.allSettled([telemetry.close(), pricing.close()]);

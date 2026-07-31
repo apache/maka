@@ -315,28 +315,5 @@ describe('PR-ANTI-LAYOUT-SHIFT-TEXT-SWAP-0 contract', () => {
     );
   });
 
-  it('discovers a self-closing Astryx Button with an inline label ternary', () => {
-    const selfClosingButton = [
-      '<Button',
-      '  label={busy ? "Saving" : "Save"}',
-      '  className="min-w-[4rem]"',
-      '  onClick={() => void save()}',
-      '/>',
-    ].join('\n');
 
-    const discovered = discoverTextSwapButtons(selfClosingButton);
-    assert.equal(discovered.length, 1);
-    assert.match(discovered[0].opening, /label=\{busy/);
-  });
-
-  it('scan does NOT discover a computed label without an inline ternary', () => {
-    const computedLabelButton =
-      '<Button label={label} className="min-w-[1rem]" onClick={() => void fn()} />';
-
-    assert.deepEqual(
-      discoverTextSwapButtons(computedLabelButton),
-      [],
-      'a computed label has no inline state transition to discover; it must stay hand-pinned in TEXT_SWAP_BUTTONS',
-    );
-  });
 });

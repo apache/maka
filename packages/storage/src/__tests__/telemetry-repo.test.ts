@@ -172,6 +172,57 @@ describe('FileTelemetryRepo', () => {
     });
   });
 
+  test('keeps a compaction that made the request bigger', async () => {
+    // `estimatedTokensSaved` is a signed difference, not a count: a compaction
+    // that grew the request saves a negative number of tokens, and that is the
+    // outcome most worth being able to see. The producer says so in the field's
+    // own name (`estimatedTokensSavedSigned`), and the shape validator reads it
+    // with `isOptionalFiniteNumber`.
+    //
+    // A blanket "no negative numbers anywhere under contextBudget" sweep
+    // contradicted both, and the contradiction was not cheap: decoding throws
+    // on the first record it cannot read, so eight such decisions made all 1297
+    // records in a real telemetry file unreadable.
+    await withRepo(async (repo, root) => {
+      await repo.load();
+      await repo.insertLlmCall(
+        llmRecord({
+          contextBudget: {
+            enabled: true,
+            estimatedTokensBefore: 10,
+            estimatedTokensAfter: 12,
+            keptTurns: 1,
+            droppedTurns: 0,
+            keptEvents: 2,
+            droppedEvents: 0,
+            compactionDecisions: [
+              {
+                stage: 'activeStep',
+                sourceKind: 'runtimeEvents',
+                decision: 'replaced',
+                estimatedTokensSaved: -396,
+              },
+            ],
+          },
+        }),
+      );
+      await repo.flush?.();
+
+      const reopened = createTelemetryRepo(root);
+      await reopened.load();
+      const rows = reopened.logs({ range: 'all' }).rows;
+      assert.equal(rows.length, 1, 'the file still decodes');
+      const decisions = rows[0]?.contextBudget?.compactionDecisions as
+        | Array<{ estimatedTokensSaved: number }>
+        | undefined;
+      assert.equal(
+        decisions?.[0]?.estimatedTokensSaved,
+        -396,
+        'and the negative saving survives the round trip',
+      );
+    });
+  });
+
   test('owns admitted records and returns detached frozen diagnostics', async () => {
     await withRepo(async (repo, root) => {
       await repo.load();
@@ -225,6 +276,57 @@ describe('FileTelemetryRepo', () => {
                 droppedTurns: 0,
                 keptEvents: 0,
                 droppedEvents: 0,
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: true,
+                estimatedTokensBefore: 10,
+                estimatedTokensAfter: 12,
+                keptTurns: 1,
+                droppedTurns: 0,
+                keptEvents: 2,
+                droppedEvents: 0,
+                compactionDecisions: [
+                  {
+                    stage: 'activeStep',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'replaced',
+                    estimatedTokensSaved: -2,
+                    coveredTurns: -1,
+                  },
+                ],
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: true,
+                estimatedTokensBefore: 10,
+                estimatedTokensAfter: 12,
+                keptTurns: 1,
+                droppedTurns: 0,
+                keptEvents: 2,
+                droppedEvents: 0,
+                compactionDecisions: [
+                  {
+                    stage: 'activeStep',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'failedOpen',
+                    validationReasonCounts: { malformed: -1 },
+                  },
+                ],
               },
             }),
           ),

@@ -11,7 +11,7 @@ import {
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Alert, AlertDescription, AlertTitle, Button, Chip, Input, useMountedRef, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, AlertTitle, Button, Chip, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
@@ -22,6 +22,19 @@ import {
   type ConnectionsBridge,
 } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+
+type ProviderFormField =
+  | 'slug'
+  | 'apiKey'
+  | 'accountId'
+  | 'baseUrl'
+  | 'defaultModel'
+  | 'form';
+
+type ProviderFormError = {
+  field: ProviderFormField;
+  message: string;
+};
 
 export function AddProviderForm(props: {
   bridge: ConnectionsBridge;
@@ -43,7 +56,7 @@ export function AddProviderForm(props: {
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState(recommendedDefaultModel);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ProviderFormError | null>(null);
   const [busy, setBusy] = useState(false);
   const submitGuard = useActionGuard<'submit'>();
   const addProviderMountedRef = useMountedRef();
@@ -59,25 +72,57 @@ export function AddProviderForm(props: {
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
 
+  function clearFieldError(field: ProviderFormField) {
+    setError((current) =>
+      current?.field === field ? null : current,
+    );
+  }
+
   async function submit() {
     if (submitGuard.current !== null) return;
     setError(null);
     const slugError = validateSlug(slug);
-    if (slugError) return setError(locale === 'zh' ? slugError : copy.invalidSlug);
-    if (props.existingSlugs.includes(slug)) return setError(copy.duplicateSlug);
+    if (slugError) {
+      return setError({
+        field: 'slug',
+        message: locale === 'zh' ? slugError : copy.invalidSlug,
+      });
+    }
+    if (props.existingSlugs.includes(slug)) {
+      return setError({ field: 'slug', message: copy.duplicateSlug });
+    }
     const normalizedApiKey = apiKey.trim();
-    if (requiresApiKey && !normalizedApiKey) return setError(copy.keyRequired(display.name));
+    if (requiresApiKey && !normalizedApiKey) {
+      return setError({
+        field: 'apiKey',
+        message: copy.keyRequired(display.name),
+      });
+    }
     const normalizedCloudflareAccountId = cloudflareAccountId.trim();
     if (isCloudflareWorkersAi && !normalizedCloudflareAccountId) {
-      return setError(copy.cloudflareAccount);
+      return setError({
+        field: 'accountId',
+        message: copy.cloudflareAccount,
+      });
     }
-    if (requiresBaseUrl && !baseUrl.trim()) return setError(copy.endpointRequired);
+    if (requiresBaseUrl && !baseUrl.trim()) {
+      return setError({
+        field: 'baseUrl',
+        message: copy.endpointRequired,
+      });
+    }
     const normalizedDefaultModel = defaultModel.trim();
-    if (isCustomRelay && !normalizedDefaultModel) return setError(copy.defaultModelRequired);
+    if (isCustomRelay && !normalizedDefaultModel) {
+      return setError({
+        field: 'defaultModel',
+        message: copy.defaultModelRequired,
+      });
+    }
     if (isExperimental) {
-      return setError(isWiredOAuth
-        ? copy.wiredLogin
-        : copy.unwiredLogin);
+      return setError({
+        field: 'form',
+        message: isWiredOAuth ? copy.wiredLogin : copy.unwiredLogin,
+      });
     }
     submitGuard.begin('submit');
     setBusy(true);
@@ -108,7 +153,12 @@ export function AddProviderForm(props: {
       if (!addProviderMountedRef.current) return;
       await props.onCreated(connection.slug, modelDiscoveryError);
     } catch (err) {
-      if (addProviderMountedRef.current) setError(providerPanelActionErrorMessage(err, locale));
+      if (addProviderMountedRef.current) {
+        setError({
+          field: 'form',
+          message: providerPanelActionErrorMessage(err, locale),
+        });
+      }
     } finally {
       submitGuard.finish();
       if (addProviderMountedRef.current) setBusy(false);
@@ -121,27 +171,33 @@ export function AddProviderForm(props: {
   }
 
   if (usesApiKeyDialog) {
-    const errorId = `provider-key-dialog-${props.providerType}-error`;
     return (
       <form className="providerKeyDialogForm" onSubmit={submitApiKey}>
-        <label>
-          <span>API Key</span>
-          <PasswordInput
-            value={apiKey}
-            onChange={(next) => {
-              setApiKey(next);
-              if (error) setError(null);
-            }}
-            placeholder={copy.apiKeyPlaceholder}
-            ariaLabel="API Key"
-            ariaDescribedBy={error ? errorId : undefined}
-            disabled={busy}
-          />
-        </label>
-        {error && <p className="providerError" id={errorId} role="alert">{error}</p>}
+        <PasswordInput
+          value={apiKey}
+          onChange={(next) => {
+            setApiKey(next);
+            clearFieldError('apiKey');
+          }}
+          placeholder={copy.apiKeyPlaceholder}
+          label={copy.apiKeyLabel(requiresApiKey)}
+          isRequired={requiresApiKey}
+          status={
+            error?.field === 'apiKey'
+              ? { type: 'error', message: error.message }
+              : undefined
+          }
+          isDisabled={busy}
+          hasAutoFocus
+        />
+        {error?.field === 'form' && (
+          <Alert variant="error">
+            <AlertDescription>{error.message}</AlertDescription>
+          </Alert>
+        )}
         <div className="providerKeyDialogActions">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
-          <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.connecting : copy.connect} />
+          <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.saving : copy.save} />
         </div>
       </form>
     );
@@ -160,66 +216,107 @@ export function AddProviderForm(props: {
             : copy.unwiredDetail}</AlertDescription>
         </Alert>
       )}
-      {supportsApiKey && (
-        <label>
-          <span>{copy.apiKeyLabel(requiresApiKey)}</span>
+      <FormLayout>
+        {supportsApiKey && (
           <PasswordInput
             value={apiKey}
             onChange={(next) => {
               setApiKey(next);
-              if (error) setError(null);
+              clearFieldError('apiKey');
             }}
             placeholder={copy.apiKeyPlaceholder}
-            ariaLabel={`${display.name} ${copy.apiKey}`}
-            disabled={isExperimental || busy}
+            label={copy.apiKeyLabel(requiresApiKey)}
+            isRequired={requiresApiKey}
+            isDisabled={isExperimental || busy}
+            status={
+              error?.field === 'apiKey'
+                ? { type: 'error', message: error.message }
+                : undefined
+            }
           />
-        </label>
-      )}
-      <label>
-        <span>{copy.slug}</span>
-        <Input value={slug} onChange={(event) => setSlug(event.currentTarget.value)} placeholder="my-provider" disabled={isExperimental || busy} aria-label={copy.slugAria} />
-      </label>
-      <label>
-        <span>{copy.name}</span>
-        <Input value={name} onChange={(event) => setName(event.currentTarget.value)} placeholder={display.name} disabled={isExperimental || busy} aria-label={copy.nameAria} />
-      </label>
-      {isCloudflareWorkersAi ? (
-        <label>
-          <span>{copy.accountIdLabel}</span>
-          <Input
+        )}
+        <TextInput
+          value={slug}
+          onChange={(value) => {
+            setSlug(value);
+            clearFieldError('slug');
+          }}
+          placeholder="my-provider"
+          isDisabled={isExperimental || busy}
+          label={copy.slug}
+          status={
+            error?.field === 'slug'
+              ? { type: 'error', message: error.message }
+              : undefined
+          }
+        />
+        <TextInput
+          value={name}
+          onChange={(value) => setName(value)}
+          placeholder={display.name}
+          isDisabled={isExperimental || busy}
+          label={copy.name}
+        />
+        {isCloudflareWorkersAi ? (
+          <TextInput
             value={cloudflareAccountId}
-            onChange={(event) => setCloudflareAccountId(event.currentTarget.value)}
+            onChange={(value) => {
+              setCloudflareAccountId(value);
+              clearFieldError('accountId');
+            }}
             placeholder={copy.accountIdPlaceholder}
-            disabled={busy}
-            aria-label={copy.accountIdAria}
+            isDisabled={busy}
+            label={copy.accountIdLabel}
+            isRequired
+            status={
+              error?.field === 'accountId'
+                ? { type: 'error', message: error.message }
+                : undefined
+            }
           />
-        </label>
-      ) : (
-        <label>
-          <span>{copy.endpointLabel(requiresBaseUrl)}</span>
-          <Input
+        ) : (
+          <TextInput
             value={baseUrl}
-            onChange={(event) => setBaseUrl(event.currentTarget.value)}
+            onChange={(value) => {
+              setBaseUrl(value);
+              clearFieldError('baseUrl');
+            }}
             placeholder={defaults.baseUrl || 'https://…'}
-            disabled={isExperimental || busy}
-            aria-label={copy.endpointAria}
+            isDisabled={isExperimental || busy}
+            label={copy.endpointLabel(requiresBaseUrl)}
+            isRequired={requiresBaseUrl}
+            status={
+              error?.field === 'baseUrl'
+                ? { type: 'error', message: error.message }
+                : undefined
+            }
           />
-        </label>
-      )}
-      {showsDefaultModel && (
-        <label>
-          <span>{copy.defaultModel}</span>
-          <Input
+        )}
+        {showsDefaultModel && (
+          <TextInput
             value={defaultModel}
-            onChange={(event) => setDefaultModel(event.currentTarget.value)}
+            onChange={(value) => {
+              setDefaultModel(value);
+              clearFieldError('defaultModel');
+            }}
             placeholder={copy.defaultModelPlaceholder}
-            disabled={isExperimental || busy}
-            aria-label={copy.defaultModelAria}
+            isDisabled={isExperimental || busy}
+            label={copy.defaultModel}
+            description={copy.defaultModelHelp}
+            isRequired={isCustomRelay}
+            status={
+              error?.field === 'defaultModel'
+                ? { type: 'error', message: error.message }
+                : undefined
+            }
           />
-          <small>{copy.defaultModelHelp}</small>
-        </label>
+        )}
+      </FormLayout>
+      {error?.field === 'form' && (
+        <Alert variant="error">
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
       )}
-      {error && <p className="providerError" role="alert">{error}</p>}
       <div className="providerActions">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
         <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />

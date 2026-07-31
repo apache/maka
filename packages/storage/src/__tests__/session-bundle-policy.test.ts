@@ -22,7 +22,11 @@ import {
   planSessionBundleExport,
   type SessionBundleExportError,
 } from '../session-bundle-policy.js';
-import { createArtifactStore, createArtifactStoreWriteAuthority } from '../artifact-store.js';
+import {
+  createArtifactStore,
+  createArtifactStoreWriteAuthority,
+  createSqliteArtifactStore,
+} from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
@@ -60,7 +64,7 @@ test('exports one session only and excludes credential/config canaries', async (
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, contents);
     }
-    const artifacts = createArtifactStore(stateRoot);
+    const artifacts = createSqliteArtifactStore(stateRoot);
     const selectedArtifact = await artifacts.create({
       id: 'selected-output',
       sessionId: selected.id,
@@ -98,6 +102,8 @@ test('exports one session only and excludes credential/config canaries', async (
     await writeFile(join(stateRoot, 'credentials.json'), 'super-secret-api-key');
     await writeFile(join(stateRoot, 'llm-connections.json'), 'host-provider-config');
     await writeFile(join(stateRoot, '.maka_cli_claude_device_id'), 'device-identity');
+    await mkdir(join(stateRoot, 'task-runs'));
+    await writeFile(join(stateRoot, 'task-runs', 'headless-ledger.jsonl'), 'headless-only\n');
     await writeFile(join(configRoot, 'credentials.json'), 'config-secret-canary');
 
     const plan = await exportSessionBundleState({
@@ -114,9 +120,11 @@ test('exports one session only and excludes credential/config canaries', async (
         '.maka_cli_claude_device_id',
         'credentials.json',
         'llm-connections.json',
-        'sessions.sqlite',
         `artifacts/${other.id}`,
+        'runtime.sqlite-shm',
+        'runtime.sqlite-wal',
         `sessions/${other.id}`,
+        'task-runs',
       ].sort(),
     );
     const exportedTranscript = await readFile(
@@ -140,21 +148,35 @@ test('exports one session only and excludes credential/config canaries', async (
     await assert.rejects(readFile(join(destinationRoot, 'sessions', other.id, 'session.jsonl')));
     await assert.rejects(readFile(join(destinationRoot, 'sessions.sqlite')));
     await assert.rejects(readFile(join(destinationRoot, 'artifacts', otherArtifact.relativePath)));
-    assert.match(
-      await readFile(join(destinationRoot, 'artifacts', 'metadata.jsonl'), 'utf8'),
-      new RegExp(`"sessionId":"${selected.id}"`),
-    );
-    assert.doesNotMatch(
-      await readFile(join(destinationRoot, 'artifacts', 'metadata.jsonl'), 'utf8'),
-      new RegExp(other.id),
-    );
-    const reopenedArtifacts = createArtifactStore(destinationRoot);
-    assert.deepEqual(await reopenedArtifacts.list(selected.id), [selectedArtifact]);
-    assert.deepEqual(await reopenedArtifacts.list(other.id), []);
-    assert.deepEqual(await reopenedArtifacts.readText(selectedArtifact.id), {
-      ok: true,
-      text: 'session output\n',
+    await assert.rejects(lstat(join(destinationRoot, 'artifacts', 'metadata.jsonl')), {
+      code: 'ENOENT',
     });
+    await assert.rejects(lstat(join(destinationRoot, 'task-runs')), { code: 'ENOENT' });
+    const reopenedArtifacts = createSqliteArtifactStore(destinationRoot);
+    try {
+      assert.deepEqual(await reopenedArtifacts.list(selected.id), [selectedArtifact]);
+      assert.deepEqual(await reopenedArtifacts.list(other.id), []);
+      assert.deepEqual(await reopenedArtifacts.readText(selectedArtifact.id), {
+        ok: true,
+        text: 'session output\n',
+      });
+      const createdAfterRestore = await reopenedArtifacts.create({
+        id: 'restored-write',
+        sessionId: selected.id,
+        turnId: 'turn-2',
+        name: 'restored.txt',
+        kind: 'file',
+        content: 'restored write\n',
+        now: 12,
+      });
+      assert.deepEqual(await reopenedArtifacts.readText(createdAfterRestore.id), {
+        ok: true,
+        text: 'restored write\n',
+      });
+    } finally {
+      reopenedArtifacts.close?.();
+      artifacts.close?.();
+    }
     const exportedRuntime = createSqliteRuntimeStore(join(destinationRoot, 'runtime.sqlite'));
     try {
       assert.equal((await exportedRuntime.readSessionRuntimeEvents(selected.id)).length, 1);
@@ -182,7 +204,7 @@ test('exports one session only and excludes credential/config canaries', async (
   });
 });
 
-test('exports while the session metadata WAL remains open and protects its sidecars', async () => {
+test('exports while the operational DB remains open and protects its sidecars', async () => {
   await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
     const sessions = createSessionStore(stateRoot);
     try {
@@ -195,7 +217,7 @@ test('exports while the session metadata WAL remains open and protects its sidec
         text: 'selected transcript',
       });
 
-      const sidecars = ['sessions.sqlite-wal', 'sessions.sqlite-shm'];
+      const sidecars = ['runtime.sqlite-wal', 'runtime.sqlite-shm'];
       const liveEntries = await readdir(stateRoot);
       for (const sidecar of sidecars) {
         assert.ok(liveEntries.includes(sidecar), liveEntries.join(', '));
@@ -228,6 +250,86 @@ test('exports while the session metadata WAL remains open and protects its sidec
     } finally {
       await sessions.close?.();
     }
+  });
+});
+
+test('exports legacy Artifact metadata into SQLite regardless of source record order', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessionId = await createSelectedSession(stateRoot);
+    const artifacts = createArtifactStore(stateRoot);
+    const later = await artifacts.create({
+      id: 'later-artifact',
+      sessionId,
+      turnId: 'turn-1',
+      name: 'later.txt',
+      kind: 'file',
+      content: 'later\n',
+      now: 2,
+    });
+    const earlier = await artifacts.create({
+      id: 'earlier-artifact',
+      sessionId,
+      turnId: 'turn-1',
+      name: 'earlier.txt',
+      kind: 'file',
+      content: 'earlier\n',
+      now: 1,
+    });
+
+    await exportSessionBundleState({ stateRoot, configRoot, destinationRoot, sessionId });
+
+    await assert.rejects(lstat(join(destinationRoot, 'artifacts', 'metadata.jsonl')), {
+      code: 'ENOENT',
+    });
+    const reopened = createSqliteArtifactStore(destinationRoot);
+    try {
+      assert.deepEqual(await reopened.list(sessionId), [later, earlier]);
+    } finally {
+      reopened.close?.();
+    }
+  });
+});
+
+test('fails closed when legacy Artifact evidence changes after SQLite cutover', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessionId = await createSelectedSession(stateRoot);
+    const legacy = createArtifactStore(stateRoot);
+    await legacy.create({
+      id: 'before-cutover',
+      sessionId,
+      turnId: 'turn-1',
+      name: 'before.txt',
+      kind: 'file',
+      content: 'before\n',
+      now: 1,
+    });
+    const sqlite = createSqliteArtifactStore(stateRoot);
+    try {
+      assert.equal((await sqlite.list(sessionId)).length, 1);
+    } finally {
+      sqlite.close?.();
+    }
+
+    await legacy.create({
+      id: 'stale-writer',
+      sessionId,
+      turnId: 'turn-2',
+      name: 'stale.txt',
+      kind: 'file',
+      content: 'stale\n',
+      now: 2,
+    });
+
+    await assert.rejects(
+      exportSessionBundleState({ stateRoot, configRoot, destinationRoot, sessionId }),
+      (error: unknown) => {
+        const exportError = error as SessionBundleExportError;
+        assert.equal(exportError.code, 'unsupported_entry');
+        assert.match(exportError.message, /Artifact metadata changed during session bundle export/);
+        return true;
+      },
+    );
+    await assert.rejects(readdir(destinationRoot), { code: 'ENOENT' });
   });
 });
 
@@ -462,11 +564,16 @@ test('authority recovery removes canonical root temps before bundle export', asy
       destinationRoot,
       sessionId,
     });
-    assert.deepEqual(await createArtifactStore(destinationRoot).list(sessionId), [record]);
-    assert.deepEqual(await createArtifactStore(destinationRoot).readText(record.id), {
-      ok: true,
-      text: 'canonical payload\n',
-    });
+    const reopened = createSqliteArtifactStore(destinationRoot);
+    try {
+      assert.deepEqual(await reopened.list(sessionId), [record]);
+      assert.deepEqual(await reopened.readText(record.id), {
+        ok: true,
+        text: 'canonical payload\n',
+      });
+    } finally {
+      reopened.close?.();
+    }
   });
 });
 

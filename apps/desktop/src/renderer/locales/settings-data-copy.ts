@@ -16,7 +16,7 @@ export type DataSettingsCopy = {
   };
   actionsAria: string; opening: string; openWorkspace: string; copying: string; copyPath: string; clearing: string; clearHistory: string;
   backupNotice: string; pathLoadFailed(error: string): string; configAria: string; configTitle: string; configHelp: string; categoryAria: string;
-  exportCategory(label: string): string; sensitiveWarning: string; importConflict: string; conflictAria: string; skip: string; overwrite: string;
+  sensitiveWarning: string; conflictAria: string; skip: string; overwrite: string;
   exporting: string; exportConfig: string; importing: string; importConfig: string;
 };
 
@@ -46,8 +46,8 @@ const SETTINGS_DATA_COPY = {
     backupNotice: '本机数据保存在工作区。需要备份时先退出 Maka，再复制整个目录；恢复时替换同一路径后重启。模型连接凭据随工作区恢复后需要重新测试；订阅账号令牌通常需要重新登录。',
     pathLoadFailed: (error) => `无法载入工作区路径：${error}`, configAria: '配置导入导出', configTitle: '配置导入导出',
     configHelp: '勾选要导出的内容，生成一个 JSON 备份文件；换机或重装时可再导入。默认不含密钥。', categoryAria: '选择导出内容',
-    exportCategory: (label) => `导出${label}`, sensitiveWarning: '⚠️ 密钥将以明文写入导出文件。任何拿到该文件的人都能使用这些密钥，请妥善保管、不要分享。',
-    importConflict: '导入时同名连接：', conflictAria: '导入时同名连接的处理方式', skip: '跳过', overwrite: '覆盖', exporting: '导出中…', exportConfig: '导出配置…', importing: '导入中…', importConfig: '导入配置…',
+    sensitiveWarning: '⚠️ 密钥将以明文写入导出文件。任何拿到该文件的人都能使用这些密钥，请妥善保管、不要分享。',
+    conflictAria: '导入时同名连接的处理方式', skip: '跳过', overwrite: '覆盖', exporting: '导出中…', exportConfig: '导出配置…', importing: '导入中…', importConfig: '导入配置…',
   },
   en: {
     categories: {
@@ -74,8 +74,8 @@ const SETTINGS_DATA_COPY = {
     backupNotice: 'Local data is stored in the workspace. To back it up, quit Maka and copy the entire directory. To restore it, replace the same path and restart. Model credentials should be tested again after a restore, and subscription accounts usually need to sign in again.',
     pathLoadFailed: (error) => `Could not load workspace path: ${error}`, configAria: 'Configuration import and export', configTitle: 'Configuration import and export',
     configHelp: 'Select the content to export into a JSON backup. You can import it after moving devices or reinstalling. Secrets are excluded by default.', categoryAria: 'Select export content',
-    exportCategory: (label) => `Export ${label}`, sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',
-    importConflict: 'Connections with the same name:', conflictAria: 'How to handle connections with the same name during import', skip: 'Skip', overwrite: 'Overwrite', exporting: 'Exporting…', exportConfig: 'Export configuration…', importing: 'Importing…', importConfig: 'Import configuration…',
+    sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',
+    conflictAria: 'How to handle connections with the same name during import', skip: 'Skip', overwrite: 'Overwrite', exporting: 'Exporting…', exportConfig: 'Export configuration…', importing: 'Importing…', importConfig: 'Import configuration…',
   },
 } satisfies UiCatalog<DataSettingsCopy>;
 

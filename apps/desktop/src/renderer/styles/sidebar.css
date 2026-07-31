@@ -469,7 +469,7 @@
 
 .maka-list-row-menu-trigger:hover,
 .maka-list-row-menu-trigger:focus-visible,
-.maka-list-row-menu-trigger[data-popup-open] {
+.maka-list-row-menu-trigger[aria-expanded="true"] {
   background: var(--state-hover-bg);
   color: var(--foreground);
 }
@@ -689,7 +689,7 @@
   color: var(--foreground-secondary);
 }
 .maka-list-row-status-icon svg {
-  /* #743: restore <Icon size={12}> — buttonVariants' [&_svg]:size-[var(--icon-size,1rem)]
+  /* #743: restore <Icon size={12}> — the shared action's icon sizing
      would force 16px (chrome tier, a cascade leak from borrowing UiButton), so
      scope a local 12px dense-meta override. Only
      the chrome tier is tokenized; dense-meta stays call-site 12–14px and is NOT

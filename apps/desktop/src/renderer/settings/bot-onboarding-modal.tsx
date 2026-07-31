@@ -6,13 +6,15 @@ import type {
 } from '@maka/core';
 import {
   Button,
-  DialogContent,
-  DialogHeader,
-  DialogRoot,
   Spinner,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { AlertCircle, Check } from '@maka/ui/icons';
 import { BotBrandLogo } from './bot-chat-shared';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -21,7 +23,8 @@ import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bo
 export function BotOnboardingModal(props: {
   provider: BotOnboardingProvider;
   brand?: BotOnboardingBrand;
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onConnected(snapshot: BotOnboardingSnapshot): void | Promise<void>;
 }) {
   const mountedRef = useMountedRef();
@@ -125,9 +128,13 @@ export function BotOnboardingModal(props: {
     }
   }
 
-  function close() {
+  function requestClose() {
     cancelCurrent();
-    props.onClose();
+    props.onOpenChange(false);
+  }
+
+  function handleOpenChange(isOpen: boolean) {
+    if (!isOpen) requestClose();
   }
 
   const status = statusCopy(snapshot, starting, error, copy, locale);
@@ -138,18 +145,26 @@ export function BotOnboardingModal(props: {
     && snapshot?.state !== 'error';
 
   return (
-    <DialogRoot open onOpenChange={(open) => { if (!open) close(); }}>
-      <DialogContent
-        className="settingsBotOnboardingModal"
-        width={520}
-        aria-label={copy.ariaLabel}
-      >
-        <DialogHeader
-          icon={<BotBrandLogo provider={props.provider} size="large" />}
-          title={copy.title}
-          subtitle={copy.subtitle}
-          onClose={close}
-        />
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={handleOpenChange}
+      className="settingsBotOnboardingModal"
+      width={520}
+      aria-label={copy.ariaLabel}
+      padding={0}
+      purpose="form"
+    >
+      <Layout
+        header={
+          <DialogHeader
+            startContent={<BotBrandLogo provider={props.provider} size="large" />}
+            title={copy.title}
+            subtitle={copy.subtitle}
+            onOpenChange={handleOpenChange}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
         <div className="settingsBotOnboardingBody" aria-live="polite">
           <div className="settingsBotOnboardingQrFrame" data-state={snapshot?.state ?? (starting ? 'starting' : 'error')}>
             {showQr ? (
@@ -187,18 +202,20 @@ export function BotOnboardingModal(props: {
         </div>
         <div className="settingsBotOnboardingActions">
           {snapshot?.state === 'connected' ? (
-            <Button variant="primary" onClick={close} label={onboardingCopy.done} />
+            <Button variant="primary" onClick={requestClose} label={onboardingCopy.done} />
           ) : snapshot?.state === 'expired' || snapshot?.state === 'denied' || error ? (
             <Button variant="primary" onClick={() => void start()} label={onboardingCopy.regenerate} />
           ) : (
             <>
               <Button variant="secondary" isDisabled={starting} onClick={() => void start()} label={onboardingCopy.refreshQr} />
-              <Button variant="ghost" onClick={close} label={onboardingCopy.cancel} />
+              <Button variant="ghost" onClick={requestClose} label={onboardingCopy.cancel} />
             </>
           )}
         </div>
-      </DialogContent>
-    </DialogRoot>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }
 

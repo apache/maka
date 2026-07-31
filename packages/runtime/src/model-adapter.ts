@@ -191,7 +191,7 @@ export class ModelAdapter {
     );
     const sdkResult = streamText({
       model: trackedModel,
-      messages: input.messages,
+      messages: lowerNativeAudioMessages(input.messages),
       tools: schemaOnlyTools,
       activeTools: input.activeTools,
       repairToolCall: input.repairToolCall,
@@ -344,6 +344,31 @@ export class ModelAdapter {
         return 'end_turn';
     }
   }
+}
+
+/**
+ * AI SDK exposes native audio through its file content part. Keep Maka's
+ * explicit AudioPart until the one adapter boundary, then lower it without
+ * copying the bytes or allowing ordinary file attachments to opt into audio.
+ */
+export function lowerNativeAudioMessages(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.map((message) => {
+    if (message.role !== 'user' || typeof message.content === 'string') return message;
+    if (!message.content.some((part) => part.type === 'audio')) return message;
+    return {
+      ...message,
+      content: message.content.map((part) =>
+        part.type === 'audio'
+          ? {
+              type: 'file' as const,
+              data: { type: 'data' as const, data: part.data },
+              filename: `voice-input.${part.format}`,
+              mediaType: part.mediaType,
+            }
+          : part,
+      ),
+    };
+  });
 }
 
 function selectedModelMaxOutputTokens(

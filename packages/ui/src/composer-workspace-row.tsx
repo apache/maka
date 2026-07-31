@@ -7,9 +7,13 @@
  */
 
 import type { ProjectRecord } from '@maka/core';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Divider } from '@astryxdesign/core/Divider';
 import { useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, FolderOpen, GitBranch, Plus } from './icons.js';
-import { Menu, MenuItem, MenuSeparator } from './primitives/menu.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -54,7 +58,7 @@ export function ComposerWorkspaceRow(props: {
       {/* The workspace and branch pickers are standard compact menu
           triggers. Shared Button owns their visual and interaction states;
           local classes only constrain layout and label truncation. */}
-      <Menu
+      <DropdownMenu
         isMenuOpen={workspaceMenuOpen}
         onOpenChange={setWorkspaceMenuOpen}
         placement="above"
@@ -79,7 +83,7 @@ export function ComposerWorkspaceRow(props: {
       >
           <div className="maka-composer-project-scroll">
             {wp.projects.map((project) => (
-              <MenuItem
+              <DropdownMenuItem
                 key={project.id}
                 onClick={() => {
                   if (project.available) wp.onSelectProject(project.id);
@@ -97,16 +101,16 @@ export function ComposerWorkspaceRow(props: {
               />
             ))}
           </div>
-          <MenuSeparator />
-          <MenuItem
+          <Divider orientation="horizontal" />
+          <DropdownMenuItem
             onClick={() => {
               wp.onAdd();
             }}
             icon={<Plus size={13} aria-hidden="true" />}
             label={copy.addProject}
           />
-          <MenuSeparator />
-          <MenuItem
+          <Divider orientation="horizontal" />
+          <DropdownMenuItem
             className="maka-composer-no-project"
             onClick={() => {
               wp.onSelectNoProject();
@@ -116,12 +120,12 @@ export function ComposerWorkspaceRow(props: {
               <Check size={12} aria-hidden="true" className="maka-composer-project-check" />
             ) : undefined}
           />
-      </Menu>
+      </DropdownMenu>
       {props.branchPicker && (() => {
         const bp = props.branchPicker!;
         const triggerDisabled = bp.pending === true;
         return (
-          <Menu
+          <DropdownMenu
             onClick={bp.onOpen}
             placement="above"
             button={{
@@ -146,7 +150,7 @@ export function ComposerWorkspaceRow(props: {
                 <div className="maka-composer-branch-empty">{copy.noBranches}</div>
               ) : (
                 bp.branches.map((b) => (
-                  <MenuItem
+                  <DropdownMenuItem
                     key={b}
                     onClick={() => {
                       if (b === bp.branch) return;
@@ -160,7 +164,7 @@ export function ComposerWorkspaceRow(props: {
                   />
                 ))
               )}
-          </Menu>
+          </DropdownMenu>
         );
       })()}
     </div>

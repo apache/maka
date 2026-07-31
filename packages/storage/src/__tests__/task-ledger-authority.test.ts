@@ -39,6 +39,13 @@ describe('interactive task ledger authority', () => {
 
         assert.equal(changes.length, 1);
         assert.deepEqual(changes[0], [result.created[0]?.id]);
+
+        first.close();
+        assert.throws(() => authenticateInteractiveTaskLedgerWriter(first), isInvalidLease);
+        const reopened = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+        assert.notEqual(reopened, first);
+        assert.equal((await reopened.list(SESSION_ID)).length, 1);
+        reopened.close();
       } finally {
         if (!owner.closed) await owner.close();
       }
@@ -46,32 +53,35 @@ describe('interactive task ledger authority', () => {
   });
 
   test('reads a current legacy tasks.json as canonical when no event ledger exists', async () => {
-    await withInteractiveOwner(async ({ root, writer }) => {
-      await mkdir(join(root, 'sessions', SESSION_ID), { recursive: true });
-      await writeFile(
-        tasksPath(root),
-        JSON.stringify([
-          {
-            id: 'legacy-task',
-            subject: 'legacy canonical task',
-            status: 'pending',
-            createdAt: 1,
-            updatedAt: 1,
-          },
-        ]),
-        'utf8',
-      );
-
-      const listed = await writer.list(SESSION_ID);
-      assert.equal(listed.length, 1);
-      assert.equal(listed[0]?.id, 'legacy-task');
-      assert.equal(listed[0]?.key, 'T1');
-      assert.equal((await writer.get(SESSION_ID, 'T1'))?.subject, 'legacy canonical task');
-    });
+    await withInteractiveOwner(
+      async ({ writer }) => {
+        const listed = await writer.list(SESSION_ID);
+        assert.equal(listed.length, 1);
+        assert.equal(listed[0]?.id, 'legacy-task');
+        assert.equal(listed[0]?.key, 'T1');
+        assert.equal((await writer.get(SESSION_ID, 'T1'))?.subject, 'legacy canonical task');
+      },
+      async (root) => {
+        await mkdir(join(root, 'sessions', SESSION_ID), { recursive: true });
+        await writeFile(
+          tasksPath(root),
+          JSON.stringify([
+            {
+              id: 'legacy-task',
+              subject: 'legacy canonical task',
+              status: 'pending',
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ]),
+          'utf8',
+        );
+      },
+    );
   });
 
   test('fails closed on a corrupt event ledger even when a legacy cache exists', async () => {
-    await withInteractiveOwner(async ({ root, writer }) => {
+    await withInteractiveRoot(async ({ root, capability }) => {
       await mkdir(join(root, 'sessions', SESSION_ID), { recursive: true });
       await writeFile(
         tasksPath(root),
@@ -87,13 +97,17 @@ describe('interactive task ledger authority', () => {
         'utf8',
       );
       await writeFile(eventsPath(root), '{"not":"a task event"}\n', 'utf8');
-
-      await assert.rejects(() => writer.list(SESSION_ID), /Invalid task event JSONL line/);
-      await assert.rejects(() => writer.get(SESSION_ID, 'cached-task'), /Invalid task event JSONL/);
-      await assert.rejects(
-        () => writer.create(SESSION_ID, [{ subject: 'must not overwrite' }]),
-        /Invalid task event JSONL/,
-      );
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        await assert.rejects(
+          () => openInteractiveTaskLedgerStoreForWrite(owner.lease),
+          /Invalid task event JSONL line/,
+        );
+      } finally {
+        if (!owner.closed) await owner.close();
+      }
     });
   });
 
@@ -111,6 +125,7 @@ describe('interactive task ledger authority', () => {
         () => writer.create(SESSION_ID, [{ subject: 'after close' }]),
         isInvalidLease,
       );
+      writer.close();
     });
   });
 
@@ -146,17 +161,22 @@ describe('interactive task ledger authority', () => {
 
 async function withInteractiveOwner(
   run: (input: { root: string; writer: InteractiveTaskLedgerWriter }) => Promise<void>,
+  prepare?: (root: string) => Promise<void>,
 ): Promise<void> {
   await withInteractiveRoot(async ({ root, capability }) => {
+    await prepare?.(root);
     const owner = await tryAcquireInteractiveRootOwner(capability);
     assert.ok(owner);
     if (!owner) return;
+    let writer: InteractiveTaskLedgerWriter | undefined;
     try {
+      writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
       await run({
         root,
-        writer: await openInteractiveTaskLedgerStoreForWrite(owner.lease),
+        writer,
       });
     } finally {
+      writer?.close();
       if (!owner.closed) await owner.close();
     }
   });

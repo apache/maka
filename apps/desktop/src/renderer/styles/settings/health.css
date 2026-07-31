@@ -116,13 +116,12 @@
      as it is. The real oddity is this page putting a sentence in a pill; if the
      blockers row is ever reworked, prefer a text row over a Badge and this
      override can go. */
-  .settingsHealthBlockers .astryx-badge {
+  .settingsHealthBlockerBadge {
     flex-shrink: 1;
     min-width: 0;
     /* The badge pins its height for single-line pills, so wrapping without
        releasing that height clips the second line. (#1565 PR 3: selector and
-       height moved to the Astryx badge — .astryx-badge is the stable
-       component class it renders.) */
+       height moved to the Astryx badge.) */
     height: auto;
     padding-block: var(--space-0-5);
     white-space: normal;

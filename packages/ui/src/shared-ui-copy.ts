@@ -17,9 +17,11 @@ export interface SharedUiCopy {
     code: string;
     opensInNewTab: string;
     copyCode: string;
-    copyingCode: string;
     copiedCode: string;
-    copyCodeFailed: string;
+  };
+  formControls: {
+    selectPlaceholder: string;
+    clear: string;
   };
   modelPicker: {
     empty: string;
@@ -104,9 +106,11 @@ const SHARED_UI_COPY = {
       code: '代码',
       opensInNewTab: '（在新标签页中打开）',
       copyCode: '复制代码',
-      copyingCode: '复制代码中',
       copiedCode: '已复制代码',
-      copyCodeFailed: '复制代码失败',
+    },
+    formControls: {
+      selectPlaceholder: '选择…',
+      clear: '清除{label}',
     },
     modelPicker: {
       empty: '没有匹配的模型',
@@ -175,9 +179,11 @@ const SHARED_UI_COPY = {
       code: 'Code',
       opensInNewTab: '(opens in new tab)',
       copyCode: 'Copy code',
-      copyingCode: 'Copying code',
       copiedCode: 'Code copied',
-      copyCodeFailed: 'Failed to copy code',
+    },
+    formControls: {
+      selectPlaceholder: 'Select…',
+      clear: 'Clear {label}',
     },
     modelPicker: {
       empty: 'No matching models',

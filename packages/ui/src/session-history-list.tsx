@@ -26,7 +26,11 @@ import {
 } from './icons.js';
 import { EmptyState } from './empty-state.js';
 import { OverlayScrollArea } from './overlay-scroll-area.js';
-import { Menu, MenuItem, MenuSeparator } from './primitives/menu.js';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Divider } from '@astryxdesign/core/Divider';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { useUiLocale } from './locale-context.js';
@@ -492,7 +496,7 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
           </BaseButton>
         )}
         {project && props.projectActions && !editing && (
-          <Menu
+          <DropdownMenu
             button={{
               label: copy.projectActionsAriaLabel(project.name),
               icon: pendingAction ? (
@@ -508,7 +512,7 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
             }}
           >
               {project.archivedAt !== undefined ? (
-                <MenuItem
+                <DropdownMenuItem
                   onClick={() =>
                     runProjectAction('restore', () => props.projectActions!.onRestore(project.id))
                   }
@@ -518,7 +522,7 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
               ) : (
                 <>
                   {project.available ? (
-                    <MenuItem
+                    <DropdownMenuItem
                       onClick={() =>
                         runProjectAction('new', () => props.projectActions!.onNew(project.id))
                       }
@@ -526,7 +530,7 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
                       label={copy.projectNewTask}
                     />
                   ) : (
-                    <MenuItem
+                    <DropdownMenuItem
                       onClick={() =>
                         runProjectAction('relink', () =>
                           props.projectActions!.onRelink(project.id))
@@ -535,15 +539,15 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
                       label={copy.projectRelink}
                     />
                   )}
-                  <MenuSeparator />
-                  <MenuItem
+                  <Divider orientation="horizontal" />
+                  <DropdownMenuItem
                     onClick={() => {
                       if (!pendingActionRef.current) setEditing(true);
                     }}
                     icon={<Pencil size={15} aria-hidden="true" />}
                     label={copy.projectRename}
                   />
-                  <MenuItem
+                  <DropdownMenuItem
                     onClick={() =>
                       runProjectAction('archive', () =>
                         props.projectActions!.onArchive(project.id))
@@ -553,7 +557,7 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
                   />
                 </>
               )}
-          </Menu>
+          </DropdownMenu>
         )}
       </div>
       {expanded && (
@@ -733,6 +737,7 @@ const SessionRow = memo(function SessionRow(props: {
   const [pendingAction, setPendingAction] = useState<SessionRowActionId | null>(null);
   const rowMountedRef = useMountedRef();
   const pendingActionRef = useRef<SessionRowActionId | null>(null);
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // PR-FE-BUG-HUNT-11: Escape on the rename input has to suppress the
   // blur-fires-on-unmount commit. Without this ref, the sequence
@@ -793,6 +798,18 @@ const SessionRow = memo(function SessionRow(props: {
     // Delegation: the App-level handler owns the confirmation flow via the
     // toast system (PR24), so SessionRow stays presentation-only.
     runRowAction('delete', () => actions.onDelete(session.id));
+  }
+
+  function handleMenuOpenChange(open: boolean) {
+    setMenuOpen(open);
+    if (open) return;
+    const intent = pendingMenuIntentRef.current;
+    pendingMenuIntentRef.current = null;
+    if (intent) {
+      window.requestAnimationFrame(() => {
+        if (rowMountedRef.current) intent();
+      });
+    }
   }
 
   function handleRowBlur(event: FocusEvent<HTMLDivElement>) {
@@ -963,9 +980,9 @@ const SessionRow = memo(function SessionRow(props: {
         </BaseButton>
       )}
       {actions && !editing && (
-        <Menu
+        <DropdownMenu
           isMenuOpen={menuOpen}
-          onOpenChange={setMenuOpen}
+          onOpenChange={handleMenuOpenChange}
           button={{
             label: copy.actionsAriaLabel,
             icon: <MoreHorizontal size={16} aria-hidden="true" />,
@@ -973,13 +990,12 @@ const SessionRow = memo(function SessionRow(props: {
             variant: 'ghost',
             size: 'sm',
             className: 'maka-list-row-menu-trigger',
-            isDisabled: actionBusy,
             'aria-hidden': actionTriggerVisible ? undefined : 'true',
             'data-visible': actionTriggerVisible ? 'true' : undefined,
             tabIndex: actionTriggerVisible ? 0 : -1,
           }}
         >
-            <MenuItem
+            <DropdownMenuItem
               isDisabled={actionBusy}
               onClick={() => runRowAction('flag', () => actions.onToggleFlag(session.id, !session.isFlagged))}
               icon={session.isFlagged
@@ -987,13 +1003,13 @@ const SessionRow = memo(function SessionRow(props: {
                 : <Pin size={16} aria-hidden="true" />}
               label={session.isFlagged ? copy.unpin : copy.pin}
             />
-            <MenuItem
+            <DropdownMenuItem
               isDisabled={actionBusy}
               onClick={startRename}
               icon={<Pencil size={16} aria-hidden="true" />}
               label={copy.rename}
             />
-            <MenuItem
+            <DropdownMenuItem
               isDisabled={actionBusy}
               onClick={() => runRowAction('archive', () => (
                 session.isArchived
@@ -1005,15 +1021,17 @@ const SessionRow = memo(function SessionRow(props: {
                 : <Archive size={16} aria-hidden="true" />}
               label={session.isArchived ? copy.unarchive : copy.archive}
             />
-            <MenuSeparator />
-            <MenuItem
+            <Divider orientation="horizontal" />
+            <DropdownMenuItem
               isDisabled={actionBusy}
-              onClick={handleDelete}
+              onClick={() => {
+                pendingMenuIntentRef.current = handleDelete;
+              }}
               icon={<Trash2 size={16} aria-hidden="true" />}
               label={copy.delete}
               style={{ color: 'var(--destructive-text)' }}
             />
-        </Menu>
+        </DropdownMenu>
       )}
     </div>
   );

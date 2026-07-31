@@ -59,21 +59,21 @@ import type {
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   createAgentRunStore,
-  createAgentMailboxStore,
-  createArtifactStore,
-  createDeepResearchStore,
+  createSqliteAgentMailboxStore,
+  createSqliteArtifactStore,
+  createSqliteDeepResearchStore,
   createReadImageSnapshotter,
   createConnectionStore,
   createGitWorktreeChildExecutor,
-  createPlanReminderStore,
-  createPlanStore,
+  createSqlitePlanReminderStore,
+  createSqlitePlanStore,
   createProjectCatalog,
   openRuntimeEventPersistence,
   createSessionStore,
   createSettingsStore,
   createMcpConfigStore,
   createShellRunStore,
-  createTelemetryRepo,
+  createSqliteTelemetryRepo,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
@@ -143,6 +143,7 @@ import {
 import { registerGatewayIpc } from './gateway-ipc-main.js';
 import { registerSessionsIpc } from './sessions-ipc-main.js';
 import { registerAgentGraphIpc } from './agent-graph-ipc-main.js';
+import { createVoiceIpcService, registerVoiceIpc } from './voice-ipc-main.js';
 import {
   assertSessionCanSendFromHeader,
   isSessionLifecycleError,
@@ -269,7 +270,7 @@ const store = createSessionStore(workspaceRoot);
 const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot);
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
-const planStore = createPlanStore(workspaceRoot);
+const planStore = createSqlitePlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
   workspaceRoot,
@@ -291,10 +292,10 @@ function ensureMcpReady(): Promise<void> {
   }
   return mcpStartup;
 }
-const telemetryRepo = createTelemetryRepo(workspaceRoot);
+const telemetryRepo = createSqliteTelemetryRepo(workspaceRoot);
 const dailyReviewArchiveStore = createDailyReviewArchiveStore(workspaceRoot);
-const artifactStore = createArtifactStore(workspaceRoot);
-const deepResearchStore = createDeepResearchStore(workspaceRoot);
+const artifactStore = createSqliteArtifactStore(workspaceRoot);
+const deepResearchStore = createSqliteDeepResearchStore(workspaceRoot);
 const storeReadImage = createReadImageSnapshotter(artifactStore);
 const attachmentApprovals = createAttachmentApprovalRegistry();
 // PR-OAUTH-SUBSCRIPTION-0: Claude subscription OAuth service.
@@ -366,9 +367,19 @@ function syncOAuthModelConnections(): Promise<void> {
   return oauthModelConnections.syncOAuthModelConnections();
 }
 
+function disconnectManagedOAuthConnection(connection: LlmConnection): Promise<void> {
+  return oauthModelConnections.disconnectManagedOAuthConnection(connection);
+}
+
 function resolveConnectionSecret(slug: string): Promise<string | null> {
   return oauthModelConnections.resolveConnectionSecret(slug);
 }
+
+const voiceIpcService = createVoiceIpcService({
+  settingsStore,
+  connectionStore,
+  resolveConnectionSecret,
+});
 
 /**
  * Read-only credential-presence check for status paths (onboarding's
@@ -397,10 +408,32 @@ const antigravitySubscription = new AntigravitySubscriptionService({
   credentialStore,
 });
 
-const planReminderStore = createPlanReminderStore(workspaceRoot);
+const planReminderStore = createSqlitePlanReminderStore(workspaceRoot);
 const taskLedgerWiring = createMainTaskLedgerWiring(workspaceRoot);
 const taskLedgerStore = taskLedgerWiring.store;
-const agentMailboxStore = createAgentMailboxStore(workspaceRoot);
+const agentMailboxStore = createSqliteAgentMailboxStore(workspaceRoot);
+
+async function closeWorkflowStores(): Promise<void> {
+  const stores = [
+    planStore,
+    deepResearchStore,
+    planReminderStore,
+    taskLedgerStore,
+    agentMailboxStore,
+  ];
+  const errors: unknown[] = [];
+  for (const result of await Promise.allSettled(stores.map((workflowStore) => workflowStore.ready()))) {
+    if (result.status === 'rejected') errors.push(result.reason);
+  }
+  for (const workflowStore of stores) {
+    try {
+      workflowStore.close();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, 'Unable to close workflow stores');
+}
 
 const sessionActivities = new SessionActivityRegistry();
 
@@ -1079,6 +1112,7 @@ function registerIpc(): void {
     coordinator: agentGraphCoordinator,
     sendToRenderer: safeSendToRenderer,
   });
+  registerVoiceIpc({ ipcMain, service: voiceIpcService });
   registerSessionsIpc({
     workspaceRoot,
     runtime,
@@ -1112,6 +1146,8 @@ function registerIpc(): void {
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession: canCreateFakeSessionFromRenderer,
+    consumeNativeAudioOperation: (input) =>
+      voiceIpcService.consumeNativeAudioOperation(input),
   });
   registerSubscriptionIpc({
     connectionStore,
@@ -1138,6 +1174,7 @@ function registerIpc(): void {
     syncOAuthModelConnections,
     resolveConnectionSecret,
     hasConnectionSecret,
+    disconnectManagedOAuthConnection,
     emitConnectionListChanged,
     // Same seam as the fake-backend override above, for the other IPC that can
     // leave the machine: adding a catalog provider runs remote model discovery
@@ -1417,6 +1454,7 @@ wireAppLifecycle({
   connectionStore,
   settingsStore,
   telemetryRepo,
+  artifactStore,
   ensureUsageReady,
   keepSystemAwake,
   botRegistry,
@@ -1430,6 +1468,7 @@ wireAppLifecycle({
   shellRuns,
   mcpManager,
   runtimePersistence,
+  closeWorkflowStores,
   mainWindowController,
   runtime,
   agentGraphCoordinator,

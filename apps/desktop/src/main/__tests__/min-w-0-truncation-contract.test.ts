@@ -30,8 +30,6 @@ const RENDERER_ROOT = resolve(REPO_ROOT, 'apps/desktop/src/renderer');
 // Selectors exempt from the min-width:0 requirement. Keep this short and
 // comment each entry with the reason it doesn't need min-width:0.
 const TRUNCATION_EXCEPTIONS = new Set<string>([
-  // parent .maka-palette-item: grid-template-columns: 18px minmax(0,1fr) auto
-  '.maka-palette-label',
   // parent .maka-artifact-row: grid-template-columns: 16px minmax(0,1fr) auto
   '.maka-artifact-row-name',
   // flex-shrink:0 makes this meta non-shrinkable, so ellipsis never fires
