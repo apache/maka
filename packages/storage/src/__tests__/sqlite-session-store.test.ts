@@ -19,7 +19,10 @@ import {
   SessionNotFoundError,
   SQLITE_SESSION_METADATA_DATABASE_NAME,
 } from '../session-store.js';
-import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
+import {
+  createSqliteSessionMetadataStore,
+  SessionMetadataVersionConflictError,
+} from '../sqlite-session-metadata-store.js';
 import {
   buildSqliteSessionCatalogPageQuery,
   type SqliteSessionCatalogCursor,
@@ -291,6 +294,39 @@ describe('default SQLite session metadata store', () => {
     }
   });
 
+  test('repairs a pending catalog projection before the same store serves another page', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-catalog-live-recovery-'));
+    const store = createSessionStore(root);
+    const metadata = createSqliteSessionMetadataStore(
+      join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
+    );
+    const transcript = createLegacyFileSessionStore(root);
+    try {
+      const session = await store.create(makeInput());
+      await metadata.beginCatalogProjectionWrite();
+      await transcript.appendMessage(session.id, {
+        type: 'assistant',
+        id: 'live-recovered-message',
+        turnId: 'live-recovered-turn',
+        ts: 50,
+        text: 'live recovered preview',
+        modelId: 'fake-model',
+      });
+
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('Recovered catalog must return a page');
+      assert.equal(page.records[0]?.summary.lastMessageAt, 50);
+      assert.equal(page.records[0]?.summary.lastMessagePreview, 'live recovered preview');
+      assert.equal(await metadata.hasPendingCatalogProjectionWrites(), false);
+    } finally {
+      metadata.close();
+      await transcript.close?.();
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('uses ordered catalog indexes without temporary sorting', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-catalog-index-'));
     const store = createSessionStore(root);
@@ -466,6 +502,31 @@ describe('default SQLite session metadata store', () => {
         },
       );
 
+      await store.appendMessage(sessionId, {
+        type: 'user',
+        id: 'message-4',
+        turnId: 'turn-4',
+        ts: 4,
+        text: 'four',
+      });
+      await store.updateHeader(sessionId, { hasUnread: true, lastMessageAt: 4 });
+      const updateHeaderVersioned = store.updateHeaderVersioned.bind(store);
+      let conflictAttempts = 0;
+      store.updateHeaderVersioned = async (id, patch, expectedRevision) => {
+        conflictAttempts += 1;
+        throw new SessionMetadataVersionConflictError(
+          id,
+          expectedRevision,
+          expectedRevision + conflictAttempts,
+        );
+      };
+      await assert.rejects(
+        store.markSessionReadThroughMessage(sessionId, 'message-4'),
+        SessionMetadataVersionConflictError,
+      );
+      assert.equal(conflictAttempts, 3);
+      store.updateHeaderVersioned = updateHeaderVersioned;
+
       await store.remove(sessionId);
     } finally {
       await store.close?.();
@@ -517,6 +578,61 @@ describe('default SQLite session metadata store', () => {
         assert.equal(created.record.header.name, 'Recovered');
         assert.deepEqual(await store.readMessagesSnapshot(sessionId), []);
         assert.equal((await store.createStableSession(request)).kind, 'existing');
+      } finally {
+        await store.close?.();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('repairs empty and recognizable truncated stable-create transcripts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-default-session-stable-truncated-'));
+    const requestFingerprint = `sha256:${'f'.repeat(64)}`;
+    const fixtures = ['stable-empty', 'stable-truncated'].map((sessionId, index) => {
+      const marker = `${JSON.stringify(createSessionTranscriptMarker(sessionId))}\n`;
+      return {
+        sessionId,
+        marker,
+        initial: index === 0 ? '' : marker.slice(0, -5),
+      };
+    });
+    try {
+      const metadata = createSqliteSessionMetadataStore(
+        join(root, SQLITE_SESSION_METADATA_DATABASE_NAME),
+      );
+      try {
+        for (const fixture of fixtures) {
+          assert.deepEqual(
+            await metadata.claimStableSessionCreate(fixture.sessionId, requestFingerprint),
+            { kind: 'absent' },
+          );
+          const sessionDir = join(root, 'sessions', fixture.sessionId);
+          await mkdir(sessionDir, { recursive: true });
+          await writeFile(join(sessionDir, 'session.jsonl'), fixture.initial);
+        }
+      } finally {
+        metadata.close();
+      }
+
+      const store = createSessionStore(root);
+      try {
+        for (const fixture of fixtures) {
+          const created = await store.createStableSession({
+            sessionId: fixture.sessionId,
+            requestFingerprint,
+            input: makeInput({ name: `Recovered ${fixture.sessionId}` }),
+          });
+          assert.equal(created.kind, 'created');
+          assert.equal(
+            await readFile(join(root, 'sessions', fixture.sessionId, 'session.jsonl'), 'utf8'),
+            fixture.marker,
+          );
+          assert.equal(
+            (await stat(join(root, 'sessions', fixture.sessionId, 'session.jsonl'))).mode & 0o777,
+            0o600,
+          );
+        }
       } finally {
         await store.close?.();
       }

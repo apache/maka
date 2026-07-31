@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
@@ -175,7 +175,7 @@ export class HostSessionCatalogCoordinator {
   async #create(input: SessionCreateInput): Promise<OperationOutcome<'session.create'>> {
     let prepared: PreparedSessionCreate;
     try {
-      prepared = prepareCreate(input);
+      prepared = await prepareCreate(input);
     } catch (error) {
       return createOperationFailure(error, 'invalid_request');
     }
@@ -198,8 +198,6 @@ export class HostSessionCatalogCoordinator {
             'Session identity belongs to a different create request',
           );
         }
-
-        await assertDirectory(prepared.cwd);
         const [model, policy] = await Promise.all([
           this.#resolveModel(input.modelTarget, input.thinkingLevel),
           this.#readRuntimePolicy(),
@@ -286,9 +284,15 @@ export class HostSessionCatalogCoordinator {
     return replaceUserOwnedLabels(current.header.labels, requestedLabels);
   }
 
-  #updateConfiguration(
+  async #updateConfiguration(
     input: SessionConfigurationUpdateInput,
   ): Promise<OperationOutcome<'session.configuration.update'>> {
+    if (input.configuration.collaborationMode === 'plan') {
+      return configurationFailure(
+        'operation_unavailable',
+        'Plan sessions are not yet supported by Runtime Host',
+      );
+    }
     return this.#admission.run(input.sessionId, async (lease) => {
       let commitAttempted = false;
       try {
@@ -584,7 +588,7 @@ interface PreparedSessionCreate {
   readonly requestFingerprint: string;
 }
 
-function prepareCreate(input: SessionCreateInput): PreparedSessionCreate {
+async function prepareCreate(input: SessionCreateInput): Promise<PreparedSessionCreate> {
   if (!isAbsolute(input.cwd)) {
     throw new SessionOperationFailure('invalid_request', 'Session cwd must be absolute');
   }
@@ -594,7 +598,13 @@ function prepareCreate(input: SessionCreateInput): PreparedSessionCreate {
       'Plan sessions are not yet supported by Runtime Host',
     );
   }
-  const cwd = resolve(input.cwd);
+  if (input.labels?.some(isExecutionSemanticLabel)) {
+    throw new SessionOperationFailure(
+      'invalid_request',
+      'Session creation cannot set reserved execution labels',
+    );
+  }
+  const cwd = await canonicalSessionDirectory(input.cwd);
   const name = normalizedSessionName(input.name ?? DEFAULT_SESSION_NAME);
   const labels = [...(input.labels ?? [])];
   const identity = [
@@ -861,9 +871,10 @@ function catalogActivityAt(header: SessionHeader): number {
   return header.lastMessageAt ?? header.lastUsedAt ?? header.createdAt;
 }
 
-async function assertDirectory(path: string): Promise<void> {
+async function canonicalSessionDirectory(path: string): Promise<string> {
   try {
-    if ((await stat(path)).isDirectory()) return;
+    const canonical = await realpath(resolve(path));
+    if ((await stat(canonical)).isDirectory()) return canonical;
   } catch {
     // Project a stable request error below.
   }

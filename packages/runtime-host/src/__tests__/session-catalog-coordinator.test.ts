@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   createDefaultRuntimePolicy,
@@ -11,7 +14,10 @@ import {
   SessionMetadataVersionConflictError,
   type SessionCatalogRecord,
 } from '@maka/storage/execution-stores';
-import type { SessionConfigurationUpdateInput } from '../protocol/index.js';
+import {
+  SESSION_CATALOG_RESULT_MAX_BYTES,
+  type SessionConfigurationUpdateInput,
+} from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
   HostSessionCatalogCoordinator,
@@ -189,6 +195,158 @@ test('typed configuration rejection does not request Host drain', async () => {
     },
   });
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('creation rejects reserved execution labels before claiming a Session identity', async () => {
+  let createAttempts = 0;
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async () => {
+        createAttempts += 1;
+        assert.fail('Reserved labels must be rejected before persistence');
+      },
+    },
+  });
+
+  for (const label of [DEEP_RESEARCH_SESSION_LABEL, `${EXPERT_TEAM_LABEL_PREFIX}review`]) {
+    const outcome = await fixture.coordinator.handlers['session.create'](
+      {
+        sessionId: fixture.sessionId,
+        cwd: process.cwd(),
+        labels: [label],
+        modelTarget: { kind: 'default' },
+      },
+      context,
+    );
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'Session creation cannot set reserved execution labels',
+      },
+    });
+  }
+  assert.equal(createAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('configuration update rejects Plan mode before invoking Runtime authority', async () => {
+  let transitionAttempts = 0;
+  const fixture = createFixture({
+    manager: {
+      transitionSessionConfiguration: async () => {
+        transitionAttempts += 1;
+        assert.fail('Plan mode must be rejected before Runtime transition');
+      },
+    },
+  });
+  const input = configurationInput(fixture.sessionId, fixture.revision());
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      ...input,
+      configuration: {
+        ...input.configuration,
+        collaborationMode: 'plan',
+      },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_unavailable',
+      message: 'Plan sessions are not yet supported by Runtime Host',
+    },
+  });
+  assert.equal(transitionAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('creation fingerprints and persists the canonical cwd behind a symlink', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-session-create-cwd-'));
+  const target = join(root, 'target');
+  const link = join(root, 'link');
+  await mkdir(target);
+  await symlink(target, link, 'dir');
+  try {
+    const requests: Parameters<CatalogStores['createStableSession']>[0][] = [];
+    const fixture = createFixture({
+      stores: {
+        createStableSession: async (request) => {
+          requests.push(request);
+          return {
+            kind: 'existing',
+            record: headerSnapshot(
+              {
+                ...sessionHeader(request.sessionId, request.input.labels ?? []),
+                cwd: request.input.cwd,
+              },
+              3,
+            ),
+          };
+        },
+      },
+    });
+    for (const cwd of [link, target]) {
+      const outcome = await fixture.coordinator.handlers['session.create'](
+        {
+          sessionId: fixture.sessionId,
+          cwd,
+          modelTarget: { kind: 'default' },
+        },
+        context,
+      );
+      assert.equal(outcome.ok, true);
+    }
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.input.cwd, await realpath(target));
+    assert.equal(requests[1]?.input.cwd, await realpath(target));
+    assert.equal(requests[0]?.requestFingerprint, requests[1]?.requestFingerprint);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('catalog paging stops before the encoded 48 KiB result boundary', async () => {
+  const records = Array.from({ length: 32 }, (_, index) => {
+    const header = {
+      ...sessionHeader(
+        `session-${index}`,
+        Array.from({ length: 32 }, (_, label) => `label-${label}-${'x'.repeat(110)}`),
+      ),
+      name: `Session ${index} ${'n'.repeat(280)}`,
+    };
+    return catalogRecord(header, 1);
+  });
+  const fixture = createFixture({
+    stores: {
+      listCatalogPage: async () => ({
+        kind: 'page',
+        revision: 'sha256:test',
+        records,
+        hasMore: false,
+      }),
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'list_start' },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  if (!outcome.ok || outcome.result.kind !== 'page') {
+    assert.fail('Catalog query did not return a page');
+  }
+  assert.ok(outcome.result.sessions.length > 0);
+  assert.ok(outcome.result.sessions.length < records.length);
+  assert.ok(outcome.result.nextCursor);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(outcome.result), 'utf8') <= SESSION_CATALOG_RESULT_MAX_BYTES,
+  );
 });
 
 function createFixture(

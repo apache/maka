@@ -247,6 +247,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private readonly metadata: SqliteSessionMetadataStore;
   private readonly ready: Promise<void>;
   private closePromise: Promise<void> | null = null;
+  private activeCatalogProjectionWrites = 0;
+  private catalogProjectionWritesIdle: Promise<void> = Promise.resolve();
+  private resolveCatalogProjectionWritesIdle: (() => void) | undefined;
+  private catalogProjectionRecovery: Promise<void> | null = null;
+  private catalogProjectionFailure: unknown;
 
   constructor(workspaceRoot: string) {
     this.files = new FileSessionStore(workspaceRoot, true);
@@ -453,7 +458,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     limit: number,
     expectedRevision?: `sha256:${string}`,
   ): Promise<SessionCatalogPageResult> {
-    await this.ensureReady();
+    await this.ensureCatalogProjectionReadable();
     const page = await this.metadata.listCatalogPage(filter ?? {}, cursor, limit);
     const revision = projectCatalogRevision(page.revision);
     if (expectedRevision !== undefined && expectedRevision !== revision) {
@@ -500,7 +505,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   }
 
   async readCatalogRecord(sessionId: string): Promise<SessionCatalogRecord> {
-    await this.ensureReady();
+    await this.ensureCatalogProjectionReadable();
     const record = await this.metadata.readCatalogRecord(sessionId);
     return {
       ...projectHeaderSnapshot(record),
@@ -546,10 +551,26 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async appendMessages(sessionId: string, messages: StoredMessage[]): Promise<void> {
     if (messages.length === 0) return;
-    await this.ensureReady();
-    await this.metadata.beginCatalogProjectionWrite();
-    await this.files.appendMessages(sessionId, messages);
-    await this.metadata.commitCatalogProjectionWrite(sessionId, catalogMessageProjection(messages));
+    const release = await this.acquireCatalogProjectionWrite();
+    try {
+      await this.metadata.beginCatalogProjectionWrite();
+      await this.files.appendMessages(sessionId, messages);
+      await this.metadata.commitCatalogProjectionWrite(
+        sessionId,
+        catalogMessageProjection(messages),
+      );
+    } catch (error) {
+      const recovery = this.scheduleCatalogProjectionRecovery();
+      release();
+      try {
+        await recovery;
+      } catch {
+        throw error;
+      }
+      throw error;
+    } finally {
+      release();
+    }
   }
 
   async updateHeader(sessionId: string, patch: Partial<SessionHeader>): Promise<SessionHeader> {
@@ -687,6 +708,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   private async closeAfterReady(): Promise<void> {
     await this.ready.catch(() => {});
+    await this.catalogProjectionRecovery?.catch(() => {});
     this.metadata.close();
   }
 
@@ -716,6 +738,66 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   private async ensureReady(): Promise<void> {
     await this.ready;
+    if (this.catalogProjectionRecovery) await this.catalogProjectionRecovery;
+    if (this.catalogProjectionFailure) throw this.catalogProjectionFailure;
+  }
+
+  private async ensureCatalogProjectionReadable(): Promise<void> {
+    await this.ensureReady();
+    if (
+      this.activeCatalogProjectionWrites === 0 &&
+      (await this.metadata.hasPendingCatalogProjectionWrites())
+    ) {
+      await this.scheduleCatalogProjectionRecovery();
+    }
+  }
+
+  private async acquireCatalogProjectionWrite(): Promise<() => void> {
+    while (true) {
+      await this.ensureReady();
+      if (!this.catalogProjectionRecovery) break;
+    }
+    if (this.activeCatalogProjectionWrites === 0) {
+      this.catalogProjectionWritesIdle = new Promise<void>((resolve) => {
+        this.resolveCatalogProjectionWritesIdle = resolve;
+      });
+    }
+    this.activeCatalogProjectionWrites += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeCatalogProjectionWrites -= 1;
+      if (this.activeCatalogProjectionWrites === 0) {
+        this.resolveCatalogProjectionWritesIdle?.();
+        this.resolveCatalogProjectionWritesIdle = undefined;
+      }
+    };
+  }
+
+  private scheduleCatalogProjectionRecovery(): Promise<void> {
+    if (this.catalogProjectionRecovery) return this.catalogProjectionRecovery;
+    const recovery = (async () => {
+      await this.catalogProjectionWritesIdle;
+      if (await this.metadata.hasPendingCatalogProjectionWrites()) {
+        await this.recoverCatalogProjections();
+      }
+    })();
+    this.catalogProjectionRecovery = recovery;
+    void recovery.then(
+      () => {
+        if (this.catalogProjectionRecovery === recovery) {
+          this.catalogProjectionRecovery = null;
+        }
+      },
+      (error: unknown) => {
+        this.catalogProjectionFailure = error;
+        if (this.catalogProjectionRecovery === recovery) {
+          this.catalogProjectionRecovery = null;
+        }
+      },
+    );
+    return recovery;
   }
 }
 
@@ -878,11 +960,25 @@ class FileSessionStore implements SessionStore {
     }
 
     const text = await readFile(path, 'utf8');
+    if (text === marker) {
+      if (this.durableTranscripts) {
+        await stabilizeTranscript(path, this.workspaceRoot);
+      }
+      return;
+    }
+    if (marker.startsWith(text)) {
+      await this.writeAtomic(path, marker);
+      if (this.durableTranscripts) {
+        await stabilizeTranscript(path, this.workspaceRoot);
+      }
+      return;
+    }
     const records = text.split('\n').filter((line) => line.trim().length > 0);
     if (records.length !== 1 || !records[0]) {
       throw new Error(`Session ${sessionId}: stable transcript is not marker-only`);
     }
     decodeSessionTranscriptMarker(JSON.parse(records[0]), sessionId);
+    await this.writeAtomic(path, marker);
     if (this.durableTranscripts) {
       await stabilizeTranscript(path, this.workspaceRoot);
     }
@@ -1374,7 +1470,7 @@ class FileSessionStore implements SessionStore {
   private async writeAtomic(path: string, content: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-    await writeFile(tempPath, content, 'utf8');
+    await writeFile(tempPath, content, { encoding: 'utf8', mode: 0o600 });
     try {
       await replaceFileWithWindowsReaderRetry(tempPath, path);
     } finally {

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readdir, mkdtemp, rm } from 'node:fs/promises';
+import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -18,12 +20,14 @@ import {
   type RuntimeHostConnection,
 } from '../client/index.js';
 import {
+  decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type SessionCatalogItem,
   type SessionCatalogProjection,
   type SessionCreateInput,
   type SubscriptionFrame,
 } from '../protocol/index.js';
+import { FramedTransport } from '../transport/framed-transport.js';
 
 const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -393,6 +397,57 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
   }
 });
 
+test('stable Session creation survives response loss and Host restart', {
+  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-create-retry-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  await seedAuthority(root, capability);
+  let host: ExecutionHostHandle | undefined;
+  let dropped: FramedTransport | undefined;
+  try {
+    host = await startHost(root, capability.rootId);
+    const input: SessionCreateInput = {
+      sessionId: 'response-loss-session',
+      cwd: root,
+      name: 'Response Loss Session',
+      labels: ['catalog'],
+      modelTarget: { kind: 'default' },
+    };
+    dropped = await sendCreateWithoutReadingResponse(host.endpoint, input);
+    const observer = await connectClient(root, 'tui');
+    const committed = await waitForSession(observer, input.sessionId);
+    dropped.destroy();
+    dropped = undefined;
+    await observer.close();
+
+    await terminateHost(host);
+    host = await startHost(root, capability.rootId);
+    const retrying = await connectClient(root, 'desktop');
+    try {
+      assert.deepEqual(
+        requireSessionProjection(await retrying.request('session.create', input)),
+        committed,
+      );
+    } finally {
+      await retrying.close();
+    }
+    await stopHost(host);
+    host = undefined;
+  } finally {
+    dropped?.destroy();
+    await terminateHost(host);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await removePosixEndpointDirectories(capability.rootId);
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 async function seedAuthority(
   root: string,
   capability: StorageRootCapability<'interactive'>,
@@ -551,6 +606,24 @@ async function querySession(
   return requireSessionProjection(result.session);
 }
 
+async function waitForSession(
+  connection: RuntimeHostConnection,
+  sessionId: string,
+): Promise<SessionCatalogProjection> {
+  const deadline = Date.now() + PROCESS_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await connection.request('session.catalog.query', {
+      kind: 'get',
+      sessionId,
+    });
+    if (result.kind === 'session' && result.session) {
+      return requireSessionProjection(result.session);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Session creation did not become durable before the deadline');
+}
+
 function requireSessionProjection(item: SessionCatalogItem): SessionCatalogProjection {
   if ('kind' in item) {
     assert.fail(`Expected a representable Session, received ${item.kind}`);
@@ -630,6 +703,45 @@ async function connectClient(
   assert.equal(result.kind, 'connected');
   if (result.kind !== 'connected') throw new Error('Runtime Host did not accept the Client');
   return result.connection;
+}
+
+async function sendCreateWithoutReadingResponse(
+  endpoint: string,
+  input: SessionCreateInput,
+): Promise<FramedTransport> {
+  const transport = new FramedTransport(await openSocket(endpoint));
+  await transport.write({
+    kind: 'hello',
+    clientInstanceId: randomUUID(),
+    surface: 'desktop',
+    protocolMin: CURRENT_PROTOCOL.min,
+    protocolMax: CURRENT_PROTOCOL.max,
+  });
+  const handshake = decodeHostFrame(await transport.read(2_000));
+  assert.ok('kind' in handshake);
+  assert.equal(handshake.kind, 'accepted');
+  await transport.write({
+    requestId: randomUUID(),
+    operation: 'session.create',
+    input,
+  });
+  return transport;
+}
+
+function openSocket(path: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(path);
+    const onError = (error: Error) => {
+      socket.off('connect', onConnect);
+      reject(error);
+    };
+    const onConnect = () => {
+      socket.off('error', onError);
+      resolve(socket);
+    };
+    socket.once('error', onError);
+    socket.once('connect', onConnect);
+  });
 }
 
 function waitForHostReady(child: ChildProcess): Promise<{
