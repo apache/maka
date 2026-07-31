@@ -89,20 +89,19 @@ export function UserQuestionPrompt(props: {
             label={question.question}
             isLabelHidden
             value={selectedValue}
+            isDisabled={interactionDisabled}
             onChange={select}
           >
             {question.options.map((option, optionIndex) => (
               <RadioListItem
                 value={`option:${optionIndex}`}
                 key={`${optionIndex}:${option.label}`}
-                isDisabled={interactionDisabled}
                 label={option.label}
                 description={option.description}
               />
             ))}
             <RadioListItem
               value="other"
-              isDisabled={interactionDisabled}
               label={copy.other}
               description={copy.otherDescription}
             />
