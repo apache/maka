@@ -8,9 +8,7 @@ import {
   type DialogProps as AstryxDialogProps,
   type DialogPurpose,
 } from '@astryxdesign/core/Dialog';
-import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
 import { Selector } from '@astryxdesign/core/Selector';
-import { mergeRefs } from '@astryxdesign/core/utils';
 import { cva, type VariantProps } from 'class-variance-authority';
 import {
   useModalFocusLifecycle,
@@ -22,9 +20,8 @@ export { cn } from './utils.js';
 
 export type PickerTriggerAppearance = 'field' | 'quiet';
 
-// Legacy field recipe retained only for picker/time-picker triggers until
-// their owning migration slices move to Astryx. Form controls no longer
-// consume this recipe.
+// Legacy field recipe retained only for model-picker triggers until their
+// owning migration slice moves to Astryx. Form controls no longer consume it.
 export const inputClasses = [
   'flex min-h-9 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm text-foreground transition-[border-color,box-shadow,background-color]',
   'placeholder:text-foreground-secondary/70',
@@ -300,7 +297,7 @@ const LegacySelectContext =
 /**
  * Frozen compound Select compatibility shell.
  *
- * All Maka call sites use SettingsSelect/PermissionModeSelect, where Astryx
+ * Remaining compatibility call sites use PermissionModeSelect, where Astryx
  * Selector owns the full implementation. These exports remain append-only
  * API compatibility: the trigger renders that same Astryx authority and the
  * retired popup marker components contribute no second listbox or layer.
@@ -406,221 +403,6 @@ export function SelectItem(
   _props: React.HTMLAttributes<HTMLDivElement> & { value: string },
 ) {
   return null;
-}
-
-/**
- * Popover — the anchored-surface primitive for pickers that are NOT a
- * single-value list (Select already covers those). Added for the time
- * picker, whose popup holds two independent columns and so has no single
- * "selected item" for Select to own.
- *
- * Astryx-backed (#1565 PR 5): the five-part composition API is frozen
- * (barrel append-only), but behind it one `usePopover` instance — owned by
- * `PopoverRoot`, shared through context — provides anchor positioning,
- * light dismiss, Escape, and the focus trap. The surface lives in the
- * native-Popover top layer, so there is no portal and no `--z-overlay`
- * pin: the top layer paints above every z-index by definition, which is
- * how the popup outranks the Settings modal that triggers it (the bug
- * fixed for Select in WAWQAQ msg `d3ea9a33`). Focus restore on close is
- * native first: the show-popover algorithm records the previously focused
- * element even for imperative `showPopover()`, and `hidePopover()` returns
- * focus to it. Light dismiss deliberately skips that return (focus follows
- * the user's click), and Astryx's `useFocusTrap` restore effect backstops
- * whatever the browser leaves behind (its guard no-ops when focus already
- * went home — see useFocusTrap.js in @astryxdesign/core).
- *
- * Deliberate Astryx-native deviations from the Base UI predecessor, all
- * invisible to the closed-state harness: the popup gains Astryx's hidden
- * tab-past close button (localized via the AstryxLocaleProvider override
- * map, ARIA follows the Astryx primitive per #1565), and the dialog is
- * non-modal (`isModal: false`) because light dismiss never inerts the
- * background — matching the Base UI popup, which carried no aria-modal.
- *
- * Known limit, accepted: in controlled mode the trigger click still
- * toggles the real layer first and reports through onOpenChange; a parent
- * that rejects the change sees a one-frame flicker before the reconcile
- * effect restores it. Native `popover="auto"` light dismiss bypasses JS
- * entirely, so strict controlled visibility is unenforceable at this
- * primitive; the only consumer (TimePicker) accepts requests synchronously.
- */
-interface PopoverContextValue {
-  popover: UsePopoverReturn;
-  /** PopoverPopup calls this once per open, after initial focus lands. */
-  onOpenSettled(): void;
-}
-
-const PopoverContext = React.createContext<PopoverContextValue | null>(null);
-
-function usePopoverContext(component: string): PopoverContextValue {
-  const context = React.useContext(PopoverContext);
-  if (context === null) throw new Error(`${component} must be used inside <PopoverRoot>`);
-  return context;
-}
-
-interface PopoverRootProps {
-  children?: React.ReactNode;
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-  /** Fires after the open transition settles: the popup is shown and initial focus has landed. */
-  onOpenChangeComplete?: (open: boolean) => void;
-  /** Accessible name for the popover dialog (Astryx `dialogLabel`). */
-  label?: string;
-}
-
-export function PopoverRoot({ children, open, onOpenChange, onOpenChangeComplete, label }: PopoverRootProps): React.ReactElement {
-  const callbacksRef = React.useRef({ onOpenChange, onOpenChangeComplete });
-  callbacksRef.current = { onOpenChange, onOpenChangeComplete };
-  // Prop-driven reconcile transitions stay silent on `onOpenChange`: the
-  // parent initiated them, so echoing them back would double-report (with
-  // `open` held true, Escape reports false and the reconcile show() would
-  // otherwise report a spurious true). `useLayer` fires these callbacks
-  // synchronously inside show()/hide(), so a flag around the calls suffices.
-  // `onOpenChangeComplete` still fires — a settle is a settle no matter who
-  // initiated the transition, and TimePicker keys its settled state on it.
-  const reconcilingRef = React.useRef(false);
-  const onShow = React.useCallback(() => {
-    if (!reconcilingRef.current) callbacksRef.current.onOpenChange?.(true);
-  }, []);
-  const onHide = React.useCallback(() => {
-    if (!reconcilingRef.current) callbacksRef.current.onOpenChange?.(false);
-    callbacksRef.current.onOpenChangeComplete?.(false);
-  }, []);
-  // Auto-focus is owned here (not by Astryx) so `initialFocus` can land on a
-  // specific element instead of the first focusable one; see PopoverPopup.
-  const popover = usePopover({
-    onShow,
-    onHide,
-    hasAutoFocus: false,
-    isModal: false,
-    dialogLabel: label,
-  });
-  // `usePopover` returns a fresh object every render, so memoizing on it is
-  // pointless — but the settled callback the popup closes over MUST be
-  // stable: PopoverPopup keys its focus effect on the open transition and a
-  // fresh identity there would re-run it (and steal focus) on every parent
-  // re-render while open.
-  const onOpenSettled = React.useCallback(() => {
-    callbacksRef.current.onOpenChangeComplete?.(true);
-  }, []);
-  const context: PopoverContextValue = { popover, onOpenSettled };
-
-  // Controlled mode: reconcile the `open` prop with the layer state. The
-  // trigger still toggles directly (and reports through onOpenChange), so a
-  // matching prop round-trip lands here as a no-op.
-  const { isOpen, show, hide } = popover;
-  React.useEffect(() => {
-    if (open === undefined) return;
-    reconcilingRef.current = true;
-    try {
-      if (open && !isOpen) show();
-      else if (!open && isOpen) hide();
-    } finally {
-      reconcilingRef.current = false;
-    }
-  }, [open, isOpen, show, hide]);
-
-  return <PopoverContext.Provider value={context}>{children}</PopoverContext.Provider>;
-}
-
-export const PopoverTrigger = forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(function PopoverTrigger(
-  { onClick, onPointerDown, ...props },
-  ref,
-) {
-  const { popover } = usePopoverContext('PopoverTrigger');
-  // The trigger is an outside element to `popover="auto"`, so pressing it
-  // while open light-dismisses during the press (on pointerup per the HTML
-  // spec) — and the same gesture's click would then re-open. Track
-  // per-gesture causality instead of a hide timestamp (Astryx's own Popover
-  // uses a 50ms window, which also swallows a genuine fast re-open after
-  // dismissing elsewhere). The guard judges only pointer-sourced clicks
-  // (`event.detail > 0`): a keyboard activation has no paired pointerdown,
-  // so a flag left behind by an aborted press (drag off, pointercancel —
-  // gestures that end without a click on the trigger) must not swallow it.
-  const wasOpenAtPointerDownRef = React.useRef(false);
-  return (
-    <button
-      type="button"
-      {...props}
-      {...popover.triggerProps}
-      ref={mergeRefs(popover.triggerRef, ref)}
-      data-popup-open={popover.isOpen ? '' : undefined}
-      data-slot="popover-trigger"
-      onPointerDown={(event) => {
-        wasOpenAtPointerDownRef.current = popover.isOpen;
-        onPointerDown?.(event);
-      }}
-      onClick={(event) => {
-        const dismissedByThisGesture =
-          event.detail > 0 && wasOpenAtPointerDownRef.current && !popover.isOpen;
-        wasOpenAtPointerDownRef.current = false;
-        onClick?.(event);
-        if (event.defaultPrevented) return;
-        if (dismissedByThisGesture) return;
-        popover.toggle();
-      }}
-    />
-  );
-});
-
-/** Layer placement is the native top layer now; this is a pass-through kept for the frozen call shape. */
-export function PopoverPortal({ children }: { children?: React.ReactNode }): React.ReactElement {
-  return <>{children}</>;
-}
-
-const PopoverPositionContext = React.createContext<{ alignment?: 'start' | 'center' | 'end'; sideOffset?: number }>({});
-
-interface PopoverPositionerProps {
-  children?: React.ReactNode;
-  align?: 'start' | 'center' | 'end';
-  /** Gap between anchor and popup, honored as a margin on the top-layer element. */
-  sideOffset?: number;
-}
-
-export function PopoverPositioner({ children, align, sideOffset }: PopoverPositionerProps): React.ReactElement {
-  const value = React.useMemo(() => ({ alignment: align, sideOffset }), [align, sideOffset]);
-  return <PopoverPositionContext.Provider value={value}>{children}</PopoverPositionContext.Provider>;
-}
-
-const POPOVER_FOCUSABLE =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-interface PopoverPopupProps extends React.HTMLAttributes<HTMLDivElement> {
-  /** Lands initial focus on a specific element instead of the first focusable one. */
-  initialFocus?: React.RefObject<HTMLElement | null>;
-}
-
-export function PopoverPopup({ className, initialFocus, style, children, ...props }: PopoverPopupProps): React.ReactNode {
-  const { popover, onOpenSettled } = usePopoverContext('PopoverPopup');
-  const { alignment, sideOffset } = React.useContext(PopoverPositionContext);
-  const { isOpen, contentRef } = popover;
-  // Mirror `initialFocus` through a ref so the focus effect below keys purely
-  // on the open transition: initial focus is a once-per-open action, and any
-  // unstable dependency would re-run it — stealing focus from whatever the
-  // user clicked inside the popup — on every re-render while open.
-  const initialFocusRef = React.useRef(initialFocus);
-  initialFocusRef.current = initialFocus;
-  React.useEffect(() => {
-    if (!isOpen) return;
-    // rAF: the native popover is shown synchronously, but focus waits a frame
-    // so the popup has painted and scroll-into-view measures real boxes.
-    const frame = requestAnimationFrame(() => {
-      const target =
-        initialFocusRef.current?.current ??
-        contentRef.current?.querySelector<HTMLElement>(POPOVER_FOCUSABLE);
-      target?.focus();
-      onOpenSettled();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [isOpen, contentRef, onOpenSettled]);
-  return popover.render(
-    // The Base UI popup carried 4px padding (`p-1`) and the positioner a 6px
-    // anchor gap; both stay as inline styles — the frozen call sites rely on
-    // them, and slice rules bar new Tailwind utilities in rewritten code.
-    <div className={cn(className)} data-slot="popover-popup" style={{ padding: 4, ...style }} {...props}>
-      {children}
-    </div>,
-    { placement: 'below', alignment, style: sideOffset ? { marginTop: sideOffset } : undefined },
-  );
 }
 
 // =============================================================

@@ -125,16 +125,12 @@ describe('Settings form accessibility labels', () => {
 
   it('keeps migrated Settings text fields and action buttons on shared UI primitives', async () => {
     const settings = await readSettingsCombinedSource();
-    const settingsSelect = await readRepo('packages/ui/src/primitives/settings-select.tsx');
     const passwordInput = await readRepo('apps/desktop/src/renderer/settings/password-input.tsx');
     const providersPanel = await readProviderSettingsCombinedSource();
     const styles = await readRendererContractCss();
 
-    assert.match(settings, /SettingsSelect,/);
-    assert.match(
-      settingsSelect,
-      /import \{[\s\S]*\bSelector\b[\s\S]*\bSelectorOption\b[\s\S]*\} from '@astryxdesign\/core\/Selector';/,
-    );
+    assert.match(settings, /\bSelector,/);
+    assert.doesNotMatch(settings, /\bSettingsSelect\b/);
     assert.match(
       passwordInput,
       /import \{[^}]*\bIconButton\b[^}]*\bTextInput\b[^}]*\buseMountedRef\b[^}]*\buseToast\b[^}]*\buseUiLocale\b[^}]*\} from '@maka\/ui';/,
@@ -145,10 +141,6 @@ describe('Settings form accessibility labels', () => {
     for (const name of ['Button', 'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger', 'TextInput', 'RelativeTime', 'TextArea', 'useToast']) {
       assert.ok(providersPanelUiImports.includes(name), `Providers provider files should import ${name} from @maka/ui`);
     }
-    assert.match(settingsSelect, /export function SettingsSelect<T extends string>/);
-    assert.match(settingsSelect, /<Selector[\s\S]*isLabelHidden[\s\S]*options=\{options\}/);
-    assert.doesNotMatch(settingsSelect, /SelectPositioner|SelectPortal|@base-ui\/react/);
-
     // ThemeSettingsPage uses Astryx SelectableCard for its preview-rich
     // single-selection grids. Strip that block before checking the remaining
     // settings form controls because SelectableCard owns its internal checkbox.
@@ -261,11 +253,11 @@ describe('Settings form accessibility labels', () => {
       ['web-search query', /label=\{copy\.queryAria\}/],
       ['proxy server address', /label=\{copy\.proxyServerAddress\}/],
       ['proxy port', /<NumberInput label=\{copy\.port\}/],
-      ['Open Gateway host', /ariaLabel=\{copy\.form\.hostAria\}/],
+      ['Open Gateway host', /label=\{copy\.form\.hostAria\}/],
       ['Open Gateway port', /<NumberInput label=\{copy\.form\.port\}/],
       ['Open Gateway session ID', /label=\{copy\.form\.sessionAria\}/],
       ['usage request filter', /label=\{props\.copy\.filterAria\}/],
-      ['usage status filter', /ariaLabel=\{props\.copy\.statusAria\}/],
+      ['usage status filter', /label=\{props\.copy\.statusAria\}/],
       ['MEMORY.md content', /label=\{copy\.text\.contentEditorAria\}/],
     ] as const) {
       assert.match(settings, pattern, `SettingsModal must label ${label}`);

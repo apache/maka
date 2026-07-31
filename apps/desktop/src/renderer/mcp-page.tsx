@@ -11,7 +11,7 @@ import {
   IconButton,
   TextInput,
   PageHeader,
-  SettingsSelect,
+  Selector,
   type ModuleHubHeader,
   Switch,
   TabsList,
@@ -609,16 +609,17 @@ function McpEditorDialog(props: {
                 <>
                   <TextInput label="MCP URL" value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
-                    <SettingsSelect
+                    <Selector
                       value={props.state.draft.transport}
                       options={[
-                        ['auto', props.copy.editor.transportAuto],
-                        ['streamable-http', props.copy.editor.transportStreamableHttp],
-                        ['sse', props.copy.editor.transportLegacySse],
+                        { value: 'auto', label: props.copy.editor.transportAuto },
+                        { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
+                        { value: 'sse', label: props.copy.editor.transportLegacySse },
                       ]}
-                      onChange={(value) => updateDraft('transport', value)}
-                      ariaLabel={props.copy.editor.transportLabel}
-                      width="full"
+                      onChange={(value) => updateDraft('transport', value as Draft['transport'])}
+                      label={props.copy.editor.transportLabel}
+                      isLabelHidden
+                      width="100%"
                     />
                     <TextArea label="HTTP headers" description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
                   </div></details>

@@ -64,7 +64,7 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
   await expect(tooltip).toBeHidden();
 });
 
-test('time-picker popover owns focus placement and every dismiss path', async ({
+test('daily review uses the canonical time field and persists its value', async ({
   window: page,
 }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
@@ -72,82 +72,14 @@ test('time-picker popover owns focus placement and every dismiss path', async ({
   const settings = page.getByRole('main', { name: '设置内容' });
   await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
 
-  const trigger = settings.getByRole('button', { name: '每日回顾执行时间' });
-  await expect(trigger).toBeVisible();
-  await expect(trigger).toBeEnabled();
+  const time = settings.getByRole('textbox', { name: '每日回顾执行时间' });
+  await expect(time).toHaveValue('08:00');
+  await time.press('ArrowUp');
+  await expect(time).toHaveValue('08:05');
 
-  await trigger.click();
-  const dialog = page.getByRole('dialog', { name: '每日回顾执行时间' });
-  await expect(dialog).toBeVisible();
-
-  // Initial focus lands on the *selected* hour (08 from the default 08:00),
-  // not the first row — the `initialFocus` contract the old Base UI popup
-  // honored and the Astryx-backed PopoverPopup must keep honoring.
-  const selectedHour = dialog.getByRole('listbox', { name: '时' }).getByRole('option', { name: '08' });
-  await expect(selectedHour).toBeFocused();
-
-  // Picking a minute updates the value, which re-renders the picker while
-  // the popover is open. Initial focus is a once-per-open action: it must
-  // NOT re-fire on that re-render and yank focus back to the hour column.
-  const minute = dialog.getByRole('listbox', { name: '分' }).getByRole('option', { name: '30' });
-  await minute.click();
-  await expect(minute).toBeFocused();
-  await page.waitForTimeout(150);
-  await expect(minute).toBeFocused();
-
-  // Clicking the open trigger closes the popover — native light dismiss
-  // fires during the press (on pointerup per the HTML spec) and the same
-  // gesture's trailing click must not re-open it. Hold the assertion past
-  // the race window.
-  await trigger.click();
-  await expect(dialog).toBeHidden();
-  await page.waitForTimeout(150);
-  await expect(dialog).toBeHidden();
-
-  // Clicking outside light-dismisses and the trigger ring turns off.
-  await trigger.click();
-  await expect(dialog).toBeVisible();
+  await settings.getByRole('button', { name: '通用', exact: true }).click();
   await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
-  await expect(dialog).toBeHidden();
-  await expect(trigger).not.toHaveAttribute('data-popup-open');
-
-  // Escape closes the popover and hands focus back to the trigger. No
-  // settling wait before this click: a fast re-open right after dismissing
-  // elsewhere must work. (Best-effort pin on the hide-timestamp regression —
-  // it caught the real ~40ms gap in practice, but Playwright cannot bound
-  // the inter-action gap below 50ms, so the gesture guard's real contract is
-  // the aborted-press journey below.)
-  await trigger.click();
-  await expect(dialog).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
-  await expect(trigger).toBeFocused();
-
-  // An aborted press must not poison the next keyboard activation: press on
-  // the open trigger (light dismiss closes the popover), drag off and
-  // release elsewhere — no click ever reaches the trigger, so a naive
-  // per-gesture flag would linger. The next Enter has no paired pointerdown
-  // and must still toggle the popover open. The release point sits beside
-  // the trigger, clear of the popup anchored below it: the spec's light
-  // dismiss deliberately ignores gestures whose down/up straddle a popover
-  // boundary (drag-out protection), so releasing inside would not dismiss.
-  await trigger.press('Enter');
-  await expect(dialog).toBeVisible();
-  const triggerBox = await trigger.boundingBox();
-  if (!triggerBox) throw new Error('trigger has no box');
-  await page.mouse.move(triggerBox.x + triggerBox.width / 2, triggerBox.y + triggerBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(triggerBox.x + triggerBox.width + 160, triggerBox.y + triggerBox.height / 2);
-  await page.mouse.up();
-  await expect(dialog).toBeHidden();
-  // `toBeHidden` tracks the DOM (`:popover-open` gone); the attribute tracks
-  // React state, which syncs through the layer's queued `toggle` task. Wait
-  // for it so Enter lands after the close fully settled.
-  await expect(trigger).not.toHaveAttribute('data-popup-open');
-  await trigger.press('Enter');
-  await expect(dialog).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
+  await expect(settings.getByRole('textbox', { name: '每日回顾执行时间' })).toHaveValue('08:05');
 });
 
 test('model picker only exposes a rendered active descendant', async ({

@@ -68,7 +68,7 @@ describe('renderer module styles contract', () => {
     assert.deepEqual(
       violations,
       [],
-      'styles/module-pages/** must only contain module-page owned selectors. Move global focus, SettingsSelect, chat header, model switcher, and shared shell rules to their real owner stylesheet.',
+      'styles/module-pages/** must only contain module-page owned selectors. Move global focus, shared form controls, chat header, model switcher, and shared shell rules to their real owner stylesheet.',
     );
   });
 

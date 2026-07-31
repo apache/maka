@@ -33,7 +33,6 @@ import {
   runStatusLabel,
 } from './plan-reminder-helpers.js';
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
-import { PlanReminderSelect } from './plan-reminder-select.js';
 import {
   TabsList,
   TabsPanel,
@@ -43,6 +42,7 @@ import {
 import {
   Badge,
   Button as UiButton,
+  Selector,
   Switch,
 } from '@astryxdesign/core';
 import { Chip, type ChipProps } from './primitives/chip.js';
@@ -323,11 +323,13 @@ export function PlanReminderPanel(props: {
                 <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
                 <label className="maka-plan-compact-select maka-plan-sort-select">
                   <span>{copy.page.sort}</span>
-                  <PlanReminderSelect
+                  <Selector
                     value={listSort}
-                    onChange={(value) => setListSort(value)}
-                    ariaLabel={copy.page.sortAriaLabel}
-                    options={copy.page.sortOptions}
+                    onChange={(value) => setListSort(value as typeof listSort)}
+                    label={copy.page.sortAriaLabel}
+                    isLabelHidden
+                    width="100%"
+                    options={copy.page.sortOptions.map(([value, label]) => ({ value, label }))}
                   />
                 </label>
                 <div className="maka-plan-search">
@@ -342,17 +344,19 @@ export function PlanReminderPanel(props: {
                 </div>
                 <label className="maka-plan-compact-select">
                   <span>{copy.page.state}</span>
-                  <PlanReminderSelect
+                  <Selector
                     value={listFilter}
-                    onChange={(value) => setListFilter(value)}
-                    ariaLabel={copy.page.filterAriaLabel}
+                    onChange={(value) => setListFilter(value as PlanReminderListFilter)}
+                    label={copy.page.filterAriaLabel}
+                    isLabelHidden
+                    width="100%"
                     options={[
-                      ['active', copy.page.filterOption(copy.page.active, filterCounts.active)],
-                      ['all', copy.page.filterOption(copy.page.all, filterCounts.all)],
-                      ['scheduled', copy.page.filterOption(copy.status.scheduled, filterCounts.scheduled)],
-                      ['paused', copy.page.filterOption(copy.status.paused, filterCounts.paused)],
-                      ['completed', copy.page.filterOption(copy.status.completed, filterCounts.completed)],
-                    ] satisfies ReadonlyArray<readonly [PlanReminderListFilter, string]>}
+                      { value: 'active', label: copy.page.filterOption(copy.page.active, filterCounts.active) },
+                      { value: 'all', label: copy.page.filterOption(copy.page.all, filterCounts.all) },
+                      { value: 'scheduled', label: copy.page.filterOption(copy.status.scheduled, filterCounts.scheduled) },
+                      { value: 'paused', label: copy.page.filterOption(copy.status.paused, filterCounts.paused) },
+                      { value: 'completed', label: copy.page.filterOption(copy.status.completed, filterCounts.completed) },
+                    ]}
                   />
                 </label>
                 </div>
@@ -361,11 +365,13 @@ export function PlanReminderPanel(props: {
               <div className="maka-plan-toolbar maka-plan-toolbar-compact" aria-label={copy.page.runsFilterAriaLabel}>
                 <label className="maka-plan-compact-select">
                   <span>{copy.page.range}</span>
-                  <PlanReminderSelect
+                  <Selector
                     value={runRange}
-                    onChange={(value) => setRunRange(value)}
-                    ariaLabel={copy.page.rangeAriaLabel}
-                    options={copy.page.rangeOptions}
+                    onChange={(value) => setRunRange(value as typeof runRange)}
+                    label={copy.page.rangeAriaLabel}
+                    isLabelHidden
+                    width="100%"
+                    options={copy.page.rangeOptions.map(([value, label]) => ({ value, label }))}
                   />
                 </label>
               </div>

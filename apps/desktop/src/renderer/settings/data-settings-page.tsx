@@ -5,7 +5,7 @@ import {
   AlertDescription,
   Button,
   SectionHeader,
-  SettingsSelect,
+  Selector,
   Switch,
   clearGlobalInputHistory,
   useMountedRef,
@@ -264,16 +264,18 @@ export function DataSettingsPage() {
         </div>
         <div className="settingsConfigStrategy">
           <span className="settingsHelpText">{copy.importConflict}</span>
-          <SettingsSelect
+          <Selector
             value={importStrategy}
-            ariaLabel={copy.conflictAria}
+            label={copy.conflictAria}
+            isLabelHidden
             options={
               [
-              ['skip', copy.skip],
-              ['overwrite', copy.overwrite],
-              ] satisfies Array<readonly [typeof importStrategy, string]>
+                { value: 'skip', label: copy.skip },
+                { value: 'overwrite', label: copy.overwrite },
+              ]
             }
-            onChange={(strategy) => setImportStrategy(strategy)}
+            width={320}
+            onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
           />
         </div>
         <div className="settingsActionRow">

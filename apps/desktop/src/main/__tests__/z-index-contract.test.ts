@@ -120,40 +120,25 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
   });
 
   it('Select and Combobox are Astryx-backed with no Base UI or z-layer pin', async () => {
-    const [ui, settingsSelect, permissionMode, modelPicker] = await Promise.all([
+    const [ui, index, permissionMode, modelPicker] = await Promise.all([
       readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'), 'utf8'),
-      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'primitives', 'settings-select.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'index.ts'), 'utf8'),
       readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'permission-mode-menu.tsx'), 'utf8'),
       readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'model-picker.tsx'), 'utf8'),
     ]);
-    const source = `${ui}\n${settingsSelect}\n${permissionMode}\n${modelPicker}`;
+    const source = `${ui}\n${index}\n${permissionMode}\n${modelPicker}`;
     assert.doesNotMatch(source, /@base-ui\/react\/(?:select|combobox)/);
     assert.match(source, /@astryxdesign\/core\/Selector/);
     assert.match(modelPicker, /@astryxdesign\/core\/Popover/);
     assert.doesNotMatch(source, /z-\[var\(--z-overlay\)\]/);
   });
 
-  /**
-   * #1565 PR 5: Popover is Astryx-backed. Its surface renders in the native
-   * Popover-API top layer — above every `--z-*` value by definition — so a
-   * `--z-overlay` pin would be dead code that reads as protection. Pin the
-   * implementation authority instead: Base UI's popover must not return, and
-   * the Astryx hook is the only behavior source.
-   */
-  it('Popover is Astryx-backed with no Base UI popover or z-layer pin', async () => {
+  it('removes the generic Maka Popover shell after its TimePicker consumer is deleted', async () => {
     const ui = await readFile(
       resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'),
       'utf8',
     );
-    assert.doesNotMatch(
-      ui,
-      /@base-ui\/react\/popover/,
-      'ui.tsx must not import @base-ui/react/popover — Popover behavior is owned by @astryxdesign/core/Popover (#1565 PR 5, one behavior authority per component).',
-    );
-    assert.match(
-      ui,
-      /@astryxdesign\/core\/Popover/,
-      'ui.tsx must source Popover behavior from @astryxdesign/core/Popover.',
-    );
+    assert.doesNotMatch(ui, /@(?:base-ui\/react|astryxdesign\/core)\/Popover/);
+    assert.doesNotMatch(ui, /Popover(?:Root|Trigger|Portal|Positioner|Popup)/);
   });
 });

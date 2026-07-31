@@ -34,8 +34,12 @@ import {
   planReminderTemplateSeed,
   toPlanReminderDateTimeInputValue,
 } from './plan-reminder-helpers.js';
-import { PlanReminderSelect } from './plan-reminder-select.js';
-import { Button as UiButton } from '@astryxdesign/core';
+import {
+  Button as UiButton,
+  DateTimeInput,
+  Selector,
+  type ISODateTimeString,
+} from '@astryxdesign/core';
 import {
   buttonVariants,
   cn,
@@ -246,12 +250,12 @@ export function PlanReminderFormDialog(props: {
               />
             </div>
             <div className="maka-plan-field">
-              <TextInput
-                label={copy.timeAriaLabel}
-                value={runAtLocal}
-                onChange={setRunAtLocal}
-                type="text"
-                placeholder="2026-06-05 13:44"
+              <DateTimeInput
+                label={copy.field.time}
+                value={runAtLocal as ISODateTimeString}
+                onChange={(value) => setRunAtLocal(value ?? '')}
+                hourFormat="24h"
+                timeIncrement={5}
                 isDisabled={formInteractionDisabled}
               />
             </div>
@@ -272,22 +276,26 @@ export function PlanReminderFormDialog(props: {
           <div className="maka-plan-form-grid">
             <label className="maka-plan-field">
               <span>{copy.field.recurrence}</span>
-              <PlanReminderSelect
+              <Selector
                 value={recurrence}
-                onChange={(value) => setRecurrence(value)}
-                disabled={formInteractionDisabled}
-                ariaLabel={copy.field.recurrence}
-                options={copy.recurrenceOptions}
+                onChange={(value) => setRecurrence(value as PlanReminderRecurrence)}
+                isDisabled={formInteractionDisabled}
+                label={copy.field.recurrence}
+                isLabelHidden
+                width="100%"
+                options={copy.recurrenceOptions.map(([value, label]) => ({ value, label }))}
               />
             </label>
             <label className="maka-plan-field">
               <span>{copy.field.delivery}</span>
-              <PlanReminderSelect
+              <Selector
                 value={deliveryChannel}
-                onChange={(value) => setDeliveryChannel(value)}
-                disabled={formInteractionDisabled}
-                ariaLabel={copy.field.delivery}
-                options={copy.deliveryOptions}
+                onChange={(value) => setDeliveryChannel(value as PlanReminderDeliveryTarget['channel'])}
+                isDisabled={formInteractionDisabled}
+                label={copy.field.delivery}
+                isLabelHidden
+                width="100%"
+                options={copy.deliveryOptions.map(([value, label]) => ({ value, label }))}
               />
             </label>
           </div>
@@ -307,11 +315,13 @@ export function PlanReminderFormDialog(props: {
               <div className="maka-plan-delivery-grid">
                 <label className="maka-plan-field">
                   <span>{copy.field.platform}</span>
-                  <PlanReminderSelect
+                  <Selector
                     value={deliveryPlatform}
-                    onChange={(value) => setDeliveryPlatform(value)}
-                    disabled={formInteractionDisabled}
-                    ariaLabel={copy.field.platform}
+                    onChange={(value) => setDeliveryPlatform(value as BotProvider)}
+                    isDisabled={formInteractionDisabled}
+                    label={copy.field.platform}
+                    isLabelHidden
+                    width="100%"
                     options={BOT_DELIVERY_PROVIDERS.map((provider) => {
                       const icon = (
                         <BotBrandLogo
@@ -321,7 +331,11 @@ export function PlanReminderFormDialog(props: {
                           aria-hidden="true"
                         />
                       );
-                      return [provider, botDisplayLabel(provider), icon] as const;
+                      return {
+                        value: provider,
+                        label: botDisplayLabel(provider),
+                        icon,
+                      };
                     })}
                   />
                 </label>

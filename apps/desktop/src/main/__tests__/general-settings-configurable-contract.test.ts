@@ -15,7 +15,7 @@ const GLOBAL_DTS = join(REPO_ROOT, 'apps', 'desktop', 'src', 'preload', 'bridge-
  * The General page used to ship three read-only `<SettingRow>` lines —
  * "启动" / "新对话模式" / "默认模型" — that read like settings but had
  * no configurable backing. The fix dropped the two without persisted
- * storage and replaced the third with a real `<SettingsSelect>` wired
+ * storage and replaced the third with a real Astryx `<Selector>` wired
  * to `connections.setDefault`. This contract pins both halves so the
  * regression can't drift back in.
  */

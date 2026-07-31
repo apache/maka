@@ -229,7 +229,7 @@ describe('Settings usage dashboard contract', () => {
     // The filter controls bind to the panel props (fed from the live draft),
     // never straight to persisted settings while typing.
     assert.match(requestsPanel, /<TextInput[\s\S]*value=\{props\.modelFilter\}/);
-    assert.match(requestsPanel, /<SettingsSelect[\s\S]*value=\{props\.status\}[\s\S]*ariaLabel=\{props\.copy\.statusAria\}/);
+    assert.match(requestsPanel, /<Selector[\s\S]*value=\{props\.status\}[\s\S]*label=\{props\.copy\.statusAria\}/);
     assert.match(usagePage, /modelFilter=\{usageDraft\.modelFilter\}/);
     assert.match(usagePage, /status=\{usageDraft\.status\}/);
     assert.doesNotMatch(

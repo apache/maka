@@ -19,7 +19,10 @@ import { TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
 import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
-import { SettingsSelect, type SettingsSelectOption } from './primitives/settings-select.js';
+import {
+  Selector,
+  type SelectorOptionData,
+} from '@astryxdesign/core/Selector';
 import { EmptyState } from './empty-state.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { CapabilityAuditStrip } from './capability-audit-strip.js';
@@ -192,30 +195,35 @@ function SkillLibraryPanel(props: {
     if (updated) setUpdatePreview(null);
   }
 
-  const categoryOptions: ReadonlyArray<SettingsSelectOption<ManagedSkillCategory | typeof MARKET_CATEGORY_ALL>> = [
-    [MARKET_CATEGORY_ALL, copy.market.categoryAll],
-    ...marketCategories.map((category) => [category, copy.categories[category]] as const),
+  const categoryOptions: SelectorOptionData[] = [
+    { value: MARKET_CATEGORY_ALL, label: copy.market.categoryAll },
+    ...marketCategories.map((category) => ({
+      value: category,
+      label: copy.categories[category],
+    })),
   ];
-  const sortOptions: ReadonlyArray<SettingsSelectOption<MarketSort>> = [
-    ['name', copy.market.sortName],
-    ['recent', copy.market.sortRecent],
+  const sortOptions: SelectorOptionData[] = [
+    { value: 'name', label: copy.market.sortName },
+    { value: 'recent', label: copy.market.sortRecent },
   ];
   const marketControls = activeSkillTab === 'market' && allManagedSources.length > 0 ? (
     <div className="maka-skill-market-controls" role="group" aria-label={copy.market.controls}>
-      <SettingsSelect<ManagedSkillCategory | typeof MARKET_CATEGORY_ALL>
+      <Selector
         value={marketCategory}
         options={categoryOptions}
-        onChange={(value) => setMarketCategory(value)}
-        ariaLabel={copy.market.categoryFilter}
-        width="full"
+        onChange={(value) => setMarketCategory(value as ManagedSkillCategory | typeof MARKET_CATEGORY_ALL)}
+        label={copy.market.categoryFilter}
+        isLabelHidden
+        width="100%"
         className="maka-skill-market-select"
       />
-      <SettingsSelect<MarketSort>
+      <Selector
         value={marketSort}
         options={sortOptions}
-        onChange={(value) => setMarketSort(value)}
-        ariaLabel={copy.market.sortAriaLabel}
-        width="full"
+        onChange={(value) => setMarketSort(value as MarketSort)}
+        label={copy.market.sortAriaLabel}
+        isLabelHidden
+        width="100%"
         className="maka-skill-market-select"
       />
     </div>

@@ -203,7 +203,7 @@ describe('Storybook baseline contract', () => {
 
     const curatedPrimitives = [
       'Button', 'Badge', 'TextInput', 'TextArea', 'NumberInput', 'CheckboxInput', 'Divider',
-      'DialogRoot', 'TabsRoot', 'SettingsSelect', 'Switch', 'Toggle', 'ToggleGroup',
+      'DialogRoot', 'TabsRoot', 'Selector', 'Switch', 'Toggle', 'ToggleGroup',
       'RadioList', 'RadioListItem', 'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
       'Menu', 'Accordion', 'Toolbar', 'ToastProvider',
     ];

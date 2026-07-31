@@ -16,7 +16,7 @@ import {
   NumberInput,
   ModelPicker,
   PermissionModeSelect,
-  SettingsSelect,
+  Selector,
   Switch,
   modelChoiceValue,
   modelMenuGroups,
@@ -105,7 +105,7 @@ export function GeneralSettingsPage(props: {
  * (启动 / 新对话模式 / 默认模型) that read like settings but had no
  * configurable backing — the static text was the entire UI. Drop the
  * two without backing storage; replace the third with a real
- * `<SettingsSelect>` that lets the user pick the default LLM model
+ * Astryx `<Selector>` that lets the user pick the default LLM model
  * inline. The selection is grouped by connection, but the persisted
  * default is the pair `{ slug, model }` via `connections.setDefaultModel`.
  *
@@ -329,15 +329,17 @@ function NetworkProxySection(props: {
           <div className="settingsFormGrid settingsFormGridProxy">
             <div>
               <span>{copy.proxyProtocol}</span>
-              <SettingsSelect
+              <Selector
                 value={proxyDraft.protocol}
-                ariaLabel={copy.proxyProtocol}
+                label={copy.proxyProtocol}
+                isLabelHidden
                 options={[
-                  ['http', 'HTTP/HTTPS'],
-                  ['https', 'HTTPS'],
-                  ['socks5', 'SOCKS5'],
-                ] satisfies Array<readonly [NetworkProxySettings['protocol'], string]>}
-                onChange={(protocol) => void updateProxy({ protocol })}
+                  { value: 'http', label: 'HTTP/HTTPS' },
+                  { value: 'https', label: 'HTTPS' },
+                  { value: 'socks5', label: 'SOCKS5' },
+                ]}
+                width={320}
+                onChange={(protocol) => void updateProxy({ protocol: protocol as NetworkProxySettings['protocol'] })}
               />
             </div>
             <div>

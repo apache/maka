@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
-import { Alert, AlertDescription, Button, SettingsSelect, Switch, TimePicker, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, Selector, Switch, TimeInput, type ISOTimeString, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -22,15 +22,17 @@ function buildDailyReviewModelOptions(
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
   locale: 'zh' | 'en',
-): Array<readonly [string, string]> {
-  const options: Array<readonly [string, string]> = [
-    [DAILY_REVIEW_DEFAULT_MODEL_VALUE, copy.defaultModel],
+): Array<{ value: string; label: string }> {
+  const options: Array<{ value: string; label: string }> = [
+    { value: DAILY_REVIEW_DEFAULT_MODEL_VALUE, label: copy.defaultModel },
   ];
-  options.push(...buildCatalogDailyReviewModelOptions(
-    connections,
-    currentModelKey.trim() === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : currentModelKey,
-    locale,
-  ));
+  options.push(
+    ...buildCatalogDailyReviewModelOptions(
+      connections,
+      currentModelKey.trim() === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : currentModelKey,
+      locale,
+    ).map(([value, label]) => ({ value, label })),
+  );
   return options;
 }
 
@@ -167,21 +169,16 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <strong>{copy.executeTime}</strong>
             <small>{copy.executeTimeHelp}</small>
           </div>
-          {/* Was a native time field. WebKit draws that control's popup
-              itself — platform-blue columns, platform metrics, no dark
-              mode — and no `::-webkit-*` selector reaches it, so the only
-              way onto the design system was to own the popup. TimePicker
-              keeps the same `HH:MM` value contract, so the persisted
-              config shape is unchanged. */}
-          <TimePicker
-            ariaLabel={copy.executeTimeAria}
-            className="settingsTimeInput"
-            value={effectiveConfig?.executeTime ?? '08:00'}
-            disabled={formDisabled || savingKey === 'executeTime'}
-            hourLabel={copy.executeTimeHour}
-            minuteLabel={copy.executeTimeMinute}
+          <TimeInput
+            label={copy.executeTimeAria}
+            isLabelHidden
+            value={(effectiveConfig?.executeTime ?? '08:00') as ISOTimeString}
+            isDisabled={formDisabled || savingKey === 'executeTime'}
+            hourFormat="24h"
+            increment={5}
+            width={140}
             onChange={(executeTime) => {
-              void patchConfig('executeTime', { executeTime });
+              if (executeTime) void patchConfig('executeTime', { executeTime });
             }}
           />
         </div>
@@ -228,11 +225,13 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <strong>{copy.model}</strong>
             <small>{copy.modelHelp}</small>
           </div>
-          <SettingsSelect
+          <Selector
             value={selectedModelValue}
-            ariaLabel={copy.modelAria}
+            label={copy.modelAria}
+            isLabelHidden
             options={modelOptions}
-            disabled={formDisabled || savingKey === 'modelKey' || modelOptions.length === 0}
+            isDisabled={formDisabled || savingKey === 'modelKey' || modelOptions.length === 0}
+            width={320}
             onChange={(value) => {
               void patchConfig('modelKey', {
                 modelKey: value === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : value,

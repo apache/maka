@@ -11,11 +11,11 @@ async function readUiSource(path: string): Promise<string> {
 }
 
 describe('#1565 PR 6 Astryx floating-component authority', () => {
-  it('makes Astryx Selector the only implementation authority for settings selects', async () => {
-    const source = await readUiSource('primitives/settings-select.tsx');
+  it('exports Astryx Selector directly instead of preserving a Maka settings-select adapter', async () => {
+    const source = await readUiSource('index.ts');
 
-    assert.match(source, /from '@astryxdesign\/core\/Selector'/);
-    assert.doesNotMatch(source, /SelectRoot|SelectTrigger|SelectPopup|SelectItem/);
+    assert.match(source, /\bSelector,[\s\S]*from '@astryxdesign\/core'/);
+    assert.doesNotMatch(source, /settings-select/);
   });
 
   it('drives the searchable model picker through Astryx combobox and popover hooks', async () => {

@@ -20,7 +20,7 @@ import {
   TextInput,
   RelativeTime,
   Segmented,
-  SettingsSelect,
+  Selector,
   Switch,
   TextArea,
   useMountedRef,
@@ -491,10 +491,12 @@ function BotCredentialFields(props: {
             return (
               <label key={field.key} className="settingsField">
                 <span>{field.label}</span>
-                <SettingsSelect
+                <Selector
                   value={props.channel[field.key] ?? field.defaultValue}
-                  ariaLabel={field.ariaLabel}
-                  options={field.options}
+                  label={field.ariaLabel}
+                  isLabelHidden
+                  options={field.options.map(([value, label]) => ({ value, label }))}
+                  width={320}
                   onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
                 />
               </label>

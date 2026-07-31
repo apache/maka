@@ -179,9 +179,9 @@ describe('Bot settings UI contract', () => {
     // The descriptor renderer must keep each field kind on its governed
     // primitive with the descriptor's accessible name.
     assert.match(settings, /function BotCredentialFields\(/);
-    assert.match(settings, /<PasswordInput[\s\S]*ariaLabel=\{field\.ariaLabel\}/);
+    assert.match(settings, /<PasswordInput[\s\S]*label=\{field\.ariaLabel\}/);
     assert.match(settings, /<TextInput[\s\S]*label=\{field\.ariaLabel\}[\s\S]*isLabelHidden/);
-    assert.match(settings, /<SettingsSelect[\s\S]*ariaLabel=\{field\.ariaLabel\}/);
+    assert.match(settings, /<Selector[\s\S]*label=\{field\.ariaLabel\}/);
     // WeChat keeps its bespoke fields component (collapsed advanced section),
     // so it is intentionally not part of the descriptor table.
     assert.match(settings, /provider === 'wechat' && \(/);

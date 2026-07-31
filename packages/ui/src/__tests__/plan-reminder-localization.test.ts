@@ -36,6 +36,11 @@ describe('plan reminder localization', () => {
 
     assert.ok(template);
     const seed = planReminderTemplateSeed(template, now);
+    assert.match(
+      seed.runAtLocal,
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/,
+      'DateTimeInput values use the local ISO date-time shape',
+    );
     const runAt = new Date(seed.runAtLocal);
 
     assert.equal(seed.editingId, null);

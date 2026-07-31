@@ -59,11 +59,10 @@ type AccountSecretProbeResult =
 // these helpers are gone. The provider detail dialog also dropped its
 // hand-rolled default-model radiogroup in favor of a native enabled-model list.
 
-// `SettingsSelect` moved to `packages/ui/src/primitives/settings-select.tsx`
-// in PR round-AB-shared-select (yuejing 2026-06-25). The Plan Reminder
-// platform select now uses the same primitive, so option shape,
-// selected-trigger icon rendering, and chrome contract are one source
-// of truth (kenji styles inventory task #128). Imported via `@maka/ui`.
+// Form selectors use Astryx Selector directly at each consumer. The Plan
+// Reminder platform select uses the same primitive, so option shape,
+// selected-trigger icon rendering, and chrome contract have one source
+// of truth.
 
 // `SettingsNavGroup` + `NAV_GROUP_ORDER` moved to `nav-group-summary.ts`
 // (PR-HEALTH-1) so the H1/H2 group-summary assertions can be pinned with

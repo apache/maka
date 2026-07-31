@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings, OpenGatewayRuntimeStatus, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, TextInput, NumberInput, SettingsSelect, Switch, TextArea, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, TextInput, NumberInput, Selector, Switch, TextArea, useToast, useUiLocale } from '@maka/ui';
 import { getOpenGatewaySettingsCopy, type OpenGatewaySettingsCopy } from '../locales/settings-open-gateway-copy';
 import { PasswordInput } from './password-input';
 import { MetricCard } from './settings-metric-card';
@@ -184,14 +184,16 @@ export function OpenGatewaySettingsPage(props: {
       <div className="settingsFormGrid settingsFormGridProxy">
         <div>
           <span>{copy.form.host}</span>
-          <SettingsSelect
+          <Selector
             value={gatewayDraft.host}
-            ariaLabel={copy.form.hostAria}
+            label={copy.form.hostAria}
+            isLabelHidden
             options={[
-              ['127.0.0.1', '127.0.0.1'],
-              ['0.0.0.0', '0.0.0.0'],
-            ] satisfies Array<readonly [AppSettings['openGateway']['host'], string]>}
-            onChange={(host) => void updateGateway({ host })}
+              { value: '127.0.0.1', label: '127.0.0.1' },
+              { value: '0.0.0.0', label: '0.0.0.0' },
+            ]}
+            width={320}
+            onChange={(host) => void updateGateway({ host: host as AppSettings['openGateway']['host'] })}
           />
         </div>
         <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly hasClear onChange={(value) => void updateGateway({ port: value ?? 3939 })} />

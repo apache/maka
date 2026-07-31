@@ -83,8 +83,6 @@ export * from './primitives/data-table.js';
 export * from './primitives/section-header.js';
 export { EmptyState } from './empty-state.js';
 export * from './primitives/segmented.js';
-export * from './primitives/settings-select.js';
-export * from './primitives/time-picker.js';
 export * from './primitives/toolbar.js';
 export {
   Collapsible,
@@ -212,4 +210,20 @@ export {
   type RadioListItemProps,
   SelectableCard,
   type SelectableCardProps,
+  Selector,
+  SelectorOption,
+  type SelectorProps,
+  type SelectorOptionType,
+  type SelectorOptionData,
+  MultiSelector,
+  type MultiSelectorProps,
+  type MultiSelectorOptionType,
+  TimeInput,
+  type TimeInputProps,
+  type ISOTimeString,
+  DateTimeInput,
+  type DateTimeInputProps,
+  type ISODateTimeString,
+  FormLayout,
+  type FormLayoutProps,
 } from '@astryxdesign/core';

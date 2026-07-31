@@ -17,7 +17,7 @@ import {
   IconButton,
   TextInput,
   Segmented,
-  SettingsSelect,
+  Selector,
   Switch,
   TabsList,
   TabsPanel,
@@ -254,15 +254,17 @@ function UsageRequestsPanel(props: {
             width="100%"
           />
         </div>
-        <SettingsSelect
+        <Selector
           value={props.status}
-          ariaLabel={props.copy.statusAria}
+          label={props.copy.statusAria}
+          isLabelHidden
           options={[
-            ['all', props.copy.statuses[0]],
-            ['success', props.copy.statuses[1]],
-            ['error', props.copy.statuses[2]],
-          ] satisfies Array<readonly [AppSettings['usage']['status'], string]>}
-          onChange={props.onStatusChange}
+            { value: 'all', label: props.copy.statuses[0] },
+            { value: 'success', label: props.copy.statuses[1] },
+            { value: 'error', label: props.copy.statuses[2] },
+          ]}
+          width={320}
+          onChange={(value) => props.onStatusChange(value as AppSettings['usage']['status'])}
         />
         <div className="settingsUsageDetailToggle">
           <span>{props.copy.details}</span>
