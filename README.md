@@ -152,7 +152,7 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 apps/desktop/       Electron main / preload / React renderer
 
 packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
-packages/storage/   File-backed stores and run ledgers
+packages/storage/   SQLite operational state, legacy importers, and payload stores
 packages/runtime/   AgentRun, model adapters, tools, context, and recovery
 packages/headless/  TaskRun, Autonomous Loop, Self-check, eval, and AHE
 packages/cli/       TUI and non-interactive CLI
@@ -184,7 +184,7 @@ Current boundaries that matter:
 
 Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
 
-## Experimental runtime recovery flag
+## Runtime storage and recovery
 
 RuntimeEvent persistence is always canonical in `runtime.sqlite`. On the first
 write, Maka batch-idempotently imports legacy RuntimeEvent JSONL without
@@ -199,6 +199,16 @@ and result in `cutover_journal`. An interrupted copy resumes without partial
 rows; a legacy database changed after cutover fails closed. The old database is
 retained as migration evidence but is no longer a production writer. Session
 transcript bodies remain append-only JSONL.
+
+Core execution state now shares that authority too: AgentRun headers and event
+ledgers, event projections, root-turn admissions and source proofs,
+Interactions, Host Epoch message receipts, and ShellRun records are canonical
+in `runtime.sqlite` across CLI, Desktop, Runtime Host, and Headless. Each legacy
+file store is fingerprinted and imported through its own durable
+`cutover_journal` entry before the corresponding repository opens. Copy and
+validation are one SQLite transaction, retries are idempotent, and a changed
+legacy source after cutover fails closed. The legacy files are retained only as
+migration evidence; new execution writes do not modify them.
 
 Runtime continuation remains opt-in:
 

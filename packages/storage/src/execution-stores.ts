@@ -10,7 +10,7 @@ import type {
   TurnRecord,
 } from '@maka/core';
 import {
-  createAgentRunStore,
+  createSqliteAgentRunStore,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
   type DurableAgentRunStore,
@@ -18,7 +18,10 @@ import {
   type RootTurnAdmission,
   type RootTurnSourceMessageReceipt,
 } from './agent-run-store.js';
-import { createMessageReceiptStore, type MessageReceiptStore } from './message-receipt-store.js';
+import {
+  createSqliteMessageReceiptStore,
+  type MessageReceiptStore,
+} from './message-receipt-store.js';
 import { createSessionStore, type SessionAuthorityStore } from './session-store.js';
 import {
   assertStorageRootLease,
@@ -28,8 +31,9 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 import {
-  openInteractiveInteractionStoreForRead,
-  openInteractiveInteractionStoreForWrite,
+  closeSqliteInteractionStoreFacade,
+  openSqliteInteractiveInteractionStoreForRead,
+  openSqliteInteractiveInteractionStoreForWrite,
   type InteractiveInteractionStoreReaderFacade,
   type InteractiveInteractionStoreWriterFacade,
 } from './interaction-store.js';
@@ -175,7 +179,7 @@ export function authenticateExecutionStoresReader<K extends StorageRootKind>(
 export async function openInteractiveExecutionStoresForWrite(
   lease: StorageRootLease<'interactive', 'write'>,
 ): Promise<ExecutionStoresWriter<'interactive'>> {
-  const interactionStore = await openInteractiveInteractionStoreForWrite(lease);
+  const interactionStore = await openSqliteInteractiveInteractionStoreForWrite(lease);
   return openExecutionStoresForWrite(lease, 'interactive', { interactionStore });
 }
 
@@ -219,15 +223,29 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
   extension: E,
 ): Promise<ExecutionStoresWriterBase<K> & E> {
   const sessionStore = createSessionStore(lease.canonicalPath);
-  const agentRunStore = createAgentRunStore(lease.canonicalPath);
+  const agentRunStore = createSqliteAgentRunStore(lease.canonicalPath);
+  const interactionStore =
+    'interactionStore' in extension
+      ? (extension.interactionStore as InteractiveInteractionStoreWriterFacade)
+      : undefined;
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: lease.canonicalPath,
   }).catch(async (error) => {
     await sessionStore.close?.().catch(() => {});
+    agentRunStore.close?.();
+    if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
     throw error;
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  const messageReceiptStore = createMessageReceiptStore(lease.canonicalPath);
+  const messageReceiptStore = createSqliteMessageReceiptStore(lease.canonicalPath);
+  await Promise.all([agentRunStore.ready?.(), messageReceiptStore.ready()]).catch(async (error) => {
+    await closeExecutionStorePersistence(sessionStore, runtimePersistence, {
+      agentRunStore,
+      messageReceiptStore,
+      interactionStore,
+    }).catch(() => {});
+    throw error;
+  });
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, kind, 'write', operation);
 
@@ -296,7 +314,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       setGeneratedTitleIfAbsent: (sessionId, title) =>
         run(() => sessionStore.setGeneratedTitleIfAbsent(sessionId, title)),
       remove: (sessionId) => run(() => sessionStore.remove(sessionId)),
-      close: () => closeExecutionStorePersistence(sessionStore, runtimePersistence),
+      close: () =>
+        closeExecutionStorePersistence(sessionStore, runtimePersistence, {
+          agentRunStore,
+          messageReceiptStore,
+          interactionStore,
+        }),
     },
     agentRunStore: {
       createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),
@@ -362,7 +385,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
 export async function openInteractiveExecutionStoresForRead(
   lease: StorageRootLease<'interactive', 'read'>,
 ): Promise<ExecutionStoresReader<'interactive'>> {
-  const interactionStore = await openInteractiveInteractionStoreForRead(lease);
+  const interactionStore = await openSqliteInteractiveInteractionStoreForRead(lease);
   return openExecutionStoresForRead(lease, 'interactive', { interactionStore });
 }
 
@@ -379,11 +402,23 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
 ): Promise<ExecutionStoresReaderBase<K> & E> {
   await assertStorageRootLease(lease, kind, 'read');
   const sessionStore = createSessionStore(lease.canonicalPath);
-  const agentRunStore = createAgentRunStore(lease.canonicalPath);
+  const agentRunStore = createSqliteAgentRunStore(lease.canonicalPath);
+  const interactionStore =
+    'interactionStore' in extension
+      ? (extension.interactionStore as InteractiveInteractionStoreReaderFacade)
+      : undefined;
+  await agentRunStore.ready?.().catch(async (error) => {
+    await sessionStore.close?.().catch(() => {});
+    agentRunStore.close?.();
+    if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
+    throw error;
+  });
   const runtimePersistence = await openRuntimeEventReadPersistence({
     workspaceRoot: lease.canonicalPath,
   }).catch(async (error) => {
     await sessionStore.close?.().catch(() => {});
+    agentRunStore.close?.();
+    if (interactionStore) closeSqliteInteractionStoreFacade(interactionStore);
     throw error;
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
@@ -399,7 +434,11 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
       readHeader: (sessionId) => run(() => sessionStore.readHeaderSnapshot(sessionId)),
       readMessages: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       listTurns: (sessionId) => run(() => sessionStore.listTurnsSnapshot(sessionId)),
-      close: () => closeExecutionStorePersistence(sessionStore, runtimePersistence),
+      close: () =>
+        closeExecutionStorePersistence(sessionStore, runtimePersistence, {
+          agentRunStore,
+          interactionStore,
+        }),
     },
     agentRunStore: {
       readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
@@ -442,6 +481,13 @@ function freezeExecutionStoresFacade(stores: {
 async function closeExecutionStorePersistence(
   sessionStore: { close?(): Promise<void> },
   runtimePersistence: { close(): void },
+  extras: {
+    agentRunStore?: Pick<DurableAgentRunStore, 'close'>;
+    messageReceiptStore?: { close(): void };
+    interactionStore?:
+      | InteractiveInteractionStoreReaderFacade
+      | InteractiveInteractionStoreWriterFacade;
+  } = {},
 ): Promise<void> {
   const errors: unknown[] = [];
   try {
@@ -451,6 +497,23 @@ async function closeExecutionStorePersistence(
   }
   try {
     await sessionStore.close?.();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    extras.agentRunStore?.close?.();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    extras.messageReceiptStore?.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    if (extras.interactionStore) {
+      closeSqliteInteractionStoreFacade(extras.interactionStore);
+    }
   } catch (error) {
     errors.push(error);
   }

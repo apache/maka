@@ -40,6 +40,7 @@ describe('operational state database cutover', () => {
           .all()
           .map((row) => ({ ...row })),
         [
+          { scope: 'core_execution', version: 1 },
           { scope: 'operational', version: 1 },
           { scope: 'runtime', version: 5 },
           { scope: 'session_metadata', version: SQLITE_SESSION_METADATA_SCHEMA_VERSION },

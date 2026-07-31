@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import type { DatabaseSync } from 'node:sqlite';
 import { appendJsonl } from './jsonl-append.js';
 import {
   decodeAgentRunEvent,
@@ -23,6 +24,12 @@ import { classifyJsonRecord } from './json-prefix.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
+import {
+  acquireOperationalStateDatabase,
+  completeOperationalStoreCutover,
+  type OperationalStateDatabaseLease,
+  type OperationalStoreCutoverFailpoint,
+} from './operational-state-store.js';
 import {
   DurableStoreWriteError,
   decodeAgentGraphIntentClaim,
@@ -127,6 +134,8 @@ export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionSt
     event: AgentRunEvent | null,
     options?: { replaceEventId?: string },
   ): Promise<void>;
+  ready?(): Promise<void>;
+  close?(): void;
 }
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
@@ -159,8 +168,335 @@ export function createAgentRunStore(workspaceRoot: string): DurableAgentRunStore
   return new FileAgentRunStore(workspaceRoot);
 }
 
+export interface SqliteAgentRunStoreOptions {
+  readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
+}
+
+export function createSqliteAgentRunStore(
+  workspaceRoot: string,
+  options: SqliteAgentRunStoreOptions = {},
+): DurableAgentRunStore {
+  return new SqliteAgentRunStore(workspaceRoot, options);
+}
+
 export function createRuntimeEventStore(workspaceRoot: string): DurableRuntimeEventStore {
   return new FileRuntimeEventStore(workspaceRoot);
+}
+
+class SqliteAgentRunStore implements DurableAgentRunStore {
+  readonly #root: string;
+  readonly #lease: OperationalStateDatabaseLease;
+  readonly #ready: Promise<void>;
+
+  constructor(workspaceRoot: string, options: SqliteAgentRunStoreOptions) {
+    this.#root = resolve(workspaceRoot);
+    this.#lease = acquireOperationalStateDatabase(this.#root);
+    this.#ready = importLegacyAgentRuns(this.#root, this.#lease, options);
+  }
+
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  async createRun(
+    header: AgentRunHeader,
+    _options: { durable?: boolean } = {},
+  ): Promise<AgentRunHeader> {
+    const normalized = normalizeAgentRunHeader(header, header.sessionId, header.runId);
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      const inserted = this.#lease.database
+        .prepare(`
+          INSERT OR IGNORE INTO core_agent_runs(
+            session_id, run_id, created_at, record_json
+          ) VALUES (?, ?, ?, ?)
+        `)
+        .run(
+          normalized.sessionId,
+          normalized.runId,
+          normalized.createdAt,
+          JSON.stringify(normalized, sanitizeJson),
+        );
+      if (inserted.changes !== 1) {
+        throw new Error(`Agent run already exists: ${normalized.runId}`);
+      }
+      const count = this.#lease.database
+        .prepare('SELECT COUNT(*) AS count FROM core_agent_runs WHERE session_id = ?')
+        .get(normalized.sessionId) as { count?: unknown };
+      const projection = this.#lease.database
+        .prepare(`
+          SELECT 1 AS present
+          FROM core_agent_run_projections
+          WHERE session_id = ? AND event_type = 'history_compact_checkpoint_recorded'
+        `)
+        .get(normalized.sessionId);
+      if (count.count === 1 && !projection) {
+        this.#lease.database
+          .prepare(`
+            INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
+            VALUES (?, 'history_compact_checkpoint_recorded', NULL)
+          `)
+          .run(normalized.sessionId);
+      }
+    });
+    return normalized;
+  }
+
+  async updateRun(
+    sessionId: string,
+    runId: string,
+    patch: Partial<AgentRunHeader>,
+    _options: { durable?: boolean } = {},
+  ): Promise<AgentRunHeader> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    await this.#ready;
+    return this.#lease.transaction('write', () => {
+      const current = readSqliteAgentRun(this.#lease.database, sessionId, runId);
+      const next = normalizeAgentRunHeader(
+        { ...current, ...patch, sessionId, runId },
+        sessionId,
+        runId,
+      );
+      const result = this.#lease.database
+        .prepare(`
+          UPDATE core_agent_runs
+          SET created_at = ?, record_json = ?
+          WHERE session_id = ? AND run_id = ?
+        `)
+        .run(next.createdAt, JSON.stringify(next, sanitizeJson), sessionId, runId);
+      if (result.changes !== 1) throw new Error(`Failed to update run ${runId}`);
+      return next;
+    });
+  }
+
+  async readRun(sessionId: string, runId: string): Promise<AgentRunHeader> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    await this.#ready;
+    return readSqliteAgentRun(this.#lease.database, sessionId, runId);
+  }
+
+  async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
+    return this.listSessionRunsForRecovery(sessionId);
+  }
+
+  async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {
+    assertSafeId(sessionId, 'Invalid session id');
+    await this.#ready;
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT run_id, record_json
+        FROM core_agent_runs
+        WHERE session_id = ?
+        ORDER BY created_at, run_id
+      `)
+      .all(sessionId) as Array<{ run_id?: unknown; record_json?: unknown }>;
+    return rows.map((row) => {
+      if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
+        throw new Error('Invalid SQLite AgentRun row');
+      }
+      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+    });
+  }
+
+  async appendEvent(
+    sessionId: string,
+    runId: string,
+    event: AgentRunEvent,
+    _options: { durable?: boolean } = {},
+  ): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      const header = readSqliteAgentRun(this.#lease.database, sessionId, runId);
+      const normalized = decodeAgentRunEvent(JSON.parse(JSON.stringify(event, sanitizeJson)), {
+        sessionId,
+        runId,
+        turnId: header.turnId,
+      });
+      const projection =
+        normalized.type === 'history_compact_checkpoint_recorded'
+          ? readSqliteAgentRunProjection(this.#lease.database, sessionId, normalized.type)
+          : undefined;
+      insertAgentRunEvent(this.#lease.database, normalized);
+      if (normalized.type === 'history_compact_checkpoint_recorded') {
+        const projected = shouldPreserveCheckpointProjectionDuringAppend(projection, normalized)
+          ? projection!
+          : normalized;
+        writeSqliteAgentRunProjection(this.#lease.database, sessionId, normalized.type, projected);
+      }
+    });
+  }
+
+  async readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
+    return this.readEventsForRecovery(sessionId, runId);
+  }
+
+  async readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    await this.#ready;
+    return readSqliteAgentRunEvents(this.#lease.database, sessionId, runId);
+  }
+
+  async readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    await this.#ready;
+    return readSqliteAgentRunEventsForEvidence(this.#lease.database, sessionId, runId);
+  }
+
+  async readEventProjection(
+    sessionId: string,
+    type: AgentRunEventType,
+  ): Promise<AgentRunEvent | null | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    await this.#ready;
+    return readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
+  }
+
+  async repairEventProjection(
+    sessionId: string,
+    type: AgentRunEventType,
+    event: AgentRunEvent | null,
+    options: { replaceEventId?: string } = {},
+  ): Promise<void> {
+    assertSafeId(sessionId, 'Invalid session id');
+    if (event !== null && !isProjectedAgentRunEvent(event, sessionId, type)) {
+      throw new Error(`Invalid AgentRun event projection repair for ${type}`);
+    }
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      const current = readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
+      if (
+        current?.id !== options.replaceEventId &&
+        shouldPreserveProjectionDuringRepair(current, event, type)
+      ) {
+        return;
+      }
+      writeSqliteAgentRunProjection(this.#lease.database, sessionId, type, event);
+    });
+  }
+
+  async admitRootTurn(input: AdmitRootTurnInput): Promise<AdmitRootTurnResult> {
+    const admission = normalizeAdmitRootTurnInput(input);
+    await this.#ready;
+    return this.#lease.transaction('write', () => {
+      const existing = readSqliteRootTurnAdmission(
+        this.#lease.database,
+        admission.sessionId,
+        admission.turnId,
+      );
+      if (existing) {
+        return existing.previousRootTurnId === input.previousRootTurnId &&
+          rootTurnAdmissionPayloadsEqual(existing, admission)
+          ? { kind: 'existing', admission: existing }
+          : { kind: 'conflict', admission: existing };
+      }
+      for (const source of admission.sourceMessages) {
+        const proof = this.#lease.database
+          .prepare(`
+            SELECT turn_id
+            FROM core_root_source_message_proofs
+            WHERE session_id = ? AND message_id = ?
+          `)
+          .get(admission.sessionId, source.messageId) as { turn_id?: unknown } | undefined;
+        if (proof && proof.turn_id !== admission.turnId) {
+          throw new Error(
+            `Root source message identity belongs to both ${String(proof.turn_id)} and ${admission.turnId}`,
+          );
+        }
+      }
+      this.#lease.database
+        .prepare(`
+          INSERT INTO core_root_turn_admissions(
+            session_id, turn_id, admitted_at, record_json
+          ) VALUES (?, ?, ?, ?)
+        `)
+        .run(
+          admission.sessionId,
+          admission.turnId,
+          admission.admittedAt,
+          JSON.stringify(admission),
+        );
+      for (const source of admission.sourceMessages) {
+        this.#lease.database
+          .prepare(`
+            INSERT INTO core_root_source_message_proofs(session_id, message_id, turn_id)
+            VALUES (?, ?, ?)
+          `)
+          .run(admission.sessionId, source.messageId, admission.turnId);
+      }
+      return { kind: 'admitted', admission };
+    });
+  }
+
+  async readRootTurnAdmission(
+    sessionId: string,
+    turnId: string,
+  ): Promise<RootTurnAdmission | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(turnId, 'Invalid turn id');
+    await this.#ready;
+    return readSqliteRootTurnAdmission(this.#lease.database, sessionId, turnId);
+  }
+
+  async readRootTurnSourceMessageReceipt(
+    sessionId: string,
+    sourceMessageId: string,
+  ): Promise<RootTurnSourceMessageReceipt | undefined> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(sourceMessageId, 'Invalid source message id');
+    await this.#ready;
+    const row = this.#lease.database
+      .prepare(`
+        SELECT turn_id
+        FROM core_root_source_message_proofs
+        WHERE session_id = ? AND message_id = ?
+      `)
+      .get(sessionId, sourceMessageId) as { turn_id?: unknown } | undefined;
+    if (!row) return undefined;
+    if (typeof row.turn_id !== 'string') throw new Error('Invalid root source message proof row');
+    const admission = readSqliteRootTurnAdmission(this.#lease.database, sessionId, row.turn_id);
+    if (!admission) {
+      throw new Error(`Root source message proof references missing Turn ${row.turn_id}`);
+    }
+    const matches = admission.sourceMessages.filter(
+      (source) => source.messageId === sourceMessageId,
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `Root source message proof does not identify exactly one source: ${sourceMessageId}`,
+      );
+    }
+    return Object.freeze({ admission, sourceMessage: matches[0]! });
+  }
+
+  async listRootTurnAdmissionsForRecovery(sessionId: string): Promise<RootTurnAdmission[]> {
+    assertSafeId(sessionId, 'Invalid session id');
+    await this.#ready;
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT turn_id, record_json
+        FROM core_root_turn_admissions
+        WHERE session_id = ?
+        ORDER BY admitted_at, turn_id
+      `)
+      .all(sessionId) as Array<{ turn_id?: unknown; record_json?: unknown }>;
+    const admissions = rows.map((row) => {
+      if (typeof row.turn_id !== 'string' || typeof row.record_json !== 'string') {
+        throw new Error('Invalid SQLite root turn admission row');
+      }
+      return normalizeRootTurnAdmission(JSON.parse(row.record_json), sessionId, row.turn_id);
+    });
+    return orderRootTurnAdmissionChain(sessionId, admissions);
+  }
+
+  close(): void {
+    this.#lease.close();
+  }
 }
 
 class FileAgentRunStore implements DurableAgentRunStore {
@@ -787,6 +1123,538 @@ class FileAgentRunStore implements DurableAgentRunStore {
         return;
       }
       await this.writeEventProjectionUnlocked(sessionId, type, null);
+    }
+  }
+}
+
+interface LegacyAgentRunProjection {
+  readonly sessionId: string;
+  readonly type: AgentRunEventType;
+  readonly event: AgentRunEvent | null;
+}
+
+interface LegacyAgentRunSnapshot {
+  readonly runs: readonly AgentRunHeader[];
+  readonly events: readonly {
+    readonly sessionId: string;
+    readonly runId: string;
+    readonly records: readonly AgentRunEvent[];
+  }[];
+  readonly projections: readonly LegacyAgentRunProjection[];
+  readonly admissions: readonly RootTurnAdmission[];
+}
+
+async function importLegacyAgentRuns(
+  root: string,
+  lease: OperationalStateDatabaseLease,
+  options: SqliteAgentRunStoreOptions,
+): Promise<void> {
+  const snapshot = await readLegacyAgentRunSnapshot(root);
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify(snapshot, sanitizeJson))
+    .digest('hex');
+  completeOperationalStoreCutover(lease, {
+    storeName: 'agent_runs',
+    sourcePath: join(root, 'sessions'),
+    sourceFingerprint: `sha256:${fingerprint}`,
+    failpoint: options.failpoint,
+    importAndValidate: (db) => {
+      for (const run of snapshot.runs) insertOrValidateAgentRun(db, run);
+      for (const stream of snapshot.events) {
+        stream.records.forEach((event, sequence) => {
+          insertOrValidateAgentRunEvent(db, event, sequence);
+        });
+      }
+      for (const projection of snapshot.projections) {
+        insertOrValidateAgentRunProjection(db, projection);
+      }
+      for (const admission of snapshot.admissions) {
+        insertOrValidateRootTurnAdmission(db, admission);
+      }
+      return {
+        agent_runs: snapshot.runs.length,
+        agent_run_events: snapshot.events.reduce(
+          (count, stream) => count + stream.records.length,
+          0,
+        ),
+        agent_run_projections: snapshot.projections.length,
+        root_turn_admissions: snapshot.admissions.length,
+        root_source_message_proofs: snapshot.admissions.reduce(
+          (count, admission) => count + admission.sourceMessages.length,
+          0,
+        ),
+      };
+    },
+  });
+}
+
+async function readLegacyAgentRunSnapshot(root: string): Promise<LegacyAgentRunSnapshot> {
+  const sessionsRoot = join(root, 'sessions');
+  let sessions;
+  try {
+    sessions = await readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { runs: [], events: [], projections: [], admissions: [] };
+    }
+    throw error;
+  }
+  const legacy = new FileAgentRunStore(root);
+  const runs: AgentRunHeader[] = [];
+  const events: Array<{
+    sessionId: string;
+    runId: string;
+    records: AgentRunEvent[];
+  }> = [];
+  const projections: LegacyAgentRunProjection[] = [];
+  const admissions: RootTurnAdmission[] = [];
+  for (const session of sessions.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!session.isDirectory() || !isSafeId(session.name)) continue;
+    const sessionRuns = await readLegacyAgentRunsForSession(root, legacy, session.name);
+    runs.push(...sessionRuns.runs);
+    events.push(...sessionRuns.events);
+    const sessionAdmissions = await legacy.listRootTurnAdmissionsForRecovery(session.name);
+    admissions.push(...sessionAdmissions);
+    await assertLegacyRootProofClosure(root, session.name, sessionAdmissions);
+    projections.push(...(await readLegacyAgentRunProjections(root, session.name)));
+  }
+  return { runs, events, projections, admissions };
+}
+
+async function readLegacyAgentRunsForSession(
+  root: string,
+  legacy: FileAgentRunStore,
+  sessionId: string,
+): Promise<{
+  runs: AgentRunHeader[];
+  events: Array<{ sessionId: string; runId: string; records: AgentRunEvent[] }>;
+}> {
+  const runsRoot = join(root, 'sessions', sessionId, 'runs');
+  let entries;
+  try {
+    entries = await readdir(runsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { runs: [], events: [] };
+    throw error;
+  }
+  const runs: AgentRunHeader[] = [];
+  const events: Array<{ sessionId: string; runId: string; records: AgentRunEvent[] }> = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory() || !isSafeId(entry.name)) {
+      throw new Error(`Invalid AgentRun entry for session ${sessionId}: ${entry.name}`);
+    }
+    const runRoot = join(runsRoot, entry.name);
+    const runEntries = await readdir(runRoot, { withFileTypes: true });
+    const hasHeader = runEntries.some(
+      (candidate) => candidate.isFile() && candidate.name === 'run.json',
+    );
+    if (!hasHeader) {
+      const runtimeOnly = runEntries.every(
+        (candidate) =>
+          (candidate.isFile() && candidate.name === 'runtime-events.jsonl') ||
+          (candidate.isDirectory() && candidate.name === 'runtime-partials') ||
+          (candidate.isFile() && isExclusiveWriteTemp(candidate.name, 'run.json')),
+      );
+      if (runtimeOnly) continue;
+      throw Object.assign(new Error(`AgentRun ${entry.name} has no durable header`), {
+        code: 'ENOENT',
+      });
+    }
+    const run = await legacy.readRun(sessionId, entry.name);
+    runs.push(run);
+    events.push({
+      sessionId,
+      runId: run.runId,
+      records: await legacy.readEventsForRecovery(sessionId, run.runId),
+    });
+  }
+  return { runs, events };
+}
+
+async function readLegacyAgentRunProjections(
+  root: string,
+  sessionId: string,
+): Promise<LegacyAgentRunProjection[]> {
+  const projectionRoot = join(root, 'sessions', sessionId, 'projections');
+  let entries;
+  try {
+    entries = await readdir(projectionRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const result: LegacyAgentRunProjection[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      throw new Error(`Invalid AgentRun projection entry: ${entry.name}`);
+    }
+    const type = entry.name.slice(0, -'.json'.length) as AgentRunEventType;
+    const parsed = JSON.parse(await readFile(join(projectionRoot, entry.name), 'utf8')) as {
+      version?: unknown;
+      event?: unknown;
+    };
+    if (parsed.version !== 1 || !Object.hasOwn(parsed, 'event')) {
+      throw new Error(`Invalid AgentRun event projection for ${type}`);
+    }
+    if (parsed.event !== null && !isProjectedAgentRunEvent(parsed.event, sessionId, type)) {
+      throw new Error(`Invalid AgentRun event projection for ${type}`);
+    }
+    result.push({
+      sessionId,
+      type,
+      event: parsed.event as AgentRunEvent | null,
+    });
+  }
+  return result;
+}
+
+async function assertLegacyRootProofClosure(
+  root: string,
+  sessionId: string,
+  admissions: readonly RootTurnAdmission[],
+): Promise<void> {
+  const expected = new Map<string, string>();
+  for (const admission of admissions) {
+    for (const source of admission.sourceMessages) {
+      expected.set(source.messageId, admission.turnId);
+    }
+  }
+  const proofRoot = join(root, 'sessions', sessionId, 'message-proofs', 'root');
+  let entries;
+  try {
+    entries = await readdir(proofRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (expected.size === 0) return;
+      throw new Error(`Missing root source message proofs for session ${sessionId}`);
+    }
+    throw error;
+  }
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      throw new Error(`Invalid root source message proof entry: ${entry.name}`);
+    }
+    const messageId = entry.name.slice(0, -'.json'.length);
+    assertSafeId(messageId, 'Invalid root source message proof identity');
+    const pointer = decodeRootSourceMessageProofPointer(
+      JSON.parse(await readFile(join(proofRoot, entry.name), 'utf8')),
+      sessionId,
+      messageId,
+    );
+    if (expected.get(messageId) !== pointer.turnId) {
+      throw new Error(`Orphan root source message proof: ${messageId}`);
+    }
+    seen.add(messageId);
+  }
+  if (seen.size !== expected.size) {
+    throw new Error(`Missing root source message proofs for session ${sessionId}`);
+  }
+}
+
+function normalizeAgentRunHeader(value: unknown, sessionId: string, runId: string): AgentRunHeader {
+  assertSafeId(sessionId, 'Invalid session id');
+  assertSafeId(runId, 'Invalid run id');
+  return decodeAgentRunHeader(JSON.parse(JSON.stringify(value, sanitizeJson)), {
+    sessionId,
+    runId,
+  });
+}
+
+function readSqliteAgentRun(db: DatabaseSync, sessionId: string, runId: string): AgentRunHeader {
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_agent_runs
+      WHERE session_id = ? AND run_id = ?
+    `)
+    .get(sessionId, runId) as { record_json?: unknown } | undefined;
+  if (!row) {
+    const error = new Error(`Agent run does not exist: ${runId}`) as NodeJS.ErrnoException;
+    error.code = 'ENOENT';
+    throw error;
+  }
+  if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite AgentRun row');
+  return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, runId);
+}
+
+function readSqliteAgentRunEvents(
+  db: DatabaseSync,
+  sessionId: string,
+  runId: string,
+): AgentRunEvent[] {
+  const rows = db
+    .prepare(`
+      SELECT record_json
+      FROM core_agent_run_events
+      WHERE session_id = ? AND run_id = ?
+      ORDER BY sequence
+    `)
+    .all(sessionId, runId) as Array<{ record_json?: unknown }>;
+  if (rows.length === 0) return [];
+  const header = readSqliteAgentRun(db, sessionId, runId);
+  return rows.map((row) => {
+    if (typeof row.record_json !== 'string') {
+      throw new Error('Invalid SQLite AgentRun event row');
+    }
+    return decodeAgentRunEvent(JSON.parse(row.record_json), {
+      sessionId,
+      runId,
+      turnId: header.turnId,
+    });
+  });
+}
+
+function readSqliteAgentRunEventsForEvidence(
+  db: DatabaseSync,
+  sessionId: string,
+  runId: string,
+): AgentRunEvent[] {
+  const rows = db
+    .prepare(`
+      SELECT sequence, record_json
+      FROM core_agent_run_events
+      WHERE session_id = ? AND run_id = ?
+      ORDER BY sequence
+    `)
+    .all(sessionId, runId) as Array<{ sequence?: unknown; record_json?: unknown }>;
+  if (rows.length === 0) return [];
+  const header = readSqliteAgentRun(db, sessionId, runId);
+  return rows.map((row) => {
+    const lineNumber =
+      typeof row.sequence === 'number' && Number.isSafeInteger(row.sequence) ? row.sequence + 1 : 0;
+    try {
+      if (typeof row.record_json !== 'string') {
+        throw new Error('Invalid SQLite AgentRun event row');
+      }
+      return decodeAgentRunEvent(JSON.parse(row.record_json), {
+        sessionId,
+        runId,
+        turnId: header.turnId,
+      });
+    } catch (error) {
+      return {
+        type: 'event_corrupt',
+        id: `run-event-corrupt-${lineNumber}`,
+        runId,
+        sessionId,
+        turnId: header.turnId,
+        ts: header.updatedAt,
+        message: error instanceof Error ? error.message : 'Invalid SQLite AgentRun event row',
+        data: { lineNumber },
+      };
+    }
+  });
+}
+
+function insertAgentRunEvent(db: DatabaseSync, event: AgentRunEvent): void {
+  const row = db
+    .prepare(`
+      SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
+      FROM core_agent_run_events
+      WHERE session_id = ? AND run_id = ?
+    `)
+    .get(event.sessionId, event.runId) as { sequence?: unknown };
+  if (typeof row.sequence !== 'number' || !Number.isSafeInteger(row.sequence)) {
+    throw new Error('Invalid next AgentRun event sequence');
+  }
+  db.prepare(`
+    INSERT INTO core_agent_run_events(
+      session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    event.sessionId,
+    event.runId,
+    row.sequence,
+    event.id,
+    event.type,
+    event.ts,
+    JSON.stringify(event, sanitizeJson),
+  );
+}
+
+function readSqliteAgentRunProjection(
+  db: DatabaseSync,
+  sessionId: string,
+  type: AgentRunEventType,
+): AgentRunEvent | null | undefined {
+  const row = db
+    .prepare(`
+      SELECT event_json
+      FROM core_agent_run_projections
+      WHERE session_id = ? AND event_type = ?
+    `)
+    .get(sessionId, type) as { event_json?: unknown } | undefined;
+  if (!row) return undefined;
+  if (row.event_json === null) return null;
+  if (typeof row.event_json !== 'string') {
+    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  }
+  const event = JSON.parse(row.event_json);
+  if (!isProjectedAgentRunEvent(event, sessionId, type)) {
+    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  }
+  return event;
+}
+
+function writeSqliteAgentRunProjection(
+  db: DatabaseSync,
+  sessionId: string,
+  type: AgentRunEventType,
+  event: AgentRunEvent | null,
+): void {
+  db.prepare(`
+    INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
+    VALUES (?, ?, ?)
+    ON CONFLICT(session_id, event_type) DO UPDATE SET event_json = excluded.event_json
+  `).run(sessionId, type, event === null ? null : JSON.stringify(event, sanitizeJson));
+}
+
+function readSqliteRootTurnAdmission(
+  db: DatabaseSync,
+  sessionId: string,
+  turnId: string,
+): RootTurnAdmission | undefined {
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_root_turn_admissions
+      WHERE session_id = ? AND turn_id = ?
+    `)
+    .get(sessionId, turnId) as { record_json?: unknown } | undefined;
+  if (!row) return undefined;
+  if (typeof row.record_json !== 'string') throw new Error('Invalid root turn admission row');
+  return normalizeRootTurnAdmission(JSON.parse(row.record_json), sessionId, turnId);
+}
+
+function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmission {
+  assertSafeId(input.sessionId, 'Invalid session id');
+  assertSafeId(input.turnId, 'Invalid turn id');
+  assertSafeId(input.proposedRunId, 'Invalid run id');
+  if (input.proposedUserMessageId !== null) {
+    assertSafeId(input.proposedUserMessageId, 'Invalid user message id');
+  }
+  if (input.previousRootTurnId !== null) {
+    assertSafeId(input.previousRootTurnId, 'Invalid previous root turn id');
+    if (input.previousRootTurnId === input.turnId) {
+      throw new Error('Root turn admission cannot reference itself');
+    }
+  }
+  if (!Number.isSafeInteger(input.admittedAt) || input.admittedAt < 0) {
+    throw new Error('Invalid root turn admission timestamp');
+  }
+  const { normalizedInput, sourceMessages } = normalizeRootTurnAdmissionPayload(
+    input.normalizedInput,
+    input.sourceMessages,
+  );
+  const admission: RootTurnAdmission = {
+    schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    runId: input.proposedRunId,
+    userMessageId: input.proposedUserMessageId,
+    execution: normalizeRootExecutionDescriptor(input.execution),
+    previousRootTurnId: input.previousRootTurnId,
+    normalizedInput,
+    sourceMessages,
+    admittedAt: input.admittedAt,
+  };
+  assertRootTurnAdmissionContract(admission);
+  assertRootTurnAdmissionRecordSize(admission);
+  return deepFreezeRootTurnAdmission(admission);
+}
+
+function insertOrValidateAgentRun(db: DatabaseSync, run: AgentRunHeader): void {
+  const encoded = JSON.stringify(run, sanitizeJson);
+  const result = db
+    .prepare(`
+      INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at, record_json)
+      VALUES (?, ?, ?, ?)
+    `)
+    .run(run.sessionId, run.runId, run.createdAt, encoded);
+  if (result.changes !== 0) return;
+  if (!isDeepStrictEqual(readSqliteAgentRun(db, run.sessionId, run.runId), run)) {
+    throw new Error(`AgentRun cutover conflict: ${run.runId}`);
+  }
+}
+
+function insertOrValidateAgentRunEvent(
+  db: DatabaseSync,
+  event: AgentRunEvent,
+  sequence: number,
+): void {
+  const encoded = JSON.stringify(event, sanitizeJson);
+  const result = db
+    .prepare(`
+      INSERT OR IGNORE INTO core_agent_run_events(
+        session_id, run_id, sequence, event_id, event_type, event_ts, record_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(event.sessionId, event.runId, sequence, event.id, event.type, event.ts, encoded);
+  if (result.changes !== 0) return;
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_agent_run_events
+      WHERE session_id = ? AND run_id = ? AND sequence = ?
+    `)
+    .get(event.sessionId, event.runId, sequence) as { record_json?: unknown } | undefined;
+  if (typeof row?.record_json !== 'string' || row.record_json !== encoded) {
+    throw new Error(`AgentRun event cutover conflict: ${event.runId}:${sequence}`);
+  }
+}
+
+function insertOrValidateAgentRunProjection(
+  db: DatabaseSync,
+  projection: LegacyAgentRunProjection,
+): void {
+  const encoded = projection.event === null ? null : JSON.stringify(projection.event, sanitizeJson);
+  const result = db
+    .prepare(`
+      INSERT OR IGNORE INTO core_agent_run_projections(session_id, event_type, event_json)
+      VALUES (?, ?, ?)
+    `)
+    .run(projection.sessionId, projection.type, encoded);
+  if (result.changes !== 0) return;
+  const existing = readSqliteAgentRunProjection(db, projection.sessionId, projection.type);
+  if (!isDeepStrictEqual(existing, projection.event)) {
+    throw new Error(`AgentRun projection cutover conflict: ${projection.type}`);
+  }
+}
+
+function insertOrValidateRootTurnAdmission(db: DatabaseSync, admission: RootTurnAdmission): void {
+  const result = db
+    .prepare(`
+      INSERT OR IGNORE INTO core_root_turn_admissions(
+        session_id, turn_id, admitted_at, record_json
+      ) VALUES (?, ?, ?, ?)
+    `)
+    .run(admission.sessionId, admission.turnId, admission.admittedAt, JSON.stringify(admission));
+  if (
+    result.changes === 0 &&
+    !isDeepStrictEqual(
+      readSqliteRootTurnAdmission(db, admission.sessionId, admission.turnId),
+      admission,
+    )
+  ) {
+    throw new Error(`Root turn admission cutover conflict: ${admission.turnId}`);
+  }
+  for (const source of admission.sourceMessages) {
+    const proof = db
+      .prepare(`
+        SELECT turn_id
+        FROM core_root_source_message_proofs
+        WHERE session_id = ? AND message_id = ?
+      `)
+      .get(admission.sessionId, source.messageId) as { turn_id?: unknown } | undefined;
+    if (proof && proof.turn_id !== admission.turnId) {
+      throw new Error(`Root source message proof cutover conflict: ${source.messageId}`);
+    }
+    if (!proof) {
+      db.prepare(`
+        INSERT INTO core_root_source_message_proofs(session_id, message_id, turn_id)
+        VALUES (?, ?, ?)
+      `).run(admission.sessionId, source.messageId, admission.turnId);
     }
   }
 }

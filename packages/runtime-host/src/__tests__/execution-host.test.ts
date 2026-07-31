@@ -1,11 +1,20 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFile, chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
@@ -1071,6 +1080,7 @@ test('startup recovery imports past a truncated legacy RuntimeEvent tail without
       'recover after a partial RuntimeEvent write',
     );
     const runtimeEventsPath = fixture.runtimeEventsPath(runId);
+    await mkdir(dirname(runtimeEventsPath), { recursive: true });
     await writeFile(runtimeEventsPath, '{"id":"truncated"', 'utf8');
 
     const host = await fixture.startHost();
@@ -1101,6 +1111,7 @@ test('startup recovery fails closed on a complete malformed RuntimeEvent record'
     );
     const runtimeEventsPath = fixture.runtimeEventsPath(runId);
     const malformed = '{"id":"malformed"\n';
+    await mkdir(dirname(runtimeEventsPath), { recursive: true });
     await writeFile(runtimeEventsPath, malformed, 'utf8');
 
     await fixture.expectHostStartupFailure();
@@ -1134,6 +1145,7 @@ test('startup recovery fails closed on a complete malformed AgentRun record', as
     );
     const eventsPath = fixture.eventsPath(runId);
     const malformed = '{"type":"run_started"\n';
+    await mkdir(dirname(eventsPath), { recursive: true });
     await writeFile(eventsPath, malformed, 'utf8');
 
     await fixture.expectHostStartupFailure();

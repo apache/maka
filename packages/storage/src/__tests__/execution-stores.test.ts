@@ -325,10 +325,11 @@ describe('execution stores', () => {
           'root',
           'source-1.json',
         );
-        await rm(rootProofPath);
+        await assert.rejects(() => stat(rootProofPath), { code: 'ENOENT' });
         assert.equal(
-          await stores.agentRunStore.readRootTurnSourceMessageReceipt(session.id, 'source-1'),
-          undefined,
+          (await stores.agentRunStore.readRootTurnSourceMessageReceipt(session.id, 'source-1'))
+            ?.admission.turnId,
+          'turn-1',
         );
         await stores.agentRunStore.listRootTurnAdmissionsForRecovery(session.id);
         assert.equal(
@@ -343,6 +344,9 @@ describe('execution stores', () => {
           'turn-admissions',
           'not-an-admission',
         );
+        await mkdir(join(root, 'sessions', session.id, 'turn-admissions'), {
+          recursive: true,
+        });
         await writeFile(unrelatedAdmissionEntry, 'unrelated');
         assert.equal(
           (await stores.agentRunStore.readRootTurnSourceMessageReceipt(session.id, 'source-1'))
@@ -428,21 +432,21 @@ describe('execution stores', () => {
 
         const header = runHeader(session.id, first.admission.runId);
         await stores.agentRunStore.createRun(header);
-        const bytes = await readFile(
-          join(root, 'sessions', session.id, 'runs', first.admission.runId, 'run.json'),
-          'utf8',
+        const legacyRunPath = join(
+          root,
+          'sessions',
+          session.id,
+          'runs',
+          first.admission.runId,
+          'run.json',
         );
+        await assert.rejects(() => stat(legacyRunPath), { code: 'ENOENT' });
         await assert.rejects(
           () => stores.agentRunStore.createRun({ ...header, updatedAt: 99 }),
           /Agent run already exists/,
         );
-        assert.equal(
-          await readFile(
-            join(root, 'sessions', session.id, 'runs', first.admission.runId, 'run.json'),
-            'utf8',
-          ),
-          bytes,
-        );
+        assert.deepEqual(await stores.agentRunStore.readRun(session.id, header.runId), header);
+        await assert.rejects(() => stat(legacyRunPath), { code: 'ENOENT' });
       } finally {
         await owner.close();
       }
@@ -1017,8 +1021,12 @@ describe('execution stores', () => {
         );
         assert.equal(first, second);
 
-        await rm(
-          join(root, 'sessions', session.id, 'message-proofs', 'root', `source-${winner}.json`),
+        await assert.rejects(
+          () =>
+            stat(
+              join(root, 'sessions', session.id, 'message-proofs', 'root', `source-${winner}.json`),
+            ),
+          { code: 'ENOENT' },
         );
       } finally {
         await owner.close();
@@ -1348,7 +1356,7 @@ describe('execution stores', () => {
     });
   });
 
-  test('repairs JSONL stores without rewriting the retired RuntimeEvent JSONL', async () => {
+  test('keeps AgentRun and RuntimeEvent legacy JSONL read-only after SQLite cutover', async () => {
     await withRoot(async ({ root }) => {
       const capability = await resolveStorageRoot({
         path: root,
@@ -1378,6 +1386,9 @@ describe('execution stores', () => {
         );
 
         const eventsPath = join(root, 'sessions', session.id, 'runs', header.runId, 'events.jsonl');
+        await mkdir(join(root, 'sessions', session.id, 'runs', header.runId), {
+          recursive: true,
+        });
         await writeFile(
           eventsPath,
           JSON.stringify(runEvent(session.id, header.runId, 'event-1', 12)),
@@ -1398,7 +1409,11 @@ describe('execution stores', () => {
           (await stores.agentRunStore.readEvents(session.id, header.runId)).map(
             (event) => event.id,
           ),
-          ['event-1', 'event-2', 'event-3'],
+          ['event-2', 'event-3'],
+        );
+        assert.equal(
+          await readFile(eventsPath, 'utf8'),
+          `${JSON.stringify(runEvent(session.id, header.runId, 'event-1', 12))}{"type":"run_started"`,
         );
 
         const runtimeEventsPath = join(
@@ -1451,7 +1466,7 @@ describe('execution stores', () => {
           undefined,
         );
 
-        for (const path of [sessionPath, eventsPath]) {
+        for (const path of [sessionPath]) {
           const lines = (await readFile(path, 'utf8')).split('\n').filter(Boolean);
           for (const line of lines) assert.doesNotThrow(() => JSON.parse(line));
         }
@@ -1524,7 +1539,7 @@ describe('execution stores', () => {
     });
   });
 
-  test('strict recovery removes recognizable uncommitted exclusive-create staging', async () => {
+  test('SQLite recovery ignores and preserves retired file-store staging artifacts', async () => {
     await withRoot(async ({ root }) => {
       const capability = await resolveStorageRoot({
         path: root,
@@ -1551,6 +1566,7 @@ describe('execution stores', () => {
         const suffix = '123.00000000-0000-4000-8000-000000000000.tmp';
         const admissionsRoot = join(root, 'sessions', session.id, 'turn-admissions');
         const admissionTemp = join(admissionsRoot, `turn-1.json.${suffix}`);
+        await mkdir(admissionsRoot, { recursive: true });
         await writeFile(admissionTemp, 'staging', 'utf8');
         const runDirectory = join(root, 'sessions', session.id, 'runs', 'run-staging');
         await mkdir(runDirectory, { recursive: true });
@@ -1562,8 +1578,8 @@ describe('execution stores', () => {
           ['turn-1'],
         );
         assert.deepEqual(await stores.agentRunStore.listSessionRunsForRecovery(session.id), []);
-        await assert.rejects(() => stat(admissionTemp), { code: 'ENOENT' });
-        await assert.rejects(() => stat(runDirectory), { code: 'ENOENT' });
+        assert.ok((await stat(admissionTemp)).isFile());
+        assert.ok((await stat(runDirectory)).isDirectory());
       } finally {
         await owner.close();
       }
@@ -1654,7 +1670,7 @@ describe('execution stores', () => {
     });
   });
 
-  test('strict recovery enumeration fails on malformed durable entities', async () => {
+  test('SQLite recovery is isolated from post-cutover legacy file corruption', async () => {
     await withRoot(async ({ root }) => {
       const capability = await resolveStorageRoot({
         path: root,
@@ -1677,22 +1693,22 @@ describe('execution stores', () => {
           sourceMessages: [],
           admittedAt: 10,
         });
-        await writeFile(
-          join(root, 'sessions', session.id, 'turn-admissions', 'turn-1.json'),
-          '{"turnId":"wrong"}\n',
-          'utf8',
-        );
-        await assert.rejects(() =>
-          stores.agentRunStore.listRootTurnAdmissionsForRecovery(session.id),
+        const admissionRoot = join(root, 'sessions', session.id, 'turn-admissions');
+        await mkdir(admissionRoot, { recursive: true });
+        await writeFile(join(admissionRoot, 'turn-1.json'), '{"turnId":"wrong"}\n', 'utf8');
+        assert.equal(
+          (await stores.agentRunStore.listRootTurnAdmissionsForRecovery(session.id))[0]?.turnId,
+          'turn-1',
         );
 
         await stores.agentRunStore.createRun(runHeader(session.id, 'run-1'));
-        await writeFile(
-          join(root, 'sessions', session.id, 'runs', 'run-1', 'run.json'),
-          '{"runId":"wrong"}\n',
-          'utf8',
+        const runRoot = join(root, 'sessions', session.id, 'runs', 'run-1');
+        await mkdir(runRoot, { recursive: true });
+        await writeFile(join(runRoot, 'run.json'), '{"runId":"wrong"}\n', 'utf8');
+        assert.equal(
+          (await stores.agentRunStore.listSessionRunsForRecovery(session.id))[0]?.runId,
+          'run-1',
         );
-        await assert.rejects(() => stores.agentRunStore.listSessionRunsForRecovery(session.id));
 
         await writeFile(
           join(root, 'sessions', session.id, 'session.jsonl'),

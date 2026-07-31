@@ -12,6 +12,10 @@ import {
   migrateSqliteSessionMetadataDatabase,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
 } from './sqlite-session-metadata-schema.js';
+import {
+  migrateSqliteCoreExecutionDatabase,
+  SQLITE_CORE_EXECUTION_SCHEMA_VERSION,
+} from './sqlite-core-execution-schema.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const LEGACY_SESSION_METADATA_DATABASE_NAME = 'sessions.sqlite';
@@ -53,6 +57,20 @@ export interface OperationalStateDatabaseLease {
   readonly databasePath: string;
   transaction<T>(mode: 'read' | 'write', operation: () => T): T;
   close(): void;
+}
+
+export type OperationalStoreCutoverFailpoint =
+  | 'after_cutover_started'
+  | 'after_cutover_rows_copied'
+  | 'after_cutover_validated';
+
+export interface OperationalStoreCutoverInput {
+  readonly storeName: string;
+  readonly sourcePath: string;
+  readonly sourceFingerprint: string;
+  readonly importAndValidate: (database: DatabaseSync) => Readonly<Record<string, number>>;
+  readonly now?: () => number;
+  readonly failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
 }
 
 interface CutoverJournalRow {
@@ -102,6 +120,7 @@ class OperationalStateDatabaseOwner {
       configureSqliteRuntimeDatabase(this.database);
       migrateSqliteRuntimeDatabase(this.database);
       migrateSqliteSessionMetadataDatabase(this.database);
+      migrateSqliteCoreExecutionDatabase(this.database);
       migrateOperationalStateDatabase(this.database, options.now ?? Date.now);
       cutoverLegacySessionMetadata({
         destination: this.database,
@@ -178,12 +197,85 @@ function migrateOperationalStateDatabase(db: DatabaseSync, now: () => number): v
     const appliedAt = now();
     registerSchema(db, 'runtime', SQLITE_RUNTIME_SCHEMA_VERSION, appliedAt);
     registerSchema(db, 'session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION, appliedAt);
+    registerSchema(db, 'core_execution', SQLITE_CORE_EXECUTION_SCHEMA_VERSION, appliedAt);
     registerSchema(db, 'operational', OPERATIONAL_STATE_SCHEMA_VERSION, appliedAt);
     db.exec('COMMIT');
   } catch (error) {
     rollback(db);
     throw error;
   }
+}
+
+/**
+ * Complete one logical legacy-store cutover under the operational owner.
+ *
+ * The durable `started` row intentionally commits before the data transaction.
+ * A crash therefore resumes against the same source fingerprint, while copied
+ * rows and the completed marker commit atomically.
+ */
+export function completeOperationalStoreCutover(
+  lease: OperationalStateDatabaseLease,
+  input: OperationalStoreCutoverInput,
+): void {
+  const journal = lease.database
+    .prepare(`
+      SELECT source_fingerprint, state
+      FROM cutover_journal
+      WHERE store_name = ?
+    `)
+    .get(input.storeName) as CutoverJournalRow | undefined;
+  if (journal?.state === 'completed') {
+    if (journal.source_fingerprint !== input.sourceFingerprint) {
+      throw new Error(`Legacy ${input.storeName} source changed after cutover completed`);
+    }
+    return;
+  }
+  if (journal && journal.source_fingerprint !== input.sourceFingerprint) {
+    throw new Error(`Legacy ${input.storeName} source changed after cutover started`);
+  }
+  if (!journal) {
+    lease.transaction('write', () => {
+      lease.database
+        .prepare(`
+          INSERT INTO cutover_journal(
+            store_name,
+            source_path,
+            source_fingerprint,
+            state,
+            started_at
+          ) VALUES (?, ?, ?, 'started', ?)
+        `)
+        .run(input.storeName, input.sourcePath, input.sourceFingerprint, (input.now ?? Date.now)());
+    });
+  }
+  input.failpoint?.('after_cutover_started');
+  lease.transaction('write', () => {
+    const validation = input.importAndValidate(lease.database);
+    input.failpoint?.('after_cutover_rows_copied');
+    for (const [name, count] of Object.entries(validation)) {
+      if (!Number.isSafeInteger(count) || count < 0) {
+        throw new Error(`Invalid ${input.storeName} cutover validation count for ${name}`);
+      }
+    }
+    input.failpoint?.('after_cutover_validated');
+    const result = lease.database
+      .prepare(`
+        UPDATE cutover_journal
+        SET state = 'completed', completed_at = ?, validation_json = ?
+        WHERE store_name = ?
+          AND source_fingerprint = ?
+          AND state = 'started'
+      `)
+      .run(
+        (input.now ?? Date.now)(),
+        JSON.stringify(validation),
+        input.storeName,
+        input.sourceFingerprint,
+      );
+    if (result.changes !== 1) {
+      throw new Error(`Unable to complete ${input.storeName} cutover journal`);
+    }
+  });
 }
 
 function registerSchema(db: DatabaseSync, scope: string, version: number, appliedAt: number): void {
