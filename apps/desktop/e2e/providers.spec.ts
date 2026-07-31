@@ -102,12 +102,13 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect((await detailDialog.boundingBox())?.height).toBe(detailHeightBefore);
   await detailKeyField.fill('');
 
-  await expect(detailDialog.getByText('GPT OSS 120B', { exact: true })).toBeHidden();
-  await detailDialog.getByText('高级设置', { exact: true }).click();
+  const modelManagement = detailDialog.getByRole('region', { name: '模型管理' });
+  await expect(modelManagement).toBeVisible();
 
   // Astryx CheckboxList owns the collection label, checkbox semantics,
   // disabled state, and focus. Search/popup behavior is intentionally absent.
-  const defaultModel = detailDialog.getByRole('checkbox', {
+  const modelList = modelManagement.getByRole('group', { name: /启用模型/ });
+  const defaultModel = modelList.getByRole('checkbox', {
     name: /GPT OSS 120B · 默认/,
   });
   await expect(defaultModel).toBeChecked();
@@ -123,12 +124,17 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   // Default-model management is a visible searchable picker in the connection
   // detail, rather than a trip through General Settings. Selecting an already
   // enabled model persists immediately and locks that row as the new default.
-  await detailDialog.getByRole('button', { name: '此连接的默认模型', exact: true }).click();
+  const defaultModelSelector = modelManagement.getByRole('button', {
+    name: '此连接的默认模型',
+    exact: true,
+  });
+  await defaultModelSelector.click();
   await page.getByRole('option', { name: /Gemma/ }).first().click();
-  await expect(detailDialog.getByRole('button', { name: '此连接的默认模型', exact: true })).toContainText(/Gemma/);
+  await expect(defaultModelSelector).toContainText(/Gemma/);
   await expect(modelList.getByRole('checkbox', { name: /Gemma/ }).first()).toBeDisabled();
 
   await expect(detailDialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
+  await detailDialog.getByText('高级设置', { exact: true }).click();
   // Short-viewport invariant: when the expanded detail content outgrows the
   // popup's 85dvh cap, the dialog must stay within the viewport and the BODY
   // must take over scrolling (grid-template-rows: auto minmax(0, 1fr)),

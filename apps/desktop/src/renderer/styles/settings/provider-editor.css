@@ -154,16 +154,6 @@
   padding-top: var(--space-4);
 }
 
-.providerDefaultModelField {
-  display: grid;
-  gap: var(--space-1-5);
-}
-
-.providerDefaultModelTrigger {
-  width: 100%;
-  justify-content: space-between;
-}
-
 .providerModelActions,
 .providerConnectionActions {
   display: flex;
@@ -279,16 +269,6 @@
 
 .providerCredentialActions {
   justify-content: space-between;
-}
-
-.providerAdvancedActions {
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.providerAdvancedDanger {
-  margin-left: auto;
-  color: var(--destructive-text);
 }
 
 .providerError {

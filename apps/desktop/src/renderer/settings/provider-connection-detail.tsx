@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Alert,
@@ -6,15 +6,9 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
-  FieldDescription,
-  FieldRoot,
-  Label,
-  ModelPicker,
-  TextInput,
   RelativeTime,
-  modelChoiceValue,
-  parseModelChoiceValue,
-  type ModelMenuGroup,
+  Selector,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -128,28 +122,21 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
-  const defaultModelGroups = useMemo<ModelMenuGroup[]>(() => {
-    const choices = modelChoices
-      .filter((entry) => entry.canUseAsChatDefault)
-      .map((entry) => ({
-        connectionSlug: connection.slug,
-        providerType: connection.providerType,
-        model: entry.id,
-        label: entry.displayName?.trim() || entry.id,
-      }));
-    return choices.length > 0
-      ? [{
-          connectionSlug: connection.slug,
-          providerType: connection.providerType,
-          heading: display.name,
-          choices,
-        }]
-      : [];
-  }, [connection.providerType, connection.slug, display.name, modelChoices]);
-  const selectedDefaultModelValue = modelChoiceValue(connection.slug, connection.defaultModel);
-  const selectedDefaultModelLabel =
-    defaultModelGroups[0]?.choices.find((choice) => choice.model === connection.defaultModel)?.label ??
-    connection.defaultModel;
+  const defaultModelOptions = modelChoices
+    .filter((entry) => entry.canUseAsChatDefault)
+    .map((entry) => ({
+      value: entry.id,
+      label: entry.displayName?.trim() || entry.id,
+    }));
+  if (
+    connection.defaultModel &&
+    !defaultModelOptions.some((option) => option.value === connection.defaultModel)
+  ) {
+    defaultModelOptions.push({
+      value: connection.defaultModel,
+      label: connection.defaultModel,
+    });
+  }
 
   return (
     <div className="providerEditor providerConnectionManager">
@@ -234,29 +221,20 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         </p>
       )}
       <section className="providerModelSettings" aria-label={copy.modelManagement}>
-        <FieldRoot className="providerDefaultModelField">
-          <Label className="text-xs text-foreground-secondary">{copy.connectionDefaultModel}</Label>
-          <FieldDescription>{copy.connectionDefaultModelHelp}</FieldDescription>
-          <ModelPicker
-            groups={defaultModelGroups}
-            value={selectedDefaultModelValue}
-            ariaLabel={copy.connectionDefaultModel}
-            disabled={detailActionBusy || defaultModelGroups.length === 0}
-            searchPlaceholder={copy.searchDefaultModels}
-            emptyMessage={copy.noModels}
-            triggerClassName="providerDefaultModelTrigger"
-            onValueChange={(value) => {
-              const parsed = parseModelChoiceValue(value);
-              if (parsed?.llmConnectionSlug === connection.slug) {
-                void updateDefaultModel(parsed.model);
-              }
-            }}
-          >
-            <span className="modelPickerOptionLabel">
-              {settingDefaultModel ? copy.savingDefaultModel : selectedDefaultModelLabel}
-            </span>
-          </ModelPicker>
-        </FieldRoot>
+        <Selector
+          label={copy.connectionDefaultModel}
+          description={copy.connectionDefaultModelHelp}
+          options={defaultModelOptions}
+          value={connection.defaultModel}
+          onChange={(model) => void updateDefaultModel(model)}
+          isDisabled={detailActionBusy || defaultModelOptions.length === 0}
+          disabledMessage={defaultModelOptions.length === 0 ? copy.noModels : undefined}
+          isLoading={settingDefaultModel}
+          hasSearch
+          searchPlaceholder={copy.searchDefaultModels}
+          placeholder={copy.noModels}
+          width="100%"
+        />
         <EnabledModelManager
           modelChoices={modelChoices}
           enabledModelIds={enabledModelIds}

@@ -678,17 +678,17 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const src = await readProviderSettingsCombinedSource();
     const detail = src.match(/function ConnectionDetailInner[\s\S]*?function GitHubCopilotReloginNotice/)?.[0] ?? '';
     const credential = detail.indexOf('<PasswordInput');
-    const modelPicker = detail.indexOf('<ModelPicker');
+    const defaultModelSelector = detail.indexOf('<Selector');
     const advanced = detail.indexOf('<details className="providerAdvancedSettings"');
     const models = detail.indexOf('<EnabledModelManager');
 
     assert.ok(credential >= 0, 'API-key connection detail must expose its credential field');
-    assert.ok(modelPicker > credential, 'credentials must remain the primary task before model management');
-    assert.ok(models > modelPicker, 'default and enabled model management must share the visible model section');
+    assert.ok(defaultModelSelector > credential, 'credentials must remain the primary task before model management');
+    assert.ok(models > defaultModelSelector, 'default and enabled model management must share the visible model section');
     assert.ok(advanced > models, 'advanced settings must follow common model management');
     const advancedBody = detail.match(/<details className="providerAdvancedSettings"[\s\S]*?<\/details>/)?.[0] ?? '';
     assert.match(advancedBody, /<ConnectionEndpointField/);
-    assert.doesNotMatch(advancedBody, /<ModelPicker|<EnabledModelManager|testConnection|updateModels/);
+    assert.doesNotMatch(advancedBody, /<Selector|<ModelPicker|<EnabledModelManager|testConnection|updateModels/);
     // The last-test message goes through the display helper in the extracted
     // controller (use-connection-detail.ts); the view renders the derived value.
     assert.match(src, /connectionLastTestMessageDisplay\(connection\.lastTestMessage, locale\)/);
@@ -779,6 +779,25 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       enabledModels,
       /MultiSelector|TextInput|OverlayScrollArea|modelListRef|activeRowId|onModelListKeyDown|visibleRows|query/,
       'Maka must not retain search or duplicate Astryx focus and checkbox behavior',
+    );
+  });
+
+  it('delegates connection-default selection to Astryx Selector', async () => {
+    const src = await readProviderSettingsCombinedSource();
+    const detail =
+      src.match(/function ConnectionDetailInner[\s\S]*?function GitHubCopilotReloginNotice/)?.[0] ?? '';
+
+    assert.match(
+      detail,
+      /<Selector[\s\S]*label=\{copy\.connectionDefaultModel\}[\s\S]*description=\{copy\.connectionDefaultModelHelp\}[\s\S]*options=\{defaultModelOptions\}[\s\S]*value=\{connection\.defaultModel\}/,
+    );
+    assert.match(detail, /<Selector[\s\S]*hasSearch/);
+    assert.match(detail, /searchPlaceholder=\{copy\.searchDefaultModels\}/);
+    assert.match(detail, /onChange=\{\(model\) => void updateDefaultModel\(model\)\}/);
+    assert.doesNotMatch(
+      detail,
+      /ModelPicker|modelChoiceValue|parseModelChoiceValue|ModelMenuGroup/,
+      'the single-connection field must use Astryx directly instead of the cross-provider product picker',
     );
   });
 
