@@ -12,10 +12,11 @@ import {
   AlertDescription,
   Badge,
   Button,
-  Input,
+  FormLayout,
   PageHeader,
-  SettingsSelect,
-  Textarea,
+  Selector,
+  TextArea,
+  TextInput,
   formatBytes,
   useMountedRef,
   useToast,
@@ -54,6 +55,12 @@ export function VoiceModelsSettingsPage(props: {
   const [creatingRecognitionConnection, setCreatingRecognitionConnection] = useState(false);
   const [editingRecognitionConnection, setEditingRecognitionConnection] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [recognitionDraft, setRecognitionDraft] = useState(
+    () => props.settings.voice.recognition,
+  );
+  const [realtimeDraft, setRealtimeDraft] = useState(
+    () => props.settings.voice.realtime,
+  );
   const captureSmokeGuard = useActionGuard<'smoke'>();
   const recognitionTestGuard = useActionGuard<'recognition'>();
   const voicePageMountedRef = useMountedRef();
@@ -69,14 +76,14 @@ export function VoiceModelsSettingsPage(props: {
   const smokeStatusId = useId();
   const enabledConnections = props.connections.filter((connection) => connection.enabled);
   const selectedRecognitionConnection = enabledConnections.find(
-    (connection) => connection.slug === props.settings.voice.recognition.connectionSlug,
+    (connection) => connection.slug === recognitionDraft.connectionSlug,
   );
   const connectionOptions = [
-    ['', copy.notConfigured],
+    { value: '', label: copy.notConfigured },
     ...enabledConnections.map(
-      (connection) => [connection.slug, connection.name] as const,
+      (connection) => ({ value: connection.slug, label: connection.name }),
     ),
-  ] as Array<readonly [string, string]>;
+  ];
 
   async function updateVoice(
     patch: {
@@ -84,6 +91,12 @@ export function VoiceModelsSettingsPage(props: {
       realtime?: Partial<AppSettings['voice']['realtime']>;
     },
   ): Promise<boolean> {
+    if (patch.recognition) {
+      setRecognitionDraft((current) => ({ ...current, ...patch.recognition }));
+    }
+    if (patch.realtime) {
+      setRealtimeDraft((current) => ({ ...current, ...patch.realtime }));
+    }
     setSaving(true);
     try {
       await props.onUpdate({
@@ -376,58 +389,49 @@ export function VoiceModelsSettingsPage(props: {
       <div className="settingsFeatureStatusHeroHeading">
         <h3>{copy.recognitionTitle}</h3>
       </div>
-      <div className="settingsFormGrid settingsFormGridProxy">
-        <label>
-          <span>{copy.connection}</span>
-          <SettingsSelect
-            value={props.settings.voice.recognition.connectionSlug}
-            ariaLabel={copy.recognitionConnectionAria}
-            options={connectionOptions}
-            disabled={saving}
-            onChange={(connectionSlug) =>
-              void updateVoice({ recognition: { connectionSlug } })
-            }
-          />
-        </label>
-        <label>
-          <span>{copy.model}</span>
-          <Input
-            key={`recognition-model:${props.settings.voice.recognition.model}`}
-            defaultValue={props.settings.voice.recognition.model}
-            disabled={saving}
-            placeholder="gpt-4o-mini-transcribe"
-            aria-label={copy.recognitionModelAria}
-            onBlur={(event) =>
-              void updateVoice({ recognition: { model: event.currentTarget.value } })
-            }
-          />
-        </label>
-        <label>
-          <span>{copy.language}</span>
-          <Input
-            key={`recognition-language:${props.settings.voice.recognition.language}`}
-            defaultValue={props.settings.voice.recognition.language}
-            disabled={saving}
-            placeholder="zh"
-            aria-label={copy.language}
-            onBlur={(event) =>
-              void updateVoice({ recognition: { language: event.currentTarget.value } })
-            }
-          />
-        </label>
-        <label>
-          <span>{copy.prompt}</span>
-          <Textarea
-            key={`recognition-prompt:${props.settings.voice.recognition.prompt}`}
-            defaultValue={props.settings.voice.recognition.prompt}
-            disabled={saving}
-            aria-label={copy.prompt}
-            onBlur={(event) =>
-              void updateVoice({ recognition: { prompt: event.currentTarget.value } })
-            }
-          />
-        </label>
-      </div>
+      <FormLayout className="settingsFormLayout" direction="horizontal">
+        <Selector
+          value={recognitionDraft.connectionSlug}
+          label={copy.connection}
+          options={connectionOptions}
+          isDisabled={saving}
+          width="100%"
+          onChange={(connectionSlug) =>
+            void updateVoice({ recognition: { connectionSlug } })
+          }
+        />
+        <TextInput
+          value={recognitionDraft.model}
+          onChange={(model) => setRecognitionDraft((current) => ({ ...current, model }))}
+          isDisabled={saving}
+          placeholder="gpt-4o-mini-transcribe"
+          label={copy.model}
+          onBlur={() =>
+            void updateVoice({ recognition: { model: recognitionDraft.model } })
+          }
+        />
+        <TextInput
+          value={recognitionDraft.language}
+          onChange={(language) =>
+            setRecognitionDraft((current) => ({ ...current, language }))
+          }
+          isDisabled={saving}
+          placeholder="zh"
+          label={copy.language}
+          onBlur={() =>
+            void updateVoice({ recognition: { language: recognitionDraft.language } })
+          }
+        />
+        <TextArea
+          value={recognitionDraft.prompt}
+          onChange={(prompt) => setRecognitionDraft((current) => ({ ...current, prompt }))}
+          isDisabled={saving}
+          label={copy.prompt}
+          onBlur={() =>
+            void updateVoice({ recognition: { prompt: recognitionDraft.prompt } })
+          }
+        />
+      </FormLayout>
       <div className="settingsActionRow">
         <Button
           ref={createRecognitionConnectionButtonRef}
@@ -490,7 +494,7 @@ export function VoiceModelsSettingsPage(props: {
           <VoiceRecognitionConnectionForm
             bridge={window.maka.connections}
             connection={selectedRecognitionConnection}
-            model={props.settings.voice.recognition.model}
+            model={recognitionDraft.model}
             onCancel={() => setEditingRecognitionConnection(false)}
             onSaved={finishEditingRecognitionConnection}
           />
@@ -500,46 +504,34 @@ export function VoiceModelsSettingsPage(props: {
       <div className="settingsFeatureStatusHeroHeading">
         <h3>{copy.realtimeTitle}</h3>
       </div>
-      <div className="settingsFormGrid settingsFormGridProxy">
-        <label>
-          <span>{copy.connection}</span>
-          <SettingsSelect
-            value={props.settings.voice.realtime.connectionSlug}
-            ariaLabel={copy.realtimeConnectionAria}
-            options={connectionOptions}
-            disabled={saving}
-            onChange={(connectionSlug) =>
-              void updateVoice({ realtime: { connectionSlug } })
-            }
-          />
-        </label>
-        <label>
-          <span>{copy.model}</span>
-          <Input
-            key={`realtime-model:${props.settings.voice.realtime.model}`}
-            defaultValue={props.settings.voice.realtime.model}
-            disabled={saving}
-            placeholder="gpt-realtime"
-            aria-label={copy.realtimeModelAria}
-            onBlur={(event) =>
-              void updateVoice({ realtime: { model: event.currentTarget.value } })
-            }
-          />
-        </label>
-        <label>
-          <span>{copy.voice}</span>
-          <Input
-            key={`realtime-voice:${props.settings.voice.realtime.voice}`}
-            defaultValue={props.settings.voice.realtime.voice}
-            disabled={saving}
-            placeholder="marin"
-            aria-label={copy.voice}
-            onBlur={(event) =>
-              void updateVoice({ realtime: { voice: event.currentTarget.value } })
-            }
-          />
-        </label>
-      </div>
+      <FormLayout className="settingsFormLayout" direction="horizontal">
+        <Selector
+          value={realtimeDraft.connectionSlug}
+          label={copy.connection}
+          options={connectionOptions}
+          isDisabled={saving}
+          width="100%"
+          onChange={(connectionSlug) =>
+            void updateVoice({ realtime: { connectionSlug } })
+          }
+        />
+        <TextInput
+          value={realtimeDraft.model}
+          onChange={(model) => setRealtimeDraft((current) => ({ ...current, model }))}
+          isDisabled={saving}
+          placeholder="gpt-realtime"
+          label={copy.model}
+          onBlur={() => void updateVoice({ realtime: { model: realtimeDraft.model } })}
+        />
+        <TextInput
+          value={realtimeDraft.voice}
+          onChange={(voice) => setRealtimeDraft((current) => ({ ...current, voice }))}
+          isDisabled={saving}
+          placeholder="marin"
+          label={copy.voice}
+          onBlur={() => void updateVoice({ realtime: { voice: realtimeDraft.voice } })}
+        />
+      </FormLayout>
 
       <dl className="settingsBotStatusGrid" aria-label={copy.statusAria}>
         <div>

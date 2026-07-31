@@ -39,10 +39,6 @@ export type VoiceSettingsCopy = {
   prompt: string;
   voice: string;
   notConfigured: string;
-  recognitionConnectionAria: string;
-  recognitionModelAria: string;
-  realtimeConnectionAria: string;
-  realtimeModelAria: string;
   testRecognition: string;
   recognitionTesting: string;
   recognitionSuccess: string;
@@ -131,10 +127,6 @@ const SETTINGS_VOICE_COPY = {
     prompt: '识别提示词（可选）',
     voice: '音色',
     notConfigured: '未配置',
-    recognitionConnectionAria: '语音识别模型连接',
-    recognitionModelAria: '语音识别模型 ID',
-    realtimeConnectionAria: '实时语音模型连接',
-    realtimeModelAria: '实时语音模型 ID',
     testRecognition: '录音 4 秒并测试识别',
     recognitionTesting: '正在录音并调用所配置的识别模型…',
     recognitionSuccess: '语音识别测试通过',
@@ -221,10 +213,6 @@ const SETTINGS_VOICE_COPY = {
     prompt: 'Recognition prompt (optional)',
     voice: 'Voice',
     notConfigured: 'Not configured',
-    recognitionConnectionAria: 'Speech recognition connection',
-    recognitionModelAria: 'Speech recognition model ID',
-    realtimeConnectionAria: 'Realtime voice connection',
-    realtimeModelAria: 'Realtime voice model ID',
     testRecognition: 'Record for four seconds and test',
     recognitionTesting: 'Recording and calling the configured recognition model…',
     recognitionSuccess: 'Speech recognition test passed',

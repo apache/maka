@@ -209,14 +209,6 @@
   gap: var(--space-3);
 }
 
-.providerEditor label {
-  display: grid;
-  gap: var(--space-1-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
 .providerActions {
   display: flex;
   align-items: center;

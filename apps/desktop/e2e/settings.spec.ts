@@ -69,6 +69,25 @@ test('settings textareas use Astryx native resizing and persist edits across sec
   await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toHaveValue(edited);
 });
 
+test('voice settings expose Astryx-owned fields and persist a draft on blur', async ({ window: page }) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('button', { name: '设置' }).click();
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await settings.getByRole('button', { name: '语音', exact: true }).click();
+
+  await expect(settings.getByRole('combobox', { name: '模型连接' })).toHaveCount(2);
+  await expect(settings.getByRole('textbox', { name: '模型 ID' })).toHaveCount(2);
+  const language = settings.getByRole('textbox', { name: '语言（可选）' });
+  await expect(language).toBeVisible();
+  await expect(settings.getByRole('textbox', { name: '识别提示词（可选）' })).toBeVisible();
+
+  await language.fill('en');
+  await language.press('Tab');
+  await settings.getByRole('button', { name: '通用', exact: true }).click();
+  await settings.getByRole('button', { name: '语音', exact: true }).click();
+  await expect(settings.getByRole('textbox', { name: '语言（可选）' })).toHaveValue('en');
+});
+
 test('open gateway metric values stay contained for long addresses', async ({ window: page }) => {
   await page.setViewportSize({ width: 900, height: 820 });
   await page.getByRole('button', { name: '展开侧边栏' }).click();

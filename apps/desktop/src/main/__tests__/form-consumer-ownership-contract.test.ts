@@ -65,3 +65,26 @@ test("product layout classes wrap Astryx controls instead of restyling their chr
     /\.maka-daily-review-model-select\s*\{/,
   );
 });
+
+test("voice settings give ordinary field semantics directly to Astryx", () => {
+  const page = readRepo(
+    "apps/desktop/src/renderer/settings/voice-settings-page.tsx",
+  );
+  const connectionForm = readRepo(
+    "apps/desktop/src/renderer/settings/voice-recognition-connection-form.tsx",
+  );
+  const providerStyles = readRepo(
+    "apps/desktop/src/renderer/styles/settings/provider-editor.css",
+  );
+  const source = `${page}\n${connectionForm}`;
+
+  assert.doesNotMatch(source, /\b(?:Input|SettingsSelect|Textarea)\b/);
+  assert.doesNotMatch(source, /<label>|<span>|<small>/);
+  assert.match(page, /<Selector[\s\S]*?label=\{copy\.connection\}/);
+  assert.match(page, /<TextArea[\s\S]*?label=\{copy\.prompt\}/);
+  assert.match(
+    connectionForm,
+    /<TextInput[\s\S]*?label=\{copy\.recognitionConnectionEndpoint\}[\s\S]*?description=\{copy\.recognitionConnectionEndpointHelp\}/,
+  );
+  assert.doesNotMatch(providerStyles, /\.providerEditor label\s*\{/);
+});

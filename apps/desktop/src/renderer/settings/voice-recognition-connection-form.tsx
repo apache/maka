@@ -7,7 +7,15 @@ import {
 import {
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
-import { Button, Input, useMountedRef, useUiLocale } from '@maka/ui';
+import {
+  Alert,
+  AlertDescription,
+  Button,
+  FormLayout,
+  TextInput,
+  useMountedRef,
+  useUiLocale,
+} from '@maka/ui';
 import { getVoiceSettingsCopy } from '../locales/settings-voice-copy';
 import { PasswordInput } from './password-input';
 import {
@@ -28,7 +36,10 @@ export function VoiceRecognitionConnectionForm(props: {
   const [baseUrl, setBaseUrl] = useState(() => effectiveBaseUrl(props.connection));
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState(props.model || props.connection.defaultModel);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    field: 'baseUrl' | 'model' | 'form';
+    message: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const submitGuard = useActionGuard<'submit'>();
   const mountedRef = useMountedRef();
@@ -43,12 +54,18 @@ export function VoiceRecognitionConnectionForm(props: {
     const normalizedModel = model.trim();
     if (!normalizedBaseUrl) {
       submitGuard.finish();
-      setError(copy.recognitionConnectionEndpointMissing);
+      setError({
+        field: 'baseUrl',
+        message: copy.recognitionConnectionEndpointMissing,
+      });
       return;
     }
     if (!normalizedModel) {
       submitGuard.finish();
-      setError(copy.recognitionConnectionModelMissing);
+      setError({
+        field: 'model',
+        message: copy.recognitionConnectionModelMissing,
+      });
       return;
     }
     setBusy(true);
@@ -61,7 +78,10 @@ export function VoiceRecognitionConnectionForm(props: {
       await props.onSaved(updated, normalizedModel);
     } catch (saveError) {
       if (!mountedRef.current) return;
-      setError(providerPanelActionErrorMessage(saveError, locale));
+      setError({
+        field: 'form',
+        message: providerPanelActionErrorMessage(saveError, locale),
+      });
     } finally {
       submitGuard.finish();
       if (mountedRef.current) setBusy(false);
@@ -70,50 +90,56 @@ export function VoiceRecognitionConnectionForm(props: {
 
   return (
     <div className="providerEditor">
-      <label>
-        <span>{copy.recognitionConnectionEndpoint}</span>
-        <Input
+      <FormLayout>
+        <TextInput
           value={baseUrl}
-          onChange={(event) => {
-            setBaseUrl(event.currentTarget.value);
-            if (error) setError(null);
+          onChange={(value) => {
+            setBaseUrl(value);
+            if (error?.field === 'baseUrl') setError(null);
           }}
           placeholder={endpointPlaceholder}
-          disabled={busy}
-          aria-label={copy.recognitionConnectionEndpoint}
+          isDisabled={busy}
+          label={copy.recognitionConnectionEndpoint}
+          description={copy.recognitionConnectionEndpointHelp}
+          status={
+            error?.field === 'baseUrl'
+              ? { type: 'error', message: error.message }
+              : undefined
+          }
         />
-        <small>{copy.recognitionConnectionEndpointHelp}</small>
-      </label>
-      {supportsApiKey ? (
-        <label>
-          <span>{copy.recognitionConnectionApiKey}</span>
+        {supportsApiKey ? (
           <PasswordInput
             value={apiKey}
             onChange={(next) => {
               setApiKey(next);
-              if (error) setError(null);
             }}
             placeholder={copy.recognitionConnectionApiKeyPlaceholder}
-            ariaLabel={copy.recognitionConnectionApiKey}
-            disabled={busy}
+            label={copy.recognitionConnectionApiKey}
+            description={copy.recognitionConnectionApiKeyHelp}
+            isDisabled={busy}
           />
-          <small>{copy.recognitionConnectionApiKeyHelp}</small>
-        </label>
-      ) : null}
-      <label>
-        <span>{copy.recognitionConnectionModel}</span>
-        <Input
+        ) : null}
+        <TextInput
           value={model}
-          onChange={(event) => {
-            setModel(event.currentTarget.value);
-            if (error) setError(null);
+          onChange={(value) => {
+            setModel(value);
+            if (error?.field === 'model') setError(null);
           }}
           placeholder={copy.recognitionConnectionModelPlaceholder}
-          disabled={busy}
-          aria-label={copy.recognitionConnectionModel}
+          isDisabled={busy}
+          label={copy.recognitionConnectionModel}
+          status={
+            error?.field === 'model'
+              ? { type: 'error', message: error.message }
+              : undefined
+          }
         />
-      </label>
-      {error ? <p className="providerError" role="alert">{error}</p> : null}
+      </FormLayout>
+      {error?.field === 'form' ? (
+        <Alert variant="error">
+          <AlertDescription>{error.message}</AlertDescription>
+        </Alert>
+      ) : null}
       <div className="providerActions">
         <Button
           variant="ghost"

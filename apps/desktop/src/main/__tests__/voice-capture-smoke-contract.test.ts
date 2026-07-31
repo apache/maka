@@ -79,7 +79,7 @@ describe('voice capture smoke Settings contract', () => {
 
     assert.match(
       pageSource,
-      /const selectedRecognitionConnection = enabledConnections\.find\([\s\S]*settings\.voice\.recognition\.connectionSlug/,
+      /const \[recognitionDraft, setRecognitionDraft\] = useState\([\s\S]*settings\.voice\.recognition[\s\S]*const selectedRecognitionConnection = enabledConnections\.find\([\s\S]*recognitionDraft\.connectionSlug/,
       'the edit action must target the currently selected recognition connection',
     );
     assert.match(pageSource, /<VoiceRecognitionConnectionForm[\s\S]*onSaved=\{finishEditingRecognitionConnection\}/);
