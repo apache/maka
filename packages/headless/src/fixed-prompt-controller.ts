@@ -594,6 +594,13 @@ function taskEventFromOutput(input: {
       error: identityMismatch.error,
     });
   }
+  if (isPreExecutionAgentFailure(input.output) && verifierGrade !== 'passed') {
+    return taskInfraFailedEvent({
+      ...input,
+      errorClass: 'infra_error',
+      error: 'Harbor cell failed before completing a model step or reporting token usage',
+    });
+  }
   if (isProviderInfraFailure(input.output.cell.errorClass) && verifierGrade === undefined) {
     return taskInfraFailedEvent({
       ...input,
@@ -620,6 +627,22 @@ function taskEventFromOutput(input: {
   return taskCompletedEvent(input);
 }
 
+function isPreExecutionAgentFailure(output: TaskRunOutput): boolean {
+  if (output.cell.status !== 'failed') return false;
+  const completedProviderStep = output.cell.tokenSummary !== undefined;
+  const executedWorkspaceTool = output.cell.toolSummary.actualToolCalls > 0;
+  if (output.cell.deadlineSettlement?.source === 'benchmark.deadline') {
+    return !completedProviderStep || !executedWorkspaceTool;
+  }
+  return (
+    !completedProviderStep &&
+    !executedWorkspaceTool &&
+    (output.cell.errorClass === 'runtime_error' ||
+      output.cell.errorClass === 'aborted' ||
+      isProviderInfraFailure(output.cell.errorClass))
+  );
+}
+
 function taskCompletedEvent(input: {
   output: TaskRunOutput;
   taskId: string;
@@ -642,11 +665,14 @@ function taskCompletedEvent(input: {
       output.cell.errorClass === 'policy_denied') &&
       output.harbor.verifier !== undefined);
   const passed = verifierGraded && output.harbor.reward > 0;
+  const rawErrorClass = output.cell.errorClass ?? 'verification_failed';
   const errorClass = passed
     ? undefined
     : deadlineSettled
       ? 'budget_exhausted'
-      : (output.cell.errorClass ?? 'verification_failed');
+      : verifierGrade === 'failed' && isUnscoredCellFailure(rawErrorClass)
+        ? 'runtime_error'
+        : rawErrorClass;
   const scored =
     verifierGraded && (verifierGrade !== undefined || !isUnscoredCellFailure(errorClass));
   const agentFailure = output.cell.status === 'failed' && errorClass === 'tool_step_cap_reached';

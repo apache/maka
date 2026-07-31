@@ -2140,7 +2140,7 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('keeps verifier-graded deadline settlements as scored benchmark outcomes', async () => {
+  test('keeps verifier-graded deadlines scored after completed model and workspace steps', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
@@ -2150,6 +2150,16 @@ describe('fixed prompt controller', () => {
         status: 'failed',
         errorClass: 'aborted',
         deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+        toolSummary: {
+          providerVisibleToolCount: 1,
+          actualToolCalls: 1,
+          actualToolNames: ['Bash'],
+          actualToolCallCounts: { Bash: 1 },
+        },
+        verifier: {
+          outcome: 'failed',
+          attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+        },
       });
       let taskRuns = 0;
 
@@ -2451,7 +2461,7 @@ describe('fixed prompt controller', () => {
     });
   });
 
-  test('rejects a deadline-settled result when required final usage is missing', async () => {
+  test('excludes a deadline-settled workspace attempt when no provider usage completed', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
       await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
@@ -2472,13 +2482,19 @@ describe('fixed prompt controller', () => {
             errorClass: 'aborted',
             deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
             omitTokenSummary: true,
+            toolSummary: {
+              providerVisibleToolCount: 1,
+              actualToolCalls: 1,
+              actualToolNames: ['Bash'],
+              actualToolCallCounts: { Bash: 1 },
+            },
           }),
         now: () => 100,
         newId: idFactory(),
       });
 
-      assert.equal(result.events[0]?.type, 'task_plumbing_failed');
-      assert.equal(result.events[0]?.errorClass, 'missing_token_usage');
+      assert.equal(result.events[0]?.type, 'task_infra_failed');
+      assert.equal(result.events[0]?.errorClass, 'infra_error');
       assert.equal(result.events[0]?.eligible, false);
       assert.equal(result.events[0]?.scored, false);
     });
@@ -2758,6 +2774,76 @@ describe('fixed prompt controller', () => {
     });
   });
 
+  test('excludes a verifier failure when the agent never completed a model step or reported usage', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'runtime_error',
+            steps: 0,
+            omitTokenSummary: true,
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_infra_failed');
+      assert.equal(result.events[0]?.status, 'infra_failed');
+      assert.equal(result.events[0]?.scored, false);
+      assert.equal(result.events[0]?.eligible, false);
+    });
+  });
+
+  test('excludes a deadline verifier failure when no provider step completed or workspace tool ran', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        requireFinalUsage: true,
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'aborted',
+            deadlineSettlement: { source: 'benchmark.deadline', mode: 'immediate' },
+            steps: 1,
+            omitTokenSummary: true,
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_infra_failed');
+      assert.equal(result.events[0]?.status, 'infra_failed');
+      assert.equal(result.events[0]?.scored, false);
+      assert.equal(result.events[0]?.eligible, false);
+    });
+  });
+
   test('keeps a structured verifier failure authoritative after an agent failure', async () => {
     await withDir(async (dir) => {
       const systemPromptPath = join(dir, 'system_prompt.md');
@@ -2788,8 +2874,51 @@ describe('fixed prompt controller', () => {
         assert.equal(result.events[0]?.passed, false);
         assert.equal(result.events[0]?.scored, true);
         assert.equal(result.events[0]?.eligible, true);
-        assert.equal(result.events[0]?.errorClass, errorClass);
+        assert.equal(
+          result.events[0]?.errorClass,
+          errorClass === 'infra_failed' ? 'runtime_error' : errorClass,
+        );
       }
+    });
+  });
+
+  test('keeps candidate resource exhaustion scored after normal workspace execution', async () => {
+    await withDir(async (dir) => {
+      const systemPromptPath = join(dir, 'system_prompt.md');
+      await writeFile(systemPromptPath, 'fixed prompt\n', 'utf8');
+
+      const result = await runFixedPromptController({
+        runId: 'run-1',
+        roundId: 'round-1',
+        config,
+        systemPromptPath,
+        resultsJsonlPath: join(dir, 'results.jsonl'),
+        tasks: [{ id: 'task-a', path: '/bench/task-a' }],
+        taskRunner: async () =>
+          harborOutput({
+            taskId: 'task-a',
+            reward: 0,
+            status: 'failed',
+            errorClass: 'infra_failed',
+            steps: 64,
+            toolSummary: {
+              providerVisibleToolCount: 1,
+              actualToolCalls: 32,
+              actualToolNames: ['Bash'],
+              actualToolCallCounts: { Bash: 32 },
+            },
+            verifier: {
+              outcome: 'failed',
+              attempts: [{ attempt: 1, classification: 'failed', durationMs: 20, reward: 0 }],
+            },
+          }),
+      });
+
+      assert.equal(result.events[0]?.type, 'task_completed');
+      assert.equal(result.events[0]?.passed, false);
+      assert.equal(result.events[0]?.scored, true);
+      assert.equal(result.events[0]?.eligible, true);
+      assert.equal(result.events[0]?.errorClass, 'runtime_error');
     });
   });
 
@@ -2993,6 +3122,7 @@ function harborOutput(input: {
   contextBudgetSummary?: TaskRunOutput['cell']['contextBudgetSummary'];
   continuationSummary?: TaskRunOutput['cell']['continuationSummary'];
   taskToolSummary?: TaskRunOutput['cell']['taskToolSummary'];
+  toolSummary?: TaskRunOutput['cell']['toolSummary'];
   errorClass?: string;
   status?: TaskRunOutput['cell']['status'];
   executionIdentity?: TaskRunOutput['cell']['executionIdentity'];
@@ -3000,6 +3130,8 @@ function harborOutput(input: {
   deadlineSettlement?: TaskRunOutput['cell']['deadlineSettlement'];
   verifier?: TaskRunOutput['harbor']['verifier'];
   providerTelemetryPath?: string;
+  steps?: number;
+  durationMs?: number;
 }): TaskRunOutput {
   return {
     harbor: { reward: input.reward ?? 1, ...(input.verifier ? { verifier: input.verifier } : {}) },
@@ -3033,14 +3165,14 @@ function harborOutput(input: {
       ...(input.contextBudgetSummary ? { contextBudgetSummary: input.contextBudgetSummary } : {}),
       ...(input.continuationSummary ? { continuationSummary: input.continuationSummary } : {}),
       ...(input.taskToolSummary ? { taskToolSummary: input.taskToolSummary } : {}),
-      toolSummary: {
+      toolSummary: input.toolSummary ?? {
         providerVisibleToolCount: 0,
         actualToolCalls: 0,
         actualToolNames: [],
         actualToolCallCounts: {},
       },
-      steps: 2,
-      durationMs: 40,
+      steps: input.steps ?? 2,
+      durationMs: input.durationMs ?? 40,
       startedAt: 20,
       finishedAt: 60,
       runtimeRefs: {

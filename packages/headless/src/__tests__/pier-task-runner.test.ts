@@ -750,10 +750,11 @@ test('pier-graded failed cells stay scored through the fixed-prompt controller',
   });
 });
 
-test('pier and harbor outputs drive identical controller events for an infra-failed graded cell', async () => {
+test('pier and harbor normalize an infra-labeled graded cell to the same runtime outcome', async () => {
   // Cross-runner parity lock: once either harness produces a valid structured
   // pass/fail grade, the verifier is authoritative even if the agent cell
-  // exited with an infrastructure error.
+  // exited with an infrastructure label. Once the candidate had an execution
+  // opportunity, that label describes its runtime outcome, not harness infra.
   await withDirs(async ({ jobsDir, repo }) => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-pier-parity-'));
     try {
@@ -827,7 +828,7 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
         assert.equal(normalizedEvents[0]?.passed, reward > 0);
         assert.equal(normalizedEvents[0]?.scored, true);
         assert.equal(normalizedEvents[0]?.eligible, true);
-        assert.equal(normalizedEvents[0]?.errorClass, reward > 0 ? undefined : 'infra_failed');
+        assert.equal(normalizedEvents[0]?.errorClass, reward > 0 ? undefined : 'runtime_error');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
