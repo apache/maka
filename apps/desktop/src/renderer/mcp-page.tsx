@@ -9,8 +9,9 @@ import {
   DialogRoot,
   EmptyState,
   IconButton,
-  TextInput,
   PageHeader,
+  RadioList,
+  RadioListItem,
   Selector,
   type ModuleHubHeader,
   Switch,
@@ -19,6 +20,7 @@ import {
   TabsRoot,
   TabsTrigger,
   TextArea,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -614,27 +616,63 @@ function McpEditorDialog(props: {
           onClose={props.onClose}
         />
         {!editing && (
-          <div className="maka-mcp-editor-mode" role="group" aria-label={props.copy.editor.modeAria}>
-            <button type="button" aria-pressed={props.state.mode === 'manual'} data-active={props.state.mode === 'manual'} onClick={() => props.onChange({ mode: 'manual', draft: emptyDraft(), editingId: null })}>
-              <Terminal aria-hidden="true" /> {props.copy.editor.manual}
-            </button>
-            <button type="button" aria-pressed={props.state.mode === 'json'} data-active={props.state.mode === 'json'} onClick={() => props.onChange({ mode: 'json', source: exampleJson() })}>
-              <FileCode aria-hidden="true" /> {props.copy.editor.pasteJson}
-            </button>
-          </div>
+          <RadioList
+            className="maka-mcp-editor-choice"
+            label={props.copy.editor.modeAria}
+            value={props.state.mode}
+            orientation="horizontal"
+            onChange={(mode) => {
+              props.onChange(
+                mode === 'json'
+                  ? { mode: 'json', source: exampleJson() }
+                  : {
+                      mode: 'manual',
+                      draft: emptyDraft(),
+                      editingId: null,
+                    },
+              );
+            }}
+          >
+            <RadioListItem
+              value="manual"
+              label={props.copy.editor.manual}
+              startContent={<Terminal aria-hidden="true" />}
+            />
+            <RadioListItem
+              value="json"
+              label={props.copy.editor.pasteJson}
+              startContent={<FileCode aria-hidden="true" />}
+            />
+          </RadioList>
         )}
         {props.state.mode === 'json' ? (
           <form className="maka-mcp-json-form" onSubmit={props.onImport}>
-            <TextArea label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} />
+            <div className="maka-mcp-json-field">
+              <TextArea label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} />
+            </div>
             <p>{props.copy.editor.jsonHelp} <code>{'{ "mcpServers": { ... } }'}</code></p>
             <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={props.onClose} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.importing : props.copy.editor.importConnect} /></div>
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
-            <div className="maka-mcp-kind-picker" role="group" aria-label={props.copy.editor.transportAria}>
-              <button type="button" aria-pressed={props.state.draft.kind === 'stdio'} data-active={props.state.draft.kind === 'stdio'} onClick={() => updateDraft('kind', 'stdio')}><Terminal aria-hidden="true" /> {props.copy.editor.localStdio}</button>
-              <button type="button" aria-pressed={props.state.draft.kind === 'remote'} data-active={props.state.draft.kind === 'remote'} onClick={() => updateDraft('kind', 'remote')}><Globe aria-hidden="true" /> {props.copy.editor.remoteUrl}</button>
-            </div>
+            <RadioList
+              className="maka-mcp-editor-choice"
+              label={props.copy.editor.transportAria}
+              value={props.state.draft.kind}
+              orientation="horizontal"
+              onChange={(kind) => updateDraft('kind', kind as Draft['kind'])}
+            >
+              <RadioListItem
+                value="stdio"
+                label={props.copy.editor.localStdio}
+                startContent={<Terminal aria-hidden="true" />}
+              />
+              <RadioListItem
+                value="remote"
+                label={props.copy.editor.remoteUrl}
+                startContent={<Globe aria-hidden="true" />}
+              />
+            </RadioList>
             <div className="maka-mcp-form-fields">
               <TextInput label={props.copy.editor.serverId} description={props.copy.editor.serverIdHelp} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
               {props.state.draft.kind === 'stdio' ? (
