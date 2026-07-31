@@ -51,6 +51,9 @@ test('command palette header geometry and dismissal stay intact', async ({ windo
 
   await openPalette();
   await expect(dialog).toBeVisible();
+  await dialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
   await expectPaletteHeaderGeometry(dialog);
   await expectCompactShortcutHints(dialog);
 

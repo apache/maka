@@ -54,6 +54,9 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(dialog.getByLabel('模型供应商连接标识')).toHaveCount(0);
   await expect(dialog.getByLabel('模型供应商服务地址')).toHaveCount(0);
   await expect(dialog.getByLabel('模型供应商默认模型')).toHaveCount(0);
+  await dialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
   const dialogBox = await dialog.boundingBox();
   expect(dialogBox?.width).toBeLessThanOrEqual(520);
   await expect(dialog.locator('.providerLogo')).toHaveCSS('width', '24px');
@@ -90,6 +93,9 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   // (disabled until a new key is entered), so nothing is added or removed.
   const detailKeyField = detailDialog.getByRole('textbox', { name: /模型密钥/ });
   await expect(detailKeyField).toHaveAttribute('placeholder', '••••••••');
+  await detailDialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
   const detailHeightBefore = (await detailDialog.boundingBox())?.height;
   await detailKeyField.fill('sk-e2e-replacement-key');
   await expect(detailDialog.getByRole('button', { name: '更新密钥', exact: true })).toBeEnabled();
