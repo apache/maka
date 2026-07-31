@@ -78,6 +78,8 @@ import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
 import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { ErrorBoundary } from './error-boundary';
 import { useShellAppearance } from './use-shell-appearance';
+import { useSkinSemanticEvents } from './use-skin-semantic-events';
+import { useSkinActionHost } from './use-skin-action-host';
 import { useShellSearch } from './use-shell-search';
 import { useSessionGoal } from './use-session-goal';
 import { deriveStaleSessionIds } from './stale-sessions';
@@ -591,6 +593,15 @@ function AppShellContent({
     liveTurnBySession,
     shellRunUpdatesBySession,
     activeSession,
+  });
+  useSkinSemanticEvents({
+    sessionId: activeId,
+    messages,
+    streaming: activeStreamingLive,
+    turnInFlight,
+    hasInFlightTools: hasInFlightLiveTools,
+    interaction: activeInteraction,
+    tools: liveTools,
   });
   // Surface a credential-lifecycle alert directly in the chat header when
   // the active session's connection is in `needs_reauth` / `error` or has
@@ -1787,6 +1798,25 @@ function AppShellContent({
   async function createSessionInProject(projectId: string) {
     if (await prepareProject(projectId)) openNewTaskSurface();
   }
+
+  useSkinActionHost({
+    sessionIds: new Set(
+      sessions
+        .filter((session) => !session.isArchived)
+        .map((session) => session.id),
+    ),
+    canSubmit:
+      !activeInteraction &&
+      !turnInFlight &&
+      !revisionDraft &&
+      pendingAttachments.length === 0 &&
+      pendingQuotes.length === 0,
+    canStop: turnInFlight || activeStreamingLive,
+    switchSession: openSessionInChat,
+    createTask: createSession,
+    submit: (text) => sendWithAttachments(text, []),
+    stop,
+  });
 
   function openPlanReminderForm() {
     setNavSelection({ section: 'automations', module: 'plan-reminders' });

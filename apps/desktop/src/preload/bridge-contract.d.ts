@@ -217,7 +217,7 @@ export type AppUpdateStatus =
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
 export interface SkinManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   name: string;
   version: string;
@@ -226,8 +226,25 @@ export interface SkinManifest {
   styles?: string;
   entry?: string;
   preview?: string;
-  permissions: Array<'dom' | 'canvas' | 'audio' | 'storage'>;
+  permissions: Array<
+    | 'dom'
+    | 'canvas'
+    | 'audio'
+    | 'storage'
+    | 'actions.navigation'
+    | 'actions.task'
+    | 'actions.submit'
+    | 'actions.stop'
+  >;
+  minimumApiVersion: number;
+  requiredCapabilities: string[];
 }
+
+export type SkinActionName =
+  | 'navigation.switch-session'
+  | 'task.new'
+  | 'composer.submit'
+  | 'generation.stop';
 
 export interface SkinRuntimeSnapshot {
   activeSkinId: string | null;
@@ -247,6 +264,10 @@ export interface MakaBridge {
     reload(): Promise<SkinRuntimeSnapshot>;
     uninstall(id: string): Promise<SkinRuntimeSnapshot>;
     openFolder(): Promise<void>;
+    authorizeAction(
+      action: SkinActionName,
+      context?: Readonly<{ textPreview?: string }>,
+    ): Promise<boolean>;
     subscribeChanges(handler: (snapshot: SkinRuntimeSnapshot) => void): () => void;
   };
   tasks: {

@@ -118,3 +118,6 @@ button {
     transition-duration: 0.01ms !important;
     caret-color: transparent !important;
   }
+.maka-skin-slot {
+  display: contents;
+}

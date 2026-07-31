@@ -148,6 +148,12 @@ const makaBridge = {
     openFolder(): Promise<void> {
       return ipcRenderer.invoke('skins:openFolder');
     },
+    authorizeAction(
+      action: import('./bridge-contract.js').SkinActionName,
+      context?: Readonly<{ textPreview?: string }>,
+    ): Promise<boolean> {
+      return ipcRenderer.invoke('skins:authorizeAction', action, context);
+    },
     subscribeChanges(handler: (snapshot: SkinRuntimeSnapshot) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: SkinRuntimeSnapshot) =>
         handler(snapshot);

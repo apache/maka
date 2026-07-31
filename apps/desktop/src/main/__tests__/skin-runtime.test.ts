@@ -6,6 +6,7 @@ import test from 'node:test';
 import { strToU8, zipSync } from 'fflate';
 import {
   createSkinRuntime,
+  assertSelfContainedSkinModule,
   buildSkinActivationScript,
   inlineStylesheetAssets,
   normalizeArchiveFiles,
@@ -56,24 +57,35 @@ class FakeWebContents implements SkinWebContents {
 }
 
 const validManifest: SkinManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   id: 'test.neon',
   name: 'Test Neon',
   version: '1.0.0',
   styles: 'theme.css',
   entry: 'entry.mjs',
   permissions: ['dom', 'canvas', 'storage'],
+  minimumApiVersion: 2,
+  requiredCapabilities: ['appearance.v1', 'parts.v1'],
 };
 
 test('parseSkinManifest validates the package contract', () => {
   const manifest = parseSkinManifest(validManifest);
   assert.equal(manifest.id, 'test.neon');
   assert.deepEqual(manifest.permissions, ['dom', 'canvas', 'storage']);
+  assert.equal(manifest.minimumApiVersion, 2);
   assert.throws(
     () => parseSkinManifest({ ...validManifest, id: '../escape' }),
     (error: unknown) =>
       error instanceof SkinRuntimeError && error.code === 'invalid-manifest',
   );
+  const legacy = parseSkinManifest({
+    ...validManifest,
+    schemaVersion: 1,
+    minimumApiVersion: undefined,
+    requiredCapabilities: undefined,
+  });
+  assert.equal(legacy.minimumApiVersion, 1);
+  assert.deepEqual(legacy.requiredCapabilities, []);
 });
 
 test('normalizeArchiveFiles strips one wrapper and rejects traversal', () => {
@@ -102,7 +114,7 @@ test('inlineStylesheetAssets converts local asset URLs to data URLs', () => {
   );
 });
 
-test('activation API exposes host appearance, state, environment, tokens, parts, styles, and lifecycle', () => {
+test('activation API exposes versioned capabilities, slots, semantic events, and controlled actions', () => {
   const script = buildSkinActivationScript(
     validManifest,
     'export function activate(api) { api.log(api.apiVersion); }',
@@ -110,11 +122,17 @@ test('activation API exposes host appearance, state, environment, tokens, parts,
   );
   for (const contract of [
     'appearance:',
+    'capabilities:',
+    'permissions:',
     'state:',
     'environment:',
     'tokens: tokenApi',
     'observe(name, handler)',
     'wait(name, timeoutMs = 5000)',
+    'slots:',
+    'mount(name)',
+    'actions:',
+    'invoke(name, input = {})',
     'styles:',
     'lifecycle:',
   ]) {
@@ -122,12 +140,31 @@ test('activation API exposes host appearance, state, environment, tokens, parts,
   }
 });
 
+test('module validation ignores import text in comments and strings but rejects real imports', () => {
+  assert.doesNotThrow(() => assertSelfContainedSkinModule(`
+    // import('comment-only')
+    const example = "import('string-only')";
+    export function activate() {}
+  `));
+  assert.throws(
+    () => assertSelfContainedSkinModule('import value from "module"; export function activate() {}'),
+    /cannot import/,
+  );
+  assert.throws(
+    () => assertSelfContainedSkinModule('export async function activate() { await import("module"); }'),
+    /cannot import/,
+  );
+});
+
 test('runtime installs, activates, and disables a high-freedom skin', async () => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-skin-test-'));
   try {
     const archivePath = join(temporaryRoot, 'neon.maka-skin');
     await writeFile(archivePath, zipSync({
-      'manifest.json': strToU8(JSON.stringify(validManifest)),
+      'manifest.json': strToU8(JSON.stringify({
+        ...validManifest,
+        permissions: [...validManifest.permissions, 'actions.stop'],
+      })),
       'theme.css': strToU8('.hero { background: url("./assets/bg.svg"); }'),
       'entry.mjs': strToU8('export function activate(api) { api.log("ready"); return () => {}; }'),
       'assets/bg.svg': strToU8('<svg xmlns="http://www.w3.org/2000/svg"/>'),
@@ -136,18 +173,33 @@ test('runtime installs, activates, and disables a high-freedom skin', async () =
     const webContents = new FakeWebContents();
     runtime.attach(webContents);
 
-    const installed = await runtime.installFromFile(archivePath);
+    const inspection = await runtime.inspectFile(archivePath);
+    assert.equal(inspection.manifest.id, 'test.neon');
+    assert.match(inspection.archiveDigest, /^[a-f0-9]{64}$/);
+    const installed = await runtime.installFromFile(archivePath, inspection.archiveDigest);
     assert.equal(installed.installed[0]?.manifest.id, 'test.neon');
 
     const active = await runtime.activate('test.neon');
     assert.equal(active.activeSkinId, 'test.neon');
     assert.match(webContents.insertedCss[0] ?? '', /data:image\/svg\+xml;base64/);
     assert.match(webContents.isolatedScripts.at(-1) ?? '', /Test Neon/);
+    assert.equal(await runtime.authorizeAction('composer.submit'), false);
+    assert.equal(await runtime.authorizeAction('generation.stop'), true);
 
     const state = JSON.parse(
       await readFile(join(temporaryRoot, 'runtime', 'state.json'), 'utf8'),
     ) as { activationPending: boolean };
     assert.equal(state.activationPending, false);
+
+    await writeFile(archivePath, zipSync({
+      'manifest.json': strToU8(JSON.stringify(validManifest)),
+      'theme.css': strToU8(':root { --changed-after-review: true; }'),
+      'entry.mjs': strToU8('export function activate() {}'),
+    }));
+    await assert.rejects(
+      runtime.installFromFile(archivePath, inspection.archiveDigest),
+      /changed after its permissions were reviewed/,
+    );
 
     const disabled = await runtime.disable();
     assert.equal(disabled.activeSkinId, null);

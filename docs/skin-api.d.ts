@@ -2,7 +2,7 @@ export type MakaThemePreference = 'light' | 'dark' | 'auto';
 export type MakaResolvedTheme = 'light' | 'dark';
 
 export interface MakaSkinManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   name: string;
   version: string;
@@ -11,8 +11,30 @@ export interface MakaSkinManifest {
   styles?: string;
   entry?: string;
   preview?: string;
-  permissions: Array<'dom' | 'canvas' | 'audio' | 'storage'>;
+  permissions: MakaSkinPermission[];
+  minimumApiVersion: number;
+  requiredCapabilities: MakaSkinCapability[];
 }
+
+export type MakaSkinPermission =
+  | 'dom'
+  | 'canvas'
+  | 'audio'
+  | 'storage'
+  | 'actions.navigation'
+  | 'actions.task'
+  | 'actions.submit'
+  | 'actions.stop';
+
+export type MakaSkinCapability =
+  | 'appearance.v1'
+  | 'parts.v1'
+  | 'slots.v1'
+  | 'events.semantic.v1'
+  | 'actions.navigation.v1'
+  | 'actions.task.v1'
+  | 'actions.submit.v1'
+  | 'actions.stop.v1';
 
 export interface MakaAppearanceSnapshot {
   preference: MakaThemePreference;
@@ -58,15 +80,76 @@ export type MakaSkinPart =
   | 'settings-content'
   | 'command-palette';
 
+export type MakaSkinSlot =
+  | 'chat-header-before'
+  | 'chat-header-after'
+  | 'transcript-before'
+  | 'transcript-after'
+  | 'composer-before'
+  | 'composer-after';
+
+export interface MakaSkinEventMap {
+  'session.changed': { sessionId: string | null };
+  'messages.changed': {
+    sessionId: string | null;
+    count: number;
+    lastMessage?: Readonly<{ id: string; type: string }>;
+  };
+  'generation.changed': {
+    sessionId: string | null;
+    state: 'idle' | 'processing' | 'streaming' | 'tool' | 'waiting';
+  };
+  'tools.changed': {
+    sessionId: string | null;
+    tools: ReadonlyArray<Readonly<{ id: string; name: string; status: string }>>;
+  };
+  'interaction.changed': {
+    sessionId: string | null;
+    kind: 'permission' | 'question' | null;
+    waiting: boolean;
+  };
+  state: MakaStateSnapshot;
+  appearance: MakaAppearanceSnapshot;
+}
+
+export interface MakaSkinActionMap {
+  'navigation.switch-session': {
+    input: { sessionId: string };
+    output: void;
+  };
+  'task.new': {
+    input: Record<string, never>;
+    output: void;
+  };
+  'composer.submit': {
+    input: { text: string };
+    output: void;
+  };
+  'generation.stop': {
+    input: Record<string, never>;
+    output: void;
+  };
+}
+
 export interface MakaSkinStyleHandle {
   update(css: string): void;
   dispose(): void;
 }
 
 export interface MakaSkinApi {
-  readonly apiVersion: 1;
+  readonly apiVersion: 2;
   readonly manifest: Readonly<MakaSkinManifest>;
   readonly overlay: HTMLDivElement;
+  readonly capabilities: {
+    readonly all: readonly MakaSkinCapability[];
+    has(name: MakaSkinCapability | string): boolean;
+    require(name: MakaSkinCapability | string): void;
+  };
+  readonly permissions: {
+    readonly all: readonly MakaSkinPermission[];
+    has(name: MakaSkinPermission | string): boolean;
+    require(name: MakaSkinPermission | string): void;
+  };
   readonly assets: {
     url(path: string): string | null;
     list(): string[];
@@ -80,6 +163,13 @@ export interface MakaSkinApi {
       handler: (elements: readonly Element[]) => void,
     ): () => void;
     wait(name: MakaSkinPart | string, timeoutMs?: number): Promise<Element>;
+  };
+  readonly slots: {
+    readonly names: readonly MakaSkinSlot[];
+    one(name: MakaSkinSlot | string): Element | null;
+    observe(name: MakaSkinSlot | string, handler: (slot: Element | null) => void): () => void;
+    wait(name: MakaSkinSlot | string, timeoutMs?: number): Promise<Element>;
+    mount(name: MakaSkinSlot | string): HTMLDivElement;
   };
   readonly appearance: {
     current(): MakaAppearanceSnapshot;
@@ -105,7 +195,18 @@ export interface MakaSkinApi {
     add(css: string, id?: string): MakaSkinStyleHandle;
   };
   readonly events: {
+    on<Type extends keyof MakaSkinEventMap>(
+      type: Type,
+      handler: (detail: MakaSkinEventMap[Type], event: Event) => void,
+    ): () => void;
     on(type: string, handler: (detail: unknown, event: Event) => void): () => void;
+  };
+  readonly actions: {
+    can<Type extends keyof MakaSkinActionMap>(name: Type): boolean;
+    invoke<Type extends keyof MakaSkinActionMap>(
+      name: Type,
+      input: MakaSkinActionMap[Type]['input'],
+    ): Promise<MakaSkinActionMap[Type]['output']>;
   };
   readonly lifecycle: {
     onDispose(handler: () => void): () => void;

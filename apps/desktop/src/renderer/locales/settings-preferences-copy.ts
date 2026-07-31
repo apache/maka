@@ -43,6 +43,8 @@ export type SettingsPreferencesCopy = {
       empty: string;
       safeMode: string;
       actionFailed: string;
+      permissions: string;
+      permissionLabels: Readonly<Record<string, string>>;
     };
   };
   general: {
@@ -141,6 +143,12 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
         title: '界面皮肤', help: '导入 .maka-skin，可使用完整 CSS 和隔离世界 JavaScript 改造整个界面。皮肤能读取并修改可见页面，只安装你信任的包。',
         import: '导入或更新', openFolder: '打开目录', activate: '启用', disable: '停用', reload: '重新加载', remove: '移除', active: '使用中', empty: '还没有安装皮肤。',
         safeMode: '安全模式已开启；所有皮肤暂时停用。移除 --disable-skins 后重启可恢复。', actionFailed: '皮肤操作失败',
+        permissions: '权限',
+        permissionLabels: {
+          dom: '读取与修改可见界面', canvas: 'Canvas / WebGL', audio: '音频', storage: '皮肤存储',
+          'actions.navigation': '切换会话', 'actions.task': '新建任务',
+          'actions.submit': '提交提示词', 'actions.stop': '停止生成',
+        },
       },
     },
     general: {
@@ -163,6 +171,12 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
         title: 'Interface skins', help: 'Import a .maka-skin package with full CSS and isolated-world JavaScript. Skins can read and modify visible page content, so install only packages you trust.',
         import: 'Import or update', openFolder: 'Open folder', activate: 'Activate', disable: 'Disable', reload: 'Reload', remove: 'Remove', active: 'Active', empty: 'No skins are installed yet.',
         safeMode: 'Safe mode is active and all skins are disabled. Restart without --disable-skins to restore them.', actionFailed: 'Skin action failed',
+        permissions: 'Permissions',
+        permissionLabels: {
+          dom: 'Read and modify visible UI', canvas: 'Canvas / WebGL', audio: 'Audio', storage: 'Skin storage',
+          'actions.navigation': 'Switch conversations', 'actions.task': 'Create tasks',
+          'actions.submit': 'Submit prompts', 'actions.stop': 'Stop generation',
+        },
       },
     },
     general: {

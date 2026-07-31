@@ -1,5 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "minimumApiVersion": 2,
+  "requiredCapabilities": ["appearance.v1", "parts.v1"],
   "id": "maka.neon-orbit",
   "name": "Neon Orbit",
   "version": "0.1.0",

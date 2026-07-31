@@ -1,12 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://maka.dev/schemas/skin-manifest-v1.json",
+  "$id": "https://maka.dev/schemas/skin-manifest-v2.json",
   "title": "Maka Skin Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "name", "version", "permissions"],
+  "required": ["schemaVersion", "id", "name", "version", "minimumApiVersion", "permissions"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
+    "minimumApiVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
     "id": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
@@ -45,12 +49,44 @@
       "type": "array",
       "uniqueItems": true,
       "items": {
-        "enum": ["dom", "canvas", "audio", "storage"]
+        "enum": [
+          "dom",
+          "canvas",
+          "audio",
+          "storage",
+          "actions.navigation",
+          "actions.task",
+          "actions.submit",
+          "actions.stop"
+        ]
+      }
+    },
+    "requiredCapabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "appearance.v1",
+          "parts.v1",
+          "slots.v1",
+          "events.semantic.v1",
+          "actions.navigation.v1",
+          "actions.task.v1",
+          "actions.submit.v1",
+          "actions.stop.v1"
+        ]
       }
     }
   },
-  "anyOf": [
-    { "required": ["styles"] },
-    { "required": ["entry"] }
-  ]
+  "allOf": [
+    {
+      "if": { "required": ["entry"] },
+      "then": {
+        "properties": {
+          "permissions": { "contains": { "const": "dom" } }
+        }
+      }
+    }
+  ],
+  "anyOf": [{ "required": ["styles"] }, { "required": ["entry"] }]
 }

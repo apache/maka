@@ -357,6 +357,7 @@ export function ChatView(props: {
   if (!props.activeSession) {
     return (
       <main className="maka-main detailPane agents-chat-panel agents-chat-view-root" data-maka-part="chat">
+        <div className="maka-skin-slot" data-maka-slot="chat-header-before" />
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -372,6 +373,8 @@ export function ChatView(props: {
             header used to be rendered here anyway, holding a lone spacer, to
             occupy the window titlebar line — which the shell's titlebar row now
             owns. */}
+        <div className="maka-skin-slot" data-maka-slot="chat-header-after" />
+        <div className="maka-skin-slot" data-maka-slot="transcript-before" />
         <OverlayScrollArea
           className="maka-chat messages"
           viewportClassName="maka-chatViewport"
@@ -381,6 +384,7 @@ export function ChatView(props: {
           {props.emptyOverride ?? <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />}
           {props.conversationItems?.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
         </OverlayScrollArea>
+        <div className="maka-skin-slot" data-maka-slot="transcript-after" />
       </main>
     );
   }
@@ -389,6 +393,7 @@ export function ChatView(props: {
 
   return (
     <main className="maka-main detailPane agents-chat-panel agents-chat-view-root" data-maka-part="chat">
+      <div className="maka-skin-slot" data-maka-slot="chat-header-before" />
       {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d): no more browser-style
           session tab in the chat header. Session name + model live in
           the sidebar; the new-task button at the top of the sidebar is
@@ -442,6 +447,7 @@ export function ChatView(props: {
             composer left-controls. Header keeps the per-session status
             chips only. */}
       </header>
+      <div className="maka-skin-slot" data-maka-slot="chat-header-after" />
       {deepResearchActive && props.deepResearchRun && (
         <DeepResearchProgressPanel
           run={props.deepResearchRun}
@@ -462,6 +468,7 @@ export function ChatView(props: {
             onClick={props.onBranchBannerClick}
           />
         )}
+        <div className="maka-skin-slot" data-maka-slot="transcript-before" />
         <OverlayScrollArea
           ref={scrollRef}
           className="maka-chat messages"
@@ -563,6 +570,7 @@ export function ChatView(props: {
               folds these into the `__loose` turn, so this is normally a
               no-op. */}
         </OverlayScrollArea>
+        <div className="maka-skin-slot" data-maka-slot="transcript-after" />
         <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
         {!pinnedToBottom && (
           <BaseButton

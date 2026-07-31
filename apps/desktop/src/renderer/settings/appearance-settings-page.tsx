@@ -378,6 +378,11 @@ function SkinSettingsSection() {
                   v{manifest.version}
                   {active ? ` · ${copy.active}` : ''}
                 </small>
+                <small>
+                  {copy.permissions}: {manifest.permissions
+                    .map((permission) => copy.permissionLabels[permission] ?? permission)
+                    .join(' · ') || '—'}
+                </small>
               </div>
             </div>
             <div className="settingsActionRow">

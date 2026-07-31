@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir,
   readFile,
@@ -8,9 +8,11 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, extname, join, posix } from 'node:path';
+import { parse } from '@babel/parser';
 import { unzipSync } from 'fflate';
 
-const SKIN_SCHEMA_VERSION = 1;
+export const SKIN_API_VERSION = 2;
+const SKIN_SCHEMA_VERSION = 2;
 const SKIN_WORLD_ID = 1004;
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 64 * 1024 * 1024;
@@ -38,17 +40,59 @@ export const SKIN_PART_NAMES = [
   'command-palette',
 ] as const;
 
+export const SKIN_SLOT_NAMES = [
+  'chat-header-before',
+  'chat-header-after',
+  'transcript-before',
+  'transcript-after',
+  'composer-before',
+  'composer-after',
+] as const;
+
+export const SKIN_CAPABILITIES = [
+  'appearance.v1',
+  'parts.v1',
+  'slots.v1',
+  'events.semantic.v1',
+  'actions.navigation.v1',
+  'actions.task.v1',
+  'actions.submit.v1',
+  'actions.stop.v1',
+] as const;
+
 const ALLOWED_PERMISSIONS = new Set([
   'dom',
   'canvas',
   'audio',
   'storage',
+  'actions.navigation',
+  'actions.task',
+  'actions.submit',
+  'actions.stop',
 ]);
 
-export type SkinPermission = 'dom' | 'canvas' | 'audio' | 'storage';
+const CAPABILITY_SET = new Set<string>(SKIN_CAPABILITIES);
+
+export type SkinPermission =
+  | 'dom'
+  | 'canvas'
+  | 'audio'
+  | 'storage'
+  | 'actions.navigation'
+  | 'actions.task'
+  | 'actions.submit'
+  | 'actions.stop';
+
+export type SkinActionName =
+  | 'navigation.switch-session'
+  | 'task.new'
+  | 'composer.submit'
+  | 'generation.stop';
+
+export type SkinCapability = (typeof SKIN_CAPABILITIES)[number];
 
 export interface SkinManifest {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   id: string;
   name: string;
   version: string;
@@ -58,6 +102,8 @@ export interface SkinManifest {
   entry?: string;
   preview?: string;
   permissions: SkinPermission[];
+  minimumApiVersion: number;
+  requiredCapabilities: SkinCapability[];
 }
 
 export interface InstalledSkin {
@@ -96,11 +142,16 @@ export interface SkinRuntime {
   readonly rootDir: string;
   attach(webContents: SkinWebContents): void;
   list(): Promise<SkinRuntimeSnapshot>;
-  installFromFile(archivePath: string): Promise<SkinRuntimeSnapshot>;
+  inspectFile(archivePath: string): Promise<{
+    manifest: SkinManifest;
+    archiveDigest: string;
+  }>;
+  installFromFile(archivePath: string, expectedDigest?: string): Promise<SkinRuntimeSnapshot>;
   activate(id: string): Promise<SkinRuntimeSnapshot>;
   disable(): Promise<SkinRuntimeSnapshot>;
   reload(): Promise<SkinRuntimeSnapshot>;
   uninstall(id: string): Promise<SkinRuntimeSnapshot>;
+  authorizeAction(action: SkinActionName): Promise<boolean>;
 }
 
 export class SkinRuntimeError extends Error {
@@ -116,6 +167,41 @@ export class SkinRuntimeError extends Error {
     super(message);
     this.name = 'SkinRuntimeError';
   }
+}
+
+async function readSkinPackage(archivePath: string): Promise<{
+  files: Map<string, Uint8Array>;
+  manifest: SkinManifest;
+  archiveDigest: string;
+}> {
+  const archive = await readFile(archivePath);
+  if (archive.byteLength > MAX_ARCHIVE_BYTES) {
+    throw new SkinRuntimeError('invalid-archive', 'Skin archive is larger than 32 MiB.');
+  }
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(archive));
+  } catch {
+    throw new SkinRuntimeError('invalid-archive', 'The selected file is not a valid .maka-skin archive.');
+  }
+  const normalizedFiles = normalizeArchiveFiles(files);
+  const manifestBytes = normalizedFiles.get('manifest.json');
+  if (!manifestBytes) {
+    throw new SkinRuntimeError('invalid-manifest', 'Skin archive does not contain manifest.json.');
+  }
+  let manifestValue: unknown;
+  try {
+    manifestValue = JSON.parse(new TextDecoder().decode(manifestBytes));
+  } catch {
+    throw new SkinRuntimeError('invalid-manifest', 'Skin manifest is not valid JSON.');
+  }
+  const manifest = parseSkinManifest(manifestValue);
+  assertManifestFiles(manifest, normalizedFiles);
+  return {
+    files: normalizedFiles,
+    manifest,
+    archiveDigest: createHash('sha256').update(archive).digest('hex'),
+  };
 }
 
 export function createSkinRuntime(options: {
@@ -216,6 +302,7 @@ export function createSkinRuntime(options: {
         try { current?.dispose?.(); } catch (error) { console.error('[maka-skin] dispose failed', error); }
         delete globalThis.__makaSkinRuntime;
         document.documentElement.removeAttribute('data-maka-skin');
+        document.documentElement.removeAttribute('data-maka-skin-api-version');
       })()`,
       url: 'maka-skin://runtime/deactivate.js',
     }]).catch(() => undefined);
@@ -272,7 +359,7 @@ export function createSkinRuntime(options: {
         }
       } else {
         await target.executeJavaScriptInIsolatedWorld(SKIN_WORLD_ID, [{
-          code: `document.documentElement.setAttribute('data-maka-skin', ${JSON.stringify(manifest.id)}); ({ ok: true })`,
+          code: `document.documentElement.setAttribute('data-maka-skin', ${JSON.stringify(manifest.id)}); document.documentElement.setAttribute('data-maka-skin-api-version', ${JSON.stringify(String(SKIN_API_VERSION))}); ({ ok: true })`,
           url: `maka-skin://${manifest.id}/activate.js`,
         }]);
       }
@@ -313,31 +400,23 @@ export function createSkinRuntime(options: {
       });
     },
     list: () => serialize(snapshot),
-    installFromFile: (archivePath) => serialize(async () => {
+    inspectFile: (archivePath) => serialize(async () => {
+      const { manifest, archiveDigest } = await readSkinPackage(archivePath);
+      return { manifest, archiveDigest };
+    }),
+    installFromFile: (archivePath, expectedDigest) => serialize(async () => {
       await initialize();
-      const archive = await readFile(archivePath);
-      if (archive.byteLength > MAX_ARCHIVE_BYTES) {
-        throw new SkinRuntimeError('invalid-archive', 'Skin archive is larger than 32 MiB.');
+      const {
+        files: normalizedFiles,
+        manifest,
+        archiveDigest,
+      } = await readSkinPackage(archivePath);
+      if (expectedDigest && archiveDigest !== expectedDigest) {
+        throw new SkinRuntimeError(
+          'invalid-archive',
+          'The skin package changed after its permissions were reviewed. Import it again.',
+        );
       }
-      let files: Record<string, Uint8Array>;
-      try {
-        files = unzipSync(new Uint8Array(archive));
-      } catch {
-        throw new SkinRuntimeError('invalid-archive', 'The selected file is not a valid .maka-skin archive.');
-      }
-      const normalizedFiles = normalizeArchiveFiles(files);
-      const manifestBytes = normalizedFiles.get('manifest.json');
-      if (!manifestBytes) {
-        throw new SkinRuntimeError('invalid-manifest', 'Skin archive does not contain manifest.json.');
-      }
-      let manifestValue: unknown;
-      try {
-        manifestValue = JSON.parse(new TextDecoder().decode(manifestBytes));
-      } catch {
-        throw new SkinRuntimeError('invalid-manifest', 'Skin manifest is not valid JSON.');
-      }
-      const manifest = parseSkinManifest(manifestValue);
-      assertManifestFiles(manifest, normalizedFiles);
       const destination = join(installedDir, manifest.id);
       let replacing = false;
       try {
@@ -452,7 +531,31 @@ export function createSkinRuntime(options: {
       await rm(destination, { recursive: true, force: true });
       return snapshot();
     }),
+    authorizeAction: (action) => serialize(async () => {
+      await initialize();
+      if (safeMode || !state.activeSkinId) return false;
+      const requiredPermission = actionPermission(action);
+      if (!requiredPermission) return false;
+      try {
+        const manifest = parseSkinManifest(
+          JSON.parse(await readFile(join(installedDir, state.activeSkinId, 'manifest.json'), 'utf8')),
+        );
+        return manifest.permissions.includes(requiredPermission);
+      } catch {
+        return false;
+      }
+    }),
   };
+}
+
+function actionPermission(action: SkinActionName): SkinPermission | null {
+  switch (action) {
+    case 'navigation.switch-session': return 'actions.navigation';
+    case 'task.new': return 'actions.task';
+    case 'composer.submit': return 'actions.submit';
+    case 'generation.stop': return 'actions.stop';
+    default: return null;
+  }
 }
 
 export function parseSkinManifest(value: unknown): SkinManifest {
@@ -460,9 +563,10 @@ export function parseSkinManifest(value: unknown): SkinManifest {
     throw new SkinRuntimeError('invalid-manifest', 'Skin manifest must be an object.');
   }
   const candidate = value as Record<string, unknown>;
-  if (candidate.schemaVersion !== SKIN_SCHEMA_VERSION) {
+  if (candidate.schemaVersion !== 1 && candidate.schemaVersion !== SKIN_SCHEMA_VERSION) {
     throw new SkinRuntimeError('invalid-manifest', 'Unsupported skin manifest schemaVersion.');
   }
+  const schemaVersion = candidate.schemaVersion;
   const id = readRequiredString(candidate.id, 'id');
   if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(id)) {
     throw new SkinRuntimeError('invalid-manifest', 'Skin id must contain 2–64 lowercase letters, numbers, dots, dashes, or underscores.');
@@ -480,8 +584,36 @@ export function parseSkinManifest(value: unknown): SkinManifest {
     throw new SkinRuntimeError('invalid-manifest', 'Skin permissions contain an unsupported capability.');
   }
   const permissions = [...new Set(rawPermissions)] as SkinPermission[];
+  if (entry && !permissions.includes('dom') && schemaVersion === 2) {
+    throw new SkinRuntimeError(
+      'invalid-manifest',
+      'Skin JavaScript requires the “dom” permission because it can read and modify visible page content.',
+    );
+  }
+  if (entry && !permissions.includes('dom')) permissions.push('dom');
+  const minimumApiVersion = schemaVersion === 1
+    ? 1
+    : readApiVersion(candidate.minimumApiVersion);
+  if (minimumApiVersion > SKIN_API_VERSION) {
+    throw new SkinRuntimeError(
+      'invalid-manifest',
+      `Skin requires Maka Skin API ${minimumApiVersion}, but this host provides ${SKIN_API_VERSION}.`,
+    );
+  }
+  const rawCapabilities = candidate.requiredCapabilities ?? [];
+  if (!Array.isArray(rawCapabilities) || rawCapabilities.some((item) => typeof item !== 'string')) {
+    throw new SkinRuntimeError('invalid-manifest', 'Skin requiredCapabilities must be an array of capability names.');
+  }
+  const unsupportedCapabilities = rawCapabilities.filter((item) => !CAPABILITY_SET.has(item as string));
+  if (unsupportedCapabilities.length > 0) {
+    throw new SkinRuntimeError(
+      'invalid-manifest',
+      `Skin requires unsupported capabilities: ${unsupportedCapabilities.join(', ')}.`,
+    );
+  }
+  const requiredCapabilities = [...new Set(rawCapabilities)] as SkinCapability[];
   return {
-    schemaVersion: 1,
+    schemaVersion,
     id,
     name,
     version,
@@ -491,7 +623,19 @@ export function parseSkinManifest(value: unknown): SkinManifest {
     ...(entry ? { entry } : {}),
     ...(preview ? { preview } : {}),
     permissions,
+    minimumApiVersion,
+    requiredCapabilities,
   };
+}
+
+function readApiVersion(value: unknown): number {
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 1_000) {
+    throw new SkinRuntimeError(
+      'invalid-manifest',
+      'Skin manifest minimumApiVersion must be a positive integer.',
+    );
+  }
+  return value as number;
 }
 
 export function normalizeArchiveFiles(files: Record<string, Uint8Array>): Map<string, Uint8Array> {
@@ -568,9 +712,7 @@ function assertManifestFiles(manifest: SkinManifest, files: Map<string, Uint8Arr
       throw new SkinRuntimeError('invalid-manifest', 'Skin entry is larger than 2 MiB.');
     }
     const source = new TextDecoder().decode(entry);
-    if (/^\s*import\s/m.test(source) || /\bimport\s*\(/.test(source)) {
-      throw new SkinRuntimeError('invalid-manifest', 'Skin entry must be self-contained and cannot import modules.');
-    }
+    assertSelfContainedSkinModule(source);
   }
 }
 
@@ -651,6 +793,15 @@ export function buildSkinActivationScript(
 
       const root = document.documentElement;
       const partNames = Object.freeze(${JSON.stringify(SKIN_PART_NAMES)});
+      const slotNames = Object.freeze(${JSON.stringify(SKIN_SLOT_NAMES)});
+      const capabilityNames = Object.freeze(${JSON.stringify(SKIN_CAPABILITIES)});
+      const permissionNames = Object.freeze([...manifest.permissions]);
+      const actionPermissions = Object.freeze({
+        'navigation.switch-session': 'actions.navigation',
+        'task.new': 'actions.task',
+        'composer.submit': 'actions.submit',
+        'generation.stop': 'actions.stop',
+      });
       const accessibilityQueries = Object.freeze({
         forcedColors: matchMedia('(forced-colors: active)'),
         prefersContrast: matchMedia('(prefers-contrast: more)'),
@@ -739,6 +890,9 @@ export function buildSkinActivationScript(
       const partSelector = (name) =>
         '[data-maka-part="' + CSS.escape(String(name)) + '"]';
       const findPart = (name) => document.querySelector(partSelector(name));
+      const slotSelector = (name) =>
+        '[data-maka-slot="' + CSS.escape(String(name)) + '"]';
+      const findSlot = (name) => document.querySelector(slotSelector(name));
       const signalAppearanceChange = () => {
         root.dataset.makaSkinAppearanceRevision =
           String((Number(root.dataset.makaSkinAppearanceRevision) || 0) + 1);
@@ -768,9 +922,27 @@ export function buildSkinActivationScript(
       });
 
       const api = Object.freeze({
-        apiVersion: 1,
+        apiVersion: ${SKIN_API_VERSION},
         manifest,
         overlay,
+        capabilities: Object.freeze({
+          all: capabilityNames,
+          has(name) { return capabilityNames.includes(String(name)); },
+          require(name) {
+            if (!capabilityNames.includes(String(name))) {
+              throw new Error('Maka Skin capability is unavailable: ' + String(name));
+            }
+          },
+        }),
+        permissions: Object.freeze({
+          all: permissionNames,
+          has(name) { return permissionNames.includes(String(name)); },
+          require(name) {
+            if (!permissionNames.includes(String(name))) {
+              throw new Error('Skin permission was not granted: ' + String(name));
+            }
+          },
+        }),
         assets: Object.freeze({
           url(path) {
             const normalized = String(path).replace(/^\\.\\//, '');
@@ -821,6 +993,60 @@ export function buildSkinActivationScript(
                 clearTimeout(timer);
               });
             });
+          },
+        }),
+        slots: Object.freeze({
+          names: slotNames,
+          one: findSlot,
+          observe(name, handler) {
+            if (typeof handler !== 'function') throw new TypeError('Slot observer must be a function.');
+            const selector = slotSelector(name);
+            let previous = null;
+            const publish = () => {
+              const next = document.querySelector(selector);
+              if (next === previous) return;
+              previous = next;
+              handler(next);
+            };
+            const observer = new MutationObserver(publish);
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+            const off = () => observer.disconnect();
+            disposers.push(off);
+            queueMicrotask(publish);
+            return off;
+          },
+          wait(name, timeoutMs = 5000) {
+            const current = findSlot(name);
+            if (current) return Promise.resolve(current);
+            return new Promise((resolve, reject) => {
+              const selector = slotSelector(name);
+              const observer = new MutationObserver(() => {
+                const match = document.querySelector(selector);
+                if (!match) return;
+                observer.disconnect();
+                clearTimeout(timer);
+                resolve(match);
+              });
+              const timer = setTimeout(() => {
+                observer.disconnect();
+                reject(new Error('Timed out waiting for Maka slot “' + String(name) + '”.'));
+              }, Math.max(0, Math.min(Number(timeoutMs) || 0, 60000)));
+              observer.observe(document.documentElement, { childList: true, subtree: true });
+              disposers.push(() => {
+                observer.disconnect();
+                clearTimeout(timer);
+              });
+            });
+          },
+          mount(name) {
+            const slot = findSlot(name);
+            if (!slot) throw new Error('Maka slot is not currently available: ' + String(name));
+            const mount = document.createElement('div');
+            mount.dataset.makaSkinMount = manifest.id;
+            mount.dataset.makaSkinSlot = String(name);
+            slot.appendChild(mount);
+            disposers.push(() => mount.remove());
+            return mount;
           },
         }),
         appearance: Object.freeze({
@@ -895,6 +1121,62 @@ export function buildSkinActivationScript(
             return onHostEvent(type, handler);
           },
         }),
+        actions: Object.freeze({
+          can(name) {
+            const permission = actionPermissions[String(name)];
+            return Boolean(permission && permissionNames.includes(permission));
+          },
+          invoke(name, input = {}) {
+            const action = String(name);
+            const permission = actionPermissions[action];
+            if (!permission || !permissionNames.includes(permission)) {
+              return Promise.reject(new Error('Skin action permission was not granted: ' + action));
+            }
+            let payload;
+            try {
+              payload = JSON.stringify(input ?? {});
+            } catch {
+              return Promise.reject(new TypeError('Skin action input must be JSON serializable.'));
+            }
+            if (payload.length > 16384) {
+              return Promise.reject(new TypeError('Skin action input is too large.'));
+            }
+            return new Promise((resolve, reject) => {
+              const request = document.createElement('span');
+              request.hidden = true;
+              request.dataset.makaSkinAction = action;
+              request.dataset.makaSkinActionInput = payload;
+              request.dataset.makaSkinActionId =
+                globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+              overlay.appendChild(request);
+              let settled = false;
+              let timer;
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                request.removeEventListener('maka:skin-action-response', onResponse);
+                const ok = request.dataset.makaSkinActionOk === 'true';
+                const raw = request.dataset.makaSkinActionResult;
+                const error = request.dataset.makaSkinActionError || 'Skin action was rejected.';
+                request.remove();
+                if (!ok) {
+                  reject(new Error(error));
+                  return;
+                }
+                try { resolve(raw ? JSON.parse(raw) : undefined); }
+                catch { resolve(undefined); }
+              };
+              const onResponse = () => finish();
+              request.addEventListener('maka:skin-action-response', onResponse);
+              timer = setTimeout(() => {
+                request.dataset.makaSkinActionError = 'Skin action timed out.';
+                finish();
+              }, 10000);
+              request.dispatchEvent(new Event('maka:skin-action-request', { bubbles: true }));
+            });
+          },
+        }),
         lifecycle: Object.freeze({
           onDispose(handler) {
             if (typeof handler !== 'function') throw new TypeError('Dispose handler must be a function.');
@@ -907,15 +1189,24 @@ export function buildSkinActivationScript(
         }),
         storage: Object.freeze({
           get(key, fallback = null) {
+            if (!permissionNames.includes('storage')) {
+              throw new Error('Skin permission was not granted: storage');
+            }
             try {
               const raw = localStorage.getItem('maka-skin:' + manifest.id + ':' + String(key));
               return raw === null ? fallback : JSON.parse(raw);
             } catch { return fallback; }
           },
           set(key, value) {
+            if (!permissionNames.includes('storage')) {
+              throw new Error('Skin permission was not granted: storage');
+            }
             localStorage.setItem('maka-skin:' + manifest.id + ':' + String(key), JSON.stringify(value));
           },
           remove(key) {
+            if (!permissionNames.includes('storage')) {
+              throw new Error('Skin permission was not granted: storage');
+            }
             localStorage.removeItem('maka-skin:' + manifest.id + ':' + String(key));
           },
         }),
@@ -936,6 +1227,7 @@ export function buildSkinActivationScript(
       };
       globalThis.__makaSkinRuntime = { dispose };
       document.documentElement.setAttribute('data-maka-skin', manifest.id);
+      document.documentElement.setAttribute('data-maka-skin-api-version', String(${SKIN_API_VERSION}));
       return { ok: true };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -944,9 +1236,7 @@ export function buildSkinActivationScript(
 }
 
 function transformSkinModule(source: string): string {
-  if (/^\s*import\s/m.test(source) || /\bimport\s*\(/.test(source)) {
-    throw new SkinRuntimeError('invalid-manifest', 'Skin entry must be self-contained and cannot import modules.');
-  }
+  assertSelfContainedSkinModule(source);
   if (/\bexport\s+default\b/.test(source)) {
     throw new SkinRuntimeError('invalid-manifest', 'Skin entry must use a named activate export.');
   }
@@ -955,6 +1245,50 @@ function transformSkinModule(source: string): string {
     .replace(/\bexport\s+(function\s+activate\b)/g, '$1')
     .replace(/\bexport\s+((?:const|let|var)\s+activate\b)/g, '$1')
     .replace(/\bexport\s*\{\s*activate\s*(?:as\s+activate\s*)?\}\s*;?/g, '');
+}
+
+export function assertSelfContainedSkinModule(source: string): void {
+  let program: ReturnType<typeof parse>;
+  try {
+    program = parse(source, {
+      sourceType: 'module',
+      createImportExpressions: true,
+      allowAwaitOutsideFunction: true,
+    });
+  } catch (error) {
+    throw new SkinRuntimeError(
+      'invalid-manifest',
+      `Skin entry is not valid JavaScript: ${errorMessage(error)}`,
+    );
+  }
+
+  const visit = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false;
+    if (Array.isArray(value)) return value.some(visit);
+    const node = value as Record<string, unknown>;
+    if (
+      node.type === 'ImportDeclaration' ||
+      node.type === 'ImportExpression' ||
+      node.type === 'ExportAllDeclaration' ||
+      ((node.type === 'ExportNamedDeclaration' || node.type === 'ExportDefaultDeclaration') && node.source)
+    ) {
+      return true;
+    }
+    return Object.entries(node).some(([key, child]) => (
+      key !== 'loc' &&
+      key !== 'start' &&
+      key !== 'end' &&
+      key !== 'extra' &&
+      visit(child)
+    ));
+  };
+
+  if (visit(program.program)) {
+    throw new SkinRuntimeError(
+      'invalid-manifest',
+      'Skin entry must be self-contained and cannot import or re-export modules.',
+    );
+  }
 }
 
 function readRequiredString(value: unknown, field: string, maxLength = 64): string {
