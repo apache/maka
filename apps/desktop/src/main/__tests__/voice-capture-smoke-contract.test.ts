@@ -49,8 +49,13 @@ describe('voice capture smoke Settings contract', () => {
     assert.match(src, /<AddProviderForm[\s\S]*providerType="openai-compatible"/);
     assert.match(
       src,
-      /onClick=\{\(\) => setCreatingRecognitionConnection\(true\)\}/,
+      /onClick=\{\(\) => setRecognitionDialog\(\{ kind: 'create', phase: 'mounting' \}\)\}/,
       'Voice must expose the create-recognition-connection action in place',
+    );
+    assert.match(
+      src,
+      /type RecognitionDialogSession =[\s\S]*phase: 'mounting' \| 'open' \| 'closing'[\s\S]*if \(!recognitionDialog \|\| recognitionDialog\.phase === 'open'\) return;[\s\S]*phase === 'mounting' \? \{ \.\.\.current, phase: 'open' \} : null/,
+      'Voice must keep a provider dialog mounted through an Astryx-observable close before releasing its session',
     );
     assert.match(
       src,
@@ -59,7 +64,7 @@ describe('voice capture smoke Settings contract', () => {
     );
     assert.match(
       src,
-      /await props\.onRefreshConnections\(\);[\s\S]*setCreatingRecognitionConnection\(false\)/,
+      /await props\.onRefreshConnections\(\);[\s\S]*requestRecognitionDialogClose\(\)/,
       'Voice must refresh the shared connection list before closing the create dialog',
     );
     assert.equal(zhCopy.createRecognitionConnection, '新建识别连接');

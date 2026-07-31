@@ -38,6 +38,10 @@ type VoiceSmokeState =
   | { status: 'ok'; durationMs: number; audioBytes: number }
   | { status: 'error'; reason: 'unsupported_media' | 'unsupported_recorder' | 'denied' | 'failed' | string };
 
+type RecognitionDialogSession =
+  | { kind: 'create'; phase: 'mounting' | 'open' | 'closing' }
+  | { kind: 'edit'; phase: 'mounting' | 'open' | 'closing'; connection: LlmConnection };
+
 export function VoiceModelsSettingsPage(props: {
   settings: AppSettings;
   connections: LlmConnection[];
@@ -54,8 +58,7 @@ export function VoiceModelsSettingsPage(props: {
   const [isBusy, setIsBusy] = useState(false);
   const [recognitionTest, setRecognitionTest] = useState<string>();
   const [recognitionTesting, setRecognitionTesting] = useState(false);
-  const [creatingRecognitionConnection, setCreatingRecognitionConnection] = useState(false);
-  const [editingRecognitionConnection, setEditingRecognitionConnection] = useState(false);
+  const [recognitionDialog, setRecognitionDialog] = useState<RecognitionDialogSession | null>(null);
   const {
     draft: voiceDraft,
     draftRef: voiceDraftRef,
@@ -83,8 +86,6 @@ export function VoiceModelsSettingsPage(props: {
     operationId: string;
     capture?: ActiveVoiceCapture;
   } | undefined>(undefined);
-  const createRecognitionConnectionButtonRef = useRef<HTMLButtonElement | null>(null);
-  const editRecognitionConnectionButtonRef = useRef<HTMLButtonElement | null>(null);
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
   const enabledConnections = props.connections.filter((connection) => connection.enabled);
@@ -97,6 +98,22 @@ export function VoiceModelsSettingsPage(props: {
       (connection) => ({ value: connection.slug, label: connection.name }),
     ),
   ];
+
+  useEffect(() => {
+    if (!recognitionDialog || recognitionDialog.phase === 'open') return;
+    const phase = recognitionDialog.phase;
+    const frame = window.requestAnimationFrame(() => {
+      setRecognitionDialog((current) => {
+        if (!current || current.phase !== phase) return current;
+        return phase === 'mounting' ? { ...current, phase: 'open' } : null;
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [recognitionDialog?.phase]);
+
+  function requestRecognitionDialogClose() {
+    setRecognitionDialog((current) => current ? { ...current, phase: 'closing' } : null);
+  }
 
   async function updateVoice(
     patch: {
@@ -146,7 +163,7 @@ export function VoiceModelsSettingsPage(props: {
       if (!saved || !voicePageMountedRef.current) return;
       await props.onRefreshConnections();
       if (!voicePageMountedRef.current) return;
-      setCreatingRecognitionConnection(false);
+      requestRecognitionDialogClose();
       toast.success(
         copy.recognitionConnectionCreated,
         copy.recognitionConnectionCreatedDetail(created.name, created.defaultModel),
@@ -175,7 +192,7 @@ export function VoiceModelsSettingsPage(props: {
     }
     await props.onRefreshConnections();
     if (!voicePageMountedRef.current) return;
-    setEditingRecognitionConnection(false);
+    requestRecognitionDialogClose();
     toast.success(
       copy.recognitionConnectionUpdated,
       copy.recognitionConnectionUpdatedDetail(connection.name, model),
@@ -451,19 +468,25 @@ export function VoiceModelsSettingsPage(props: {
       </FormLayout>
       <div className="settingsActionRow">
         <Button
-          ref={createRecognitionConnectionButtonRef}
           variant="secondary"
           type="button"
           isDisabled={saving || isBusy}
-          onClick={() => setCreatingRecognitionConnection(true)}
+          onClick={() => setRecognitionDialog({ kind: 'create', phase: 'mounting' })}
           label={copy.createRecognitionConnection}
         />
         <Button
-          ref={editRecognitionConnectionButtonRef}
           variant="secondary"
           type="button"
           isDisabled={saving || isBusy || !selectedRecognitionConnection}
-          onClick={() => setEditingRecognitionConnection(true)}
+          onClick={() => {
+            if (selectedRecognitionConnection) {
+              setRecognitionDialog({
+                kind: 'edit',
+                phase: 'mounting',
+                connection: selectedRecognitionConnection,
+              });
+            }
+          }}
           label={copy.editRecognitionConnection}
         />
         <Button
@@ -480,19 +503,21 @@ export function VoiceModelsSettingsPage(props: {
         </Alert>
       ) : null}
 
-      {creatingRecognitionConnection ? (
+      {recognitionDialog?.kind === 'create' ? (
         <ProviderConnectionDialog
           title={copy.createRecognitionConnectionTitle}
           subtitle={copy.createRecognitionConnectionSubtitle}
           providerType="openai-compatible"
-          onClose={() => setCreatingRecognitionConnection(false)}
-          finalFocus={() => createRecognitionConnectionButtonRef.current}
+          isOpen={recognitionDialog.phase === 'open'}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) requestRecognitionDialogClose();
+          }}
         >
           <AddProviderForm
             bridge={window.maka.connections}
             providerType="openai-compatible"
             existingSlugs={props.connections.map((connection) => connection.slug)}
-            onCancel={() => setCreatingRecognitionConnection(false)}
+            onCancel={requestRecognitionDialogClose}
             onCreated={async (slug) => {
               await finishCreatingRecognitionConnection(slug);
             }}
@@ -500,19 +525,21 @@ export function VoiceModelsSettingsPage(props: {
         </ProviderConnectionDialog>
       ) : null}
 
-      {editingRecognitionConnection && selectedRecognitionConnection ? (
+      {recognitionDialog?.kind === 'edit' ? (
         <ProviderConnectionDialog
           title={copy.editRecognitionConnectionTitle}
-          subtitle={copy.editRecognitionConnectionSubtitle(selectedRecognitionConnection.name)}
-          providerType={selectedRecognitionConnection.providerType}
-          onClose={() => setEditingRecognitionConnection(false)}
-          finalFocus={() => editRecognitionConnectionButtonRef.current}
+          subtitle={copy.editRecognitionConnectionSubtitle(recognitionDialog.connection.name)}
+          providerType={recognitionDialog.connection.providerType}
+          isOpen={recognitionDialog.phase === 'open'}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) requestRecognitionDialogClose();
+          }}
         >
           <VoiceRecognitionConnectionForm
             bridge={window.maka.connections}
-            connection={selectedRecognitionConnection}
+            connection={recognitionDialog.connection}
             model={recognitionDraft.model}
-            onCancel={() => setEditingRecognitionConnection(false)}
+            onCancel={requestRecognitionDialogClose}
             onSaved={finishEditingRecognitionConnection}
           />
         </ProviderConnectionDialog>
