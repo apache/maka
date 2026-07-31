@@ -11,7 +11,7 @@ describe('desktop agent-team collaboration wiring', () => {
   it('shares one durable mailbox/task ledger across lead and child tools', async () => {
     const main = await readMainProcessCombinedSource();
 
-    assert.match(main, /const agentMailboxStore = createAgentMailboxStore\(workspaceRoot\)/);
+    assert.match(main, /const agentMailboxStore = createSqliteAgentMailboxStore\(workspaceRoot\)/);
     assert.match(
       main,
       /buildAgentTeamLeadTools\(\{[\s\S]*?mailbox: agentMailboxStore,[\s\S]*?taskLedger: taskLedgerStore/,

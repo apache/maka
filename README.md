@@ -210,6 +210,28 @@ validation are one SQLite transaction, retries are idempotent, and a changed
 legacy source after cutover fails closed. The legacy files are retained only as
 migration evidence; new execution writes do not modify them.
 
+Workflow state is migrating in reviewable slices. Task Ledger events and
+projections, Plan events and projections, Deep Research events, Agent Mailbox
+messages, and Plan Reminder records are now canonical in `runtime.sqlite`.
+Desktop and Runtime Host production wiring opens these SQLite repositories;
+their JSON/JSONL predecessors are read only during a fingerprinted, crash-safe
+cutover and are never updated by later mutations.
+
+The remaining structured operational stores are deliberately classified rather
+than implied complete:
+
+- usage telemetry and pricing authority move in the next workflow-metadata
+  slice;
+- artifact metadata and lifecycle state move with a recoverable
+  metadata/payload publication protocol, while payload bytes remain files;
+- StoredMessage transcript bodies remain append-only JSONL;
+- automation, connections, credentials, settings, MCP configuration, skills,
+  and device identity are configuration state and stay outside this operational
+  migration;
+- Headless TaskRun evaluation ledgers, imported foreign-session caches, Daily
+  Review archives, and quote-cleanup bookkeeping are separate product/evaluation
+  domains and are not part of issue #1649.
+
 Runtime continuation remains opt-in:
 
 - `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn

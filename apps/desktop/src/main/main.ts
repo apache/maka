@@ -59,14 +59,14 @@ import type {
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   createAgentRunStore,
-  createAgentMailboxStore,
+  createSqliteAgentMailboxStore,
   createArtifactStore,
-  createDeepResearchStore,
+  createSqliteDeepResearchStore,
   createReadImageSnapshotter,
   createConnectionStore,
   createGitWorktreeChildExecutor,
-  createPlanReminderStore,
-  createPlanStore,
+  createSqlitePlanReminderStore,
+  createSqlitePlanStore,
   createProjectCatalog,
   openRuntimeEventPersistence,
   createSessionStore,
@@ -269,7 +269,7 @@ const store = createSessionStore(workspaceRoot);
 const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot);
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
-const planStore = createPlanStore(workspaceRoot);
+const planStore = createSqlitePlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
   workspaceRoot,
@@ -294,7 +294,7 @@ function ensureMcpReady(): Promise<void> {
 const telemetryRepo = createTelemetryRepo(workspaceRoot);
 const dailyReviewArchiveStore = createDailyReviewArchiveStore(workspaceRoot);
 const artifactStore = createArtifactStore(workspaceRoot);
-const deepResearchStore = createDeepResearchStore(workspaceRoot);
+const deepResearchStore = createSqliteDeepResearchStore(workspaceRoot);
 const storeReadImage = createReadImageSnapshotter(artifactStore);
 const attachmentApprovals = createAttachmentApprovalRegistry();
 // PR-OAUTH-SUBSCRIPTION-0: Claude subscription OAuth service.
@@ -397,10 +397,32 @@ const antigravitySubscription = new AntigravitySubscriptionService({
   credentialStore,
 });
 
-const planReminderStore = createPlanReminderStore(workspaceRoot);
+const planReminderStore = createSqlitePlanReminderStore(workspaceRoot);
 const taskLedgerWiring = createMainTaskLedgerWiring(workspaceRoot);
 const taskLedgerStore = taskLedgerWiring.store;
-const agentMailboxStore = createAgentMailboxStore(workspaceRoot);
+const agentMailboxStore = createSqliteAgentMailboxStore(workspaceRoot);
+
+async function closeWorkflowStores(): Promise<void> {
+  const stores = [
+    planStore,
+    deepResearchStore,
+    planReminderStore,
+    taskLedgerStore,
+    agentMailboxStore,
+  ];
+  const errors: unknown[] = [];
+  for (const result of await Promise.allSettled(stores.map((workflowStore) => workflowStore.ready()))) {
+    if (result.status === 'rejected') errors.push(result.reason);
+  }
+  for (const workflowStore of stores) {
+    try {
+      workflowStore.close();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, 'Unable to close workflow stores');
+}
 
 const sessionActivities = new SessionActivityRegistry();
 
@@ -1430,6 +1452,7 @@ wireAppLifecycle({
   shellRuns,
   mcpManager,
   runtimePersistence,
+  closeWorkflowStores,
   mainWindowController,
   runtime,
   agentGraphCoordinator,

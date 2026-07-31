@@ -1,5 +1,8 @@
 import type { TaskLedgerStore } from '@maka/core';
-import { createTaskLedgerStore } from '@maka/storage';
+import {
+  createSqliteTaskLedgerStore,
+  type SqliteTaskLedgerStore,
+} from '@maka/storage';
 import { buildTaskLedgerTools, isTaskLedgerToolsEnabled, type MakaTool } from '@maka/runtime';
 
 /**
@@ -12,13 +15,13 @@ import { buildTaskLedgerTools, isTaskLedgerToolsEnabled, type MakaTool } from '@
  */
 export interface MainTaskLedgerWiring {
   /** Per-session task ledger store; shared by tools (mutate) and turn tail (read). */
-  store: TaskLedgerStore;
+  store: TaskLedgerStore & SqliteTaskLedgerStore;
   /** task_create/task_update/task_list/task_get bound to {@link store}. */
   tools: MakaTool[];
 }
 
 export function createMainTaskLedgerWiring(workspaceRoot: string): MainTaskLedgerWiring {
-  const store = createTaskLedgerStore(workspaceRoot);
+  const store = createSqliteTaskLedgerStore(workspaceRoot);
   return {
     store,
     tools: isTaskLedgerToolsEnabled()

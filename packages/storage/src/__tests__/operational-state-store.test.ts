@@ -44,6 +44,7 @@ describe('operational state database cutover', () => {
           { scope: 'operational', version: 1 },
           { scope: 'runtime', version: 5 },
           { scope: 'session_metadata', version: SQLITE_SESSION_METADATA_SCHEMA_VERSION },
+          { scope: 'workflow', version: 1 },
         ],
       );
       assert.deepEqual(

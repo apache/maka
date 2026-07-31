@@ -43,13 +43,16 @@ export async function createExecutionRuntimeHostComposition(
 ): Promise<RuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let taskLedgerStore:
+    | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
+    | undefined;
   let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
-    const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
+    taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
     const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
     usageStores = openedUsageStores;
@@ -388,6 +391,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          taskLedgerStore?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -420,6 +428,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       await usageStores?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      taskLedgerStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

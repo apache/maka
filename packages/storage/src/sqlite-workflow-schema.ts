@@ -1,0 +1,75 @@
+import type { DatabaseSync } from 'node:sqlite';
+
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 1;
+
+export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_task_ledger_events (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      event_id TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, sequence),
+      UNIQUE (session_id, event_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_task_ledger_projections (
+      session_id TEXT PRIMARY KEY,
+      record_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_plan_events (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      event_id TEXT NOT NULL,
+      store_version INTEGER NOT NULL CHECK (store_version > 0),
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, sequence),
+      UNIQUE (session_id, event_id),
+      UNIQUE (session_id, store_version)
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_plan_projections (
+      session_id TEXT PRIMARY KEY,
+      store_version INTEGER NOT NULL CHECK (store_version >= 0),
+      record_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_deep_research_events (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      event_id TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, sequence),
+      UNIQUE (session_id, event_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_agent_mailbox_messages (
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL CHECK (sequence >= 0),
+      message_id TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      parent_run_id TEXT NOT NULL,
+      scope_sequence INTEGER NOT NULL CHECK (scope_sequence > 0),
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (session_id, sequence),
+      UNIQUE (session_id, message_id),
+      UNIQUE (session_id, team_id, parent_run_id, scope_sequence)
+    );
+
+    CREATE INDEX IF NOT EXISTS workflow_agent_mailbox_scope
+      ON workflow_agent_mailbox_messages(
+        session_id, team_id, parent_run_id, scope_sequence
+      );
+
+    CREATE TABLE IF NOT EXISTS workflow_plan_reminders (
+      reminder_id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS workflow_plan_reminders_order
+      ON workflow_plan_reminders(created_at, reminder_id);
+  `);
+}
