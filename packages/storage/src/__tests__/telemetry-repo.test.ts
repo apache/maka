@@ -281,6 +281,57 @@ describe('FileTelemetryRepo', () => {
           ),
         /invalid contextBudget/,
       );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: true,
+                estimatedTokensBefore: 10,
+                estimatedTokensAfter: 12,
+                keptTurns: 1,
+                droppedTurns: 0,
+                keptEvents: 2,
+                droppedEvents: 0,
+                compactionDecisions: [
+                  {
+                    stage: 'activeStep',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'replaced',
+                    estimatedTokensSaved: -2,
+                    coveredTurns: -1,
+                  },
+                ],
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
+      await assert.rejects(
+        () =>
+          repo.insertLlmCall(
+            llmRecord({
+              contextBudget: {
+                enabled: true,
+                estimatedTokensBefore: 10,
+                estimatedTokensAfter: 12,
+                keptTurns: 1,
+                droppedTurns: 0,
+                keptEvents: 2,
+                droppedEvents: 0,
+                compactionDecisions: [
+                  {
+                    stage: 'activeStep',
+                    sourceKind: 'runtimeEvents',
+                    decision: 'failedOpen',
+                    validationReasonCounts: { malformed: -1 },
+                  },
+                ],
+              },
+            }),
+          ),
+        /invalid contextBudget/,
+      );
       assert.deepEqual(repo.logs({ range: 'all' }), { rows: [], total: 0 });
     });
   });

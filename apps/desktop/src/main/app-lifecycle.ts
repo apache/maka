@@ -301,11 +301,13 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // never ran. Nothing said so — the only trace was an unhandled rejection
     // warning about `contextBudget`, which names the record and not one of the
     // things that stopped working because of it.
-    const step = async (name: string, run: () => unknown): Promise<void> => {
+    const step = async (name: string, run: () => unknown): Promise<boolean> => {
       try {
         await run();
+        return true;
       } catch (error) {
         console.error(`[startup] ${name} failed; continuing:`, error);
+        return false;
       }
     };
 
@@ -331,12 +333,20 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     await step('usage readiness', () => ensureUsageReady());
     await step('project migration', () => migrateSessionProjectsOnStartup());
     await step('session recovery', () => recoverInterruptedSessionsOnStartup());
+    let botRegistryReady = false;
     if (settings) {
       const resolved = settings;
-      await step('bot registry', () => botRegistry.applySettings(resolved.botChat));
+      botRegistryReady = await step(
+        'bot registry',
+        () => botRegistry.applySettings(resolved.botChat),
+      );
       await step('open gateway', () => openGateway.sync(resolved.openGateway));
     }
-    await step('plan reminders', () => planReminders.refreshTimers());
+    if (botRegistryReady) {
+      await step('plan reminders', () => planReminders.refreshTimers());
+    } else {
+      console.error('[startup] plan reminders not started; bot registry is not ready');
+    }
     await step('daily review scheduler', () => dailyReview.startScheduler());
     await step('config watcher', () => {
       configWatcher = startConfigFileWatcher(workspaceRoot, {

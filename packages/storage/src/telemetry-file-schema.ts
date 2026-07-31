@@ -496,30 +496,20 @@ function hasNoNegativeNumbers(value: unknown): boolean {
   return true;
 }
 
-/**
- * Fields under `contextBudget` whose value is a signed difference, not a count.
- *
- * A compaction that made the request bigger saves a negative number of tokens,
- * and that is the outcome most worth being able to see. The producer says so in
- * the field's own name — `estimatedTokensSavedSigned` in `semantic-compact.ts`
- * — and `isCompactionDecisionDiagnostic` reads them with
- * `isOptionalFiniteNumber`, which allows the sign.
- *
- * The blanket sweep below contradicted both, and the contradiction was not
- * cheap: `decodeTelemetryFile` throws on the first record it cannot read, so
- * eight decisions with a negative saving made all 1297 records in a real
- * telemetry file unreadable. On this machine that rejection also aborted the
- * desktop's background startup, because the sequence it sat in stopped at the
- * first failure.
- */
-const SIGNED_CONTEXT_BUDGET_FIELDS = ['compactionDecisions'] as const;
-
 function contextBudgetCountsAreNonNegative(value: unknown): boolean {
   if (!isRecord(value)) return hasNoNegativeNumbers(value);
+  return Object.entries(value).every(([key, entry]) =>
+    key === 'compactionDecisions'
+      ? entry === undefined ||
+        (Array.isArray(entry) && entry.every(compactionDecisionCountsAreNonNegative))
+      : hasNoNegativeNumbers(entry),
+  );
+}
+
+function compactionDecisionCountsAreNonNegative(value: unknown): boolean {
+  if (!isRecord(value)) return false;
   return Object.entries(value).every(
-    ([key, entry]) =>
-      (SIGNED_CONTEXT_BUDGET_FIELDS as readonly string[]).includes(key) ||
-      hasNoNegativeNumbers(entry),
+    ([key, entry]) => key === 'estimatedTokensSaved' || hasNoNegativeNumbers(entry),
   );
 }
 

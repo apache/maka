@@ -91,6 +91,11 @@ describe('session startup recovery contract', () => {
       /step\('project migration', \(\) => migrateSessionProjectsOnStartup\(\)\)/,
       'each startup step must fail on its own rather than ending the sequence',
     );
+    assert.match(
+      backgroundBlock,
+      /botRegistryReady = await step\([\s\S]*?'bot registry'[\s\S]*?if \(botRegistryReady\) \{[\s\S]*?planReminders\.refreshTimers\(\)/,
+      'due reminders must not be consumed before bot delivery is ready',
+    );
     assert.match(migration, /await runProjectStartupMigration\(/);
   });
 });
