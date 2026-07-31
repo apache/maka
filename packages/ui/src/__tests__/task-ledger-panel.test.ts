@@ -61,3 +61,16 @@ describe('task ledger disclosure', () => {
     assert.doesNotMatch(trigger, /lucide-chevron-down/);
   });
 });
+
+test('task ledger exposes real parent-child groups instead of aria-level-only rows', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'zh',
+    children: createElement(TaskLedgerPanel, {
+      tasks: [
+        task({ id: 'parent', key: 'T1', subject: 'Parent', status: 'in_progress' }),
+        task({ id: 'child', parentId: 'parent', key: 'T1.1', subject: 'Child', status: 'pending' }),
+      ],
+    }),
+  }));
+  assert.match(markup, /role="treeitem"[^>]*aria-level="1"[\s\S]*role="group"[\s\S]*aria-level="2"/);
+});

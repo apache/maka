@@ -208,10 +208,7 @@
 
 .maka-artifact-row {
   width: 100%;
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-1-5);
+  justify-content: flex-start;
   padding: var(--space-1) var(--space-1-5);
   margin: 0;
   border: var(--border-width-hairline) solid transparent;
@@ -255,17 +252,11 @@
   color: var(--link);
 }
 
-.maka-artifact-row-name {
-  font-weight: var(--font-weight-medium);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 .maka-artifact-row-meta {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-end;
+  margin-left: auto;
   gap: 1px;
   font-size: var(--font-size-caption);
   color: oklch(from var(--foreground) l c h / 0.62);
@@ -277,8 +268,6 @@
 }
 
 .maka-artifact-row-badge {
-  grid-column: 1 / -1;
-  justify-self: start;
   margin-top: var(--space-0-5);
 }
 
@@ -506,20 +495,6 @@
 
 .maka-artifact-toolbar-danger-group {
   margin-left: auto;
-}
-
-.maka-artifact-toolbar-separator {
-  /* Pin the separator to a literal 1px hairline. At narrow pane widths
-     the toolbar wraps and this element rendered as a ~15px bordered
-     pill next to the delete button — visual noise that read as an
-     empty broken button. */
-  flex: 0 0 1px;
-  width: 1px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  min-height: 22px;
-  background: var(--border);
 }
 
 /* Narrow windows place the single workbar below the conversation. */

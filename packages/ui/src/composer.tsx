@@ -34,7 +34,7 @@ import { ComposerMentionPopup, mentionOptionId } from './composer-mention-popup.
 import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
-import { Button as UiButton, IconButton } from '@astryxdesign/core';
+import { Button as UiButton, ChatComposer as AstryxChatComposer, IconButton } from '@astryxdesign/core';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -705,23 +705,25 @@ export const Composer = forwardRef<
         </div>
       )}
       <form
-      ref={formRef}
-      className="maka-composer composer"
-      hidden={props.hidden}
-      data-drag-active={dragActive ? 'true' : undefined}
-      data-maka-file-drop-target={canAcceptDroppedFiles() ? 'true' : undefined}
-      onDragOver={onComposerDragOver}
-      onDragLeave={onComposerDragLeave}
-      onDrop={onComposerDrop}
-      onSubmit={submit}
-    >
-      <div
-        className="maka-composer-inner composerInner agents-parchment-paper-surface"
-        data-maka-contract="composer-inner"
-        data-streaming={props.streaming ? 'true' : undefined}
+        ref={formRef}
+        className="maka-composer composer"
+        hidden={props.hidden}
+        data-drag-active={dragActive ? 'true' : undefined}
+        data-maka-file-drop-target={canAcceptDroppedFiles() ? 'true' : undefined}
+        onDragOver={onComposerDragOver}
+        onDragLeave={onComposerDragLeave}
+        onDrop={onComposerDrop}
+        onSubmit={submit}
       >
-        {/* No px on the chip row: `.maka-composer-inner` already pads the card,
-            so an extra px-3 would sit the chips 12px right of the textarea. */}
+        <AstryxChatComposer
+          className="maka-composer-astryx"
+          data-streaming={props.streaming ? 'true' : undefined}
+          onSubmit={() => void sendCurrent()}
+          isDisabled={props.disabled}
+          elevation="none"
+          input={(
+            <div className="maka-composer-input">
+        {/* Astryx owns the card inset; chips align directly with the input. */}
         {props.pendingQuotes && props.pendingQuotes.length > 0 ? (
           <div className="flex flex-wrap items-start gap-1 pb-1">
             {props.pendingQuotes.map((quote, index) => (
@@ -810,7 +812,10 @@ export const Composer = forwardRef<
             {copy.dropToImport}
           </span>
         )}
-        <div className="maka-composer-toolbar composerActions" data-streaming={props.streaming ? 'true' : undefined}>
+            </div>
+          )}
+          footerActions={(
+            <div className="maka-composer-toolbar composerActions" data-streaming={props.streaming ? 'true' : undefined}>
           <div className="maka-composer-left-controls">
             {/* PR-COMPOSER-TOOLBAR-SPLIT: the single ＋ menu is split into
                 three named controls — upload / modes / skills —
@@ -1164,12 +1169,14 @@ export const Composer = forwardRef<
               />
             )}
           </div>
-        </div>
-      </div>
-      {props.workspacePicker ? (
-        <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />
-      ) : null}
-    </form>
+            </div>
+          )}
+          sendButton={<span aria-hidden="true" />}
+        />
+        {props.workspacePicker ? (
+          <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />
+        ) : null}
+      </form>
     </>
   );
 });

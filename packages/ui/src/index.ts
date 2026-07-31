@@ -63,14 +63,8 @@ export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
 // `previewVariants` (#332 PR4) IS re-exported: its file-diff parts have a second,
 // cross-package consumer — `apps/desktop`'s `artifact-preview.tsx` — which is the
 // promotion condition the off-barrel convention named, so the export is the rule.
-export { Bubble, Marker, Message, previewVariants } from './primitives/chat.js';
+export { previewVariants } from './primitives/chat.js';
 export { formatTurnDuration } from './chat-display-helpers.js';
-export type {
-  BubbleProps,
-  MarkerProps,
-  MarkerVariant,
-  MessageProps,
-} from './primitives/chat.js';
 export * from './primitives/empty.js';
 export * from './primitives/item.js';
 export * from './primitives/spinner.js';

@@ -8,33 +8,48 @@
    Relocated from maka-tokens.css. Authored unlayered (the renderer styles/
    contract requires it) but pulled into @layer components by
    `@import ... layer(components)` in styles.css, so the rules keep the exact
-   cascade precedence they had in tokens — Tailwind utilities still win, which
-   several selectors here depend on: .maka-message-row's margin loses to the
-   Message variant's ml-0/mr-auto, .maka-message-copy loses to the UiButton
-   size utilities. Zero visual change — issue #546 PR4.
+   cascade precedence they had in tokens. Astryx now owns the sender-aware row
+   and bubble chrome; the remaining selectors are product content and actions.
    ============================================================================ */
 
-/* --- Message row (Message primitive base: cva("maka-message-row")) -------- */
-.maka-message-row {
-  max-width: var(--maka-chat-measure);
-  margin: 0 auto;
+/* Astryx owns sender-aware row alignment; Maka only declares the product
+   reading geometry and the deliberately dense conversation type scale. */
+.maka-chat-message {
   width: 100%;
   opacity: 1;
 }
 
+.maka-chat-message-list {
+  width: 100%;
+}
+
+.maka-chat-message-bubble {
+  font-size: var(--font-size-base);
+  line-height: 1.6154em;
+}
+
+.maka-chat-message-bubble-user {
+  max-width: min(100%, 640px);
+  padding: var(--space-2-5) var(--space-3);
+  border-radius: var(--radius-surface);
+  background: var(--chat-user-bg);
+  color: var(--chat-user-foreground, var(--foreground));
+  white-space: pre-wrap;
+}
+
+.maka-chat-message-bubble-assistant {
+  width: 100%;
+  max-width: none;
+  padding: var(--space-0-5) 0 0;
+}
+
 /* --- Assistant bubble shell ----------------------------------------------- */
-/* User message: a tinted, width-capped block anchored to the right — now
-   the `Bubble variant="user"` chat primitive (issue #332 PR1). It keeps the
-   neutral `--chat-user-bg` token path; the shell utilities live in
-   packages/ui/src/primitives/chat.tsx. */
+/* User message: a tinted, width-capped Astryx bubble anchored to the right. */
 /* Assistant: no bubble — just text on background, like an editor. The
    Markdown typography and block rhythm belong to Astryx, so the shell keeps
    only container geometry.
-   The reading measure (max-width) lives on .maka-message-row above, shared
-   with the composer, so the assistant block matches the composer width. */
-.maka-bubble-assistant {
-  padding: var(--space-0-5) 0 0;
-}
+   The reading measure is inherited from the conversation surface shared with
+   the composer, so the assistant block matches the composer width. */
 /* The streaming ▎ caret + its trailing-<p> inline hack were retired by the
    streaming UI rework. Chat smooths the visible text before it reaches
    Markdown; PR 8 owns the remaining streaming and scroll-anchoring boundary. */
@@ -155,14 +170,14 @@
    packages/ui/src/primitives/chat.tsx); the layout is now location-
    independent instead of keyed on a `[data-role="assistant"]` descendant. */
 
-[data-slot="message"] pre:not([data-maka-contract="markdown"] pre) {
+.maka-chat-message pre:not([data-maka-contract="markdown"] pre) {
   margin: 0;
   font: inherit;
 }
 
 /* System-note pill. Markdown descendants are excluded through Maka's product
    boundary so raw-pre treatment cannot become a second code-block authority. */
-[data-slot="message"][data-role="system"]
+.maka-chat-message[data-sender="system"]
   pre:not([data-maka-contract="markdown"] pre) {
   display: inline-flex;
   border-radius: var(--radius-pill);

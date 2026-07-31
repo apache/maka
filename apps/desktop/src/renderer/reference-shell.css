@@ -73,8 +73,7 @@
 }
 
 /* `.agents-parchment-paper-surface` is reused by the composer body. The bare
-   class drops its border; the composer re-establishes its own card chrome on
-   top (see `.composer .maka-composer-inner` in styles/composer.css). */
+   class drops its border; Astryx ChatComposer owns composer chrome. */
 .agents-parchment-paper-surface {
   border: 0;
   background-color: var(--agents-content-area-bg);

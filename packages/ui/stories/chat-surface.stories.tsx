@@ -594,6 +594,26 @@ export const Processing: Story = {
   ),
 };
 
+// Real path: open a completed Processing disclosure in a persisted conversation.
+// Review evidence: the same persisted reasoning/tool turn with the product
+// disclosure opened, so keyboard linkage, long command output, failure tone,
+// and in-place answer order can be inspected without manually recreating it.
+export const ProcessingExpanded: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: processingConversation,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    canvasElement
+      .querySelector<HTMLButtonElement>('[data-processing="block"] button[aria-expanded="false"]')
+      ?.click();
+  },
+};
+
 // Real path: hover a turn → 从这里分支 → the new session opens with the parent banner above
 // the transcript.
 export const BranchedConversation: Story = {

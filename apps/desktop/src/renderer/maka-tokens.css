@@ -1263,7 +1263,7 @@ html[data-os="darwin"].dark {
 
   /* ---- Composer --------------------------------------------------- */
 
-  .maka-composer[data-drag-active="true"] .maka-composer-inner {
+  .maka-composer[data-drag-active="true"] .maka-composer-astryx {
     border-color: oklch(from var(--focus-ring) l c h / 0.46);
     background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
     box-shadow:

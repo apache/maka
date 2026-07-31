@@ -26,9 +26,9 @@ import type {
   StoredMessage,
 } from '@maka/core';
 import { isDeepResearchSession } from '@maka/core';
+import { ChatMessage, ChatMessageList } from '@astryxdesign/core';
 import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
-import { Message } from './primitives/chat.js';
 import { EmptyState } from './empty-state.js';
 import {
   ModelContinuingIndicator,
@@ -468,6 +468,12 @@ export function ChatView(props: {
           contentClassName="maka-chatContent"
           onScroll={onScroll}
         >
+          <ChatMessageList
+            className="maka-chat-message-list"
+            density="compact"
+            gap={4}
+            isStreaming={streamingActive}
+          >
           {chat.length === 0 && !streamingActive && (
             props.messageLoading ? null : props.messageLoadError ? (
               <div role="alert" aria-busy={props.messageLoadRetryPending ? 'true' : undefined}>
@@ -537,7 +543,7 @@ export function ChatView(props: {
               `tailTurnId` is undefined), so the answer never double-renders. */}
           {streamingActive && !tailTurnId && (
             <section className="maka-turn" data-live-streaming="true">
-              <Message variant="assistant" className="group/answer">
+              <ChatMessage sender="assistant" className="maka-chat-message group/answer">
                 <div className="flex flex-col gap-2">
                   {props.liveTurn?.providerRetry ? (
                     <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
@@ -549,7 +555,7 @@ export function ChatView(props: {
                   )}
                 </div>
                 <div aria-hidden="true" className="mt-0.5 h-8" />
-              </Message>
+              </ChatMessage>
             </section>
           )}
           {props.conversationItems
@@ -560,6 +566,7 @@ export function ChatView(props: {
               still appear instead of vanishing. materializeTurns already
               folds these into the `__loose` turn, so this is normally a
               no-op. */}
+          </ChatMessageList>
         </OverlayScrollArea>
         <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
         {!pinnedToBottom && (

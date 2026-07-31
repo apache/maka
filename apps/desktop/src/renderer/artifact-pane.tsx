@@ -26,7 +26,6 @@
  * Layout: fills the Files tab and reports its authoritative filtered count.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import {
   AlertTriangle,
   FileCode,
@@ -49,19 +48,12 @@ import {
   AlertTitle,
   Badge,
   Button,
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-  Toolbar,
-  ToolbarGroup,
-  ToolbarSeparator,
   formatBytes,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { EmptyState as AstryxEmptyState, Toolbar as AstryxToolbar } from '@astryxdesign/core';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { ArtifactPreview } from './artifact-preview';
 import { nextArtifactListAction } from './artifact-list-keyboard';
@@ -78,6 +70,10 @@ export function ArtifactPane(props: {
   const toast = useToast();
   const locale = useUiLocale();
   const copy = getArtifactCopy(locale);
+  const previewEmptyStateCopy = {
+    title: copy.pane.empty,
+    description: copy.pane.emptyHint,
+  };
   const [records, setRecords] = useState<ArtifactRecord[]>([]);
   const [recordsSessionId, setRecordsSessionId] = useState<string | undefined>(undefined);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -391,9 +387,9 @@ export function ArtifactPane(props: {
           >
             {activeRecords.map((record) => (
               <li key={record.id} className="maka-artifact-list-item">
-                <BaseButton
+                <Button
                   id={`maka-artifact-row-${record.id}`}
-                  type="button"
+                  variant="ghost"
                   className="maka-artifact-row"
                   role="option"
                   aria-selected={record.id === selectedId}
@@ -405,21 +401,24 @@ export function ArtifactPane(props: {
                   data-selected={record.id === selectedId ? 'true' : 'false'}
                   data-deleted={record.status === 'deleted' ? 'true' : 'false'}
                   onClick={() => setSelectedId(record.id)}
-                >
-                  <span className="maka-artifact-row-icon" aria-hidden="true">
-                    <KindIcon kind={record.kind} />
-                  </span>
-                  <span className="maka-artifact-row-name">{record.name}</span>
-                  <span className="maka-artifact-row-meta">
-                    <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
-                <span className="maka-artifact-row-time">
-                  {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
-                </span>
-                  </span>
-                  {record.status === 'deleted' && (
-                <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
+                  label={record.name}
+                  icon={(
+                    <span className="maka-artifact-row-icon" aria-hidden="true">
+                      <KindIcon kind={record.kind} />
+                    </span>
                   )}
-                </BaseButton>
+                  endContent={(
+                    <span className="maka-artifact-row-meta">
+                      <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
+                      <span className="maka-artifact-row-time">
+                        {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
+                      </span>
+                      {record.status === 'deleted' && (
+                        <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
+                      )}
+                    </span>
+                  )}
+                />
               </li>
             ))}
           </ul>
@@ -445,22 +444,23 @@ export function ArtifactPane(props: {
                 onShowInFolder={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
               />
             ) : (
-              <Empty className="maka-artifact-preview-empty py-10 md:py-12 gap-4">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <FileText aria-hidden="true" />
-                  </EmptyMedia>
-                  <EmptyTitle>{activeRecords.length > 0 ? copy.pane.notSelected : copy.pane.empty}</EmptyTitle>
-              <EmptyDescription>
-                {activeRecords.length > 0 ? copy.pane.selectHint : copy.pane.emptyHint}
-              </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
+              <AstryxEmptyState
+                className="maka-artifact-preview-empty"
+                isCompact
+                icon={<FileText aria-hidden="true" />}
+                {...(activeRecords.length > 0
+                  ? {title: copy.pane.notSelected, description: copy.pane.selectHint}
+                  : previewEmptyStateCopy)}
+              />
             )}
           </div>
           {selected && (
-            <Toolbar className="maka-artifact-toolbar" aria-label={copy.pane.actionsAria}>
-              <ToolbarGroup className="maka-artifact-toolbar-group">
+            <AstryxToolbar
+              className="maka-artifact-toolbar"
+              label={copy.pane.actionsAria}
+              size="sm"
+              gap={1}
+              startContent={<div className="maka-artifact-toolbar-group">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -493,9 +493,8 @@ export function ArtifactPane(props: {
                     label={pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}
                   />
                 )}
-              </ToolbarGroup>
-              <ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" />
-              <ToolbarGroup className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
+              </div>}
+              endContent={<div className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
                 <Tooltip
                   content={
                     selected.source === 'tool_result_archive'
@@ -520,8 +519,8 @@ export function ArtifactPane(props: {
                     aria-busy={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
                   />
                 </Tooltip>
-              </ToolbarGroup>
-            </Toolbar>
+              </div>}
+            />
           )}
     </div>
   );

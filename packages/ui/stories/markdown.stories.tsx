@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { ChatMessageBubble } from '@astryxdesign/core';
 import { Markdown, MakaUriContext } from '../src/markdown.js';
-import { Bubble } from '../src/primitives/chat.js';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -74,7 +74,7 @@ const plainBlock = code('', 'plain or unknown\nindented sample');
 export const RichAssistantAnswer: Story = {
   render: () => (
     <ProseFrame>
-      <Bubble variant="assistant" className="maka-bubble-with-actions">
+      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '## 改动思路',
@@ -99,7 +99,7 @@ export const RichAssistantAnswer: Story = {
             '如果后续要加新状态，只需补充对应的行图标，不再扩张侧栏信息架构。',
           ].join('\n')}
         />
-      </Bubble>
+      </ChatMessageBubble>
     </ProseFrame>
   ),
 };
@@ -109,7 +109,7 @@ export const RichAssistantAnswer: Story = {
 export const CodeBlockVariety: Story = {
   render: () => (
     <ProseFrame>
-      <Bubble variant="assistant" className="maka-bubble-with-actions">
+      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '下面是几种常见代码块，用来核对语言标签和复制按钮。',
@@ -125,7 +125,7 @@ export const CodeBlockVariety: Story = {
             plainBlock,
           ].join('\n')}
         />
-      </Bubble>
+      </ChatMessageBubble>
     </ProseFrame>
   ),
 };
@@ -134,7 +134,7 @@ export const CodeBlockVariety: Story = {
 export const ListsAndQuote: Story = {
   render: () => (
     <ProseFrame>
-      <Bubble variant="assistant" className="maka-bubble-with-actions">
+      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '可以按下面顺序处理：',
@@ -152,7 +152,7 @@ export const ListsAndQuote: Story = {
             '> 这里的顺序不是强制的，只要回归测试先跑就行。',
           ].join('\n')}
         />
-      </Bubble>
+      </ChatMessageBubble>
     </ProseFrame>
   ),
 };
@@ -164,7 +164,7 @@ export const LinkRouting: Story = {
   render: () => (
     <ProseFrame>
       <MakaUriContext.Provider value={noop}>
-        <Bubble variant="assistant" className="maka-bubble-with-actions">
+        <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
           <Markdown
             text={[
               '这里有三类链接，用来核对内部路由和安全过滤。',
@@ -183,7 +183,7 @@ export const LinkRouting: Story = {
               '链接外的正文 `inline code` 和普通文字不受影响。',
             ].join('\n')}
           />
-        </Bubble>
+        </ChatMessageBubble>
       </MakaUriContext.Provider>
     </ProseFrame>
   ),
@@ -197,7 +197,7 @@ export const LinkRouting: Story = {
 export const WideTable: Story = {
   render: () => (
     <ProseFrame>
-      <Bubble variant="assistant" className="maka-bubble-with-actions">
+      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '列多且内容长的表格会在正文宽度内横向滚动：',
@@ -210,7 +210,7 @@ export const WideTable: Story = {
             '表格后的正文保持正常段落间距。',
           ].join('\n')}
         />
-      </Bubble>
+      </ChatMessageBubble>
     </ProseFrame>
   ),
 };
@@ -220,7 +220,7 @@ export const WideTable: Story = {
 export const LongFormArticle: Story = {
   render: () => (
     <ProseFrame width={680}>
-      <Bubble variant="assistant" className="maka-bubble-with-actions">
+      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '# Storybook 表面覆盖：为什么单独可看很重要',
@@ -264,7 +264,7 @@ export const LongFormArticle: Story = {
             '以上是全部范围；有疑问先在 issue 里讨论再动手。',
           ].join('\n')}
         />
-      </Bubble>
+      </ChatMessageBubble>
     </ProseFrame>
   ),
 };

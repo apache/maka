@@ -9,6 +9,8 @@ import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
 import {
   Button as UiButton,
+  ChatMessage,
+  ChatMessageBubble,
   Collapsible as AstryxCollapsible,
   IconButton as UiIconButton,
 } from '@astryxdesign/core';
@@ -21,7 +23,7 @@ import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
-import { Bubble, Marker, markerVariants, Message, TextShimmer } from './primitives/chat.js';
+import { Marker, markerVariants, TextShimmer } from './primitives/chat.js';
 import { SETTLE_FADE, ToolKindIcon, ToolTrow, useToolDisclosure } from './tool-activity.js';
 import {
   isProcessingRunning,
@@ -148,7 +150,7 @@ const MessageBody = memo(function MessageBody(props: {
     // (same primitive + `markerVariants('footer-action')`).
     return (
       <>
-        <Bubble variant="user">
+        <ChatMessageBubble className="maka-chat-message-bubble maka-chat-message-bubble-user">
           <span>{props.text}</span>
           {props.quotes && props.quotes.length > 0 ? (
             <div className="maka-user-quotes flex flex-wrap items-start gap-1 mt-1">
@@ -173,10 +175,10 @@ const MessageBody = memo(function MessageBody(props: {
               ))}
             </div>
           ) : null}
-        </Bubble>
+        </ChatMessageBubble>
         {/* #642: the whole meta row — absolute HH:mm time + copy — hides by
             default and appears when the user bubble is hovered or keyboard
-            focus lands inside (keys off `group/usermsg` on the user Message).
+            focus lands inside (keys off `group/usermsg` on the user ChatMessage).
             Absolute wall-clock time (not relative "N 小时前"); the full date
             stays on the time's `title` and the bubble's own `title`. */}
         <div className="maka-message-meta opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/usermsg:opacity-100 focus-within:opacity-100">
@@ -215,9 +217,9 @@ const MessageBody = memo(function MessageBody(props: {
   // duration · cost) lives in the footer's info tooltip; copy + the other
   // actions live in the turn footer.
   return (
-    <Bubble variant="assistant" className="maka-bubble-with-actions">
+    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-with-actions">
       <Markdown text={props.text} />
-    </Bubble>
+    </ChatMessageBubble>
   );
 });
 
@@ -353,7 +355,7 @@ export const TurnView = memo(function TurnView(props: {
   searchHighlighted?: boolean;
   /**
    * #642 single render path: set only on the active streaming tail turn. When
-   * present, the assistant `Message` renders the live 深度思考 + answer bubble as
+   * present, the assistant `ChatMessage` renders the live 深度思考 + answer bubble as
    * the trailing entries of its timeline — the SAME node the committed turn
    * will settle into, so live→settled is a data-source swap (no unmount/mount).
    * While live the footer is a reserved-height placeholder, not the real
@@ -380,7 +382,7 @@ export const TurnView = memo(function TurnView(props: {
   const { turn } = props;
   const forwardBadges = props.lineageBadges?.filter((b) => b.direction === 'forward') ?? [];
   const reverseBadges = props.lineageBadges?.filter((b) => b.direction === 'reverse') ?? [];
-  // The assistant `Message` mounts once the turn has any timeline content OR
+  // The assistant `ChatMessage` mounts once the turn has any timeline content OR
   // this is the live streaming tail (a thinking-only / textless streaming turn
   // has an empty committed timeline but must still show its live answer block).
   const showAssistantMessage = turn.timeline.length > 0 || !!props.liveStreaming;
@@ -445,11 +447,10 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {turn.user && (
-        <Message
-          variant="user"
+        <ChatMessage
+          sender="user"
           aria-label={copy.userAriaLabel}
-          title={turn.user.ts ? formatAbsoluteTimestamp(turn.user.ts, locale) : undefined}
-          className="group/usermsg"
+          className="maka-chat-message group/usermsg"
         >
           <MessageBody
             role="user"
@@ -487,23 +488,23 @@ export const TurnView = memo(function TurnView(props: {
             }
           />
 
-        </Message>
+        </ChatMessage>
       )}
       {turn.notes.map((note) => (
-        <Message
+        <ChatMessage
           key={note.id}
-          variant="system"
-          title={note.ts ? formatAbsoluteTimestamp(note.ts, locale) : undefined}
+          sender="system"
+          className="maka-chat-message"
         >
           <MessageBody role="system" text={note.text} ts={note.ts} />
-        </Message>
+        </ChatMessage>
       ))}
       {showAssistantMessage && (
-        <Message
-          variant="assistant"
+        <ChatMessage
+          sender="assistant"
           data-turn-status={turn.status}
           aria-label={copy.assistantAriaLabel}
-          className="group/answer"
+          className="maka-chat-message group/answer"
         >
           <div className="flex flex-col gap-2">
             {/* PR109d-c: aborted turn gets a muted "(已中断)" marker + Ban icon
@@ -608,7 +609,7 @@ export const TurnView = memo(function TurnView(props: {
               />
             )
           )}
-        </Message>
+        </ChatMessage>
       )}
     </section>
   );
@@ -901,7 +902,7 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; truncate
   }, [props.live, catchingUp, props.onSettled]);
 
   return (
-    <Bubble variant="assistant" className="maka-bubble-streaming">
+    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming">
       <Markdown text={displayed} streaming />
       {props.truncated && (
         <div
@@ -913,7 +914,7 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; truncate
           {copy.truncated}
         </div>
       )}
-    </Bubble>
+    </ChatMessageBubble>
   );
 }
 
