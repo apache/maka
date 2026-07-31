@@ -4,7 +4,8 @@
  * Maka must be usable out of the box with zero credentials. opencode-free is a
  * first-class provider that exposes OpenCode Zen's free, anonymous, IP-limited
  * models over the same `https://opencode.ai/zen/v1` endpoint, with no API key
- * (the runtime sends a placeholder that the OpenCode server treats as
+ * (the runtime passes an empty key and @ai-sdk/openai-compatible omits the
+ * Authorization header, so the OpenCode server treats the request as
  * anonymous). It reuses the opencode (Zen) model metadata — same endpoint,
  * same model ids — without duplicating snapshot entries.
  *
