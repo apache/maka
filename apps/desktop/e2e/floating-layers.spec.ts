@@ -129,7 +129,7 @@ test('model picker keeps keyboard highlight inside the scroll viewport', async (
     .toBe(true);
 });
 
-test('conditionally unmounted dialogs restore their opener by default', async ({
+test('keyboard help lets Astryx restore its opener on close', async ({
   window: page,
 }) => {
   const opener = page.getByRole('button', { name: '搜索对话' });
@@ -172,4 +172,29 @@ test('search dialog lets Astryx restore its opener on ordinary close', async ({
 
   await expect(dialog).toBeHidden();
   await expect(opener).toBeFocused();
+});
+
+test('search closes before navigating and focusing the matched turn', async ({
+  window: page,
+}) => {
+  const needle = 'search ownership needle 7319';
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill(needle);
+  await composer.press('Enter');
+  await expect(page.getByText(`Fake backend received: ${needle}`)).toBeVisible();
+
+  const opener = page.getByRole('button', { name: '搜索对话' });
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: '搜索' });
+  const input = dialog.getByRole('combobox', { name: '搜索会话标题和内容…' });
+  await input.fill(needle);
+  const result = dialog.getByRole('option', { name: /用户消息/ });
+  await expect(result).toBeVisible();
+  await result.click();
+
+  await expect(dialog).toBeHidden();
+  const target = page.locator('.maka-turn').filter({ hasText: needle });
+  await expect(target).toBeFocused();
+  await expect(target).toHaveAttribute('data-search-highlight', 'true');
+  await expect(opener).not.toBeFocused();
 });
