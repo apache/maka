@@ -19,34 +19,6 @@
   gap: var(--space-2-5);
 }
 
-/* Status banner at the top of feature settings pages. */
-.settingsFeatureStatusBanner {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.32);
-  border-radius: var(--radius-surface);
-  background: oklch(from var(--info) l c h / 0.06);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-  width: fit-content;
-  max-width: 100%;
-}
-.settingsFeatureStatusBanner strong {
-  color: var(--info-text);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: var(--tracking-wide);
-}
-.settingsFeatureStatusBannerDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--info);
-  flex: 0 0 auto;
-}
-
 .settingsFeatureStatusHero {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);

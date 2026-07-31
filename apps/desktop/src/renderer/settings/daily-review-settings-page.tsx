@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Card, Item } from '@astryxdesign/core';
+import { Banner, Card, Item } from '@astryxdesign/core';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
 import { Alert, AlertDescription, Button, Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
@@ -144,10 +144,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           subtitle — report by exception instead: only the not-wired
           fallback state warrants a banner. */}
       {!hasConfigIpc && (
-        <header className="settingsFeatureStatusBanner" role="status">
-          <span className="settingsFeatureStatusBannerDot" aria-hidden="true" />
-          <span>{copy.unavailable}</span>
-        </header>
+        <Banner status="info" title={copy.unavailable} />
       )}
 
       {loadError ? (

@@ -32,3 +32,13 @@ test('status labels use the Astryx Badge authority without a Maka Chip API', () 
     if (source) assert.doesNotMatch(source, /\bChip\b|primitives\/chip/, `${rel} must use Astryx Badge or plain text`);
   }
 });
+
+test('page-level status uses Astryx Banner without a custom status dot', () => {
+  const source = read('apps/desktop/src/renderer/settings/daily-review-settings-page.tsx');
+  const css = read('apps/desktop/src/renderer/styles/settings/nav-sidebar.css');
+
+  assert.match(source, /import\s+\{[^}]*\bBanner\b[^}]*\}\s+from '@astryxdesign\/core'/s);
+  assert.match(source, /<Banner\s+status="info"/);
+  assert.doesNotMatch(source, /settingsFeatureStatusBannerDot/);
+  assert.doesNotMatch(css, /\.settingsFeatureStatusBanner(?:Dot)?\b/);
+});
