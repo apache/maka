@@ -432,6 +432,7 @@ function SettingsPage(props: {
           settings={props.settings}
           connections={props.connections}
           onUpdate={props.onUpdateSettings}
+          onRefreshConnections={props.onRefreshConnections}
         />
       );
     case 'open-gateway':

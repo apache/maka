@@ -21,7 +21,7 @@ describe('voice capture smoke Settings contract', () => {
     const gatewayNav = src.match(/\{\s*id:\s*'open-gateway'[\s\S]*?\},/);
     assert.ok(gatewayNav, 'open-gateway nav item must exist');
     assert.doesNotMatch(gatewayNav![0], /comingSoon:\s*true/, 'open-gateway nav must not be tagged as coming soon');
-    assert.match(src, /case\s+'voice':\s*\n[\s\S]*?<VoiceModelsSettingsPage\s*\/>/);
+    assert.match(src, /case\s+'voice':\s*\n[\s\S]*?<VoiceModelsSettingsPage\b/);
     assert.match(src, /case\s+'open-gateway':\s*\n[\s\S]*?<OpenGatewaySettingsPage\b/);
     assert.doesNotMatch(src, /'voice':\s*\{[\s\S]*当前尚未实现/, 'voice must not keep stale roadmap copy');
   });
@@ -37,6 +37,33 @@ describe('voice capture smoke Settings contract', () => {
     assert.match(zhCopy.idle, /等待运行本机录音自检/, 'voice idle state should read as an actionable local check');
     assert.doesNotMatch(zhCopy.idle, /尚未运行本机录音自检/, 'voice idle state should not read like unfinished implementation copy');
     assert.doesNotMatch(src, /localStorage\.setItem\([^)]*voice/i, 'voice smoke must not persist audio state in localStorage');
+  });
+
+  it('creates a recognition connection in Voice and selects its ASR model', async () => {
+    const src = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-settings-page.tsx'),
+      'utf8',
+    );
+    const zhCopy = getVoiceSettingsCopy('zh');
+
+    assert.match(src, /<AddProviderForm[\s\S]*providerType="openai-compatible"/);
+    assert.match(
+      src,
+      /onClick=\{\(\) => setCreatingRecognitionConnection\(true\)\}/,
+      'Voice must expose the create-recognition-connection action in place',
+    );
+    assert.match(
+      src,
+      /const created = connections\.find\(\(connection\) => connection\.slug === slug\);[\s\S]*recognition:\s*\{[\s\S]*connectionSlug: created\.slug,[\s\S]*model: created\.defaultModel/,
+      'a newly created connection must become the selected recognition connection and model',
+    );
+    assert.match(
+      src,
+      /await props\.onRefreshConnections\(\);[\s\S]*setCreatingRecognitionConnection\(false\)/,
+      'Voice must refresh the shared connection list before closing the create dialog',
+    );
+    assert.equal(zhCopy.createRecognitionConnection, '新建识别连接');
+    assert.match(zhCopy.createRecognitionConnectionSubtitle, /ASR 模型 ID/);
   });
 
   it('keeps success and permission states as deterministic stories', async () => {

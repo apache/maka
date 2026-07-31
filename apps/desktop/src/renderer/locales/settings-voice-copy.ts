@@ -47,6 +47,13 @@ export type VoiceSettingsCopy = {
   recognitionTesting: string;
   recognitionSuccess: string;
   recognitionFailed: string;
+  createRecognitionConnection: string;
+  createRecognitionConnectionTitle: string;
+  createRecognitionConnectionSubtitle: string;
+  recognitionConnectionCreated: string;
+  recognitionConnectionCreatedDetail(connection: string, model: string): string;
+  recognitionConnectionCreateFailed: string;
+  recognitionConnectionModelMissing: string;
   saveFailed: string;
 };
 
@@ -115,6 +122,13 @@ const SETTINGS_VOICE_COPY = {
     recognitionTesting: '正在录音并调用所配置的识别模型…',
     recognitionSuccess: '语音识别测试通过',
     recognitionFailed: '语音识别测试失败',
+    createRecognitionConnection: '新建识别连接',
+    createRecognitionConnectionTitle: '新建语音识别连接',
+    createRecognitionConnectionSubtitle: '填写 OpenAI 兼容的语音识别服务地址、API Key 和 ASR 模型 ID。创建后会自动选中该连接和模型。',
+    recognitionConnectionCreated: '语音识别连接已创建',
+    recognitionConnectionCreatedDetail: (connection, model) => `已选择 ${connection} · ${model}`,
+    recognitionConnectionCreateFailed: '新建语音识别连接失败',
+    recognitionConnectionModelMissing: '新连接缺少默认 ASR 模型 ID。',
     saveFailed: '保存语音设置失败',
   },
   en: {
@@ -181,6 +195,13 @@ const SETTINGS_VOICE_COPY = {
     recognitionTesting: 'Recording and calling the configured recognition model…',
     recognitionSuccess: 'Speech recognition test passed',
     recognitionFailed: 'Speech recognition test failed',
+    createRecognitionConnection: 'New recognition connection',
+    createRecognitionConnectionTitle: 'New speech recognition connection',
+    createRecognitionConnectionSubtitle: 'Enter an OpenAI-compatible speech recognition endpoint, API key, and ASR model ID. The new connection and model will be selected automatically.',
+    recognitionConnectionCreated: 'Speech recognition connection created',
+    recognitionConnectionCreatedDetail: (connection, model) => `Selected ${connection} · ${model}`,
+    recognitionConnectionCreateFailed: 'Could not create speech recognition connection',
+    recognitionConnectionModelMissing: 'The new connection is missing a default ASR model ID.',
     saveFailed: 'Could not save voice settings',
   },
 } satisfies UiCatalog<VoiceSettingsCopy>;

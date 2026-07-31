@@ -22,6 +22,9 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { getVoiceSettingsCopy, type VoiceSettingsCopy } from '../locales/settings-voice-copy';
+import { AddProviderForm } from './provider-add-form';
+import { ProviderConnectionDialog } from './provider-connection-dialog';
+import { providerPanelActionErrorMessage } from './provider-panel-shared';
 import { useActionGuard } from './use-action-guard';
 import { startVoiceCapture } from '../voice-audio-capture';
 
@@ -38,6 +41,7 @@ export function VoiceModelsSettingsPage(props: {
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
+  onRefreshConnections(): Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getVoiceSettingsCopy(locale);
@@ -45,10 +49,12 @@ export function VoiceModelsSettingsPage(props: {
   const [smoke, setSmoke] = useState<VoiceSmokeState>({ status: 'idle' });
   const [isBusy, setIsBusy] = useState(false);
   const [recognitionTest, setRecognitionTest] = useState<string>();
+  const [creatingRecognitionConnection, setCreatingRecognitionConnection] = useState(false);
   const [saving, setSaving] = useState(false);
   const captureSmokeGuard = useActionGuard<'smoke'>();
   const voicePageMountedRef = useMountedRef();
   const activeVoiceCaptureStreamRef = useRef<MediaStream | null>(null);
+  const createRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
   const toast = useToast();
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
@@ -65,7 +71,7 @@ export function VoiceModelsSettingsPage(props: {
       recognition?: Partial<AppSettings['voice']['recognition']>;
       realtime?: Partial<AppSettings['voice']['realtime']>;
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     setSaving(true);
     try {
       await props.onUpdate({
@@ -80,10 +86,42 @@ export function VoiceModelsSettingsPage(props: {
           },
         },
       });
+      return true;
     } catch (error) {
       toast.error(copy.saveFailed, error instanceof Error ? error.message : copy.failed);
+      return false;
     } finally {
       if (voicePageMountedRef.current) setSaving(false);
+    }
+  }
+
+  async function finishCreatingRecognitionConnection(slug: string): Promise<void> {
+    try {
+      const connections = await window.maka.connections.list();
+      const created = connections.find((connection) => connection.slug === slug);
+      if (!created?.defaultModel.trim()) {
+        throw new Error(copy.recognitionConnectionModelMissing);
+      }
+      const saved = await updateVoice({
+        recognition: {
+          connectionSlug: created.slug,
+          model: created.defaultModel,
+        },
+      });
+      if (!saved || !voicePageMountedRef.current) return;
+      await props.onRefreshConnections();
+      if (!voicePageMountedRef.current) return;
+      setCreatingRecognitionConnection(false);
+      toast.success(
+        copy.recognitionConnectionCreated,
+        copy.recognitionConnectionCreatedDetail(created.name, created.defaultModel),
+      );
+    } catch (error) {
+      if (!voicePageMountedRef.current) return;
+      toast.error(
+        copy.recognitionConnectionCreateFailed,
+        providerPanelActionErrorMessage(error, locale),
+      );
     }
   }
 
@@ -331,6 +369,15 @@ export function VoiceModelsSettingsPage(props: {
       </div>
       <div className="settingsActionRow">
         <Button
+          ref={createRecognitionConnectionButtonRef}
+          variant="secondary"
+          type="button"
+          disabled={saving || isBusy}
+          onClick={() => setCreatingRecognitionConnection(true)}
+        >
+          {copy.createRecognitionConnection}
+        </Button>
+        <Button
           type="button"
           disabled={saving || isBusy}
           onClick={() => void runRecognitionTest()}
@@ -342,6 +389,26 @@ export function VoiceModelsSettingsPage(props: {
         <Alert variant="passive" role="status">
           <AlertDescription>{recognitionTest}</AlertDescription>
         </Alert>
+      ) : null}
+
+      {creatingRecognitionConnection ? (
+        <ProviderConnectionDialog
+          title={copy.createRecognitionConnectionTitle}
+          subtitle={copy.createRecognitionConnectionSubtitle}
+          providerType="openai-compatible"
+          onClose={() => setCreatingRecognitionConnection(false)}
+          finalFocus={() => createRecognitionConnectionButtonRef.current}
+        >
+          <AddProviderForm
+            bridge={window.maka.connections}
+            providerType="openai-compatible"
+            existingSlugs={props.connections.map((connection) => connection.slug)}
+            onCancel={() => setCreatingRecognitionConnection(false)}
+            onCreated={async (slug) => {
+              await finishCreatingRecognitionConnection(slug);
+            }}
+          />
+        </ProviderConnectionDialog>
       ) : null}
 
       <div className="settingsFeatureStatusHeroHeading">
