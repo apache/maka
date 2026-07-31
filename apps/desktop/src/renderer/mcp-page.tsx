@@ -643,7 +643,6 @@ function McpEditorDialog(props: {
       className="maka-mcp-editor-dialog"
       width="min(92vw, var(--maka-chat-measure))"
       maxHeight="85dvh"
-      padding={0}
       purpose="form"
     >
       <Layout

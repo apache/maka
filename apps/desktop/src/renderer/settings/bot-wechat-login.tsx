@@ -160,7 +160,6 @@ export function WechatQrLoginModal(props: {
       onOpenChange={props.onOpenChange}
       className="settingsWechatQrModal"
       width={360}
-      padding={0}
       purpose="info"
     >
       <Layout
