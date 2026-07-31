@@ -39,7 +39,7 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   ).toBe(true);
 });
 
-test('settings textareas use Astryx native resizing and preserve edits', async ({ window: page }) => {
+test('settings textareas use Astryx native resizing and persist edits across section re-entry', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
@@ -54,6 +54,9 @@ test('settings textareas use Astryx native resizing and preserve edits', async (
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '记忆', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'vertical');
   await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'vertical');
+
+  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toHaveValue(edited);
 });
 
 test('shared settings input owns its desktop focus chrome', async ({ window: page }) => {
