@@ -45,12 +45,13 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
 
   await page.getByRole('button', { name: /添加模型供应商：Cerebras/ }).click();
   const dialog = page.getByRole('dialog', { name: '连接 Cerebras' });
+  const keyInput = dialog.getByRole('textbox', { name: /API Key/ });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByLabel('API Key')).toBeFocused();
-  await expect(dialog.getByLabel('API Key')).toHaveAttribute('type', 'password');
+  await expect(keyInput).toBeFocused();
+  await expect(keyInput).toHaveAttribute('type', 'password');
   await expect(dialog.getByText('完成必要配置后，连接会出现在模型页上方。')).toBeVisible();
   await expect(dialog.locator('[data-slot="dialog-header"]')).toHaveCSS('border-bottom-width', '0px');
-  await expect(dialog.getByLabel('API Key')).toHaveAttribute('placeholder', '输入或粘贴 API Key');
+  await expect(keyInput).toHaveAttribute('placeholder', '输入或粘贴 API Key');
   await expect(dialog.getByLabel('模型供应商连接标识')).toHaveCount(0);
   await expect(dialog.getByLabel('模型供应商服务地址')).toHaveCount(0);
   await expect(dialog.getByLabel('模型供应商默认模型')).toHaveCount(0);
@@ -61,7 +62,6 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect(dialogBox?.width).toBeLessThanOrEqual(520);
   await expect(dialog.locator('.providerLogo')).toHaveCSS('width', '24px');
   await expect(dialog.locator('.providerLogo')).toHaveCSS('height', '24px');
-  const keyInput = dialog.getByLabel('API Key');
   const inputBox = await keyInput.boundingBox();
   await keyInput.fill(`sk-${'a'.repeat(300)}`);
   const longKeyLayout = await keyInput.evaluate((input) => ({
@@ -130,10 +130,11 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await detailDialog.getByLabel('搜索模型').click();
   await page.keyboard.press('Tab');
   const firstStop = await page.evaluate(() => ({
-    role: document.activeElement?.getAttribute('role') ?? null,
+    tagName: document.activeElement?.tagName ?? null,
+    type: document.activeElement?.getAttribute('type') ?? null,
     inList: Boolean(document.activeElement?.closest('.providerModelChoiceList')),
   }));
-  expect(firstStop).toEqual({ role: 'checkbox', inList: true });
+  expect(firstStop).toEqual({ tagName: 'INPUT', type: 'checkbox', inList: true });
   await page.keyboard.press('Tab');
   expect(await page.evaluate(() => Boolean(document.activeElement?.closest('.providerModelChoiceList')))).toBe(false);
   await page.keyboard.press('Shift+Tab');
@@ -141,18 +142,26 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await page.keyboard.press('ArrowDown');
   const afterArrow = await page.evaluate(() => ({
     id: document.activeElement?.getAttribute('data-model-id') ?? null,
-    checked: document.activeElement?.getAttribute('aria-checked') ?? null,
+    checked: document.activeElement instanceof HTMLInputElement ? document.activeElement.checked : null,
   }));
   expect(afterArrow.id).not.toBeNull();
   expect(afterArrow.id).not.toBe(beforeArrow);
   await page.keyboard.press('Space');
   const toggledRow = detailDialog.locator(`[data-model-id="${afterArrow.id}"]`);
-  await expect(toggledRow).toHaveAttribute('aria-checked', afterArrow.checked === 'true' ? 'false' : 'true');
+  if (afterArrow.checked) {
+    await expect(toggledRow).not.toBeChecked();
+  } else {
+    await expect(toggledRow).toBeChecked();
+  }
   // Restore the row's original state (rows freeze while the save is in
   // flight — the existing busy-freeze contract — so wait until re-enabled).
   await expect(toggledRow).toBeEnabled();
   await toggledRow.click();
-  await expect(toggledRow).toHaveAttribute('aria-checked', afterArrow.checked!);
+  if (afterArrow.checked) {
+    await expect(toggledRow).toBeChecked();
+  } else {
+    await expect(toggledRow).not.toBeChecked();
+  }
 
   // Default-model management is a visible searchable picker in the connection
   // detail, rather than a trip through General Settings. Selecting an already
@@ -218,13 +227,14 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
   // The plain base-URL input is replaced by the account-id field; the endpoint
   // is derived, not typed.
   await expect(page.getByLabel('Cloudflare 账户 ID')).toHaveValue('');
-  await expect(page.getByLabel('Cloudflare Workers AI API Key')).toBeVisible();
+  const cloudflareKey = page.getByRole('textbox', { name: /Cloudflare Workers AI API Key/ });
+  await expect(cloudflareKey).toBeVisible();
   await expect(page.getByLabel('模型供应商服务地址')).toHaveCount(0);
   await page.getByLabel('Cloudflare 账户 ID').fill(accountId);
   await page.getByRole('button', { name: '保存供应商' }).click();
   await expect(page.getByRole('alert')).toHaveText('请填写 Cloudflare Workers AI API Key');
 
-  await page.getByLabel('Cloudflare Workers AI API Key').fill('e2e-cloudflare-key');
+  await cloudflareKey.fill('e2e-cloudflare-key');
   await page.getByRole('button', { name: '保存供应商' }).click();
 
   const connection = page.getByRole('button', { name: /模型连接：Cloudflare Workers AI/ });
@@ -276,7 +286,7 @@ test('restores keyboard focus across provider dialogs', async ({ window: page })
   const siliconFlow = page.getByRole('button', { name: /添加模型供应商：SiliconFlow/ });
   await siliconFlow.focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByLabel('API Key')).toBeFocused();
+  await expect(page.getByRole('textbox', { name: /API Key/ })).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(siliconFlow).toBeFocused();

@@ -235,7 +235,8 @@ describe('issue #406 design-system governance contract', () => {
     const ui = await readUiSource();
     assert.match(ui, /default:\s*'bg-primary text-primary-foreground/);
     const appearance = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/settings/appearance-settings-page.tsx'), 'utf8');
-    assert.match(appearance, /<RadioList[\s\S]*<RadioListItem/);
+    assert.match(appearance, /<SelectableCard[\s\S]*isSelected=\{props\.themePref === value\}[\s\S]*onChange=\{\(\) => void setTheme\(value\)\}/);
+    assert.match(appearance, /<SelectableCard[\s\S]*isSelected=\{currentPalette === palette\}[\s\S]*onChange=\{\(\) => void setPalette\(palette\)\}/);
     assert.doesNotMatch(appearance, /\bChoiceCard/);
     assert.match(ui, /<BaseProgress\.Indicator className="[^"]*bg-control/);
 

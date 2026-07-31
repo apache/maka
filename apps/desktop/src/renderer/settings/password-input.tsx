@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Ref } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
+  InputGroup,
   TextInput,
   useMountedRef,
   useToast,
@@ -29,9 +30,10 @@ export function PasswordInput(props: {
   value: string;
   onChange(next: string): void;
   placeholder?: string;
-  ariaLabel?: string;
+  label: string;
+  isLabelHidden?: boolean;
   description?: string;
-  ariaDescribedBy?: string;
+  error?: string | null;
   disabled?: boolean;
   inputRef?: Ref<HTMLInputElement>;
   onBlur?(): void;
@@ -81,20 +83,24 @@ export function PasswordInput(props: {
   }
   return (
     <div className="settingsPasswordField">
-      <TextInput
-        ref={props.inputRef}
-        type={visible ? 'text' : 'password'}
-        value={props.value}
-        onChange={(value) => props.onChange(value)}
-        onBlur={props.onBlur}
-        placeholder={props.placeholder}
-        label={props.ariaLabel ?? props.placeholder ?? 'Password'}
+      <InputGroup
+        label={props.label}
         description={props.description}
-        isLabelHidden
-        aria-describedby={props.ariaDescribedBy}
+        isLabelHidden={props.isLabelHidden ?? true}
         isDisabled={props.disabled}
-      />
-      <div className="settingsPasswordActions">
+        status={props.error ? { type: 'error', message: props.error } : undefined}
+      >
+        <TextInput
+          ref={props.inputRef}
+          type={visible ? 'text' : 'password'}
+          value={props.value}
+          onChange={(value) => props.onChange(value)}
+          onBlur={props.onBlur}
+          placeholder={props.placeholder}
+          label={copy.value}
+          isLabelHidden
+          isDisabled={props.disabled}
+        />
         {props.value && !props.disabled && (
           <IconButton
             variant="ghost"
@@ -116,7 +122,7 @@ export function PasswordInput(props: {
           aria-pressed={visible}
           icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
         />
-      </div>
+      </InputGroup>
     </div>
   );
 }

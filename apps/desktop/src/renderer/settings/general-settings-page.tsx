@@ -52,7 +52,7 @@ export function GeneralSettingsPage(props: {
           app, not how the app looks. The component keeps its save flow. */}
       <PersonalizationSettingsPage settings={props.settings} onUpdate={props.onUpdate} />
       <SettingsRows>
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="switch">
           <div>
             <strong>{copy.incognito}</strong>
             <small>{copy.incognitoHelp}</small>
@@ -68,7 +68,7 @@ export function GeneralSettingsPage(props: {
             }}
           />
         </div>
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="switch">
           <div>
             <strong>{copy.notifications}</strong>
             <small>{copy.notificationsHelp}</small>
@@ -311,7 +311,7 @@ function NetworkProxySection(props: {
 
   return (
     <>
-      <div className="settingsFormRow">
+      <div className="settingsFormRow" data-control="switch">
         <div>
           <strong>{copy.proxy}</strong>
           <small>{copy.proxyHelp}</small>
@@ -353,7 +353,7 @@ function NetworkProxySection(props: {
             <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly hasClear onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
           </div>
 
-          <div className="settingsFormRow">
+          <div className="settingsFormRow" data-control="switch">
             <div>
               <strong>{copy.proxyAuth}</strong>
               <small>{copy.proxyAuthHelp}</small>
@@ -379,7 +379,7 @@ function NetworkProxySection(props: {
               </div>
               <div>
                 <span>{copy.password}</span>
-                <PasswordInput value={proxyDraft.password} onChange={(next) => void updateProxy({ password: next })} ariaLabel={copy.proxyPassword} />
+                <PasswordInput value={proxyDraft.password} onChange={(next) => void updateProxy({ password: next })} label={copy.proxyPassword} />
               </div>
             </div>
           )}

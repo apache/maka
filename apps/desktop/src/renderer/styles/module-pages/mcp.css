@@ -385,8 +385,7 @@
 
 .maka-mcp-server-identity code,
 .maka-mcp-tool-list code,
-.maka-mcp-server-details pre,
-.maka-mcp-json-form textarea {
+.maka-mcp-server-details pre {
   font-family: var(--font-mono);
 }
 
@@ -518,11 +517,6 @@
   padding: 0 var(--space-4) var(--space-1);
 }
 
-.maka-mcp-form-fields textarea {
-  min-height: 96px;
-  font-family: var(--font-mono);
-}
-
 .maka-mcp-advanced {
   border-top: var(--border-width-hairline) solid var(--border);
   padding-top: var(--space-3);
@@ -532,16 +526,6 @@
   display: grid;
   gap: var(--space-4);
   padding-top: var(--space-4);
-}
-
-.maka-mcp-advanced select {
-  width: 100%;
-  min-height: var(--h-control-md);
-  padding-inline: var(--space-3);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
 }
 
 .maka-mcp-json-form > label {
@@ -556,12 +540,6 @@
   color: var(--foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
-}
-
-.maka-mcp-json-form textarea {
-  min-height: 260px;
-  resize: none;
-  line-height: var(--leading-normal);
 }
 
 .maka-mcp-json-form > p {

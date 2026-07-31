@@ -105,12 +105,12 @@ test('Slack 展示完整 Socket Mode 凭据，Telegram 明示官方 Token 流程
   const settings = page.getByRole('main', { name: '设置内容' });
 
   await settings.getByRole('button', { name: '接入 Slack' }).click();
-  await expect(settings.getByLabel('Slack Bot Token')).toBeVisible();
-  await expect(settings.getByLabel('Slack App-Level Token')).toBeVisible();
+  await expect(settings.getByRole('textbox', { name: /Slack Bot Token/ })).toBeVisible();
+  await expect(settings.getByRole('textbox', { name: /Slack App-Level Token/ })).toBeVisible();
   await expect(settings.getByText('使用 Bot Token 与 App-Level Token 通过 Socket Mode 接入')).toBeVisible();
 
   await settings.getByRole('button', { name: '返回远程接入' }).click();
   await settings.getByRole('button', { name: '接入 Telegram' }).click();
-  await expect(settings.getByLabel('Telegram Bot Token')).toBeVisible();
+  await expect(settings.getByRole('textbox', { name: /Telegram Bot Token/ })).toBeVisible();
   await expect(settings.getByText(/Telegram 官方目前仅支持通过 @BotFather 获取 Bot Token/)).toBeVisible();
 });

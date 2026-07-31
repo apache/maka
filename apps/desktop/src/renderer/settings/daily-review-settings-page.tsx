@@ -148,7 +148,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       ) : null}
 
       <SettingsRows>
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.enabled}</strong>
             <small>{copy.enabledHelp}</small>
@@ -187,7 +187,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
         </div>
 
         {DAILY_REVIEW_SECTION_KEYS.map((key) => (
-          <div key={key} className="settingsRow">
+          <div key={key} className="settingsRow" data-control="switch">
             <div>
               <strong>{copy.sections[key].title}</strong>
               <small>{copy.sections[key].detail}</small>
@@ -209,7 +209,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           </div>
         ))}
 
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.deep}</strong>
             <small>{copy.deepHelp}</small>
@@ -241,7 +241,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           />
         </div>
 
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.includeCli}</strong>
             <small>{copy.includeCliHelp}</small>
@@ -255,7 +255,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           />
         </div>
 
-        <div className="settingsRow">
+        <div className="settingsRow" data-control="switch">
           <div>
             <strong>{copy.notify}</strong>
             <small>{copy.notifyHelp}</small>

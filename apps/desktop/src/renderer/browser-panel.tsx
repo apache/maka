@@ -191,28 +191,30 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
           </TooltipTrigger>
           <TooltipContent>{state.loading ? copy.stop : copy.refresh}</TooltipContent>
         </Tooltip>
-        <TextInput
-          className="maka-browser-address"
-          type="text"
-          label={copy.addressAria}
-          isLabelHidden
-          placeholder={copy.addressPlaceholder}
-          value={address}
-          onChange={setAddress}
-          onFocus={() => {
-            editingRef.current = true;
-          }}
-          onBlur={() => {
-            editingRef.current = false;
-            setAddress(state.url);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.currentTarget.blur();
-              go();
-            }
-          }}
-        />
+        <div className="maka-browser-address-field">
+          <TextInput
+            type="text"
+            label={copy.addressAria}
+            isLabelHidden
+            width="100%"
+            placeholder={copy.addressPlaceholder}
+            value={address}
+            onChange={setAddress}
+            onFocus={() => {
+              editingRef.current = true;
+            }}
+            onBlur={() => {
+              editingRef.current = false;
+              setAddress(state.url);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur();
+                go();
+              }
+            }}
+          />
+        </div>
         <Tooltip>
           {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
           <TooltipTrigger

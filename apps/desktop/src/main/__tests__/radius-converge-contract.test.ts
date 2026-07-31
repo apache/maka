@@ -530,7 +530,8 @@ describe('radius token governance (#406 gap 4)', () => {
       // at 32px. The contract then made the regression unfixable — restoring
       // the ratio failed the test. Ratio-governed now; see --radius-plate.
       '.providerLogo': '--radius-plate',
-      '.maka-browser-address': '--radius-control',
+      // Browser address input chrome is owned by Astryx TextInput. Maka only
+      // keeps the flex sizing wrapper, so no renderer radius is pinned here.
       // .maka-plan-shell dropped: unboxed to a plain layout container
       // (the MCP page set the no-outer-frame precedent) — no card chrome,
       // no radius.

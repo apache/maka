@@ -116,13 +116,11 @@ describe('settings row track contract', () => {
     const css = stripCssComments(await readAllRendererCss());
 
     // A switch is ~40px and always fits beside its label, so stacking it
-    // reads as a detached orphan. This is the one row kind that stays
-    // horizontal below the 460px container breakpoint. The selector must
-    // stay tag-agnostic: Base UI renders Switch's root as a SPAN, and a
-    // tag-qualified rewrite of this selector has rotted silently before.
+    // reads as a detached orphan. The product row declares this layout need
+    // explicitly instead of inspecting Astryx's rendered role/DOM.
     assert.match(
       css,
-      /\.settingsRow:has\(>\s*\[role="switch"\]\)[^{]*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/,
+      /\.settingsRow\[data-control="switch"\][^{]*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/,
       'switch-only rows must keep two columns inside the narrow-container block',
     );
   });

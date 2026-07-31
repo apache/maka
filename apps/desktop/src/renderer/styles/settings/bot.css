@@ -131,7 +131,7 @@
   grid-row: 1;
 }
 
-.settingsBotDetailHeader > [data-slot="switch"] {
+.settingsBotDetailHeader > .settingsBotDetailSwitch {
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
@@ -388,7 +388,7 @@
    the window, so wrap structurally instead. The filter input grows from its
    old 260px track; the select/toggle/count/clear keep their natural widths and
    fall to the next line when they no longer fit. */
-.settingsUsageFilters > input {
+.settingsUsageModelFilter {
   flex: 1 1 260px;
   min-width: 0;
 }

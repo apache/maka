@@ -4,34 +4,7 @@
    36px/6px read as two misaligned controls. */
 .maka-skill-search {
   width: min(280px, 30vw);
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--muted-foreground);
-  padding: 0 var(--space-2-5);
-}
-
-.maka-skill-search input {
-  /* The visible search chrome belongs to `.maka-skill-search`; the inner
-     `Input` owns bare field reset through the shared UI component. */
   min-width: 0;
-  width: 100%;
-  height: 30px;
-  min-height: 0;
-  font-size: var(--font-size-ui);
-}
-
-.maka-skill-search input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.maka-skill-search:focus-within {
-  border-color: oklch(from var(--foreground) l c h / 0.16);
-  box-shadow: 0 0 0 2px oklch(from var(--foreground) l c h / 0.055);
 }
 
 /* Skills page

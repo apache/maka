@@ -247,7 +247,7 @@ export function PlanReminderFormDialog(props: {
             </div>
             <div className="maka-plan-field">
               <TextInput
-                label={copy.field.time}
+                label={copy.timeAriaLabel}
                 value={runAtLocal}
                 onChange={setRunAtLocal}
                 type="text"

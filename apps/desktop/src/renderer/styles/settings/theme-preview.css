@@ -14,19 +14,20 @@
   height: auto;
   min-height: 48px;
   justify-content: stretch;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  color: var(--foreground);
   overflow: hidden;
-  padding: var(--space-2);
   text-align: left;
   white-space: normal;
 }
 
-.settingsThemeOption label {
+.settingsThemeOptionCopy {
+  display: grid;
+  gap: var(--space-0-5);
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.settingsThemeOptionCopy small {
+  color: var(--muted-foreground);
 }
 
 .settingsThemeOptionPreview {
@@ -131,16 +132,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .settingsThemePreview { transition: none; }
-}
-
-.settingsThemeOption:hover {
-  border-color: var(--border-strong);
-  background: var(--state-hover-bg);
-}
-
-.settingsThemeOption:has(input:checked) {
-  border-color: var(--border-strong);
-  background: var(--state-selected-bg);
 }
 
 /* PR-THEME-PRODUCT-PALETTES-0: palette picker. Each option shows a

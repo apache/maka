@@ -78,10 +78,6 @@ const ALLOWLIST: ImportantAllowance[] = [
 
 const RETIRED_RING_RESET_BLOCKS = [
   {
-    fileSuffix: 'apps/desktop/src/renderer/styles/module-pages/skills.css',
-    anchor: '.maka-skill-search input',
-  },
-  {
     fileSuffix: 'apps/desktop/src/renderer/styles/composer.css',
     anchor: '.composer .maka-composer-textarea',
   },

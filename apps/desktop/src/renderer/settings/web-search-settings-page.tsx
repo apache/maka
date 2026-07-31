@@ -274,7 +274,7 @@ export function WebSearchSettingsPage(props: {
             onChange={setDraftKey}
             disabled={usingEnvKey || credentialActionBusy}
             placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
-            ariaLabel={copy.keyAria}
+            label={copy.keyAria}
           />
         </div>
 
@@ -320,19 +320,22 @@ export function WebSearchSettingsPage(props: {
             <strong>{copy.query}</strong>
             <small>{copy.queryHelp}</small>
           </div>
-          <TextInput
-            value={liveQuery}
-            onChange={(value) => updateLiveQuery(value)}
-            placeholder={copy.queryPlaceholder}
-            label={copy.queryAria}
-            isLabelHidden
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !liveQueryRunning) {
-                event.preventDefault();
-                void runLiveQuery();
-              }
-            }}
-          />
+          <div className="settingsWebSearchQueryField">
+            <TextInput
+              value={liveQuery}
+              onChange={(value) => updateLiveQuery(value)}
+              placeholder={copy.queryPlaceholder}
+              label={copy.queryAria}
+              isLabelHidden
+              width="100%"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !liveQueryRunning) {
+                  event.preventDefault();
+                  void runLiveQuery();
+                }
+              }}
+            />
+          </div>
         </div>
         <div className="settingsRow settingsWebSearchSearchRow">
           <div>

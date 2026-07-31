@@ -121,16 +121,9 @@
   border-bottom: var(--border-width-hairline) solid var(--border);
 }
 
-.maka-browser-address {
+.maka-browser-address-field {
   flex: 1 1 auto;
   min-width: 0;
-  height: 26px;
-  padding: 0 var(--space-2-5);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface-canvas);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
 }
 
 .maka-browser-strip {

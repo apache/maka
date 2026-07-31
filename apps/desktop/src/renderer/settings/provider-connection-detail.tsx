@@ -160,7 +160,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               value={apiKey}
               onChange={setApiKey}
               placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-              ariaLabel={copy.modelKeyAria(display.name)}
+              label={copy.modelKeyAria(display.name)}
+              isLabelHidden={false}
               description={apiKeyStatusHint}
               disabled={detailActionBusy}
             />

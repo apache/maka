@@ -200,6 +200,8 @@ export {
   type TextAreaProps,
   NumberInput,
   type NumberInputProps,
+  InputGroup,
+  type InputGroupProps,
   Switch,
   type SwitchProps,
   CheckboxInput,
@@ -208,4 +210,6 @@ export {
   type RadioListProps,
   RadioListItem,
   type RadioListItemProps,
+  SelectableCard,
+  type SelectableCardProps,
 } from '@astryxdesign/core';

@@ -164,6 +164,7 @@ export function BotChatChannelDetail(props: {
           {/* Keep the detail introduction first for heading navigation, while
               placing the switch before the first focusable documentation link. */}
           <Switch
+            className="settingsBotDetailSwitch"
             label={detailCopy.enableAria(providerPresentation.label)}
             isLabelHidden
             disabledMessage={enableSwitchHint}
@@ -482,7 +483,7 @@ function BotCredentialFields(props: {
                   value={props.channel[field.key] ?? ''}
                   onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
                   placeholder={field.placeholder}
-                  ariaLabel={field.ariaLabel}
+                  label={field.ariaLabel}
                 />
               </div>
             );

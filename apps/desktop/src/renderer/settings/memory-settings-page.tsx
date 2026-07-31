@@ -83,7 +83,7 @@ export function MemorySettingsPage(props: {
   return (
     <div className="settingsStructuredPage">
       <SettingsRows>
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="cluster">
           <div>
             <strong>{copy.text.localFile}</strong>
             <small>{copy.text.localFileHelp}</small>
@@ -106,7 +106,7 @@ export function MemorySettingsPage(props: {
           </span>
         </div>
 
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="switch">
           <div>
             <strong>{copy.text.agentReadable}</strong>
             <small>{copy.text.agentReadableHelp}</small>
@@ -120,7 +120,7 @@ export function MemorySettingsPage(props: {
           />
         </div>
 
-        <div className="settingsFormRow">
+        <div className="settingsFormRow" data-control="switch">
           <div>
             <strong>{copy.text.instructions}</strong>
             <small>{copy.text.instructionsHelp}</small>
@@ -258,6 +258,7 @@ export function MemorySettingsPage(props: {
               label={copy.text.filterAria}
               isLabelHidden
               placeholder={copy.text.filterPlaceholder}
+              width="100%"
             />
             {normalizedMemoryEntryQuery ? (
               <Button
@@ -333,6 +334,7 @@ export function MemorySettingsPage(props: {
             isLabelHidden
             placeholder={copy.text.titlePlaceholder}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            width="100%"
           />
           <TextInput
             type="text"
@@ -342,6 +344,7 @@ export function MemorySettingsPage(props: {
             isLabelHidden
             placeholder={copy.text.tagsPlaceholder}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            width="100%"
           />
           <TextArea
             value={newMemoryContent}
@@ -351,6 +354,7 @@ export function MemorySettingsPage(props: {
             placeholder={copy.text.contentPlaceholder}
             rows={3}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+            width="100%"
           />
         </div>
         <Button
@@ -379,6 +383,7 @@ export function MemorySettingsPage(props: {
           hasSpellCheck={false}
           label={copy.text.contentEditorAria}
           isLabelHidden
+          width="100%"
         />
       </div>
 

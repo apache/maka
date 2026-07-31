@@ -11,6 +11,7 @@ import {
   IconButton,
   TextInput,
   PageHeader,
+  SettingsSelect,
   type ModuleHubHeader,
   Switch,
   TabsList,
@@ -40,6 +41,10 @@ import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import { parseMcpImport } from './mcp-import';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
+import {
+  validateMcpEditorDraft,
+  type McpEditorErrors,
+} from './mcp-editor-validation';
 
 type Draft = {
   id: string;
@@ -71,6 +76,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const [config, setConfig] = useState<McpConfigFile>(EMPTY_CONFIG);
   const [statuses, setStatuses] = useState<McpServerStatus[]>([]);
   const [editor, setEditor] = useState<EditorState>(null);
+  const [editorErrors, setEditorErrors] = useState<McpEditorErrors>({});
   const [activeTab, setActiveTab] = useState<'market' | 'installed'>('market');
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState<string | null>('load');
@@ -118,6 +124,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   });
 
   function openManual(draft: Draft = emptyDraft()) {
+    setEditorErrors({});
     setEditor({ mode: 'manual', draft: { ...draft }, editingId: null });
   }
 
@@ -176,6 +183,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   async function saveDraft(event: React.FormEvent) {
     event.preventDefault();
     if (!editor || editor.mode !== 'manual') return;
+    const validation = validateMcpEditorDraft(editor.draft);
+    if (Object.keys(validation).length > 0) {
+      setEditorErrors(validation);
+      return;
+    }
+    setEditorErrors({});
     setBusy('save');
     try {
       const next = await window.maka.mcp.upsert(editor.draft.id.trim(), configFromDraft(editor.draft, copy));
@@ -391,10 +404,17 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
       {editor && (
         <McpEditorDialog
           state={editor}
+          errors={editorErrors}
           copy={copy}
           saving={busy === 'save' || busy === 'import'}
-          onChange={setEditor}
-          onClose={() => setEditor(null)}
+          onChange={(next) => {
+            setEditor(next);
+            setEditorErrors({});
+          }}
+          onClose={() => {
+            setEditor(null);
+            setEditorErrors({});
+          }}
           onSave={saveDraft}
           onImport={importJson}
         />
@@ -526,6 +546,7 @@ function McpServerRow(props: {
 
 function McpEditorDialog(props: {
   state: Exclude<EditorState, null>;
+  errors: McpEditorErrors;
   copy: McpCopy;
   saving: boolean;
   onChange(next: Exclude<EditorState, null>): void;
@@ -574,22 +595,32 @@ function McpEditorDialog(props: {
               <button type="button" aria-pressed={props.state.draft.kind === 'remote'} data-active={props.state.draft.kind === 'remote'} onClick={() => updateDraft('kind', 'remote')}><Globe aria-hidden="true" /> {props.copy.editor.remoteUrl}</button>
             </div>
             <div className="maka-mcp-form-fields">
-              <div className="settingsField"><TextInput label="Server ID" value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" /><small>{props.copy.editor.serverIdHelp}</small></div>
+              <TextInput label="Server ID" description={props.copy.editor.serverIdHelp} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
               {props.state.draft.kind === 'stdio' ? (
                 <>
-                  <TextInput label="Command" value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" />
-                  <div className="settingsField"><TextArea label="Arguments" value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} /><small>{props.copy.editor.argumentsHelp}</small></div>
+                  <TextInput label="Command" value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
+                  <TextArea label="Arguments" description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
                     <TextInput label="Working directory" value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
-                    <div className="settingsField"><TextArea label="Environment" value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} /><small>{props.copy.editor.environmentHelp}</small></div>
+                    <TextArea label="Environment" description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
                   </div></details>
                 </>
               ) : (
                 <>
-                  <TextInput label="MCP URL" type="text" value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" />
+                  <TextInput label="MCP URL" value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
-                    <label className="settingsField"><span>Transport</span><select value={props.state.draft.transport} onChange={(event) => updateDraft('transport', event.currentTarget.value as Draft['transport'])}><option value="auto">Auto fallback</option><option value="streamable-http">Streamable HTTP</option><option value="sse">Legacy SSE</option></select></label>
-                    <div className="settingsField"><TextArea label="HTTP headers" value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} /><small>{props.copy.editor.headersHelp}</small></div>
+                    <SettingsSelect
+                      value={props.state.draft.transport}
+                      options={[
+                        ['auto', props.copy.editor.transportAuto],
+                        ['streamable-http', props.copy.editor.transportStreamableHttp],
+                        ['sse', props.copy.editor.transportLegacySse],
+                      ]}
+                      onChange={(value) => updateDraft('transport', value)}
+                      ariaLabel={props.copy.editor.transportLabel}
+                      width="full"
+                    />
+                    <TextArea label="HTTP headers" description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
                   </div></details>
                 </>
               )}

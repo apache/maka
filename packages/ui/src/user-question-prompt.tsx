@@ -1,8 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { UserQuestionRequestEvent, UserQuestionResponse } from '@maka/core';
-import { RadioList, RadioListItem } from '@astryxdesign/core';
-import { Pencil } from './icons.js';
-import { Button } from '@astryxdesign/core';
+import { Button, RadioList, RadioListItem, TextInput } from '@astryxdesign/core';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
@@ -47,7 +45,7 @@ export function UserQuestionPrompt(props: {
   const question = props.request.questions[questionIndex];
   if (!question) return null;
   const draft = drafts[questionIndex] ?? null;
-  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : '';
+  const selectedValue = draft?.kind === 'option' ? `option:${draft.optionIndex}` : draft?.kind === 'other' ? 'other' : '';
   const interactionDisabled = Boolean(props.stopPending) || responsePending;
   const canContinue = canLeaveQuestion(draft) && !interactionDisabled;
   const isLast = questionIndex === props.request.questions.length - 1;
@@ -57,6 +55,10 @@ export function UserQuestionPrompt(props: {
   }
 
   function select(value: string) {
+    if (value === 'other') {
+      updateDraft({ kind: 'other', value: draft?.kind === 'other' ? draft.value : '' });
+      return;
+    }
     const optionIndex = Number(value.slice('option:'.length));
     updateDraft({ kind: 'option', optionIndex });
   }
@@ -109,21 +111,27 @@ export function UserQuestionPrompt(props: {
                 description={option.description}
               />
             ))}
-          </RadioList>
-          <label
-            className="maka-question-other-field"
-            data-selected={draft?.kind === 'other' ? '' : undefined}
-          >
-            <Pencil className="maka-question-other-icon" aria-hidden="true" />
-            <input
-              aria-label={copy.otherAriaLabel}
-              className="maka-question-other-input"
-              placeholder={copy.otherPlaceholder}
-              value={draft?.kind === 'other' ? draft.value : ''}
-              disabled={interactionDisabled}
-              onChange={(event) => updateDraft({ kind: 'other', value: event.currentTarget.value })}
+            <RadioListItem
+              value="other"
+              isDisabled={interactionDisabled}
+              label={copy.other}
+              description={copy.otherDescription}
             />
-          </label>
+          </RadioList>
+          {draft?.kind === 'other' ? (
+            <div className="maka-question-other-answer">
+              <TextInput
+                label={copy.otherAriaLabel}
+                isLabelHidden
+                placeholder={copy.otherPlaceholder}
+                value={draft.value}
+                isDisabled={interactionDisabled}
+                onChange={(value) => updateDraft({ kind: 'other', value })}
+                width="100%"
+                hasAutoFocus
+              />
+            </div>
+          ) : null}
         </div>
 
         <footer className="maka-interaction-actions maka-question-actions">

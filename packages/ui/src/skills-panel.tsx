@@ -826,6 +826,7 @@ export function SkillsModuleMain(props: {
             <TextInput
               label={copy.page.search}
               isLabelHidden
+              width="100%"
               startIcon={<Search size={15} aria-hidden="true" />}
               value={skillSearchQuery}
               onChange={(value) => setSkillSearchQuery(value.slice(0, 120))}

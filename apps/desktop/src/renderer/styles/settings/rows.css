@@ -83,13 +83,7 @@
   transition: background var(--duration-base) var(--ease-out-strong);
 }
 
-/* Detail audit + alignment-governance round: bare Switch controls sat at
-   the value column's START (x≈mid-page) while inputs/selects hug the right
-   rail. The original fix tag-qualified the selector with a button prefix, but
-   Base UI renders the Switch root as a SPAN — the selector matched nothing
-   and rotted silently. Tag-AGNOSTIC by rule: role is the contract, the
-   rendered tag never is. */
-.settingsRow > [role="switch"] {
+.settingsRow[data-control="switch"] > :last-child {
   justify-self: end;
 }
 
@@ -359,9 +353,6 @@
    the description column has space to breathe.
    PR-SETTINGS-INPUT-POLISH-0: cap from 280 → 320 since rows are now
    roomier (24px L/R padding). */
-.settingsField[data-orient="horizontal"] > input {
-  max-width: 320px;
-}
 /* The horizontal row above the first one shouldn't carry a top border;
    below the last one the section footer takes over. The default
    border-bottom is fine for the inter-row hairlines. */
@@ -383,21 +374,13 @@
   background: oklch(from var(--focus-ring) l c h / 0.04);
 }
 
-.settingsFormGrid select:focus-visible {
-  outline: none;
-  border-color: var(--focus-ring);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.18);
-}
-
 /* PR-SETTINGS-A11Y-POLISH-0 — respect prefers-reduced-motion. The
    interaction still fires, just instantly.
    Justified: a11y reduced-motion override; the only `!important` in this
    file, tracked in renderer-important-audit-contract.test.ts. */
 @media (prefers-reduced-motion: reduce) {
   .settingsFormRow,
-  .settingsRow,
-  .settingsField input,
-  .settingsField textarea {
+  .settingsRow {
     transition: none !important;
   }
 }
@@ -426,13 +409,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* #1363 review: the exception applies only when the switch is the row's
-     ONLY control (label + switch, nothing else). A three-part row — e.g.
-     Memory's label + status Chip + switch — held horizontal would crush
-     the label to a char-per-line sliver, so it stacks like any other row.
-     `:not(input)` spares Base UI Switch's hidden sibling checkbox, which
-     is a real third child on every switch row. */
-  .settingsRow:has(> [role="switch"]):not(:has(> :nth-child(3):not(input))) {
+  .settingsRow[data-control="switch"] {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
@@ -457,7 +434,6 @@
     text-align: left;
   }
 
-  .settingsRow[data-control-width="compact"] > input,
   .settingsRow[data-control-width="compact"] > .settingsTimeInput {
     justify-self: start;
   }
@@ -468,7 +444,7 @@
     gap: var(--space-2-5);
   }
 
-  .settingsFormRow:has(> [role="switch"]):not(:has(> :nth-child(3):not(input))) {
+  .settingsFormRow[data-control="switch"] {
     flex-direction: row;
     align-items: center;
     gap: var(--space-5);

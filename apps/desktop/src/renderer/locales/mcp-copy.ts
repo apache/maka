@@ -35,6 +35,8 @@ export type McpCopy = {
     importing: string; importConnect: string; transportAria: string; localStdio: string; remoteUrl: string;
     serverIdHelp: string; argumentsPlaceholder: string; argumentsHelp: string; advanced: string;
     workingDirectoryPlaceholder: string; environmentHelp: string; headersHelp: string; saving: string; saveConnect: string;
+    required: string; invalidUrl: string;
+    transportLabel: string; transportAuto: string; transportStreamableHttp: string; transportLegacySse: string;
   };
 };
 
@@ -79,6 +81,8 @@ const MCP_COPY = {
       argumentsPlaceholder: '每行一个 argument\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/folder', argumentsHelp: '每行作为独立 argument，不经过 shell interpolation。',
       advanced: '高级设置', workingDirectoryPlaceholder: '可选，例如 /path/to/project', environmentHelp: '每行一个 KEY=value。', headersHelp: '每行一个 Header=value。',
       saving: '保存中…', saveConnect: '保存并连接',
+      required: '此字段为必填项。', invalidUrl: '请输入有效的 HTTP 或 HTTPS URL。',
+      transportLabel: 'Transport', transportAuto: '自动回退', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: '旧版 SSE',
     },
   },
   en: {
@@ -121,6 +125,8 @@ const MCP_COPY = {
       argumentsPlaceholder: 'One argument per line\n-y\n@modelcontextprotocol/server-filesystem\n/path/to/folder', argumentsHelp: 'Each line is a separate argument and does not use shell interpolation.',
       advanced: 'Advanced settings', workingDirectoryPlaceholder: 'Optional, for example /path/to/project', environmentHelp: 'One KEY=value entry per line.', headersHelp: 'One Header=value entry per line.',
       saving: 'Saving…', saveConnect: 'Save and connect',
+      required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.',
+      transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
     },
   },
 } satisfies UiCatalog<McpCopy>;

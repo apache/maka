@@ -63,16 +63,6 @@
     border-radius: var(--radius-surface);
     background: oklch(from var(--foreground) l c h / 0.04);
   }
-.settingsOauthPastePanel textarea {
-    width: 100%;
-    padding: var(--space-2);
-    border-radius: var(--radius-control);
-    border: var(--border-width-hairline) solid var(--border);
-    background: var(--background);
-    color: var(--foreground);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-ui);
-  }
 .settingsErrorText {
     color: var(--destructive-text, var(--destructive, red));
   }

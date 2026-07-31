@@ -35,7 +35,7 @@ export function BotWeChatFields(props: {
           value={channel.token}
           onChange={(next) => updateChannel({ token: next })}
           placeholder={copy.tokenPlaceholder}
-          ariaLabel={copy.tokenAria}
+          label={copy.tokenAria}
         />
       </div>
       <div className="settingsBotAdvanced">
@@ -75,7 +75,7 @@ export function BotWeChatFields(props: {
                 value={channel.appSecret ?? ''}
                 onChange={(next) => updateChannel({ appSecret: next })}
                 placeholder={copy.appSecretPlaceholder}
-                ariaLabel={copy.appSecretAria}
+                label={copy.appSecretAria}
               />
             </div>
             <Alert variant="info">

@@ -3,28 +3,53 @@
   "scopes": [
     {
       "name": "composer-textarea",
-      "selectors": ["[data-maka-contract=\"composer-inner\"]"]
+      "selectors": ["[data-maka-contract=\"composer-input\"]"]
     },
     {
-      "name": "settings-form-controls",
+      "name": "astryx-form-controls",
       "selectors": [
-        "[data-maka-contract=\"settings-rows\"]",
-        ".settingsStructuredPage:has([data-maka-contract=\"settings-rows\"])",
-        "[data-overlayscrollbars-viewport]:has([data-maka-contract=\"settings-rows\"])",
-        "[data-overlayscrollbars-content]:has([data-maka-contract=\"settings-rows\"])"
+        ":is(.astryx-field, .astryx-switch, .astryx-checkbox-input, .astryx-radio-list, .astryx-radio-list-item, .astryx-selectable-card)"
       ]
     },
     {
-      "name": "provider-form-controls",
+      "name": "general-personalization-card",
+      "selectors": [".settingsStructuredPage > .settingsStructuredPage"]
+    },
+    {
+      "name": "general-privacy-card",
       "selectors": [
-        ":is([data-maka-contract=\"providers-panel\"] :is(input, textarea), [data-maka-contract=\"providers-panel\"] :has(> :is(input, textarea)), [data-maka-contract=\"providers-panel\"] :has(> label):has(:is(input, textarea)))"
+        ".settingsStructuredPage:has(> .settingsStructuredPage) > .settingsRows:nth-child(2)"
       ]
     },
     {
-      "name": "module-form-controls",
+      "name": "general-defaults-card",
       "selectors": [
-        ":is([data-maka-contract=\"module-main\"] :is(input, textarea), [data-maka-contract=\"module-main\"] :has(> :is(input, textarea)), [data-maka-contract=\"module-main\"] :has(> label):has(:is(input, textarea)))"
+        ".settingsStructuredPage:has(> .settingsStructuredPage) > .settingsRows:nth-child(3)"
       ]
+    },
+    {
+      "name": "general-proxy-card",
+      "selectors": [
+        ".settingsStructuredPage:has(> .settingsStructuredPage) > .settingsRows:nth-child(4)"
+      ]
+    },
+    {
+      "name": "general-page-layout",
+      "selectors": [".settingsStructuredPage:has(> .settingsStructuredPage)"]
+    },
+    {
+      "name": "general-scroll-layout",
+      "selectors": [
+        ".settingsPageContentInner:has(> .settingsStructuredPage > .settingsStructuredPage)"
+      ]
+    },
+    {
+      "name": "provider-catalog-search",
+      "selectors": [".providerCatalogSearch"]
+    },
+    {
+      "name": "mcp-catalog-search",
+      "selectors": [".maka-mcp-search"]
     }
   ]
 }

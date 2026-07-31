@@ -59,40 +59,6 @@
   gap: 0;
 }
 
-/* Shared settings form controls. */
-.settingsField input,
-.settingsField textarea,
-.settingsFormGrid input,
-.settingsFormGrid select,
-.settingsUsageFilters input,
-.settingsUsageFilters select {
-  min-width: 0;
-  min-height: 34px;
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.12);
-  border-radius: var(--radius-control);
-  background: var(--background);
-  color: var(--foreground);
-  padding: var(--space-1-5) var(--space-2-5);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  outline: none;
-  transition: border-color var(--duration-base) var(--ease-out-strong), box-shadow var(--duration-base) var(--ease-out-strong);
-}
-
-.settingsField textarea {
-  border-radius: var(--radius-control);
-  padding: var(--space-2) var(--space-2-5);
-  line-height: var(--leading-normal);
-  font-family: inherit;
-  font-size: var(--font-size-ui);
-}
-
-.settingsFormGrid select:focus,
-.settingsUsageFilters select:focus {
-  border-color: oklch(from var(--focus-ring) l c h / 0.42);
-  box-shadow: 0 0 0 var(--focus-glow-width) oklch(from var(--focus-ring) l c h / 0.12);
-}
-
 .settingsActionRow {
   display: flex;
   align-items: center;
@@ -101,28 +67,8 @@
 }
 
 .settingsPasswordField {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.settingsPasswordField input {
   width: 100%;
-  /* #1364: `width: 100%` alone cannot shrink an input below its intrinsic
-     `size` width (~180px), so at the 480px window floor the key field
-     overflowed its row by ~90px. */
   min-width: 0;
-  padding-right: var(--space-16);
-}
-
-.settingsPasswordActions {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: var(--space-0-5);
 }
 
 .settingsFieldHint {

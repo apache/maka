@@ -120,7 +120,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /onDeleted=\{async \(\) => \{[\s\S]*closeDialog\(\);[\s\S]*const reloaded = await reload\(\);[\s\S]*providerCatalogRef\.current\?\.querySelector<HTMLInputElement>\('\[data-provider-catalog-search\] input'\)\?\.focus\(\);/,
+      /onDeleted=\{async \(\) => \{[\s\S]*closeDialog\(\);[\s\S]*const reloaded = await reload\(\);[\s\S]*providerCatalogSearchRef\.current\?\.focus\(\);/,
       'Connection delete completion must restore focus to the stable provider search after refreshing the root list',
     );
   });
@@ -321,7 +321,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /<ProviderConnectionDialog[\s\S]*<AddProviderForm/);
     assert.match(src, /<DialogContent[\s\S]*className="providerConnectionDialog"[\s\S]*width=\{520\}/);
     assert.match(src, /initialFocus=\{\(\) =>[\s\S]*summary[\s\S]*\?\? true\}/, 'connection dialogs must focus the visible Advanced summary when no form control precedes it');
-    assert.match(src, /ariaLabel="API Key"/);
+    assert.match(src, /label="API Key"/);
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
     assert.match(
       src,
@@ -490,7 +490,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(detail, /<PasswordInput[\s\S]*description=\{apiKeyStatusHint\}/);
     assert.match(detail, /hasSecret === true\s*\?\s*copy\.keySet/);
     assert.match(detail, /placeholder=\{hasSecret === true \? '••••••••' : copy\.pasteModelKey\}/);
-    assert.match(detail, /ariaLabel=\{copy\.modelKeyAria\(display\.name\)\}/);
+    assert.match(detail, /label=\{copy\.modelKeyAria\(display\.name\)\}/);
     assert.match(detail, /\{copy\.getModelKey\}/);
     assert.match(detail, /copy\.keyTroubleshooting/);
 

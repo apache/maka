@@ -227,32 +227,6 @@
   font-weight: var(--font-weight-medium);
 }
 
-.providerEditor input,
-.providerEditor select {
-  min-width: 0;
-  min-height: 36px;
-  border: var(--border-width-hairline) solid var(--border);
-  /* PR-UI-LAYOUT-22: provider editor inputs (used in the
-   * ConfigureProvider sheet) brought up to the LAYOUT-11/21 focus
-   * ring family. Was: radius 6 + border-only focus.
-   * Now: radius 8 + min-height 36 + 3px halo + smoother transition.
-   * Matches connectionForm inputs visually so users see the same
-   * "this is a focused input" signal everywhere. */
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  color: var(--foreground);
-  padding: 0 var(--space-3);
-  outline: none;
-  font-size: var(--font-size-ui);
-  transition: border-color var(--duration-base) var(--ease-out-strong), box-shadow var(--duration-base) var(--ease-out-strong), background var(--duration-base) var(--ease-out-strong);
-}
-
-.providerEditor select:focus {
-  border-color: oklch(from var(--focus-ring) l c h / 0.42);
-  background: var(--background);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.10);
-}
-
 .providerActions {
   display: flex;
   align-items: center;

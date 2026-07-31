@@ -77,7 +77,7 @@ describe('Settings form accessibility labels', () => {
     // The base rule is the one that declares its own display.
     const settingsRowRules = styles.match(/\.settingsRow\s*\{[\s\S]*?\}/g) ?? [];
     const settingsRow = settingsRowRules.find((rule) => /display:\s*grid;/.test(rule)) ?? '';
-    const settingsRowStacked = settingsRowRules.find((rule) => !/display:/.test(rule)) ?? '';
+    const settingsRowStacked = settingsRowRules.find((rule) => /grid-template-columns:\s*minmax\(0,\s*1fr\);/.test(rule)) ?? '';
     const settingsRowValue = styles.match(/\.settingsRow > span\s*\{[\s\S]*?\}/)?.[0] ?? '';
     // #1362: the title tier is one comma-grouped rule for both row kinds.
     const settingsRowTitle = styles.match(/\.settingsRow strong,\s*\.settingsFormRow strong\s*\{[\s\S]*?\}/)?.[0] ?? '';
@@ -149,15 +149,9 @@ describe('Settings form accessibility labels', () => {
     assert.match(settingsSelect, /<Selector[\s\S]*isLabelHidden[\s\S]*options=\{options\}/);
     assert.doesNotMatch(settingsSelect, /SelectPositioner|SelectPortal|@base-ui\/react/);
 
-    // ThemeSettingsPage uses native <button> on purpose for the radio-card
-    // pickers (mode / palette): the cards are a custom grid with a preview
-    // tile + label, and the shared <Button>'s baked-in Tailwind
-    // utilities (`h-9 inline-flex bg-primary text-primary-foreground`) collapse
-    // the card to a 36px-tall black pill. See `settings-theme-contract.test.ts`
-    // which pins the inverse direction (radio cards must stay native).
-    // For the general SettingsModal coverage we strip that block out before
-    // asserting `no <button>` so the form-primitive rule still bites everywhere
-    // else (action buttons, header buttons, etc.).
+    // ThemeSettingsPage uses Astryx SelectableCard for its preview-rich
+    // single-selection grids. Strip that block before checking the remaining
+    // settings form controls because SelectableCard owns its internal checkbox.
     const themeBlockRange = (() => {
       const start = settings.indexOf('function ThemeSettingsPage(');
       const end = settings.indexOf('function WebSearchSettingsPage(', start);
@@ -345,22 +339,15 @@ describe('Settings form accessibility labels', () => {
     assert.match(hint, /font-size:\s*var\(--font-size-base\);/, 'hints sit on the body tier');
   });
 
-  // Alignment-governance round (maintainer report: 每日回顾 switches sat
-  // mid-page while every other row control hugs the right rail). The
-  // original end-align rule was tag-qualified (`button[role="switch"]`)
-  // but Base UI renders the Switch root as a SPAN — the selector matched
-  // nothing and rotted silently for weeks. Two pins: the rule exists in
-  // tag-agnostic form, and no settings CSS ever tag-qualifies role
-  // selectors again (role is the contract; the rendered tag is not).
-  it('end-aligns settings row switches with a tag-agnostic role selector', async () => {
+  it('end-aligns settings row switches through an explicit product layout hook', async () => {
     const styles = await readRendererContractCss();
-    const alignRule = styles.match(/\.settingsRow\s*>\s*\[role="switch"\]\s*\{[\s\S]*?\}/)?.[0] ?? '';
-    assert.ok(alignRule, '.settingsRow > [role="switch"] rule must exist');
+    const alignRule = styles.match(/\.settingsRow\[data-control="switch"\]\s*>\s*:last-child\s*\{[\s\S]*?\}/)?.[0] ?? '';
+    assert.ok(alignRule, 'switch rows must use the explicit data-control layout hook');
     assert.match(alignRule, /justify-self:\s*end;/, 'settings row switches must end-align like every other row control');
     assert.doesNotMatch(
       styles,
-      /button\[role="switch"\]/,
-      'never tag-qualify role selectors — Base UI renders the Switch root as a span, so button[role="switch"] silently matches nothing',
+      /\[role="switch"\]|\[data-slot="switch"\]/,
+      'renderer layout CSS must not depend on Astryx switch internals',
     );
   });
 });

@@ -129,7 +129,7 @@ describe('Personalization form state sync (PR-PERSONALIZATION-SYNC-0)', () => {
     // The tone textarea change handler must schedule the debounced save.
     assert.match(
       page,
-      /onChange=\{\(value\) => \{[\s\S]*?setAssistantTone\(value\);[\s\S]*?scheduleToneSave\(value\);/,
+      /onChange=\{\(value\) => \{[\s\S]*?const next = value\.slice\(0, 500\);[\s\S]*?setAssistantTone\(next\);[\s\S]*?scheduleToneSave\(next\);/,
       'Tone textarea onChange must schedule the debounced autosave',
     );
   });

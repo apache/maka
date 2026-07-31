@@ -107,6 +107,7 @@ export type SettingsPreferencesCopy = {
     copy: string;
     hide: string;
     show: string;
+    value: string;
   };
 };
 
@@ -132,7 +133,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     about: {
       loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制环境信息', pasteHint: '可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', subtitle: '本地优先的 AI 助手 · 桌面端运行环境', privacyLabel: '隐私与安全', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['所有会话、设置、凭据和 Skill 指令文件都保留在本机工作区。', '模型密钥保存在本机凭据文件内；订阅账号令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在对话内明示授权。', '每个会话都会在本机保留消息、工具调用、权限决策与模式变更记录。'], runtime: '运行时', runtimeDetail: '界面层、桌面运行时和本地 Node 版本号。', platform: '平台', platformDetail: '操作系统、版本和 CPU 架构。', workspace: '工作区', workspaceDetail: '会话、设置和凭据全部留在本地这条路径下。', storage: '存储', storageDetail: '会话、设置、使用统计、凭据文件和订阅账号安全存储。', local: '本地', copying: '复制中…', copyEnvironment: '复制环境信息', copyHelp: '复制以上版本与平台信息以便定位问题；内容不包含工作区路径。',
     },
-    password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示' },
+    password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
   en: {
     personalization: {
@@ -147,7 +148,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     about: {
       loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Environment info copied', pasteHint: 'Paste it directly into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Conversations, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the conversation.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each session.'], runtime: 'Runtime', runtimeDetail: 'Interface, desktop runtime, and local Node versions.', platform: 'Platform', platformDetail: 'Operating system, version, and CPU architecture.', workspace: 'Workspace', workspaceDetail: 'Conversations, settings, and credentials stay under this local path.', storage: 'Storage', storageDetail: 'Conversations, settings, usage statistics, credential files, and secure subscription storage.', local: 'Local', copying: 'Copying…', copyEnvironment: 'Copy environment info', copyHelp: 'Copy version and platform details to help diagnose an issue. The workspace path is excluded.',
     },
-    password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show' },
+    password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
   },
 } satisfies UiCatalog<SettingsPreferencesCopy>;
 

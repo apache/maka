@@ -244,13 +244,16 @@ function UsageRequestsPanel(props: {
   return (
     <>
       <div className="settingsUsageFilters" role="group" aria-label={props.copy.filtersAria}>
-        <TextInput
-          value={props.modelFilter}
-          onChange={(value) => props.onModelFilterChange(value)}
-          placeholder={props.copy.filterPlaceholder}
-          label={props.copy.filterAria}
-          isLabelHidden
-        />
+        <div className="settingsUsageModelFilter">
+          <TextInput
+            value={props.modelFilter}
+            onChange={(value) => props.onModelFilterChange(value)}
+            placeholder={props.copy.filterPlaceholder}
+            label={props.copy.filterAria}
+            isLabelHidden
+            width="100%"
+          />
+        </div>
         <SettingsSelect
           value={props.status}
           ariaLabel={props.copy.statusAria}

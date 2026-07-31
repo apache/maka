@@ -8,7 +8,7 @@ import type {
   UiLocalePreference,
   UpdateAppSettingsResult,
 } from '@maka/core';
-import { RadioList, RadioListItem, TextInput, Segmented, TextArea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { SelectableCard, TextInput, Segmented, TextArea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -171,7 +171,7 @@ export function PersonalizationSettingsPage(props: {
           <TextInput
             type="text"
             value={displayName}
-            onChange={(value) => setDisplayName(value)}
+            onChange={(value) => setDisplayName(value.slice(0, 60))}
             onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
             label={copy.displayName}
@@ -206,8 +206,9 @@ export function PersonalizationSettingsPage(props: {
           <TextArea
             value={assistantTone}
             onChange={(value) => {
-              setAssistantTone(value);
-              scheduleToneSave(value);
+              const next = value.slice(0, 500);
+              setAssistantTone(next);
+              scheduleToneSave(next);
             }}
             onBlur={() => flushTone(assistantTone)}
             placeholder={copy.assistantTonePlaceholder}
@@ -335,53 +336,53 @@ function ThemeSettingsPage(props: {
   return (
     <div className="settingsStructuredPage">
       <h3 className="settingsSubheading">{copy.theme}</h3>
-      <RadioList
-        className="settingsThemeOptions settingsThemeOptionsPreview"
-        label={copy.theme}
-        isLabelHidden
-        value={props.themePref}
-        onChange={(next) => void setTheme(next as typeof props.themePref)}
-      >
+      <div className="settingsThemeOptions settingsThemeOptionsPreview" role="group" aria-label={copy.theme}>
         {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
-          <RadioListItem
+          <SelectableCard
             key={value}
-            value={value}
             className="settingsThemeOption settingsThemeOptionPreview"
             label={option.label}
-            description={option.help}
-            startContent={<ThemePreviewMock variant={value} />}
-          />
+            isSelected={props.themePref === value}
+            onChange={() => void setTheme(value)}
+            padding={2}
+          >
+            <ThemePreviewMock variant={value} />
+            <span className="settingsThemeOptionCopy">
+              <strong>{option.label}</strong>
+              <small>{option.help}</small>
+            </span>
+          </SelectableCard>
         ))}
-      </RadioList>
+      </div>
 
       <h3 className="settingsSubheading">{copy.palette}</h3>
       {/* PR-PALETTE-PICKER-GROUPS-0: 11 palettes in a flat grid is
           cramped. Split into 编辑器主题 (default + 4 community editor
           themes) and 产品色调 (6 product accents) so the picker is
-          easier to scan. Each subgroup is its own radiogroup so
-          arrow-key navigation stays scoped. */}
+          easier to scan. Each subgroup is a named SelectableCard group;
+          the controlled palette ID keeps selection exclusive. */}
       {PALETTE_GROUPS.map((group) => (
         <div key={group.id} className="settingsPaletteGroup">
           <h4 className="settingsPaletteGroupHeading">{copy.paletteGroups[group.id]}</h4>
-          <RadioList
-            className="settingsThemeOptions settingsPaletteOptions"
-            label={copy.paletteGroups[group.id]}
-            isLabelHidden
-            value={currentPalette}
-            onChange={(next) => void setPalette(next as ThemePalette)}
-          >
+          <div className="settingsThemeOptions settingsPaletteOptions" role="group" aria-label={copy.paletteGroups[group.id]}>
             {group.palettes.map((palette) => (
-              <RadioListItem
+              <SelectableCard
                 key={palette}
-                value={palette}
                 data-palette={palette}
                 className="settingsThemeOption settingsPaletteOption"
                 label={copy.paletteLabels[palette]}
-                description={copy.paletteHelp[palette]}
-                startContent={<span className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`} aria-hidden="true" />}
-              />
+                isSelected={currentPalette === palette}
+                onChange={() => void setPalette(palette)}
+                padding={2}
+              >
+                <span className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`} aria-hidden="true" />
+                <span className="settingsThemeOptionCopy">
+                  <strong>{copy.paletteLabels[palette]}</strong>
+                  <small>{copy.paletteHelp[palette]}</small>
+                </span>
+              </SelectableCard>
             ))}
-          </RadioList>
+          </div>
         </div>
       ))}
 

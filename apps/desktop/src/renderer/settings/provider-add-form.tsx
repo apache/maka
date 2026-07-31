@@ -121,24 +121,20 @@ export function AddProviderForm(props: {
   }
 
   if (usesApiKeyDialog) {
-    const errorId = `provider-key-dialog-${props.providerType}-error`;
     return (
       <form className="providerKeyDialogForm" onSubmit={submitApiKey}>
-        <div>
-          <span>API Key</span>
-          <PasswordInput
-            value={apiKey}
-            onChange={(next) => {
-              setApiKey(next);
-              if (error) setError(null);
-            }}
-            placeholder={copy.apiKeyPlaceholder}
-            ariaLabel="API Key"
-            ariaDescribedBy={error ? errorId : undefined}
-            disabled={busy}
-          />
-        </div>
-        {error && <p className="providerError" id={errorId} role="alert">{error}</p>}
+        <PasswordInput
+          value={apiKey}
+          onChange={(next) => {
+            setApiKey(next);
+            if (error) setError(null);
+          }}
+          placeholder={copy.apiKeyPlaceholder}
+          label="API Key"
+          isLabelHidden={false}
+          error={error}
+          disabled={busy}
+        />
         <div className="providerKeyDialogActions">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
           <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.saving : copy.save} />
@@ -170,7 +166,7 @@ export function AddProviderForm(props: {
               if (error) setError(null);
             }}
             placeholder={copy.apiKeyPlaceholder}
-            ariaLabel={`${display.name} ${copy.apiKey}`}
+            label={`${display.name} ${copy.apiKey}`}
             disabled={isExperimental || busy}
           />
         </div>

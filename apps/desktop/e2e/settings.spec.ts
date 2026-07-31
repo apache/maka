@@ -9,8 +9,8 @@ test('settings switches keep the compact shared control geometry', async ({ wind
   await expect(privacySwitch).toBeVisible();
   const box = await privacySwitch.boundingBox();
   expect(box).not.toBeNull();
-  expect(box!.width).toBe(32);
-  expect(box!.height).toBe(18);
+  expect(box!.width).toBe(40);
+  expect(box!.height).toBe(24);
   await expect.poll(
     () => privacySwitch.evaluate((element) => getComputedStyle(element).boxShadow),
   ).toBe('none');
@@ -30,40 +30,30 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   await expect(page.getByLabel('设置内容')).toBeVisible();
 
   await page.locator('[aria-label="设置分组"]').getByText('外观').click();
-  await page.getByRole('radio', { name: '深色 始终使用深色界面。' }).click();
+  await page.locator('.settingsThemeOptionPreview').filter({
+    has: page.getByText('深色', { exact: true }),
+  }).click();
 
   await expect.poll(
     async () => page.evaluate(() => document.documentElement.classList.contains('dark')),
   ).toBe(true);
 });
 
-test('settings textarea grows with content and scrolls only at its shared cap', async ({ window: page }) => {
+test('settings textareas use Astryx native resizing and preserve edits', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
 
   const textarea = page.getByRole('textbox', { name: '助手语气偏好' });
   await expect(textarea).toBeVisible();
-  await expect(textarea).toHaveCSS('resize', 'none');
-  await expect(textarea).toHaveCSS('field-sizing', 'content');
-
-  const initialHeight = await textarea.evaluate((element) => element.getBoundingClientRect().height);
-  await textarea.fill(Array.from({ length: 7 }, (_, index) => `偏好 ${index + 1}`).join('\n'));
-  const grownHeight = await textarea.evaluate((element) => element.getBoundingClientRect().height);
-  expect(grownHeight).toBeGreaterThan(initialHeight);
-
-  await textarea.fill(Array.from({ length: 30 }, (_, index) => `偏好 ${index + 1}`).join('\n'));
-  const capped = await textarea.evaluate((element) => ({
-    height: element.getBoundingClientRect().height,
-    clientHeight: element.clientHeight,
-    scrollHeight: element.scrollHeight,
-  }));
-  expect(capped.height).toBeLessThanOrEqual(320);
-  expect(capped.scrollHeight).toBeGreaterThan(capped.clientHeight);
+  await expect(textarea).toHaveCSS('resize', 'vertical');
+  const edited = Array.from({ length: 7 }, (_, index) => `偏好 ${index + 1}`).join('\n');
+  await textarea.fill(edited);
+  await expect(textarea).toHaveValue(edited);
 
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '记忆', exact: true }).click();
-  await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'none');
-  await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'none');
+  await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'vertical');
+  await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'vertical');
 });
 
 test('shared settings input owns its desktop focus chrome', async ({ window: page }) => {
@@ -72,11 +62,13 @@ test('shared settings input owns its desktop focus chrome', async ({ window: pag
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
 
   const displayName = page.getByRole('textbox', { name: '显示名称' });
-  await expect(displayName).toHaveCSS('box-shadow', 'none');
+  const fieldChrome = displayName.locator('xpath=..');
+  await expect(fieldChrome).toHaveCSS('box-shadow', 'none');
+  const restingBorder = await fieldChrome.evaluate((element) => getComputedStyle(element).borderColor);
   await displayName.focus();
-  const focusShadow = await displayName.evaluate((element) => getComputedStyle(element).boxShadow);
-  expect(focusShadow).not.toBe('none');
-  expect(focusShadow).not.toContain('inset');
+  await expect.poll(
+    () => fieldChrome.evaluate((element) => getComputedStyle(element).borderColor),
+  ).not.toBe(restingBorder);
 });
 
 test('open gateway metric values stay contained for long addresses', async ({ window: page }) => {
@@ -409,7 +401,7 @@ test('remote access opens a channel detail from the overview and returns', async
   const backButton = settings.getByRole('button', { name: '返回远程接入' });
   await expect(backButton).toBeVisible();
   await expect(settings.getByRole('heading', { name: '连接配置' })).toBeVisible();
-  const tokenInput = settings.getByLabel('Telegram Bot Token');
+  const tokenInput = settings.getByRole('textbox', { name: /Telegram Bot Token/ });
   await expect(tokenInput).toBeVisible();
 
   const detailHeadings = await settings.getByRole('heading').allTextContents();
@@ -421,6 +413,8 @@ test('remote access opens a channel detail from the overview and returns', async
   await expect(disabledSwitch).toBeDisabled();
   await expect(disabledSwitch).toHaveAccessibleDescription('先测试并连接后才能启用。');
   await backButton.focus();
+  await page.keyboard.press('Tab');
+  await expect(disabledSwitch).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(configDocs).toBeFocused();
   await page.keyboard.press('Tab');
@@ -520,7 +514,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
           return body.getBoundingClientRect().width >= expectedWidth - 1;
         })(),
         switchPrecedesDocs: (() => {
-          const toggle = element.querySelector<HTMLElement>('[data-slot="switch"]');
+          const toggle = element.querySelector<HTMLElement>('.settingsBotDetailSwitch');
           const docs = element.querySelector<HTMLElement>('.settingsBotConfigDocLink');
           return toggle && docs
             ? Boolean(toggle.compareDocumentPosition(docs) & Node.DOCUMENT_POSITION_FOLLOWING)
@@ -528,7 +522,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
         })(),
         headingPrecedesSwitch: (() => {
           const heading = element.querySelector<HTMLElement>('h3');
-          const toggle = element.querySelector<HTMLElement>('[data-slot="switch"]');
+          const toggle = element.querySelector<HTMLElement>('.settingsBotDetailSwitch');
           return heading && toggle
             ? Boolean(heading.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING)
             : false;
@@ -630,7 +624,7 @@ test('appearance palette names stay fully visible at the window floor', async ({
   await settings.getByRole('button', { name: '外观', exact: true }).click();
 
   const label = settings
-    .locator('.settingsThemeLabel strong')
+    .locator('.settingsThemeOptionCopy strong')
     .filter({ hasText: 'Catppuccin Mocha' });
   await expect(label).toBeVisible();
   // Wrapping, not clipping: nothing hides past the box in either axis.

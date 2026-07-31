@@ -168,7 +168,7 @@ export function OpenGatewaySettingsPage(props: {
         </Alert>
       )}
 
-      <div className="settingsFormRow">
+      <div className="settingsFormRow" data-control="switch">
         <div>
           <strong>{copy.form.enabled}</strong>
           <small>{copy.form.enabledHelp}</small>
@@ -205,7 +205,7 @@ export function OpenGatewaySettingsPage(props: {
               if (tokenDraft !== gatewayDraft.token) void saveToken();
             }}
             placeholder={copy.form.tokenPlaceholder}
-            ariaLabel={copy.form.tokenAria}
+            label={copy.form.tokenAria}
           />
         </div>
         <div>

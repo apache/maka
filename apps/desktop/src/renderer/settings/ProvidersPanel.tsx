@@ -75,6 +75,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const providerDialogLifecycleRef = useRef(0);
   const providersPanelRef = useRef<HTMLDivElement>(null);
   const providerCatalogRef = useRef<HTMLElement>(null);
+  const providerCatalogSearchRef = useRef<HTMLInputElement>(null);
   const locale = useUiLocale();
   const providerCopy = getProviderSettingsCopy(locale);
   const copy = providerCopy.panel;
@@ -126,7 +127,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   useEffect(() => {
     if (loading || initialPage !== 'catalog') return;
     providerCatalogRef.current?.scrollIntoView({ block: 'start' });
-    providerCatalogRef.current?.querySelector<HTMLInputElement>('[data-provider-catalog-search] input')?.focus({ preventScroll: true });
+    providerCatalogSearchRef.current?.focus({ preventScroll: true });
   }, [initialPage, loading]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
@@ -270,6 +271,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               ))}
             </PrimitiveTabsList>
             <TextInput
+              ref={providerCatalogSearchRef}
               className="providerCatalogSearch"
               value={catalogQuery}
               onChange={setCatalogQuery}
@@ -277,7 +279,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               label={copy.searchAria}
               isLabelHidden
               startIcon={<Search aria-hidden="true" />}
-              data-provider-catalog-search
               />
             <PrimitiveTabsPanel value={catalogCategory}>
               {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (
@@ -360,7 +361,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               closeDialog();
               const reloaded = await reload();
               if (!reloaded || !providersPanelMountedRef.current) return;
-              providerCatalogRef.current?.querySelector<HTMLInputElement>('[data-provider-catalog-search] input')?.focus();
+              providerCatalogSearchRef.current?.focus();
             }}
           />
         </ProviderConnectionDialog>

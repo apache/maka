@@ -333,6 +333,8 @@ export function PlanReminderPanel(props: {
                 <div className="maka-plan-search">
                   <TextInput
                     label={copy.page.searchLabel}
+                    isLabelHidden
+                    width="100%"
                     value={listQuery}
                     onChange={(value) => setListQuery(value.slice(0, 120))}
                     placeholder={copy.page.searchPlaceholder}
