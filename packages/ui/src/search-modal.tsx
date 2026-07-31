@@ -63,9 +63,9 @@ export function createThreadSearchSource(
       const requestGeneration = ++generation;
       const trimmed = query.trim();
       input.onQueryChange(trimmed);
-      input.onItemsChange([]);
       if (!trimmed || !input.searchThread) {
         input.onErrorChange(null);
+        input.onItemsChange([]);
         return [];
       }
       try {
@@ -80,6 +80,7 @@ export function createThreadSearchSource(
             reason: response.reason,
             message: response.message,
           });
+          input.onItemsChange([]);
           return [];
         }
         input.onErrorChange(null);
@@ -103,6 +104,7 @@ export function createThreadSearchSource(
           reason: 'provider_error',
           message: input.thrownErrorMessage(caught),
         });
+        input.onItemsChange([]);
         return [];
       }
     },
@@ -216,7 +218,9 @@ export function SearchModal(props: {
           const result =
             itemByIdRef.current.get(itemId)?.auxiliaryData?.result;
           if (result?.target?.kind !== 'thread') return;
-          restoreFocusOnCloseRef.current = false;
+          if (result.target.turnId) {
+            restoreFocusOnCloseRef.current = false;
+          }
           props.onNavigateToSession?.(
             result.target.sessionId,
             result.target.turnId,

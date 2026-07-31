@@ -174,7 +174,7 @@ test('conditionally unmounted dialogs restore their opener by default', async ({
   await expect(opener).toBeFocused();
 });
 
-test('selecting a search result does not restore focus to the opener', async ({
+test('a title-only search result restores focus to the opener', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const opener = page.getByRole('button', { name: '搜索对话' });
@@ -187,5 +187,5 @@ test('selecting a search result does not restore focus to the opener', async ({
 
   await expect(dialog).toBeHidden();
   await expect(page.getByText('示例对话 01')).toBeVisible();
-  await expect(opener).not.toBeFocused();
+  await expect(opener).toBeFocused();
 });

@@ -53,7 +53,6 @@ export interface AppShellCommandListOptions {
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
   captureComposerImportOwner: () => ComposerImportOwner;
-  closePalette: () => void;
   composerRef: RefBox<ComposerAppendHandle | null>;
   createSession: () => void;
   startModeSession: (mode: SessionStartMode) => Promise<boolean>;
@@ -152,9 +151,7 @@ export function buildAppShellCommandList(
     onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
     onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
     onSelectModule: (selection) => {
-      const { closePalette, setNavSelection } = optionsRef.current;
-      setNavSelection(selection);
-      closePalette();
+      optionsRef.current.setNavSelection(selection);
     },
     onExportActiveConversation: async () => {
       const { activeId, messages, sessions, toastApi } = optionsRef.current;

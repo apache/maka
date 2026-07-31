@@ -122,7 +122,9 @@ export function CommandPalette(props: {
   function commit(commandId: string) {
     const command = itemById.get(commandId)?.auxiliaryData?.command;
     if (!command) return;
-    void Promise.resolve(command.run()).catch(() => undefined);
+    void Promise.resolve()
+      .then(() => command.run())
+      .catch(() => undefined);
   }
 
   return (

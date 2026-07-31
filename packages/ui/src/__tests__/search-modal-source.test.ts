@@ -68,6 +68,18 @@ function createHarness() {
 }
 
 describe('thread search source', () => {
+  it('keeps the selectable mapping while a filtered follow-up is pending', async () => {
+    const harness = createHarness();
+    const initial = harness.source.search('current');
+    harness.requests.get('current')?.resolve([result('current-session')]);
+    await initial;
+
+    harness.source.cancel?.();
+    void harness.source.search('current-session');
+
+    assert.deepEqual(harness.getVisibleItemIds(), ['current-session::0']);
+  });
+
   it('does not let an older success replace the current item mapping', async () => {
     const harness = createHarness();
     const older = harness.source.search('older');

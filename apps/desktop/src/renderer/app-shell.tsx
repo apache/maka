@@ -2003,7 +2003,6 @@ function AppShellContent({
     themePref,
     visibleSessions,
     captureComposerImportOwner,
-    closePalette,
     composerRef,
     createSession,
     startModeSession,

@@ -94,7 +94,7 @@ describe('Command palette accessibility and visible copy', () => {
 
     assert.match(
       source,
-      /void Promise\.resolve\(command\.run\(\)\)\.catch\(\(\) => undefined\)/,
+      /void Promise\.resolve\(\)\s*\.then\(\(\) => command\.run\(\)\)\s*\.catch\(\(\) => undefined\)/,
     );
   });
 });
