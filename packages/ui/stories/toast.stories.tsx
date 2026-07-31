@@ -142,45 +142,29 @@ export const ConfirmQueued: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const page = within(document.body);
-    const calls: string[] = [];
-    const originalShowModal = HTMLDialogElement.prototype.showModal;
-    const originalClose = HTMLDialogElement.prototype.close;
-    HTMLDialogElement.prototype.showModal = function showModal() {
-      calls.push(`show:${this.textContent?.includes('确认 A？') ? 'A' : 'B'}`);
-      return originalShowModal.call(this);
-    };
-    HTMLDialogElement.prototype.close = function close() {
-      calls.push(`close:${this.textContent?.includes('确认 A？') ? 'A' : 'B'}`);
-      return originalClose.call(this);
-    };
+    const opener = canvas.getByRole('button', { name: '连续确认' });
+    await userEvent.click(opener);
 
-    try {
-      const opener = canvas.getByRole('button', { name: '连续确认' });
-      await userEvent.click(opener);
+    const first = await page.findByRole('alertdialog', { name: '确认 A？' });
+    await expect(page.queryAllByRole('alertdialog')).toHaveLength(1);
+    await expect(page.queryByRole('alertdialog', { name: '确认 B？' })).not.toBeInTheDocument();
+    const firstCancel = within(first).getByRole('button', { name: '取消' });
+    await expect(firstCancel).toHaveFocus();
+    await userEvent.click(firstCancel);
 
-      const first = await page.findByRole('alertdialog', { name: '确认 A？' });
-      const firstCancel = within(first).getByRole('button', { name: '取消' });
-      await expect(firstCancel).toHaveFocus();
-      await userEvent.click(firstCancel);
+    await waitFor(() => {
+      expect(page.queryByRole('alertdialog', { name: '确认 A？' })).not.toBeInTheDocument();
+    });
+    const second = await page.findByRole('alertdialog', { name: '确认 B？' });
+    await expect(page.queryAllByRole('alertdialog')).toHaveLength(1);
+    const secondCancel = within(second).getByRole('button', { name: '取消' });
+    await expect(secondCancel).toHaveFocus();
+    await userEvent.click(
+      within(second).getByRole('button', { name: '确认 B' }),
+    );
 
-      const second = await page.findByRole('alertdialog', { name: '确认 B？' });
-      const secondCancel = within(second).getByRole('button', { name: '取消' });
-      await expect(secondCancel).toHaveFocus();
-      await userEvent.click(
-        within(second).getByRole('button', { name: '确认 B' }),
-      );
-
-      await waitFor(() => expect(canvas.getByText('结果：false,true')).toBeInTheDocument());
-      await expect(opener).toHaveFocus();
-      await expect(calls).toEqual([
-        'show:A',
-        'close:A',
-        'show:B',
-        'close:B',
-      ]);
-    } finally {
-      HTMLDialogElement.prototype.showModal = originalShowModal;
-      HTMLDialogElement.prototype.close = originalClose;
-    }
+    await waitFor(() => expect(canvas.getByText('结果：false,true')).toBeInTheDocument());
+    await expect(page.queryAllByRole('alertdialog')).toHaveLength(0);
+    await expect(opener).toHaveFocus();
   },
 };
