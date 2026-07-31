@@ -57,6 +57,7 @@ export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';
 export * from './project-catalog.js';
 export * from './git-worktree-child-executor.js';
+export * from './git-workspace-service.js';
 export * from './project-session-migration.js';
 export * from './session-bundle-policy.js';
 export * from './session-bundle-contract.js';
