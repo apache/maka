@@ -21,7 +21,7 @@ import {
 } from '../packages/runtime/dist/index.js';
 import {
   createAgentRunStore,
-  createArtifactStore,
+  createSqliteArtifactStore,
   createRuntimeEventStore,
   createSessionStore,
 } from '../packages/storage/dist/index.js';
@@ -111,7 +111,7 @@ if (
 const sessionStore = createSessionStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-const artifactStore = createArtifactStore(workspaceRoot);
+const artifactStore = createSqliteArtifactStore(workspaceRoot);
 const backends = new BackendRegistry();
 const llmRecords = [];
 const runTraceEvents = [];
@@ -510,7 +510,7 @@ async function runPhase7ToolScenario(input) {
   const sessionStore = createSessionStore(workspaceRoot);
   const runStore = createAgentRunStore(workspaceRoot);
   const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-  const artifactStore = createArtifactStore(workspaceRoot);
+  const artifactStore = createSqliteArtifactStore(workspaceRoot);
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -1198,7 +1198,7 @@ async function runPhase10HistoryCompactScenario(input) {
   const sessionStore = createSessionStore(workspaceRoot);
   const runStore = createAgentRunStore(workspaceRoot);
   const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-  const artifactStore = createArtifactStore(workspaceRoot);
+  const artifactStore = createSqliteArtifactStore(workspaceRoot);
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -1451,7 +1451,7 @@ async function runPhase8SynthesisScenario(input) {
   const sessionStore = createSessionStore(workspaceRoot);
   const runStore = createAgentRunStore(workspaceRoot);
   const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-  const artifactStore = createArtifactStore(workspaceRoot);
+  const artifactStore = createSqliteArtifactStore(workspaceRoot);
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];

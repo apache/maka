@@ -25,7 +25,7 @@ import type {
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import type { PreparedSkillInvocationMessage, SessionManager } from '@maka/runtime';
-import type { createArtifactStore, createSessionStore } from '@maka/storage';
+import type { ArtifactStore, createSessionStore } from '@maka/storage';
 import type { ConnectionStore, SettingsStore } from '@maka/storage';
 import { runThreadSearch } from './search/thread-search.js';
 import { resolveSessionSend } from './session-send-resolve.js';
@@ -58,7 +58,6 @@ import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
 import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 type E2eFixture = ReturnType<typeof resolveE2eFixture>;
 

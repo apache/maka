@@ -4,18 +4,23 @@ import { link, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
+import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
-  createArtifactStore,
   createSqliteArtifactStore,
   createSqliteArtifactStoreWriteAuthority,
 } from '../artifact-store.js';
+import * as artifactStoreModule from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 
 describe('SQLite artifact metadata', () => {
+  test('does not expose the retired JSONL Artifact writer', () => {
+    assert.equal(Reflect.has(artifactStoreModule, 'createArtifactStore'), false);
+    assert.equal(Reflect.has(artifactStoreModule, 'createArtifactStoreWriteAuthority'), false);
+  });
+
   test('cuts over legacy metadata once and makes SQLite canonical without rewriting JSONL', async () => {
     await withWorkspace(async (root) => {
-      const legacy = createArtifactStore(root);
-      const migrated = await legacy.create(artifactInput('migrated', 'legacy bytes', 1));
+      const migrated = await seedLegacyArtifact(root, artifactInput('migrated', 'legacy bytes', 1));
       const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
       const legacyMetadata = await readFile(metadataPath);
 
@@ -47,8 +52,7 @@ describe('SQLite artifact metadata', () => {
 
   test('resumes an interrupted cutover atomically', async () => {
     await withWorkspace(async (root) => {
-      const legacy = createArtifactStore(root);
-      const record = await legacy.create(artifactInput('legacy', 'durable', 1));
+      const record = await seedLegacyArtifact(root, artifactInput('legacy', 'durable', 1));
       const interrupted = createSqliteArtifactStore(root, {
         failpoint: (point) => {
           if (point === 'after_cutover_rows_copied') {
@@ -71,7 +75,7 @@ describe('SQLite artifact metadata', () => {
 
   test('runs the first legacy cutover under the artifact writer lock', async () => {
     await withWorkspace(async (root) => {
-      await createArtifactStore(root).create(artifactInput('legacy', 'durable', 1));
+      await seedLegacyArtifact(root, artifactInput('legacy', 'durable', 1));
       const held = await holdArtifactWriterLock(root);
       const store = createSqliteArtifactStore(root);
       let settled = false;
@@ -90,13 +94,12 @@ describe('SQLite artifact metadata', () => {
 
   test('fails closed when an old writer changes JSONL after cutover', async () => {
     await withWorkspace(async (root) => {
-      const legacy = createArtifactStore(root);
-      await legacy.create(artifactInput('legacy', 'durable', 1));
+      await seedLegacyArtifact(root, artifactInput('legacy', 'durable', 1));
       const store = createSqliteArtifactStore(root);
       await store.list('session-1');
       store.close?.();
 
-      await createArtifactStore(root).create(artifactInput('old-writer', 'stale', 2));
+      await seedLegacyArtifact(root, artifactInput('old-writer', 'stale', 2));
       const reopened = createSqliteArtifactStore(root);
       try {
         await assert.rejects(
@@ -205,6 +208,37 @@ function artifactInput(id: string, content: string, now: number) {
     source: 'fixture' as const,
     now,
   };
+}
+
+async function seedLegacyArtifact(
+  root: string,
+  input: ReturnType<typeof artifactInput>,
+): Promise<ArtifactRecord> {
+  const relativePath = `${input.sessionId}/${input.id}-${input.name}`;
+  const payloadPath = join(root, 'artifacts', relativePath);
+  const metadataPath = join(root, 'artifacts', 'metadata.jsonl');
+  await mkdir(dirname(payloadPath), { recursive: true });
+  await writeFile(payloadPath, input.content);
+  const record: ArtifactRecord = {
+    id: input.id,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    createdAt: input.now,
+    name: input.name,
+    kind: input.kind,
+    relativePath,
+    sizeBytes: Buffer.byteLength(input.content),
+    source: input.source,
+    status: 'live',
+  };
+  let existing = '';
+  try {
+    existing = await readFile(metadataPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  await writeFile(metadataPath, `${existing}${JSON.stringify(record)}\n`);
+  return record;
 }
 
 async function createPublicationResidue(

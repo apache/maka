@@ -7,14 +7,13 @@ import type {
   ToolResultArchiveRecorderInput,
   ToolResultArchiveResourceReadInput,
 } from '@maka/runtime';
-import type { createArtifactStore, createReadImageSnapshotter } from '@maka/storage';
+import type { ArtifactStore, createReadImageSnapshotter } from '@maka/storage';
 import {
   persistArchivedToolResultToArtifacts,
   readArchivedToolResultFromArtifacts,
   readArchivedToolResultResourceFromArtifacts,
 } from './tool-result-archive-artifacts.js';
 
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type ReadImageSnapshotter = ReturnType<typeof createReadImageSnapshotter>;
 
 export interface ToolArtifactPersistenceDeps {

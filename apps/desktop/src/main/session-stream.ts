@@ -31,7 +31,7 @@ import type {
   buildPricingLookup,
 } from '@maka/runtime';
 import {
-  createArtifactStore,
+  type ArtifactStore,
   createAttachmentByteReader,
   createTelemetryRepo,
   openRuntimeEventPersistence,
@@ -54,7 +54,6 @@ type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
 type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];

@@ -257,8 +257,10 @@ evidence fails closed to a summary trajectory instead of mixing authorities.
 The remaining storage work is deliberately classified rather than implied
 complete:
 
-- legacy operational writers and compatibility-only JSONL code can be removed
-  only after the migration/cutover matrix is complete;
+- Artifact metadata no longer exposes a production JSONL writer;
+  `artifacts/metadata.jsonl` is accepted only as fingerprinted, read-only
+  cutover evidence, and can be removed after the migration/cutover matrix is
+  complete;
 - StoredMessage transcript bodies remain append-only JSONL;
 - automation, connections, credentials, settings, MCP configuration, skills,
   and device identity are configuration state and stay outside this operational

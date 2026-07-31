@@ -23,7 +23,7 @@ import {
   restoreOperationalStateBackup,
   validateOperationalStateBackup,
 } from '../operational-state-backup.js';
-import { createArtifactStore, createSqliteArtifactStore } from '../artifact-store.js';
+import { createSqliteArtifactStore } from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
 
 test('backs up live WAL state and restores a writable relational closure', async () => {
@@ -414,15 +414,20 @@ test('fails closed when retained legacy Artifact evidence changes after cutover'
     } finally {
       artifacts.close?.();
     }
-    await createArtifactStore(stateRoot).create({
-      id: 'stale-writer-artifact',
-      sessionId,
-      turnId: 'turn-2',
-      name: 'stale.txt',
-      kind: 'file',
-      content: 'stale\n',
-      now: 2,
-    });
+    await writeFile(
+      join(stateRoot, 'artifacts', 'metadata.jsonl'),
+      `${JSON.stringify({
+        id: 'stale-writer-artifact',
+        sessionId,
+        turnId: 'turn-2',
+        createdAt: 2,
+        name: 'stale.txt',
+        kind: 'file',
+        relativePath: `${sessionId}/stale-writer-artifact-stale.txt`,
+        sizeBytes: 6,
+        status: 'live',
+      })}\n`,
+    );
 
     await assert.rejects(
       createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot }),

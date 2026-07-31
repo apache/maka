@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createArtifactStore } from '../artifact-store.js';
+import { createSqliteArtifactStore as createArtifactStore } from '../artifact-store.js';
 import * as storage from '../index.js';
 
 test('persists the exact prepared request as a private artifact', async () => {

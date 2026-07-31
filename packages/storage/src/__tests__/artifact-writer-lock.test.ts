@@ -18,11 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { openHeadlessArtifactStoreForWrite } from '../artifact-stores.js';
-import {
-  createArtifactStore,
-  createSqliteArtifactStore,
-  type CreateArtifactInput,
-} from '../artifact-store.js';
+import { createSqliteArtifactStore, type CreateArtifactInput } from '../artifact-store.js';
 import { withArtifactWriterLock } from '../artifact-writer-lock.js';
 import { createHeadlessRootLease, resolveStorageRoot } from '../root-authority.js';
 import { exportSessionBundleState } from '../session-bundle-policy.js';
@@ -31,6 +27,7 @@ import { createSessionStore } from '../session-store.js';
 const TEST_TIMEOUT_MS = 15_000;
 const OPERATION_TIMEOUT_MS = 5_000;
 const COMPETING_PAYLOAD_BYTES = 4 * 1024 * 1024;
+const createArtifactStore = createSqliteArtifactStore;
 
 test('public Store mutation waits for a child-held writer lock and preserves metadata', {
   timeout: TEST_TIMEOUT_MS,
@@ -65,8 +62,8 @@ test('public Store mutations in separate processes reload and publish under one 
 
     const parentStore = createArtifactStore(stateRoot);
     await parentStore.list('session-1');
-    const holder = await spawnLockHolder(stateRoot);
     const child = await spawnPublicWriter(stateRoot, 'session-1');
+    const holder = await spawnLockHolder(stateRoot);
     try {
       const childInput = artifactInput('child-public', undefined, 3);
       const childPayload = repeatedPayload('child-public:', COMPETING_PAYLOAD_BYTES);

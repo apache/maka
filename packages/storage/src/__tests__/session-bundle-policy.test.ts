@@ -15,7 +15,11 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES, type RuntimeEvent } from '@maka/core';
+import {
+  MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
+  type ArtifactRecord,
+  type RuntimeEvent,
+} from '@maka/core';
 import {
   assertSessionBundleRootLayout,
   exportSessionBundleState,
@@ -23,12 +27,14 @@ import {
   type SessionBundleExportError,
 } from '../session-bundle-policy.js';
 import {
-  createArtifactStore,
-  createArtifactStoreWriteAuthority,
   createSqliteArtifactStore,
+  createSqliteArtifactStoreWriteAuthority,
 } from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
+
+const createArtifactStore = createSqliteArtifactStore;
+const createArtifactStoreWriteAuthority = createSqliteArtifactStoreWriteAuthority;
 
 test('exports one session only and excludes credential/config canaries', async () => {
   await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
@@ -293,8 +299,7 @@ test('exports legacy Artifact metadata into SQLite regardless of source record o
 test('fails closed when legacy Artifact evidence changes after SQLite cutover', async () => {
   await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
     const sessionId = await createSelectedSession(stateRoot);
-    const legacy = createArtifactStore(stateRoot);
-    await legacy.create({
+    await seedLegacyArtifact(stateRoot, {
       id: 'before-cutover',
       sessionId,
       turnId: 'turn-1',
@@ -310,7 +315,7 @@ test('fails closed when legacy Artifact evidence changes after SQLite cutover', 
       sqlite.close?.();
     }
 
-    await legacy.create({
+    await seedLegacyArtifact(stateRoot, {
       id: 'stale-writer',
       sessionId,
       turnId: 'turn-2',
@@ -545,8 +550,8 @@ test('authority recovery removes canonical root temps before bundle export', asy
       join(artifactRoot, 'metadata.jsonl.123.1700000000000.tmp'),
       join(artifactRoot, `.artifact-purge-intent.json.123.${uuid}.tmp`),
     ];
-    await writeFile(tempPaths[0]!, await readFile(join(artifactRoot, 'metadata.jsonl')));
-    await writeFile(tempPaths[1]!, await readFile(join(artifactRoot, 'metadata.jsonl')));
+    await writeFile(tempPaths[0]!, 'retired metadata writer residue\n');
+    await writeFile(tempPaths[1]!, 'retired metadata writer residue\n');
     await writeFile(tempPaths[2]!, JSON.stringify({ schemaVersion: 1, artifactIds: [record.id] }));
 
     await assertArtifactRecoveryRequired(
@@ -678,8 +683,7 @@ test('rejects every Artifact metadata file that the Artifact store cannot reopen
       await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
         const selectedSessionId = await createSelectedSession(stateRoot);
         const otherSessionId = await createSelectedSession(stateRoot);
-        const artifacts = createArtifactStore(stateRoot);
-        await artifacts.create({
+        const selectedRecord = await seedLegacyArtifact(stateRoot, {
           id: 'selected-artifact',
           sessionId: selectedSessionId,
           turnId: 'turn-1',
@@ -688,7 +692,7 @@ test('rejects every Artifact metadata file that the Artifact store cannot reopen
           content: 'selected\n',
           now: 1,
         });
-        await artifacts.create({
+        const otherRecord = await seedLegacyArtifact(stateRoot, {
           id: 'other-artifact',
           sessionId: otherSessionId,
           turnId: 'turn-1',
@@ -699,10 +703,7 @@ test('rejects every Artifact metadata file that the Artifact store cannot reopen
         });
 
         const metadataPath = join(stateRoot, 'artifacts', 'metadata.jsonl');
-        const records = (await readFile(metadataPath, 'utf8'))
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        const records: Array<Record<string, unknown>> = [{ ...selectedRecord }, { ...otherRecord }];
         const corrupted = corruption.apply(records);
         await writeFile(
           metadataPath,
@@ -949,6 +950,44 @@ async function createArtifactTransactionResidue(
   const purgeIntentTempName = `.artifact-purge-intent.json.123.${uuid}.tmp`;
   await writeFile(join(artifactRoot, purgeIntentTempName), purgeIntent);
   return `artifacts/${purgeIntentTempName}`;
+}
+
+async function seedLegacyArtifact(
+  stateRoot: string,
+  input: {
+    id: string;
+    sessionId: string;
+    turnId: string;
+    name: string;
+    kind: 'file';
+    content: string;
+    now: number;
+  },
+): Promise<ArtifactRecord> {
+  const relativePath = `${input.sessionId}/${input.id}-${input.name}`;
+  const payloadPath = join(stateRoot, 'artifacts', relativePath);
+  const metadataPath = join(stateRoot, 'artifacts', 'metadata.jsonl');
+  await mkdir(dirname(payloadPath), { recursive: true });
+  await writeFile(payloadPath, input.content);
+  const record: ArtifactRecord = {
+    id: input.id,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    createdAt: input.now,
+    name: input.name,
+    kind: input.kind,
+    relativePath,
+    sizeBytes: Buffer.byteLength(input.content),
+    status: 'live',
+  };
+  let existing = '';
+  try {
+    existing = await readFile(metadataPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  await writeFile(metadataPath, `${existing}${JSON.stringify(record)}\n`);
+  return record;
 }
 
 function escapeRegExp(value: string): string {

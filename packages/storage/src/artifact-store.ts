@@ -10,7 +10,6 @@ import {
   readFile,
   readdir,
   realpath,
-  rename,
   rm,
   stat,
   unlink,
@@ -41,7 +40,6 @@ import {
   isCanonicalArtifactRecoveryTempName,
 } from './artifact-storage-layout.js';
 import {
-  decodeArtifactMetadata,
   isSafeRelativeArtifactPath,
   validateCanonicalArtifactTargetName,
   validateRelativeArtifactPath,
@@ -73,15 +71,6 @@ const EMPTY_SESSION_SNAPSHOT: ArtifactSessionSnapshot = {
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
   readonly revision: ArtifactListRevision;
-}
-
-interface MetadataFileIdentity {
-  readonly dev: bigint;
-  readonly ino: bigint;
-  readonly size: bigint;
-  readonly mtimeNs: bigint;
-  readonly ctimeNs: bigint;
-  readonly birthtimeNs: bigint;
 }
 
 type ArtifactReadFailure = {
@@ -215,41 +204,17 @@ export interface ArtifactStoreWriteAuthority {
   close(): void;
 }
 
-export function createArtifactStore(workspaceRoot: string): ArtifactStore {
-  return new FileArtifactStore(workspaceRoot, 'legacy');
-}
-
 export function createSqliteArtifactStore(
   workspaceRoot: string,
   options: CreateSqliteArtifactMetadataOptions = {},
 ): ArtifactStore {
-  return new FileArtifactStore(
+  return new SqliteArtifactStore(
     workspaceRoot,
-    'legacy',
-    undefined,
-    undefined,
+    'self_managed',
     createSqliteArtifactMetadataRepository(workspaceRoot, options),
+    undefined,
+    undefined,
   );
-}
-
-export function createArtifactStoreWriteAuthority(
-  workspaceRoot: string,
-  options: {
-    assertAuthority?: () => Promise<void>;
-    leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority;
-  } = {},
-): ArtifactStoreWriteAuthority {
-  const store = new FileArtifactStore(
-    workspaceRoot,
-    'authority',
-    options.assertAuthority,
-    options.leaseBoundWriterLockAuthority,
-  );
-  return Object.freeze({
-    store,
-    recover: () => store.recoverForWriteWithAuthority(),
-    close: () => store.close(),
-  });
 }
 
 export function createSqliteArtifactStoreWriteAuthority(
@@ -260,12 +225,12 @@ export function createSqliteArtifactStoreWriteAuthority(
     cutover?: CreateSqliteArtifactMetadataOptions;
   } = {},
 ): ArtifactStoreWriteAuthority {
-  const store = new FileArtifactStore(
+  const store = new SqliteArtifactStore(
     workspaceRoot,
     'authority',
+    createSqliteArtifactMetadataRepository(workspaceRoot, options.cutover),
     options.assertAuthority,
     options.leaseBoundWriterLockAuthority,
-    createSqliteArtifactMetadataRepository(workspaceRoot, options.cutover),
   );
   return Object.freeze({
     store,
@@ -274,36 +239,32 @@ export function createSqliteArtifactStoreWriteAuthority(
   });
 }
 
-class FileArtifactStore implements ArtifactAuthorityStore {
+class SqliteArtifactStore implements ArtifactAuthorityStore {
   private artifactRoot: string;
-  private metadataPath: string;
   private purgeIntentPath: string;
   private records: ArtifactRecord[] = [];
   private sessionSnapshots = new Map<string, ArtifactSessionSnapshot>();
-  private loaded = false;
   private metadataReady = false;
   private recoveryRequired: boolean;
-  private legacyRecoveryRequired: boolean;
+  private selfManagedRecoveryRequired: boolean;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
-  private metadataIdentity: MetadataFileIdentity | null | undefined;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(
     private workspaceRoot: string,
-    private readonly recoveryMode: 'legacy' | 'authority',
+    private readonly recoveryMode: 'self_managed' | 'authority',
+    private readonly metadataRepository: ArtifactMetadataRepository,
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
-    private readonly metadataRepository?: ArtifactMetadataRepository,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
-    this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.recoveryRequired = recoveryMode === 'authority';
-    this.legacyRecoveryRequired = recoveryMode === 'legacy';
+    this.selfManagedRecoveryRequired = recoveryMode === 'self_managed';
   }
 
   close(): void {
-    this.metadataRepository?.close();
+    this.metadataRepository.close();
   }
 
   async create(input: CreateArtifactInput): Promise<ArtifactRecord> {
@@ -509,10 +470,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         await syncDirectory(targetDirectory);
         await this.writeMetadataUnlocked(nextRecords);
       } catch (error) {
-        if (targetLinked && isPublishedMetadataError(error)) {
-          preserveStaging = true;
-          this.invalidateWriterState();
-        } else if (targetLinked) {
+        if (targetLinked) {
           try {
             await removeFileDurably(target, targetDirectory);
           } catch (cleanupError) {
@@ -906,91 +864,15 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async load(): Promise<void> {
-    if (this.metadataRepository) {
-      await this.metadataRepository.ready();
-      this.metadataReady = true;
-      this.replaceRecords(this.metadataRepository.readAll());
-      this.loaded = true;
-      return;
-    }
-    let handle;
-    try {
-      handle = await open(this.metadataPath, 'r');
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-      if (!this.loaded || this.metadataIdentity !== null) {
-        this.replaceRecords([]);
-        this.metadataIdentity = null;
-        this.loaded = true;
-      }
-      return;
-    }
-    try {
-      const metadataStat = await handle.stat({ bigint: true });
-      if (!metadataStat.isFile()) throw artifactMetadataNotFile();
-      const identity = metadataFileIdentity(metadataStat);
-      if (this.loaded && sameMetadataIdentity(this.metadataIdentity, identity)) return;
-      const text = await handle.readFile({ encoding: 'utf8' });
-      this.replaceRecords(decodeArtifactMetadata(text));
-      this.metadataIdentity = identity;
-      this.loaded = true;
-    } finally {
-      await handle.close();
-    }
+    await this.metadataRepository.ready();
+    this.metadataReady = true;
+    this.replaceRecords(this.metadataRepository.readAll());
   }
 
   private async writeMetadataUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
-    if (this.metadataRepository) {
-      await this.metadataRepository.ready();
-      this.metadataReady = true;
-      this.metadataRepository.replaceAll(records);
-      this.loaded = true;
-      return;
-    }
-    const metadataDirectory = dirname(this.metadataPath);
-    const createdDirectory = await mkdir(metadataDirectory, { recursive: true });
-    if (createdDirectory !== undefined) {
-      await syncDirectoryChain(metadataDirectory, this.workspaceRoot);
-    }
-    const tempPath = `${this.metadataPath}.${process.pid}.${randomUUID()}.tmp`;
-    const payload = records.map((record) => JSON.stringify(record)).join('\n');
-    let published = false;
-    let publishedIdentity: MetadataFileIdentity | undefined;
-    let publicationError: MetadataPublicationError | undefined;
-    try {
-      await writeFile(tempPath, payload ? `${payload}\n` : '', {
-        encoding: 'utf8',
-        flag: 'wx',
-      });
-      await syncFile(tempPath);
-      const tempStat = await stat(tempPath, { bigint: true });
-      publishedIdentity = metadataFileIdentity(tempStat);
-      await rename(tempPath, this.metadataPath);
-      published = true;
-      await syncDirectory(metadataDirectory);
-    } catch (error) {
-      this.invalidateWriterState();
-      publicationError = new MetadataPublicationError(error, published);
-    }
-    if (!published) {
-      try {
-        await removeFileDurably(tempPath, metadataDirectory);
-      } catch (cleanupError) {
-        this.invalidateWriterState();
-        if (publicationError) {
-          throw new AggregateError(
-            [publicationError, cleanupError],
-            'Artifact metadata publication and temp cleanup both failed',
-          );
-        }
-        throw cleanupError;
-      }
-    }
-    if (publicationError) throw publicationError;
-    if (!publishedIdentity)
-      throw new Error('Artifact metadata publication identity is unavailable');
-    this.metadataIdentity = publishedIdentity;
-    this.loaded = true;
+    await this.metadataRepository.ready();
+    this.metadataReady = true;
+    this.metadataRepository.replaceAll(records);
   }
 
   private async prepareMutationUnlocked(
@@ -1007,11 +889,11 @@ class FileArtifactStore implements ArtifactAuthorityStore {
         }
       | { readonly kind: 'delete' | 'purge' },
   ): Promise<void> {
-    if (this.recoveryMode === 'legacy') {
+    if (this.recoveryMode === 'self_managed') {
       this.recoverableOrphans.clear();
-      if (this.legacyRecoveryRequired) {
+      if (this.selfManagedRecoveryRequired) {
         await this.prepareRecoveryUnlocked();
-        this.legacyRecoveryRequired = false;
+        this.selfManagedRecoveryRequired = false;
       } else {
         await this.reloadForMutationUnlocked();
         await this.recoverPurgeIntentUnlocked();
@@ -1035,30 +917,9 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
-    if (this.metadataRepository) {
-      await this.metadataRepository.ready();
-      this.metadataReady = true;
-      this.replaceRecords(this.metadataRepository.readAll());
-      this.loaded = true;
-      return;
-    }
-    try {
-      const handle = await open(this.metadataPath, 'r');
-      try {
-        const metadataStat = await handle.stat({ bigint: true });
-        if (!metadataStat.isFile()) throw artifactMetadataNotFile();
-        const text = await handle.readFile({ encoding: 'utf8' });
-        this.replaceRecords(decodeArtifactMetadata(text));
-        this.metadataIdentity = metadataFileIdentity(metadataStat);
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      if (!isNotFound(error)) throw error;
-      this.replaceRecords([]);
-      this.metadataIdentity = null;
-    }
-    this.loaded = true;
+    await this.metadataRepository.ready();
+    this.metadataReady = true;
+    this.replaceRecords(this.metadataRepository.readAll());
   }
 
   private async hasCanonicalRecoveryResidueUnlocked(): Promise<boolean> {
@@ -1320,20 +1181,17 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
   private invalidateWriterState(): void {
     if (this.recoveryMode === 'authority') this.recoveryRequired = true;
-    else this.legacyRecoveryRequired = true;
+    else this.selfManagedRecoveryRequired = true;
   }
 
-  private bindLegacyMutationRoot(canonicalRoot: string): void {
-    if (this.recoveryMode !== 'legacy' || this.workspaceRoot === canonicalRoot) return;
+  private bindMutationRoot(canonicalRoot: string): void {
+    if (this.workspaceRoot === canonicalRoot) return;
     this.workspaceRoot = canonicalRoot;
     this.artifactRoot = join(canonicalRoot, 'artifacts');
-    this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.replaceRecords([]);
-    this.loaded = false;
-    this.metadataIdentity = undefined;
     this.recoverableOrphans.clear();
-    this.legacyRecoveryRequired = true;
+    if (this.recoveryMode === 'self_managed') this.selfManagedRecoveryRequired = true;
   }
 
   private replaceRecords(records: ArtifactRecord[]): void {
@@ -1537,10 +1395,10 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     return this.enqueueSerialized(async () => {
-      if (this.metadataRepository && !this.metadataReady) {
+      if (!this.metadataReady) {
         return this.runWithWriterLock(async () => {
           await this.assertAuthority?.();
-          await this.metadataRepository?.ready();
+          await this.metadataRepository.ready();
           this.metadataReady = true;
           return operation();
         });
@@ -1565,7 +1423,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
       return withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, operation);
     }
     return withArtifactWriterLock(this.workspaceRoot, async (canonicalRoot) => {
-      this.bindLegacyMutationRoot(canonicalRoot);
+      this.bindMutationRoot(canonicalRoot);
       return operation();
     });
   }
@@ -1573,33 +1431,6 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
 function publicationStagingName(targetBasename: string): string {
   return `.artifact-publish.${artifactTargetHash(targetBasename)}.${randomUUID()}.tmp`;
-}
-
-function sameMetadataIdentity(
-  left: MetadataFileIdentity | null | undefined,
-  right: MetadataFileIdentity,
-): boolean {
-  return (
-    left !== null &&
-    left !== undefined &&
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs &&
-    left.birthtimeNs === right.birthtimeNs
-  );
-}
-
-function metadataFileIdentity(fileStat: BigIntStats): MetadataFileIdentity {
-  return {
-    dev: fileStat.dev,
-    ino: fileStat.ino,
-    size: fileStat.size,
-    mtimeNs: fileStat.mtimeNs,
-    ctimeNs: fileStat.ctimeNs,
-    birthtimeNs: fileStat.birthtimeNs,
-  };
 }
 
 async function openRealTarget(path: string) {
@@ -1665,12 +1496,6 @@ function conversationCopyArtifactId(
 
 function artifactWriteRecoveryRequired(): Error {
   return new Error('Artifact write recovery is required before another mutation');
-}
-
-function artifactMetadataNotFile(): NodeJS.ErrnoException {
-  const error = new Error('Artifact metadata path is not a regular file') as NodeJS.ErrnoException;
-  error.code = 'EISDIR';
-  return error;
 }
 
 function optionalCanonicalText(value: string | undefined): string | undefined {
@@ -1774,19 +1599,6 @@ function truncateWithoutSplittingSurrogate(value: string, maxCodeUnits: number):
   const truncated = value.slice(0, maxCodeUnits);
   const last = truncated.charCodeAt(truncated.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? truncated.slice(0, -1) : truncated;
-}
-
-class MetadataPublicationError extends Error {
-  constructor(
-    cause: unknown,
-    readonly published: boolean,
-  ) {
-    super('Artifact metadata publication failed', { cause });
-  }
-}
-
-function isPublishedMetadataError(error: unknown): boolean {
-  return error instanceof MetadataPublicationError && error.published;
 }
 
 async function removeFileDurably(path: string, directory: string): Promise<boolean> {
