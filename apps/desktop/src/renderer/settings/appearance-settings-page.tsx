@@ -11,6 +11,7 @@ import type {
 import {
   RadioList,
   RadioListItem,
+  FormLayout,
   SegmentedControl,
   SegmentedControlItem,
   TextArea,
@@ -171,11 +172,7 @@ export function PersonalizationSettingsPage(props: {
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
       <Card padding={0} className="settingsRows">
-        <div className="settingsFormRow settingsPersonalizationDisplayName">
-          <div>
-            <strong>{copy.displayName}</strong>
-            <small>{copy.displayNameHelp}</small>
-          </div>
+        <FormLayout className="settingsFormLayout">
           <TextInput
             type="text"
             value={displayName}
@@ -183,10 +180,9 @@ export function PersonalizationSettingsPage(props: {
             onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
             label={copy.displayName}
-            isLabelHidden
+            description={copy.displayNameHelp}
             width="100%"
           />
-        </div>
 
         {/*
           PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
@@ -208,11 +204,6 @@ export function PersonalizationSettingsPage(props: {
           </SegmentedControl>}
         />
 
-        <div className="settingsFormRow" data-orient="vertical">
-          <div>
-            <strong>{copy.assistantTone}</strong>
-            <small>{copy.assistantToneHelp}</small>
-          </div>
           <TextArea
             value={assistantTone}
             onChange={(value) => {
@@ -225,14 +216,14 @@ export function PersonalizationSettingsPage(props: {
             rows={4}
             hasSpellCheck={false}
             label={copy.assistantTone}
-            isLabelHidden
+            description={copy.assistantToneHelp}
             width="100%"
             style={{
               boxSizing: 'border-box',
               height: 'calc(var(--space-16) + var(--space-5))',
             }}
           />
-        </div>
+        </FormLayout>
       </Card>
     </div>
   );

@@ -30,4 +30,7 @@ test('horizontal setting controls use Astryx Item slots', () => {
     assert.match(source, /<Item\b/);
     assert.doesNotMatch(source, /className="settings(?:Form)?Row\b/);
   }
+
+  const css = read('apps/desktop/src/renderer/styles/settings/rows.css');
+  assert.doesNotMatch(css, /\.settingsRow\b|\.settingsFormRow\b/);
 });
