@@ -158,6 +158,18 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(confirm).toBeVisible();
   await confirm.getByRole('button', { name: '取消', exact: true }).click();
   await expect(confirm).toBeHidden();
+
+  // Confirming deletion refreshes the backing list before the detail session
+  // closes. The session must retain its content until Astryx observes false,
+  // then hand product-navigation focus to the provider search.
+  await deleteButton.click();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: '删除', exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(detailDialog).toBeHidden();
+  const providerSearch = page.getByPlaceholder('搜索服务商');
+  await expect(providerSearch).toBeFocused();
+  await expect(connection).toHaveCount(0);
   await cdp.send('Emulation.clearDeviceMetricsOverride');
 });
 

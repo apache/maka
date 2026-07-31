@@ -80,7 +80,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
 
   it('ProvidersPanel surfaces model connection reload failures instead of sticking on loading', async () => {
     const src = await readProviderSettingsCombinedSource();
-    const panel = src.match(/export function ProvidersPanel[\s\S]*?const selected = useMemo/)?.[0] ?? '';
+    const panel = src.match(/export function ProvidersPanel[\s\S]*?function chipTitle/)?.[0] ?? '';
     const reloadMatch = src.match(/async function reload\(\): Promise<boolean> \{[\s\S]*?\n  \}/);
     assert.ok(reloadMatch, 'ProvidersPanel reload() must exist');
     assert.match(
@@ -117,11 +117,6 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       src,
       /onCreated=\{async \(_slug, modelDiscoveryError\) => \{[\s\S]*const lifecycle = providerDialogLifecycleRef\.current;[\s\S]*const reloaded = await reload\(\);[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*\) return;[\s\S]*requestDialogClose\(\);/,
       'AddProviderForm completion must not close a newer dialog after the original dialog was dismissed',
-    );
-    assert.match(
-      src,
-      /onDeleted=\{async \(\) => \{[\s\S]*const reloaded = await reload\(\);[\s\S]*focusProviderSearchAfterCloseRef\.current = true;[\s\S]*requestDialogClose\(\);/,
-      'Connection delete completion must refresh first and then close Astryx with a product navigation focus intent',
     );
   });
 
@@ -401,11 +396,6 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const src = await readProviderSettingsCombinedSource();
     const reloadBlock = src.match(/async function reload\(\)[\s\S]*?^\s*\}/m)?.[0] ?? '';
 
-    assert.match(
-      src,
-      /if \(dialogState\?\.kind !== 'manage' \|\| selected\) return;[\s\S]*requestDialogClose\(\)/,
-      'a removed selected connection must close through Astryx before conditional unmount',
-    );
     assert.doesNotMatch(reloadBlock, /list\[0\]\?\.slug/, 'reload must not auto-select the first provider');
   });
 

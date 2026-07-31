@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
@@ -35,7 +35,7 @@ export { ProviderLogo, providerDisplay } from './provider-display';
 
 type ProviderDialogState =
   | { kind: 'create'; providerType: ProviderType }
-  | { kind: 'manage'; slug: string }
+  | { kind: 'manage'; connection: LlmConnection }
   | null;
 
 type CatalogCategory = ProviderCatalogGroup | 'accounts';
@@ -165,9 +165,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
     if (loading || !initialConnectionSlug || initialConnectionDetailOpenedRef.current) return;
-    if (!connections.some((connection) => connection.slug === initialConnectionSlug)) return;
+    const connection = connections.find((candidate) => candidate.slug === initialConnectionSlug);
+    if (!connection) return;
     initialConnectionDetailOpenedRef.current = true;
-    openDialog({ kind: 'manage', slug: initialConnectionSlug });
+    openDialog({ kind: 'manage', connection });
   }, [loading, initialConnectionSlug, connections]);
 
   useEffect(() => {
@@ -176,17 +177,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     onInitialCreateProviderConsumed?.();
   }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
-  const selected = useMemo(
-    () => dialogState?.kind === 'manage'
-      ? connections.find((connection) => connection.slug === dialogState.slug) ?? null
-      : null,
-    [connections, dialogState],
-  );
-
-  useEffect(() => {
-    if (dialogState?.kind !== 'manage' || selected) return;
-    requestDialogClose();
-  }, [dialogState, selected]);
+  const selected = dialogState?.kind === 'manage'
+    ? connections.find((connection) => connection.slug === dialogState.connection.slug)
+      ?? dialogState.connection
+    : null;
 
   function chipTitle(connection: LlmConnection): string {
     const status = connectionChipStatus(connection, locale);
@@ -266,7 +260,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                       data-disabled={connection.enabled ? undefined : 'true'}
                       aria-label={chipAriaLabel(connection)}
                       title={chipTitle(connection)}
-                      render={<button type="button" onClick={() => openDialog({ kind: 'manage', slug: connection.slug })} />}
+                      render={<button type="button" onClick={() => openDialog({ kind: 'manage', connection })} />}
                     >
                       <ItemMedia><ProviderLogo type={connection.providerType} compact /></ItemMedia>
                       <ItemContent>
