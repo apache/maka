@@ -1152,7 +1152,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
   }
 });
 
-test('queued follow-up binds Client Capabilities to its submitting connection', {
+test('mixed-Client queued follow-ups preserve each submitting connection through root handoff', {
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
@@ -1226,19 +1226,53 @@ test('queued follow-up binds Client Capabilities to its submitting connection', 
       operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-b'),
     );
     assert.equal(queued.ok && queued.result.disposition, 'followup');
+    const queuedAfter = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'followup-from-provider-a',
+        content: { text: HOLD_EXTERNAL_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(queuedAfter.ok && queuedAfter.result.disposition, 'followup');
 
     backend?.release();
     await waitUntil(() => {
       const state = fixture.coordinator.readRootState(fixture.sessionId);
       return state.kind === 'active' && state.turnId !== firstTurnId;
     });
-    const followupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
-    assert.deepEqual(followupSnapshot?.registrationIds, ['registration-b']);
-    followupSnapshot?.release();
+    const firstFollowup = fixture.coordinator.readRootState(fixture.sessionId);
+    assert.equal(firstFollowup.kind, 'active');
+    if (firstFollowup.kind !== 'active') return;
+    const firstFollowupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(firstFollowupSnapshot?.registrationIds, ['registration-b']);
+    firstFollowupSnapshot?.release();
 
-    const followup = fixture.coordinator.readRootState(fixture.sessionId);
-    assert.equal(followup.kind, 'active');
-    if (followup.kind === 'active') await fixture.coordinator.stopRoot(followup);
+    await waitUntil(() => backend?.sendCount === 2);
+    backend?.release();
+    await waitUntil(() => {
+      const state = fixture.coordinator.readRootState(fixture.sessionId);
+      return state.kind === 'active' && state.turnId !== firstFollowup.turnId;
+    });
+    const secondFollowupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(secondFollowupSnapshot?.registrationIds, ['registration-a']);
+    secondFollowupSnapshot?.release();
+
+    await waitUntil(() => backend?.sendCount === 3);
+    backend?.release();
+    await waitUntil(
+      () => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle',
+      5_000,
+    );
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.deepEqual(
+      admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
+      [[], ['followup-from-provider-b'], ['followup-from-provider-a']],
+    );
   } finally {
     first.close();
     second.close();

@@ -7,6 +7,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
@@ -68,6 +69,35 @@ const CONNECTION_EFFECT_MODEL_IDS = Array.from(
   { length: 129 },
   (_, index) => `connection-effect-model-${String(index + 1).padStart(3, '0')}`,
 );
+
+test('production Host settles dispatched Client Capabilities before publishing Ready', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const prepared = await seedDispatchedClientCapability(fixture);
+    const host = await fixture.startHost({
+      sessionId: fixture.sessionId,
+      runId: prepared.runId,
+    });
+    try {
+      const outcome = host.recoveryOutcome;
+      assert.equal(outcome?.content?.kind, 'function_response');
+      if (outcome?.content?.kind !== 'function_response') return;
+      assert.equal(outcome.content.name, prepared.toolName);
+      assert.equal(outcome.content.isError, true);
+      assert.ok(outcome.content.result && typeof outcome.content.result === 'object');
+      const recovered = outcome.content.result as {
+        kind?: unknown;
+        uncertainOutcome?: unknown;
+      };
+      assert.equal(recovered.kind, 'text');
+      assert.deepEqual(recovered.uncertainOutcome, {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      });
+    } finally {
+      await fixture.stopHost(host);
+    }
+  });
+});
 
 test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
@@ -206,6 +236,79 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
     }
   });
 });
+
+async function seedDispatchedClientCapability(
+  fixture: ExecutionFixture,
+): Promise<{ runId: string; toolName: string }> {
+  const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire execution root for Client Capability setup');
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const operationId = 'client-capability-before-ready';
+    const invocationId = `${operationId}-invocation`;
+    const runId = `${operationId}-run`;
+    const turnId = `${operationId}-turn`;
+    const providerToolCallId = `${operationId}-call`;
+    const toolName = 'mcp__client_fixture__navigate';
+    const args = { url: 'https://example.test/recovery' };
+    const canonicalArgsHash = canonicalToolArgsHash(toolName, args);
+    const call: RuntimeEvent = {
+      id: `${operationId}_call`,
+      invocationId,
+      runId,
+      sessionId: fixture.sessionId,
+      turnId,
+      ts: 10,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'function_call',
+        id: providerToolCallId,
+        name: toolName,
+        args,
+      },
+      refs: { operationId, toolCallId: providerToolCallId },
+    };
+    const dispatch: RuntimeEvent = {
+      id: `${operationId}_dispatch`,
+      invocationId,
+      runId,
+      sessionId: fixture.sessionId,
+      turnId,
+      ts: 10,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      actions: {
+        toolDispatch: {
+          protocol: TOOL_BOUNDARY_PROTOCOL_V1,
+          operationId,
+          providerToolCallId,
+          toolName,
+          canonicalArgsHash,
+          recoveryMode: 'outcome_unknown',
+        },
+      },
+      refs: { operationId, toolCallId: providerToolCallId },
+    };
+    await stores.runtimeEventStore.commitToolPrepared({
+      operationId,
+      journalEventId: `${operationId}_prepared`,
+      runtimeEvent: call,
+      dispatchRuntimeEvent: dispatch,
+      providerToolCallId,
+      toolName,
+      canonicalArgsHash,
+      recoveryMode: 'outcome_unknown',
+      committedAt: 10,
+    });
+    return { runId, toolName };
+  } finally {
+    await owner.close();
+  }
+}
 
 test('two UDS Clients share one Runtime Policy authority and CAS winner', async () => {
   await withExecutionRoot(async (fixture) => {
@@ -1777,6 +1880,7 @@ interface ExecutionHostHandle {
   child: ChildProcess;
   hostEpoch: string;
   endpoint: string;
+  recoveryOutcome?: RuntimeEvent;
 }
 
 interface TurnLedger {
@@ -2154,8 +2258,11 @@ class ExecutionFixture {
     }
   }
 
-  async startHost(): Promise<ExecutionHostHandle> {
-    const child = this.spawnHost('inherit');
+  async startHost(recoveryProbe?: {
+    sessionId: string;
+    runId: string;
+  }): Promise<ExecutionHostHandle> {
+    const child = this.spawnHost('inherit', recoveryProbe);
     const ready = await waitForHostReady(child);
     return { child, ...ready };
   }
@@ -2294,10 +2401,18 @@ class ExecutionFixture {
     await rm(this.base, { recursive: true, force: true });
   }
 
-  private spawnHost(stderr: 'inherit' | 'ignore'): ChildProcess {
+  private spawnHost(
+    stderr: 'inherit' | 'ignore',
+    recoveryProbe?: { sessionId: string; runId: string },
+  ): ChildProcess {
     const child = fork(
       new URL('./fixtures/execution-host.js', import.meta.url),
-      [this.root, this.capability.rootId, '60000'],
+      [
+        this.root,
+        this.capability.rootId,
+        '60000',
+        ...(recoveryProbe ? [recoveryProbe.sessionId, recoveryProbe.runId] : []),
+      ],
       { stdio: ['ignore', 'ignore', stderr, 'ipc'] },
     );
     this.#children.add(child);
@@ -2642,7 +2757,9 @@ function userRuntimeContent(
   return undefined;
 }
 
-function waitForHostReady(child: ChildProcess): Promise<{ hostEpoch: string; endpoint: string }> {
+function waitForHostReady(
+  child: ChildProcess,
+): Promise<{ hostEpoch: string; endpoint: string; recoveryOutcome?: RuntimeEvent }> {
   return withTimeout(
     new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -2661,7 +2778,11 @@ function waitForHostReady(child: ChildProcess): Promise<{ hostEpoch: string; end
       const onMessage = (message: unknown) => {
         if (!isHostReadyMessage(message)) return;
         cleanup();
-        resolve({ hostEpoch: message.hostEpoch, endpoint: message.endpoint });
+        resolve({
+          hostEpoch: message.hostEpoch,
+          endpoint: message.endpoint,
+          ...(message.recoveryOutcome ? { recoveryOutcome: message.recoveryOutcome } : {}),
+        });
       };
       child.once('error', onError);
       child.once('exit', onExit);
@@ -2672,15 +2793,20 @@ function waitForHostReady(child: ChildProcess): Promise<{ hostEpoch: string; end
   );
 }
 
-function isHostReadyMessage(
-  value: unknown,
-): value is { type: 'ready'; hostEpoch: string; endpoint: string } {
+function isHostReadyMessage(value: unknown): value is {
+  type: 'ready';
+  hostEpoch: string;
+  endpoint: string;
+  recoveryOutcome?: RuntimeEvent;
+} {
   if (!value || typeof value !== 'object') return false;
   const message = value as Record<string, unknown>;
   return (
     message.type === 'ready' &&
     typeof message.hostEpoch === 'string' &&
-    typeof message.endpoint === 'string'
+    typeof message.endpoint === 'string' &&
+    (message.recoveryOutcome === undefined ||
+      (typeof message.recoveryOutcome === 'object' && message.recoveryOutcome !== null))
   );
 }
 

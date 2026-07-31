@@ -555,6 +555,127 @@ describe('Host Client Capability coordinator', () => {
     connection.close();
     coordinator.close();
   });
+
+  test('rejects malformed chunk-state transitions without losing invocation ownership', async () => {
+    const cases = [
+      {
+        name: 'start before acceptance',
+        transition: (connection: ClientCapabilityConnection, invocationId: string) => {
+          connection.accept({
+            kind: 'client.capability.result_start',
+            invocationId,
+            byteLength: 2,
+            chunkCount: 1,
+          });
+        },
+        message: /chunks started outside the accepted phase/,
+      },
+      {
+        name: 'chunk before start',
+        transition: (connection: ClientCapabilityConnection, invocationId: string) => {
+          connection.accept({ kind: 'client.capability.accepted', invocationId });
+          connection.accept({
+            kind: 'client.capability.result_chunk',
+            invocationId,
+            index: 0,
+            data: Buffer.from('{}').toString('base64'),
+          });
+        },
+        message: /chunk is out of sequence/,
+      },
+      {
+        name: 'duplicate start',
+        transition: (connection: ClientCapabilityConnection, invocationId: string) => {
+          connection.accept({ kind: 'client.capability.accepted', invocationId });
+          connection.accept({
+            kind: 'client.capability.result_start',
+            invocationId,
+            byteLength: 2,
+            chunkCount: 1,
+          });
+          connection.accept({
+            kind: 'client.capability.result_start',
+            invocationId,
+            byteLength: 2,
+            chunkCount: 1,
+          });
+        },
+        message: /chunks started outside the accepted phase/,
+      },
+      {
+        name: 'unchunked result after start',
+        transition: (connection: ClientCapabilityConnection, invocationId: string) => {
+          connection.accept({ kind: 'client.capability.accepted', invocationId });
+          connection.accept({
+            kind: 'client.capability.result_start',
+            invocationId,
+            byteLength: 2,
+            chunkCount: 1,
+          });
+          connection.accept({
+            kind: 'client.capability.result',
+            invocationId,
+            result: textResult('invalid terminal form'),
+          });
+        },
+        message: /result arrived outside the accepted phase/,
+      },
+      {
+        name: 'out-of-order chunk',
+        transition: (connection: ClientCapabilityConnection, invocationId: string) => {
+          connection.accept({ kind: 'client.capability.accepted', invocationId });
+          connection.accept({
+            kind: 'client.capability.result_start',
+            invocationId,
+            byteLength: 2,
+            chunkCount: 1,
+          });
+          connection.accept({
+            kind: 'client.capability.result_chunk',
+            invocationId,
+            index: 1,
+            data: Buffer.from('{}').toString('base64'),
+          });
+        },
+        message: /chunk is out of sequence/,
+      },
+    ] as const;
+
+    for (const malformed of cases) {
+      const coordinator = createCoordinator();
+      let resolveInvocation!: (invocationId: string) => void;
+      const invocationArrived = new Promise<string>((resolve) => {
+        resolveInvocation = resolve;
+      });
+      const connection = coordinator.attachConnection('connection-a', {
+        send: async (frame) => {
+          if (frame.kind === 'client.capability.call') {
+            resolveInvocation(frame.invocationId);
+          }
+        },
+      });
+      await replace(coordinator, 'connection-a', 'registration-a', 'opaque');
+      await coordinator.bindSession('session-a', 'connection-a');
+      const snapshot = coordinator.snapshotForSession('session-a');
+      assert.ok(snapshot);
+      const pending = invoke(snapshot.tools[0]);
+      const invocationId = await invocationArrived;
+
+      try {
+        assert.throws(
+          () => malformed.transition(connection, invocationId),
+          malformed.message,
+          malformed.name,
+        );
+      } finally {
+        connection.close();
+        const outcome = await Promise.allSettled([pending]);
+        snapshot.release();
+        coordinator.close();
+        assert.equal(outcome[0]?.status, 'rejected', malformed.name);
+      }
+    }
+  });
 });
 
 async function assertLossClassification(
