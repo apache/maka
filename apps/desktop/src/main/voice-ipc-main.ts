@@ -28,6 +28,8 @@ const MAX_ACTIVE_OPERATIONS = 32;
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 const TRANSCRIPTION_TIMEOUT_MS = 90_000;
 const REALTIME_TOKEN_TIMEOUT_MS = 20_000;
+const REALTIME_CONNECT_TIMEOUT_MS = 30_000;
+const MAX_REALTIME_SDP_BYTES = 256 * 1024;
 const AUDIO_MIME_TYPES = new Set([
   'audio/wav',
   'audio/wave',
@@ -55,7 +57,7 @@ export interface VoiceIpcService {
   begin(input: VoiceBeginRequest): Promise<VoiceBeginResult>;
   finishCapture(operationId: unknown, input: unknown): Promise<VoiceFinishCaptureResult>;
   cancel(operationId: unknown): void;
-  createRealtimeSession(): Promise<VoiceRealtimeClientSession>;
+  createRealtimeSession(offerSdp: unknown): Promise<VoiceRealtimeClientSession>;
   closeRealtimeSession(sessionId: unknown): void;
   validateCoordinatorToolCall(input: unknown): VoiceCoordinatorToolCall;
   consumeNativeAudioOperation(input: {
@@ -173,68 +175,91 @@ export function createVoiceIpcService(deps: {
     return operation.audio;
   }
 
-  async function createRealtimeSession(): Promise<VoiceRealtimeClientSession> {
+  async function createRealtimeSession(offerSdpInput: unknown): Promise<VoiceRealtimeClientSession> {
     if (realtimeLease && realtimeLease.expiresAt > now()) {
       throw new Error('voice_realtime_session_already_active');
     }
     realtimeLease = undefined;
-    const { plan } = await resolveConfiguredRoute({ intent: 'voice_chat' });
-    if (plan.kind === 'blocked') throw new Error(`voice_route_blocked:${plan.reason}`);
-    if (plan.kind !== 'realtime_voice') throw new Error('voice_realtime_not_ready');
-    const connection = await requireConnection(plan.target.connectionSlug);
-    const secret = await deps.resolveConnectionSecret(connection.slug);
-    if (providerAuthRequiresSecret(connection.providerType) && !secret) {
-      throw new Error('voice_connection_secret_missing');
-    }
-    const baseUrl = effectiveBaseUrl(connection);
-    const tokenUrl = endpointUrl(baseUrl, 'realtime/client_secrets');
-    const endpoint = endpointUrl(baseUrl, 'realtime/calls');
-    const response = await fetchImpl(tokenUrl, {
-      method: 'POST',
-      headers: requestHeaders(secret),
-      body: JSON.stringify({
-        session: {
-          type: 'realtime',
-          model: plan.target.modelId,
-          instructions:
-            'You are Maka Voice Coordinator. Keep responses concise. Use only the four coordination tools for work; never claim a task changed unless the tool output confirms it.',
-          audio: {
-            output: {
-              voice: (await deps.settingsStore.get()).voice.realtime.voice,
-            },
-          },
-          tools: realtimeCoordinatorTools(),
-          tool_choice: 'auto',
-        },
-      }),
-      signal: AbortSignal.timeout(REALTIME_TOKEN_TIMEOUT_MS),
-    });
-    const payload = parseJsonObject(await readBoundedResponse(response));
-    if (!response.ok) throw providerHttpError('realtime_session', response.status);
-    const nested =
-      payload.client_secret && typeof payload.client_secret === 'object'
-        ? (payload.client_secret as Record<string, unknown>)
-        : {};
-    const clientSecret =
-      typeof payload.value === 'string'
-        ? payload.value
-        : typeof nested.value === 'string'
-          ? nested.value
-          : '';
-    if (!clientSecret) throw new Error('voice_realtime_secret_missing');
-    const expiresAtRaw = payload.expires_at ?? nested.expires_at;
+    const offerSdp = normalizeRealtimeOfferSdp(offerSdpInput);
     const sessionId = randomUUID();
-    const expiresAt =
-      typeof expiresAtRaw === 'number' ? expiresAtRaw * 1_000 : now() + 60_000;
-    realtimeLease = { sessionId, expiresAt: now() + 24 * 60 * 60_000 };
-    return {
-      sessionId,
-      clientSecret,
-      endpoint,
-      model: plan.target.modelId,
-      providerLabel: plan.target.providerLabel ?? plan.target.connectionSlug,
-      expiresAt,
-    };
+    realtimeLease = { sessionId, expiresAt: now() + REALTIME_CONNECT_TIMEOUT_MS };
+    try {
+      const { plan } = await resolveConfiguredRoute({ intent: 'voice_chat' });
+      if (plan.kind === 'blocked') throw new Error(`voice_route_blocked:${plan.reason}`);
+      if (plan.kind !== 'realtime_voice') throw new Error('voice_realtime_not_ready');
+      const connection = await requireConnection(plan.target.connectionSlug);
+      const secret = await deps.resolveConnectionSecret(connection.slug);
+      if (providerAuthRequiresSecret(connection.providerType) && !secret) {
+        throw new Error('voice_connection_secret_missing');
+      }
+      const baseUrl = effectiveBaseUrl(connection);
+      const tokenUrl = endpointUrl(baseUrl, 'realtime/client_secrets');
+      const endpoint = endpointUrl(baseUrl, 'realtime/calls');
+      const tokenResponse = await fetchImpl(tokenUrl, {
+        method: 'POST',
+        headers: requestHeaders(secret),
+        body: JSON.stringify({
+          session: {
+            type: 'realtime',
+            model: plan.target.modelId,
+            instructions:
+              'You are Maka Voice Coordinator. Keep responses concise. Use only the four coordination tools for work; never claim a task changed unless the tool output confirms it.',
+            audio: {
+              output: {
+                voice: (await deps.settingsStore.get()).voice.realtime.voice,
+              },
+            },
+            tools: realtimeCoordinatorTools(),
+            tool_choice: 'auto',
+          },
+        }),
+        signal: AbortSignal.timeout(REALTIME_TOKEN_TIMEOUT_MS),
+      });
+      const payload = parseJsonObject(await readBoundedResponse(tokenResponse));
+      if (!tokenResponse.ok) {
+        throw providerHttpError('realtime_session', tokenResponse.status);
+      }
+      const nested =
+        payload.client_secret && typeof payload.client_secret === 'object'
+          ? (payload.client_secret as Record<string, unknown>)
+          : {};
+      const clientSecret =
+        typeof payload.value === 'string'
+          ? payload.value
+          : typeof nested.value === 'string'
+            ? nested.value
+            : '';
+      if (!clientSecret) throw new Error('voice_realtime_secret_missing');
+      const expiresAtRaw = payload.expires_at ?? nested.expires_at;
+      const expiresAt =
+        typeof expiresAtRaw === 'number' ? expiresAtRaw * 1_000 : now() + 60_000;
+      const callResponse = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${clientSecret}`,
+          'Content-Type': 'application/sdp',
+          'OpenAI-Beta': 'realtime=v1',
+        },
+        body: offerSdp,
+        signal: AbortSignal.timeout(REALTIME_CONNECT_TIMEOUT_MS),
+      });
+      const answerSdp = await readBoundedResponse(callResponse);
+      if (!callResponse.ok) {
+        throw providerHttpError('realtime_connect', callResponse.status);
+      }
+      if (!answerSdp.trim()) throw new Error('voice_realtime_answer_invalid');
+      realtimeLease = { sessionId, expiresAt: now() + 24 * 60 * 60_000 };
+      return {
+        sessionId,
+        answerSdp,
+        model: plan.target.modelId,
+        providerLabel: plan.target.providerLabel ?? plan.target.connectionSlug,
+        expiresAt,
+      };
+    } catch (error) {
+      if (realtimeLease?.sessionId === sessionId) realtimeLease = undefined;
+      throw error;
+    }
   }
 
   function closeRealtimeSession(sessionIdInput: unknown): void {
@@ -403,8 +428,8 @@ export function registerVoiceIpc(input: {
   input.ipcMain.handle('voice:cancel', (_event, operationId) =>
     input.service.cancel(operationId),
   );
-  input.ipcMain.handle('voice:createRealtimeSession', () =>
-    input.service.createRealtimeSession(),
+  input.ipcMain.handle('voice:createRealtimeSession', (_event, offerSdp) =>
+    input.service.createRealtimeSession(offerSdp),
   );
   input.ipcMain.handle('voice:closeRealtimeSession', (_event, sessionId) =>
     input.service.closeRealtimeSession(sessionId),
@@ -419,6 +444,18 @@ function configuredModelExists(connection: LlmConnection, model: string): boolea
     connectionEnabledModelIds(connection).includes(model) ||
     connection.models?.some((entry) => entry.id === model) === true
   );
+}
+
+function normalizeRealtimeOfferSdp(input: unknown): string {
+  if (typeof input !== 'string') throw new Error('voice_realtime_offer_invalid');
+  const offerSdp = input.trim();
+  if (
+    !offerSdp.startsWith('v=0') ||
+    new TextEncoder().encode(offerSdp).byteLength > MAX_REALTIME_SDP_BYTES
+  ) {
+    throw new Error('voice_realtime_offer_invalid');
+  }
+  return offerSdp;
 }
 
 function normalizeBeginRequest(input: unknown): VoiceBeginRequest {

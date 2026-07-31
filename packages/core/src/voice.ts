@@ -163,8 +163,7 @@ export type VoiceFinishCaptureResult =
 
 export interface VoiceRealtimeClientSession {
   sessionId: string;
-  clientSecret: string;
-  endpoint: string;
+  answerSdp: string;
   model: string;
   providerLabel: string;
   expiresAt?: number;

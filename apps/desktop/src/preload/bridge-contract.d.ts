@@ -411,7 +411,7 @@ export interface MakaBridge {
       audio: VoiceCapturedAudio,
     ): Promise<VoiceFinishCaptureResult>;
     cancel(operationId: string): Promise<void>;
-    createRealtimeSession(): Promise<VoiceRealtimeClientSession>;
+    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession>;
     closeRealtimeSession(sessionId: string): Promise<void>;
     validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall>;
   };

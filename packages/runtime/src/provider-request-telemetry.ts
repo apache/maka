@@ -355,7 +355,8 @@ function preparedCapture(
   modelId: string,
   params: Record<string, unknown>,
 ): PreparedProviderRequestCapture {
-  const prompt = Array.isArray(params.prompt) ? params.prompt : [];
+  const safeParams = secretFreeParams(params);
+  const prompt = Array.isArray(safeParams.prompt) ? safeParams.prompt : [];
   const instructions: unknown[] = [];
   const messages: unknown[] = [];
   for (const item of prompt) {
@@ -363,8 +364,8 @@ function preparedCapture(
     if (record?.role === 'system') instructions.push(record.content);
     else messages.push(item);
   }
-  const tools = Array.isArray(params.tools) ? params.tools : [];
-  const providerOptions = asRecord(params.providerOptions);
+  const tools = Array.isArray(safeParams.tools) ? safeParams.tools : [];
+  const providerOptions = asRecord(safeParams.providerOptions);
   return capturePreparedProviderRequest({
     providerId,
     modelId,
@@ -372,13 +373,34 @@ function preparedCapture(
     messages,
     tools,
     ...(providerOptions ? { providerOptions } : {}),
-    requestPayload: secretFreeParams(params),
+    requestPayload: safeParams,
   });
 }
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {
   const { abortSignal: _abortSignal, headers: _headers, ...safe } = params;
-  return safe;
+  return redactOperationMemoryAudio(safe) as Record<string, unknown>;
+}
+
+const OPERATION_MEMORY_AUDIO_REDACTION = '[redacted:operation-memory-audio]';
+
+function redactOperationMemoryAudio(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactOperationMemoryAudio);
+  const record = asRecord(value);
+  if (!record) return value;
+  if (
+    typeof record.filename === 'string' &&
+    record.filename.startsWith('voice-input.') &&
+    typeof record.mediaType === 'string' &&
+    record.mediaType.startsWith('audio/') &&
+    'data' in record
+  ) {
+    return { ...record, data: OPERATION_MEMORY_AUDIO_REDACTION };
+  }
+  if (ArrayBuffer.isView(value)) return value;
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, redactOperationMemoryAudio(entry)]),
+  );
 }
 
 function abortStatus(signal: AbortSignal | undefined, error: unknown): 'failed' | 'aborted' {

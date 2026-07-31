@@ -1424,42 +1424,79 @@ function AppShellContent({
           displayText: uiLocale === 'zh' ? '🎙️ 语音任务' : '🎙️ Voice task',
         },
       ),
-    runCoordinatorTool: async (call) => {
+    runCoordinatorTool: async (call, context) => {
       if (call.name === 'start_task') {
         if (!call.arguments.task) throw new Error('voice_task_missing');
-        return { ok: await send(call.arguments.task) };
+        let taskSessionId: string | undefined;
+        const ok = await send(call.arguments.task, undefined, {
+          onSessionResolved: (sessionId) => {
+            taskSessionId = sessionId;
+          },
+        });
+        return {
+          output: {
+            ok,
+            ...(taskSessionId ? { sessionId: taskSessionId } : {}),
+          },
+          ...(ok && taskSessionId ? { taskSessionId } : {}),
+        };
+      }
+      const sessionId = context.taskSessionId;
+      if (!sessionId) {
+        return { output: { ok: false, status: 'no_active_task' } };
       }
       if (call.name === 'steer_task') {
         if (!call.arguments.guidance) throw new Error('voice_guidance_missing');
-        const sessionId = activeIdRef.current;
-        if (!sessionId) return { ok: await send(call.arguments.guidance) };
         const outcome = await window.maka.sessions.steer(
           sessionId,
           call.arguments.guidance,
         );
         if (outcome.kind === 'fallback') {
-          return { ok: await send(call.arguments.guidance), fallback: true };
+          const sendResult = await window.maka.sessions.send(sessionId, {
+            type: 'send',
+            turnId: crypto.randomUUID(),
+            text: call.arguments.guidance,
+          });
+          await refreshSessions();
+          if (activeIdRef.current === sessionId) {
+            await refreshMessages(sessionId);
+          }
+          return {
+            output: { ok: sendResult.ok, fallback: true, sessionId },
+            taskSessionId: sessionId,
+          };
         }
-        return { ok: true, queued: true };
+        return {
+          output: { ok: true, queued: true, sessionId },
+          taskSessionId: sessionId,
+        };
       }
       if (call.name === 'check_task') {
-        const sessionId = activeIdRef.current;
-        const session = sessions.find((candidate) => candidate.id === sessionId);
-        return session
-          ? { ok: true, sessionId: session.id, status: session.status }
-          : { ok: false, status: 'no_active_task' };
+        const authoritativeSessions = await window.maka.sessions.list();
+        const session = authoritativeSessions.find((candidate) => candidate.id === sessionId);
+        return {
+          output: session
+            ? { ok: true, sessionId: session.id, status: session.status }
+            : { ok: false, sessionId, status: 'task_not_found' },
+          ...(session ? { taskSessionId: sessionId } : {}),
+        };
       }
-      const lastAssistant = [...messages]
+      const taskMessages = await window.maka.sessions.readMessages(sessionId);
+      const lastAssistant = [...taskMessages]
         .reverse()
         .find((message) => message.type === 'assistant');
       return {
-        ok: true,
-        summary:
-          lastAssistant?.type === 'assistant'
-            ? lastAssistant.text.slice(-4_000)
-            : uiLocale === 'zh'
-              ? '当前任务还没有可总结的回复。'
-              : 'The current task has no response to summarize yet.',
+        output: {
+          ok: true,
+          sessionId,
+          summary:
+            lastAssistant?.type === 'assistant'
+              ? lastAssistant.text.slice(-4_000)
+              : uiLocale === 'zh'
+                ? '当前任务还没有可总结的回复。'
+                : 'The current task has no response to summarize yet.',
+        },
+        taskSessionId: sessionId,
       };
     },
     onBlocked: (reason) => {

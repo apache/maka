@@ -926,8 +926,8 @@ const makaBridge = {
     cancel(operationId: string): Promise<void> {
       return ipcRenderer.invoke('voice:cancel', operationId);
     },
-    createRealtimeSession(): Promise<VoiceRealtimeClientSession> {
-      return ipcRenderer.invoke('voice:createRealtimeSession');
+    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession> {
+      return ipcRenderer.invoke('voice:createRealtimeSession', offerSdp);
     },
     closeRealtimeSession(sessionId: string): Promise<void> {
       return ipcRenderer.invoke('voice:closeRealtimeSession', sessionId);

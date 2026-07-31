@@ -107,6 +107,55 @@ describe('voice capture smoke Settings contract', () => {
     assert.match(zhCopy.recognitionConnectionApiKeyHelp, /只有填写新值时才会替换/);
   });
 
+  it('keeps realtime secrets in main and binds coordinator calls to their own task session', async () => {
+    const hookSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/use-voice-input.ts'),
+      'utf8',
+    );
+    const shellSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/app-shell.tsx'),
+      'utf8',
+    );
+    const preloadSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/preload/preload.ts'),
+      'utf8',
+    );
+
+    assert.match(
+      hookSource,
+      /createRealtimeSession\(offer\.sdp \?\? ''\)/,
+      'renderer must send only its SDP offer through the trusted bridge',
+    );
+    assert.match(hookSource, /sdp:\s*session\.answerSdp/);
+    assert.doesNotMatch(hookSource, /session\.(?:clientSecret|endpoint)/);
+    assert.doesNotMatch(hookSource, /fetch\(session\./);
+    assert.match(
+      preloadSource,
+      /createRealtimeSession\(offerSdp: string\)[\s\S]*ipcRenderer\.invoke\('voice:createRealtimeSession', offerSdp\)/,
+      'preload must not expose the endpoint or ephemeral credential',
+    );
+    assert.match(hookSource, /taskSessionId\?: string/);
+    assert.match(
+      hookSource,
+      /inputRef\.current\.runCoordinatorTool\(call,\s*\{[\s\S]*taskSessionId: active\.taskSessionId/,
+      'the live DataChannel handler must use current callbacks and its voice-session-owned task',
+    );
+
+    const coordinatorBlock = shellSource.slice(
+      shellSource.indexOf('runCoordinatorTool: async'),
+      shellSource.indexOf('onBlocked:', shellSource.indexOf('runCoordinatorTool: async')),
+    );
+    assert.match(coordinatorBlock, /onSessionResolved/);
+    assert.match(coordinatorBlock, /const sessionId = context\.taskSessionId/);
+    assert.match(coordinatorBlock, /window\.maka\.sessions\.list\(\)/);
+    assert.match(coordinatorBlock, /window\.maka\.sessions\.readMessages\(sessionId\)/);
+    assert.doesNotMatch(
+      coordinatorBlock,
+      /sessions\.find|const lastAssistant = \[\.\.\.messages\]/,
+      'status and summaries must not read the render that opened the DataChannel',
+    );
+  });
+
   it('keeps success and permission states as deterministic stories', async () => {
     const stories = await readFile(
       join(REPO_ROOT, 'apps/desktop/stories/settings/settings-pages.stories.tsx'),

@@ -28,12 +28,25 @@ export interface VoiceInputController {
   toggleRealtime(): Promise<void>;
 }
 
+export interface VoiceCoordinatorToolContext {
+  realtimeSessionId: string;
+  taskSessionId?: string;
+}
+
+export interface VoiceCoordinatorToolExecution {
+  output: unknown;
+  taskSessionId?: string;
+}
+
 export function useVoiceInput(input: {
   getDraftKey(): string;
   getCurrentAgent(): { connectionSlug: string; model: string } | undefined;
   appendTranscript(draftKey: string, text: string): void;
   sendNativeVoice(operationId: string): Promise<boolean>;
-  runCoordinatorTool(call: VoiceCoordinatorToolCall): Promise<unknown>;
+  runCoordinatorTool(
+    call: VoiceCoordinatorToolCall,
+    context: VoiceCoordinatorToolContext,
+  ): Promise<VoiceCoordinatorToolExecution>;
   onBlocked(reason: string): void;
   onError(error: unknown): void;
 }): VoiceInputController {
@@ -44,6 +57,8 @@ export function useVoiceInput(input: {
   const [providerLabel, setProviderLabel] = useState<string>();
   const [routeKind, setRouteKind] =
     useState<Exclude<VoiceRoutePlan['kind'], 'blocked'>>();
+  const inputRef = useRef(input);
+  inputRef.current = input;
   const activeCaptureRef = useRef<ActiveVoiceCapture | undefined>(undefined);
   const operationRef = useRef<{
     id: string;
@@ -56,6 +71,7 @@ export function useVoiceInput(input: {
     stream: MediaStream;
     audio: HTMLAudioElement;
     channel: RTCDataChannel;
+    taskSessionId?: string;
   } | undefined>(undefined);
   const realtimeRevisionRef = useRef(0);
 
@@ -191,12 +207,6 @@ export function useVoiceInput(input: {
     let stream: MediaStream | undefined;
     let audio: HTMLAudioElement | undefined;
     try {
-      const session = await window.maka.voice.createRealtimeSession();
-      sessionId = session.sessionId;
-      if (revision !== realtimeRevisionRef.current) {
-        await window.maka.voice.closeRealtimeSession(session.sessionId);
-        return;
-      }
       stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -216,24 +226,22 @@ export function useVoiceInput(input: {
         if (audio) audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
       });
       const channel = peer.createDataChannel('oai-events');
-      channel.addEventListener('message', (event) => {
-        void handleRealtimeEvent(channel, event.data);
-      });
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
-      const response = await fetch(session.endpoint, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session.clientSecret}`,
-          'Content-Type': 'application/sdp',
-          'OpenAI-Beta': 'realtime=v1',
-        },
-        body: offer.sdp ?? '',
+      if (revision !== realtimeRevisionRef.current) {
+        peer.close();
+        stream.getTracks().forEach((track) => track.stop());
+        audio.remove();
+        return;
+      }
+      const session = await window.maka.voice.createRealtimeSession(offer.sdp ?? '');
+      sessionId = session.sessionId;
+      channel.addEventListener('message', (event) => {
+        void handleRealtimeEvent(channel, session.sessionId, event.data);
       });
-      if (!response.ok) throw new Error('voice_realtime_connect_failed');
       await peer.setRemoteDescription({
         type: 'answer',
-        sdp: await response.text(),
+        sdp: session.answerSdp,
       });
       if (revision !== realtimeRevisionRef.current) {
         peer.close();
@@ -263,7 +271,7 @@ export function useVoiceInput(input: {
       audio?.remove();
       if (sessionId) await window.maka.voice.closeRealtimeSession(sessionId).catch(() => {});
       if (revision === realtimeRevisionRef.current) setRealtimeState('idle');
-      input.onError(error);
+      inputRef.current.onError(error);
     }
   }
 
@@ -279,7 +287,11 @@ export function useVoiceInput(input: {
     setRealtimeState('idle');
   }
 
-  async function handleRealtimeEvent(channel: RTCDataChannel, raw: unknown): Promise<void> {
+  async function handleRealtimeEvent(
+    channel: RTCDataChannel,
+    realtimeSessionId: string,
+    raw: unknown,
+  ): Promise<void> {
     if (typeof raw !== 'string') return;
     let event: Record<string, unknown>;
     try {
@@ -302,11 +314,24 @@ export function useVoiceInput(input: {
     }
     let output: unknown;
     try {
+      const active = realtimeRef.current;
+      if (!active || active.sessionId !== realtimeSessionId) return;
       const call = await window.maka.voice.validateCoordinatorToolCall({
         name,
         arguments: args,
       });
-      output = await input.runCoordinatorTool(call);
+      const execution = await inputRef.current.runCoordinatorTool(call, {
+        realtimeSessionId,
+        ...(active.taskSessionId ? { taskSessionId: active.taskSessionId } : {}),
+      });
+      const current = realtimeRef.current;
+      if (
+        execution.taskSessionId &&
+        current?.sessionId === realtimeSessionId
+      ) {
+        current.taskSessionId = execution.taskSessionId;
+      }
+      output = execution.output;
     } catch (error) {
       output = {
         ok: false,

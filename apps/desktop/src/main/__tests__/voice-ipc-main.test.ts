@@ -191,16 +191,25 @@ describe('voice IPC service', () => {
     );
   });
 
-  it('returns only an ephemeral realtime token and enforces one active lease', async () => {
-    const fetchMock: typeof fetch = async (_url, init) => {
-      assert.equal(
-        new Headers(init?.headers).get('authorization'),
-        'Bearer server-secret',
-      );
-      return new Response(
-        JSON.stringify({ value: 'ephemeral-client-secret', expires_at: 123 }),
-        { status: 200 },
-      );
+  it('exchanges realtime SDP in main without exposing credentials and enforces one active lease', async () => {
+    const requests: Array<{
+      url: string;
+      authorization: string | null;
+      body: BodyInit | null | undefined;
+    }> = [];
+    const fetchMock: typeof fetch = async (url, init) => {
+      requests.push({
+        url: String(url),
+        authorization: new Headers(init?.headers).get('authorization'),
+        body: init?.body,
+      });
+      if (String(url).endsWith('/realtime/client_secrets')) {
+        return new Response(
+          JSON.stringify({ value: 'ephemeral-client-secret', expires_at: 123 }),
+          { status: 200 },
+        );
+      }
+      return new Response('v=0\r\no=answer', { status: 200 });
     };
     const voice = service({
       settings: settings({
@@ -213,11 +222,32 @@ describe('voice IPC service', () => {
       connection: connection(['gpt-realtime']),
       fetch: fetchMock,
     });
-    const session = await voice.createRealtimeSession();
-    assert.equal(session.clientSecret, 'ephemeral-client-secret');
+    const offerSdp = 'v=0\r\no=offer';
+    const session = await voice.createRealtimeSession(offerSdp);
+    assert.equal(session.answerSdp, 'v=0\r\no=answer');
     assert.equal(JSON.stringify(session).includes('server-secret'), false);
-    await assert.rejects(() => voice.createRealtimeSession());
+    assert.equal(JSON.stringify(session).includes('ephemeral-client-secret'), false);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.url, 'https://api.openai.test/v1/realtime/client_secrets');
+    assert.equal(requests[0]?.authorization, 'Bearer server-secret');
+    assert.match(String(requests[0]?.body), /"model":"gpt-realtime"/);
+    assert.deepEqual(requests[1], {
+      url: 'https://api.openai.test/v1/realtime/calls',
+      authorization: 'Bearer ephemeral-client-secret',
+      body: offerSdp,
+    });
+    await assert.rejects(
+      () => voice.createRealtimeSession(offerSdp),
+      /voice_realtime_session_already_active/,
+    );
     voice.closeRealtimeSession(session.sessionId);
-    assert.equal((await voice.createRealtimeSession()).clientSecret, 'ephemeral-client-secret');
+    assert.equal((await voice.createRealtimeSession(offerSdp)).answerSdp, 'v=0\r\no=answer');
+    await assert.rejects(
+      () => service({
+        settings: settings(),
+        connection: connection(['gpt-realtime']),
+      }).createRealtimeSession('not-sdp'),
+      /voice_realtime_offer_invalid/,
+    );
   });
 });

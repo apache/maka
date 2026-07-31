@@ -86,6 +86,7 @@ export interface AppShellChatActions {
       quotes?: readonly QuoteRef[];
       displayText?: string;
       voiceOperationId?: string;
+      onSessionResolved?: (sessionId: string) => void;
     },
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
@@ -263,6 +264,7 @@ export function createAppShellChatActions(deps: {
       quotes?: readonly QuoteRef[];
       displayText?: string;
       voiceOperationId?: string;
+      onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
     const skillIds = options.skillIds;
@@ -341,6 +343,7 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
+        options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
@@ -391,6 +394,7 @@ export function createAppShellChatActions(deps: {
         restoreOptimisticStatus = undefined;
         return false;
       }
+      options.onSessionResolved?.(sessionId);
       if (activeIdRef.current === sessionId) {
         showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
       }
