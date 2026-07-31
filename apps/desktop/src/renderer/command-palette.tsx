@@ -5,7 +5,7 @@
 // the user can fuzzy-search across both. Astryx owns the dialog, input,
 // listbox, keyboard navigation, focus, and dismissal.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
   CornerDownLeft,
@@ -72,7 +72,8 @@ function fuzzy(query: string, text: string): boolean {
 
 export function CommandPalette(props: {
   commands: Command[];
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).commandPalette;
@@ -99,6 +100,18 @@ export function CommandPalette(props: {
     () => new Map(items.map((item) => [item.id, item])),
     [items],
   );
+  const pendingCommandRef = useRef<Command | null>(null);
+
+  useEffect(() => {
+    if (props.isOpen) return;
+    const command = pendingCommandRef.current;
+    pendingCommandRef.current = null;
+    if (!command) return;
+    const frame = window.requestAnimationFrame(() => {
+      void Promise.resolve(command.run()).catch(() => undefined);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.isOpen]);
   const searchSource = useMemo<SearchSource<PaletteItem>>(
     () => ({
       bootstrap: () => items,
@@ -121,19 +134,16 @@ export function CommandPalette(props: {
 
   function commit(commandId: string) {
     const command = itemById.get(commandId)?.auxiliaryData?.command;
-    if (!command) return;
-    void Promise.resolve()
-      .then(() => command.run())
-      .catch(() => undefined);
+    if (!command || command.disabled || pendingCommandRef.current) return;
+    pendingCommandRef.current = command;
+    props.onOpenChange(false);
   }
 
   return (
     <AstryxLocaleProvider overrides={astryxOverrides}>
       <AstryxCommandPalette
-        isOpen
-        onOpenChange={(isOpen) => {
-          if (!isOpen) props.onClose();
-        }}
+        isOpen={props.isOpen}
+        onOpenChange={props.onOpenChange}
         searchSource={searchSource}
         label={copy.label}
         width={584}

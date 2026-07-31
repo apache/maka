@@ -5,8 +5,11 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
 }) => {
   const dialog = page.getByRole('dialog', { name: '命令面板' });
   const openPalette = async (): Promise<void> => {
-    await page.getByRole('button', { name: '更多操作' }).click();
+    await trigger.click();
     await page.getByRole('menuitem', { name: '打开命令面板' }).click();
+    await expect(
+      dialog.getByRole('combobox', { name: '搜索命令、设置项或会话' }),
+    ).toBeFocused();
   };
 
   await openPalette();
@@ -34,6 +37,7 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
   await page.keyboard.press('Enter');
   await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
   await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('main', { name: '设置内容' })).toBeHidden();
@@ -42,6 +46,7 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
 });
 
 test('new plan reminder command opens the existing form and applies a template', async ({

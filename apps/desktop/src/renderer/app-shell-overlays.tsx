@@ -136,12 +136,13 @@ export function AppShellOverlays(props: {
           onNavigateToSession={searchModalOnNavigate}
         />
       )}
-      {paletteOpen && (
-        <CommandPalette
-          onClose={closePalette}
-          commands={commands}
-        />
-      )}
+      <CommandPalette
+        isOpen={paletteOpen}
+        onOpenChange={(open) => {
+          if (!open) closePalette();
+        }}
+        commands={commands}
+      />
     </>
   );
 }
