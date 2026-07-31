@@ -84,7 +84,6 @@ export function PasswordInput(props: {
   }
   return (
     <InputGroup
-      className="settingsPasswordField"
       label={props.label}
       description={props.description}
       isLabelHidden={props.isLabelHidden}

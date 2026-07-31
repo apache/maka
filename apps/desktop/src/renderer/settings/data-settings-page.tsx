@@ -242,23 +242,21 @@ export function DataSettingsPage() {
             const option = copy.categories[id];
             const checked = selectedCategories.has(id);
             return (
-              <div key={id} className="settingsConfigCategoryItem">
-                <Switch
-                  label={copy.exportCategory(option.label)}
-                  isLabelHidden
-                  value={checked}
-                  onChange={() => toggleCategory(id)}
-                />
-                <span>
-                  <strong>{option.label}</strong>
-                  <small>{option.detail}</small>
-                  {option.sensitive && checked ? (
-                    <small role="alert" data-tone="destructive">
-                      {copy.sensitiveWarning}
-                    </small>
-                  ) : null}
-                </span>
-              </div>
+              <Switch
+                key={id}
+                label={option.label}
+                description={option.detail}
+                value={checked}
+                width="100%"
+                labelPosition="start"
+                labelSpacing="spread"
+                status={
+                  option.sensitive && checked
+                    ? { type: 'warning', message: copy.sensitiveWarning }
+                    : undefined
+                }
+                onChange={() => toggleCategory(id)}
+              />
             );
           })}
         </div>

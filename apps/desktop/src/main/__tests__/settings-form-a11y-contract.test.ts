@@ -209,7 +209,7 @@ describe('Settings form accessibility labels', () => {
     assert.match(passwordInput, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.match(
       passwordInput,
-      /<InputGroup[\s\S]*className="settingsPasswordField"[\s\S]*isLabelHidden=\{props\.isLabelHidden\}[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.status\}/,
+      /<InputGroup[\s\S]*isLabelHidden=\{props\.isLabelHidden\}[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.status\}/,
       'the visible credential field must own required and error presentation',
     );
     assert.match(
@@ -219,6 +219,7 @@ describe('Settings form accessibility labels', () => {
     );
     assert.doesNotMatch(passwordInput, /isLabelHidden \?\? true/);
     assert.doesNotMatch(passwordInput, /<div className="settingsPasswordField">/);
+    assert.doesNotMatch(passwordInput, /settingsPasswordField/);
     assert.doesNotMatch(
       passwordInput,
       /const copyingRef = useRef\(false\)/,

@@ -269,14 +269,16 @@ export function WebSearchSettingsPage(props: {
                 : <>{copy.savedKeyHelp} <a href="https://tavily.com" target="_blank" rel="noreferrer noopener">tavily.com</a></>}
             </small>
           </div>
-          <PasswordInput
-            value={draftKey}
-            onChange={setDraftKey}
-            isDisabled={usingEnvKey || credentialActionBusy}
-            placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
-            label={copy.keyAria}
-            isLabelHidden
-          />
+          <div className="settingsWebSearchKeyField">
+            <PasswordInput
+              value={draftKey}
+              onChange={setDraftKey}
+              isDisabled={usingEnvKey || credentialActionBusy}
+              placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
+              label={copy.keyAria}
+              isLabelHidden
+            />
+          </div>
         </div>
 
         <div className="settingsRow settingsWebSearchCredentialActionRow">

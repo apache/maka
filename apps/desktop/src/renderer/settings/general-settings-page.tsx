@@ -345,7 +345,7 @@ function NetworkProxySection(props: {
               placeholder="127.0.0.1"
               label={copy.serverAddress}
             />
-            <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly hasClear onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
+            <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
           </FormLayout>
 
           <div className="settingsFormRow" data-control="switch">

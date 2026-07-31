@@ -193,7 +193,7 @@ export function OpenGatewaySettingsPage(props: {
             width="100%"
             onChange={(host) => void updateGateway({ host: host as AppSettings['openGateway']['host'] })}
           />
-          <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly hasClear onChange={(value) => void updateGateway({ port: value ?? 3939 })} />
+          <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly onChange={(value) => void updateGateway({ port: value ?? 3939 })} />
         </FormLayout>
         <FormLayout direction="horizontal">
           <PasswordInput

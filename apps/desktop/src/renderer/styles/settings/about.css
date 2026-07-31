@@ -99,25 +99,3 @@
   gap: var(--space-2);
   margin-top: var(--space-1);
 }
-
-.settingsConfigCategoryItem {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-/* #1363: the label stack is a flex item — without min-width:0 its widest
-   unbreakable run sets the row minimum instead of wrapping. */
-.settingsConfigCategoryItem > span {
-  min-width: 0;
-}
-
-.settingsConfigCategoryItem small {
-  display: block;
-  color: var(--muted-foreground);
-}
-
-.settingsConfigCategoryItem small[data-tone="destructive"] {
-  margin-top: var(--space-1);
-  color: var(--destructive);
-}

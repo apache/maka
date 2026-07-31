@@ -31,7 +31,7 @@
   white-space: nowrap;
 }
 
-.settingsWebSearchKeyRow > .settingsPasswordField,
+.settingsWebSearchKeyField,
 .settingsWebSearchQueryField {
   width: min(100%, 360px);
   /* #1364: a text input never shrinks below its intrinsic `size` width on its
@@ -131,7 +131,7 @@
     white-space: normal;
   }
 
-  .settingsWebSearchKeyRow > .settingsPasswordField,
+  .settingsWebSearchKeyField,
   .settingsWebSearchQueryField {
     width: 100%;
     justify-self: stretch;

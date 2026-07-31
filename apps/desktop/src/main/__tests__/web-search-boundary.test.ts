@@ -365,7 +365,7 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
       /settingsFormRow|settingsFormGrid|style=\{\{/,
       'Web search Settings must not regress to naked form rows/grids or inline layout styles',
     );
-    assert.match(styles, /\.settingsWebSearchKeyRow > \.settingsPasswordField/);
+    assert.match(styles, /\.settingsWebSearchKeyField/);
     assert.match(styles, /\.settingsWebSearchQueryIntroRow\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
     assert.match(styles, /\.settingsWebSearchDisabledReason\s*\{[\s\S]*?color:\s*var\(--muted-foreground\);/);
   });
