@@ -156,10 +156,13 @@ import {
   toolSchemaCharsForDiagnostics,
   type RequestShapeDiagnostic,
 } from './request-shape.js';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
   type ProviderRequestAttemptRecord,
   type ProviderRequestCaptureRecord,
+  type ProviderRequestUsage,
+  type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityConfig } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
@@ -383,6 +386,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   ) => Promise<{ artifactId: string }>;
   /** Best-effort durable row for one physical provider request attempt. */
   recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
+  /**
+   * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
+   * stays a diagnostic trace: this one carries the accounting record.
+   */
+  recordModelCallAttempt?: (attempt: ModelCallAttempt) => void | Promise<void>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -792,6 +800,17 @@ export class AiSdkBackend implements AgentBackend {
           newId: this.newId,
           persistCapture: recordProviderRequestCapture!,
           recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+          ...(this.input.recordModelCallAttempt
+            ? {
+                accounting: {
+                  sessionId: this.sessionId,
+                  resolveRunId: () => this.currentRunId ?? undefined,
+                  callKind: 'main' as const,
+                  record: this.input.recordModelCallAttempt,
+                  resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage),
+                },
+              }
+            : {}),
         })
       : undefined;
 
@@ -2007,6 +2026,39 @@ export class AiSdkBackend implements AgentBackend {
         },
         pricing,
       ).totalCost;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolves cost for a canonical accounting record at settlement time, together
+   * with the rates it was computed against.
+   *
+   * The basis travels with the amount because a figure recomputed later from
+   * whatever pricing is current would silently drift from what the call actually
+   * cost. An unresolvable price returns `undefined` rather than zero — the
+   * record then carries `costBasis: 'unpriced'`, which is not the same claim as
+   * a call that was free.
+   */
+  private resolveModelCallCost(usage: ProviderRequestUsage): ResolvedModelCallCost | undefined {
+    try {
+      const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
+        `${this.input.connection.providerType}:${this.input.modelId}`,
+      );
+      if (pricing === null) return undefined;
+      const costUsd = computeCost(
+        {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          cacheHitInputTokens: usage.cacheReadInputTokens ?? 0,
+          cacheMissInputTokens: usage.cacheMissInputTokens ?? 0,
+          cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+        },
+        pricing,
+      ).totalCost;
+      if (costUsd === undefined || !Number.isFinite(costUsd)) return undefined;
+      return { costUsd, pricingRates: pricing };
     } catch {
       return undefined;
     }
