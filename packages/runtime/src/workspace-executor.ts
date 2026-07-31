@@ -300,14 +300,12 @@ async function resolveWritableInsideCwd(
   label: string,
 ): Promise<string> {
   const root = await fs.realpath(cwd);
-  const candidate = isAbsolute(inputPath)
-    ? resolve(inputPath)
-    : resolve(root, inputPath);
+  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
 
   if (!isPathInside(root, candidate)) {
     throw new Error(
       `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-      `received ${JSON.stringify(inputPath)}.`,
+        `received ${JSON.stringify(inputPath)}.`,
     );
   }
 
@@ -325,14 +323,12 @@ async function resolveExistingInsideCwd(
   label: string,
 ): Promise<string> {
   const root = await fs.realpath(cwd);
-  const candidate = isAbsolute(inputPath)
-    ? resolve(inputPath)
-    : resolve(root, inputPath);
+  const candidate = isAbsolute(inputPath) ? resolve(inputPath) : resolve(root, inputPath);
 
   if (!isPathInside(root, candidate)) {
     throw new Error(
       `${label} path must stay inside session cwd ${JSON.stringify(root)}; ` +
-      `received ${JSON.stringify(inputPath)}.`,
+        `received ${JSON.stringify(inputPath)}.`,
     );
   }
 
