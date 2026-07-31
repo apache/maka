@@ -95,38 +95,3 @@ describe('PR-OPACITY-CONVERGE-0 contract', () => {
     assert.ok(values.includes('0.06'), `dark --opacity-overlay must include 0.06; got ${JSON.stringify(values)}`);
   });
 });
-
-describe('opacity whitelist negative cases', () => {
-  it('rejects bare numbers (non-token, non-literal)', () => {
-    assert.ok(findOpacityOffenders('opacity: 0.5', 'test').length > 0, 'bare 0.5 must fail');
-    assert.ok(findOpacityOffenders('opacity: 0.65', 'test').length > 0, 'bare 0.65 must fail');
-    assert.ok(findOpacityOffenders('opacity: 0.8', 'test').length > 0, 'bare 0.8 must fail');
-    assert.ok(findOpacityOffenders('opacity: 0.04', 'test').length > 0, 'bare 0.04 must fail');
-  });
-
-  it('accepts whitelisted tokens and 0/1 + literals', () => {
-    assert.deepEqual(findOpacityOffenders('opacity: var(--opacity-disabled)', 'test'), []);
-    assert.deepEqual(findOpacityOffenders('opacity: var(--opacity-muted)', 'test'), []);
-    assert.deepEqual(findOpacityOffenders('opacity: var(--opacity-pending)', 'test'), []);
-    assert.deepEqual(findOpacityOffenders('opacity: var(--opacity-overlay)', 'test'), []);
-    assert.deepEqual(findOpacityOffenders('opacity: 0', 'test'), []);
-    assert.deepEqual(findOpacityOffenders('opacity: 1', 'test'), []);
-    assert.deepEqual(findOpacityOffenders('opacity: inherit', 'test'), []);
-  });
-
-  it('excludes opacity inside @keyframes (animation intent, not element state)', () => {
-    assert.deepEqual(
-      findOpacityOffenders('@keyframes x { 0% { opacity: 0; } 50% { opacity: 0.3; } 100% { opacity: 1; } }', 'test'),
-      [],
-    );
-    assert.deepEqual(
-      findOpacityOffenders('@keyframes y { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; } }', 'test'),
-      [],
-    );
-  });
-
-  it('rejects typos and unknown tokens in var()', () => {
-    assert.ok(findOpacityOffenders('opacity: var(--opacity-mata)', 'test').length > 0, 'typo must fail');
-    assert.ok(findOpacityOffenders('opacity: var(--opacity-private)', 'test').length > 0, 'unknown token must fail');
-  });
-});

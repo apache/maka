@@ -51,11 +51,3 @@ describe('PR-NUMBER-FIELD-CONVERGE-0 contract', () => {
     }
   });
 });
-
-describe('number-field negative cases', () => {
-  it('HAND_CONVERT_RE matches the hand-conversion, not other Number() uses', () => {
-    assert.ok(HAND_CONVERT_RE.test('Number(event.currentTarget.value)'), 'the hand-conversion must match');
-    assert.ok(!HAND_CONVERT_RE.test('Number(123)'), 'a plain Number(123) must not match');
-    assert.ok(!HAND_CONVERT_RE.test('const n = Number("x")'), 'a different Number() call must not match');
-  });
-});

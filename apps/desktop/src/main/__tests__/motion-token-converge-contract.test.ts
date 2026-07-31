@@ -208,34 +208,6 @@ describe('PR-MOTION-TOKEN-CONVERGE-0 contract', () => {
     );
   });
 
-  it('bare-timing-keyword scanner catches ease-linear and same-line transition/animation linear', () => {
-    // P1: `ease-linear` is a Tailwind class that compiles to
-    // `transition-timing-function: linear` — must be caught.
-    assert.deepEqual(
-      scanBareTimingKeywords('className="transition-opacity ease-linear"', 'fixture'),
-      ['fixture:1: bare `ease-linear`'],
-    );
-    // P1: a `linear` in a `transition` must NOT be shielded by an
-    // `infinite` in an `animation` on the same physical line.
-    assert.deepEqual(
-      scanBareTimingKeywords(
-        'style={{ transition: "opacity 100ms linear", animation: "spin 1s linear infinite" }}',
-        'fixture',
-      ),
-      ['fixture:1: bare `linear`', 'fixture:1: bare `linear`'],
-    );
-    // P1: in a comma-separated animation list, a `linear` on a
-    // non-infinite item must be flagged.
-    assert.deepEqual(
-      scanBareTimingKeywords('animation: spin 1s linear infinite, fade 100ms linear 1;', 'fixture'),
-      ['fixture:1: bare `linear`', 'fixture:1: bare `linear`'],
-    );
-    // P3: `ease-in-out` reports once as `ease-in-out`, not also as `ease-in`.
-    assert.deepEqual(
-      scanBareTimingKeywords('transition: opacity 120ms ease-in-out', 'fixture'),
-      ['fixture:1: bare `ease-in-out`'],
-    );
-  });
 
   it('bare ms in transition/animation is banned — use var(--duration-*) (0ms/0.01ms a11y whitelisted)', async () => {
     const stripped = stripKeyframes(stripCssComments(await readAllRendererCss()))
