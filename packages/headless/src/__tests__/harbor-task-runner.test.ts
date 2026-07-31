@@ -1437,6 +1437,54 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('propagates an authoritative Harbor agent timeout into a failed graded cell', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '0\n',
+          cell: cellOutput({ status: 'completed', errorClass: undefined }),
+          trialResult: {
+            exception_info: {
+              exception_type: 'AgentTimeoutError',
+              exception_message: 'Agent execution timed out after 900.0 seconds',
+            },
+          },
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.equal(output.harbor.reward, 0);
+      assert.equal(output.cell.status, 'failed');
+      assert.equal(output.cell.errorClass, 'budget_exhausted');
+      assert.deepEqual(output.cell.deadlineSettlement, {
+        source: 'benchmark.deadline',
+        mode: 'immediate',
+      });
+    });
+  });
+
+  test('does not infer a benchmark deadline from an ordinary verifier failure', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '0\n',
+          cell: cellOutput({ status: 'completed', errorClass: undefined }),
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.equal(output.cell.status, 'completed');
+      assert.equal(output.cell.errorClass, undefined);
+      assert.equal(output.cell.deadlineSettlement, undefined);
+    });
+  });
+
   test('hydrates missing deadline usage from the trial checkpoint', async () => {
     await withRun(async ({ jobsDir, repo }) => {
       const usageCheckpoint = tokenSummary({
