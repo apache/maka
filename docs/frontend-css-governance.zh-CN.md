@@ -41,11 +41,7 @@
 - `.settingsPermissionRefresh`
 - `.settingsBotList button`
 
-对应护栏测试在：
-
-- `apps/desktop/src/main/__tests__/renderer-style-layer-cascade-contract.test.ts`
-
-如果你修改了这些规则，必须同一个 PR 一起更新契约测试。
+这是约定，不是测试护栏：静态级联契约已随源码扫描测试套件一起删除。改动这里靠看真实渲染结果（Storybook 或 app）验证，而不是靠正则扫 CSS。
 
 ## 4. `!important` 使用规则
 
@@ -54,7 +50,6 @@
   - reduced-motion / e2e-fixture 这类测试或可访问性覆盖
 - 其他任何 `!important` 都必须同时满足：
   - 就地写明 `Justified:` 注释
-  - 在 `renderer-important-audit-contract.test.ts` 中登记
 - 如果一个元素的 primitive reset 可以直接通过 JSX utility class 完成，优先把 reset 下沉到 JSX，不要继续在 CSS 里叠更多 `!important`。
 
 ## 5. Token 规则
@@ -78,27 +73,28 @@
 - 如果某个 class 是运行时动态生成、源码静态搜索不到，必须在脚本 allowlist 中明确登记。
 - 如果 dead class 数量变化，只有在评审明确确认的前提下，才允许修改 `scripts/check-dead-css-baseline.json`。
 
-## 7. Contract Test 规则
+## 7. 这些规则靠什么保证
 
-- 所有检查“真实 renderer CSS”的测试，应通过以下 helper 读取样式：
-  - `css-test-helpers.ts`
-  - `contract-css-helpers.ts`
-- 如果断言关注的是“真实生效规则”，不要再直接只读 `styles.css`。
-- 只有在校验“入口文件本身必须保持干净”时，才允许只检查 `styles.css`。
+靠评审时的约定，加上仍然独立存在的快速脚本：`check-dead-css`、`check-a11y`、
+`check-copy`、`check-console`。原来用测试把这些规则再断言一遍的源码扫描套件已经
+删除——它让每次重构都要顺手改写自己的护栏，抓到的却只是 linter 该抓的东西。
+
+- renderer CSS 的行为在它真正渲染的地方验证：Storybook、app，或对真实界面的 e2e 断言。
+- 真的值得机器强制的规则，写成 `scripts/check-*.mjs`（快、单一职责、不依赖构建），
+  而不是写成一个正则扫源码树的测试。
 
 ## 8. 推荐改动顺序
 
 调整 renderer CSS 时，建议按下面顺序推进：
 
-1. 先把 contract test 指向真实 CSS 位置。
-2. 再把 `styles.css` 中的真实规则块迁到子文件。
-3. 只把“不会覆盖共享 utility”的规则放进 layer。
-4. 清理 dead selector。
-5. 只有在 primitive / layer 架构已经稳定后，再移除剩余 `!important`。
+1. 把 `styles.css` 中的真实规则块迁到子文件。
+2. 只把“不会覆盖共享 utility”的规则放进 layer。
+3. 清理 dead selector。
+4. 只有在 primitive / layer 架构已经稳定后，再移除剩余 `!important`。
 
 ## 9. 当前治理原则
 
 - 先保证 CI 护栏可信，再做结构收敛。
 - 先删 dead CSS，再谈样式“美化性重构”。
 - 对共享 `Button` / `Textarea` / `EmptyState` 这类 primitive 的覆盖，优先从组件接口层解决，不要长期依赖 renderer CSS 强压。
-- 任何会影响 Tailwind utility 级联顺序的改动，都必须配合 contract test 和最小回归验证一起提交。
+- 任何会影响 Tailwind utility 级联顺序的改动，都必须配合对真实渲染结果的最小回归验证一起提交。
