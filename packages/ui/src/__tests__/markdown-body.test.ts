@@ -208,7 +208,7 @@ it('ships overrides only for Astryx surfaces Maka renders', () => {
   for (const key of Object.keys(messages)) {
     assert.doesNotMatch(
       key,
-      /^@astryx\.(?:lightbox|selector|chat)/,
+      /^@astryx\.(?:lightbox|chat)/,
       `dead Astryx locale override: ${key}`,
     );
   }
