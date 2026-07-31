@@ -74,7 +74,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const providersPanelMountedRef = useMountedRef();
   const providersReloadTicketRef = useRef(0);
   const providerDialogLifecycleRef = useRef(0);
-  const dialogHasOpenedRef = useRef(false);
   const focusProviderSearchAfterCloseRef = useRef(false);
   const providerCatalogRef = useRef<HTMLElement>(null);
   const providerCatalogSearchRef = useRef<HTMLInputElement>(null);
@@ -83,8 +82,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const copy = providerCopy.panel;
   const toast = useToast();
 
-  function closeDialog() {
-    providerDialogLifecycleRef.current += 1;
+  function releaseDialog(lifecycle: number) {
+    if (providerDialogLifecycleRef.current !== lifecycle) return;
     setDialogState(null);
     if (focusProviderSearchAfterCloseRef.current) {
       focusProviderSearchAfterCloseRef.current = false;
@@ -97,29 +96,30 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   }
 
   function openDialog(nextState: Exclude<ProviderDialogState, null>) {
-    dialogHasOpenedRef.current = false;
+    const lifecycle = providerDialogLifecycleRef.current + 1;
+    providerDialogLifecycleRef.current = lifecycle;
     setIsDialogOpen(false);
     setDialogState(nextState);
+    window.requestAnimationFrame(() => {
+      if (!providersPanelMountedRef.current || providerDialogLifecycleRef.current !== lifecycle) return;
+      setIsDialogOpen(true);
+    });
   }
 
   function requestDialogClose() {
+    const lifecycle = providerDialogLifecycleRef.current + 1;
+    providerDialogLifecycleRef.current = lifecycle;
     setIsDialogOpen(false);
+    window.requestAnimationFrame(() => releaseDialog(lifecycle));
   }
 
-  useEffect(() => {
-    if (!dialogState) return;
-    if (!dialogHasOpenedRef.current) {
-      if (isDialogOpen) {
-        dialogHasOpenedRef.current = true;
-      } else {
-        setIsDialogOpen(true);
-      }
+  function handleDialogOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setIsDialogOpen(true);
       return;
     }
-    if (isDialogOpen) return;
-    const frame = window.requestAnimationFrame(closeDialog);
-    return () => window.cancelAnimationFrame(frame);
-  }, [dialogState, isDialogOpen]);
+    requestDialogClose();
+  }
 
   async function reload(): Promise<boolean> {
     const ticket = ++providersReloadTicketRef.current;
@@ -354,7 +354,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           subtitle={copy.createSubtitle}
           providerType={createType}
           isOpen={isDialogOpen}
-          onOpenChange={setIsDialogOpen}
+          onOpenChange={handleDialogOpenChange}
         >
           <AddProviderForm
             key={createType}
@@ -388,7 +388,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           subtitle={connectionDialogSubtitle(selected, selected.slug === defaultSlug, locale)}
           providerType={selected.providerType}
           isOpen={isDialogOpen}
-          onOpenChange={setIsDialogOpen}
+          onOpenChange={handleDialogOpenChange}
         >
           <ConnectionDetail
             key={selected.slug}

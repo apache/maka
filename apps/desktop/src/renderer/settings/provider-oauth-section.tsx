@@ -45,7 +45,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
   const cards = modelOAuthCards(copy);
   const [openModal, setOpenModal] = useState<OAuthServiceId | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const modalHasOpenedRef = useRef(false);
+  const modalLifecycleRef = useRef(0);
   const [claudeCatalogEnabled, setClaudeCatalogEnabled] = useState<boolean | null>(null);
   const toast = useToast();
   const modelOAuthMountedRef = useMountedRef();
@@ -135,33 +135,36 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
   }
 
   function openOAuthModal(service: OAuthServiceId) {
-    modalHasOpenedRef.current = false;
+    const lifecycle = modalLifecycleRef.current + 1;
+    modalLifecycleRef.current = lifecycle;
     setIsModalOpen(false);
     setOpenModal(service);
+    window.requestAnimationFrame(() => {
+      if (!modelOAuthMountedRef.current || modalLifecycleRef.current !== lifecycle) return;
+      setIsModalOpen(true);
+    });
   }
 
-  useEffect(() => {
-    if (!openModal) return;
-    if (!modalHasOpenedRef.current) {
-      if (isModalOpen) {
-        modalHasOpenedRef.current = true;
-      } else {
-        setIsModalOpen(true);
-      }
+  function handleModalOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setIsModalOpen(true);
       return;
     }
-    if (isModalOpen) return;
-    const frame = window.requestAnimationFrame(() => {
+    const lifecycle = modalLifecycleRef.current + 1;
+    modalLifecycleRef.current = lifecycle;
+    setIsModalOpen(false);
+    window.requestAnimationFrame(() => {
+      if (!modelOAuthMountedRef.current || modalLifecycleRef.current !== lifecycle) return;
       setOpenModal(null);
       void refreshAfterOAuthChange();
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [isModalOpen, openModal]);
+  }
 
   useEffect(() => {
     void refreshAllCards();
     return () => {
       modelOAuthRefreshTicketRef.current += 1;
+      modalLifecycleRef.current += 1;
     };
   }, []);
 
@@ -215,13 +218,13 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
       {openModal === 'claude' && (
         <ClaudeSubscriptionModal
           isOpen={isModalOpen}
-          onOpenChange={setIsModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
       {openModal === 'github-copilot' && (
         <GitHubCopilotSubscriptionModal
           isOpen={isModalOpen}
-          onOpenChange={setIsModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
       {openModal === 'codex' && (
@@ -229,7 +232,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
           service="codex"
           onLoginSuccess={refreshAfterOAuthChange}
           isOpen={isModalOpen}
-          onOpenChange={setIsModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
       {openModal === 'xai' && (
@@ -237,7 +240,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
           service="xai"
           onLoginSuccess={refreshAfterOAuthChange}
           isOpen={isModalOpen}
-          onOpenChange={setIsModalOpen}
+          onOpenChange={handleModalOpenChange}
         />
       )}
     </div>
