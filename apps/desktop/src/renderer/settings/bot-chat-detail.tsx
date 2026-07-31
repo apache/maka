@@ -481,7 +481,6 @@ function BotCredentialFields(props: {
                 placeholder={field.placeholder}
                 label={field.label}
                 description={field.description}
-                isLabelHidden={false}
               />
             );
           case 'select':

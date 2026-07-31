@@ -1,5 +1,5 @@
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, Chip, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, Chip, FormLayout, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { SettingsRows } from './settings-rows';
 import { MemoryEntryList } from './memory-entry-list';
@@ -325,13 +325,12 @@ export function MemorySettingsPage(props: {
           <strong>{copy.text.manualAdd}</strong>
           <small>{copy.text.manualAddHelp}</small>
         </div>
-        <div className="settingsMemoryManualAddGrid">
+        <FormLayout>
           <TextInput
             type="text"
             value={newMemoryTitle}
             onChange={(value) => setNewMemoryTitle(value)}
-            label={copy.text.titleAria}
-            isLabelHidden
+            label={copy.text.title}
             placeholder={copy.text.titlePlaceholder}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
             width="100%"
@@ -340,8 +339,7 @@ export function MemorySettingsPage(props: {
             type="text"
             value={newMemoryTags}
             onChange={(value) => setNewMemoryTags(value)}
-            label={copy.text.tagsAria}
-            isLabelHidden
+            label={copy.text.tags}
             placeholder={copy.text.tagsPlaceholder}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
             width="100%"
@@ -349,14 +347,13 @@ export function MemorySettingsPage(props: {
           <TextArea
             value={newMemoryContent}
             onChange={(value) => setNewMemoryContent(value)}
-            label={copy.text.contentAria}
-            isLabelHidden
+            label={copy.text.content}
             placeholder={copy.text.contentPlaceholder}
             rows={3}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
             width="100%"
           />
-        </div>
+        </FormLayout>
         <Button
           variant="secondary"
           isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
@@ -373,7 +370,6 @@ export function MemorySettingsPage(props: {
       )}
 
       <div className="settingsMemoryEditor">
-        <span>{copy.text.fileContent}</span>
         <TextArea
           ref={editorRef}
           value={draft}
@@ -381,8 +377,7 @@ export function MemorySettingsPage(props: {
           isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
           rows={12}
           hasSpellCheck={false}
-          label={copy.text.contentEditorAria}
-          isLabelHidden
+          label={copy.text.fileContent}
           width="100%"
         />
       </div>

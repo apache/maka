@@ -141,7 +141,7 @@ describe('Daily Review copy feedback contract', () => {
     assert.match(panelBlock, /runDailyReviewAction\('copy', async \(\) => \{/);
     assert.match(panelBlock, /runDailyReviewAction\('append', async \(\) => \{/);
     assert.match(panelBlock, /runDailyReviewAction\('save', async \(\) => \{/);
-    assert.match(panelBlock, /disabled=\{dailyReviewActionBusy\}/);
+    assert.match(panelBlock, /isDisabled=\{dailyReviewActionBusy\}/);
     assert.match(panelBlock, /aria-busy=\{pendingDailyReviewAction === 'copy' \? 'true' : undefined\}/);
     assert.match(panelBlock, /copy\.export\.copying/);
     assert.match(panelBlock, /copy\.export\.appending/);
@@ -184,7 +184,7 @@ describe('Daily Review copy feedback contract', () => {
       /catch \(err\) \{\s*if \(isDailyReviewActionCurrent\(actionKey\)\) setError\(dailyReviewPanelErrorMessage\(err, locale\)\);\s*\}/,
       'Late manual-run failures must not render errors after leaving Daily Review',
     );
-    assert.match(panelBlock, /disabled=\{dailyReviewActionBusy\}/);
+    assert.match(panelBlock, /isDisabled=\{dailyReviewActionBusy\}/);
     assert.match(panelBlock, /pendingDailyReviewAction === 'run:daily' \? copy\.page\.generating : copy\.page\.generateDaily/);
     assert.match(panelBlock, /pendingDailyReviewAction === 'run:deep' \? copy\.page\.generating : copy\.page\.generateDeep/);
   });

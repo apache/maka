@@ -199,13 +199,12 @@ export function OpenGatewaySettingsPage(props: {
           <PasswordInput
             value={tokenDraft}
             onChange={setTokenDraft}
-            disabled={saving}
+            isDisabled={saving}
             onBlur={() => {
               if (tokenDraft !== gatewayDraft.token) void saveToken();
             }}
             placeholder={copy.form.tokenPlaceholder}
             label={copy.form.token}
-            isLabelHidden={false}
           />
           <TextInput
             value={eventSessionId}

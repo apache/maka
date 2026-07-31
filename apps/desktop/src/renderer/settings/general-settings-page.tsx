@@ -372,7 +372,6 @@ function NetworkProxySection(props: {
                 value={proxyDraft.password}
                 onChange={(next) => void updateProxy({ password: next })}
                 label={copy.password}
-                isLabelHidden={false}
               />
             </FormLayout>
           )}

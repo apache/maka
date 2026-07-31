@@ -143,6 +143,17 @@ describe('PR4 remaining shared UI copy contract', () => {
     assert.equal(getDailyReviewCopy('en').page.title, 'Daily review');
     assert.equal(getPlanReminderCopy('zh').page.title, '定时任务');
     assert.equal(getPlanReminderCopy('en').page.title, 'Scheduled tasks');
+    assert.deepEqual(
+      [
+        getPlanReminderCopy('zh').form.field.cron,
+        getPlanReminderCopy('zh').form.field.chatId,
+        getPlanReminderCopy('zh').form.field.timeInput,
+        getPlanReminderCopy('en').form.field.cron,
+        getPlanReminderCopy('en').form.field.chatId,
+        getPlanReminderCopy('en').form.field.timeInput,
+      ],
+      ['Cron', 'Chat ID', '提醒时间', 'Cron', 'Chat ID', 'Reminder time'],
+    );
     assert.equal(getSkillsCopy('zh').page.title, '技能');
     assert.equal(getSkillsCopy('en').page.title, 'Skills');
     assert.match(applyAssistantComplete('x'.repeat(100), { maxTotalChars: 40, locale: 'en' }).text, /remaining output truncated/);
@@ -174,6 +185,50 @@ describe('PR4 remaining desktop copy contract', () => {
     assert.equal(getArtifactCopy('zh').pane.empty, '暂无生成文件');
     assert.equal(getArtifactCopy('en').pane.empty, 'No generated files');
     assert.equal(getMcpCopy('en').page.market, 'Marketplace');
+    assert.deepEqual(
+      {
+        serverId: getMcpCopy('zh').editor.serverId,
+        command: getMcpCopy('zh').editor.command,
+        arguments: getMcpCopy('zh').editor.arguments,
+        workingDirectory: getMcpCopy('zh').editor.workingDirectory,
+        environment: getMcpCopy('zh').editor.environment,
+        url: getMcpCopy('zh').editor.url,
+        headers: getMcpCopy('zh').editor.headers,
+        transport: getMcpCopy('zh').editor.transportLabel,
+      },
+      {
+        serverId: '服务器 ID',
+        command: '命令',
+        arguments: '参数',
+        workingDirectory: '工作目录',
+        environment: '环境变量',
+        url: 'MCP URL',
+        headers: 'HTTP 请求头',
+        transport: '传输协议',
+      },
+    );
+    assert.deepEqual(
+      {
+        serverId: getMcpCopy('en').editor.serverId,
+        command: getMcpCopy('en').editor.command,
+        arguments: getMcpCopy('en').editor.arguments,
+        workingDirectory: getMcpCopy('en').editor.workingDirectory,
+        environment: getMcpCopy('en').editor.environment,
+        url: getMcpCopy('en').editor.url,
+        headers: getMcpCopy('en').editor.headers,
+        transport: getMcpCopy('en').editor.transportLabel,
+      },
+      {
+        serverId: 'Server ID',
+        command: 'Command',
+        arguments: 'Arguments',
+        workingDirectory: 'Working directory',
+        environment: 'Environment',
+        url: 'MCP URL',
+        headers: 'HTTP headers',
+        transport: 'Transport',
+      },
+    );
     assert.equal(getMcpCatalog('zh').find((entry) => entry.id === 'filesystem')?.name, '本地文件');
     assert.equal(getMcpCatalog('en').find((entry) => entry.id === 'filesystem')?.name, 'Local files');
     assert.equal(getPermissionCenterCopy('zh').title, '权限与能力');

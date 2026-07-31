@@ -199,7 +199,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       detail,
-      /<PasswordInput[\s\S]*disabled=\{detailActionBusy\}/,
+      /<PasswordInput[\s\S]*isDisabled=\{detailActionBusy\}/,
       'ConnectionDetail API key draft must freeze while any detail action is in flight',
     );
     assert.match(
@@ -321,7 +321,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(src, /<ProviderConnectionDialog[\s\S]*<AddProviderForm/);
     assert.match(src, /<DialogContent[\s\S]*className="providerConnectionDialog"[\s\S]*width=\{520\}/);
     assert.match(src, /initialFocus=\{\(\) =>[\s\S]*summary[\s\S]*\?\? true\}/, 'connection dialogs must focus the visible Advanced summary when no form control precedes it');
-    assert.match(src, /label="API Key"/);
+    assert.match(src, /label=\{copy\.apiKeyLabel\(requiresApiKey\)\}/);
     assert.match(src, /\.\.\.\(normalizedApiKey \? \{ apiKey: normalizedApiKey \} : \{\}\)/);
     assert.match(
       src,
@@ -1325,6 +1325,11 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(browserModal, /flow\.pendingAction === 'logout' \? copy\.loggingOut : copy\.logout/, 'browser OAuth logout must expose locale-specific progress feedback');
     assert.match(claudeCard, /const refresh = async \(\) => \{[\s\S]*catch \(error\) \{[\s\S]*toast\.error\(copy\.refreshFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth state refresh must surface thrown failures');
     assert.match(claudeCard, /settingsErrorText" role="alert"\>\{pasteError\}/, 'Claude OAuth refresh failures must be visible in the modal body');
+    assert.match(
+      claudeCard,
+      /<TextArea[\s\S]*status=\{pasteError \? \{ type: 'error', message: pasteError \} : undefined\}/,
+      'the active paste field must own its validation status and message',
+    );
     assert.match(claudeCard, /catch \(error\) \{[\s\S]*toast\.error\(copy\.startFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth start must toast thrown failures');
     assert.match(claudeCard, /catch \(error\) \{[\s\S]*toast\.error\(copy\.submitFailed, message\);[\s\S]*setPasteError\(message\);/, 'Claude OAuth paste submit must toast thrown failures');
     assert.match(claudeCard, /catch \(error\) \{[\s\S]*toast\.error\(copy\.cancelFailed, subscriptionActionErrorMessage\(error, locale\)\);/, 'Claude OAuth cancel must toast thrown failures');

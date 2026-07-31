@@ -417,9 +417,34 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           errors={editorErrors}
           copy={copy}
           saving={busy === 'save' || busy === 'import'}
-          onChange={(next) => {
+          onChange={(next, changedKey) => {
             setEditor(next);
-            setEditorErrors({});
+            setEditorErrors((current) => {
+              if (changedKey === undefined) {
+                return {};
+              }
+              if (Object.keys(current).length === 0 || next.mode !== 'manual') {
+                return current;
+              }
+              if (changedKey === 'kind') {
+                return validateMcpEditorDraft(next.draft);
+              }
+              if (
+                changedKey !== 'id' &&
+                changedKey !== 'command' &&
+                changedKey !== 'url'
+              ) {
+                return current;
+              }
+              const nextErrors = { ...current };
+              const changedError = validateMcpEditorDraft(next.draft)[changedKey];
+              if (changedError) {
+                nextErrors[changedKey] = changedError;
+              } else {
+                delete nextErrors[changedKey];
+              }
+              return nextErrors;
+            });
           }}
           onClose={() => {
             setEditor(null);
@@ -559,7 +584,10 @@ function McpEditorDialog(props: {
   errors: McpEditorErrors;
   copy: McpCopy;
   saving: boolean;
-  onChange(next: Exclude<EditorState, null>): void;
+  onChange(
+    next: Exclude<EditorState, null>,
+    changedKey?: keyof Draft,
+  ): void;
   onClose(): void;
   onSave(event: React.FormEvent): void;
   onImport(event: React.FormEvent): void;
@@ -567,7 +595,10 @@ function McpEditorDialog(props: {
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
   const updateDraft = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     if (props.state.mode !== 'manual') return;
-    props.onChange({ ...props.state, draft: { ...props.state.draft, [key]: value } });
+    props.onChange(
+      { ...props.state, draft: { ...props.state.draft, [key]: value } },
+      key,
+    );
   };
   return (
     <DialogRoot open onOpenChange={(open) => { if (!open) props.onClose(); }}>
@@ -605,19 +636,19 @@ function McpEditorDialog(props: {
               <button type="button" aria-pressed={props.state.draft.kind === 'remote'} data-active={props.state.draft.kind === 'remote'} onClick={() => updateDraft('kind', 'remote')}><Globe aria-hidden="true" /> {props.copy.editor.remoteUrl}</button>
             </div>
             <div className="maka-mcp-form-fields">
-              <TextInput label="Server ID" description={props.copy.editor.serverIdHelp} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
+              <TextInput label={props.copy.editor.serverId} description={props.copy.editor.serverIdHelp} value={props.state.draft.id} onChange={(value) => updateDraft('id', value)} isDisabled={editing} isRequired placeholder="filesystem" status={props.errors.id ? { type: 'error', message: props.copy.editor.required } : undefined} />
               {props.state.draft.kind === 'stdio' ? (
                 <>
-                  <TextInput label="Command" value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
-                  <TextArea label="Arguments" description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
+                  <TextInput label={props.copy.editor.command} value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
+                  <TextArea label={props.copy.editor.arguments} description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
-                    <TextInput label="Working directory" value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
-                    <TextArea label="Environment" description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
+                    <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
+                    <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
                   </div></details>
                 </>
               ) : (
                 <>
-                  <TextInput label="MCP URL" value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
+                  <TextInput label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
                   <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
                     <Selector
                       value={props.state.draft.transport}
@@ -628,10 +659,9 @@ function McpEditorDialog(props: {
                       ]}
                       onChange={(value) => updateDraft('transport', value as Draft['transport'])}
                       label={props.copy.editor.transportLabel}
-                      isLabelHidden
                       width="100%"
                     />
-                    <TextArea label="HTTP headers" description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
+                    <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
                   </div></details>
                 </>
               )}

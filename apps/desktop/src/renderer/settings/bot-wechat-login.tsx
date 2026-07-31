@@ -34,7 +34,6 @@ export function BotWeChatFields(props: {
         onChange={(next) => updateChannel({ token: next })}
         placeholder={copy.tokenPlaceholder}
         label={copy.token}
-        isLabelHidden={false}
         isRequired
       />
       <div className="settingsBotAdvanced">
@@ -65,7 +64,6 @@ export function BotWeChatFields(props: {
               onChange={(next) => updateChannel({ appSecret: next })}
               placeholder={copy.appSecretPlaceholder}
               label={copy.appSecret}
-              isLabelHidden={false}
             />
             <Alert variant="info">
               <AlertDescription>{copy.advancedNotice}</AlertDescription>

@@ -465,7 +465,7 @@ export function DailyReviewPanel(props: {
               <DailyReviewTotalsCell label={copy.overview.conversations} value={visibleSummary.totals.sessionCount.toString()} />
               <DailyReviewTotalsCell label={copy.overview.requests} value={visibleSummary.totals.requestCount.toString()} />
               <DailyReviewTotalsCell
-                label="Token"
+                label={copy.overview.tokens}
                 value={visibleSummary.totals.totalTokens.toLocaleString(intlLocale)}
               />
               <DailyReviewTotalsCell

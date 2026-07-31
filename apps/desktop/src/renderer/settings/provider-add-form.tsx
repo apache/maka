@@ -130,11 +130,10 @@ export function AddProviderForm(props: {
             if (error) setError(null);
           }}
           placeholder={copy.apiKeyPlaceholder}
-          label="API Key"
-          isLabelHidden={false}
+          label={copy.apiKeyLabel(requiresApiKey)}
           isRequired={requiresApiKey}
-          error={error}
-          disabled={busy}
+          status={error ? { type: 'error', message: error } : undefined}
+          isDisabled={busy}
         />
         <div className="providerKeyDialogActions">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
@@ -167,9 +166,8 @@ export function AddProviderForm(props: {
             }}
             placeholder={copy.apiKeyPlaceholder}
             label={copy.apiKeyLabel(requiresApiKey)}
-            isLabelHidden={false}
             isRequired={requiresApiKey}
-            disabled={isExperimental || busy}
+            isDisabled={isExperimental || busy}
           />
         )}
         <TextInput

@@ -396,11 +396,10 @@ export function ClaudeSubscriptionCard() {
             onChange={(value) => setPasteValue(value)}
             placeholder={copy.codePlaceholder}
             label={copy.codeAria}
-            isLabelHidden
             rows={3}
             hasSpellCheck={false}
+            status={pasteError ? { type: 'error', message: pasteError } : undefined}
           />
-          {pasteError && <small className="settingsErrorText">{pasteError}</small>}
           <div className="settingsConnectionActions">
             <Button
               variant="primary"

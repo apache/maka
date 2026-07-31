@@ -29,7 +29,7 @@ import { BOT_DELIVERY_PROVIDERS, botDisplayLabel } from '@maka/core';
 import {
   type PlanReminderFormSeed,
   formatPlanDeliveryProviderList,
-  planReminderFormValidationMessage,
+  planReminderFormValidation,
   planReminderPresetRunAt,
   planReminderTemplateSeed,
   toPlanReminderDateTimeInputValue,
@@ -93,7 +93,7 @@ export function PlanReminderFormDialog(props: {
   const delivery: PlanReminderDeliveryTarget = deliveryChannel === 'bot'
     ? { channel: 'bot', platform: deliveryPlatform, chatId: deliveryChatId.trim() }
     : { channel: 'local' };
-  const validationMessage = planReminderFormValidationMessage({
+  const validation = planReminderFormValidation({
     title,
     parsedRunAt,
     recurrence,
@@ -101,7 +101,7 @@ export function PlanReminderFormDialog(props: {
     delivery,
     now: Date.now(),
   }, locale);
-  const canCreate = validationMessage === null;
+  const canCreate = validation === null;
   const submitDisabled = !canCreate || submitPending;
   const formInteractionDisabled = submitPending;
   const isEditing = editingId !== null;
@@ -247,14 +247,23 @@ export function PlanReminderFormDialog(props: {
               data-maka-plan-title-input="true"
               placeholder={copy.titlePlaceholder}
               isDisabled={formInteractionDisabled}
+              isRequired
+              status={validation?.field === 'title'
+                ? { type: 'error', message: validation.message }
+                : undefined}
             />
             <DateTimeInput
               label={copy.field.time}
+              timeLabel={copy.field.timeInput}
               value={runAtLocal as ISODateTimeString}
               onChange={(value) => setRunAtLocal(value ?? '')}
               hourFormat="24h"
               timeIncrement={5}
               isDisabled={formInteractionDisabled}
+              isRequired
+              status={validation?.field === 'time'
+                ? { type: 'error', message: validation.message }
+                : undefined}
             />
           </FormLayout>
           <div className="maka-plan-presets" aria-label={copy.presetsAriaLabel}>
@@ -290,11 +299,15 @@ export function PlanReminderFormDialog(props: {
           </FormLayout>
           {recurrence === 'cron' && (
             <TextInput
-              label="Cron"
+              label={copy.field.cron}
               value={cronExpression}
               onChange={(value) => setCronExpression(value.slice(0, 80))}
               placeholder={copy.cronPlaceholder}
               isDisabled={formInteractionDisabled}
+              isRequired
+              status={validation?.field === 'cron'
+                ? { type: 'error', message: validation.message }
+                : undefined}
             />
           )}
           {deliveryChannel === 'bot' && (
@@ -323,11 +336,15 @@ export function PlanReminderFormDialog(props: {
                   })}
                 />
                 <TextInput
-                  label="Chat ID"
+                  label={copy.field.chatId}
                   value={deliveryChatId}
                   onChange={(value) => setDeliveryChatId(value.slice(0, 160))}
                   placeholder={copy.chatIdPlaceholder}
                   isDisabled={formInteractionDisabled}
+                  isRequired
+                  status={validation?.field === 'chatId'
+                    ? { type: 'error', message: validation.message }
+                    : undefined}
                 />
               </FormLayout>
               <p className="maka-plan-delivery-help">
@@ -344,11 +361,6 @@ export function PlanReminderFormDialog(props: {
             placeholder={copy.notePlaceholder}
             isDisabled={formInteractionDisabled}
           />
-          {validationMessage && (
-            <p className="maka-plan-validation" role="status" aria-live="polite">
-              {validationMessage}
-            </p>
-          )}
           <footer className="maka-plan-form-footer">
             <UiButton
               variant="secondary"

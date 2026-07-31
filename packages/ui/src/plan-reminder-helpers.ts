@@ -74,23 +74,31 @@ export function planReminderTemplateNextRunAt(template: PlanReminderExampleTempl
   return nextRun.getTime();
 }
 
-export function planReminderFormValidationMessage(input: {
+export type PlanReminderValidationField = 'title' | 'time' | 'cron' | 'chatId';
+
+export function planReminderFormValidation(input: {
   title: string;
   parsedRunAt: number;
   recurrence: PlanReminderRecurrence;
   cronExpression: string;
   delivery: PlanReminderDeliveryTarget;
   now: number;
-}, locale: UiLocale): string | null {
+}, locale: UiLocale): { field: PlanReminderValidationField; message: string } | null {
   const copy = getPlanReminderCopy(locale).validation;
-  if (input.title.trim().length === 0) return copy.title;
-  if (!Number.isFinite(input.parsedRunAt)) return copy.timeInvalid;
-  if (input.parsedRunAt < input.now) return copy.timePast;
+  if (input.title.trim().length === 0) {
+    return { field: 'title', message: copy.title };
+  }
+  if (!Number.isFinite(input.parsedRunAt)) {
+    return { field: 'time', message: copy.timeInvalid };
+  }
+  if (input.parsedRunAt < input.now) {
+    return { field: 'time', message: copy.timePast };
+  }
   if (input.recurrence === 'cron' && input.cronExpression.trim().split(/\s+/).length !== 5) {
-    return copy.cron;
+    return { field: 'cron', message: copy.cron };
   }
   if (input.delivery.channel === 'bot' && input.delivery.chatId.length === 0) {
-    return copy.chatId;
+    return { field: 'chatId', message: copy.chatId };
   }
   return null;
 }

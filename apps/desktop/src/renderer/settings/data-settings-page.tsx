@@ -262,22 +262,18 @@ export function DataSettingsPage() {
             );
           })}
         </div>
-        <div className="settingsConfigStrategy">
-          <span className="settingsHelpText">{copy.importConflict}</span>
-          <Selector
-            value={importStrategy}
-            label={copy.conflictAria}
-            isLabelHidden
-            options={
-              [
-                { value: 'skip', label: copy.skip },
-                { value: 'overwrite', label: copy.overwrite },
-              ]
-            }
-            width={320}
-            onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
-          />
-        </div>
+        <Selector
+          value={importStrategy}
+          label={copy.conflictAria}
+          options={
+            [
+              { value: 'skip', label: copy.skip },
+              { value: 'overwrite', label: copy.overwrite },
+            ]
+          }
+          width="100%"
+          onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
+        />
         <div className="settingsActionRow">
           <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
           <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />

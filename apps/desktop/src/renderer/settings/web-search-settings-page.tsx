@@ -272,9 +272,10 @@ export function WebSearchSettingsPage(props: {
           <PasswordInput
             value={draftKey}
             onChange={setDraftKey}
-            disabled={usingEnvKey || credentialActionBusy}
+            isDisabled={usingEnvKey || credentialActionBusy}
             placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
             label={copy.keyAria}
+            isLabelHidden
           />
         </div>
 

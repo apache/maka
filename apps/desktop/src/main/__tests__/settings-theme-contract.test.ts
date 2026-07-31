@@ -68,7 +68,7 @@ describe('Settings theme page contract', () => {
     );
   });
 
-  it('uses Astryx card selection without keeping retired radio helpers', async () => {
+  it('uses Astryx radio selection without keeping retired keyboard helpers', async () => {
     const src = await readSettingsCombinedSource();
     const themePage = src.match(/function ThemeSettingsPage\([\s\S]*?function WebSearchSettingsPage/)?.[0] ?? '';
 
@@ -77,10 +77,16 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(src, /function radioTabIndex/);
     assert.doesNotMatch(src, /import \{ nextRadioId \} from '\.\/model-table-keyboard'/);
 
-    assert.match(themePage, /role="group" aria-label=\{copy\.theme\}/);
-    assert.match(themePage, /<SelectableCard[\s\S]*isSelected=\{props\.themePref === value\}[\s\S]*onChange=\{\(\) => void setTheme\(value\)\}/);
-    assert.match(themePage, /<SelectableCard[\s\S]*isSelected=\{currentPalette === palette\}[\s\S]*onChange=\{\(\) => void setPalette\(palette\)\}/);
+    assert.match(
+      themePage,
+      /<RadioList[\s\S]*label=\{copy\.theme\}[\s\S]*value=\{props\.themePref\}[\s\S]*onChange=\{\(value\) => void setTheme\(value as ThemePreference\)\}/,
+    );
+    assert.match(
+      themePage,
+      /<RadioList[\s\S]*label=\{copy\.palette\}[\s\S]*value=\{currentPalette\}[\s\S]*onChange=\{\(value\) => void setPalette\(value as ThemePalette\)\}/,
+    );
     assert.doesNotMatch(themePage, /onSettingsRadioGroupKeyDown|radioTabIndex|data-radio-value/);
+    assert.doesNotMatch(themePage, /role="group"|<SelectableCard/);
     assert.doesNotMatch(themePage, /界面密度|props\.density|setDensity|onDensityChange/);
 
     // Segmented now comes from `@maka/ui`. The local
@@ -89,7 +95,7 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(src, /^function Segmented</m);
   });
 
-  it('uses Astryx SelectableCard for preview-rich theme and palette choices', async () => {
+  it('expresses preview-rich choices through RadioList public content slots', async () => {
     const src = await readSettingsCombinedSource();
     const themePage = src.match(/function ThemeSettingsPage\([\s\S]*?function WebSearchSettingsPage/)?.[0] ?? '';
     const themePageNoComments = themePage
@@ -97,24 +103,31 @@ describe('Settings theme page contract', () => {
       .replace(/\/\/[^\n]*/g, '');
     const lcButtonCount = (themePageNoComments.match(/<button\b/g) ?? []).length;
     const ucButtonCount = (themePageNoComments.match(/<Button\b/g) ?? []).length;
-    const selectableCardCount = (themePageNoComments.match(/<SelectableCard\b/g) ?? []).length;
+    const radioListCount = (themePageNoComments.match(/<RadioList\b/g) ?? []).length;
+    const radioItemCount = (themePageNoComments.match(/<RadioListItem\b/g) ?? []).length;
     assert.equal(
       lcButtonCount,
       0,
-      `Theme/palette cards must use SelectableCard, not native <button> (found ${lcButtonCount})`,
+      `Theme/palette choices must not use native <button> (found ${lcButtonCount})`,
     );
     assert.equal(
       ucButtonCount,
       0,
-      `Theme/palette cards must use SelectableCard, not shared <Button> (found ${ucButtonCount})`,
+      `Theme/palette choices must not use shared <Button> (found ${ucButtonCount})`,
     );
     assert.equal(
-      selectableCardCount,
+      radioListCount,
       2,
-      `Expected exactly 2 <SelectableCard> elements (one per map), found ${selectableCardCount}`,
+      `Expected exactly 2 <RadioList> elements, found ${radioListCount}`,
     );
-    assert.match(themePage, /className="settingsThemeOption settingsThemeOptionPreview"/);
-    assert.match(themePage, /className="settingsThemeOption settingsPaletteOption"/);
+    assert.equal(
+      radioItemCount,
+      2,
+      `Expected exactly 2 mapped <RadioListItem> elements, found ${radioItemCount}`,
+    );
+    assert.match(themePage, /startContent=\{<ThemePreviewMock variant=\{value\} \/>\}/);
+    assert.match(themePage, /className=\{`settingsPaletteSwatch settingsPaletteSwatch-\$\{palette\}`\}/);
+    assert.doesNotMatch(themePage, /settingsThemeOption(?:Copy|Preview)?\b/);
     assert.doesNotMatch(themePage, /界面密度|settingsDensitySwatch|setDensity/);
   });
 
@@ -130,22 +143,13 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(JSON.stringify(en), /[\u3400-\u9fff]/u);
   });
 
-  it('keeps product preview layout without restyling SelectableCard chrome', async () => {
+  it('keeps product preview content without restyling RadioListItem chrome', async () => {
     const css = await readRendererContractCss();
 
+    assert.doesNotMatch(css, /\.settingsThemeOption(?:Copy|Preview)?\b/);
     assert.match(
       css,
-      /\.settingsThemeOption \{[\s\S]*height:\s*auto;[\s\S]*min-height:\s*48px;[\s\S]*justify-content:\s*stretch;[\s\S]*overflow:\s*hidden;[\s\S]*white-space:\s*normal;/,
-      'Theme option cards must keep the product preview-card shell around Astryx radios',
-    );
-    assert.match(
-      css,
-      /\.settingsThemeOptionPreview \{[\s\S]*align-items:\s*stretch;[\s\S]*min-height:\s*116px;/,
-      'Theme preview cards must reserve enough vertical space for preview plus label',
-    );
-    assert.match(
-      css,
-      /\.settingsThemePreview \{[\s\S]*max-height:\s*70px;[\s\S]*aspect-ratio:\s*16 \/ 8;[\s\S]*overflow:\s*hidden;/,
+      /\.settingsThemePreview \{[\s\S]*width:\s*88px;[\s\S]*height:\s*44px;[\s\S]*overflow:\s*hidden;/,
       'Theme preview mocks must be bounded so they cannot cover visible labels',
     );
     assert.match(
@@ -163,18 +167,6 @@ describe('Settings theme page contract', () => {
       /settingsThemePreviewPane[\s\S]{0,260}oklch\([^)]*75\)/,
       'Theme preview tiles must not keep the old warm parchment hue after the gray-shell baseline',
     );
-    // #1362: palette names WRAP inside their Astryx item instead of
-    // truncating. At the 480px window floor the old nowrap+ellipsis cut
-    // "Catppuccin Mocha" to "Catppucc…" with no way to recover the name.
-    assert.match(
-      css,
-      /\.settingsThemeOptionCopy \{[^}]*overflow-wrap:\s*anywhere;/,
-      'Long palette names must wrap inside their option cards',
-    );
-    assert.doesNotMatch(
-      css,
-      /\.settingsThemeOptionCopy \{[^}]*text-overflow:\s*ellipsis;/,
-      'Palette names must not regress to nowrap+ellipsis truncation (#1362)',
-    );
+    assert.doesNotMatch(css, /\.astryx-(?:radio-list|radio-list-item)/);
   });
 });

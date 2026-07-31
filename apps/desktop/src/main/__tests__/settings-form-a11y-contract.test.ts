@@ -209,14 +209,16 @@ describe('Settings form accessibility labels', () => {
     assert.match(passwordInput, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.match(
       passwordInput,
-      /<InputGroup[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.error \? \{ type: 'error', message: props\.error \} : undefined\}/,
+      /<InputGroup[\s\S]*className="settingsPasswordField"[\s\S]*isLabelHidden=\{props\.isLabelHidden\}[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.status\}/,
       'the visible credential field must own required and error presentation',
     );
     assert.match(
       passwordInput,
-      /<TextInput[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.error \? \{ type: 'error' \} : undefined\}/,
+      /<TextInput[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.status \? \{ type: props\.status\.type \} : undefined\}/,
       'required and invalid semantics must reach the actual credential input',
     );
+    assert.doesNotMatch(passwordInput, /isLabelHidden \?\? true/);
+    assert.doesNotMatch(passwordInput, /<div className="settingsPasswordField">/);
     assert.doesNotMatch(
       passwordInput,
       /const copyingRef = useRef\(false\)/,
@@ -282,7 +284,7 @@ describe('Settings form accessibility labels', () => {
       ['Open Gateway session ID', /label=\{copy\.form\.sessionId\}/],
       ['usage request filter', /label=\{props\.copy\.filterAria\}/],
       ['usage status filter', /label=\{props\.copy\.statusAria\}/],
-      ['MEMORY.md content', /label=\{copy\.text\.contentEditorAria\}/],
+      ['MEMORY.md content', /label=\{copy\.text\.fileContent\}/],
     ] as const) {
       assert.match(settings, pattern, `SettingsModal must label ${label}`);
     }

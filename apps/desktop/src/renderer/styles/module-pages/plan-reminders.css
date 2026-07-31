@@ -233,18 +233,6 @@
   white-space: nowrap;
 }
 
-.maka-plan-validation {
-  margin: 0;
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.34);
-  border-radius: var(--radius-control);
-  background: oklch(from var(--warning) l c h / 0.08);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
-  padding: var(--space-1) var(--space-2);
-}
-
 .maka-plan-delivery-help {
   margin: 0;
   color: var(--foreground-secondary);

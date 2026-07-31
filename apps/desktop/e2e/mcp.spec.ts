@@ -37,12 +37,12 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     await page.getByRole('button', { name: '设置', exact: true }).click();
     const settings = page.getByRole('main', { name: '设置内容' });
     await settings.getByRole('button', { name: '外观', exact: true }).click();
-    await settings.getByRole('radio', { name: '深色 始终使用深色界面。' }).click();
+    await settings.getByRole('radio', { name: '深色' }).click();
     await settings.getByRole('button', { name: '返回应用' }).click();
     await page.screenshot({ path: variantPath(screenshotPath, 'dark-market') });
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await settings.getByRole('button', { name: '外观', exact: true }).click();
-    await settings.getByRole('radio', { name: '浅色 始终使用浅色界面。' }).click();
+    await settings.getByRole('radio', { name: '浅色' }).click();
     await settings.getByRole('button', { name: '返回应用' }).click();
     const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     await page.setViewportSize({ width: 760, height: 700 });
@@ -71,9 +71,20 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await mcp.getByRole('button', { name: '添加 MCP' }).click();
   const editor = page.getByRole('dialog', { name: '添加 MCP' });
   if (screenshotPath) await page.screenshot({ path: variantPath(screenshotPath, 'manual') });
-  await editor.getByLabel('Server ID').fill('e2e-fixture');
-  await editor.getByLabel('Command').fill(process.execPath);
-  await editor.getByLabel('Arguments').fill(fixtureServer);
+  await expect(editor.locator('label').filter({ hasText: '服务器 ID' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: '命令' })).toBeVisible();
+  await expect(editor.locator('label').filter({ hasText: '参数' })).toBeVisible();
+  await editor.getByRole('button', { name: '保存并连接' }).click();
+  await expect(editor.getByLabel('服务器 ID')).toHaveAttribute('aria-invalid', 'true');
+  await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
+  await editor.getByLabel('服务器 ID').fill('e2e-fixture');
+  await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
+  await editor.getByRole('button', { name: '远程 URL' }).click();
+  await editor.getByText('高级设置', { exact: true }).click();
+  await expect(editor.locator('label').filter({ hasText: '传输协议' })).toBeVisible();
+  await editor.getByRole('button', { name: '本地 stdio' }).click();
+  await editor.getByLabel('命令').fill(process.execPath);
+  await editor.getByLabel('参数').fill(fixtureServer);
   await editor.getByRole('button', { name: '保存并连接' }).click();
 
   await expect(mcp.getByText('e2e-fixture', { exact: true })).toBeVisible();

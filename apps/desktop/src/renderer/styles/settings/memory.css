@@ -405,11 +405,6 @@
   font-size: var(--font-size-caption);
 }
 
-.settingsMemoryManualAddGrid {
-  display: grid;
-  gap: var(--space-2);
-}
-
 .settingsMemoryDraftWarning {
   display: grid;
   gap: var(--space-1);
@@ -433,12 +428,6 @@
 .settingsMemoryEditor {
   display: grid;
   gap: var(--space-2);
-}
-
-.settingsMemoryEditor > span {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
 /* Memory page meta row — relocated from connection.css — issue #546 PR1. */

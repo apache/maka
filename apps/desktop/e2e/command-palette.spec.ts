@@ -82,6 +82,12 @@ test('new plan reminder command opens the existing form and applies a template',
   await expect(reminderDialog).toBeVisible();
   const title = reminderDialog.getByRole('textbox', { name: '标题' });
   await expect(title).toBeFocused();
+  await expect(title).toHaveAttribute('aria-required', 'true');
+  await expect(title).toHaveAttribute('aria-invalid', 'true');
+  await title.fill('临时标题');
+  await expect(
+    reminderDialog.getByRole('textbox', { name: '提醒时间' }),
+  ).toHaveAttribute('aria-required', 'true');
 
   await reminderDialog.getByRole('button', { name: '使用模板' }).click();
   await page.getByRole('menuitem', { name: /每日新闻摘要.*每天 09:30/ }).click();

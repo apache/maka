@@ -121,20 +121,3 @@
   margin-top: var(--space-1);
   color: var(--destructive);
 }
-
-.settingsConfigStrategy {
-  display: flex;
-  align-items: center;
-  /* #1363: the nowrap label + select trigger have a one-line minimum wider
-     than the 480px window floor's content column — the select drops to its
-     own line instead of dragging the section into overflow. */
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2-5);
-}
-
-/* #1363 review: no nowrap on the strategy label — the English copy
-   ("Connections with the same name:") is wider than the 480px floor's
-   content column and dragged the section into clipped overflow. On wide
-   layouts the label fits one line either way. */
-

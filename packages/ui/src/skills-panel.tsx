@@ -581,7 +581,9 @@ function SkillLibraryPanel(props: {
                         isDisabled={props.actionBusy || !canToggleSkill}
                         label={skill.enabled ? copy.row.disableAriaLabel(skill.name) : copy.row.enableAriaLabel(skill.name)}
                         isLabelHidden
-                        labelTooltip={skill.runtimeStatus === 'state_error' ? copy.row.stateErrorTitle : skill.enabled ? copy.row.enabledTitle : copy.row.disabledTitle}
+                        disabledMessage={skill.runtimeStatus === 'state_error'
+                          ? copy.row.stateErrorTitle
+                          : undefined}
                         onChange={(next) => props.onSetSkillEnabled?.(skillRef, next)}
                       />
                     </>

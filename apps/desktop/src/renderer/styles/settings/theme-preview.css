@@ -5,45 +5,12 @@
   gap: var(--space-2);
 }
 
-.settingsThemeOption {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  height: auto;
-  min-height: 48px;
-  justify-content: stretch;
-  overflow: hidden;
-  text-align: left;
-  white-space: normal;
-}
-
-.settingsThemeOptionCopy {
-  display: grid;
-  gap: var(--space-0-5);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.settingsThemeOptionCopy small {
-  color: var(--muted-foreground);
-}
-
-.settingsThemeOptionPreview {
-  grid-template-columns: 1fr;
-  grid-template-rows: auto auto;
-  align-items: stretch;
-  gap: var(--space-2);
-  min-height: 116px;
-}
-
 /* Mini chat-surface mock rendered inside each theme tile. Hardcodes colors
  * per variant so the preview doesn't track the active theme — comparing
  * tiles is the whole point. */
 .settingsThemePreview {
-  width: 100%;
-  max-height: 70px;
+  width: 88px;
+  height: 44px;
   aspect-ratio: 16 / 8;
   border-radius: var(--radius-surface);
   overflow: hidden;
@@ -171,10 +138,7 @@
 .settingsPaletteSwatch-sand             { background: oklch(0.62 0.14 55); }
 .settingsPaletteSwatch-mono             { background: oklch(0.30 0 0); }
 
-/* PR-PALETTE-PICKER-GROUPS-0: subgroup container that gathers a small
-   heading (编辑器主题 / 产品色调) above its own grid. Spacing matches
-   the existing settingsSubheading rhythm so the page reads as one
-   continuous picker, just structured. */
+/* Product grouping only; RadioList owns the control layout and chrome. */
 .settingsPaletteGroup {
   display: flex;
   flex-direction: column;

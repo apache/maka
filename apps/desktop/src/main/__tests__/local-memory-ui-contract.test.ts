@@ -372,7 +372,11 @@ describe('local MEMORY.md Settings UI contract', () => {
 
     assert.match(src, /appendManualLocalMemoryEntryDraft\(draft/);
     assert.match(src, /tags:\s*newMemoryTags\.split\(', '\)|tags:\s*newMemoryTags\.split\(','/);
-    assert.match(src, /label=\{copy\.text\.tagsAria\}[\s\S]*isLabelHidden/);
+    assert.match(src, /<FormLayout>[\s\S]*label=\{copy\.text\.tags\}/);
+    assert.doesNotMatch(
+      src,
+      /label=\{copy\.text\.(?:title|tags|content|fileContent)\}\s+isLabelHidden/,
+    );
     assert.match(src, /copy\.text\.addedDraft/);
     assert.match(src, /copy\.text\.addedDraftDetail/);
     assert.doesNotMatch(manualAddBlock, /window\.maka\.memory\.save\(result\.draft\)/);

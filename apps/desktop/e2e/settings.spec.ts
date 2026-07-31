@@ -30,9 +30,12 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   await expect(page.getByLabel('设置内容')).toBeVisible();
 
   await page.locator('[aria-label="设置分组"]').getByText('外观').click();
-  await page.locator('.settingsThemeOptionPreview').filter({
-    has: page.getByText('深色', { exact: true }),
-  }).click();
+  const themeGroup = page.getByRole('radiogroup', { name: '主题' });
+  const lightTheme = themeGroup.getByRole('radio', { name: '浅色' });
+  const darkTheme = themeGroup.getByRole('radio', { name: '深色' });
+  await lightTheme.focus();
+  await lightTheme.press('ArrowDown');
+  await expect(darkTheme).toBeChecked();
 
   await expect.poll(
     async () => page.evaluate(() => document.documentElement.classList.contains('dark')),
@@ -52,8 +55,15 @@ test('settings textareas use Astryx native resizing and persist edits across sec
   await expect(textarea).toHaveValue(edited);
 
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '记忆', exact: true }).click();
+  await expect(page.locator('label').filter({ hasText: '记忆标题' })).toBeVisible();
+  await expect(page.locator('label').filter({ hasText: '记忆标签' })).toBeVisible();
+  await expect(page.locator('label').filter({ hasText: '记忆内容' })).toBeVisible();
+  await expect(page.locator('label').filter({ hasText: 'MEMORY.md 内容' })).toBeVisible();
   await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'vertical');
   await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'vertical');
+
+  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '数据', exact: true }).click();
+  await expect(page.locator('label').filter({ hasText: '导入时同名连接的处理方式' })).toBeVisible();
 
   await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toHaveValue(edited);
@@ -617,9 +627,7 @@ test('appearance palette names stay fully visible at the window floor', async ({
   const settings = await openSettings(page);
   await settings.getByRole('button', { name: '外观', exact: true }).click();
 
-  const label = settings
-    .locator('.settingsThemeOptionCopy strong')
-    .filter({ hasText: 'Catppuccin Mocha' });
+  const label = settings.getByText('Catppuccin Mocha', { exact: true });
   await expect(label).toBeVisible();
   // Wrapping, not clipping: nothing hides past the box in either axis.
   await expect.poll(
@@ -637,9 +645,8 @@ test('appearance palette names stay fully visible at the window floor', async ({
 /**
  * #1363 — the three small form-row pages at the window floor. Daily Review
  * and About are covered by the #1362 row-stacking mechanism; the Data page
- * adds two page-owned surfaces: the config strategy row (nowrap label +
- * select, one-line minimum wider than the floor column) now wraps, and the
- * workspace path renders as a wrapping mono value.
+ * adds two page-owned surfaces: the Astryx conflict-strategy field and the
+ * workspace path's wrapping mono value.
  */
 test('data, about, and daily review stay contained at the window floor', async ({
   window: page,
@@ -648,14 +655,16 @@ test('data, about, and daily review stay contained at the window floor', async (
   const settings = await openSettings(page);
 
   await settings.getByRole('button', { name: '数据', exact: true }).click();
-  const strategy = settings.locator('.settingsConfigStrategy');
+  const strategy = settings.getByRole('combobox', { name: '导入时同名连接的处理方式' });
   await expect(strategy).toBeVisible();
-  await expect(strategy).toHaveCSS('flex-wrap', 'wrap');
-  // The section itself, not just the page: the page-level assertion below
-  // passes even when a child overflows into clipped space (#1363 review).
-  await expect.poll(
-    () => strategy.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
+  const strategyBox = await strategy.boundingBox();
+  const settingsBox = await settings.boundingBox();
+  expect(strategyBox).not.toBeNull();
+  expect(settingsBox).not.toBeNull();
+  expect(strategyBox!.x).toBeGreaterThanOrEqual(settingsBox!.x);
+  expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
+    settingsBox!.x + settingsBox!.width,
+  );
   const workspaceValue = settings.locator('.settingsRow span[data-mono="true"]').first();
   await expect(workspaceValue).toBeVisible();
   await expect.poll(
@@ -679,10 +688,9 @@ test('data, about, and daily review stay contained at the window floor', async (
 });
 
 /**
- * #1363 review: the English strategy label ("Connections with the same
- * name:") is wider than the 480px floor's content column — with the old
- * `white-space: nowrap` the section overflowed into clipped space that the
- * page-level containment assertion could not see. The label wraps now.
+ * #1363 review: the full English field label is wider than the 480px floor's
+ * content column, so the field and label must remain contained without a
+ * product-owned wrapper.
  */
 test('data config strategy stays contained at the window floor in English', async ({
   enLocaleWindow: page,
@@ -693,16 +701,18 @@ test('data config strategy stays contained at the window floor in English', asyn
   const settings = page.getByRole('main', { name: 'Settings content' });
   await settings.getByRole('button', { name: 'Data', exact: true }).click();
 
-  const strategy = settings.locator('.settingsConfigStrategy');
+  const strategy = settings.getByRole('combobox', {
+    name: 'How to handle connections with the same name during import',
+  });
   await expect(strategy).toBeVisible();
-  await expect.poll(
-    () =>
-      strategy.evaluate((element) => ({
-        sectionContained: element.scrollWidth <= element.clientWidth,
-        labelWraps:
-          getComputedStyle(element.querySelector('.settingsHelpText')!).whiteSpace !== 'nowrap',
-      })),
-  ).toEqual({ sectionContained: true, labelWraps: true });
+  const strategyBox = await strategy.boundingBox();
+  const settingsBox = await settings.boundingBox();
+  expect(strategyBox).not.toBeNull();
+  expect(settingsBox).not.toBeNull();
+  expect(strategyBox!.x).toBeGreaterThanOrEqual(settingsBox!.x);
+  expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
+    settingsBox!.x + settingsBox!.width,
+  );
 });
 
 /**

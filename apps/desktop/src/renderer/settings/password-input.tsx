@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type Ref } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
   InputGroup,
+  type InputGroupProps,
   TextInput,
   useMountedRef,
   useToast,
@@ -33,10 +34,9 @@ export function PasswordInput(props: {
   label: string;
   isLabelHidden?: boolean;
   description?: string;
-  error?: string | null;
+  status?: InputGroupProps['status'];
   isRequired?: boolean;
-  disabled?: boolean;
-  inputRef?: Ref<HTMLInputElement>;
+  isDisabled?: boolean;
   onBlur?(): void;
 }) {
   const copy = getSettingsPreferencesCopy(useUiLocale()).password;
@@ -83,50 +83,48 @@ export function PasswordInput(props: {
     }
   }
   return (
-    <div className="settingsPasswordField">
-      <InputGroup
-        label={props.label}
-        description={props.description}
-        isLabelHidden={props.isLabelHidden ?? true}
+    <InputGroup
+      className="settingsPasswordField"
+      label={props.label}
+      description={props.description}
+      isLabelHidden={props.isLabelHidden}
+      isRequired={props.isRequired}
+      isDisabled={props.isDisabled}
+      status={props.status}
+    >
+      <TextInput
+        type={visible ? 'text' : 'password'}
+        value={props.value}
+        onChange={(value) => props.onChange(value)}
+        onBlur={props.onBlur}
+        placeholder={props.placeholder}
+        label={copy.value}
+        isLabelHidden
         isRequired={props.isRequired}
-        isDisabled={props.disabled}
-        status={props.error ? { type: 'error', message: props.error } : undefined}
-      >
-        <TextInput
-          ref={props.inputRef}
-          type={visible ? 'text' : 'password'}
-          value={props.value}
-          onChange={(value) => props.onChange(value)}
-          onBlur={props.onBlur}
-          placeholder={props.placeholder}
-          label={copy.value}
-          isLabelHidden
-          isRequired={props.isRequired}
-          isDisabled={props.disabled}
-          status={props.error ? { type: 'error' } : undefined}
-        />
-        {props.value && !props.disabled && (
-          <IconButton
-            variant="ghost"
-            size="sm"
-            isDisabled={copying}
-            onClick={() => void copyValue()}
-            label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
-            icon={justCopied
-              ? <Check size={16} aria-hidden="true" />
-              : <Copy size={16} aria-hidden="true" />}
-          />
-        )}
+        isDisabled={props.isDisabled}
+        status={props.status ? { type: props.status.type } : undefined}
+      />
+      {props.value && !props.isDisabled && (
         <IconButton
           variant="ghost"
           size="sm"
-          onClick={() => setVisible((current) => !current)}
-          isDisabled={props.disabled}
-          label={visible ? copy.hide : copy.show}
-          aria-pressed={visible}
-          icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+          isDisabled={copying}
+          onClick={() => void copyValue()}
+          label={copying ? copy.copying : justCopied ? copy.copied : copy.copy}
+          icon={justCopied
+            ? <Check size={16} aria-hidden="true" />
+            : <Copy size={16} aria-hidden="true" />}
         />
-      </InputGroup>
-    </div>
+      )}
+      <IconButton
+        variant="ghost"
+        size="sm"
+        onClick={() => setVisible((current) => !current)}
+        isDisabled={props.isDisabled}
+        label={visible ? copy.hide : copy.show}
+        aria-pressed={visible}
+        icon={visible ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
+      />
+    </InputGroup>
   );
 }

@@ -221,7 +221,7 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
       'Live query verification must have a guard-backed duplicate-submit guard.',
     );
     assert.match(page![0], /const credentialActionBusy = pendingCredentialAction !== null \|\| testing/);
-    assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
+    assert.match(page![0], /isDisabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
     // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
     assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| usingEnvKey \|\| draftKey\.length === 0\}/);
     assert.match(page![0], /pendingCredentialAction === 'save' \? copy\.saving : copy\.saveKey/);
@@ -406,7 +406,7 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.match(page![0], /copy\.envPlaceholder/);
     assert.match(page![0], /copy\.envKeyHelp/);
     assert.match(getWebSearchSettingsCopy('zh').envKeyHelp, /TAVILY_API_KEY \/ MAKA_TAVILY_API_KEY/);
-    assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/);
+    assert.match(page![0], /isDisabled=\{usingEnvKey \|\| credentialActionBusy\}/);
     assert.doesNotMatch(page![0], /process\.env|TAVILY_API_KEY[\s\S]{0,40}apiKey/);
   });
 

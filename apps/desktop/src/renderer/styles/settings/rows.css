@@ -237,26 +237,6 @@
   word-break: break-all;
 }
 
-/* === control-width variants ============================================ */
-
-/* PR daily-review-bundled (@kenji audit finding #5): semantic width
-   bucket on the row, not a class selector keyed off the input
-   className. Different settings rows ask for different control
-   widths (time-pickers want compact, free-text selects want a 320px
-   cap); keying off the row makes the contract local and obvious. */
-.settingsRow[data-control-width="compact"] > input,
-.settingsRow[data-control-width="compact"] > .settingsTimeInput {
-  /* `width: auto` over the Input primitive's `w-full`: a 140px flat cap
-     stretched the box to 140px while `08:00` + the picker glyph only ink
-     ~80px, leaving a ~60px dead strip inside the field's right edge. The
-     field now hugs its content and stays pinned to the same right rail as
-     the switch rows above it; 140px remains the ceiling for the wider
-     compact controls that share this bucket. */
-  width: auto;
-  max-width: 140px;
-  justify-self: end;
-}
-
 /* === fields and grids =================================================== */
 
 /* #1362: non-row children of a rows card — the proxy sub-form's grids,
@@ -349,14 +329,10 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* Values and controls sit under their label now; right-alignment against
-     the card edge would detach them from it. */
+  /* Values sit under their label now; right-alignment against the card edge
+     would detach them from it. */
   .settingsRow > span {
     text-align: left;
-  }
-
-  .settingsRow[data-control-width="compact"] > .settingsTimeInput {
-    justify-self: start;
   }
 
   .settingsFormRow {

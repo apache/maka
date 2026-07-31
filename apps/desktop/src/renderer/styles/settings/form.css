@@ -79,7 +79,3 @@
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;
 }
-
-.settingsSubheading + .settingsThemeOptions {
-  margin-top: calc(var(--space-1-5) * -1);
-}

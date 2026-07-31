@@ -161,9 +161,8 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               onChange={setApiKey}
               placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
               label={copy.modelKeyAria(display.name)}
-              isLabelHidden={false}
               description={apiKeyStatusHint}
-              disabled={detailActionBusy}
+              isDisabled={detailActionBusy}
             />
           </div>
           <div className="providerCredentialActions">
