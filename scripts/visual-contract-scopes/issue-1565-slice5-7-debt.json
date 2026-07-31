@@ -1,0 +1,11 @@
+{
+  "slice": "issue-1565-slice5-7-debt",
+  "scopes": [
+    {
+      "name": "shell-topbar-tooltip-consumers",
+      "selectors": [
+        ":is(header:has([data-maka-contract=\"shell-topbar-rail\"]), header:has([data-maka-contract=\"shell-topbar-rail\"]) *)"
+      ]
+    }
+  ]
+}
