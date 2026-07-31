@@ -9,7 +9,7 @@ const fixtureServer = path.resolve(
 test('MCP module completes stdio add, discovery, disable, JSON import, and delete', async ({ window: page }) => {
   const screenshotPath = process.env.MAKA_MCP_E2E_SCREENSHOT;
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   const extensions = sidebar.getByRole('button', { name: '扩展', exact: true });
   await expect(sidebar.getByRole('button', { name: '技能', exact: true })).toHaveCount(0);
   await expect(sidebar.getByRole('button', { name: 'MCP', exact: true })).toHaveCount(0);

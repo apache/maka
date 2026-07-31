@@ -24,7 +24,7 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   await access(skillDir);
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
 
@@ -55,7 +55,7 @@ test('offers no delete for a project-scope skill', async ({ invocableSkillsWindo
   // refuses them with `blocked_scope`, and the panel must not offer a button
   // that cannot work.
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
 

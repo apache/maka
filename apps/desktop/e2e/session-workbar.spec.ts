@@ -2,11 +2,11 @@ import { test, expect } from './fixtures';
 
 test('session tools share one user-controlled workbar', async ({ sessionWorkbarWindow: page }) => {
   const workbar = page.getByRole('complementary', { name: '会话工作栏' });
-  const tabs = workbar.getByRole('tablist', { name: '会话工作栏栏目' });
+  const tabs = workbar.getByRole('navigation', { name: '会话工作栏栏目' });
 
-  await expect(tabs.getByRole('tab', { name: /任务/ })).toHaveAttribute('aria-selected', 'true');
-  await expect(tabs.getByRole('tab', { name: /浏览器/ })).toBeDisabled();
-  await expect(tabs.getByRole('tab', { name: /文件/ })).toBeEnabled();
+  await expect(tabs.getByRole('button', { name: /任务/ })).toHaveAttribute('aria-current', 'page');
+  await expect(tabs.getByRole('button', { name: /浏览器/ })).toHaveCount(0);
+  await expect(tabs.getByRole('button', { name: /文件/ })).toBeEnabled();
   await expect(
     workbar.getByRole('tree', { name: '活跃会话任务' }).getByText('完成会话任务台账升级'),
   ).toBeVisible();
@@ -55,7 +55,7 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
 
   await page.getByRole('button', { name: '展开会话工作栏' }).click();
   await expect(workbar).toBeVisible();
-  await tabs.getByRole('tab', { name: /文件/ }).click();
+  await tabs.getByRole('button', { name: /文件/ }).click();
   await expect(workbar.getByText('暂无生成文件')).toBeVisible();
 
   await page.setViewportSize({ width: 480, height: 320 });
@@ -66,7 +66,10 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
   expect(narrowLayout.height).toBeLessThanOrEqual(narrowLayout.viewportHeight * 0.42 + 1);
 
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
-  await page.locator('button[aria-label="扩展"]').dispatchEvent('click');
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .getByRole('button', { name: '扩展', exact: true })
+    .dispatchEvent('click');
   await expect(workbar).toBeHidden();
   await expect(page.getByRole('main', { name: '扩展' })).toBeVisible();
 });
