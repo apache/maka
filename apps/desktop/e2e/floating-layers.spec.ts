@@ -1,17 +1,12 @@
 import { expect, test } from './fixtures.js';
 
 /**
- * #1565 PR 5 — the floating kernel. Tooltip and Popover moved from Base UI
- * portals onto Astryx's native-Popover top layer (CSS anchor positioning, no
- * portal, no z-index). The static harnesses cannot see this: a closed
- * floating surface has no box, and the visual contract explicitly declares
- * top-layer content out of scope. These two journeys are the behavior
- * contract for the kernel every later slice (menus, dialogs, toasts)
- * builds on: the surface opens into the top layer, focus lands where the
- * consumer declared, Escape dismisses, and focus returns to the trigger.
+ * #1565 PR 5 — Astryx owns Tooltip and Popover behavior. These journeys lock
+ * the public user contract: surfaces open, dismiss, and restore focus without
+ * Maka inspecting Astryx's native layer implementation.
  */
 
-test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
+test('tooltip opens on hover and dismisses on Escape', async ({
   window: page,
 }) => {
   const trigger = page.getByRole('button', { name: '搜索对话' });
@@ -21,13 +16,6 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
   const tooltip = page.getByRole('tooltip');
   await expect(tooltip).toBeVisible();
   await expect(tooltip).toContainText('搜索对话');
-
-  // The surface must live in the browser top layer (`:popover-open`), not in
-  // a portalled z-indexed container — that is the kernel's one structural
-  // invariant, and what lets it paint above `maka.legacy` fixed chrome.
-  await expect
-    .poll(() => tooltip.evaluate((element) => element.closest('[popover]')?.matches(':popover-open') ?? false))
-    .toBe(true);
 
   // WCAG 1.4.13: hover content must be dismissible without moving the pointer,
   // and an Escape-dismissed tooltip must not reappear until the pointer leaves
@@ -44,7 +32,6 @@ test('tooltip opens on hover in the top layer and dismisses on Escape', async ({
   await expect(tooltip).toBeVisible();
   await page.mouse.move(10, 300);
   await expect(tooltip).toBeHidden();
-
 });
 
 test('daily review uses the canonical time field and persists its value', async ({

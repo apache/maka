@@ -322,17 +322,21 @@ describe('issue #406 design-system governance contract', () => {
 
   it('keeps core visual surfaces on shadow rings instead of hard borders', async () => {
     const ui = await readUiSource();
+    const dialog = await readFile(
+      resolve(
+        REPO_ROOT,
+        'packages/ui/src/plan-reminder-form-dialog.tsx',
+      ),
+      'utf8',
+    );
     const styles = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles.css'), 'utf8');
     const panelShadow = styles.match(/--shadow-maka-panel:\s*([^;]+);/)?.[1] ?? '';
 
     assert.match(panelShadow, /0\s+0\s+0\s+1px\s+var\(--border\)/);
-    const dialogBlock = ui.slice(
-      ui.indexOf('interface DialogContextValue'),
-      ui.indexOf('// Astryx owns tab navigation'),
-    );
-    assert.match(ui, /Dialog as AstryxDialog[\s\S]*from '@astryxdesign\/core\/Dialog'/);
+    assert.doesNotMatch(ui, /DialogContext|AstryxDialog|MODAL_POPUP_CLASS/);
+    assert.match(dialog, /from '@astryxdesign\/core\/Dialog'/);
     assert.doesNotMatch(
-      dialogBlock,
+      dialog,
       /shadow-maka-panel|border-border|MODAL_POPUP_CLASS/,
       'Maka must not apply a second dialog surface over Astryx chrome',
     );

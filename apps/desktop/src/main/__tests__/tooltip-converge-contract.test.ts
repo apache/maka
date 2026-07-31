@@ -13,7 +13,7 @@
  * Out of scope (deferred to a follow-up): the longer tail of `title=` usages
  * that need per-site judgment (label-prop components like SettingRow /
  * MetricCard / SetupHero render `title` as visible text — those are NOT
- * tooltips and stay; truncation spans, SelectTrigger titles, status-badge
+ * tooltips and stay; truncation spans, picker titles, status-badge
  * icons, and OnboardingHero's submit button ARE tooltip-eligible but each
  * needs a label-vs-tooltip check, so they are not swept in this commit).
  *
