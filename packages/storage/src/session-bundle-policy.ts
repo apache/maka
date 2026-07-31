@@ -79,6 +79,7 @@ export const SESSION_BUNDLE_PROTECTED_ENTRIES = [
   'log',
   'activation.json',
   'activation-input.json',
+  'task-runs',
   '.maka',
   ARTIFACT_WRITER_LOCK_FILE,
   LEGACY_SESSION_METADATA_DATABASE_NAME,

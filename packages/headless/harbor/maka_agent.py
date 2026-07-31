@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -742,37 +743,16 @@ class MakaAgent(BaseInstalledAgent):
         local_store_root = self._trajectory_artifact_store_root()
         local_artifact_root = local_store_root / "artifacts"
         database_path = local_store_root / "runtime.sqlite"
-        metadata_path = local_artifact_root / "metadata.jsonl"
-        if database_path.is_file() or metadata_path.is_file():
+        if database_path.is_file():
             return
-        remote_store_root = EnvironmentPaths.agent_dir / "maka-storage"
+        shutil.rmtree(local_store_root, ignore_errors=True)
+        remote_store_root = EnvironmentPaths.agent_dir / "trajectory-state"
         remote_artifact_root = remote_store_root / "artifacts"
         try:
-            metadata_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                await environment.download_file(
-                    (remote_store_root / "runtime.sqlite").as_posix(), database_path
-                )
-                try:
-                    await environment.download_file(
-                        (remote_store_root / "runtime.sqlite-wal").as_posix(),
-                        Path(f"{database_path}-wal"),
-                    )
-                except Exception:  # noqa: BLE001 - WAL may not exist after checkpoint.
-                    pass
-                try:
-                    await environment.download_file(
-                        (remote_artifact_root / "metadata.jsonl").as_posix(),
-                        metadata_path,
-                    )
-                except Exception:  # noqa: BLE001 - absent after SQLite-native creation.
-                    pass
-            except Exception:  # noqa: BLE001 - support pre-SQLite artifact stores.
-                database_path.unlink(missing_ok=True)
-                Path(f"{database_path}-wal").unlink(missing_ok=True)
-                await environment.download_file(
-                    (remote_artifact_root / "metadata.jsonl").as_posix(), metadata_path
-                )
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+            await environment.download_file(
+                (remote_store_root / "runtime.sqlite").as_posix(), database_path
+            )
             for relative_path in referenced_image_artifact_paths(
                 runtime_events_path, local_store_root
             ):
@@ -782,6 +762,7 @@ class MakaAgent(BaseInstalledAgent):
                     (remote_artifact_root / relative_path).as_posix(), local
                 )
         except Exception as exc:  # noqa: BLE001 - trajectory builder fails closed.
+            shutil.rmtree(local_store_root, ignore_errors=True)
             self.logger.debug("Could not download Maka runtime artifacts: %s", exc)
 
     def _write_trajectory(self, output: dict[str, Any]) -> None:
@@ -993,7 +974,7 @@ class MakaAgent(BaseInstalledAgent):
         if isinstance(configured, Path):
             return configured
         if self._harbor_mode() == "task-run":
-            return self.logs_dir / "maka-task-run" / "runs"
+            return self.logs_dir / "maka-task-run" / "trajectory-state"
         return self.logs_dir / "maka-storage"
 
     async def _run_task_run_host(
@@ -1031,7 +1012,7 @@ class MakaAgent(BaseInstalledAgent):
             storage_root = host_repo_root / storage_root
         env["MAKA_OUTPUT_DIR"] = str(output_dir)
         env["MAKA_STORAGE_ROOT"] = str(storage_root)
-        self._trajectory_storage_root = storage_root
+        self._trajectory_storage_root = output_dir / "trajectory-state"
         env["MAKA_CELL_SOFT_TIMEOUT_MS"] = str(self._cell_soft_timeout_ms(env))
 
         task_workdir, workdir_probe = await self._resolve_task_workdir(environment)

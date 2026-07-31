@@ -246,11 +246,17 @@ sets, transcript decodability, and the exact manifested file tree before
 atomically publishing a new state root. Interrupted backup or restore staging
 is removed and can be retried without changing either source.
 
+Headless trajectory hydration now consumes a frozen selected-session export
+from that SQLite Artifact authority. The cell publishes `trajectory-state`
+only when RuntimeEvents reference image Artifacts; Harbor downloads its
+standalone `runtime.sqlite` first and then only the payloads referenced by the
+validated snapshot. It does not copy a live WAL or fall back to
+`artifacts/metadata.jsonl`. Missing, corrupt, unsupported, or mismatched
+evidence fails closed to a summary trajectory instead of mixing authorities.
+
 The remaining storage work is deliberately classified rather than implied
 complete:
 
-- remaining trajectory export paths must consume the SQLite artifact metadata
-  authority while preserving payload files;
 - legacy operational writers and compatibility-only JSONL code can be removed
   only after the migration/cutover matrix is complete;
 - StoredMessage transcript bodies remain append-only JSONL;

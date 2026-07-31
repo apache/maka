@@ -102,6 +102,8 @@ test('exports one session only and excludes credential/config canaries', async (
     await writeFile(join(stateRoot, 'credentials.json'), 'super-secret-api-key');
     await writeFile(join(stateRoot, 'llm-connections.json'), 'host-provider-config');
     await writeFile(join(stateRoot, '.maka_cli_claude_device_id'), 'device-identity');
+    await mkdir(join(stateRoot, 'task-runs'));
+    await writeFile(join(stateRoot, 'task-runs', 'headless-ledger.jsonl'), 'headless-only\n');
     await writeFile(join(configRoot, 'credentials.json'), 'config-secret-canary');
 
     const plan = await exportSessionBundleState({
@@ -122,6 +124,7 @@ test('exports one session only and excludes credential/config canaries', async (
         'runtime.sqlite-shm',
         'runtime.sqlite-wal',
         `sessions/${other.id}`,
+        'task-runs',
       ].sort(),
     );
     const exportedTranscript = await readFile(
@@ -148,6 +151,7 @@ test('exports one session only and excludes credential/config canaries', async (
     await assert.rejects(lstat(join(destinationRoot, 'artifacts', 'metadata.jsonl')), {
       code: 'ENOENT',
     });
+    await assert.rejects(lstat(join(destinationRoot, 'task-runs')), { code: 'ENOENT' });
     const reopenedArtifacts = createSqliteArtifactStore(destinationRoot);
     try {
       assert.deepEqual(await reopenedArtifacts.list(selected.id), [selectedArtifact]);

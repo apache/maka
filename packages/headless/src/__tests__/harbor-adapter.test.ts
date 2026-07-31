@@ -2623,10 +2623,11 @@ with tempfile.TemporaryDirectory() as tmp:
         relative_task_run_env = captured_host_process["kwargs"]["env"]
         expected_task_run_out = host_repo_root / "relative-task-run"
         expected_storage_root = expected_task_run_out / "runs"
+        expected_trajectory_root = expected_task_run_out / "trajectory-state"
         assert relative_task_run_env["MAKA_TASK_RUN_OUT_DIR"] == str(expected_task_run_out), relative_task_run_env
         assert relative_task_run_env["MAKA_OUTPUT_DIR"] == str(expected_task_run_out), relative_task_run_env
         assert relative_task_run_env["MAKA_STORAGE_ROOT"] == str(expected_storage_root), relative_task_run_env
-        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_storage_root
+        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_trajectory_root
         assert captured_host_process["kwargs"]["cwd"] == str(host_repo_root)
 
         runner_env_path = Path(tmp) / "task-run.env"
@@ -3207,6 +3208,65 @@ def event(event_id, ts, role, author, content=None, refs=None, status=None, acti
     return value
 
 
+def write_artifact_database(store_root, records, artifact_schema_version=1):
+    store_root.mkdir(parents=True, exist_ok=True)
+    database_path = store_root / "runtime.sqlite"
+    database_path.unlink(missing_ok=True)
+    connection = sqlite3.connect(database_path)
+    connection.executescript("""
+        CREATE TABLE operational_schema_migrations (
+            scope TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
+        CREATE TABLE cutover_journal (
+            store_name TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            state TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            validation_json TEXT
+        );
+        CREATE TABLE artifact_records (
+            storage_key TEXT PRIMARY KEY,
+            artifact_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            record_json TEXT NOT NULL
+        );
+    """)
+    connection.execute(
+        "INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES ('artifact', ?, 1)",
+        (artifact_schema_version,),
+    )
+    connection.execute(
+        "INSERT INTO cutover_journal(store_name, source_path, source_fingerprint, state, started_at, completed_at, validation_json) VALUES ('artifact_metadata', 'artifacts/metadata.jsonl', 'none', 'completed', 1, 1, '{}')"
+    )
+    for record in records:
+        connection.execute(
+            """
+            INSERT INTO artifact_records(
+                storage_key, artifact_id, session_id, created_at, status, relative_path, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["id"],
+                record["id"],
+                record["sessionId"],
+                record["createdAt"],
+                record["status"],
+                record["relativePath"],
+                json.dumps(record),
+            ),
+        )
+    connection.commit()
+    connection.close()
+    return database_path
+
+
 events = [
     event("user", 1000, "user", "user", {"kind": "text", "text": "Solve the task"}),
     event("call", 1100, "model", "agent", {"kind": "function_call", "id": "tool-1", "name": "Bash", "args": {"command": "echo ok", "password": "private-password"}}, {"stepId": "step-1"}),
@@ -3252,8 +3312,7 @@ with tempfile.TemporaryDirectory() as tmp:
     image_path = artifact_root / "session-1" / "artifact-image-shot.png"
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-    metadata_path = artifact_root / "metadata.jsonl"
-    metadata_path.write_text(json.dumps({
+    image_record = {
         "id": "artifact-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3265,7 +3324,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n", encoding="utf-8")
+    }
+    database_path = write_artifact_database(artifact_root.parent, [image_record])
     agent._apply_cell_output(context, {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3281,6 +3341,30 @@ with tempfile.TemporaryDirectory() as tmp:
     assert image_content[0].source.path.endswith(".png"), image_content
     assert (logs_dir / image_content[0].source.path).is_file(), image_content
 
+    database_path.unlink()
+    metadata_path = artifact_root / "metadata.jsonl"
+    metadata_path.write_text(json.dumps(image_record) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    legacy_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert legacy_payload["extra"]["maka_artifact_kind"] == "summary", legacy_payload
+    assert legacy_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_missing", legacy_payload
+    metadata_path.unlink()
+
+    write_artifact_database(artifact_root.parent, [image_record], artifact_schema_version=2)
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    newer_schema_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert newer_schema_payload["extra"]["maka_artifact_kind"] == "summary", newer_schema_payload
+    assert newer_schema_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_invalid", newer_schema_payload
+    database_path = write_artifact_database(artifact_root.parent, [image_record])
+
     materialized_path = logs_dir / image_content[0].source.path
     protected_path = logs_dir / "protected-image-target"
     materialized_path.unlink()
@@ -3294,6 +3378,16 @@ with tempfile.TemporaryDirectory() as tmp:
     assert not materialized_path.is_symlink(), materialized_path
     assert protected_path.read_bytes() == b"protected", protected_path
 
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture-tampered")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    mismatched_image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert mismatched_image_payload["extra"]["maka_artifact_kind"] == "summary", mismatched_image_payload
+    assert mismatched_image_payload["extra"]["maka_summary_reason"] == "image_artifact_content_mismatch", mismatched_image_payload
+
     image_path.unlink()
     agent._apply_cell_output(context, {
         "status": "completed",
@@ -3304,9 +3398,15 @@ with tempfile.TemporaryDirectory() as tmp:
     assert missing_image_payload["extra"]["maka_artifact_kind"] == "summary", missing_image_payload
     assert missing_image_payload["extra"]["maka_summary_reason"] == "image_artifact_unavailable", missing_image_payload
 
-    escaping_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    escaping_metadata = dict(image_record)
     escaping_metadata["relativePath"] = "../outside.png"
-    metadata_path.write_text(json.dumps(escaping_metadata) + "\n", encoding="utf-8")
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "UPDATE artifact_records SET relative_path = ?, record_json = ? WHERE artifact_id = ?",
+        (escaping_metadata["relativePath"], json.dumps(escaping_metadata), escaping_metadata["id"]),
+    )
+    connection.commit()
+    connection.close()
     agent._apply_cell_output(context, {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3367,7 +3467,7 @@ with tempfile.TemporaryDirectory() as tmp:
         encoding="utf-8",
     )
     downloaded_relative_path = "session-1/downloaded-image-shot.png"
-    downloaded_metadata = json.dumps({
+    downloaded_record = {
         "id": "downloaded-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3379,29 +3479,14 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n"
+    }
 
     class ArtifactDownloadEnvironment:
         async def download_file(self, remote, local):
-            if remote == "/logs/agent/maka-storage/runtime.sqlite":
-                database = sqlite3.connect(local)
-                database.execute("""
-                    CREATE TABLE artifact_records (
-                        storage_key TEXT PRIMARY KEY,
-                        created_at INTEGER NOT NULL,
-                        record_json TEXT NOT NULL
-                    )
-                """)
-                database.execute(
-                    "INSERT INTO artifact_records(storage_key, created_at, record_json) VALUES (?, ?, ?)",
-                    ("downloaded-image", 1200, downloaded_metadata.strip()),
-                )
-                database.commit()
-                database.close()
+            if remote == "/logs/agent/trajectory-state/runtime.sqlite":
+                write_artifact_database(Path(local).parent, [downloaded_record])
                 return
-            if remote == "/logs/agent/maka-storage/runtime.sqlite-wal":
-                raise FileNotFoundError(remote)
-            assert remote == f"/logs/agent/maka-storage/artifacts/{downloaded_relative_path}", remote
+            assert remote == f"/logs/agent/trajectory-state/artifacts/{downloaded_relative_path}", remote
             Path(local).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
 
     asyncio.run(download_agent._download_runtime_artifacts(ArtifactDownloadEnvironment()))
@@ -3414,12 +3499,12 @@ with tempfile.TemporaryDirectory() as tmp:
     task_run_runtime_path.write_text(
         "\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8"
     )
-    task_run_artifact_root = task_run_logs / "maka-task-run" / "runs" / "artifacts"
+    task_run_store_root = task_run_logs / "maka-task-run" / "trajectory-state"
+    task_run_artifact_root = task_run_store_root / "artifacts"
     task_run_image_path = task_run_artifact_root / "session-1" / "task-run-shot.png"
     task_run_image_path.parent.mkdir(parents=True)
     task_run_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-    (task_run_artifact_root / "metadata.jsonl").parent.mkdir(parents=True, exist_ok=True)
-    (task_run_artifact_root / "metadata.jsonl").write_text(json.dumps({
+    task_run_record = {
         "id": "artifact-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3431,7 +3516,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n", encoding="utf-8")
+    }
+    write_artifact_database(task_run_store_root, [task_run_record])
     task_run_agent._apply_cell_output(AgentContext(), {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
