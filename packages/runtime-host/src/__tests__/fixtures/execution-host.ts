@@ -37,16 +37,19 @@ if (recoverySessionId && recoveryRunId) {
   }
 }
 
-process.send?.({
-  type: 'ready',
-  hostEpoch: result.host.hostEpoch,
-  endpoint: result.host.endpoint,
-  ...(recoveryOutcome ? { recoveryOutcome } : {}),
-});
-
 try {
-  await runRuntimeHostProcessLifecycle(result.host, { closeOnDisconnect: true });
-} catch {
+  await runRuntimeHostProcessLifecycle(result.host, {
+    closeOnDisconnect: true,
+    onReady: () =>
+      process.send?.({
+        type: 'ready',
+        hostEpoch: result.host.hostEpoch,
+        endpoint: result.host.endpoint,
+        ...(recoveryOutcome ? { recoveryOutcome } : {}),
+      }),
+  });
+} catch (error) {
+  console.error(error);
   process.exitCode = 1;
 } finally {
   if (process.connected) process.disconnect?.();
