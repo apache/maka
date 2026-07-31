@@ -62,8 +62,8 @@ export function VoiceModelsSettingsPage(props: {
     operationId: string;
     capture?: ActiveVoiceCapture;
   } | undefined>(undefined);
-  const createRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
-  const editRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
+  const createRecognitionConnectionButtonRef = useRef<HTMLButtonElement | null>(null);
+  const editRecognitionConnectionButtonRef = useRef<HTMLButtonElement | null>(null);
   const toast = useToast();
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
@@ -433,27 +433,25 @@ export function VoiceModelsSettingsPage(props: {
           ref={createRecognitionConnectionButtonRef}
           variant="secondary"
           type="button"
-          disabled={saving || isBusy}
+          isDisabled={saving || isBusy}
           onClick={() => setCreatingRecognitionConnection(true)}
-        >
-          {copy.createRecognitionConnection}
-        </Button>
+          label={copy.createRecognitionConnection}
+        />
         <Button
           ref={editRecognitionConnectionButtonRef}
           variant="secondary"
           type="button"
-          disabled={saving || isBusy || !selectedRecognitionConnection}
+          isDisabled={saving || isBusy || !selectedRecognitionConnection}
           onClick={() => setEditingRecognitionConnection(true)}
-        >
-          {copy.editRecognitionConnection}
-        </Button>
+          label={copy.editRecognitionConnection}
+        />
         <Button
+          variant="primary"
           type="button"
-          disabled={saving || isBusy || recognitionTesting}
+          isDisabled={saving || isBusy || recognitionTesting}
           onClick={() => void runRecognitionTest()}
-        >
-          {copy.testRecognition}
-        </Button>
+          label={copy.testRecognition}
+        />
       </div>
       {recognitionTest ? (
         <Alert variant="passive" role="status">

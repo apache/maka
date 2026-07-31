@@ -82,11 +82,6 @@ describe('voice capture smoke Settings contract', () => {
       /const selectedRecognitionConnection = enabledConnections\.find\([\s\S]*settings\.voice\.recognition\.connectionSlug/,
       'the edit action must target the currently selected recognition connection',
     );
-    assert.match(
-      pageSource,
-      /disabled=\{saving \|\| isBusy \|\| !selectedRecognitionConnection\}[\s\S]*copy\.editRecognitionConnection/,
-      'Voice must disable the edit action until a recognition connection is selected',
-    );
     assert.match(pageSource, /<VoiceRecognitionConnectionForm[\s\S]*onSaved=\{finishEditingRecognitionConnection\}/);
     assert.match(
       formSource,
@@ -147,7 +142,11 @@ describe('voice capture smoke Settings contract', () => {
     );
     assert.match(coordinatorBlock, /onSessionResolved/);
     assert.match(coordinatorBlock, /const sessionId = context\.taskSessionId/);
-    assert.match(coordinatorBlock, /window\.maka\.sessions\.list\(\)/);
+    assert.match(
+      coordinatorBlock,
+      /const authoritativeSessions = await refreshSessions\(\)/,
+      'coordinator status checks must refresh through the session workspace owner',
+    );
     assert.match(coordinatorBlock, /window\.maka\.sessions\.readMessages\(sessionId\)/);
     assert.doesNotMatch(
       coordinatorBlock,

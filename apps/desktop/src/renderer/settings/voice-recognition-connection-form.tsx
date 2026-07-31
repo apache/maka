@@ -115,12 +115,20 @@ export function VoiceRecognitionConnectionForm(props: {
       </label>
       {error ? <p className="providerError" role="alert">{error}</p> : null}
       <div className="providerActions">
-        <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>
-          {copy.cancel}
-        </Button>
-        <Button type="button" disabled={busy} onClick={() => void save()}>
-          {busy ? copy.recognitionConnectionSaving : copy.recognitionConnectionSave}
-        </Button>
+        <Button
+          variant="ghost"
+          type="button"
+          isDisabled={busy}
+          onClick={props.onCancel}
+          label={copy.cancel}
+        />
+        <Button
+          variant="primary"
+          type="button"
+          isDisabled={busy}
+          onClick={() => void save()}
+          label={busy ? copy.recognitionConnectionSaving : copy.recognitionConnectionSave}
+        />
       </div>
     </div>
   );

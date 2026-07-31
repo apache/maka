@@ -348,6 +348,7 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
+  const voiceCopy = getDesktopConversationCopy(uiLocale).voice;
   useEffect(() => {
     let cancelled = false;
     const refreshUpdateStatus = () => {
@@ -1421,7 +1422,7 @@ function AppShellContent({
         undefined,
         {
           voiceOperationId: operationId,
-          displayText: uiLocale === 'zh' ? '🎙️ 语音任务' : '🎙️ Voice task',
+          displayText: voiceCopy.taskDisplayText,
         },
       ),
     runCoordinatorTool: async (call, context) => {
@@ -1472,7 +1473,7 @@ function AppShellContent({
         };
       }
       if (call.name === 'check_task') {
-        const authoritativeSessions = await window.maka.sessions.list();
+        const authoritativeSessions = await refreshSessions();
         const session = authoritativeSessions.find((candidate) => candidate.id === sessionId);
         return {
           output: session
@@ -1492,9 +1493,7 @@ function AppShellContent({
           summary:
             lastAssistant?.type === 'assistant'
               ? lastAssistant.text.slice(-4_000)
-              : uiLocale === 'zh'
-                ? '当前任务还没有可总结的回复。'
-                : 'The current task has no response to summarize yet.',
+              : voiceCopy.noTaskResponse,
         },
         taskSessionId: sessionId,
       };
@@ -1504,21 +1503,19 @@ function AppShellContent({
         reason === 'recognition_not_configured' ||
         reason === 'realtime_not_configured';
       toastApi.error(
-        uiLocale === 'zh' ? '语音不可用' : 'Voice unavailable',
+        voiceCopy.unavailableTitle,
         configure
-          ? uiLocale === 'zh'
-            ? '请先在设置 · 语音中配置识别或实时语音模型。'
-            : 'Configure a recognition or realtime voice model in Settings · Voice.'
+          ? voiceCopy.configureDescription
           : reason,
       );
       if (configure) openSettingsSection('voice');
     },
     onError: (error) => {
       toastApi.error(
-        uiLocale === 'zh' ? '语音操作失败' : 'Voice operation failed',
+        voiceCopy.operationFailedTitle,
         localizedShellErrorMessage(
           error,
-          uiLocale === 'zh' ? '请检查麦克风、模型配置和网络连接。' : 'Check the microphone, model configuration, and network.',
+          voiceCopy.operationFailedFallback,
           uiLocale,
         ),
       );

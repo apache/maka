@@ -308,6 +308,14 @@ export const Composer = forwardRef<
   // PR-UI-15: locale-aware copy for placeholder + toolbar states. We
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).composer;
+  const voiceCaptureLabel = props.voiceCaptureState === 'recording'
+    ? copy.voiceStopRecording
+    : props.voiceCaptureState === 'native_ready'
+      ? copy.voiceSend
+      : copy.voiceStart;
+  const realtimeVoiceLabel = props.realtimeVoiceState !== 'idle'
+    ? copy.voiceRealtimeStop
+    : copy.voiceRealtimeStart;
 
   useEffect(() => {
     return () => {
@@ -1051,59 +1059,41 @@ export const Composer = forwardRef<
             {!props.streaming && (
               <>
                 {props.onToggleVoiceCapture ? (
-                  <UiButton
-                    variant="quiet"
-                    size="icon-sm"
-                    shape="pill"
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
                     type="button"
                     className="maka-composer-voice-button"
                     data-state={props.voiceCaptureState ?? 'idle'}
-                    disabled={
+                    isDisabled={
                       props.disabled ||
                       props.voiceCaptureState === 'requesting' ||
                       props.voiceCaptureState === 'processing' ||
                       props.voiceCaptureState === 'sending'
                     }
-                    aria-label={
-                      props.voiceCaptureState === 'recording'
-                        ? copy.voiceStopRecording
-                        : props.voiceCaptureState === 'native_ready'
-                          ? copy.voiceSend
-                          : copy.voiceStart
-                    }
-                    title={`${copy.voiceStart}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
+                    label={voiceCaptureLabel}
+                    tooltip={`${voiceCaptureLabel}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
                     onClick={(event) => {
                       void props.onToggleVoiceCapture?.({ dictate: event.shiftKey });
                     }}
-                  >
-                    <Mic size={15} aria-hidden="true" />
-                  </UiButton>
+                    icon={<Mic size={15} aria-hidden="true" />}
+                  />
                 ) : null}
                 {props.onToggleRealtimeVoice ? (
-                  <UiButton
-                    variant="quiet"
-                    size="icon-sm"
-                    shape="pill"
+                  <IconButton
+                    variant="ghost"
+                    size="sm"
                     type="button"
                     className="maka-composer-realtime-voice-button"
                     data-state={props.realtimeVoiceState ?? 'idle'}
-                    disabled={props.disabled}
-                    aria-label={
-                      props.realtimeVoiceState !== 'idle'
-                        ? copy.voiceRealtimeStop
-                        : copy.voiceRealtimeStart
-                    }
-                    title={
-                      props.realtimeVoiceState !== 'idle'
-                        ? copy.voiceRealtimeStop
-                        : copy.voiceRealtimeStart
-                    }
+                    isDisabled={props.disabled}
+                    label={realtimeVoiceLabel}
+                    tooltip={realtimeVoiceLabel}
                     onClick={() => {
                       void props.onToggleRealtimeVoice?.();
                     }}
-                  >
-                    <Volume2 size={15} aria-hidden="true" />
-                  </UiButton>
+                    icon={<Volume2 size={15} aria-hidden="true" />}
+                  />
                 ) : null}
                 {props.activeSession ? (
                   <ChatModelSwitcher
