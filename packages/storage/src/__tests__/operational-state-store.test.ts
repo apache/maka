@@ -10,7 +10,10 @@ import {
   type OperationalStateCutoverFailpoint,
 } from '../operational-state-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
-import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
+import {
+  createSqliteSessionMetadataStore,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
+} from '../sqlite-session-metadata-store.js';
 
 describe('operational state database cutover', () => {
   test('imports sessions.sqlite into runtime.sqlite once and rejects later legacy changes', async () => {
@@ -39,7 +42,7 @@ describe('operational state database cutover', () => {
         [
           { scope: 'operational', version: 1 },
           { scope: 'runtime', version: 5 },
-          { scope: 'session_metadata', version: 14 },
+          { scope: 'session_metadata', version: SQLITE_SESSION_METADATA_SCHEMA_VERSION },
         ],
       );
       assert.deepEqual(
