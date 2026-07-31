@@ -86,10 +86,10 @@ export function BotChatOverview(props: {
         <div className="settingsRemoteAccessActiveList">
           {activeChannels.length === 0 ? (
             <EmptyState
-              Icon={MessageSquare}
+              icon={<MessageSquare />}
               title={copy.empty}
-              body={copy.emptyHelp}
-              extraClassName="settingsRemoteAccessEmpty"
+              description={copy.emptyHelp}
+              className="settingsRemoteAccessEmpty"
             />
           ) : activeChannels.map((entry) => (
             <Item

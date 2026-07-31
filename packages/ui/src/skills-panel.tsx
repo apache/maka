@@ -18,6 +18,7 @@ import {
   Badge,
   type BadgeProps,
   Button as UiButton,
+  EmptyState,
   IconButton,
   Switch,
   Tab,
@@ -29,7 +30,6 @@ import {
   Selector,
   type SelectorOptionData,
 } from '@astryxdesign/core/Selector';
-import { EmptyState } from './empty-state.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { CapabilityAuditStrip } from './capability-audit-strip.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
@@ -173,12 +173,9 @@ function SkillLibraryPanel(props: {
     return filtered;
   }, [allManagedSources, marketCategory, marketSort, normalizedSkillQuery]);
   const skillListEmptyTitle = normalizedSkillQuery ? copy.installed.emptySearchTitle : copy.installed.emptyTitle;
-  const skillListEmptyBody: ReactNode = normalizedSkillQuery ? copy.installed.emptySearchBody : (
-    <>
-      {copy.installed.emptyBodyBeforeCode} <code className="maka-empty-state-code">SKILL.md</code>{' '}
-      {copy.installed.emptyBodyAfterCode}
-    </>
-  );
+  const skillListEmptyBody = normalizedSkillQuery
+    ? copy.installed.emptySearchBody
+    : `${copy.installed.emptyBodyBeforeCode} SKILL.md ${copy.installed.emptyBodyAfterCode}`;
   async function reviewManagedSkillUpdate(skill: SkillEntry) {
     if (!props.onPreviewManagedSkillUpdate || reviewingSkillId !== null) return;
     setReviewingSkillId(skill.id);
@@ -312,19 +309,19 @@ function SkillLibraryPanel(props: {
       />
       {allManagedSources.length === 0 ? (
         <EmptyState
-          Icon={BookOpen}
+          icon={<BookOpen />}
           title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
-          body={normalizedSkillQuery
+          description={normalizedSkillQuery
             ? copy.market.emptySearchBody
             : copy.market.emptyBody}
-          extraClassName="maka-skill-installed-empty"
+          className="maka-skill-installed-empty"
         />
       ) : marketSources.length === 0 ? (
         <EmptyState
-          Icon={Search}
+          icon={<Search />}
           title={copy.market.emptySearchTitle}
-          body={copy.market.emptyFilterBody}
-          extraClassName="maka-skill-installed-empty"
+          description={copy.market.emptyFilterBody}
+          className="maka-skill-installed-empty"
         />
       ) : (
         <div className="maka-skill-market-grid">
@@ -376,17 +373,17 @@ function SkillLibraryPanel(props: {
       />
       {bundledCatalog.length === 0 ? (
         <EmptyState
-          Icon={Blocks}
+          icon={<Blocks />}
           title={copy.builtin.emptyTitle}
-          body={copy.builtin.emptyBody}
-          extraClassName="maka-skill-installed-empty"
+          description={copy.builtin.emptyBody}
+          className="maka-skill-installed-empty"
         />
       ) : bundledCatalogFiltered.length === 0 ? (
         <EmptyState
-          Icon={Search}
+          icon={<Search />}
           title={copy.builtin.noMatchTitle}
-          body={copy.builtin.noMatchBody}
-          extraClassName="maka-skill-installed-empty"
+          description={copy.builtin.noMatchBody}
+          className="maka-skill-installed-empty"
         />
       ) : (
         <div className="maka-skill-market-grid">
@@ -428,24 +425,20 @@ function SkillLibraryPanel(props: {
     </section>
   );
 
-  const skillList = (list: SkillEntry[], emptyTitle: string, emptyBody: ReactNode, label: string) => (
+  const skillList = (list: SkillEntry[], emptyTitle: string, emptyBody: string, label: string) => (
     <section className="maka-skill-installed" aria-label={label}>
       {list.length === 0 ? (
         <EmptyState
-          Icon={Blocks}
+          icon={<Blocks />}
           title={emptyTitle}
-          body={emptyBody}
-          cta={props.onCreateSkillTemplate ? {
-            label: props.createPending ? copy.installed.createPending : copy.installed.createExample,
-            onClick: props.onCreateSkillTemplate,
-            disabled: props.actionBusy,
-          } : undefined}
-          secondaryCta={props.onRefreshSkills ? {
-            label: props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh,
-            onClick: props.onRefreshSkills,
-            disabled: props.actionBusy,
-          } : undefined}
-          extraClassName="maka-skill-installed-empty"
+          description={emptyBody}
+          actions={(
+            <>
+              {props.onCreateSkillTemplate ? <UiButton variant="primary" label={props.createPending ? copy.installed.createPending : copy.installed.createExample} onClick={props.onCreateSkillTemplate} isDisabled={props.actionBusy} /> : null}
+              {props.onRefreshSkills ? <UiButton variant="ghost" label={props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh} onClick={props.onRefreshSkills} isDisabled={props.actionBusy} /> : null}
+            </>
+          )}
+          className="maka-skill-installed-empty"
         />
       ) : (
         <>

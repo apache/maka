@@ -29,7 +29,7 @@ import { isDeepResearchSession } from '@maka/core';
 import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import { Message } from './primitives/chat.js';
-import { EmptyState } from './empty-state.js';
+import { EmptyState, Button as UiButton } from '@astryxdesign/core';
 import {
   ModelContinuingIndicator,
   ModelProviderRetryIndicator,
@@ -472,14 +472,10 @@ export function ChatView(props: {
             props.messageLoading ? null : props.messageLoadError ? (
               <div role="alert" aria-busy={props.messageLoadRetryPending ? 'true' : undefined}>
                 <EmptyState
-                  Icon={AlertTriangle}
+                  icon={<AlertTriangle />}
                   title={copy.loadFailed}
-                  body={props.messageLoadError}
-                  cta={props.onRetryMessages ? {
-                    label: props.messageLoadRetryPending ? copy.loading : copy.retryLoad,
-                    onClick: props.onRetryMessages,
-                    disabled: props.messageLoadRetryPending,
-                  } : undefined}
+                  description={props.messageLoadError}
+                  actions={props.onRetryMessages ? <UiButton variant="primary" label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad} onClick={props.onRetryMessages} isDisabled={props.messageLoadRetryPending} /> : undefined}
                 />
               </div>
             ) : props.emptyOverride ?? (

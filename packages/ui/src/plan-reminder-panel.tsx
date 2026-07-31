@@ -36,6 +36,7 @@ import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import {
   Badge,
   Button as UiButton,
+  EmptyState,
   Selector,
   Switch,
   Tab,
@@ -50,7 +51,6 @@ import { Divider } from '@astryxdesign/core/Divider';
 import type { BadgeProps } from '@astryxdesign/core/Badge';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
-import { EmptyState } from './empty-state.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   PlanReminderDraftInput,
@@ -418,18 +418,18 @@ export function PlanReminderPanel(props: {
               )}
             {props.reminders.length === 0 ? (
               <EmptyState
-                Icon={Clock}
+                icon={<Clock />}
                 title={copy.page.emptyTitle}
-                body={copy.page.emptyBody}
-                extraClassName="maka-plan-empty"
+                description={copy.page.emptyBody}
+                className="maka-plan-empty"
               />
             ) : sortedReminders.length === 0 ? (
               <EmptyState
-                Icon={Clock}
+                icon={<Clock />}
                 title={normalizedListQuery ? copy.page.noSearchTitle : copy.page.noFilterTitle}
-                body={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
-                secondaryCta={{ label: copy.page.clearSearch, onClick: () => setListQuery(''), disabled: !normalizedListQuery }}
-                extraClassName="maka-plan-empty"
+                description={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
+                actions={<UiButton variant="ghost" label={copy.page.clearSearch} onClick={() => setListQuery('')} isDisabled={!normalizedListQuery} />}
+                className="maka-plan-empty"
               />
             ) : (
               <div className="maka-plan-list" aria-label={copy.page.listAriaLabel}>
@@ -582,10 +582,10 @@ export function PlanReminderPanel(props: {
             <div className="maka-plan-tab-panel">
               {visibleRunEntries.length === 0 ? (
               <EmptyState
-                Icon={Clock}
+                icon={<Clock />}
                 title={copy.page.noRunsTitle}
-                body={copy.page.noRunsBody}
-                extraClassName="maka-plan-empty maka-plan-runs-empty"
+                description={copy.page.noRunsBody}
+                className="maka-plan-empty maka-plan-runs-empty"
               />
             ) : (
               <div className="maka-plan-run-list" aria-label={copy.page.runsAriaLabel}>

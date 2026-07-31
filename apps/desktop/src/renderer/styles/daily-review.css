@@ -422,3 +422,9 @@
 
 .maka-daily-review-archive-section-body ul { list-style: disc; }
 .maka-daily-review-archive-section-body ol { list-style: decimal; }
+.maka-daily-review-inline-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-ui);
+  line-height: var(--leading-normal);
+}

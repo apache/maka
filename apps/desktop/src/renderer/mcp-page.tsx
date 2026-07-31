@@ -408,11 +408,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               </div>
             ) : (
               <EmptyState
-                Icon={Search}
+                icon={<Search />}
                 title={copy.page.noMarket}
-                body={copy.page.noMarketDetail(query)}
-                cta={{ label: copy.page.clearSearch, onClick: () => setQuery('') }}
-                extraClassName="maka-mcp-empty"
+                description={copy.page.noMarketDetail(query)}
+                actions={<Button variant="primary" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
+                className="maka-mcp-empty"
               />
               )}
             </div>
@@ -424,11 +424,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
             ) : entries.length === 0 ? (
               <EmptyState
-                Icon={Plug}
+                icon={<Plug />}
                 title={copy.page.noInstalled}
-                body={copy.page.noInstalledDetail}
-                cta={{ label: copy.page.browseMarket, onClick: () => setActiveTab('market') }}
-                extraClassName="maka-mcp-empty"
+                description={copy.page.noInstalledDetail}
+                actions={<Button variant="primary" label={copy.page.browseMarket} onClick={() => setActiveTab('market')} />}
+                className="maka-mcp-empty"
               />
             ) : installedEntries.length > 0 ? (
               <ul className="maka-mcp-server-list">
@@ -449,11 +449,11 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               </ul>
             ) : (
               <EmptyState
-                Icon={Search}
+                icon={<Search />}
                 title={copy.page.noInstalledMatch}
-                body={copy.page.noInstalledMatchDetail(query)}
-                cta={{ label: copy.page.clearSearch, onClick: () => setQuery('') }}
-                extraClassName="maka-mcp-empty"
+                description={copy.page.noInstalledMatchDetail(query)}
+                actions={<Button variant="primary" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
+                className="maka-mcp-empty"
               />
               )}
             </div>

@@ -451,10 +451,10 @@ function UsageStatsTable(props: {
   if (props.rows.length === 0) {
     return (
       <EmptyState
-        Icon={props.empty.Icon}
+        icon={<props.empty.Icon />}
         title={props.empty.title}
-        body={props.empty.body ?? ''}
-        extraClassName="settingsUsageEmpty"
+        description={props.empty.body ?? ''}
+        className="settingsUsageEmpty"
       />
     );
   }

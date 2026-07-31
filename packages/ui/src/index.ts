@@ -71,7 +71,6 @@ export type {
   MarkerVariant,
   MessageProps,
 } from './primitives/chat.js';
-export * from './primitives/empty.js';
 export { Item, type ItemProps } from '@astryxdesign/core';
 export * from './primitives/spinner.js';
 export * from './primitives/kbd.js';
@@ -84,7 +83,7 @@ export {
   type TableProps,
 } from '@astryxdesign/core';
 export * from './primitives/section-header.js';
-export { EmptyState } from './empty-state.js';
+export { EmptyState, type EmptyStateProps } from '@astryxdesign/core';
 export * from './primitives/toolbar.js';
 export { Tab, TabList, type TabProps, type TabListProps } from '@astryxdesign/core';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9

@@ -24,7 +24,7 @@ import {
   ShieldAlert,
   Trash2,
 } from './icons.js';
-import { EmptyState } from './empty-state.js';
+import { EmptyState } from '@astryxdesign/core';
 import { OverlayScrollArea } from './overlay-scroll-area.js';
 import {
   DropdownMenu,
@@ -172,10 +172,10 @@ export function SessionHistoryList(props: {
         // pure "no sessions yet" copy — no inline CTA. The top-of-
         // sidebar `+ 新任务` button is the only create-session entry.
         <EmptyState
-          Icon={MessageSquare}
+          icon={<MessageSquare />}
           title={copy.emptyTitle}
-          body={copy.emptyBody}
-          extraClassName="maka-session-empty-state"
+          description={copy.emptyBody}
+          className="maka-session-empty-state"
         />
       ) : (
         <OverlayScrollArea

@@ -54,7 +54,6 @@
 @import "./styles/prompt-suggestions.css" layer(maka.legacy);
 @import "./styles/deep-research.css" layer(maka.legacy);
 @import "./styles/onboarding.css" layer(maka.legacy);
-@import "./styles/empty-state.css" layer(maka.legacy);
 @import "./styles/module-pages.css" layer(maka.legacy);
 @import "./styles/settings/select.css" layer(maka.legacy);
 @import "./styles/model-switcher.css" layer(maka.legacy);

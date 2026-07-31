@@ -23,6 +23,7 @@ import {
   Badge,
   type BadgeProps,
   Button as UiButton,
+  EmptyState,
   IconButton,
   SegmentedControl,
   SegmentedControlItem,
@@ -30,7 +31,6 @@ import {
   type SelectorOptionData,
 } from '@astryxdesign/core';
 import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
-import { EmptyState } from './empty-state.js';
 import { StatTile } from './primitives/stat-tile.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { PageHeader } from './primitives/page-header.js';
@@ -452,11 +452,11 @@ export function DailyReviewPanel(props: {
 
         {error && !visibleSummary ? (
           <EmptyState
-            Icon={CalendarDays}
+            icon={<CalendarDays />}
             title={copy.overview.readFailed}
-            body={error}
-            cta={{ label: copy.overview.retry, onClick: () => setReloadToken((n) => n + 1) }}
-            extraClassName="maka-daily-review-summary-empty"
+            description={error}
+            actions={<UiButton variant="primary" label={copy.overview.retry} onClick={() => setReloadToken((n) => n + 1)} />}
+            className="maka-daily-review-summary-empty"
           />
         ) : !visibleSummary ? (
           <div className="maka-daily-review-loading" aria-busy="true">
@@ -487,7 +487,7 @@ export function DailyReviewPanel(props: {
             </div>
 
             {visibleSummary.totals.sessionCount === 0 && visibleSummary.totals.requestCount === 0 ? (
-              <EmptyState variant="inline" title={emptyOverviewTitle} body={emptyOverviewBody} />
+              <p className="maka-daily-review-inline-empty">{emptyOverviewTitle} · {emptyOverviewBody}</p>
             ) : (
               <>
                 {visibleSummary.sessions.length > 0 && (
@@ -566,15 +566,11 @@ export function DailyReviewPanel(props: {
           )}
           {archives.length === 0 && !archiveError ? (
             <EmptyState
-              Icon={CalendarDays}
+              icon={<CalendarDays />}
               title={copy.reports.emptyTitle}
-              body={copy.reports.emptyBody}
-              cta={canManualRun ? {
-                label: copy.page.generateDaily,
-                onClick: () => void triggerManualRun('daily'),
-                disabled: dailyReviewActionBusy,
-              } : undefined}
-              extraClassName="maka-daily-review-summary-empty"
+              description={copy.reports.emptyBody}
+              actions={canManualRun ? <UiButton variant="primary" label={copy.page.generateDaily} onClick={() => void triggerManualRun('daily')} isDisabled={dailyReviewActionBusy} /> : undefined}
+              className="maka-daily-review-summary-empty"
             />
           ) : (
             <ul className="maka-daily-review-report-list" aria-label={copy.reports.historyAriaLabel}>
