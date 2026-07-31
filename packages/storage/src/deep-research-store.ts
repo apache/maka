@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import {
   isDeepResearchEvent,
   isDeepResearchScopeLevel,
@@ -22,6 +23,12 @@ import {
 import { assertSafeSessionId } from './session-store.js';
 import { appendJsonl } from './jsonl-append.js';
 import { chainWrite } from './write-queue.js';
+import {
+  acquireOperationalStateDatabase,
+  completeOperationalStoreCutover,
+  type OperationalStateDatabaseLease,
+  type OperationalStoreCutoverFailpoint,
+} from './operational-state-store.js';
 
 export type { DeepResearchStore } from '@maka/core/deep-research-run';
 
@@ -39,6 +46,22 @@ export function createDeepResearchStore(
     options.newId ?? randomUUID,
     options.now ?? Date.now,
   );
+}
+
+export interface SqliteDeepResearchStore extends DeepResearchStore {
+  ready(): Promise<void>;
+  close(): void;
+}
+
+export interface CreateSqliteDeepResearchStoreOptions extends CreateDeepResearchStoreOptions {
+  failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
+}
+
+export function createSqliteDeepResearchStore(
+  workspaceRoot: string,
+  options: CreateSqliteDeepResearchStoreOptions = {},
+): SqliteDeepResearchStore {
+  return new SqliteDeepResearchStoreImpl(workspaceRoot, options);
 }
 
 class FileDeepResearchStore implements DeepResearchStore {
@@ -63,6 +86,8 @@ class FileDeepResearchStore implements DeepResearchStore {
 
   async readEvents(sessionId: string): Promise<DeepResearchEvent[]> {
     assertSafeSessionId(sessionId);
+    const canonical = await this.readCanonicalEvents(sessionId);
+    if (canonical) return canonical;
     let text: string;
     try {
       text = await readFile(this.eventsPath(sessionId), 'utf8');
@@ -352,6 +377,7 @@ class FileDeepResearchStore implements DeepResearchStore {
   }
 
   private async appendEvent(sessionId: string, event: DeepResearchEvent): Promise<void> {
+    if (await this.appendCanonicalEvent(sessionId, event)) return;
     const path = this.eventsPath(sessionId);
     await mkdir(dirname(path), { recursive: true });
     await appendJsonl(path, `${JSON.stringify(event)}\n`, {
@@ -360,9 +386,225 @@ class FileDeepResearchStore implements DeepResearchStore {
     });
   }
 
+  protected async readCanonicalEvents(
+    _sessionId: string,
+  ): Promise<DeepResearchEvent[] | undefined> {
+    return undefined;
+  }
+
+  protected async appendCanonicalEvent(
+    _sessionId: string,
+    _event: DeepResearchEvent,
+  ): Promise<boolean> {
+    return false;
+  }
+
   private eventsPath(sessionId: string): string {
     return join(this.sessionsRoot, sessionId, 'deep-research', 'events.jsonl');
   }
+}
+
+class SqliteDeepResearchStoreImpl extends FileDeepResearchStore implements SqliteDeepResearchStore {
+  readonly #lease: OperationalStateDatabaseLease;
+  readonly #ready: Promise<void>;
+
+  constructor(workspaceRoot: string, options: CreateSqliteDeepResearchStoreOptions) {
+    super(workspaceRoot, options.newId ?? randomUUID, options.now ?? Date.now);
+    const root = resolve(workspaceRoot);
+    this.#lease = acquireOperationalStateDatabase(root);
+    this.#ready = importLegacyDeepResearchState(root, this.#lease, options.failpoint);
+  }
+
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  close(): void {
+    this.#lease.close();
+  }
+
+  protected override async readCanonicalEvents(sessionId: string): Promise<DeepResearchEvent[]> {
+    await this.#ready;
+    return readSqliteDeepResearchEvents(this.#lease.database, sessionId);
+  }
+
+  protected override async appendCanonicalEvent(
+    sessionId: string,
+    event: DeepResearchEvent,
+  ): Promise<boolean> {
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      insertDeepResearchEvent(this.#lease.database, sessionId, event);
+    });
+    return true;
+  }
+}
+
+interface LegacyDeepResearchLedger {
+  sessionId: string;
+  events: DeepResearchEvent[];
+}
+
+async function importLegacyDeepResearchState(
+  root: string,
+  lease: OperationalStateDatabaseLease,
+  failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
+): Promise<void> {
+  const ledgers = await readLegacyDeepResearchLedgers(root);
+  const fingerprint = `sha256:${createHash('sha256')
+    .update(JSON.stringify(ledgers))
+    .digest('hex')}`;
+  completeOperationalStoreCutover(lease, {
+    storeName: 'workflow_deep_research',
+    sourcePath: join(root, 'sessions'),
+    sourceFingerprint: fingerprint,
+    failpoint,
+    importAndValidate: (database) => {
+      let eventCount = 0;
+      for (const ledger of ledgers) {
+        for (const event of ledger.events) {
+          insertOrValidateDeepResearchEvent(database, ledger.sessionId, event);
+          eventCount += 1;
+        }
+      }
+      const persisted = database
+        .prepare('SELECT COUNT(*) AS count FROM workflow_deep_research_events')
+        .get() as { count?: unknown };
+      if (persisted.count !== eventCount) {
+        throw new Error('Deep Research cutover row-count validation failed');
+      }
+      return { sessions: ledgers.length, events: eventCount };
+    },
+  });
+}
+
+async function readLegacyDeepResearchLedgers(root: string): Promise<LegacyDeepResearchLedger[]> {
+  const sessionsRoot = join(root, 'sessions');
+  let entries;
+  try {
+    entries = await readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const ledgers: LegacyDeepResearchLedger[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory()) continue;
+    assertSafeSessionId(entry.name);
+    let text: string;
+    try {
+      text = await readFile(
+        join(sessionsRoot, entry.name, 'deep-research', 'events.jsonl'),
+        'utf8',
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    const events = decodeLegacyDeepResearchEvents(text, entry.name);
+    const projection = projectDeepResearchEvents(events);
+    if (projection.diagnostics.length > 0) {
+      throw new Error(
+        `Deep Research ledger projection failed: ${projection.diagnostics.join('; ')}`,
+      );
+    }
+    ledgers.push({ sessionId: entry.name, events });
+  }
+  return ledgers;
+}
+
+function decodeLegacyDeepResearchEvents(text: string, sessionId: string): DeepResearchEvent[] {
+  const events: DeepResearchEvent[] = [];
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      throw new Error(
+        `Invalid deep research event JSONL line ${index + 1}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (!isDeepResearchEvent(parsed) || parsed.sessionId !== sessionId) {
+      throw new Error(
+        `Invalid deep research event JSONL line ${index + 1}: unexpected event shape`,
+      );
+    }
+    events.push(parsed);
+  }
+  return events;
+}
+
+function readSqliteDeepResearchEvents(
+  database: DatabaseSync,
+  sessionId: string,
+): DeepResearchEvent[] {
+  assertSafeSessionId(sessionId);
+  const rows = database
+    .prepare(`
+      SELECT record_json
+      FROM workflow_deep_research_events
+      WHERE session_id = ?
+      ORDER BY sequence
+    `)
+    .all(sessionId) as Array<{ record_json?: unknown }>;
+  return rows.map((row, index) => {
+    if (typeof row.record_json !== 'string') {
+      throw new Error(`Invalid SQLite Deep Research event at sequence ${index}`);
+    }
+    const parsed = JSON.parse(row.record_json);
+    if (!isDeepResearchEvent(parsed) || parsed.sessionId !== sessionId) {
+      throw new Error(`Invalid SQLite Deep Research event at sequence ${index}`);
+    }
+    return parsed;
+  });
+}
+
+function insertDeepResearchEvent(
+  database: DatabaseSync,
+  sessionId: string,
+  event: DeepResearchEvent,
+): void {
+  const row = database
+    .prepare(`
+      SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
+      FROM workflow_deep_research_events
+      WHERE session_id = ?
+    `)
+    .get(sessionId) as { sequence?: unknown };
+  if (typeof row.sequence !== 'number' || !Number.isSafeInteger(row.sequence)) {
+    throw new Error('Invalid next Deep Research event sequence');
+  }
+  database
+    .prepare(`
+      INSERT INTO workflow_deep_research_events(
+        session_id, sequence, event_id, record_json
+      ) VALUES (?, ?, ?, ?)
+    `)
+    .run(sessionId, row.sequence, event.eventId, JSON.stringify(event));
+}
+
+function insertOrValidateDeepResearchEvent(
+  database: DatabaseSync,
+  sessionId: string,
+  event: DeepResearchEvent,
+): void {
+  const existing = database
+    .prepare(`
+      SELECT record_json
+      FROM workflow_deep_research_events
+      WHERE session_id = ? AND event_id = ?
+    `)
+    .get(sessionId, event.eventId) as { record_json?: unknown } | undefined;
+  if (existing) {
+    if (existing.record_json !== JSON.stringify(event)) {
+      throw new Error(`Deep Research cutover conflict: ${event.eventId}`);
+    }
+    return;
+  }
+  insertDeepResearchEvent(database, sessionId, event);
 }
 
 function refsFromContext(context: DeepResearchMutationContext): { refs?: DeepResearchEventRefs } {

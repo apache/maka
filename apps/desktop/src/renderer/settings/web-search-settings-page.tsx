@@ -284,29 +284,24 @@ export function WebSearchSettingsPage(props: {
           </div>
           <div className="settingsActionRow settingsWebSearchActionButtons">
             <Button
-              type="button"
-              disabled={credentialActionBusy || usingEnvKey || draftKey.length === 0}
+              variant="primary"
+              isDisabled={credentialActionBusy || usingEnvKey || draftKey.length === 0}
               onClick={() => void saveDraftKey()}
-            >
-              {pendingCredentialAction === 'save' ? copy.saving : copy.saveKey}
-            </Button>
+              label={pendingCredentialAction === 'save' ? copy.saving : copy.saveKey}
+            />
             <Button
-              type="button"
               variant="secondary"
-              disabled={credentialActionBusy || (draftKey.length === 0 && !hasUsableKey)}
+              isDisabled={credentialActionBusy || (draftKey.length === 0 && !hasUsableKey)}
               onClick={() => void runTest()}
-            >
-              {testing ? copy.testing : copy.testKey}
-            </Button>
+              label={testing ? copy.testing : copy.testKey}
+            />
             {hasStoredKey && (
               <Button
-                type="button"
                 variant="ghost"
-                disabled={credentialActionBusy}
+                isDisabled={credentialActionBusy}
                 onClick={() => void clearKey()}
-              >
-                {pendingCredentialAction === 'clear' ? copy.clearing : copy.clearKey}
-              </Button>
+                label={pendingCredentialAction === 'clear' ? copy.clearing : copy.clearKey}
+              />
             )}
           </div>
         </div>
@@ -344,12 +339,11 @@ export function WebSearchSettingsPage(props: {
           </div>
           <div className="settingsWebSearchSearchControls">
             <Button
-              type="button"
-              disabled={liveQueryRunning || queryDisabledReason !== null}
+              variant="primary"
+              isDisabled={liveQueryRunning || queryDisabledReason !== null}
               onClick={() => void runLiveQuery()}
-            >
-              {liveQueryRunning ? copy.searching : copy.search}
-            </Button>
+              label={liveQueryRunning ? copy.searching : copy.search}
+            />
             {!liveQueryRunning && queryDisabledReason && (
               <small className="settingsWebSearchDisabledReason">
                 {queryDisabledReason}

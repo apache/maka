@@ -128,11 +128,10 @@ export function ClaudeSubscriptionCard() {
         </small>
         <div className="settingsConnectionActions">
           <Button
-            type="button"
+            variant="primary"
             onClick={() => void refreshExperimentalGate()}
-          >
-            {copy.retry}
-          </Button>
+            label={copy.retry}
+          />
         </div>
       </div>
     );
@@ -355,35 +354,31 @@ export function ClaudeSubscriptionCard() {
       <div className="settingsConnectionActions">
         {canStartClaudeLogin || claudeLoginPending ? (
           <Button
-            type="button"
+            variant="primary"
             onClick={() => void startLogin()}
-            disabled={actionBusy || claudeLoginPending}
-          >
-            {pendingAction === 'login'
+            isDisabled={actionBusy || claudeLoginPending}
+            label={pendingAction === 'login'
               ? copy.openingBrowser
               : claudeLoginPending
               ? copy.loggingIn
               : state?.runtimeState === 'refresh_failed' || state?.runtimeState === 'storage_failed'
                 ? copy.relogin
                 : copy.loginSubscription}
-          </Button>
+          />
         ) : (
           <>
             <Button
-              type="button"
+              variant="primary"
               onClick={() => void refreshQuota()}
-              disabled={actionBusy}
-            >
-              {pendingAction === 'quota' ? copy.refreshing : copy.refreshQuota}
-            </Button>
+              isDisabled={actionBusy}
+              label={pendingAction === 'quota' ? copy.refreshing : copy.refreshQuota}
+            />
             <Button
-              type="button"
               variant="ghost"
               onClick={() => void logout()}
-              disabled={actionBusy}
-            >
-              {pendingAction === 'logout' ? copy.loggingOut : copy.logout}
-            </Button>
+              isDisabled={actionBusy}
+              label={pendingAction === 'logout' ? copy.loggingOut : copy.logout}
+            />
           </>
         )}
       </div>
@@ -408,20 +403,17 @@ export function ClaudeSubscriptionCard() {
           {pasteError && <small className="settingsErrorText">{pasteError}</small>}
           <div className="settingsConnectionActions">
             <Button
-              type="button"
+              variant="primary"
               onClick={() => void submitPaste()}
-              disabled={actionBusy || pasteValue.trim().length === 0}
-            >
-              {pendingAction === 'submit' ? copy.submitting : copy.submitCode}
-            </Button>
+              isDisabled={actionBusy || pasteValue.trim().length === 0}
+              label={pendingAction === 'submit' ? copy.submitting : copy.submitCode}
+            />
             <Button
-              type="button"
               variant="ghost"
               onClick={() => void cancelLogin()}
-              disabled={actionBusy}
-            >
-              {pendingAction === 'cancel' ? copy.cancelling : copy.cancel}
-            </Button>
+              isDisabled={actionBusy}
+              label={pendingAction === 'cancel' ? copy.cancelling : copy.cancel}
+            />
           </div>
         </div>
       )}

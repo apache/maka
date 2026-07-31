@@ -461,6 +461,20 @@ export interface SandboxBoundaryFailureSignal {
   requiredExpansion?: SandboxBoundaryExpansion;
 }
 
+export interface ToolUncertainOutcomeSignal {
+  code: 'outcome_unknown';
+  retrySafe: false;
+}
+
+export class ToolOutcomeUnknownError extends Error {
+  readonly code = 'outcome_unknown';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ToolOutcomeUnknownError';
+  }
+}
+
 export type ShellRunCompactResult = ShellRunResultMetadata &
   ({ mode: 'pipes'; output?: never } | { mode: 'pty'; output?: never });
 
@@ -486,6 +500,7 @@ export type ToolResultContent =
       text: string;
       sandboxDenial?: SandboxDenialSignal;
       sandboxFailure?: SandboxBoundaryFailureSignal;
+      uncertainOutcome?: ToolUncertainOutcomeSignal;
     }
   | { kind: 'json'; value: unknown }
   | { kind: 'file_diff'; paths: string[]; diff: string }

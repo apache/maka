@@ -24,6 +24,7 @@
     "./orchestration": "./dist/orchestration.js",
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
+    "./model-call-attempt": "./dist/model-call-attempt.js",
     "./shell-run": "./dist/shell-run.js",
     "./browser": "./dist/browser.js",
     "./session-event-health": "./dist/session-event-health.js",
@@ -62,6 +63,7 @@
     "./backend-types": "./dist/backend-types.js",
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-contract-matrix": "./dist/provider-contract-matrix.js",
+    "./model-catalog": "./dist/model-catalog.js",
     "./model-metadata": "./dist/model-metadata.js",
     "./model-thinking": "./dist/model-thinking.js",
     "./connection-readiness": "./dist/connection-readiness.js",
@@ -79,6 +81,7 @@
     "./usage-stats/pricing": "./dist/usage-stats/pricing.js",
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
+    "./session-name": "./dist/session-name.js",
     "./tool-catalog": "./dist/tool-catalog.js"
   },
   "scripts": {

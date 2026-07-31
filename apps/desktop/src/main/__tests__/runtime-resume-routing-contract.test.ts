@@ -65,6 +65,9 @@ describe('runtime resume desktop routing contract', () => {
     const recovery = main.match(/async function recoverInterruptedSessionsOnStartup\(\): Promise<void> \{[\s\S]*?\n  \}/)?.[0] ?? '';
 
     assert.match(recovery, /MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1'/);
-    assert.match(recovery, /resumeSafeBoundaryContinuationsOnStartup\(runtime, streamEvents\)/);
+    assert.match(
+      recovery,
+      /resumeSafeBoundaryContinuationsOnStartup\(runtime, streamEvents, console\.error\)/,
+    );
   });
 });

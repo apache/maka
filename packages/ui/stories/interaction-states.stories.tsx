@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { SessionSummary } from '@maka/core';
 import { userEvent } from 'storybook/test';
 import { SessionListPanel } from '../src/session-list-panel.js';
-import { Button } from '../src/ui.js';
+import { Button } from '../src/index.js';
 
 const meta = {
   title: 'Design System/Interaction States',
@@ -12,8 +12,8 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-const VARIANTS = ['default', 'secondary', 'ghost', 'quiet', 'destructive'] as const;
-const NEUTRAL_VARIANTS = ['secondary', 'ghost', 'quiet'] as const;
+const VARIANTS = ['primary', 'secondary', 'ghost', 'destructive'] as const;
+const NEUTRAL_VARIANTS = ['secondary', 'ghost'] as const;
 const noop = () => undefined;
 
 const COMPOSITE_ROW_SESSIONS: SessionSummary[] = [
@@ -72,14 +72,14 @@ export const ButtonStates: Story = {
   render: () => (
     <StoryFrame
       title="按钮比例 / Button proportions"
-      description="同一个 primitive 负责中英文、五种 variant 与 disabled 的统一比例。"
+      description="同一个 primitive 负责中英文、四种 variant 与 disabled 的统一比例。"
     >
       {VARIANTS.map((variant) => (
         <div key={variant} style={{ ...rowStyle, gridTemplateColumns: '88px repeat(3, max-content)' }}>
           <code style={{ color: 'var(--foreground-secondary)', fontSize: 11 }}>{variant}</code>
-          <Button variant={variant}>中文状态</Button>
-          <Button variant={variant}>English state</Button>
-          <Button variant={variant} disabled>已禁用 / Disabled</Button>
+          <Button variant={variant} label="中文状态" />
+          <Button variant={variant} label="English state" />
+          <Button variant={variant} isDisabled label="已禁用 / Disabled" />
         </div>
       ))}
     </StoryFrame>
@@ -127,19 +127,19 @@ export const NeutralButtonStates: Story = {
     >
       <div style={rowStyle}>
         <code style={{ color: 'var(--foreground-secondary)', fontSize: 11 }}>secondary</code>
-        <Button variant="secondary">静止</Button>
-        <Button variant="secondary" data-state-target="hover">悬停</Button>
-        <Button variant="secondary" data-state-target="active">按下</Button>
-        <Button variant="secondary" data-state-target="focus">焦点</Button>
-        <Button variant="secondary" disabled data-state-target="disabled">禁用</Button>
-        <Button variant="secondary" aria-disabled="true" data-state-target="aria-disabled">ARIA 禁用</Button>
+        <Button variant="secondary" label="静止" />
+        <Button variant="secondary" data-state-target="hover" label="悬停" />
+        <Button variant="secondary" data-state-target="active" label="按下" />
+        <Button variant="secondary" data-state-target="focus" label="焦点" />
+        <Button variant="secondary" isDisabled data-state-target="disabled" label="禁用" />
+        <Button variant="secondary" isDisabled data-state-target="aria-disabled" label="ARIA 禁用" />
       </div>
       {NEUTRAL_VARIANTS.slice(1).map((variant) => (
         <div key={variant} style={{ ...rowStyle, gridTemplateColumns: '88px repeat(3, max-content)' }}>
           <code style={{ color: 'var(--foreground-secondary)', fontSize: 11 }}>{variant}</code>
-          <Button variant={variant}>静止</Button>
-          <Button variant={variant} disabled>禁用</Button>
-          <Button variant={variant} aria-disabled="true">ARIA 禁用</Button>
+          <Button variant={variant} label="静止" />
+          <Button variant={variant} isDisabled label="禁用" />
+          <Button variant={variant} isDisabled label="ARIA 禁用" />
         </div>
       ))}
     </StoryFrame>
@@ -155,15 +155,15 @@ export const SolidButtonStates: Story = {
       title="实心按钮 / Solid buttons"
       description="default 与 destructive 共用同一交互层级；按住 Active 目标检查真实 :active。"
     >
-      {(['default', 'destructive'] as const).map((variant) => (
+      {(['primary', 'destructive'] as const).map((variant) => (
         <div key={variant} style={rowStyle}>
           <code style={{ color: 'var(--foreground-secondary)', fontSize: 11 }}>{variant}</code>
-          <Button variant={variant}>静止</Button>
-          <Button variant={variant} data-state-target="hover">悬停</Button>
-          <Button variant={variant} data-state-target="active">按下</Button>
-          <Button variant={variant} data-state-target="focus">焦点</Button>
-          <Button variant={variant} disabled data-state-target="disabled">禁用</Button>
-          <Button variant={variant} aria-disabled="true" data-state-target="aria-disabled">ARIA 禁用</Button>
+          <Button variant={variant} label="静止" />
+          <Button variant={variant} data-state-target="hover" label="悬停" />
+          <Button variant={variant} data-state-target="active" label="按下" />
+          <Button variant={variant} data-state-target="focus" label="焦点" />
+          <Button variant={variant} isDisabled data-state-target="disabled" label="禁用" />
+          <Button variant={variant} isDisabled data-state-target="aria-disabled" label="ARIA 禁用" />
         </div>
       ))}
     </StoryFrame>

@@ -1310,59 +1310,6 @@ html[data-os="darwin"].dark {
     color: var(--foreground);
   }
 
-  /* ---- Modal / Dialog --------------------------------------------- */
-
-  .maka-modal-backdrop {
-    position: fixed; inset: 0;
-    /* PR-UI-LAYOUT-13: harmonize with .settingsModalBackdrop (LAYOUT-2)
-     * — backdrop scrim derived from `--foreground` at low alpha
-     * (not `--background` which made the scrim transparent on light
-     * mode) + slightly stronger blur so the dialog reads as paused
-     * context. */
-    background: oklch(from var(--foreground) l c h / 0.40);
-    backdrop-filter: blur(10px) saturate(0.9);
-    -webkit-backdrop-filter: blur(10px) saturate(0.9);
-    display: grid; place-items: center;
-    z-index: var(--z-modal);
-    overscroll-behavior: contain;
-    opacity: 1;
-  }
-  .maka-modal {
-    background: var(--background);
-    border-radius: var(--radius-modal);
-    box-shadow: var(--shadow-modal);
-    width: min(520px, calc(100vw - 48px));
-    max-height: calc(100dvh - 80px);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    opacity: 1;
-  }
-  .maka-modal-header {
-    padding: var(--space-4) var(--space-5) var(--space-2) var(--space-5);
-    border-bottom: var(--border-width-hairline) solid var(--border);
-  }
-  .maka-modal-title {
-    font-size: var(--font-size-heading);
-    font-weight: var(--font-weight-semibold);
-    color: var(--foreground);
-    letter-spacing: var(--tracking-normal);
-  }
-  .maka-modal-subtitle {
-    font-size: var(--font-size-ui);
-    color: var(--foreground-secondary);
-    margin-top: var(--space-0-5);
-  }
-  .maka-modal-body { padding: var(--space-4) var(--space-5); overflow-y: auto; flex: 1; }
-  .maka-modal-footer {
-    padding: var(--space-3) var(--space-5);
-    border-top: var(--border-width-hairline) solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-2);
-  }
-
   /* ---- Code blocks (used in args preview inside permission prompt) --- */
 
   .maka-code {

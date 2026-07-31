@@ -15,7 +15,7 @@ import type {
   createProjectCatalog,
   createSessionStore,
   createSettingsStore,
-  createTelemetryRepo,
+  createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
 import type { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -37,11 +37,18 @@ import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { runProjectStartupMigration } from './project-startup-migration.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { resolveDockPresentation } from './dock-presentation.js';
 import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 export interface AppLifecycleDeps {
-  isIsolatedE2e: boolean;
+  // Whether this run stays out of the developer's way. main.ts owns the
+  // condition; the dock icon follows it so window visibility and dock
+  // presence can never drift apart. A fixture window someone asked to see
+  // (MAKA_E2E_SHOW_WINDOW) opts out of both together: as an accessory app it
+  // has no dock tile and no Cmd+Tab entry, so switching away during a manual
+  // review would leave no way back.
+  startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
@@ -49,7 +56,7 @@ export interface AppLifecycleDeps {
   credentialStore: ReturnType<typeof createFileCredentialStore>;
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
-  telemetryRepo: ReturnType<typeof createTelemetryRepo>;
+  telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
@@ -63,6 +70,7 @@ export interface AppLifecycleDeps {
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
+  closeWorkflowStores: () => Promise<void>;
   mainWindowController: ReturnType<typeof createMainWindowController>;
   runtime: SessionManager;
   agentGraphCoordinator: AgentGraphCoordinator;
@@ -94,7 +102,7 @@ export interface AppLifecycleDeps {
  */
 export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
-    isIsolatedE2e,
+    startHidden,
     e2eFixture,
     workspaceRoot,
     sessionStore,
@@ -116,6 +124,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     shellRuns,
     mcpManager,
     runtimePersistence,
+    closeWorkflowStores,
     mainWindowController,
     runtime,
     agentGraphCoordinator,
@@ -144,7 +153,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await agentGraphSupervisorWakeCoordinator.recover();
       await agentGraphCoordinator.recover();
       if (process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1') return;
-      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents);
+      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents, console.error);
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.
@@ -197,19 +206,13 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   }
 
   app.whenReady().then(async () => {
-    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20): set the
-    // app's dock icon (macOS) so the dev `npm start` run shows Maka's
-    // brand mark instead of the generic Electron icon. Packaged
-    // builds get the icon via .app bundle Info.plist; this covers the
-    // dev path.
-    if (process.platform === 'darwin' && app.dock) {
-      if (process.env.MAKA_E2E_FIXTURE || isIsolatedE2e) {
-        // PR-VISUAL-SMOKE-HEADLESS: hide the dock icon so the spawned
-        // Electron runs as an accessory app — no dock bounce, and it
-        // never becomes frontmost / steals focus from the developer's
-        // active window during a capture run or an E2E run.
+    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20) and
+    // PR-VISUAL-SMOKE-HEADLESS: see resolveDockPresentation for the rule.
+    const dockPresentation = resolveDockPresentation(process.platform, startHidden);
+    if (app.dock) {
+      if (dockPresentation === 'hide') {
         app.dock.hide();
-      } else {
+      } else if (dockPresentation === 'icon') {
         try {
           const iconPath = join(import.meta.dirname, '..', '..', 'assets', 'icon.png');
           app.dock.setIcon(nativeImage.createFromPath(iconPath));
@@ -391,6 +394,11 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);
+    }
+    try {
+      await closeWorkflowStores();
+    } catch (error) {
+      console.error('[shutdown] cleanup failed:', error);
     }
     runtimePersistence.close();
     agentGraphControlStore.close();

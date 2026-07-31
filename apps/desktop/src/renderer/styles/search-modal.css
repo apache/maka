@@ -1,23 +1,5 @@
-/* Search modal — input + local thread-search results. Relocated from sidebar.css — issue #546 PR3. */
-/* Search modal: input + local thread-search results, backed by
- * `window.maka.search.thread()` through the renderer shell. The dialog
- * backdrop is rendered by the shared Dialog primitive (.maka-dialog-backdrop
- * + .maka-modal-backdrop tokens), not a search-modal-specific element. */
-.maka-search-modal {
-  width: min(560px, 92vw);
-  max-height: 64vh;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  padding: 0;
-  overflow: hidden;
-  /* Double-bezel inner highlight — high-end-visual-design §4A: premium
-     modals read as physical hardware via a 1px inner top highlight. The
-     outer chrome (border + shadow) lives on the Dialog primitive; this
-     adds the inner sheen. */
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.05);
-}
-/* Header band: the shared DialogHeader primitive (@maka/ui) owns the title
- * row + quiet icon-sm close button now — no search-modal-specific header CSS. */
+/* Search modal input + local thread-search results. Astryx owns the dialog
+ * surface; this file only styles product content. */
 /* PR-UX-POLISH-1 commit 5: real search modal layout.
  * - input-row: text input + leading magnifier icon, sits below the
  *   header band.

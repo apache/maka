@@ -23,31 +23,45 @@ test('workspace topbar folds secondary actions into an overflow menu', async ({ 
 
   const overflow = toolbar.getByRole('button', { name: '更多操作' });
   await expect(overflow).toBeVisible();
+  await expect
+    .poll(async () => {
+      const radii = await toolbar.getByRole('button').evaluateAll((buttons) =>
+        buttons.map((button) => getComputedStyle(button).borderRadius),
+      );
+      return new Set(radii).size;
+    })
+    .toBe(1);
 
   // Each secondary action surfaces only behind the overflow menu, and clicking
   // a menuitem fires its callback (the destination opens) — not just visible.
   const openSecondary = async (label: string): Promise<void> => {
-    await overflow.click();
+    await overflow.press('Enter');
+    await expect(page.getByRole('menu', { name: '更多操作' })).toBeVisible();
     await page.getByRole('menuitem', { name: label }).click();
   };
 
   // feedback → opens Settings (About section).
   await openSecondary('问题反馈');
-  await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await expect(settings).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
 
   // help → opens the keyboard-shortcut dialog.
   await openSecondary('打开帮助');
-  await expect(page.locator('.maka-help-modal')).toBeVisible();
+  const help = page.locator('.maka-help-modal');
+  await expect(help).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(help).toBeHidden();
 
   // health → opens Settings (Health section).
   await openSecondary('打开健康中心');
-  await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
+  await expect(settings).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(settings).toBeHidden();
 
   // The command-palette entry is end-to-end verified by command-palette.spec
   // (overflow → menuitem → dialog); here we only assert it is present.
-  await overflow.click();
+  await overflow.press('Enter');
   await expect(page.getByRole('menuitem', { name: '打开命令面板' })).toBeVisible();
 });

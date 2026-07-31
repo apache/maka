@@ -751,14 +751,9 @@ test('pier-graded failed cells stay scored through the fixed-prompt controller',
 });
 
 test('pier and harbor outputs drive identical controller events for an infra-failed graded cell', async () => {
-  // Cross-runner parity lock for the scoring semantics INHERITED from the
-  // fixed-prompt controller (predating this PR): a CLI-crash cell
-  // (errorClass=infra_failed) with pier grade reward=0 is excluded via
-  // isProviderInfraFailure (scored=false), while reward=1 scores through
-  // structuredVerifierPassed. Whether that asymmetry is desirable is a
-  // controller question out of this PR's scope; the runner invariant is that
-  // Pier and Harbor produce controller-identical events for the same trial
-  // shape, so neither side can drift unilaterally.
+  // Cross-runner parity lock: once either harness produces a valid structured
+  // pass/fail grade, the verifier is authoritative even if the agent cell
+  // exited with an infrastructure error.
   await withDirs(async ({ jobsDir, repo }) => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-pier-parity-'));
     try {
@@ -767,6 +762,7 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
       await writeFile(systemPromptPath, systemPrompt, 'utf8');
       const promptHash = hashSystemPrompt(systemPrompt);
       for (const reward of [0, 1]) {
+        const normalizedEvents: Array<Record<string, unknown>> = [];
         const cell = cellOutput({
           status: 'failed',
           errorClass: 'infra_failed',
@@ -807,7 +803,6 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
           },
           cell: pierOutput.cell,
         };
-        const normalizedEvents: Array<Record<string, unknown>> = [];
         for (const [flavor, output] of [
           ['pier', pierOutput],
           ['harbor', harborOutput],
@@ -828,6 +823,11 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
           normalizedEvents.push(event);
         }
         assert.deepEqual(normalizedEvents[0], normalizedEvents[1]);
+        assert.equal(normalizedEvents[0]?.type, 'task_completed');
+        assert.equal(normalizedEvents[0]?.passed, reward > 0);
+        assert.equal(normalizedEvents[0]?.scored, true);
+        assert.equal(normalizedEvents[0]?.eligible, true);
+        assert.equal(normalizedEvents[0]?.errorClass, reward > 0 ? undefined : 'infra_failed');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });

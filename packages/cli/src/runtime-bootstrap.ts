@@ -58,7 +58,7 @@ import {
   type ModelMessage,
 } from '@maka/runtime';
 import {
-  createAgentRunStore,
+  createSqliteAgentRunStore,
   createAttachmentByteReader,
   createArtifactStore,
   createAutomationStore,
@@ -70,7 +70,7 @@ import {
   createReadImageSnapshotter,
   createSessionStore,
   createSettingsStore,
-  createShellRunStore,
+  createSqliteShellRunStore,
   assertSessionBundleRootLayout,
   type ForeignSessionStore,
   persistProviderRequestCaptureArtifact,
@@ -80,7 +80,7 @@ import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import { fetchProviderModels } from '@maka/runtime';
 import { createApiKeyOnboardingSurface, type MakaOnboardingSurface } from './onboarding.js';
-import { resolveModelVisionSupport } from '@maka/core';
+import { isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
 import type { ModelChoice, ReadySessionTarget } from './connection-target.js';
 import {
   listReadyModelChoices,
@@ -130,6 +130,21 @@ export interface MakaCliRuntimeContext {
   close(): Promise<void>;
   /** API-key onboarding surface for the /setup wizard (#1098). */
   onboarding: MakaOnboardingSurface;
+}
+
+export function resolveCliStreamConnectTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env.MAKA_STREAM_CONNECT_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error('MAKA_STREAM_CONNECT_TIMEOUT_MS must be a positive integer');
+  }
+  const timeoutMs = Number(raw);
+  if (!Number.isSafeInteger(timeoutMs)) {
+    throw new Error('MAKA_STREAM_CONNECT_TIMEOUT_MS must be a positive safe integer');
+  }
+  return timeoutMs;
 }
 
 /**
@@ -207,16 +222,19 @@ export async function createMakaCliRuntimeContext(
   }
   await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
   const store = createSessionStore(stateRoot);
-  const runStore = createAgentRunStore(stateRoot);
+  const runStore = createSqliteAgentRunStore(stateRoot);
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: stateRoot,
-    // Graph execution can dispatch durable tools from both the supervisor and
-    // child agents. Those tool facts must cross the SQLite atomic boundary;
-    // the legacy JSONL event store intentionally rejects them.
-    sqliteCanonical: agentGraphEnabled || process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
-  const shellRunStore = createShellRunStore(stateRoot);
+  const shellRunStore = createSqliteShellRunStore(stateRoot);
+  await Promise.all([runStore.ready?.(), shellRunStore.ready()]).catch(async (error) => {
+    await store.close?.().catch(() => {});
+    runtimePersistence.close();
+    runStore.close?.();
+    shellRunStore.close();
+    throw error;
+  });
   const artifactStore = createArtifactStore(stateRoot);
   const agentGraphControlStore = agentGraphEnabled
     ? createAgentGraphControlStore(stateRoot)
@@ -634,6 +652,7 @@ export async function createMakaCliRuntimeContext(
       mode: header.permissionMode,
       cwd: header.cwd,
     });
+    const streamConnectTimeoutMs = resolveCliStreamConnectTimeoutMs();
     const agentGraphSupervisorTools =
       !ctx.tools && agentGraphEnabled
         ? await agentGraphCoordinator!.toolsForSession(ctx.sessionId)
@@ -693,6 +712,7 @@ export async function createMakaCliRuntimeContext(
           }
         : {}),
       providerOptions: buildProviderOptions(ready.connection, ready.model, header.thinkingLevel),
+      ...(streamConnectTimeoutMs !== undefined ? { streamConnectTimeoutMs } : {}),
       contextBudget: buildDefaultContextBudgetPolicy(ready.connection, {
         name: 'cli-default-history-budget',
         modelId: ready.model,
@@ -797,7 +817,7 @@ export async function createMakaCliRuntimeContext(
           runStore.listSessionRuns(sessionId),
         ]);
         return (
-          shellUpdates.some((update) => update.result.status === 'running') ||
+          shellUpdates.some((update) => isActiveShellRunStatus(update.result.status)) ||
           runs.some(
             (run) =>
               run.parentRunId !== undefined &&
@@ -1080,6 +1100,8 @@ export async function createMakaCliRuntimeContext(
       shellRunListeners.clear();
       await store.close?.();
       runtimePersistence.close();
+      runStore.close?.();
+      shellRunStore.close();
     },
   };
 }

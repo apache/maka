@@ -11,10 +11,10 @@ const READ_ONLY_HINT = '只读取和搜索，不写入文件、不访问网络�
 test('a read-only session names its boundary and can still be raised to full access', async ({
   readOnlyBoundaryWindow: page,
 }) => {
-  const trigger = page.locator('.maka-composer-left-controls [data-slot="select-trigger"]');
+  const trigger = page.locator('.maka-composer-left-controls').getByRole('combobox');
   await expect(trigger).toHaveText('只读');
-  await expect(trigger).toHaveAttribute('aria-label', '权限模式：只读');
-  await expect(trigger).toHaveAttribute('title', READ_ONLY_HINT);
+  await expect(trigger).toHaveAccessibleName('权限模式：只读');
+  await expect(trigger).toHaveAccessibleDescription(READ_ONLY_HINT);
 
   await trigger.click();
   const options = page.getByRole('option');
@@ -47,16 +47,25 @@ test('a read-only session names its boundary and can still be raised to full acc
   // Keyboard navigation still works with nothing selected, and choosing Auto
   // is a real permission change.
   await trigger.click();
-  await page.keyboard.press('ArrowDown');
+  // The click resolves when it is dispatched, not when the popup exists. Keys
+  // sent before then land on nothing: no option is highlighted, Enter selects
+  // nothing, and the label sits on 只读 until the assertion times out. Waiting
+  // for the listbox the keys are aimed at fixes the sequence rather than
+  // widening the window it is allowed to be wrong in (measured: 2/25 failures
+  // without this line, 25/25 clean with it).
+  await expect(page.getByRole('listbox')).toBeVisible();
+  const activeDescendant = await trigger.getAttribute('aria-activedescendant');
+  expect(activeDescendant).not.toBeNull();
+  await expect(page.locator(`[id="${activeDescendant}"]`)).toContainText('自动');
   await page.keyboard.press('Enter');
   await expect(trigger).toHaveText('自动');
 });
 
-test('approving an expansion updates the permission label at once', async ({
+test('approving an expansion updates the permission label at once and after a reload', async ({
   sandboxBoundaryWindow: page,
 }) => {
   const prompt = page.locator('.maka-sandbox-boundary-prompt');
-  const trigger = page.locator('.maka-composer-left-controls [data-slot="select-trigger"]');
+  const trigger = page.locator('.maka-composer-left-controls').getByRole('combobox');
 
   // The session runs read-only and is asking to write outside the workspace.
   await expect(prompt).toHaveCount(1);
@@ -68,13 +77,42 @@ test('approving an expansion updates the permission label at once', async ({
   // moves — so a surface that does not re-read authority would keep telling
   // the user this session cannot write, right after they let it.
   await expect(trigger).toHaveText('自动');
-});
 
-// A reload assertion used to follow, to show the label came from the boundary
-// rather than renderer state. It could not hold here: after a reload the
-// composer stays hidden until a boundary has been read for the restored
-// session, and that read has no retry — `readExecutionBoundary` rejecting once
-// leaves the snapshot unset for good. On CI the composer never became visible
-// within the timeout. That is a product gap worth its own fix (#1629), not
-// something this journey should encode; the read model's own contract test
-// already covers that the label follows authority and not renderer state.
+  // The answer has to reach the fixture state itself, not just the active
+  // request list. The renderer seeds its interaction queue straight out of
+  // `e2eFixture:getState` on every boot, bypassing that list entirely, so a
+  // retirement only the list could see leaves an answered request that the
+  // seed can still put back over the composer. Asserted here directly because
+  // that is the part with hard evidence: this poll fails against a
+  // list-only retirement and passes against a retirement at the shared owner.
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        const state = await window.maka.e2eFixture.getState();
+        return Object.keys(state?.sandboxBoundaryBySession ?? {}).length;
+      }),
+    )
+    .toBe(0);
+
+  // And it is the boundary saying so, not renderer state: it survives a reload,
+  // where the renderer starts from nothing and has to read the boundary again.
+  // The notice assertion adds that the composer came back because that read
+  // landed, not because the surface gave up and fell open. It does NOT exercise
+  // the retry — nothing rejects here — which the read model's own tests cover
+  // deterministically (#1629).
+  //
+  // What made this half time out on CI before #1630 removed it is not measured
+  // here — an answered request that stayed active could be resurrected by
+  // either the list or the seed, and the local ordering never reproduced it.
+  // What is measured is that neither path has an answered request to resurrect
+  // any more, which the poll above pins directly.
+  await page.reload();
+  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
+  await expect(page.locator('.maka-boundary-unreadable-notice')).toHaveCount(0);
+  await expect(trigger).toHaveText('自动');
+
+  // Re-checked after the boot path has had time to run both seeds: a late
+  // resurrection would take the slot back here rather than never happening.
+  await expect(prompt).toHaveCount(0);
+  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
+});

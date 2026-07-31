@@ -93,7 +93,8 @@ describe('Settings app-info loading contract', () => {
       /await navigator\.clipboard\.writeText\(info\.workspacePath\);[\s\S]*if \(dataPageMountedRef\.current\) \{[\s\S]*toast\.success\(copy\.pathCopied\);[\s\S]*\}[\s\S]*catch \{[\s\S]*if \(dataPageMountedRef\.current\) \{[\s\S]*toast\.error\(copy\.copyFailed, copy\.copyFailedDetail\)/,
       'Late workspace-path copy success/failure toasts must not fire after Settings is closed',
     );
-    assert.match(dataBlock, /disabled=\{!info \|\| dataActionDisabled\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(dataBlock, /isDisabled=\{!info \|\| dataActionDisabled\}/);
     assert.match(dataBlock, /isDataActionPending\('workspace:open'\) \? copy\.opening : copy\.openWorkspace/);
     assert.match(dataBlock, /isDataActionPending\('workspace:path:copy'\) \? copy\.copying : copy\.copyPath/);
     assert.match(dataBlock, /toast\.error\(copy\.copyFailed, copy\.copyFailedDetail\)/);
@@ -129,9 +130,10 @@ describe('Settings app-info loading contract', () => {
     assert.match(zh.storageDetail, /凭据/);
     assert.doesNotMatch(JSON.stringify(en), /[\u3400-\u9fff]/u);
     assert.match(aboutBlock, /const envSummaryHelpId = useId\(\)/);
+    // #1565 PR 3: Astryx Button (`isDisabled`, `variant="primary"`, no `type` passthrough needed).
     assert.match(
       aboutBlock,
-      /<Button type="button" disabled=\{copyingEnvSummary\} aria-describedby=\{envSummaryHelpId\}/,
+      /<Button variant="primary" isDisabled=\{copyingEnvSummary\} aria-describedby=\{envSummaryHelpId\}/,
       'About page copy button must be programmatically described by the privacy note',
     );
     assert.match(
@@ -167,7 +169,8 @@ describe('Settings app-info loading contract', () => {
       /await navigator\.clipboard\.writeText\(summary\);[\s\S]*if \(aboutPageMountedRef\.current\) \{[\s\S]*toast\.success\(copy\.copied, copy\.pasteHint\);[\s\S]*\}[\s\S]*catch \{[\s\S]*if \(aboutPageMountedRef\.current\) \{[\s\S]*toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\);[\s\S]*\}[\s\S]*finally \{[\s\S]*envSummaryCopyGuard\.finish\(\);[\s\S]*if \(aboutPageMountedRef\.current\) \{[\s\S]*setCopyingEnvSummary\(false\);[\s\S]*\}/,
       'About page environment copy must not update UI after unmount',
     );
-    assert.match(aboutBlock, /disabled=\{copyingEnvSummary\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(aboutBlock, /isDisabled=\{copyingEnvSummary\}/);
     assert.match(aboutBlock, /copyingEnvSummary \? copy\.copying : copy\.copyEnvironment/);
     assert.match(aboutBlock, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
     assert.doesNotMatch(aboutBlock, /toast\.error\('复制失败', '剪贴板不可用'\)/);

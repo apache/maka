@@ -366,6 +366,7 @@ function canonical(
   return {
     session: {
       sessionId: SESSION_ID,
+      metadataRevision: 1,
       status: 'active',
       createdAt: 1,
       lastUsedAt: overrides.lastUsedAt ?? 1,

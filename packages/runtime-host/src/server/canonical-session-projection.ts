@@ -55,8 +55,11 @@ export class CanonicalSessionProjectionReader {
   async read(sessionId: string): Promise<CanonicalSessionProjection | null> {
     const admission = this.#rootAdmissions.latestAdmission(sessionId);
     let header: SessionHeader;
+    let metadataRevision: number;
     try {
-      header = await this.#stores.sessionStore.readHeaderSnapshot(sessionId);
+      const record = await this.#stores.sessionStore.readHeaderRecordSnapshot(sessionId);
+      header = record.header;
+      metadataRevision = record.revision;
     } catch (error) {
       if (isMissingFile(error)) return null;
       throw error;
@@ -85,6 +88,7 @@ export class CanonicalSessionProjectionReader {
     const queue = this.#messages.projection(sessionId);
     const session: SessionContinuityIdentity = {
       sessionId: header.id,
+      metadataRevision,
       status: header.status,
       createdAt: header.createdAt,
       lastUsedAt: header.lastUsedAt,

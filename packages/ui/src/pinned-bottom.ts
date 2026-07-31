@@ -17,6 +17,25 @@ export interface PinnedBottomSizeObserver {
 
 export type PinnedBottomSizeObserverFactory = (callback: () => void) => PinnedBottomSizeObserver;
 
+export function resolvePinnedBottomScroll(input: {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  threshold: number;
+  wasPinned: boolean;
+  lastFollowedScrollTop?: number;
+}): { pinned: boolean; shouldFollow: boolean } {
+  const distanceFromBottom = input.scrollHeight - input.scrollTop - input.clientHeight;
+  const followsLastWrite =
+    input.wasPinned &&
+    input.lastFollowedScrollTop !== undefined &&
+    Math.abs(input.scrollTop - input.lastFollowedScrollTop) <= 1;
+  return {
+    pinned: followsLastWrite || distanceFromBottom <= input.threshold,
+    shouldFollow: followsLastWrite && distanceFromBottom > input.threshold,
+  };
+}
+
 /**
  * Follows the scroll content's actual commit clock. Streaming text is revealed
  * by requestAnimationFrame after raw deltas arrive, while OverlayScrollbars
@@ -35,11 +54,14 @@ export function createPinnedBottomFollower(options: {
   viewport: PinnedBottomViewport;
   content: Element;
   isPinned: () => boolean;
+  onFollow?: (scrollTop: number) => void;
   createObserver?: PinnedBottomObserverFactory;
   createSizeObserver?: PinnedBottomSizeObserverFactory;
 }): () => void {
   const follow = (): void => {
-    if (options.isPinned()) options.viewport.scrollTop = options.viewport.scrollHeight;
+    if (!options.isPinned()) return;
+    options.viewport.scrollTop = options.viewport.scrollHeight;
+    options.onFollow?.(options.viewport.scrollTop);
   };
   const createObserver = options.createObserver
     ?? (typeof MutationObserver === 'function'

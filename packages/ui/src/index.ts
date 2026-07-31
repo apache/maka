@@ -52,7 +52,9 @@ export * from './bot-brand.js';
 export * from './bot-brand-logo.js';
 export * from './maka-wordmark.js';
 export * from './primitives/alert.js';
-export * from './primitives/card.js';
+// #1565 PR 3: Card is the Astryx primitive now (the thin data-slot recipe is
+// retired); same barrel slot, implementation swapped behind it.
+export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
 // `markerVariants` / `toolVariants` are deliberately NOT re-exported here:
 // they are internal styling tables that the chat call sites apply via relative
 // import, so keeping them off the package barrel preserves the governance goal
@@ -120,11 +122,11 @@ export {
   AccordionPrimitive as PrimitiveAccordionPrimitive,
 } from './primitives/accordion.js';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9
-// collapsed the legacy ui.tsx Badge onto this one. Badge is the pill emphasis
-// marker (health/permission center). Variants: default / destructive / error
-// / info / outline / secondary / success / warning.
-export { Badge, badgeVariants } from './primitives/badge.js';
-export type { BadgeProps } from './primitives/badge.js';
+// collapsed the legacy ui.tsx Badge onto this one. #1565 PR 3: the recipe is
+// the Astryx Badge now (label prop, status + palette variants); same barrel
+// slot, implementation swapped behind it. badgeVariants retired with the cva
+// recipe (no consumers).
+export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
 // PR-USE-SHADCN-BASE-UI-CHIP: squared compact status label. #520 PR9 collapsed
 // .settingsBadge + .settingsConnectionBadge CSS chips onto this one. Chip is
 // the squared (radius-control) counterpart to pill Badge, for dense settings
@@ -172,3 +174,33 @@ export {
   type FadeRingState,
   type FadeBatch,
 } from './stream-fade.js';
+
+// #1565 PR 2: Astryx i18n adapter — appended, never reordered (barrel freeze).
+export * from './astryx-i18n.js';
+
+// #1565 PR 3: Astryx atoms. These append-only exports leave the frozen
+// @maka/ui surface intact; the mechanical atom cut follows separately.
+export {
+  Button,
+  type ButtonProps,
+  type ButtonVariant,
+  type ButtonSize,
+  Divider,
+  type DividerProps,
+  Text,
+  type TextProps,
+  type TextType,
+  type TextSize,
+  Stack,
+  type StackProps,
+  StackItem,
+  type StackItemProps,
+  HStack,
+  type HStackProps,
+  VStack,
+  type VStackProps,
+  IconButton,
+  type IconButtonProps,
+  ClickableCard,
+  type ClickableCardProps,
+} from '@astryxdesign/core';

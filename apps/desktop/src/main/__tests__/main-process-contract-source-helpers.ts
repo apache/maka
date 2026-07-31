@@ -96,6 +96,7 @@ export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/tool-assembly.ts',
   'apps/desktop/src/main/tool-artifact-persistence.ts',
   'apps/desktop/src/main/usage-ipc-main.ts',
+  'apps/desktop/src/main/voice-ipc-main.ts',
   'apps/desktop/src/main/web-search-ipc-main.ts',
   'apps/desktop/src/main/workspace-instructions-ipc-main.ts',
   'apps/desktop/src/main/workspace-resources-ipc-main.ts',

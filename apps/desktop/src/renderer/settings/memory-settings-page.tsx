@@ -183,38 +183,32 @@ export function MemorySettingsPage(props: {
                 <li key={`${backup.kind}:${backup.path}`} className="settingsMemoryBackupCandidate">
                   <span>{backupCandidateLabel} · <RelativeTime ts={backup.updatedAt} /></span>
                   <Button
-                    type="button"
                     variant="secondary"
                     size="sm"
                     className="min-w-[4rem]"
                     aria-label={copy.openBackupAria(backupCandidateLabel)}
-                    disabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending(`backup:${backup.kind}:open`)}
+                    isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending(`backup:${backup.kind}:open`)}
                     onClick={() => void openBackupCandidate(backup)}
-                  >
-                    {isMemoryActionPending(`backup:${backup.kind}:open`) ? copy.text.opening : copy.text.open}
-                  </Button>
+                    label={isMemoryActionPending(`backup:${backup.kind}:open`) ? copy.text.opening : copy.text.open}
+                  />
                   <Button
-                    type="button"
                     variant="secondary"
                     size="sm"
                     className="min-w-[4rem]"
                     aria-label={copy.restoreBackupAria(backupCandidateLabel)}
-                    disabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending(`backup:${backup.kind}:restore`)}
+                    isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending(`backup:${backup.kind}:restore`)}
                     onClick={() => void restoreBackupCandidate(backup)}
-                  >
-                    {isMemoryActionPending(`backup:${backup.kind}:restore`) ? copy.text.restoring : copy.text.restore}
-                  </Button>
+                    label={isMemoryActionPending(`backup:${backup.kind}:restore`) ? copy.text.restoring : copy.text.restore}
+                  />
                   <Button
-                    type="button"
                     variant="secondary"
                     size="sm"
                     className="min-w-[4rem]"
                     aria-label={copy.copyBackupAria(backupCandidateLabel)}
-                    disabled={isMemoryActionPending(`backup:${backup.kind}:copy`)}
+                    isDisabled={isMemoryActionPending(`backup:${backup.kind}:copy`)}
                     onClick={() => void copyBackupReference(backup)}
-                  >
-                    {isMemoryActionPending(`backup:${backup.kind}:copy`) ? copy.text.copying : copy.text.copyReference}
-                  </Button>
+                    label={isMemoryActionPending(`backup:${backup.kind}:copy`) ? copy.text.copying : copy.text.copyReference}
+                  />
                 </li>
               );
             })}
@@ -263,13 +257,11 @@ export function MemorySettingsPage(props: {
             />
             {normalizedMemoryEntryQuery ? (
               <Button
-                type="button"
                 variant="secondary"
                 size="sm"
                 onClick={() => setMemoryEntryQuery('')}
-              >
-                {copy.text.clear}
-              </Button>
+                label={copy.text.clear}
+              />
             ) : null}
             <small>
               {normalizedMemoryEntryQuery
@@ -355,13 +347,11 @@ export function MemorySettingsPage(props: {
           />
         </div>
         <Button
-          type="button"
           variant="secondary"
-          disabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+          isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
           onClick={addManualMemoryDraftEntry}
-        >
-          {copy.text.addDraft}
-        </Button>
+          label={copy.text.addDraft}
+        />
       </div>
 
       {memoryDraftHasSensitiveFields && (
@@ -391,33 +381,15 @@ export function MemorySettingsPage(props: {
       )}
 
       <div className="settingsActionRow" role="group" aria-label={copy.text.fileActionsAria}>
-        <Button type="button" className="min-w-[3.5rem]" disabled={memoryControlsDisabled || !effective.enabled || !memoryDraftDirty} onClick={() => void save()}>
-          {pendingMemoryWriteAction === 'save' ? copy.text.saving : memoryDraftDirty ? copy.text.save : copy.text.saved}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[7.5rem]" disabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:file:open')} onClick={() => void openFile()}>
-          {isMemoryActionPending('memory:file:open') ? copy.text.opening : copy.text.openFile}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[6rem]" disabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:folder:open')} onClick={() => void openFolder()}>
-          {isMemoryActionPending('memory:folder:open') ? copy.text.opening : copy.text.openFolder}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[4rem]" disabled={memoryControlsDisabled || !effective.enabled} onClick={() => void reloadDraftFromDisk()}>
-          {pendingMemoryWriteAction === 'reload' ? copy.text.loading : copy.text.reload}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[5rem]" disabled={memoryControlsDisabled || !effective.enabled || !effective.latestBackup || isMemoryActionPending('backup:latest:open')} onClick={() => void openLatestBackup()}>
-          {isMemoryActionPending('backup:latest:open') ? copy.text.opening : copy.text.openPrevious}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[4rem]" disabled={!effective.path || isMemoryActionPending('memory:path:copy')} onClick={() => void copyPath()}>
-          {isMemoryActionPending('memory:path:copy') ? copy.text.copying : copy.text.copyPath}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[7rem]" disabled={!effective.latestBackup || (effective.latestBackup ? isMemoryActionPending(`backup:${effective.latestBackup.kind}:copy`) : false)} onClick={() => void copyLatestBackupReference()}>
-          {effective.latestBackup && isMemoryActionPending(`backup:${effective.latestBackup.kind}:copy`) ? copy.text.copying : copy.text.copyPrevious}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[5rem]" disabled={memoryControlsDisabled || !effective.enabled} onClick={() => void reset()}>
-          {pendingMemoryWriteAction === 'reset' ? copy.text.resetting : copy.text.resetBackup}
-        </Button>
-        <Button type="button" variant="ghost" className="min-w-[5rem]" disabled={memoryControlsDisabled || !effective.enabled || !effective.latestBackup || isMemoryActionPending('backup:latest:restore')} onClick={() => void restoreLatestBackup()}>
-          {isMemoryActionPending('backup:latest:restore') ? copy.text.restoring : copy.text.restorePrevious}
-        </Button>
+        <Button variant="primary" className="min-w-[3.5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || !memoryDraftDirty} onClick={() => void save()} label={pendingMemoryWriteAction === 'save' ? copy.text.saving : memoryDraftDirty ? copy.text.save : copy.text.saved} />
+        <Button variant="ghost" className="min-w-[7.5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:file:open')} onClick={() => void openFile()} label={isMemoryActionPending('memory:file:open') ? copy.text.opening : copy.text.openFile} />
+        <Button variant="ghost" className="min-w-[6rem]" isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:folder:open')} onClick={() => void openFolder()} label={isMemoryActionPending('memory:folder:open') ? copy.text.opening : copy.text.openFolder} />
+        <Button variant="ghost" className="min-w-[4rem]" isDisabled={memoryControlsDisabled || !effective.enabled} onClick={() => void reloadDraftFromDisk()} label={pendingMemoryWriteAction === 'reload' ? copy.text.loading : copy.text.reload} />
+        <Button variant="ghost" className="min-w-[5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || !effective.latestBackup || isMemoryActionPending('backup:latest:open')} onClick={() => void openLatestBackup()} label={isMemoryActionPending('backup:latest:open') ? copy.text.opening : copy.text.openPrevious} />
+        <Button variant="ghost" className="min-w-[4rem]" isDisabled={!effective.path || isMemoryActionPending('memory:path:copy')} onClick={() => void copyPath()} label={isMemoryActionPending('memory:path:copy') ? copy.text.copying : copy.text.copyPath} />
+        <Button variant="ghost" className="min-w-[7rem]" isDisabled={!effective.latestBackup || (effective.latestBackup ? isMemoryActionPending(`backup:${effective.latestBackup.kind}:copy`) : false)} onClick={() => void copyLatestBackupReference()} label={effective.latestBackup && isMemoryActionPending(`backup:${effective.latestBackup.kind}:copy`) ? copy.text.copying : copy.text.copyPrevious} />
+        <Button variant="ghost" className="min-w-[5rem]" isDisabled={memoryControlsDisabled || !effective.enabled} onClick={() => void reset()} label={pendingMemoryWriteAction === 'reset' ? copy.text.resetting : copy.text.resetBackup} />
+        <Button variant="ghost" className="min-w-[5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || !effective.latestBackup || isMemoryActionPending('backup:latest:restore')} onClick={() => void restoreLatestBackup()} label={isMemoryActionPending('backup:latest:restore') ? copy.text.restoring : copy.text.restorePrevious} />
       </div>
     </div>
   );

@@ -114,63 +114,46 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
     }
   });
 
-  it('keeps Select positioners in the overlay layer so popup hit-testing can outrank composer chrome', async () => {
+  it('removes the retired Select positioner layer now that Astryx uses the native top layer', async () => {
     const stripped = stripCssComments(await readAllRendererCss());
-    const positionerRule = stripped.match(/\.settingsSelectPositioner\s*\{[\s\S]*?\}/)?.[0] ?? '';
+    assert.doesNotMatch(stripped, /\.settingsSelectPositioner\s*\{/, 'the Base UI Select positioner recipe must be deleted');
+  });
 
-    assert.notEqual(positionerRule, '', '.settingsSelectPositioner rule not found in renderer CSS');
-    assert.match(
-      positionerRule,
-      /z-index:\s*var\(--z-overlay\)\s*;/,
-      'SettingsSelect positioner must share SelectPopup\'s --z-overlay layer. The positioner creates the root stacking context for portaled selects; if it stays at --z-dropdown, the popup cannot reliably win hit-tests over composer chrome when it opens upward.',
-    );
+  it('Select and Combobox are Astryx-backed with no Base UI or z-layer pin', async () => {
+    const [ui, settingsSelect, permissionMode, modelPicker] = await Promise.all([
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'primitives', 'settings-select.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'permission-mode-menu.tsx'), 'utf8'),
+      readFile(resolve(REPO_ROOT, 'packages', 'ui', 'src', 'model-picker.tsx'), 'utf8'),
+    ]);
+    const source = `${ui}\n${settingsSelect}\n${permissionMode}\n${modelPicker}`;
+    assert.doesNotMatch(source, /@base-ui\/react\/(?:select|combobox)/);
+    assert.match(source, /@astryxdesign\/core\/Selector/);
+    assert.match(modelPicker, /@astryxdesign\/core\/Popover/);
+    assert.doesNotMatch(source, /z-\[var\(--z-overlay\)\]/);
   });
 
   /**
-   * The rule above only proves the CSS class carries the layer — it says
-   * nothing about whether a given call site remembered to apply it. That
-   * gap shipped a real bug: `PermissionModeSelect` rendered a bare
-   * `<SelectPositioner>`, so Settings → 通用 → 默认权限模式 portalled its
-   * popup *below* the `.settingsModal` layer. The popup was in the DOM
-   * with `aria-expanded="true"`, but invisible and unclickable — the
-   * modal won every hit-test. DOM-level e2e cannot see it; only paint
-   * order can.
-   *
-   * The layer now lives on the wrapped `SelectPositioner`/`PopoverPositioner`
-   * in `packages/ui/src/ui.tsx`, so every consumer inherits it. This test
-   * pins that, and pins that the layer is NOT written onto the popup —
-   * Base UI renders popups `position: static`, where `z-index` is inert
-   * and reads as protection that isn't there.
+   * #1565 PR 5: Popover is Astryx-backed. Its surface renders in the native
+   * Popover-API top layer — above every `--z-*` value by definition — so a
+   * `--z-overlay` pin would be dead code that reads as protection. Pin the
+   * implementation authority instead: Base UI's popover must not return, and
+   * the Astryx hook is the only behavior source.
    */
-  it('carries the overlay layer on the positioner wrappers, never on the static popup', async () => {
+  it('Popover is Astryx-backed with no Base UI popover or z-layer pin', async () => {
     const ui = await readFile(
       resolve(REPO_ROOT, 'packages', 'ui', 'src', 'ui.tsx'),
       'utf8',
     );
-
-    // `[^>]*` keeps each match inside a single self-closing JSX tag, so a
-    // later element's layer can't be mistaken for this one's.
-    const element = (tag: string): string =>
-      ui.match(new RegExp(`<${tag.replace('.', '\\.')}\\b[^>]*/>`))?.[0] ?? '';
-
-    for (const tag of ['BaseSelect.Positioner', 'BasePopover.Positioner']) {
-      const el = element(tag);
-      assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
-      assert.match(
-        el,
-        /z-\[var\(--z-overlay\)\]/,
-        `${tag} must carry the --z-overlay layer: the popup it wraps is position:static, so a z-index there does nothing and the portalled subtree paints under .settingsModal.`,
-      );
-    }
-
-    for (const tag of ['BaseSelect.Popup', 'BasePopover.Popup']) {
-      const el = element(tag);
-      assert.notEqual(el, '', `${tag} wrapper not found in packages/ui/src/ui.tsx`);
-      assert.doesNotMatch(
-        el,
-        /z-\[var\(--z-overlay\)\]/,
-        `${tag} must NOT carry the overlay layer — it is position:static, so the z-index is inert and only disguises a missing layer on the positioner.`,
-      );
-    }
+    assert.doesNotMatch(
+      ui,
+      /@base-ui\/react\/popover/,
+      'ui.tsx must not import @base-ui/react/popover — Popover behavior is owned by @astryxdesign/core/Popover (#1565 PR 5, one behavior authority per component).',
+    );
+    assert.match(
+      ui,
+      /@astryxdesign\/core\/Popover/,
+      'ui.tsx must source Popover behavior from @astryxdesign/core/Popover.',
+    );
   });
 });

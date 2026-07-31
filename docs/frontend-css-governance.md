@@ -24,9 +24,9 @@ Maka's frontend styling combines Tailwind v4 with handwritten renderer CSS. Some
 - Do not place `@import` inside an `@layer` block.
 - A selector that must override a shared primitive's Tailwind utility must remain outside `@layer components` until the primitive seam is fixed.
 
-## 3. Required unlayered rules
+## 3. Rules that must outrank Tailwind utilities
 
-These selectors currently depend on appearing after Tailwind utilities and must remain unlayered:
+These selectors depend on beating Tailwind utilities on the same element. Since #1565 PR 1 they do so by living in the `maka.legacy` layer, which `cascade-layers.css` declares after `utilities` (before that they relied on being unlayered). The declaration in `cascade-layers.css` is append-only: later migration PRs may add layers but must never reorder the existing five.
 
 - `.maka-nav-row`
 - `html[data-os="darwin"] .maka-nav-row`

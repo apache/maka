@@ -193,6 +193,7 @@ export class RuntimeRunner {
       }
       if (
         request.text.length > 0 ||
+        request.voiceAudio !== undefined ||
         request.attachments !== undefined ||
         request.quotes !== undefined
       ) {
@@ -533,6 +534,7 @@ function buildFlowInput(request: InvocationRequest): FlowInput {
     ...(request.lineage?.parentRunId ? { parentRunId: request.lineage.parentRunId } : {}),
     ...(request.orchestration !== undefined ? { orchestration: request.orchestration } : {}),
     text: request.text,
+    ...(request.voiceAudio !== undefined ? { voiceAudio: request.voiceAudio } : {}),
     context: request.context ?? [],
     ...(request.runtimeContext !== undefined ? { runtimeContext: request.runtimeContext } : {}),
     ...(continuation !== undefined ? { continuation } : {}),

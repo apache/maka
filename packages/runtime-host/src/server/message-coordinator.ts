@@ -41,7 +41,7 @@ import {
 } from '../protocol/index.js';
 import type { RuntimeHostResidency } from './host-kernel.js';
 import { worstCaseMessageQueueProjection } from './message-queue-capacity.js';
-import type { MessageOperationHandlerMap } from './operation-dispatcher.js';
+import type { ConnectionContext, MessageOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 
 type MessageOperationErrorCode =
@@ -73,6 +73,7 @@ export interface HostMessageStartInput {
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly sourceMessage: RootTurnSourceMessage;
+  readonly initiatingConnectionId: string;
 }
 
 export interface HostMessageStopClaim {
@@ -97,7 +98,7 @@ export interface HostMessageRootPort {
   startFromMessage(
     input: HostMessageStartInput,
     admission: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string }>;
+  ): Promise<{ readonly turnId: string } | { readonly error: string }>;
   claimStop(
     input: Omit<TurnInterruptInput, 'originHostEpoch' | 'interruptId'>,
     commitQueueFence: () => QueueFenceResult,
@@ -142,6 +143,7 @@ interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
   readonly content: MessageContent;
+  readonly initiatingConnectionId: string;
   readonly placement: MessagePlacement;
   readonly disposition: 'steering' | 'followup';
   readonly generation: number;
@@ -211,6 +213,7 @@ export interface RootFollowupBatch {
   readonly transitionId: string;
   readonly sessionId: string;
   readonly previousTurnId: string;
+  readonly initiatingConnectionId: string | undefined;
   readonly content: MessageContent;
   readonly sources: readonly RootFollowupSource[];
 }
@@ -223,7 +226,7 @@ export interface QueueFenceResult {
 /** The sole in-memory message authority for one Runtime Host Epoch. */
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
-    'turn.message.submit': (input) => this.submit(input),
+    'turn.message.submit': (input, context) => this.submit(input, context),
     'queue.retract': (input) => this.retract(input),
     'turn.interrupt': (input) => this.interrupt(input),
   };
@@ -360,7 +363,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       this.#mutated(state);
     }
     state.run = undefined;
-    const entries = [...state.followup];
+    const entries = sameInitiatingClientPrefix(state.followup);
     const followup = canonicalFollowupBatch(entries);
     const transition: TerminalTransition = {
       transitionId: this.#createId(),
@@ -372,6 +375,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       transitionId: transition.transitionId,
       sessionId: identity.sessionId,
       previousTurnId: identity.turnId,
+      initiatingConnectionId: entries[0]?.initiatingConnectionId,
       content: followup.content,
       sources: followup.sources,
     };
@@ -427,7 +431,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     this.#sessions.clear();
   }
 
-  private submit(input: TurnMessageSubmitInput): Promise<MessageOutcome<TurnMessageSubmitResult>> {
+  private submit(
+    input: TurnMessageSubmitInput,
+    context: ConnectionContext,
+  ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     const payload = canonicalSubmitPayload(input);
     const isCurrentEpoch = input.originHostEpoch === this.#hostEpoch;
     if (isCurrentEpoch) {
@@ -443,9 +450,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     if (this.#failStopped) {
       return Promise.resolve(failure('host_draining', 'Runtime Host message authority has failed'));
     }
-    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload);
+    if (!isCurrentEpoch) return this.#submitAdmitted(input, payload, context.connectionId);
     const key = operationKey(input.sessionId, input.messageId);
-    const result = this.#submitAdmitted(input, payload);
+    const result = this.#submitAdmitted(input, payload, context.connectionId);
     this.#pendingSubmits.set(key, { payload, result });
     void result.then(
       () => this.#deletePendingSubmit(key, result),
@@ -457,6 +464,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   #submitAdmitted(
     input: TurnMessageSubmitInput,
     payload: CanonicalSubmitPayload,
+    initiatingConnectionId: string,
   ): Promise<MessageOutcome<TurnMessageSubmitResult>> {
     return this.#sessionAdmission.run(input.sessionId, async (admission) => {
       if (this.#failStopped) {
@@ -519,9 +527,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             sessionId: input.sessionId,
             content: payload.content,
             sourceMessage,
+            initiatingConnectionId,
           },
           admission,
         );
+        if ('error' in started) {
+          return failure('operation_conflict', started.error);
+        }
         if (!isEntityId(started.turnId)) {
           throw new RuntimeMessageAuthorityInvariantError('Started Turn identity is not encodable');
         }
@@ -605,6 +617,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         entryId,
         messageId: input.messageId,
         content: payload.content,
+        initiatingConnectionId,
         placement: input.placement,
         disposition,
         generation: state.generation,
@@ -1139,8 +1152,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   #commitTransition(state: SessionState): void {
     const transition = state.transition;
     if (!transition) throw new RuntimeMessageAuthorityInvariantError('Missing terminal transition');
+    if (transition.entries.some((entry, index) => state.followup[index] !== entry)) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Terminal transition no longer owns the queued follow-up prefix',
+      );
+    }
     for (const entry of transition.entries) this.#releaseEntry(entry);
-    state.followup = [];
+    state.followup.splice(0, transition.entries.length);
     state.transition = undefined;
     state.reservedRoot = undefined;
     state.stopFence = undefined;
@@ -1153,6 +1171,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       !transition ||
       transition.transitionId !== batch.transitionId ||
       transition.identity.turnId !== batch.previousTurnId ||
+      transition.entries[0]?.initiatingConnectionId !== batch.initiatingConnectionId ||
       !isDeepStrictEqual(transition.entries.map(sourceFromEntry), batch.sources) ||
       !messageContentsEqual(
         aggregateMessageContent(transition.entries.map((entry) => entry.content)),
@@ -1447,6 +1466,15 @@ function canonicalFollowupBatch(entries: readonly LiveEntry[]): {
       'Accepted follow-up batch violates the durable root admission contract',
     );
   }
+}
+
+function sameInitiatingClientPrefix(entries: readonly LiveEntry[]): LiveEntry[] {
+  const initiatingConnectionId = entries[0]?.initiatingConnectionId;
+  if (!initiatingConnectionId) return [];
+  const boundary = entries.findIndex(
+    (entry) => entry.initiatingConnectionId !== initiatingConnectionId,
+  );
+  return entries.slice(0, boundary === -1 ? entries.length : boundary);
 }
 
 function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): boolean {

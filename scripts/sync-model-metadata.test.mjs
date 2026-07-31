@@ -124,6 +124,7 @@ test('sync-model-metadata maps models.dev modalities into Maka metadata', async 
 
   const generated = await readFile(output, 'utf8');
   assert.match(generated, /"vision":true,"reasoning":true,"functionCalling":true/);
+  assert.match(generated, /"modalities":\{"input":\["text","image"\],"output":\["text"\]\}/);
   assert.match(generated, /"text-model".*"lifecycle":"deprecated".*"vision":false/);
   assert.match(
     generated,

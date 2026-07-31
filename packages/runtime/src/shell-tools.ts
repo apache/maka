@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isActiveShellRunStatus } from '@maka/core';
 import { redactSecrets } from '@maka/core/redaction';
 import type { ToolResultContent } from '@maka/core/events';
 import type { ToolExecutionFacts } from '@maka/core/permission';
@@ -228,7 +229,7 @@ export function buildManagedBashTool(
           ...(transformed?.sandboxType ? { sandboxType: transformed.sandboxType } : {}),
           ...(onCompletion ? { onCompletion } : {}),
         });
-        if (result.kind === 'terminal' || result.status !== 'running') {
+        if (result.kind === 'terminal' || !isActiveShellRunStatus(result.status)) {
           onCompletion?.({
             successful: result.status === 'completed' && result.exitCode === 0,
           });

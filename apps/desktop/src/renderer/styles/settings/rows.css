@@ -19,11 +19,12 @@
 /* PR-SETTINGS-GROUPED-CARD-0 (WAWQAQ msg `1abecd66`): grouped card —
    outer card + hairline dividers, no per-row chrome. The ONLY card
    primitive on settings pages (see .settingsStructuredPage note in
-   nav-sidebar.css). */
+   nav-sidebar.css). #1565 PR 3: the card face (background, border, radius)
+   is owned by the Astryx Card that settings-rows.tsx renders; this class
+   keeps only the row grid, the container query, and the overflow clip. */
 .settingsRows {
   display: grid;
   gap: 0;
-  border: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.08);
   overflow: hidden;
   /* #1362: the card is the query container for the row-stacking rules at the
      bottom of this file. Rows respond to the width the card actually has —
@@ -280,10 +281,6 @@
   justify-self: end;
 }
 
-.settingsRow[data-control-width="select"] > .settingsSelectTrigger {
-  justify-self: end;
-}
-
 /* === fields and grids =================================================== */
 
 .settingsFormGrid {
@@ -362,8 +359,7 @@
    the description column has space to breathe.
    PR-SETTINGS-INPUT-POLISH-0: cap from 280 → 320 since rows are now
    roomier (24px L/R padding). */
-.settingsField[data-orient="horizontal"] > input,
-.settingsField[data-orient="horizontal"] > .settingsSelectTrigger {
+.settingsField[data-orient="horizontal"] > input {
   max-width: 320px;
 }
 /* The horizontal row above the first one shouldn't carry a top border;
@@ -462,8 +458,7 @@
   }
 
   .settingsRow[data-control-width="compact"] > input,
-  .settingsRow[data-control-width="compact"] > .settingsTimeInput,
-  .settingsRow[data-control-width="select"] > .settingsSelectTrigger {
+  .settingsRow[data-control-width="compact"] > .settingsTimeInput {
     justify-self: start;
   }
 
@@ -488,7 +483,7 @@
      card an action button wider than the row would bleed past the card
      edge. Let it shrink and let the label wrap, keeping the primitive's
      32px as a floor. */
-  .settingsActionRow > [data-slot="button"] {
+  .settingsActionRow > .astryx-button {
     flex-shrink: 1;
     height: auto;
     min-height: 2rem;

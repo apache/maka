@@ -17,6 +17,8 @@ import type { AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-
 import {
   createSqliteSessionMetadataStore,
   SessionMetadataConflictError,
+  SessionMetadataVersionConflictError,
+  SQLITE_SESSION_METADATA_SCHEMA_VERSION,
   type SqliteSessionMetadataStoreFailpoint,
 } from '../sqlite-session-metadata-store.js';
 import {
@@ -31,7 +33,7 @@ describe('SqliteSessionMetadataStore', () => {
     try {
       const store = createSqliteSessionMetadataStore(path, { now: () => 100 });
       const header = fullHeader();
-      assert.equal(store.schemaVersion(), 14);
+      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.equal(store.journalMode(), 'wal');
       assert.deepEqual(await store.create(header), {
         header,
@@ -42,7 +44,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const reopened = createSqliteSessionMetadataStore(path, { now: () => 200 });
       try {
-        assert.equal(reopened.schemaVersion(), 14);
+        assert.equal(reopened.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.deepEqual(await reopened.read(header.id), {
           header,
           metadataVersion: 1,
@@ -76,7 +78,7 @@ describe('SqliteSessionMetadataStore', () => {
     const metadata = createSqliteSessionMetadataStore(path);
     try {
       assert.equal(runtime.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
-      assert.equal(metadata.schemaVersion(), 14);
+      assert.equal(metadata.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       await metadata.create(fullHeader());
       await runtime.appendRuntimeEvent('session-1', 'run-1', {
         id: 'event-1',
@@ -111,6 +113,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v12 = new DatabaseSync(path);
       v12.exec(`
+        DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         UPDATE session_metadata_schema
         SET version = 12
@@ -883,6 +886,7 @@ describe('SqliteSessionMetadataStore', () => {
       // Rewind to the pre-provenance shape a shipped database would have.
       const v13 = new DatabaseSync(path);
       v13.exec(`
+        DROP TABLE session_create_claims;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
         ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
         DROP INDEX sandbox_boundary_log_settled_closures;
@@ -1007,6 +1011,15 @@ describe('SqliteSessionMetadataStore', () => {
         metadata_version INTEGER NOT NULL,
         committed_at INTEGER NOT NULL
       );
+      CREATE TABLE session_metadata_labels (
+        session_id TEXT NOT NULL,
+        label_index INTEGER NOT NULL,
+        label TEXT NOT NULL,
+        PRIMARY KEY(session_id, label_index),
+        FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+      );
+      CREATE INDEX session_metadata_labels_by_label
+        ON session_metadata_labels(label, session_id);
     `);
     db.prepare(`
       INSERT INTO session_metadata(
@@ -1040,7 +1053,7 @@ describe('SqliteSessionMetadataStore', () => {
 
     const store = createSqliteSessionMetadataStore(path);
     try {
-      assert.equal(store.schemaVersion(), 14);
+      assert.equal(store.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
       assert.deepEqual(
         (
           await store.list({
@@ -1373,6 +1386,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v4 = new DatabaseSync(path);
       v4.exec(`
+        DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         DROP TABLE agent_graph_supervisor_wake_attempts;
         DROP TABLE agent_graph_supervisor_wakes;
@@ -1403,7 +1417,7 @@ describe('SqliteSessionMetadataStore', () => {
 
       const migrated = createSqliteSessionMetadataStore(path);
       try {
-        assert.equal(migrated.schemaVersion(), 14);
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
         assert.equal(await migrated.remove(child.id), true);
         await assert.rejects(
           () => migrated.createSubagent({ ...child, id: 'retry-after-migration' }),
@@ -1446,6 +1460,207 @@ describe('SqliteSessionMetadataStore', () => {
         SessionMetadataConflictError,
       );
       assert.equal((await store.read('session-1')).header.name, 'Renamed');
+    } finally {
+      store.close();
+    }
+  });
+
+  test('keeps stable create claims across exact retries, removal, and reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-stable-session-create-'));
+    const path = join(root, 'sessions.sqlite');
+    const requestFingerprint = `sha256:${'a'.repeat(64)}`;
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: nextNow(10) });
+      const header = fullHeader({ id: 'stable-session' });
+      try {
+        const created = await store.createStableSession(header, requestFingerprint);
+        assert.equal(created.kind, 'created');
+        assert.equal(created.record.metadataVersion, 1);
+
+        const retry = await store.createStableSession(
+          fullHeader({ id: 'stable-session', name: 'Changed default' }),
+          requestFingerprint,
+        );
+        assert.equal(retry.kind, 'existing');
+        assert.equal(retry.record.header.name, 'Session');
+        assert.deepEqual(
+          await store.probeStableSessionCreate('stable-session', `sha256:${'b'.repeat(64)}`),
+          { kind: 'conflict', reason: 'identity_mismatch' },
+        );
+        assert.equal(await store.remove('stable-session'), true);
+      } finally {
+        store.close();
+      }
+
+      const reopened = createSqliteSessionMetadataStore(path);
+      try {
+        assert.deepEqual(
+          await reopened.probeStableSessionCreate('stable-session', requestFingerprint),
+          { kind: 'conflict', reason: 'removed' },
+        );
+        assert.deepEqual(
+          await reopened.createStableSession(
+            fullHeader({ id: 'stable-session' }),
+            requestFingerprint,
+          ),
+          { kind: 'conflict', reason: 'removed' },
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('reserves stable create identity before metadata commit and across reopen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-stable-session-create-claim-'));
+    const path = join(root, 'sessions.sqlite');
+    const requestFingerprint = `sha256:${'c'.repeat(64)}`;
+    try {
+      const store = createSqliteSessionMetadataStore(path, { now: () => 10 });
+      try {
+        assert.deepEqual(
+          await store.claimStableSessionCreate('stable-session', requestFingerprint),
+          { kind: 'absent' },
+        );
+      } finally {
+        store.close();
+      }
+
+      const reopened = createSqliteSessionMetadataStore(path, { now: () => 20 });
+      try {
+        assert.deepEqual(
+          await reopened.probeStableSessionCreate('stable-session', requestFingerprint),
+          { kind: 'absent' },
+        );
+        assert.deepEqual(
+          await reopened.probeStableSessionCreate('stable-session', `sha256:${'d'.repeat(64)}`),
+          { kind: 'conflict', reason: 'identity_mismatch' },
+        );
+        const created = await reopened.createStableSession(
+          fullHeader({ id: 'stable-session' }),
+          requestFingerprint,
+        );
+        assert.equal(created.kind, 'created');
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('commits configuration and sandbox boundary as one compare-and-set transaction', async () => {
+    let armed = false;
+    const store = createSqliteSessionMetadataStore(':memory:', {
+      now: nextNow(20),
+      failpoint: (point) => {
+        if (armed && point === 'after_sandbox_boundary_write') {
+          throw new Error('boundary failpoint');
+        }
+      },
+    });
+    const configuration = {
+      expectedVersion: 1,
+      configuration: {
+        backend: 'ai-sdk' as const,
+        llmConnectionSlug: 'openrouter',
+        connectionLocked: true,
+        model: 'openrouter/free',
+        thinkingLevel: undefined,
+        permissionMode: 'bypass' as const,
+        collaborationMode: 'plan' as const,
+        orchestrationMode: 'graph' as const,
+        labels: ['configured'],
+      },
+      lifecycle: { kind: 'preserve' as const },
+    };
+    try {
+      await store.create(
+        fullHeader({
+          id: 'configured-session',
+          status: 'active',
+          blockedReason: undefined,
+          parentSessionId: undefined,
+          permissionMode: 'ask',
+        }),
+      );
+
+      armed = true;
+      await assert.rejects(
+        store.updateSessionConfiguration('configured-session', configuration),
+        /boundary failpoint/,
+      );
+      armed = false;
+      assert.equal((await store.read('configured-session')).header.permissionMode, 'ask');
+      assert.deepEqual(await store.readExecutionBoundary('configured-session'), {
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      });
+
+      const updated = await store.updateSessionConfiguration('configured-session', configuration);
+      assert.equal(updated.metadataVersion, 2);
+      assert.equal(updated.header.model, 'openrouter/free');
+      assert.equal(updated.header.collaborationMode, 'plan');
+      assert.equal(updated.header.orchestrationMode, 'graph');
+      assert.deepEqual(updated.header.labels, ['configured']);
+      assert.deepEqual(await store.readExecutionBoundary('configured-session'), {
+        kind: 'bypass',
+        revision: 1,
+      });
+      await assert.rejects(
+        store.updateSessionConfiguration('configured-session', configuration),
+        (error: unknown) => {
+          assert.ok(error instanceof SessionMetadataVersionConflictError);
+          assert.equal(error.expectedVersion, 1);
+          assert.equal(error.actualVersion, 2);
+          return true;
+        },
+      );
+      await assert.rejects(
+        store.updateSessionConfiguration('configured-session', {
+          ...configuration,
+          expectedVersion: 2,
+          lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: 30 },
+        }),
+        /no longer has a connection block/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('clears only the explicit connection-block lifecycle transition', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: () => 40 });
+    try {
+      await store.create(
+        fullHeader({
+          id: 'connection-blocked-session',
+          status: 'blocked',
+          blockedReason: 'NO_REAL_CONNECTION',
+          statusUpdatedAt: 10,
+        }),
+      );
+      const updated = await store.updateSessionConfiguration('connection-blocked-session', {
+        expectedVersion: 1,
+        configuration: {
+          backend: 'ai-sdk',
+          llmConnectionSlug: 'openrouter',
+          connectionLocked: true,
+          model: 'openrouter/free',
+          thinkingLevel: undefined,
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          labels: [],
+        },
+        lifecycle: { kind: 'clear_connection_block', statusUpdatedAt: 30 },
+      });
+      assert.equal(updated.header.status, 'active');
+      assert.equal(updated.header.blockedReason, undefined);
+      assert.equal(updated.header.statusUpdatedAt, 30);
     } finally {
       store.close();
     }

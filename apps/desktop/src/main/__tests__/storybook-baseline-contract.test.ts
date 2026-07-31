@@ -87,7 +87,12 @@ describe('Storybook baseline contract', () => {
 
     assert.match(preview, /context\.title\.startsWith\(['"]Product\/['"]\)/);
     assert.match(preview, /if\s*\([^)]*Product/);
-    assert.match(preview, /return\s+<LocaleProvider[^>]*><Story\s*\/><\/LocaleProvider>/);
+    // Stories render inside the same Astryx mount as app.tsx — <Theme>
+    // outermost, AstryxLocaleProvider inside LocaleProvider. Those are
+    // providers, not review geometry: Product stories keep <Story /> inside
+    // providers without adding a geometry-bearing wrapper.
+    assert.match(preview, /<Theme\s+theme=\{makaTheme\}\s+mode=\{colorScheme\}/);
+    assert.match(preview, /<AstryxLocaleProvider>\s*<Story\s*\/>\s*<\/AstryxLocaleProvider>/);
     assert.match(preview, /p-6/, 'non-Product stories must retain explicit review padding');
   });
 
@@ -197,8 +202,8 @@ describe('Storybook baseline contract', () => {
     const allStorySrc = storyFiles.map((f) => readFileSync(join(storiesDir, f), 'utf8')).join('\n');
 
     const curatedPrimitives = [
-      'Button', 'Badge', 'Input', 'Textarea', 'Separator',
-      'DialogRoot', 'TabsRoot', 'SelectRoot', 'Label', 'Switch', 'Toggle', 'ToggleGroup',
+      'Button', 'Badge', 'Input', 'Textarea', 'Divider',
+      'DialogRoot', 'TabsRoot', 'SettingsSelect', 'Label', 'Switch', 'Toggle', 'ToggleGroup',
       'RadioGroup', 'Radio', 'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
       'Menu', 'Accordion', 'Toolbar', 'ToastProvider',
     ];

@@ -14,6 +14,7 @@ import {
   DataTable,
   type DataTableColumn,
   EmptyState,
+  IconButton,
   Input,
   Segmented,
   SettingsSelect,
@@ -131,19 +132,17 @@ export function UsageSettingsPage(props: {
             page refresh (one action, one shape everywhere); pinned to the
             row's trailing edge so the time cluster reads as a single
             left-aligned group. */}
-        <Button
-          type="button"
-          variant="quiet"
-          size="icon-sm"
-          disabled={refreshing}
+        <IconButton
+          variant="ghost"
+          size="sm"
+          isDisabled={refreshing}
           aria-busy={refreshing}
           data-pending={refreshing ? 'true' : undefined}
-          aria-label={refreshing ? copy.refreshingAria : copy.refreshAria}
-          title={refreshing ? copy.refreshingAria : copy.refreshAria}
+          label={refreshing ? copy.refreshingAria : copy.refreshAria}
+          tooltip={refreshing ? copy.refreshingAria : copy.refreshAria}
           onClick={() => void refresh()}
-        >
-          <RefreshCcw size={15} aria-hidden="true" />
-        </Button>
+          icon={<RefreshCcw size={15} aria-hidden="true" />}
+        />
       </div>
 
       <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
@@ -237,9 +236,7 @@ function UsageRequestsPanel(props: {
       <Alert variant="info">
         <AlertDescription>{props.copy.summaryOnly}</AlertDescription>
         <AlertAction>
-          <Button type="button" variant="secondary" size="sm" onClick={props.onEnableDetails}>
-            {props.copy.showDetails}
-          </Button>
+          <Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />
         </AlertAction>
       </Alert>
     );
@@ -269,16 +266,14 @@ function UsageRequestsPanel(props: {
         <small className="settingsUsageRecordCount">{props.copy.recordCount(props.recordCount)}</small>
         <Button
           className="settingsUsageClearFilter"
-          type="button"
           variant="ghost"
           size="sm"
-          disabled={!props.hasRequestFilters}
+          isDisabled={!props.hasRequestFilters}
           aria-hidden={!props.hasRequestFilters ? 'true' : undefined}
           tabIndex={!props.hasRequestFilters ? -1 : undefined}
           onClick={props.hasRequestFilters ? props.onClearFilters : undefined}
-        >
-          {props.copy.clearFilters}
-        </Button>
+          label={props.copy.clearFilters}
+        />
       </div>
       <UsageStatsTable
         ariaLabel={props.copy.tables.requestsAria}
@@ -390,9 +385,7 @@ function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSet
   const label = shortUsageSessionId(row.sessionId);
   if (!onOpenSession) return label;
   return (
-    <Button type="button" variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)}>
-      {copy.tables.openSession(label)}
-    </Button>
+    <Button variant="ghost" size="sm" onClick={() => onOpenSession(row.sessionId)} label={copy.tables.openSession(label)} />
   );
 }
 

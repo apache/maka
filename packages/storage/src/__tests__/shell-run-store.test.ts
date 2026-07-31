@@ -61,6 +61,66 @@ describe('ShellRunStore', () => {
     });
   });
 
+  it('preserves forward-only starting, running, and terminal lifecycle transitions', async () => {
+    await withStore(async (store) => {
+      await store.createShellRun(record({ shellRunId: 'shell-1', status: 'starting' }));
+      const running = await store.updateShellRun('session-1', 'shell-1', {
+        status: 'running',
+        updatedAt: 2,
+      });
+      const completed = await store.updateShellRun('session-1', 'shell-1', {
+        status: 'completed',
+        exitCode: 0,
+        completedAt: 3,
+        updatedAt: 3,
+      });
+
+      assert.equal(running.revision, 2);
+      assert.equal(completed.revision, 3);
+      await assert.rejects(
+        () =>
+          store.updateShellRun('session-1', 'shell-1', {
+            status: 'running',
+            completedAt: undefined,
+            exitCode: undefined,
+            updatedAt: 4,
+          }),
+        /Invalid ShellRun status transition: completed -> running/,
+      );
+    });
+  });
+
+  it('terminalizes failed or lost starts and keeps terminal outcomes immutable', async () => {
+    await withStore(async (store) => {
+      await store.createShellRun(record({ shellRunId: 'failed-launch', status: 'starting' }));
+      const failed = await store.updateShellRun('session-1', 'failed-launch', {
+        status: 'failed',
+        failureMessage: 'spawn failed',
+        completedAt: 2,
+        updatedAt: 2,
+      });
+      assert.equal(failed.status, 'failed');
+
+      await store.createShellRun(record({ shellRunId: 'lost-launch', status: 'starting' }));
+      const orphaned = await store.updateShellRun('session-1', 'lost-launch', {
+        status: 'orphaned',
+        failureMessage: 'host restarted before launch outcome was known',
+        completedAt: 2,
+        updatedAt: 2,
+      });
+      assert.equal(orphaned.status, 'orphaned');
+
+      await assert.rejects(
+        () =>
+          store.updateShellRun('session-1', 'failed-launch', {
+            failureMessage: 'different failure',
+            updatedAt: 3,
+          }),
+        /ShellRun terminal outcome is immutable: failed/,
+      );
+    });
+  });
+
   it('round-trips sandbox execution and one-shot escalation audit facts', async () => {
     await withStore(async (store) => {
       const created = await store.createShellRun({

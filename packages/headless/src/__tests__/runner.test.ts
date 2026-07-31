@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -15,7 +15,7 @@ import {
 import type { BackendKind, SessionEvent, SessionHeader } from '@maka/core';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
-import { createSessionStore } from '@maka/storage';
+import { createSessionStore, openRuntimeEventReadPersistence } from '@maka/storage';
 import type { Config, Task } from '../contracts.js';
 import type { HeadlessBackendContext } from '../isolation.js';
 import { runExperiment } from '../runner.js';
@@ -203,18 +203,6 @@ const piConfig: Config = {
   model: 'pi-test',
 };
 
-async function fileExistsRecursive(root: string, name: string): Promise<boolean> {
-  for (const entry of await readdir(root, { withFileTypes: true })) {
-    const full = join(root, entry.name);
-    if (entry.isDirectory()) {
-      if (await fileExistsRecursive(full, name)) return true;
-    } else if (entry.name === name) {
-      return true;
-    }
-  }
-  return false;
-}
-
 async function withDirs<T>(
   fn: (fixtureDir: string, storageRoot: string) => Promise<T>,
 ): Promise<T> {
@@ -254,11 +242,24 @@ describe('runExperiment (walking skeleton)', () => {
       assert.equal(result.agentSwarmAuthorization, 'none');
       // The agent run produced a trajectory...
       assert.ok(result.steps > 0, 'expected a non-empty trajectory');
-      // ...persisted as the canonical runtime-events.jsonl.
-      assert.ok(
-        await fileExistsRecursive(storageRoot, 'runtime-events.jsonl'),
-        'expected runtime-events.jsonl under the storage root',
-      );
+      // ...persisted in the canonical SQLite RuntimeEvent ledger.
+      const runtimePersistence = await openRuntimeEventReadPersistence({
+        workspaceRoot: storageRoot,
+      });
+      try {
+        assert.equal(runtimePersistence.kind, 'sqlite');
+        assert.ok(
+          (
+            await runtimePersistence.runtimeEventStore.readRuntimeEvents(
+              result.sessionId,
+              result.runId,
+            )
+          ).length > 0,
+          'expected RuntimeEvents in runtime.sqlite',
+        );
+      } finally {
+        runtimePersistence.close();
+      }
     });
   });
 

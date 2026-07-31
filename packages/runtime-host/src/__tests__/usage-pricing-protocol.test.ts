@@ -33,6 +33,7 @@ import {
 } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'usage-pricing-protocol-test',
@@ -189,9 +190,9 @@ describe('Usage/Pricing protocol', () => {
       usageResponse({
         kind: 'logs',
         source: 'llm',
-        rows: [validLog()],
+        rows: [validLog(), { ...validLog(1), callKind: 'history_compact' }],
         offset: 0,
-        total: 1,
+        total: 2,
         nextOffset: null,
       }),
     );
@@ -264,6 +265,14 @@ describe('Usage/Pricing protocol', () => {
       },
       {
         kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), callKind: 'unknown' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+      },
+      {
+        kind: 'logs',
         source: 'tool',
         rows: [{ ...validToolLog(), source: 'llm' }],
         offset: 0,
@@ -306,7 +315,11 @@ describe('Usage/Pricing protocol', () => {
           stores.telemetry.recordToolInvocation(longToolRecord(identity, index + 11)),
         ]),
       );
-      const coordinator = new HostUsagePricingCoordinator(stores, () => {});
+      const coordinator = new HostUsagePricingCoordinator(
+        stores,
+        () => {},
+        new RuntimePolicyActivationGate(),
+      );
 
       const llmRows = await queryUsageRows(coordinator, 'llm');
       const toolRows = await queryUsageRows(coordinator, 'tool');

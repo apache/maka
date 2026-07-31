@@ -418,6 +418,10 @@ type ShellCopy = {
     updateOpenManualFallback: string;
     loading: string;
     goToModels: string;
+    boundaryUnreadableTitle: string;
+    boundaryUnreadableDetail: string;
+    boundaryUnreadableRetry: string;
+    boundaryUnreadableRetrying: string;
     permissionModeChanging: string;
     permissionModeStreaming: string;
     permissionModeRunning: string;
@@ -1109,6 +1113,10 @@ const SHELL_COPY_BY_LOCALE = {
       updateOpenManualFallback: '请稍后重试，或前往 GitHub Releases 下载最新版本。',
       loading: '加载中',
       goToModels: '去模型',
+      boundaryUnreadableTitle: '暂时读不到这个对话的权限',
+      boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的对话。',
+      boundaryUnreadableRetry: '重试',
+      boundaryUnreadableRetrying: '重试中…',
       permissionModeChanging: '权限模式正在切换，完成后再继续操作。',
       permissionModeStreaming: '当前对话正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前对话正在运行，等结束后再切换权限模式。',
@@ -1629,6 +1637,11 @@ const SHELL_COPY_BY_LOCALE = {
       updateOpenManualFallback: 'Try again later, or download the latest version from GitHub Releases.',
       loading: 'Loading',
       goToModels: 'Go to Models',
+      boundaryUnreadableTitle: 'Could not read this conversation’s permissions',
+      boundaryUnreadableDetail:
+        'Until they can be read, you cannot type here. Try again, or switch to another conversation.',
+      boundaryUnreadableRetry: 'Try again',
+      boundaryUnreadableRetrying: 'Trying again…',
       permissionModeChanging: 'The permission mode is changing. Wait for it to finish before continuing.',
       permissionModeStreaming:
         'This conversation is streaming. Wait for it to finish before changing the permission mode.',

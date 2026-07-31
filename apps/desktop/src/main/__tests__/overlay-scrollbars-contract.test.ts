@@ -77,7 +77,7 @@ describe('OverlayScrollbars integration contract', () => {
     const styles = await readRendererContractCss();
     const tokens = await repoFile('apps/desktop/src/renderer/maka-tokens.css');
 
-    assert.match(styles, /@import "overlayscrollbars\/overlayscrollbars\.css";/, 'renderer CSS must load OverlayScrollbars vendor styles');
+    assert.match(styles, /@import "overlayscrollbars\/overlayscrollbars\.css" layer\(maka\.legacy\);/, 'renderer CSS must load OverlayScrollbars vendor styles');
     assert.match(styles, /\.os-theme-maka\s*\{[\s\S]*--os-size:\s*8px/, 'Maka theme must define compact 8px overlay scrollbars');
     assert.match(styles, /\.os-theme-maka\s*\{[\s\S]*--os-handle-bg:\s*var\(--border\)/, 'Maka theme must bind the handle to existing design tokens');
     assert.match(tokens, /Native fallback[\s\S]*OverlayScrollbars/, 'native scrollbar rules must be documented as fallback, not the primary app scroller');

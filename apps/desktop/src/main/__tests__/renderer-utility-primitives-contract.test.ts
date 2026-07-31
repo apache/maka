@@ -11,8 +11,15 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/browser-panel.tsx'), 'utf8');
 
     assert.match(source, /import \{ normalizeBrowserAddressInput, type BrowserState \} from '@maka\/core';/);
-    assert.match(source, /import \{[^}]*\bButton\b[^}]*\bInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
-    assert.doesNotMatch(source, /<button\b/, 'BrowserPanel nav controls must use shared Button');
+    // #1565 PR 3: nav controls are Base UI Tooltip trigger render-props on the
+    // intentionally retained legacy buttonVariants seam; the address bar stays
+    // on the shared Input primitive.
+    assert.match(source, /import \{[^}]*\bbuttonVariants\b[^}]*\bInput\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
+    assert.equal(
+      (source.match(/<button\b/g) ?? []).length,
+      (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
+      'BrowserPanel raw <button> may appear only as the legacy buttonVariants render-prop seam (#1565 PR 3)',
+    );
     assert.doesNotMatch(source, /<input\b/, 'BrowserPanel address bar must use shared Input');
     assert.doesNotMatch(source, /const full = \/\^\[a-z\]\+/, 'BrowserPanel must not keep renderer-only address prefix regex');
     assert.match(
@@ -98,7 +105,13 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     assert.match(source, /import \{[^}]*\bButton\b[^}]*\bToolbar\b[^}]*\bToolbarGroup\b[^}]*\bToolbarSeparator\b[^}]*\buseToast\b[^}]*\} from '@maka\/ui';/);
     assert.match(source, /import \{ Button as BaseButton \} from '@base-ui\/react\/button';/);
-    assert.doesNotMatch(source, /<button\b/, 'ArtifactPane controls must use shared Button or the semantic Base UI row seam');
+    // #1565 PR 3: the destructive delete action is a Tooltip trigger
+    // render-prop on the intentionally retained legacy buttonVariants seam.
+    assert.equal(
+      (source.match(/<button\b/g) ?? []).length,
+      (source.match(/render=\{<button type="button" className=\{cn\(buttonVariants\(/g) ?? []).length,
+      'ArtifactPane controls must use shared Button, the semantic Base UI row seam, or the legacy buttonVariants render-prop seam (#1565 PR 3)',
+    );
     assert.doesNotMatch(source, /role="toolbar"/, 'ArtifactPane toolbar semantics must come from shared primitive Toolbar');
     assert.match(source, /<Toolbar className="maka-artifact-toolbar" aria-label=\{copy\.pane\.actionsAria\}>/);
     assert.match(source, /<ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" \/>/);
@@ -123,7 +136,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(source, /<InputGroupAddon align="inline-end"/, 'Palette input must not duplicate footer shortcuts inline');
     assert.match(
       source,
-      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?aria-label=\{copy\.closeLabel\}/,
+      /<div className="maka-palette-header">[\s\S]*?<InputGroup[\s\S]*?<\/InputGroup>[\s\S]*?<IconButton[\s\S]*?label=\{copy\.closeLabel\}/,
       'Palette header must place the close action after the search InputGroup',
     );
     assert.match(source, /<Autocomplete.Item[\s\S]*className="maka-palette-item"/, 'Command palette rows must be Autocomplete.Item (#520 PR8)');
@@ -163,7 +176,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(source, /<kbd\b/, 'KeyboardHelpModal shortcut glyphs must use shared primitive Kbd');
     assert.match(
       source,
-      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*titleId="maka-help-title"[\s\S]*onClose=\{props\.onClose\}/,
+      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=\{props\.onClose\}/,
       'KeyboardHelpModal must render the shared DialogHeader with 键盘快捷键 as THE title',
     );
     // The redundant second title and eyebrow are gone.
@@ -179,12 +192,9 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     // close button) instead of an ad-hoc header. The command palette is
     // intentionally headerless (its input row IS the header) and is excluded.
     const header = await readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8');
-    // The shared close button is the SAME form everywhere: quiet icon-sm
-    // Button + X, aria-label defaults to 关闭, no border box.
-    assert.match(header, /variant="quiet"/, 'DialogHeader close must be the quiet Button variant');
-    assert.match(header, /size="icon-sm"/, 'DialogHeader close must be icon-sm');
-    assert.match(header, /aria-label=\{closeLabel \?\? copy\.shared\.close\}/, 'DialogHeader close aria-label follows the resolved UI locale');
-    assert.match(header, /<X aria-hidden="true" \/>/, 'DialogHeader close renders the X icon');
+    assert.match(header, /DialogHeader as AstryxDialogHeader/);
+    assert.match(header, /<AstryxDialogHeader/);
+    assert.doesNotMatch(header, /<Button|<button|<X\b/, 'Astryx must own the header close affordance');
     assert.match(header, /export function DialogHeader/, 'DialogHeader must be exported');
 
     // Both titled modals import + render the shared DialogHeader.
@@ -194,22 +204,23 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     const searchModal = await readFile(join(repoRoot, 'packages/ui/src/search-modal.tsx'), 'utf8');
     assert.match(searchModal, /import \{ DialogHeader \} from '\.\/primitives\/dialog-header\.js';/);
-    assert.match(searchModal, /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*titleId="maka-search-modal-title"/);
+    assert.match(searchModal, /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=/);
     // The old ad-hoc header language is gone.
     assert.doesNotMatch(searchModal, /maka-search-modal-header/, 'Search modal must drop the ad-hoc header class');
     assert.doesNotMatch(searchModal, /maka-search-modal-close/, 'Search modal must drop the ad-hoc close class');
   });
 
-  it('keeps toast actions and confirm dialog buttons on shared Button without legacy classes', async () => {
+  it('keeps toast actions and confirm dialog buttons on Astryx authorities without legacy classes', async () => {
     const source = await readFile(join(repoRoot, 'packages/ui/src/toast.tsx'), 'utf8');
 
-    assert.match(source, /import \{[^}]*\bButton\b[^}]*\} from '.\/ui\.js';/);
+    assert.match(source, /Button as AstryxButton[\s\S]*from '@astryxdesign\/core\/Button'/);
+    assert.match(source, /AlertDialog as AstryxAlertDialog[\s\S]*from '@astryxdesign\/core\/AlertDialog'/);
     assert.doesNotMatch(source, /<button\b/, 'ToastProvider controls must use shared Button');
     assert.doesNotMatch(source, /className="maka-button/, 'Confirm dialog actions must not keep legacy maka-button styling');
-    assert.match(source, /render=\{<Button type="button" variant="secondary" size="sm" \/>\}/);
-    assert.match(source, /render=\{<Button type="button" variant="quiet" size="icon-sm" \/>\}/);
+    assert.match(source, /<AstryxButton[\s\S]*variant="ghost"[\s\S]*label=\{input\.action\.label\}/);
+    assert.match(source, /<AstryxAlertDialog/);
     assert.doesNotMatch(source, /className="maka-toast-(?:action|close)"/);
-    assert.match(source, /<Button[\s\S]*variant=\{destructive \? 'destructive' : 'default'\}/);
+    assert.match(source, /actionVariant=\{destructive \? 'destructive' : 'primary'\}/);
   });
 
   it('keeps shared primitive default labels locale-aware', async () => {
@@ -231,9 +242,10 @@ describe('renderer utility surfaces use shared UI primitives', () => {
   it('expresses clear-input-history semantics through the destructive Button variant', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/settings/data-settings-page.tsx'), 'utf8');
 
+    // #1565 PR 3: Astryx Button — no type="button" attribute on the destructive action.
     assert.match(
       source,
-      /<Button\s+type="button"\s+variant="destructive"\s+onClick=\{\(\) => void clearInputHistory\(\)\}/,
+      /<Button\s+variant="destructive"\s+onClick=\{\(\) => void clearInputHistory\(\)\}/,
     );
     assert.doesNotMatch(source, /className="[^"]*destructive[^"]*"/);
   });
@@ -267,8 +279,14 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.match(skillsCss, /\.maka-skill-library-open-button\s*\{\s*justify-self:\s*end;\s*\}/);
 
     const skills = consumers[3];
-    assert.match(skills, /variant="secondary"\s+size="icon-sm"\s+onClick=\{\(\) => props\.onInstallManagedSkill/);
-    assert.match(skills, /variant="secondary"\s+size="icon-sm"\s+className="maka-skill-library-open-button"/);
+    assert.match(
+      skills,
+      /<IconButton\s+variant="secondary"\s+size="sm"\s+onClick=\{\(\) => props\.onInstallManagedSkill/,
+    );
+    assert.match(
+      skills,
+      /<IconButton\s+variant="secondary"\s+size="sm"\s+className="maka-skill-library-open-button"/,
+    );
     assert.match(skills, /variant="secondary"\s+size="sm"\s+onClick=\{\(\) => void reviewManagedSkillUpdate/);
     assert.doesNotMatch(skills, /className="maka-skill-filter-pill"/);
     assert.doesNotMatch(skills, /className="maka-skill-market-install-button"/);
@@ -277,7 +295,8 @@ describe('renderer utility surfaces use shared UI primitives', () => {
 
     const artifactPane = consumers[5];
     assert.doesNotMatch(artifactPane, /className="[^"]*maka-artifact-toolbar-button/);
-    assert.match(artifactPane, /variant="destructive" size="icon-sm"/);
+    // #1565 PR 3: the delete action rides the legacy buttonVariants render-prop seam.
+    assert.match(artifactPane, /buttonVariants\(\{ variant: 'destructive', size: 'icon-sm' \}\)/);
     assert.doesNotMatch(rendererCss, /\.maka-artifact-toolbar-button\b/);
 
     const providers = consumers[6];
@@ -290,11 +309,12 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.match(wechat, /<BaseButton[\s\S]*className="settingsBotAdvancedToggle"/);
     assert.doesNotMatch(wechat, /<Button[\s\S]*className="settingsBotAdvancedToggle"/);
     assert.doesNotMatch(wechat, /className="settingsWechatQrSecondary"/);
-    assert.equal(wechat.match(/<Button type="button" variant="secondary" size="sm" disabled=\{loading\} onClick=\{reloadQrCode\}>/g)?.length, 3);
+    // #1565 PR 3: Astryx Button — isDisabled prop, label prop, no type="button".
+    assert.equal(wechat.match(/<Button variant="secondary" size="sm" isDisabled=\{loading\} onClick=\{reloadQrCode\}/g)?.length, 3);
     assert.doesNotMatch(rendererCss, /\.settingsWechatQrSecondary\b/);
 
     const providerDetail = await readFile(join(process.cwd(), 'src/renderer/settings/provider-connection-detail.tsx'), 'utf8');
-    assert.match(providerDetail, /<Button variant="secondary" type="button" disabled=\{detailActionBusy \|\| !hasUsableCredential\} onClick=\{runTest\}>/);
+    assert.match(providerDetail, /<Button variant="secondary" isDisabled=\{detailActionBusy \|\| !hasUsableCredential\} onClick=\{runTest\}/);
     assert.doesNotMatch(providerDetail, /<BaseButton|modelTableRow/);
   });
 
@@ -331,8 +351,14 @@ describe('renderer utility surfaces use shared UI primitives', () => {
       );
     }
 
-    assert.match(composer, /variant="quiet"\s+size="icon-sm"\s+shape="pill"[\s\S]*aria-label=\{pendingImportAction/);
-    assert.match(composer, /variant="default"\s+size="icon"\s+shape="pill"[\s\S]*aria-label=\{copy\.sendLabel\}/);
+    assert.match(
+      composer,
+      /button=\{\{[\s\S]*?pendingImportAction === 'pick'[\s\S]*?isIconOnly:\s*true,[\s\S]*?variant:\s*'ghost',[\s\S]*?size:\s*'sm'/,
+    );
+    assert.match(
+      composer,
+      /<IconButton\s+variant="primary"[\s\S]*?label=\{copy\.sendLabel\}/,
+    );
     assert.match(plan, /variant="secondary"\s+size="sm"[\s\S]*onClick=\{\(\) => applyRunAtPreset/);
 
     assert.match(story, /import \{ SessionListPanel \} from '\.\.\/src\/session-list-panel\.js';/);

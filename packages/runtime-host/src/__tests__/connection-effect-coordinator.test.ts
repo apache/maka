@@ -162,7 +162,7 @@ test('provider discovery failure preserves the existing catalog and returns no s
       stores,
       activation: new RuntimePolicyActivationGate(),
       now: () => 123,
-      onCommittedMutation: async () => {
+      onCommittedMutation: () => {
         invalidations += 1;
       },
       createTransport: () =>

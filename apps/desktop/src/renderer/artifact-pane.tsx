@@ -49,6 +49,8 @@ import {
   AlertTitle,
   Badge,
   Button,
+  buttonVariants,
+  cn,
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -372,15 +374,13 @@ export function ArtifactPane(props: {
                 <Button
                   variant="secondary"
                   size="sm"
-                  type="button"
                   onClick={() => void retryArtifactListRefresh()}
-                  disabled={pendingArtifactListRetry}
+                  isDisabled={pendingArtifactListRetry}
                   aria-busy={pendingArtifactListRetry ? 'true' : undefined}
                   data-pending={pendingArtifactListRetry ? 'true' : undefined}
-                >
-                  <RefreshCcw size={13} aria-hidden="true" />
-                  <span>{pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}</span>
-                </Button>
+                  icon={<RefreshCcw size={13} aria-hidden="true" />}
+                  label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
+                />
               </AlertAction>
             </Alert>
           )}
@@ -421,9 +421,7 @@ export function ArtifactPane(props: {
                 </span>
                   </span>
                   {record.status === 'deleted' && (
-                <Badge variant="destructive" className="maka-artifact-row-badge">
-                  {copy.pane.deletedBadge}
-                </Badge>
+                <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
                   )}
                 </BaseButton>
               </li>
@@ -468,49 +466,44 @@ export function ArtifactPane(props: {
             <Toolbar className="maka-artifact-toolbar" aria-label={copy.pane.actionsAria}>
               <ToolbarGroup className="maka-artifact-toolbar-group">
                 <Button
-                  type="button"
                   variant="secondary"
                   size="sm"
                   onClick={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
-                  disabled={artifactActionBusy}
+                  isDisabled={artifactActionBusy}
                   data-pending={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
                   aria-busy={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
-                >
-                  <FolderOpen size={14} aria-hidden="true" />
-                  <span>{pendingArtifactAction === `${selected.id}:open` ? copy.pane.opening : copy.pane.openInFinder}</span>
-                </Button>
+                  icon={<FolderOpen size={14} aria-hidden="true" />}
+                  label={pendingArtifactAction === `${selected.id}:open` ? copy.pane.opening : copy.pane.openInFinder}
+                />
                 <Button
-                  type="button"
                   variant="secondary"
                   size="sm"
                   onClick={() => void runArtifactAction(`${selected.id}:save`, () => saveAs(selected.id))}
-                  disabled={artifactActionBusy}
+                  isDisabled={artifactActionBusy}
                   data-pending={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
                   aria-busy={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
-                >
-                  <Save size={14} aria-hidden="true" />
-                  <span>{pendingArtifactAction === `${selected.id}:save` ? copy.pane.saving : copy.pane.saveAs}</span>
-                </Button>
+                  icon={<Save size={14} aria-hidden="true" />}
+                  label={pendingArtifactAction === `${selected.id}:save` ? copy.pane.saving : copy.pane.saveAs}
+                />
                 {isTextKind(selected.kind) && (
                   <Button
-                    type="button"
                     variant="secondary"
                     size="sm"
                     onClick={() => void runArtifactAction(`${selected.id}:copy`, () => copyText(selected.id))}
-                    disabled={artifactActionBusy}
+                    isDisabled={artifactActionBusy}
                     data-pending={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
                     aria-busy={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
-                  >
-                    <Copy size={14} aria-hidden="true" />
-                    <span>{pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}</span>
-                  </Button>
+                    icon={<Copy size={14} aria-hidden="true" />}
+                    label={pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}
+                  />
                 )}
               </ToolbarGroup>
               <ToolbarSeparator className="maka-artifact-toolbar-separator" orientation="vertical" />
               <ToolbarGroup className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
                 <Tooltip>
+                  {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
                   <TooltipTrigger
-                    render={<Button type="button" variant="destructive" size="icon-sm" />}
+                    render={<button type="button" className={cn(buttonVariants({ variant: 'destructive', size: 'icon-sm' }))} />}
                     onClick={() => void runArtifactAction(`${selected.id}:delete`, () => deleteArtifact(selected.id))}
                     disabled={
                       artifactActionBusy || selected.source === 'deep_research' ||

@@ -384,6 +384,7 @@ function attemptFromEvent(
     !isNonNegativeInteger(data.step) ||
     !isPositiveInteger(data.attempt) ||
     !isNonNegativeInteger(data.requestBytes) ||
+    (data.contextWindow !== undefined && !isPositiveInteger(data.contextWindow)) ||
     !isNonNegativeFiniteNumber(data.startedAt) ||
     !isNonNegativeFiniteNumber(data.completedAt) ||
     !isAttemptStatus(data.status) ||
@@ -415,6 +416,7 @@ function attemptFromEvent(
   const cacheWriteInputTokens = data.cacheWriteInputTokens as number | undefined;
   const outputTokens = data.outputTokens as number | undefined;
   const reasoningTokens = data.reasoningTokens as number | undefined;
+  const contextWindow = data.contextWindow as number | undefined;
   const cacheReadInputSource = data.cacheReadInputSource as
     | ProviderRequestAttemptRecord['cacheReadInputSource']
     | undefined;
@@ -435,6 +437,7 @@ function attemptFromEvent(
       captureArtifactId: data.captureArtifactId as string,
       providerId: data.providerId as string,
       modelId: data.modelId as string,
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
       requestHash: data.requestHash as string,
       requestBytes: data.requestBytes,
       segments: segments as PreparedRequestSegment[],

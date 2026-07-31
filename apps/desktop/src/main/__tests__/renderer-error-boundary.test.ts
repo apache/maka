@@ -33,7 +33,7 @@ test('renderer error boundary exposes a redacted copyable diagnostic report', as
   assert.doesNotMatch(source, /await navigator\.clipboard\.writeText\(formatRendererErrorReport\(error, errorInfo\)\);\s*this\.setState\(\{ copyState: 'copied' \}\)/);
   assert.doesNotMatch(source, /\} catch \{\s*this\.setState\(\{ copyState: 'failed' \}\)/);
   assert.match(source, /copyPending\s*\? copy\.copyPending/);
-  assert.match(source, /disabled=\{copyPending\}/);
+  assert.match(source, /isDisabled=\{copyPending\}/); // #1565 PR 3: Astryx Button uses isDisabled
   assert.match(source, /aria-busy=\{copyPending \? 'true' : undefined\}/);
   assert.match(source, /data-copy-state=\{copyState\}/);
   // PR3 (#527) added a min-w utility to the copy button (text-swap width
@@ -41,8 +41,9 @@ test('renderer error boundary exposes a redacted copyable diagnostic report', as
   // class list instead of an exact className="…", same form as the negative
   // maka-button check below.
   assert.match(source, /variant="secondary"[\s\S]*className="[^"]*\bmaka-error-copy-action\b[^"]*"/);
-  assert.match(source, /<UiButton type="button" variant="secondary" onClick=\{this\.handleReset\}>/);
-  assert.match(source, /<UiButton[\s\S]*variant="default"[\s\S]*onClick=\{this\.handleReload\}/);
+  // #1565 PR 3: Astryx Button — label prop instead of children, primary instead of default.
+  assert.match(source, /<UiButton\s+variant="secondary"\s+onClick=\{this\.handleReset\}[\s\S]*?label=\{copy\.retry\}/);
+  assert.match(source, /<UiButton variant="primary" onClick=\{this\.handleReload\} label=\{copy\.reload\} \/>/);
   assert.doesNotMatch(source, /className="maka-button/);
   assert.doesNotMatch(source, /data-variant="primary"/);
   assert.match(source, /copy\.copyReport/);

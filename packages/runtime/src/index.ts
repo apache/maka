@@ -8,6 +8,8 @@
 export {
   SessionManager,
   BackendRegistry,
+  SessionConfigurationRevisionConflictError,
+  SessionConfigurationTransitionError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
@@ -17,6 +19,9 @@ export type {
   PlanSafeBoundaryContinuationInput,
   SessionManagerDeps,
   RuntimeContinuationLifecycleEvent,
+  SessionConfigurationStoreUpdate,
+  SessionConfigurationTransitionRequest,
+  SessionConfigurationTransitionErrorCode,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,
@@ -287,6 +292,13 @@ export { AiSdkBackend } from './ai-sdk-backend.js';
 export { isSupportedImagePath, validateImageBytes } from './image-file.js';
 export { findFirstChangedCacheableSegment } from './request-shape.js';
 export { createProviderRequestCaptureRecorder } from './provider-request-telemetry.js';
+export { readLatestContextDiagnostics } from './context-diagnostics.js';
+export type {
+  ContextDiagnostics,
+  ContextDiagnosticsCompaction,
+  ContextDiagnosticsSegment,
+  ContextDiagnosticsUnavailableReason,
+} from './context-diagnostics.js';
 export type {
   PreparedProviderRequestCapture,
   PreparedRequestSegment,
@@ -301,7 +313,11 @@ export type {
 } from './provider-request-telemetry.js';
 export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
-export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
+export type {
+  McpToolProvider,
+  McpToolInvocationContext,
+  BuildMcpToolsOptions,
+} from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
 export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
@@ -1046,10 +1062,15 @@ export type {
   ConnectionModelDiscoveryEffectOutcome,
   ConnectionTestEffectOutcome,
 } from './connection-effect-outcome.js';
-export { createConnectionEffectFetchTransport } from './network/scoped-fetch-transport.js';
+export {
+  createConnectionEffectFetchTransport,
+  createProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
 export type {
   ConnectionEffectFetchTransport,
   ConnectionEffectProxySnapshot,
+  ProxiedFetchProxy,
+  ProxiedFetchTransport,
 } from './network/scoped-fetch-transport.js';
 
 export { materializeSession, applyAppendedMessage, setToolStatus } from './materializer.js';
@@ -1493,6 +1514,7 @@ export {
   SKILLS_PROMPT_CONTEXT_RATIO,
   resolveSkillsPromptCharBudget,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   selectSkillsForContext,
   selectSkillScanForContext,
@@ -1501,7 +1523,9 @@ export {
   gateSkillsByHostCapabilities,
   // skills-agent-tools
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   SkillShadowSelectionTracker,
   SKILL_TOOL_NAME,
   SKILL_SEARCH_TOOL_NAME,
@@ -1596,5 +1620,6 @@ export type {
   LoadedSkillInstructions,
   LoadSkillInstructionsResult,
   // skills-agent-tools
+  SkillInventoryResolver,
   SkillToolOptions,
 } from './skills.js';

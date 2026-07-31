@@ -98,7 +98,7 @@ describe('deriveAppShellTurnViewModel interrupted recovery', () => {
       },
     ]);
 
-    assert.match(viewModel.turnFailedReasonLabels['turn-1'] ?? '', /沙箱边界请求已按拒绝关闭/);
+    assert.match(viewModel.turnFailedReasonLabels['turn-1'] ?? '', /「允许访问工作区以外的内容」请求已按拒绝关闭/);
     assert.match(viewModel.turnFailedRecoveryLabels['turn-1'] ?? '', /重试本轮/);
     // Answering is impossible after the restart, so this turn must not be
     // offered as a safe-resume candidate the way a plain restart is.

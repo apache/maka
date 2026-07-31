@@ -15,11 +15,15 @@ import {
   type CapabilitySnapshotCollection,
   type OsPermissionId,
   type OsPermissionSnapshot,
-  type OsPermissionState,
   type PermissionSnapshot,
 } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import type { computerUseServiceHealth } from './computer-use-host.js';
+import {
+  mapMediaAccessStatus,
+  mediaPermissionActions,
+  supportsMediaPermissionProbe,
+} from './os-permission-policy.js';
 
 const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'microphone', 'automation'];
 
@@ -310,18 +314,24 @@ function mediaPermissionSnapshot(
   now: number,
   platform: NodeJS.Platform,
 ): OsPermissionSnapshot {
-  if (platform !== 'darwin' && id === 'screen_recording') {
-    return unsupportedPermission(id, now, '仅 macOS TCC 权限适用');
+  if (!supportsMediaPermissionProbe(id, platform)) {
+    return unsupportedPermission(
+      id,
+      now,
+      id === 'screen_recording'
+        ? '屏幕录制权限状态仅能在 macOS 上读取'
+        : '当前平台无法读取麦克风系统权限状态',
+    );
   }
   try {
     const status = mapMediaAccessStatus(systemPreferences.getMediaAccessStatus(mediaType));
+    const actions = mediaPermissionActions({ id, platform, status });
     return {
       id,
       status,
       source: 'electron',
       checkedAt: now,
-      canOpenSettings: platform === 'darwin',
-      canRequest: id === 'microphone' && status === 'not_determined',
+      ...actions,
     };
   } catch (error) {
     return unknownPermission(id, now, generalizedReason(error), platform === 'darwin');
@@ -329,14 +339,22 @@ function mediaPermissionSnapshot(
 }
 
 function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
+  const supported = Notification.isSupported();
   return {
     id: 'notifications',
-    status: Notification.isSupported() ? 'unknown' : 'unsupported',
+    status: supported ? 'unknown' : 'unsupported',
     source: 'electron',
     checkedAt: now,
-    reason: Notification.isSupported() ? '主进程暂时无法读取通知授权状态' : 'Electron 通知能力不可用',
+    reason: supported
+      ? platform === 'darwin'
+        ? 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认'
+        : 'Electron 无法可靠读取当前系统的通知授权状态'
+      : 'Electron 通知能力不可用',
     canOpenSettings: platform === 'darwin',
-    canRequest: Notification.isSupported(),
+    // Showing a Notification is not an authorization API and does not report
+    // whether macOS delivered or suppressed it. Never present that probe as a
+    // successful permission request.
+    canRequest: false,
   };
 }
 
@@ -380,20 +398,6 @@ function unknownPermission(
     canOpenSettings,
     canRequest: false,
   };
-}
-
-function mapMediaAccessStatus(status: string): OsPermissionState {
-  switch (status) {
-    case 'granted':
-      return 'granted';
-    case 'denied':
-    case 'restricted':
-      return 'denied';
-    case 'not-determined':
-      return 'not_determined';
-    default:
-      return 'unknown';
-  }
 }
 
 function generalizedReason(error: unknown): string {

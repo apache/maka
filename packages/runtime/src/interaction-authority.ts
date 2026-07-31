@@ -402,13 +402,16 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   }
 
   private assertNewContinuation(request: UserQuestionRequestEvent): void {
-    if (this.closeReason !== undefined || this.publicationsSealed || this.released) {
-      const phase =
-        this.closeReason !== undefined
-          ? `Run ${this.runId} started closing`
-          : `Run ${this.runId} sealed Interaction publication`;
+    if (this.closeReason !== undefined) {
+      throw new RuntimeInteractionAdmissionRejectedError(
+        request.requestId,
+        'run_closed',
+        this.closeReason,
+      );
+    }
+    if (this.publicationsSealed || this.released) {
       throw new RuntimeInteractionInvariantError(
-        `Interaction request ${request.requestId} registered after ${phase}`,
+        `Interaction request ${request.requestId} registered after Run ${this.runId} sealed Interaction publication`,
       );
     }
     if (request.turnId !== this.turnId) {

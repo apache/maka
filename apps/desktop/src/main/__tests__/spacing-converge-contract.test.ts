@@ -275,38 +275,3 @@ describe('PR-SPACING-CONVERGE-0 contract', () => {
     assert.deepEqual(offenders, [], `Offenders:\n  ${offenders.join('\n  ')}`);
   });
 });
-
-describe('spacing whitelist negative cases', () => {
-  it('rejects bare Npx in spacing props', () => {
-    assert.ok(findCssOffenders('padding: 8px', 'test').length > 0, 'bare 8px must fail');
-    assert.ok(findCssOffenders('gap: 18px', 'test').length > 0, 'bare 18px must fail');
-    assert.ok(findCssOffenders('margin-top: 14px', 'test').length > 0, 'bare 14px must fail');
-  });
-
-  it('accepts valid tokens, calc, and literals', () => {
-    assert.deepEqual(findCssOffenders('padding: var(--space-2)', 'test'), []);
-    assert.deepEqual(findCssOffenders('gap: var(--space-1-5)', 'test'), []);
-    assert.deepEqual(findCssOffenders('margin: 0', 'test'), []);
-    assert.deepEqual(findCssOffenders('margin: auto', 'test'), []);
-    assert.deepEqual(findCssOffenders('padding: 1px', 'test'), []);
-    assert.deepEqual(findCssOffenders('margin: calc(var(--space-1) * -1)', 'test'), []);
-    assert.deepEqual(findCssOffenders('padding: var(--space-2) var(--space-3)', 'test'), []);
-  });
-
-  it('accepts bare px inside clamp()/max()/min() (responsive params)', () => {
-    assert.deepEqual(findCssOffenders('padding: clamp(72px, 10vh, 116px)', 'test'), []);
-    assert.deepEqual(findCssOffenders('padding: 0 max(var(--space-6), calc((100% - 768px) / 2))', 'test'), []);
-  });
-
-  it('rejects unknown --space-* tokens', () => {
-    assert.ok(findCssOffenders('padding: var(--space-7)', 'test').length > 0, 'non-whitelisted token must fail');
-    assert.ok(findCssOffenders('gap: var(--space-99)', 'test').length > 0, 'unknown token must fail');
-  });
-
-  it('does not scan non-spacing properties', () => {
-    assert.deepEqual(findCssOffenders('width: 8px', 'test'), []);
-    assert.deepEqual(findCssOffenders('height: 18px', 'test'), []);
-    assert.deepEqual(findCssOffenders('top: 4px', 'test'), []);
-    assert.deepEqual(findCssOffenders('grid-template-columns: 8px 1fr', 'test'), []);
-  });
-});

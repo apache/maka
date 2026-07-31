@@ -238,7 +238,7 @@
   grid-template-columns: auto auto minmax(0, 1fr) auto;
 }
 
-.maka-question-actions > [data-slot="button"]:last-child {
+.maka-question-actions > .astryx-button:last-child {
   grid-column: 4;
 }
 
@@ -283,11 +283,11 @@
     flex-direction: initial;
   }
 
-  .maka-question-actions > [data-slot="button"] {
+  .maka-question-actions > .astryx-button {
     width: 100%;
   }
 
-  .maka-question-actions > [data-slot="button"]:last-child {
+  .maka-question-actions > .astryx-button:last-child {
     grid-column: auto;
   }
 }

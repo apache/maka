@@ -2,6 +2,7 @@ import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
+  deriveConnectionSlug,
   providerAuthSupportsApiKey,
   type ConnectionLastTestStatus,
   type LlmConnection,
@@ -50,9 +51,8 @@ export type OnboardingSaveInput = Pick<
 export type OnboardingSaveResult = SaveApiKeyConnectionResult;
 
 /** Build the onboarding surface the TUI wizard calls, owning the connection and
- *  credential stores plus the model probe. Centralizes the `slug = providerType`
- *  policy so the first-run host (cli.ts) and the in-session host
- *  (runtime-bootstrap) share one write path. */
+ *  credential stores plus the model probe so the first-run host (cli.ts) and
+ *  the in-session host (runtime-bootstrap) share one write path. */
 export function createApiKeyOnboardingSurface(deps: {
   connectionStore: Pick<
     ConnectionStore,
@@ -128,7 +128,8 @@ export async function listOnboardingProviders(input: {
   const connections = await input.connectionStore.list();
   const bySlug = new Map(connections.map((connection) => [connection.slug, connection]));
   return listApiKeyOnboardableProviders().map((provider) => {
-    const existing = bySlug.get(provider.providerType);
+    const candidate = bySlug.get(deriveConnectionSlug(provider.providerType));
+    const existing = candidate?.providerType === provider.providerType ? candidate : undefined;
     return {
       ...provider,
       hasConnection: existing !== undefined,
@@ -167,7 +168,15 @@ export async function verifyApiKeyConnection(
   const def = PROVIDER_DEFAULTS[input.providerType];
   const requiresKey = def?.authKind === 'api_key';
   const suppliedKey = input.apiKey?.trim() ?? '';
-  const existing = await input.connectionStore.get(input.providerType);
+  const canonicalSlug = deriveConnectionSlug(input.providerType);
+  const candidate = await input.connectionStore.get(canonicalSlug);
+  if (candidate && candidate.providerType !== input.providerType) {
+    return {
+      kind: 'error',
+      text: `Connection slug "${canonicalSlug}" belongs to another provider`,
+    };
+  }
+  const existing = candidate;
   let connection: LlmConnection;
   let secret: string;
   if (existing) {
@@ -175,7 +184,7 @@ export async function verifyApiKeyConnection(
     if (suppliedKey) {
       secret = suppliedKey;
     } else {
-      const stored = (await input.credentialStore.getSecret(input.providerType, 'api_key')) ?? '';
+      const stored = (await input.credentialStore.getSecret(existing.slug, 'api_key')) ?? '';
       if (requiresKey && !stored) return { kind: 'error', text: 'API key is required' };
       secret = stored;
     }
@@ -198,7 +207,7 @@ function transientOnboardingConnection(providerType: ProviderType): LlmConnectio
   const def = PROVIDER_DEFAULTS[providerType];
   const now = Date.now();
   return {
-    slug: providerType,
+    slug: deriveConnectionSlug(providerType),
     name: def.label,
     providerType,
     ...(def.baseUrl ? { baseUrl: def.baseUrl } : {}),
@@ -251,11 +260,20 @@ export async function saveApiKeyConnection(
   }
   const def = PROVIDER_DEFAULTS[input.providerType];
   const suppliedKey = input.apiKey?.trim() ?? '';
-  const existing = await input.connectionStore.get(input.providerType);
+  const canonicalSlug = deriveConnectionSlug(input.providerType);
+  const candidate = await input.connectionStore.get(canonicalSlug);
+  if (candidate && candidate.providerType !== input.providerType) {
+    return {
+      kind: 'error',
+      text: `Connection slug "${canonicalSlug}" belongs to another provider`,
+    };
+  }
+  const existing = candidate;
   const normalizedDefault =
     existing && enabled.includes(existing.defaultModel) ? existing.defaultModel : enabled[0]!;
   const testAt = new Date().toISOString();
   const modelPatch = {
+    enabled: true,
     defaultModel: normalizedDefault,
     enabledModelIds: enabled,
     models: [...input.models],
@@ -264,58 +282,61 @@ export async function saveApiKeyConnection(
     lastTestStatus: 'verified' as ConnectionLastTestStatus,
     lastTestAt: testAt,
   };
+  let connectionSlug: string;
 
   if (existing) {
+    connectionSlug = existing.slug;
     // Rotate the key first (if supplied): a rotation failure leaves the existing
     // connection untouched (previous secret + previous curation stand). A failed
     // curation write rolls the rotation back so the connection keeps its previous
     // secret + curation — save stays atomic from the caller's view.
     if (suppliedKey) {
-      const previousSecret = await input.credentialStore.getSecret(input.providerType, 'api_key');
+      const previousSecret = await input.credentialStore.getSecret(connectionSlug, 'api_key');
       try {
-        await input.credentialStore.setSecret(input.providerType, 'api_key', suppliedKey);
+        await input.credentialStore.setSecret(connectionSlug, 'api_key', suppliedKey);
       } catch (error) {
         return { kind: 'error', text: error instanceof Error ? error.message : String(error) };
       }
       try {
-        await input.connectionStore.update(input.providerType, modelPatch);
+        await input.connectionStore.update(connectionSlug, modelPatch);
       } catch (error) {
         if (previousSecret !== null) {
-          await input.credentialStore.setSecret(input.providerType, 'api_key', previousSecret);
+          await input.credentialStore.setSecret(connectionSlug, 'api_key', previousSecret);
         } else {
-          await input.credentialStore.deleteSecret(input.providerType, 'api_key');
+          await input.credentialStore.deleteSecret(connectionSlug, 'api_key');
         }
         return { kind: 'error', text: error instanceof Error ? error.message : String(error) };
       }
     } else {
       try {
-        await input.connectionStore.update(input.providerType, modelPatch);
+        await input.connectionStore.update(connectionSlug, modelPatch);
       } catch (error) {
         return { kind: 'error', text: error instanceof Error ? error.message : String(error) };
       }
     }
   } else {
-    await input.connectionStore.create({
-      slug: input.providerType,
+    const created = await input.connectionStore.create({
+      slug: canonicalSlug,
       name: def.label,
       providerType: input.providerType,
       defaultModel: normalizedDefault,
     });
+    connectionSlug = created.slug;
     try {
-      await input.credentialStore.setSecret(input.providerType, 'api_key', suppliedKey);
+      await input.credentialStore.setSecret(connectionSlug, 'api_key', suppliedKey);
     } catch (error) {
       // Atomicity: a newly-created connection is rolled back when the secret
       // write fails, so no half-configured connection becomes the default.
-      await input.connectionStore.remove(input.providerType);
+      await input.connectionStore.remove(connectionSlug);
       return { kind: 'error', text: error instanceof Error ? error.message : String(error) };
     }
     try {
-      await input.connectionStore.update(input.providerType, modelPatch);
+      await input.connectionStore.update(connectionSlug, modelPatch);
     } catch (error) {
       // Atomicity: a failed curation write rolls back the new connection + secret
       // so no half-configured default connection is left behind for first-run.
-      await input.connectionStore.remove(input.providerType);
-      await input.credentialStore.deleteSecret(input.providerType, 'api_key');
+      await input.connectionStore.remove(connectionSlug);
+      await input.credentialStore.deleteSecret(connectionSlug, 'api_key');
       return { kind: 'error', text: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -323,7 +344,7 @@ export async function saveApiKeyConnection(
   // setDefault only when no default connection exists (first run, or a host with
   // no prior default). In-session setup never replaces an existing default.
   if ((await input.connectionStore.getDefault()) === null) {
-    await input.connectionStore.setDefault(input.providerType);
+    await input.connectionStore.setDefault(connectionSlug);
   }
 
   const modelChoices = await input.fetchModelChoices();

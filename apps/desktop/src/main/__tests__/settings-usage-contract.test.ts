@@ -48,7 +48,8 @@ describe('Settings usage dashboard contract', () => {
     assert.match(requestsPanel, /className="settingsUsageDetailToggle"/);
     assert.match(requestsPanel, /className="settingsUsageRecordCount"/);
     assert.match(requestsPanel, /className="settingsUsageClearFilter"/);
-    assert.match(requestsPanel, /disabled=\{!props\.hasRequestFilters\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(requestsPanel, /isDisabled=\{!props\.hasRequestFilters\}/);
     assert.match(requestsPanel, /tabIndex=\{!props\.hasRequestFilters \? -1 : undefined\}/);
     assert.doesNotMatch(
       requestsPanel,

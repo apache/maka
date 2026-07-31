@@ -19,6 +19,7 @@ export interface SubagentWorkspaceBinding {
   leaseId: string;
   gitCommonDir: string;
   worktreePath: string;
+  /** Host-owned lease branch; the child may check out another branch inside the leased worktree. */
   branch: string;
   baseCommit: string;
 }

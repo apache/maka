@@ -1,16 +1,4 @@
-/* WeChat QR login dialog. */
-.settingsWechatQrModal {
-  width: min(360px, calc(100vw - 40px));
-  display: grid;
-  gap: var(--space-4);
-  border: var(--border-width-hairline) solid color-mix(in srgb, var(--brand-wechat) 18%, var(--border));
-  border-radius: var(--radius-modal);
-  background: var(--background);
-  box-shadow:
-    0 24px 58px oklch(from var(--foreground) l c h / 0.18),
-    0 8px 18px oklch(from var(--foreground) l c h / 0.10);
-  padding: var(--space-4);
-}
+/* WeChat QR login dialog content. */
 
 .settingsWechatQrCaption {
   margin: 0;

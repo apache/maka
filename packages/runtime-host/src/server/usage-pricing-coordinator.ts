@@ -30,6 +30,7 @@ import {
   type UsageQueryResult,
 } from '../protocol/index.js';
 import type { UsagePricingOperationHandlerMap } from './operation-dispatcher.js';
+import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 
 /** Root-scoped projection over the authentic lease-bound usage stores. */
 export class HostUsagePricingCoordinator {
@@ -41,11 +42,20 @@ export class HostUsagePricingCoordinator {
 
   readonly #stores: InteractiveUsageStoresWriter;
   readonly #requestDrain: () => void;
+  readonly #activation: RuntimePolicyActivationGate;
+  readonly #onCommittedPricingMutation: () => void;
   #poisonDrainRequested = false;
 
-  constructor(stores: InteractiveUsageStoresWriter, requestDrain: () => void) {
+  constructor(
+    stores: InteractiveUsageStoresWriter,
+    requestDrain: () => void,
+    activation: RuntimePolicyActivationGate,
+    onCommittedPricingMutation: () => void = () => {},
+  ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
     this.#requestDrain = requestDrain;
+    this.#activation = activation;
+    this.#onCommittedPricingMutation = onCommittedPricingMutation;
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
@@ -129,11 +139,18 @@ export class HostUsagePricingCoordinator {
   }
 
   async #mutatePricing(input: PricingMutateInput): Promise<OperationOutcome<'pricing.mutate'>> {
+    return this.#activation.runMutation(() => this.#mutatePricingWithinActivation(input));
+  }
+
+  async #mutatePricingWithinActivation(
+    input: PricingMutateInput,
+  ): Promise<OperationOutcome<'pricing.mutate'>> {
     try {
       const stored =
         input.mutation.kind === 'upsert'
           ? await this.#stores.pricing.upsert(input.expectedRevision, input.mutation.pricing)
           : await this.#stores.pricing.delete(input.expectedRevision, input.mutation.modelKey);
+      if (stored.changed) this.#onCommittedPricingMutation();
       return {
         ok: true,
         result: {
@@ -142,7 +159,11 @@ export class HostUsagePricingCoordinator {
         },
       };
     } catch (error) {
-      return this.#mapMutationFailure(classifyInteractiveUsageStoresFailure(error));
+      const failure = classifyInteractiveUsageStoresFailure(error);
+      if (failure.kind === 'commit_outcome_unknown') {
+        this.#onCommittedPricingMutation();
+      }
+      return this.#mapMutationFailure(failure);
     }
   }
 

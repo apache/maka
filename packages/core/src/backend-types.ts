@@ -22,6 +22,7 @@ import type { StoredMessage, BackendKind } from './session.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
+import type { EphemeralVoiceAudio } from './voice.js';
 
 export interface RuntimeContinuationMetadata {
   sourceInvocationId: string;
@@ -46,6 +47,12 @@ export interface BackendSendInput {
    */
   headAnchorRuntimeEvent?: RuntimeEvent;
   text: string;
+  /**
+   * Operation-owned raw audio for the current turn. It is deliberately absent
+   * from MessageContent/RuntimeEvent/StoredMessage so no persistence or replay
+   * path can retain the bytes.
+   */
+  voiceAudio?: EphemeralVoiceAudio;
   attachments?: AttachmentRef[];
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];

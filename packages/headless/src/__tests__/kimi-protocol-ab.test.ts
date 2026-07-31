@@ -298,10 +298,6 @@ describe('Kimi protocol A/B', () => {
       taskRunner: async (input) => {
         const terminal = output(input.task.id, join(dir, 'unused-trace.jsonl'));
         terminal.harbor.reward = 0;
-        terminal.harbor.verifier = {
-          outcome: 'failed',
-          attempts: [{ attempt: 1, classification: 'failed', durationMs: 1, reward: 0 }],
-        };
         terminal.cell.status = 'failed';
         terminal.cell.errorClass = 'provider_billing';
         delete terminal.cell.traceEventsPath;

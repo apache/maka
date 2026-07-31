@@ -23,17 +23,17 @@ function normalizedFile(file: string): string {
   return file.replaceAll('\\', '/');
 }
 
-type AstNode = {
+export type AstNode = {
   type: string;
   loc?: { start: { line: number } } | null;
   [key: string]: unknown;
 };
 
-function isAstNode(value: unknown): value is AstNode {
+export function isAstNode(value: unknown): value is AstNode {
   return Boolean(value) && typeof value === 'object' && typeof (value as { type?: unknown }).type === 'string';
 }
 
-function sourceFileFor(source: string): AstNode {
+export function sourceFileFor(source: string): AstNode {
   return parse(source, {
     sourceType: 'module',
     plugins: ['typescript', 'jsx'],
@@ -48,7 +48,7 @@ function violation(file: string, node: AstNode, text: string): SourceViolation {
   };
 }
 
-function visitAst(node: AstNode, visit: (node: AstNode) => void): void {
+export function visitAst(node: AstNode, visit: (node: AstNode) => void): void {
   visit(node);
   for (const [key, value] of Object.entries(node)) {
     if (key === 'loc' || key === 'start' || key === 'end') continue;

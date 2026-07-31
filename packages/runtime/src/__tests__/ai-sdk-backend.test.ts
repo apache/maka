@@ -77,6 +77,61 @@ import type {
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 describe('AiSdkBackend model history', () => {
+  test('preserves operation-owned audio through the durable request path and redacts its capture', async () => {
+    const model = completionModel();
+    const captures: ProviderRequestCaptureRecord[] = [];
+    const durable = durableTurnHarness('turn-voice', 'follow the attached audio');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordProviderRequestCapture: async (capture) => {
+        captures.push(capture);
+        return { artifactId: 'artifact-voice-capture' };
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(
+      backend.send(
+        durable.input({
+          voiceAudio: {
+            bytes: new Uint8Array([222, 173, 190, 239]),
+            mediaType: 'audio/wav',
+            format: 'wav',
+            durationMs: 500,
+            sampleRate: 16_000,
+            channels: 1,
+            retention: 'operation_memory',
+          },
+        }),
+      ),
+      durable,
+    );
+
+    const providerPrompt = model.doStreamCalls[0]?.prompt ?? [];
+    const currentUser = providerPrompt.find((message) => message.role === 'user');
+    assert.ok(currentUser && Array.isArray(currentUser.content));
+    const audioFile = currentUser.content.find(
+      (part) => part.type === 'file' && part.filename === 'voice-input.wav',
+    );
+    assert.ok(audioFile, 'the durable first provider call must retain native audio');
+    assert.equal(audioFile.type, 'file');
+    if (audioFile.type !== 'file') return;
+    assert.equal(audioFile.mediaType, 'audio/wav');
+
+    assert.equal(captures.length, 1);
+    assert.match(captures[0]!.serializedRequest, /\[redacted:operation-memory-audio\]/);
+    assert.doesNotMatch(captures[0]!.serializedRequest, /3q2\+7w==|"222"/);
+  });
+
   test('exposes one active sandbox snapshot to the model and durable run trace', async () => {
     const model = completionModel();
     const traces: RunTraceEvent[] = [];
@@ -308,12 +363,8 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async () => {},
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'k3',
@@ -342,13 +393,9 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async () => {},
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
         models: [{ id: 'k3', maxOutputTokens: 65_536 }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'k3',
@@ -377,7 +424,6 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async () => {},
       connection: {
         slug: 'github-copilot',
-        name: 'GitHub Copilot',
         providerType: 'github-copilot',
         defaultModel: 'future-claude-model',
         models: [
@@ -387,9 +433,6 @@ describe('AiSdkBackend model history', () => {
             maxOutputTokens: 128_000,
           },
         ],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'github-account-token',
       modelId: 'future-claude-model',
@@ -418,12 +461,8 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async () => {},
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'kimi-for-coding',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'kimi-for-coding',
@@ -459,12 +498,8 @@ describe('AiSdkBackend model history', () => {
       appendMessage: async () => {},
       connection: {
         slug: 'mistral',
-        name: 'Mistral',
         providerType: 'mistral',
         defaultModel: 'mistral-large-latest',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'sk-test',
       modelId: 'mistral-large-latest',
@@ -9183,7 +9218,10 @@ describe('AiSdkBackend RunTrace', () => {
       sessionId: 'session-1',
       header: header(),
       appendMessage: async () => {},
-      connection: connection(),
+      connection: {
+        ...connection(),
+        models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+      },
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
@@ -9209,6 +9247,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(attempts[0]?.step, 0);
     assert.equal(attempts[0]?.attempt, 1);
     assert.equal(attempts[0]?.status, 'completed');
+    assert.equal(attempts[0]?.contextWindow, 200_000);
     assert.equal(attempts[0]?.captureId, captures[0]?.captureId);
     assert.equal(attempts[0]?.cacheMissInputSource, 'derived');
     assert.equal(
@@ -10731,12 +10770,8 @@ describe('AiSdkBackend thinking persistence', () => {
       appendMessage: async () => {},
       connection: {
         slug: 'volcengine-agent-plan',
-        name: 'Volcengine Ark Agent Plan (China)',
         providerType: 'volcengine-agent-plan',
         defaultModel: 'ark-code-latest',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'ark-plan-token',
       modelId: 'ark-code-latest',

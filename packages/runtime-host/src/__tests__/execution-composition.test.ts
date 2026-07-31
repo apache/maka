@@ -21,7 +21,25 @@ import {
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+
+test('composition drain preserves usage admission until active Runtime work settles', async () => {
+  await withCompositionRoot(async ({ owner }) => {
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    composition.beginDrain();
+
+    await usage.telemetry.recordLlmCall(lifecycleUsageRecord());
+    const persisted = await usage.telemetry.logs({ range: 'all' }, 0, 10);
+    assert.deepEqual(
+      persisted.rows.map((row) => row.id),
+      ['usage_after_composition_drain'],
+    );
+
+    await composition.close();
+  });
+});
 
 test('production execution composition owns claimed graph activation retry and exact abort', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
@@ -286,6 +304,30 @@ function graphExecutionDescriptor(claim: AgentGraphIntentClaim) {
     agentId: LOCAL_READ_AGENT_DEFINITION.id,
     agentName: LOCAL_READ_AGENT_DEFINITION.name,
   };
+}
+
+function lifecycleUsageRecord() {
+  return {
+    id: 'usage_after_composition_drain',
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    inputTokens: 10,
+    outputTokens: 20,
+    cacheHitInputTokens: 0,
+    cacheMissInputTokens: 10,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 30,
+    costUsd: 0.001,
+    latencyMs: 100,
+    status: 'success',
+    date: '2026-07-30',
+    ts: Date.UTC(2026, 6, 30),
+    startedAt: Date.UTC(2026, 6, 30) - 100,
+  } as Parameters<
+    Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>['telemetry']['recordLlmCall']
+  >[0];
 }
 
 async function assertUniqueGraphExecutionFacts(

@@ -378,7 +378,7 @@ describe('describeTurnErrorClass (PR109e-d @kenji gate #3)', () => {
     // The prompt the user never answered must read as a named closure, not as
     // a bare restart and not as the generic "等待权限确认" catch-all.
     const text = describeTurnErrorClass(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS);
-    assert.equal(text, '本地应用重启，等待确认的沙箱边界请求已按拒绝关闭');
+    assert.equal(text, '本地应用重启，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭');
     assert.notEqual(text, describeTurnErrorClass('app_restarted'));
     assert.notEqual(text, describeTurnErrorClass('permission_required'));
     assert.doesNotMatch(text, new RegExp(SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS));

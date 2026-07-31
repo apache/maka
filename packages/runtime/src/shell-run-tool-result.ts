@@ -10,6 +10,7 @@ import type {
   ShellRunUpdate,
   ToolResultContent,
 } from '@maka/core';
+import { isActiveShellRunStatus } from '@maka/core';
 
 import { shellRunResourceRef, type ShellRunWriteInput } from './shell-run-contract.js';
 import { truncateToolOutput } from './tool-output.js';
@@ -33,7 +34,7 @@ export function shellRunUpdate(record: ShellRunRecord): ShellRunUpdate {
 }
 
 export function terminalContent(record: ShellRunRecord): TerminalToolResult {
-  if (record.status === 'running' || record.status === 'orphaned') {
+  if (isActiveShellRunStatus(record.status) || record.status === 'orphaned') {
     throw new Error(`ShellRun status ${record.status} cannot be returned as a terminal result`);
   }
   return {
@@ -100,6 +101,7 @@ function terminalResultStatus(status: ShellRunStatus): TerminalToolResult['statu
     case 'timed_out':
     case 'cancelled':
       return status;
+    case 'starting':
     case 'running':
     case 'orphaned':
       throw new Error(`ShellRun status ${status} cannot be returned as a terminal result`);

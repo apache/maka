@@ -34,14 +34,53 @@ export function encodeCanonicalRuntimeEvent(value: unknown): CanonicalRuntimeEve
 
 function normalizeRuntimeEventEnvelope(event: RuntimeEvent): RuntimeEvent {
   const normalized = omitUndefinedEnvelopeFields(event) as unknown as RuntimeEvent;
-  for (const key of ['content', 'actions', 'refs'] as const) {
+  for (const key of ['content', 'refs'] as const) {
     const nested = normalized[key];
     if (nested && typeof nested === 'object') {
-      Object.defineProperty(normalized, key, {
-        ...Object.getOwnPropertyDescriptor(normalized, key),
-        value: omitUndefinedEnvelopeFields(nested),
-      });
+      replaceDataProperty(normalized, key, omitUndefinedEnvelopeFields(nested));
     }
+  }
+  if (normalized.actions && typeof normalized.actions === 'object') {
+    replaceDataProperty(normalized, 'actions', normalizeRuntimeEventActions(normalized.actions));
+  }
+  return normalized;
+}
+
+function normalizeRuntimeEventActions(value: object): object {
+  const normalized = omitUndefinedEnvelopeFields(value);
+  const tokenUsage = Reflect.get(normalized, 'tokenUsage') as unknown;
+  if (tokenUsage && typeof tokenUsage === 'object' && !Array.isArray(tokenUsage)) {
+    replaceDataProperty(normalized, 'tokenUsage', normalizeTokenUsage(tokenUsage));
+  }
+  return normalized;
+}
+
+function normalizeTokenUsage(value: object): object {
+  const normalized = omitUndefinedEnvelopeFields(value);
+  const promptSegments = Reflect.get(normalized, 'promptSegments') as unknown;
+  if (Array.isArray(promptSegments)) {
+    replaceDataProperty(
+      normalized,
+      'promptSegments',
+      mapArrayElements(promptSegments, omitUndefinedEnvelopeFields),
+    );
+  }
+  const contextBudget = Reflect.get(normalized, 'contextBudget') as unknown;
+  if (contextBudget && typeof contextBudget === 'object' && !Array.isArray(contextBudget)) {
+    replaceDataProperty(normalized, 'contextBudget', normalizeContextBudget(contextBudget));
+  }
+  return normalized;
+}
+
+function normalizeContextBudget(value: object): object {
+  const normalized = omitUndefinedEnvelopeFields(value);
+  const compactionDecisions = Reflect.get(normalized, 'compactionDecisions') as unknown;
+  if (Array.isArray(compactionDecisions)) {
+    replaceDataProperty(
+      normalized,
+      'compactionDecisions',
+      mapArrayElements(compactionDecisions, omitUndefinedEnvelopeFields),
+    );
   }
   return normalized;
 }
@@ -57,4 +96,47 @@ function omitUndefinedEnvelopeFields(value: object): object {
     Object.defineProperty(result, key, descriptor);
   }
   return result;
+}
+
+function mapArrayElements(value: unknown[], map: (item: object) => object): unknown[] {
+  const result: unknown[] = [];
+  Object.setPrototypeOf(result, Object.getPrototypeOf(value));
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!lengthDescriptor || !Object.hasOwn(lengthDescriptor, 'value')) {
+    throw new Error('RuntimeEvent is not losslessly serializable');
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+      throw new Error('RuntimeEvent is not losslessly serializable');
+    }
+    const item = descriptor.value;
+    Object.defineProperty(result, key, {
+      ...descriptor,
+      value:
+        isArrayIndex(key, value.length) &&
+        item !== null &&
+        typeof item === 'object' &&
+        !Array.isArray(item)
+          ? map(item)
+          : item,
+    });
+  }
+  Object.defineProperty(result, 'length', lengthDescriptor);
+  return result;
+}
+
+function isArrayIndex(key: PropertyKey, length: number): boolean {
+  if (typeof key !== 'string' || key.length === 0) return false;
+  const index = Number(key);
+  return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key;
+}
+
+function replaceDataProperty(target: object, key: PropertyKey, value: unknown): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+    throw new Error('RuntimeEvent is not losslessly serializable');
+  }
+  Object.defineProperty(target, key, { ...descriptor, value });
 }

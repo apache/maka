@@ -11,6 +11,7 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import { HostUsagePricingCoordinator } from '../server/usage-pricing-coordinator.js';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
@@ -30,9 +31,13 @@ test('a deleted live root marker requests poison drain exactly once', async () =
   try {
     const stores = await openInteractiveUsageStoresForWrite(owner.lease);
     let drainRequests = 0;
-    const coordinator = new HostUsagePricingCoordinator(stores, () => {
-      drainRequests += 1;
-    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {
+        drainRequests += 1;
+      },
+      new RuntimePolicyActivationGate(),
+    );
 
     await rm(join(root, STORAGE_ROOT_MARKER_FILE));
     const expected = {

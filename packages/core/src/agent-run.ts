@@ -166,6 +166,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'usage_recorded',
   'provider_request_captured',
   'provider_request_attempt_recorded',
+  'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'active_full_compact_block_recorded',
   'semantic_compact_block_recorded',

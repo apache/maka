@@ -359,6 +359,19 @@ export async function buildSkillsPromptFragmentWithReport(
 ): Promise<SkillsPromptFragmentResult> {
   const scan = await scanSkillsWithDiagnostics(source);
   const selection = selectSkillScanForContext(scan, host, budgetOptions);
+  return renderSkillsPromptSelection(selection);
+}
+
+/** Render an already-authoritative inventory without rescanning its backing files. */
+export function buildSkillsPromptFragmentFromInventoryWithReport(
+  inventory: readonly ScannedSkill[],
+  host?: HostCapabilities,
+  budgetOptions?: SkillCatalogBudgetOptions,
+): SkillsPromptFragmentResult {
+  return renderSkillsPromptSelection(selectSkillsForContext(inventory, host, budgetOptions));
+}
+
+function renderSkillsPromptSelection(selection: SkillContextSelection): SkillsPromptFragmentResult {
   if (selection.advertised.length === 0 && selection.report.omittedCount === 0) {
     return { report: selection.report };
   }
@@ -402,7 +415,7 @@ export function loadSkillInstructionsFromScan(
   host?: HostCapabilities,
 ): LoadSkillInstructionsResult {
   const raw = typeof name === 'string' ? name.trim() : '';
-  const enabledSkills = skills.filter((skill) => skill.enabled);
+  const enabledSkills = skills.filter((skill) => skill.enabled && !skill.shadowedBy);
   // Gate eligible skills before exposing them as available or loading them.
   // `host === undefined` keeps the legacy no-gating behavior.
   const gated = host
@@ -453,6 +466,7 @@ export function loadSkillInstructionsFromScan(
 
   const disabledSkill = skills.find(
     (candidate) =>
+      !candidate.shadowedBy &&
       !candidate.enabled &&
       (candidate.ref.toLowerCase() === normalized ||
         candidate.id.toLowerCase() === normalized ||
@@ -515,7 +529,10 @@ export function rankSkillSearchCandidates(
   }
 
   const ranked = candidates
-    .map((skill) => ({ skill, score: scoreSkillSearchMatch(skill, normalizedQuery) }))
+    .map((skill) => ({
+      skill,
+      score: scoreSkillSearchMatch(skill, normalizedQuery),
+    }))
     .filter((candidate) => candidate.score > 0)
     .sort(
       (a, b) =>

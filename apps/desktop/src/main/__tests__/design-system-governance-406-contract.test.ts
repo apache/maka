@@ -97,6 +97,26 @@ function mixOklchToSrgb(c1: [number, number, number], c2: [number, number, numbe
 }
 
 describe('issue #406 design-system governance contract', () => {
+  it('uses IconButton instead of repeating icon-only semantics on Button', async () => {
+    const sources = (
+      await Promise.all([
+        readSourceTree(resolve(REPO_ROOT, 'packages/ui/src')),
+        readSourceTree(resolve(REPO_ROOT, 'apps/desktop/src/renderer')),
+      ])
+    ).flat();
+    const violations = sources
+      .filter(({ source }) =>
+        /<(?:Button|UiButton)\b[^>]*\bisIconOnly\b/s.test(source),
+      )
+      .map(({ path }) => relative(REPO_ROOT, path));
+
+    assert.deepEqual(
+      violations,
+      [],
+      'production icon-only actions must use IconButton, which makes the required icon and forbidden visible children part of the type contract',
+    );
+  });
+
   it('keeps featured skill banners neutral instead of using blue as decorative texture', async () => {
     const source = stripCssComments(await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/module-pages/skills.css'), 'utf8'));
     const block = source.match(/\.maka-skill-featured-banner\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
@@ -113,11 +133,7 @@ describe('issue #406 design-system governance contract', () => {
       'animate-spin',
       'maka-composer-permission-pulse',
       'maka-composer-stream-bounce',
-      // D6 waiting-state spectrum: toast arrival overshoot (attention
-      // guidance for new information) + composer streaming top sweep
-      // (visible "working" status) — both functional, not decorative.
-      'maka-toast-enter',
-      'maka-toast-exit',
+      // Composer streaming top sweep is visible "working" status.
       'maka-processing-sweep',
       'maka-list-row-streaming-pulse',
       // Streaming UI rework: the "深度思考" disclosure title + a working trow's
@@ -223,12 +239,11 @@ describe('issue #406 design-system governance contract', () => {
 
     const menu = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/menu.tsx'), 'utf8');
     const tabs = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/tabs.tsx'), 'utf8');
-    assert.match(menu, /data-checked:bg-control/);
+    assert.match(menu, /from '@astryxdesign\/core\/DropdownMenu'/);
+    assert.match(tabs, /from "@base-ui\/react\/tabs"/);
+    assert.doesNotMatch(menu, /data-checked:bg-(?:control|primary)/);
     assert.match(tabs, /bg-foreground data-\[orientation=horizontal\]:h-0\.5/);
-    assert.doesNotMatch(menu, /data-checked:bg-primary/);
-    assert.doesNotMatch(tabs, /bg-control data-\[orientation=horizontal\]:h-0\.5/);
-    assert.doesNotMatch(tabs, /bg-primary data-\[orientation=horizontal\]:h-0\.5/);
-
+    assert.doesNotMatch(tabs, /bg-(?:control|primary) data-\[orientation=horizontal\]:h-0\.5/);
   });
 
   it('permission-mode chip text is readable across all tones (>=4.5:1)', async () => {
@@ -298,15 +313,19 @@ describe('issue #406 design-system governance contract', () => {
   it('keeps core visual surfaces on shadow rings instead of hard borders', async () => {
     const ui = await readUiSource();
     const styles = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles.css'), 'utf8');
-    const dialogClass = ui.match(/className=\{cn\(\s*'([^']*shadow-maka-panel[^']*)'/)?.[1] ?? '';
-    const selectClass = ui.match(/SelectPopup[\s\S]*?className=\{cn\('([^']*shadow-maka-panel[^']*)'/)?.[1] ?? '';
     const panelShadow = styles.match(/--shadow-maka-panel:\s*([^;]+);/)?.[1] ?? '';
 
     assert.match(panelShadow, /0\s+0\s+0\s+1px\s+var\(--border\)/);
-    for (const [name, className] of [['DialogPopup', dialogClass], ['SelectPopup', selectClass]] as const) {
-      assert.ok(className.includes('shadow-maka-panel'), `${name} must keep the shadow-ring recipe`);
-      assert.ok(!/\bborder\b|\bborder-border\b/.test(className), `${name} must not use a hard visual border`);
-    }
+    const dialogBlock = ui.slice(
+      ui.indexOf('interface DialogContextValue'),
+      ui.indexOf('// Astryx owns tab navigation'),
+    );
+    assert.match(ui, /Dialog as AstryxDialog[\s\S]*from '@astryxdesign\/core\/Dialog'/);
+    assert.doesNotMatch(
+      dialogBlock,
+      /shadow-maka-panel|border-border|MODAL_POPUP_CLASS/,
+      'Maka must not apply a second dialog surface over Astryx chrome',
+    );
 
     const chat = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/chat.tsx'), 'utf8');
     assert.ok(chat.includes('[box-shadow:var(--shadow-minimal-flat)]'));

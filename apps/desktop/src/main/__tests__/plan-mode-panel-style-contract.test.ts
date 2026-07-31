@@ -70,8 +70,9 @@ describe('Plan Mode proposal presentation', () => {
     assert.match(source, /const \[expanded, setExpanded\] = useState\(false\)/);
     assert.match(source, /aria-expanded=\{expanded\}/);
     assert.match(source, /\{expanded && \(/);
-    assert.match(source, />\s*恢复执行\s*</);
-    assert.match(source, />\s*放弃计划\s*</);
+    // #1565 PR 3: Astryx Button renders visible text from the `label` prop.
+    assert.match(source, /label="恢复执行"/);
+    assert.match(source, /label="放弃计划"/);
     assert.match(source, /toastApi\.confirm\(\{/);
     assert.match(source, /window\.maka\.sessions\.abandonPlanExecution/);
     assert.match(preload, /abandonPlanExecution\(sessionId: string, executionId: string\)/);

@@ -1,8 +1,12 @@
 import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
-import { providerAuthRequiresSecret, type LlmConnection } from '@maka/core/llm-connections';
+import {
+  providerAuthRequiresSecret,
+  type RuntimeExecutionConnection,
+} from '@maka/core/llm-connections';
 import { lookupModelMetadata, openAiAdapterApiProtocol } from '@maka/core/model-metadata';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
+import { rawFinishReasonString } from './model-protocol.js';
 import type {
   ModelMessage,
   NormalizedUsage,
@@ -51,7 +55,7 @@ import {
  * `LanguageModelV2` type into core's dependency graph.
  */
 export interface ModelFactoryInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   kimiOpenAiTransportState?: KimiOpenAiTransportState;
@@ -67,7 +71,7 @@ export interface RepairableAiSdkToolCall {
 }
 
 export interface ModelAdapterInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;
@@ -187,7 +191,7 @@ export class ModelAdapter {
     );
     const sdkResult = streamText({
       model: trackedModel,
-      messages: input.messages,
+      messages: lowerNativeAudioMessages(input.messages),
       tools: schemaOnlyTools,
       activeTools: input.activeTools,
       repairToolCall: input.repairToolCall,
@@ -342,8 +346,33 @@ export class ModelAdapter {
   }
 }
 
+/**
+ * AI SDK exposes native audio through its file content part. Keep Maka's
+ * explicit AudioPart until the one adapter boundary, then lower it without
+ * copying the bytes or allowing ordinary file attachments to opt into audio.
+ */
+export function lowerNativeAudioMessages(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.map((message) => {
+    if (message.role !== 'user' || typeof message.content === 'string') return message;
+    if (!message.content.some((part) => part.type === 'audio')) return message;
+    return {
+      ...message,
+      content: message.content.map((part) =>
+        part.type === 'audio'
+          ? {
+              type: 'file' as const,
+              data: { type: 'data' as const, data: part.data },
+              filename: `voice-input.${part.format}`,
+              mediaType: part.mediaType,
+            }
+          : part,
+      ),
+    };
+  });
+}
+
 function selectedModelMaxOutputTokens(
-  connection: LlmConnection,
+  connection: RuntimeExecutionConnection,
   modelId: string,
   providerOptions: Record<string, unknown> | undefined,
 ): number | undefined {
@@ -359,7 +388,7 @@ function selectedModelMaxOutputTokens(
     : wireOutputLimit;
 }
 
-function usesAnthropicMessages(connection: LlmConnection, modelId: string): boolean {
+function usesAnthropicMessages(connection: RuntimeExecutionConnection, modelId: string): boolean {
   const { adapter, apiProtocol } = resolveModelRuntime(connection, modelId);
   return (
     adapter.kind === 'anthropic' ||
@@ -368,14 +397,14 @@ function usesAnthropicMessages(connection: LlmConnection, modelId: string): bool
   );
 }
 
-function usesKimiOpenAiChat(connection: LlmConnection, modelId: string): boolean {
+function usesKimiOpenAiChat(connection: RuntimeExecutionConnection, modelId: string): boolean {
   return (
     connection.providerType === 'kimi-coding-plan' &&
     resolveModelRuntime(connection, modelId).apiProtocol === 'openai-chat'
   );
 }
 
-function usesOpenAiResponses(connection: LlmConnection, modelId: string): boolean {
+function usesOpenAiResponses(connection: RuntimeExecutionConnection, modelId: string): boolean {
   const runtime = resolveModelRuntime(connection, modelId);
   if (runtime.adapter.kind !== 'openai') return false;
   return (
@@ -895,15 +924,4 @@ function rawUsageFields(usage: AiSdkUsageLike): AiSdkRawUsageFields | undefined 
     raw.completion_tokens_details = { reasoning_tokens: reasoningTokens };
   }
   return Object.keys(raw).length > 0 ? raw : undefined;
-}
-
-export function rawFinishReasonString(reason: unknown): string | undefined {
-  if (typeof reason === 'string') return reason;
-  if (reason && typeof reason === 'object') {
-    const raw = (reason as { raw?: unknown }).raw;
-    if (typeof raw === 'string') return raw;
-    const unified = (reason as { unified?: unknown }).unified;
-    if (typeof unified === 'string') return unified;
-  }
-  return undefined;
 }

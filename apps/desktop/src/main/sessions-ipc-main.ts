@@ -20,6 +20,7 @@ import type {
   SessionListFilter,
   StoredMessage,
   ThinkingLevel,
+  EphemeralVoiceAudio,
 } from '@maka/core';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
@@ -38,7 +39,11 @@ import {
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
 } from './permission-response-guard.js';
-import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
+import {
+  getE2eFixtureState,
+  retireE2eFixtureSandboxBoundaryRequest,
+  type resolveE2eFixture,
+} from './e2e-fixture.js';
 import type { requireReadyConnection } from './chat-readiness.js';
 import type { MainTaskLedgerWiring } from './task-ledger-wiring.js';
 import type { MainGoalWiring } from './goal-wiring.js';
@@ -50,6 +55,7 @@ import { handleReviseBeforeTurn } from './session-revision.js';
 import { prepareSessionSendSkillPlan } from './session-send-skill-plan.js';
 import type { DesktopCreateSessionInput } from './new-session-project.js';
 import { registerSessionExecutionIpc } from './session-execution-ipc-main.js';
+import { createQuoteCompanionCleanupAuthority } from './quote-companion-cleanup.js';
 
 type SessionStore = ReturnType<typeof createSessionStore>;
 type ArtifactStore = ReturnType<typeof createArtifactStore>;
@@ -66,6 +72,7 @@ interface SessionToolCleanup {
 }
 
 export interface SessionsIpcDeps {
+  workspaceRoot: string;
   runtime: SessionManager;
   store: SessionStore;
   taskLedgerStore: MainTaskLedgerWiring['store'];
@@ -110,6 +117,11 @@ export interface SessionsIpcDeps {
   ) => Promise<{ turnId: string; ok: boolean; error?: string }>;
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
   canCreateFakeSession: () => boolean;
+  consumeNativeAudioOperation?: (input: {
+    operationId: string;
+    connectionSlug: string;
+    model: string;
+  }) => EphemeralVoiceAudio;
 }
 
 function latestStoredMessageTs(messages: readonly StoredMessage[]): number | undefined {
@@ -177,6 +189,7 @@ export function registerSessionsIpc(
   ipcMain: Pick<typeof electronIpcMain, 'handle'> = electronIpcMain,
 ): void {
   const {
+    workspaceRoot,
     runtime,
     store,
     taskLedgerStore,
@@ -203,6 +216,7 @@ export function registerSessionsIpc(
     streamEvents,
     getWorkspacePrivacyContext,
     canCreateFakeSession,
+    consumeNativeAudioOperation,
   } = deps;
   registerSessionExecutionIpc({
     ipcMain,
@@ -212,6 +226,21 @@ export function registerSessionsIpc(
     streamEvents,
     emitModeChanged: (sessionId) => emitSessionsChanged('mode-change', sessionId),
   });
+  const removeSession = async (sessionId: string): Promise<void> => {
+    computerUseOverlay.clearForSession(sessionId);
+    computerUseTools.clearSession(sessionId);
+    await goalWiring.removeSession(sessionId, () => runtime.remove(sessionId));
+    invalidateSessionBindings?.(sessionId);
+    clearSkillHost?.(sessionId);
+    await releaseBrowserSession(sessionId);
+    automationManager.removeAllForSession(sessionId);
+    emitSessionsChanged('deleted', sessionId);
+  };
+  const quoteCompanionCleanup = createQuoteCompanionCleanupAuthority({
+    workspaceRoot,
+    removeSession,
+  });
+
   ipcMain.handle('shell-runs:list', (_event, sessionId: string) => runtime.listShellRunUpdates(sessionId));
   ipcMain.handle('tasks:list', async (_event, sessionId: string) => {
     const tasks = await taskLedgerStore.list(sessionId, {
@@ -222,7 +251,15 @@ export function registerSessionsIpc(
     });
     return tasks.map(sanitizeTaskLedgerTask);
   });
-  ipcMain.handle('sessions:list', (_event, filter?: SessionListFilter) => runtime.listSessions(filter));
+  ipcMain.handle('sessions:list', async (_event, filter?: SessionListFilter) => {
+    // Listing is also a recovery trigger. Await it so an orphaned hidden
+    // companion is removed before it can reappear in the sidebar after restart.
+    const recovery = await quoteCompanionCleanup.recover();
+    const pendingCleanup = new Set(recovery.failed.map(({ sessionId }) => sessionId));
+    return (await runtime.listSessions(filter)).filter(
+      ({ id }) => !pendingCleanup.has(id),
+    );
+  });
   ipcMain.handle('sessions:create', async (_event, input?: CreateSessionRequestInput) => {
     // #1433: `mode` is a product intent, not a session field. What it implies,
     // what the renderer may ask for directly, and what the configured default
@@ -335,6 +372,8 @@ export function registerSessionsIpc(
     runtime.readExecutionBoundary(sessionId),
   );
   ipcMain.handle('sessions:listActiveSandboxBoundaryRequests', (_event, sessionId: string) => {
+    // Already filtered by retirement: `getE2eFixtureState` is the one owner of
+    // which fixture requests are still unanswered.
     const fixtureRequest = getE2eFixtureState(e2eFixture)?.sandboxBoundaryBySession?.[sessionId];
     return fixtureRequest
       ? [fixtureRequest]
@@ -349,8 +388,13 @@ export function registerSessionsIpc(
       // would model an "allow" that grants nothing and no surface built on the
       // boundary could be exercised against it (#1611).
       if (normalized.decision === 'allow') {
+        // Retired only once the grant has landed. The runtime drops an active
+        // request when the decision is acknowledged, not when it is received;
+        // hiding this one before the write succeeds would let the fixture
+        // swallow a settlement failure the renderer is about to be told about.
         await applyFixtureSandboxBoundaryExpansion(store, sessionId, fixtureRequest.expansion);
       }
+      retireE2eFixtureSandboxBoundaryRequest(normalized.requestId);
       return;
     }
     if (normalized.decision === 'allow') {
@@ -393,17 +437,35 @@ export function registerSessionsIpc(
     const skillInvocation = sendPlan.preparation;
     const { turnId, attachments } = sendPlan.resolved;
     const displayText =
-      sendCommand.text.trim().length > 0
+      sendCommand.displayText ??
+      (sendCommand.text.trim().length > 0
         ? sendCommand.text
         : skillInvocation.skillInvocation.loaded
             .map((skill) => `/skill:${skill.id}`)
-            .join(' ');
+            .join(' '));
+    const voiceTargetHeader = sendCommand.voiceOperationId
+      ? await store.readHeader(sessionId)
+      : undefined;
+    const voiceAudio =
+      sendCommand.voiceOperationId && voiceTargetHeader
+        ? consumeNativeAudioOperation?.({
+            operationId: sendCommand.voiceOperationId,
+            connectionSlug: voiceTargetHeader.llmConnectionSlug,
+            model: voiceTargetHeader.model,
+          })
+        : undefined;
+    if (sendCommand.voiceOperationId && !voiceAudio) {
+      throw new Error('voice_operation_unavailable');
+    }
     const iterator = runtime.sendMessage(
       sessionId,
       {
         turnId,
         text: skillInvocation.sendText,
-        ...(skillInvocation.disposition === 'ready' ? { displayText } : {}),
+        ...(voiceAudio ? { voiceAudio } : {}),
+        ...(skillInvocation.disposition === 'ready' || sendCommand.displayText !== undefined
+          ? { displayText }
+          : {}),
         ...(sendCommand.turnOrchestration
           ? { turnOrchestration: sendCommand.turnOrchestration }
           : {}),
@@ -425,6 +487,13 @@ export function registerSessionsIpc(
       attachments,
       skillInvocation: skillInvocation.skillInvocation,
     };
+  });
+  ipcMain.handle('sessions:steer', async (_event, sessionId: string, text: unknown) => {
+    if (typeof text !== 'string' || text.trim().length === 0 || text.length > 128_000) {
+      throw new Error('Invalid steering text');
+    }
+    await store.readHeader(sessionId);
+    return runtime.steer(sessionId, text.trim());
   });
   ipcMain.handle(
     'attachments:pickFiles',
@@ -614,15 +683,11 @@ export function registerSessionsIpc(
   });
   ipcMain.handle('sessions:remove', async (_event, sessionId: string, options?: unknown) => {
     for (const id of await resolveSessionActionIds(runtime, sessionId, options)) {
-      computerUseOverlay.clearForSession(id);
-      computerUseTools.clearSession(id);
-      await goalWiring.removeSession(id, () => runtime.remove(id));
-      invalidateSessionBindings?.(id);
-      clearSkillHost?.(id);
-      await releaseBrowserSession(id);
-      automationManager.removeAllForSession(id);
-      emitSessionsChanged('deleted', id);
+      await removeSession(id);
     }
+  });
+  ipcMain.handle('sessions:cleanupQuoteCompanion', async (_event, sessionId: string) => {
+    await quoteCompanionCleanup.cleanup(sessionId);
   });
 }
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -11,6 +11,7 @@ import {
   importLegacyRuntimeEventJsonlTree,
   importRuntimeEventsFromJsonl,
   openRuntimeEventPersistence,
+  openRuntimeEventReadPersistence,
 } from '../runtime-event-transfer.js';
 
 describe('runtime event JSONL compatibility transfer', () => {
@@ -34,6 +35,25 @@ describe('runtime event JSONL compatibility transfer', () => {
           ts: 3,
         }),
       );
+      await appendFile(
+        join(root, 'sessions', 'session-1', 'runs', 'run-1', 'runtime-events.jsonl'),
+        `${JSON.stringify(
+          runtimeEvent('event-4', {
+            ts: 4,
+            content: undefined,
+            actions: {
+              permissionRequest: {
+                requestId: 'pr-1',
+                toolUseId: 'tc-1',
+                toolName: 'Bash',
+                category: 'shell_unsafe',
+                reason: 'shell_dangerous',
+                args: { command: 'rm foo' },
+              },
+            } as never,
+          }),
+        )}\n`,
+      );
 
       const first = await importLegacyRuntimeEventJsonlTree({
         workspaceRoot: root,
@@ -46,8 +66,8 @@ describe('runtime event JSONL compatibility transfer', () => {
 
       assert.deepEqual(first, {
         filesScanned: 2,
-        eventsRead: 3,
-        eventsImported: 3,
+        eventsRead: 4,
+        eventsImported: 4,
         eventsExisting: 0,
       });
       assert.deepEqual(second, {
@@ -58,8 +78,12 @@ describe('runtime event JSONL compatibility transfer', () => {
       });
       assert.deepEqual(
         (await sqlite.readSessionRuntimeEvents('session-1')).map((event) => event.id),
-        ['event-1', 'event-2', 'event-3'],
+        ['event-1', 'event-2', 'event-3', 'event-4'],
       );
+      const importedRequest = (await sqlite.readRuntimeEvents('session-1', 'run-1')).at(-1)?.actions
+        ?.permissionRequest;
+      assert.equal(importedRequest?.kind, 'tool_permission');
+      assert.equal(importedRequest?.rememberForTurnAllowed, false);
     } finally {
       sqlite.close();
       await rm(root, { recursive: true, force: true });
@@ -84,13 +108,16 @@ describe('runtime event JSONL compatibility transfer', () => {
         'run-1',
         'runtime-events.jsonl',
       );
-      const legacyStreamPartial = runtimeEvent('partial-thinking', {
-        ts: 3,
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'thinking', text: 'interrupted thought' },
-      });
+      const legacyStreamPartial = {
+        ...runtimeEvent('partial-thinking', {
+          ts: 3,
+          partial: true,
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'thinking', text: 'interrupted thought' },
+        }),
+        unexpectedField: true,
+      };
       const partialRowWithStatus = runtimeEvent('partial-terminal', {
         ts: 4,
         partial: true,
@@ -186,16 +213,64 @@ describe('runtime event JSONL compatibility transfer', () => {
     }
   });
 
-  it('selects exactly one canonical writer and imports before returning SQLite mode', async () => {
+  it('imports the stable prefix of a crash-truncated legacy tail without rewriting it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-runtime-truncated-import-'));
+    const sqlite = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    const sourcePath = join(root, 'sessions', 'session-1', 'runs', 'run-1', 'runtime-events.jsonl');
+    try {
+      await createAgentRunStore(root).createRun(runHeader());
+      const legacy = createRuntimeEventStore(root);
+      await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-1'));
+      await appendFile(sourcePath, '{"id":"truncated"', 'utf8');
+      const before = await readFile(sourcePath);
+
+      const report = await importLegacyRuntimeEventJsonlTree({
+        workspaceRoot: root,
+        destination: sqlite,
+      });
+
+      assert.deepEqual(report, {
+        filesScanned: 1,
+        eventsRead: 1,
+        eventsImported: 1,
+        eventsExisting: 0,
+      });
+      assert.deepEqual(
+        (await sqlite.readImmutableRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
+        ['event-1'],
+      );
+      assert.deepEqual(await readFile(sourcePath), before);
+
+      await appendFile(sourcePath, '\n', 'utf8');
+      await assert.rejects(
+        importLegacyRuntimeEventJsonlTree({ workspaceRoot: root, destination: sqlite }),
+        /Invalid legacy RuntimeEvent JSONL line 2/,
+      );
+    } finally {
+      sqlite.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('always selects the SQLite writer, imports first, and leaves legacy JSONL unchanged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-runtime-persistence-'));
     const legacy = createRuntimeEventStore(root);
     try {
       await createAgentRunStore(root).createRun(runHeader());
       await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-1'));
+      const legacyPath = join(
+        root,
+        'sessions',
+        'session-1',
+        'runs',
+        'run-1',
+        'runtime-events.jsonl',
+      );
+      const legacyBytes = await readFile(legacyPath);
+      const legacyMtime = (await stat(legacyPath)).mtimeMs;
 
       const opened = await openRuntimeEventPersistence({
         workspaceRoot: root,
-        sqliteCanonical: true,
       });
       try {
         assert.equal(opened.kind, 'sqlite');
@@ -216,30 +291,87 @@ describe('runtime event JSONL compatibility transfer', () => {
       } finally {
         opened.close();
       }
+      assert.deepEqual(await readFile(legacyPath), legacyBytes);
+      assert.equal((await stat(legacyPath)).mtimeMs, legacyMtime);
 
-      const stickyCanonical = await openRuntimeEventPersistence({
+      const reopened = await openRuntimeEventPersistence({
         workspaceRoot: root,
-        sqliteCanonical: false,
       });
       try {
-        assert.equal(stickyCanonical.kind, 'sqlite');
+        assert.equal(reopened.kind, 'sqlite');
         assert.deepEqual(
-          (await stickyCanonical.runtimeEventStore.readRuntimeEvents('session-1', 'run-1')).map(
+          (await reopened.runtimeEventStore.readRuntimeEvents('session-1', 'run-1')).map(
             (event) => event.id,
           ),
           ['event-1', 'sqlite-only-event'],
         );
       } finally {
-        stickyCanonical.close();
+        reopened.close();
       }
 
-      const legacyOnly = await openRuntimeEventPersistence({
+      const fresh = await openRuntimeEventPersistence({
         workspaceRoot: join(root, 'legacy-only'),
-        sqliteCanonical: false,
       });
-      assert.equal(legacyOnly.kind, 'jsonl');
-      assert.equal(legacyOnly.runtimeCommitStore, undefined);
-      legacyOnly.close();
+      assert.equal(fresh.kind, 'sqlite');
+      assert.strictEqual(fresh.runtimeEventStore, fresh.runtimeCommitStore);
+      fresh.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps legacy-only roots read-only until a writer performs the canonical import', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-runtime-reader-'));
+    try {
+      await createAgentRunStore(root).createRun(runHeader());
+      const legacy = createRuntimeEventStore(root);
+      await legacy.appendRuntimeEvent('session-1', 'run-1', runtimeEvent('event-1'));
+
+      const legacyReader = await openRuntimeEventReadPersistence({ workspaceRoot: root });
+      try {
+        assert.equal(legacyReader.kind, 'jsonl');
+        assert.deepEqual(
+          (await legacyReader.runtimeEventStore.readRuntimeEvents('session-1', 'run-1')).map(
+            (event) => event.id,
+          ),
+          ['event-1'],
+        );
+      } finally {
+        legacyReader.close();
+      }
+      await assert.rejects(stat(join(root, 'runtime.sqlite')), { code: 'ENOENT' });
+
+      const writer = await openRuntimeEventPersistence({ workspaceRoot: root });
+      try {
+        await writer.runtimeEventStore.appendRuntimeEvent(
+          'session-1',
+          'run-1',
+          runtimeEvent('event-2', { ts: 2 }),
+        );
+      } finally {
+        writer.close();
+      }
+
+      const sqliteReader = await openRuntimeEventReadPersistence({ workspaceRoot: root });
+      try {
+        assert.equal(sqliteReader.kind, 'sqlite');
+        assert.deepEqual(
+          (await sqliteReader.runtimeEventStore.readRuntimeEvents('session-1', 'run-1')).map(
+            (event) => event.id,
+          ),
+          ['event-1', 'event-2'],
+        );
+        await assert.rejects(
+          sqliteReader.runtimeEventStore.appendRuntimeEvent(
+            'session-1',
+            'run-1',
+            runtimeEvent('read-only-write', { ts: 3 }),
+          ),
+          /read-?only|readonly/u,
+        );
+      } finally {
+        sqliteReader.close();
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

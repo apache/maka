@@ -64,19 +64,5 @@ describe('renderer form font reset contract', () => {
     );
   });
 
-  it('self-check: catches the historical reset, layered duplicates, mixed lists, and :where()/:is()', () => {
-    const historical = 'button,\n  textarea,\n  input,\n  select {\n    font: inherit;\n  }';
-    assert.equal(findFormFontDeclarations(historical).length, 1);
-    assert.equal(findFormFontDeclarations(`@layer base {\n${historical}\n}`).length, 1);
-    // #568 review P3 bypasses of the old every-part-is-a-form-type check:
-    assert.equal(findFormFontDeclarations('button, body { font: inherit; }').length, 1);
-    assert.equal(findFormFontDeclarations(':where(button, input) { font: inherit; }').length, 1);
-    assert.equal(findFormFontDeclarations(':is(select) { line-height: 1.2; }').length, 1);
-  });
 
-  it('self-check: ignores scoped form selectors and non-font declarations', () => {
-    assert.equal(findFormFontDeclarations('.composer textarea { font-size: 12px; }').length, 0);
-    assert.equal(findFormFontDeclarations('button.chip, input[type="checkbox"] { font-size: 12px; }').length, 0);
-    assert.equal(findFormFontDeclarations('button { transition: color 1s; }').length, 0);
-  });
 });

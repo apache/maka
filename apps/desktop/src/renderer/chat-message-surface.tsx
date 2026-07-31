@@ -62,7 +62,7 @@ export function ChatMessageSurface({
   );
   const emptyOverride: ReactNode =
     showOnboardingHero && onboardingState ? (
-      <div className="maka-onboarding-surface">
+      <div className="maka-onboarding-surface" data-maka-contract="onboarding-surface">
         <OnboardingHero
           state={onboardingState}
           onOpenSettings={onOpenSettings}

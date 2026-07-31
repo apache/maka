@@ -95,6 +95,7 @@ export {
   isStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
+  ToolOutcomeUnknownError,
   TOOL_ACTIVITY_KINDS,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
@@ -152,6 +153,7 @@ export {
   isRuntimeEventAuthor,
   isRuntimeEventStatus,
   decodeRuntimeEvent,
+  decodePersistedRuntimeEvent,
   isTerminalRuntimeEventStatus,
   isTerminalRuntimeEvent,
   isPartialRuntimeEvent,
@@ -329,6 +331,32 @@ export {
   isSessionInlineRun,
 } from './agent-run.js';
 
+// model-call-attempt.ts
+export type {
+  ModelCallAttempt,
+  ModelCallAttemptStatus,
+  ModelCallCostBasis,
+  ModelCallCoverage,
+  ModelCallGroup,
+  ModelCallKind,
+  ModelCallUsageBasis,
+} from './model-call-attempt.js';
+export {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  MODEL_CALL_ATTEMPT_STATUSES,
+  MODEL_CALL_COST_BASES,
+  MODEL_CALL_KINDS,
+  MODEL_CALL_USAGE_BASES,
+  decodeModelCallAttempt,
+  dedupeModelCallAttempts,
+  groupModelCallAttempts,
+  isModelCallAttempt,
+  settledAttempt,
+  sumModelCallCostUsd,
+  summarizeModelCallCoverage,
+} from './model-call-attempt.js';
+
 // shell-run.ts
 export type {
   PipeShellOutput,
@@ -338,6 +366,7 @@ export type {
   ShellRunOperation,
   ShellRunPatch,
   ShellRunRecord,
+  ShellRunActiveStatus,
   ShellRunStatus,
   ShellRunStore,
   ShellRunTerminalStatus,
@@ -391,12 +420,15 @@ export {
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
+  SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
   isShellOutput,
+  isActiveShellRunStatus,
   isShellRunId,
   isShellRunStatus,
   isValidShellRunState,
+  isValidShellRunStatusTransition,
   isTerminalShellRunStatus,
 } from './shell-run.js';
 
@@ -1187,6 +1219,22 @@ export type {
   VoiceTtsPolicy,
   VoiceTtsProvider,
   VoiceTtsRequest,
+  VoiceIntent,
+  VoiceAudioFormat,
+  EphemeralVoiceAudio,
+  VoiceModelRouteCapability,
+  VoiceRecognitionConfig,
+  VoiceRealtimeConfig,
+  VoiceSettings,
+  VoiceRoutePlan,
+  ResolveVoiceRouteInput,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
+  VoiceCoordinatorToolName,
+  VoiceCoordinatorToolCall,
 } from './voice.js';
 export {
   VOICE_MAX_AUDIO_BYTES,
@@ -1198,6 +1246,10 @@ export {
   defaultVoiceCapabilitySnapshot,
   defaultVoiceCaptureCaps,
   defaultVoicePrivacyFlags,
+  defaultVoiceSettings,
+  normalizeVoiceSettings,
+  resolveVoiceRoute,
+  normalizeVoiceCoordinatorToolCall,
   normalizeVoiceInputMode,
   normalizeVoiceTranscriptText,
   normalizeVoiceTtsPolicy,
@@ -1231,6 +1283,7 @@ export type {
   ProviderDefaults,
   ProviderRuntimeAdapter,
   ProviderType,
+  RuntimeExecutionConnection,
   UpdateConnectionInput,
 } from './llm-connections.js';
 export {
@@ -1242,6 +1295,7 @@ export {
   READY_PROVIDER_TYPES,
   backendKindOf,
   connectionEnabledModelIds,
+  deriveConnectionSlug,
   isWiredOAuthProvider,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
@@ -1378,7 +1432,7 @@ export {
 } from './model-catalog.js';
 
 // model-metadata.ts
-export { resolveModelVisionSupport } from './model-metadata.js';
+export { resolveModelVisionSupport, resolveModelVoiceMetadata } from './model-metadata.js';
 
 // settings.ts
 export type {

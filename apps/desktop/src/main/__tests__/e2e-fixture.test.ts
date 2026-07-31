@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { discoverMarkedStorageRoot } from '@maka/storage/root-authority';
 import {
   getE2eFixtureState,
+  resetE2eFixtureSandboxBoundaryRetirement,
   resolveE2eFixture,
+  retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from '../e2e-fixture.js';
 import { readE2eFixtureCombinedSource } from './e2e-fixture-source-helpers.js';
@@ -307,6 +309,31 @@ describe('e2e-fixture mode', () => {
     assert.deepEqual(request.expansion.filesystem?.entries, [
       { path: '/outside/dist', access: 'write', scope: 'subtree' },
     ]);
+  });
+
+  it('retires an answered boundary request from every reader of fixture state', () => {
+    resetE2eFixtureSandboxBoundaryRetirement();
+    try {
+      const fixture = resolveE2eFixture('sandbox-boundary', false);
+      const request = getE2eFixtureState(fixture)?.sandboxBoundaryBySession?.['e2e-fixture-permission'];
+      assert.ok(request);
+
+      retireE2eFixtureSandboxBoundaryRequest(request.requestId);
+
+      // Both exits read this one state: the sessions IPC serves the active
+      // list from it, and the renderer seeds its interaction queue straight
+      // out of `e2eFixture:getState`. Retiring at either exit alone would just
+      // move the resurrection to the other one — after a reload the seed path
+      // would put the prompt back over the composer for good.
+      const after = getE2eFixtureState(fixture);
+      assert.deepEqual(after?.sandboxBoundaryBySession, {});
+      // The rest of the scenario is untouched: retirement settles one request,
+      // it does not disable the fixture.
+      assert.equal(after?.activeSessionId, 'e2e-fixture-permission');
+      assert.ok(after?.liveTurnBySession?.['e2e-fixture-permission']);
+    } finally {
+      resetE2eFixtureSandboxBoundaryRetirement();
+    }
   });
 
   it('task-ledger fixture seeds the hierarchical desktop read model', async () => {

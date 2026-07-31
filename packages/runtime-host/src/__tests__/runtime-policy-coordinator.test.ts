@@ -128,6 +128,112 @@ test('production composition shares one gate across mutation and backend activat
   }
 });
 
+test('production mutation releases the gate before active-turn backend disposal completes', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-runtime-policy-active-turn-refresh-'));
+  const root = join(base, 'interactive');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const activationEntered = deferred<void>();
+  const releaseActivation = deferred<void>();
+  const originalRunBackendActivation = RuntimePolicyActivationGate.prototype.runBackendActivation;
+  let heldActivation = false;
+  const activationSpy = mock.method(
+    RuntimePolicyActivationGate.prototype,
+    'runBackendActivation',
+    function <T>(this: RuntimePolicyActivationGate, operation: () => Promise<T> | T): Promise<T> {
+      return Reflect.apply(originalRunBackendActivation, this, [
+        async () => {
+          const result = await operation();
+          if (!heldActivation) {
+            heldActivation = true;
+            activationEntered.resolve();
+            await releaseActivation.promise;
+          }
+          return result;
+        },
+      ]) as Promise<T>;
+    },
+  );
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  try {
+    const setupStores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await setupStores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => undefined,
+    });
+    await composition.recover();
+
+    const initial = await composition.handlers['runtime.policy.query']({}, context);
+    assert.equal(initial.ok, true);
+    if (!initial.ok) return;
+    const turnId = randomUUID();
+    const start = composition.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId,
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      },
+      context,
+    );
+    await activationEntered.promise;
+
+    const mutation = composition.handlers['runtime.policy.mutate'](
+      {
+        expectedRevision: initial.result.revision,
+        operation: {
+          kind: 'set_memory',
+          value: { enabled: false, agentReadEnabled: false },
+        },
+      },
+      context,
+    );
+    releaseActivation.resolve();
+
+    assert.deepEqual(await settlesWithin(mutation, 'policy mutation'), {
+      ok: true,
+      result: { kind: 'committed', revision: initial.result.revision + 1 },
+    });
+    const memory = await settlesWithin(
+      composition.handlers['memory.query']({ kind: 'state' }, context),
+      'policy-dependent read',
+    );
+    assert.equal(memory.ok, true);
+
+    const started = await start;
+    assert.equal(started.ok, true);
+    if (started.ok) {
+      await composition.handlers['turn.stop'](
+        { sessionId: session.id, turnId, runId: started.result.runId },
+        context,
+      );
+    }
+  } finally {
+    activationSpy.mock.restore();
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
 test('production policy mutation drains and poisons activation when cached backend disposal fails', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-policy-disposal-failure-'));
   const root = join(base, 'interactive');
@@ -215,6 +321,7 @@ test('production policy mutation drains and poisons activation when cached backe
       ok: true,
       result: { kind: 'committed', revision: initial.result.revision + 1 },
     });
+    await waitFor(() => drainRequests === 1, 'backend disposal failure drain');
     assert.equal(drainRequests, 1);
     assert.equal(activationGates.length, 1);
     await assert.rejects(
@@ -742,4 +849,37 @@ async function withCoordinator(
     await owner.close();
     await rm(base, { recursive: true, force: true });
   }
+}
+
+async function settlesWithin<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} did not settle`)), 2_000);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`${label} did not occur`);
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }

@@ -102,7 +102,7 @@ describe('session row actions fail soft', () => {
     );
     assert.match(
       ui,
-      /<MenuTrigger[\s\S]*?disabled=\{actionBusy\}[\s\S]*?<MenuPopup[\s\S]*?<MenuItem[\s\S]*?disabled=\{actionBusy\}/,
+      /<Menu[\s\S]*?button=\{\{[\s\S]*?isDisabled:\s*actionBusy[\s\S]*?<MenuItem[\s\S]*?isDisabled=\{actionBusy\}/,
       'the overflow trigger and its menu actions must be disabled while the row owns an action',
     );
     assert.doesNotMatch(ui, /aria-busy=\{pendingAction ===/);

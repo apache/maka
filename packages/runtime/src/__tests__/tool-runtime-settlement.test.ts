@@ -1,7 +1,12 @@
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionHeader } from '@maka/core';
+import {
+  createBypassExecutionBoundary,
+  createGenesisExecutionBoundary,
+  type LlmConnection,
+  type SessionHeader,
+} from '@maka/core';
 import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
@@ -27,6 +32,54 @@ describe('ToolRuntime settlement', () => {
       result,
       modelOutput: { type: 'json', value: result },
     });
+  });
+
+  it('requires the bypass boundary before dispatching Client Capability tools', async () => {
+    let calls = 0;
+    const clientTool: MakaTool = {
+      name: 'client_browser',
+      description: 'client browser',
+      parameters: {},
+      categoryHint: 'client_capability',
+      impl: () => {
+        calls += 1;
+        return { ok: true };
+      },
+    };
+    const settle = (runtime: ToolRuntime, toolCallId: string) =>
+      runtime.settleToolCall({
+        tool: clientTool,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId,
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
+      });
+
+    const blocked = await settle(
+      makeRuntime({
+        readExecutionBoundary: async () => createGenesisExecutionBoundary('ask'),
+      }),
+      'call-managed',
+    );
+    assert.equal(calls, 0);
+    assert.match(
+      String((blocked.result as { error?: unknown }).error),
+      /require the Bypass execution boundary/,
+    );
+
+    const allowed = await settle(
+      makeRuntime({
+        readExecutionBoundary: async () => createBypassExecutionBoundary(0),
+      }),
+      'call-bypass',
+    );
+    assert.equal(calls, 1);
+    assert.deepEqual(allowed.result, { ok: true });
   });
 
   it('keeps the durable Bash command while omitting it from the live model output', async () => {
@@ -308,7 +361,9 @@ describe('ToolRuntime settlement', () => {
 });
 
 function makeRuntime(
-  overrides: Pick<ToolRuntimeInput, 'materializeDefaultToolResultOutput'> = {},
+  overrides: Partial<
+    Pick<ToolRuntimeInput, 'materializeDefaultToolResultOutput' | 'readExecutionBoundary'>
+  > = {},
 ): ToolRuntime {
   return createTestToolRuntime({
     sessionId: 'session-1',

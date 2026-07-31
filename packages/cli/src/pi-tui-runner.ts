@@ -33,7 +33,7 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import type { ForeignSessionStore } from '@maka/storage';
-import type { GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
+import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
 import type { ModelChoice } from './connection-target.js';
 import {
   listApiKeyOnboardableProviders,
@@ -2173,6 +2173,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const slashCommands: MakaSlashCommand[] = [
     {
+      name: 'context',
+      description: 'Show latest request context usage',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /context',
+          });
+          requestRender();
+          return;
+        }
+        void runControl(async () => {
+          const diagnostics: ContextDiagnostics = input.driver.getContextDiagnostics
+            ? await input.driver.getContextDiagnostics()
+            : { status: 'unavailable', reason: 'trace_unavailable' };
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: formatContextDiagnostics(diagnostics),
+          });
+          requestRender();
+        });
+      },
+    },
+    {
       name: 'compact',
       description: 'Compact session context',
       run: (parts: string[]) => {
@@ -2658,6 +2684,85 @@ const BOTTOM_PICKER_MARGIN_ROWS = 4;
 // full slash-command menu, so a bare `/` shows every command rather than
 // silently clipping the last command.
 const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
+
+function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
+  if (diagnostics.status === 'unavailable') {
+    return diagnostics.reason === 'no_completed_request'
+      ? 'Context unavailable\nNo completed provider request exists for this session.'
+      : 'Context unavailable\nProvider request trace data could not be read.';
+  }
+
+  const lines = [
+    'Context',
+    'Latest completed request',
+    `${diagnostics.providerId} · ${diagnostics.modelId}`,
+    '',
+    'Usage',
+  ];
+  const pushMetric = (label: string, value: string, source: string): void => {
+    lines.push(`  ${label}: ${value}`, `    ${source}`);
+  };
+  pushMetric(
+    'Used',
+    diagnostics.inputTokens === undefined
+      ? 'unavailable'
+      : `${formatContextCount(diagnostics.inputTokens)} tokens`,
+    diagnostics.inputTokens === undefined ? 'provider report missing' : 'provider-reported',
+  );
+  pushMetric(
+    'Total',
+    diagnostics.contextWindow === undefined
+      ? 'unavailable'
+      : `${formatContextCount(diagnostics.contextWindow)} tokens`,
+    diagnostics.contextWindow === undefined
+      ? 'request-model snapshot missing'
+      : 'request-model snapshot',
+  );
+
+  if (diagnostics.inputTokens !== undefined && diagnostics.contextWindow !== undefined) {
+    const free = Math.max(0, diagnostics.contextWindow - diagnostics.inputTokens);
+    const percent = Math.round((diagnostics.inputTokens / diagnostics.contextWindow) * 100);
+    pushMetric('Free', `${formatContextCount(free)} tokens`, 'calculated');
+    pushMetric('Share', `${percent}%`, 'calculated');
+  } else {
+    pushMetric('Free', 'unavailable', 'requires Used and Total');
+    pushMetric('Share', 'unavailable', 'requires Used and Total');
+  }
+
+  lines.push('', 'Estimated breakdown');
+  if (diagnostics.segments.length === 0) {
+    lines.push('  Unavailable', '    no captured request segments');
+  } else {
+    const labels: Record<(typeof diagnostics.segments)[number]['kind'], string> = {
+      system_instructions: 'System instructions',
+      tool_definitions: 'Tool definitions',
+      messages: 'Messages',
+      other: 'Other options',
+    };
+    for (const segment of diagnostics.segments) {
+      lines.push(
+        `  ${labels[segment.kind]}: ≈${formatContextCount(segment.estimatedTokens)} tokens`,
+      );
+    }
+  }
+
+  if (diagnostics.compaction) {
+    const compaction = diagnostics.compaction;
+    lines.push(
+      '',
+      'History compaction',
+      `  ${compaction.phase.replace('_', '-')} · ${formatContextCount(compaction.eventCount)} events / ${formatContextCount(compaction.turnCount)} turns`,
+      `  ≈${formatContextCount(compaction.estimatedTokens)} tokens · local estimate`,
+    );
+  } else {
+    lines.push('', 'History compaction', '  Unavailable for this request');
+  }
+  return lines.join('\n');
+}
+
+function formatContextCount(value: number): string {
+  return value.toLocaleString('en-US');
+}
 
 function flattenLinkedSessionTree(
   roots: readonly SessionSummary[],

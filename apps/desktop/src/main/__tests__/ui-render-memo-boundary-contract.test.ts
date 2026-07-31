@@ -313,6 +313,10 @@ class FakeElement {
   readonly namespaceURI = 'http://www.w3.org/1999/xhtml';
   readonly nodeName: string;
   readonly nodeType = 1;
+  readonly style = {
+    setProperty() {},
+    removeProperty() {},
+  } as unknown as CSSStyleDeclaration;
   readonly tagName: string;
   parentNode: FakeElement | null = null;
   textContent = '';

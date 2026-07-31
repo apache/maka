@@ -121,7 +121,7 @@ describe('Settings coming-soon cleanup contract', () => {
 
   it('keeps Voice settings boundary copy in current-policy language', async () => {
     const settings = await readSettingsCombinedSource();
-    const voicePage = settings.match(/function VoiceModelsSettingsPage\(\)[\s\S]*?async function readBrowserMicrophonePermission/);
+    const voicePage = settings.match(/function VoiceModelsSettingsPage\([\s\S]*?async function readBrowserMicrophonePermission/);
     const voiceCopy = getVoiceSettingsCopy('zh');
 
     assert.ok(voicePage, 'Voice settings page block must exist');
@@ -281,7 +281,16 @@ describe('Settings coming-soon cleanup contract', () => {
       'Permission Center must release only the action it owns and avoid state writes after unmount',
     );
     assert.match(permissionPage, /busy=\{pendingPermAction !== null\}/);
-    assert.match(permissionPage, /pendingKey=\{pendingPermAction === `\$\{id\}:request` \? 'request'/);
+    assert.match(
+      permissionPage,
+      /pendingKey=\{[\s\S]*pendingPermAction === `\$\{id\}:request`[\s\S]*pendingPermAction === `\$\{id\}:dragGrant`[\s\S]*\? 'dragGrant'/,
+      'all three permission actions must expose their reachable pending label and aria-busy state',
+    );
+    assert.match(
+      permissionPage,
+      /window\.addEventListener\('focus', refreshAfterSystemSettings\)/,
+      'Permission Center must re-read TCC after the user returns from System Settings',
+    );
   });
 
   it('keeps bot readiness waiting states action-oriented', async () => {

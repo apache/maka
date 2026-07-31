@@ -22,19 +22,13 @@ const probeScroller = `(() => {
     scrollHeight: scroller.scrollHeight,
     clientHeight: scroller.clientHeight,
     distanceFromBottom: Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight),
-    // The warm-up forces inline content-visibility per chunk and clears it on
-    // release; any remaining forced turn means the walk is still in flight.
-    // Guards against a stalled compositor freezing MID-WALK geometry into a
-    // false "settled" (frozen reads are equal reads).
-    warming: Boolean(document.querySelector('.maka-turn[style*="content-visibility"]')),
   };
 })()`;
 
 // The fixture's 24 turns are 60 filler lines each (>1000px real, 250px as a
-// placeholder), so the whole transcript is ~15k px un-warmed vs ~32k warmed.
-// A settle check must first see final-scale height — two early reads agreeing
-// on the PLACEHOLDER height would otherwise declare "settled" before the
-// warm-up even starts (fonts / lazy-markdown gates delay it on slow machines).
+// placeholder), so the whole transcript is ~15k px un-warmed vs ~40k warmed.
+// Asserted once the walk reports itself done, as a guard that it actually
+// rewrote the placeholder geometry rather than finishing over nothing.
 const WARMED_HEIGHT_FLOOR = 24 * 800;
 
 type ColumnGeometry = {
@@ -79,21 +73,32 @@ async function probeColumnGeometry(page: import('@playwright/test').Page): Promi
   });
 }
 
+/**
+ * Wait for the warm-up's own terminal state, which the scroller publishes as
+ * `data-turn-warmup="settled"`.
+ *
+ * This used to be inferred: no chunk currently forced, final-scale height, and
+ * two consecutive 500ms reads agreeing. The walk is chunked and pauses between
+ * chunks, so that describes an idle gap just as well as the end — under 50x CPU
+ * throttling this suite reports two 29068px reads in a row with 8 of 24 turns
+ * still un-warmed and a final height of 40452px, i.e. a "settled" that is a
+ * third short. The same guess fails the other way whenever the sampler keeps
+ * straddling chunk boundaries: every read differs from the last, the predicate
+ * is false for all 30 samples, and the poll dies on its budget while the
+ * warm-up is working normally.
+ *
+ * Neither is a slow machine; both are the criterion. The walk knows when it is
+ * done, so ask it.
+ */
 async function settleGeometry(page: import('@playwright/test').Page, options: { pinned: boolean }): Promise<void> {
-  let previousHeight = -1;
-  await expect.poll(async () => {
-    const current = await page.evaluate(probeScroller) as {
-      scrollHeight: number;
-      distanceFromBottom: number;
-      warming: boolean;
-    };
-    const settled = !current.warming
-      && current.scrollHeight > WARMED_HEIGHT_FLOOR
-      && current.scrollHeight === previousHeight
-      && (!options.pinned || current.distanceFromBottom === 0);
-    previousHeight = current.scrollHeight;
-    return settled;
-  }, { timeout: 15_000, intervals: [500] }).toBe(true);
+  await expect(page.locator('.maka-chatViewport[data-turn-warmup="settled"]')).toBeAttached({ timeout: 15_000 });
+  const settled = await page.evaluate(probeScroller) as { scrollHeight: number };
+  expect(settled.scrollHeight, JSON.stringify(settled)).toBeGreaterThan(WARMED_HEIGHT_FLOOR);
+  // The last chunk's inflation reaches the pinned follower through a
+  // ResizeObserver, one layout after the walk hands back.
+  if (options.pinned) {
+    await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
+  }
 }
 
 test('chat viewport and message column share the composer centerline', async ({ longTranscriptWindow: page }) => {
@@ -157,8 +162,8 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
   // distance stays 0 while scrollHeight rises to its final value.
   await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
 
-  // Geometry settled = final-scale height and two consecutive reads agreeing
-  // on it while still pinned. A fixed sleep would race the warm-up.
+  // And the pin is still 0 once the walk reports itself done, which is what
+  // makes the poll above a contract rather than a lucky early read.
   await settleGeometry(page, { pinned: true });
 });
 

@@ -1,0 +1,11 @@
+{
+  "slice": "pr6-modal-layers",
+  "scopes": [
+    {
+      "name": "toast-viewport",
+      "selectors": [
+        ":is(body:has([data-maka-contract=\"shell-topbar-rail\"]) [role=\"region\"][aria-label=\"通知\"], body:has([data-maka-contract=\"shell-topbar-rail\"]) [role=\"region\"][aria-label=\"通知\"] *)"
+      ]
+    }
+  ]
+}

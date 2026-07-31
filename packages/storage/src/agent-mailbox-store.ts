@@ -1,6 +1,7 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { appendFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_MAILBOX_LIST_MAX,
   AGENT_MAILBOX_MAX_MESSAGES_PER_TEAM_RUN,
@@ -17,6 +18,12 @@ import {
 } from '@maka/core/agent-mailbox';
 import { assertSafeSessionId } from './session-store.js';
 import { chainWrite } from './write-queue.js';
+import {
+  acquireOperationalStateDatabase,
+  completeOperationalStoreCutover,
+  type OperationalStateDatabaseLease,
+  type OperationalStoreCutoverFailpoint,
+} from './operational-state-store.js';
 
 export interface AgentMailboxStoreDeps {
   newId?: () => string;
@@ -28,6 +35,22 @@ export function createAgentMailboxStore(
   deps: AgentMailboxStoreDeps = {},
 ): AgentMailboxStore {
   return new FileAgentMailboxStore(workspaceRoot, deps);
+}
+
+export interface SqliteAgentMailboxStore extends AgentMailboxStore {
+  ready(): Promise<void>;
+  close(): void;
+}
+
+export interface SqliteAgentMailboxStoreDeps extends AgentMailboxStoreDeps {
+  failpoint?: (point: OperationalStoreCutoverFailpoint) => void;
+}
+
+export function createSqliteAgentMailboxStore(
+  workspaceRoot: string,
+  deps: SqliteAgentMailboxStoreDeps = {},
+): SqliteAgentMailboxStore {
+  return new SqliteAgentMailboxStoreImpl(workspaceRoot, deps);
 }
 
 class FileAgentMailboxStore implements AgentMailboxStore {
@@ -84,9 +107,7 @@ class FileAgentMailboxStore implements AgentMailboxStore {
       };
       if (!isAgentMailboxMessage(message))
         throw new Error('Generated agent mailbox message is invalid');
-      const path = this.filePath(sessionId);
-      await mkdir(dirname(path), { recursive: true });
-      await appendFile(path, `${JSON.stringify(message)}\n`, 'utf8');
+      await this.appendMessage(sessionId, message);
       total = scope.length + 1;
     });
     if (!message) throw new Error('Agent mailbox write did not produce a message');
@@ -120,7 +141,9 @@ class FileAgentMailboxStore implements AgentMailboxStore {
     return join(this.sessionsRoot, sessionId, 'agent-mailbox.jsonl');
   }
 
-  private async readAll(sessionId: string): Promise<AgentMailboxMessage[]> {
+  protected async readAll(sessionId: string): Promise<AgentMailboxMessage[]> {
+    const canonical = await this.readCanonicalMessages(sessionId);
+    if (canonical) return canonical;
     let text: string;
     try {
       text = await readFile(this.filePath(sessionId), 'utf8');
@@ -156,6 +179,226 @@ class FileAgentMailboxStore implements AgentMailboxStore {
     }
     return messages;
   }
+
+  protected async readCanonicalMessages(
+    _sessionId: string,
+  ): Promise<AgentMailboxMessage[] | undefined> {
+    return undefined;
+  }
+
+  protected async appendMessage(sessionId: string, message: AgentMailboxMessage): Promise<void> {
+    const path = this.filePath(sessionId);
+    await mkdir(dirname(path), { recursive: true });
+    await appendFile(path, `${JSON.stringify(message)}\n`, 'utf8');
+  }
+}
+
+class SqliteAgentMailboxStoreImpl extends FileAgentMailboxStore implements SqliteAgentMailboxStore {
+  readonly #lease: OperationalStateDatabaseLease;
+  readonly #ready: Promise<void>;
+
+  constructor(workspaceRoot: string, deps: SqliteAgentMailboxStoreDeps) {
+    super(workspaceRoot, deps);
+    const root = resolve(workspaceRoot);
+    this.#lease = acquireOperationalStateDatabase(root);
+    this.#ready = importLegacyAgentMailboxState(root, this.#lease, deps.failpoint);
+  }
+
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  close(): void {
+    this.#lease.close();
+  }
+
+  protected override async readCanonicalMessages(
+    sessionId: string,
+  ): Promise<AgentMailboxMessage[]> {
+    await this.#ready;
+    return readSqliteAgentMailboxMessages(this.#lease.database, sessionId);
+  }
+
+  protected override async appendMessage(
+    sessionId: string,
+    message: AgentMailboxMessage,
+  ): Promise<void> {
+    await this.#ready;
+    this.#lease.transaction('write', () => {
+      insertAgentMailboxMessage(this.#lease.database, sessionId, message);
+    });
+  }
+}
+
+interface LegacyAgentMailbox {
+  sessionId: string;
+  messages: AgentMailboxMessage[];
+}
+
+async function importLegacyAgentMailboxState(
+  root: string,
+  lease: OperationalStateDatabaseLease,
+  failpoint?: (point: OperationalStoreCutoverFailpoint) => void,
+): Promise<void> {
+  const ledgers = await readLegacyAgentMailboxes(root);
+  const fingerprint = `sha256:${createHash('sha256')
+    .update(JSON.stringify(ledgers))
+    .digest('hex')}`;
+  completeOperationalStoreCutover(lease, {
+    storeName: 'workflow_agent_mailbox',
+    sourcePath: join(root, 'sessions'),
+    sourceFingerprint: fingerprint,
+    failpoint,
+    importAndValidate: (database) => {
+      let messageCount = 0;
+      for (const ledger of ledgers) {
+        for (const message of ledger.messages) {
+          insertOrValidateAgentMailboxMessage(database, ledger.sessionId, message);
+          messageCount += 1;
+        }
+      }
+      const persisted = database
+        .prepare('SELECT COUNT(*) AS count FROM workflow_agent_mailbox_messages')
+        .get() as { count?: unknown };
+      if (persisted.count !== messageCount) {
+        throw new Error('Agent mailbox cutover row-count validation failed');
+      }
+      return { sessions: ledgers.length, messages: messageCount };
+    },
+  });
+}
+
+async function readLegacyAgentMailboxes(root: string): Promise<LegacyAgentMailbox[]> {
+  const sessionsRoot = join(root, 'sessions');
+  let entries;
+  try {
+    entries = await readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const result: LegacyAgentMailbox[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory()) continue;
+    assertSafeSessionId(entry.name);
+    let text: string;
+    try {
+      text = await readFile(join(sessionsRoot, entry.name, 'agent-mailbox.jsonl'), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    result.push({
+      sessionId: entry.name,
+      messages: decodeAgentMailboxText(text, entry.name),
+    });
+  }
+  return result;
+}
+
+function decodeAgentMailboxText(text: string, sessionId: string): AgentMailboxMessage[] {
+  const messages: AgentMailboxMessage[] = [];
+  const seen = new Set<string>();
+  const lastByScope = new Map<string, number>();
+  for (const [index, line] of text.split(/\n/).entries()) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`Invalid agent mailbox JSONL line ${index + 1}: ${String(error)}`);
+    }
+    if (!isAgentMailboxMessage(parsed) || parsed.sessionId !== sessionId || seen.has(parsed.id)) {
+      throw new Error(`Invalid agent mailbox JSONL line ${index + 1}: unexpected message shape`);
+    }
+    const scope = `${parsed.teamId}\u0000${parsed.parentRunId}`;
+    if (parsed.seq <= (lastByScope.get(scope) ?? 0)) {
+      throw new Error(`Invalid agent mailbox JSONL line ${index + 1}: non-monotonic sequence`);
+    }
+    seen.add(parsed.id);
+    lastByScope.set(scope, parsed.seq);
+    messages.push(parsed);
+  }
+  return messages;
+}
+
+function readSqliteAgentMailboxMessages(
+  database: DatabaseSync,
+  sessionId: string,
+): AgentMailboxMessage[] {
+  assertSafeSessionId(sessionId);
+  const rows = database
+    .prepare(`
+      SELECT record_json
+      FROM workflow_agent_mailbox_messages
+      WHERE session_id = ?
+      ORDER BY sequence
+    `)
+    .all(sessionId) as Array<{ record_json?: unknown }>;
+  return rows.map((row, index) => {
+    if (typeof row.record_json !== 'string') {
+      throw new Error(`Invalid SQLite agent mailbox message at sequence ${index}`);
+    }
+    const parsed = JSON.parse(row.record_json);
+    if (!isAgentMailboxMessage(parsed) || parsed.sessionId !== sessionId) {
+      throw new Error(`Invalid SQLite agent mailbox message at sequence ${index}`);
+    }
+    return parsed;
+  });
+}
+
+function insertAgentMailboxMessage(
+  database: DatabaseSync,
+  sessionId: string,
+  message: AgentMailboxMessage,
+): void {
+  const row = database
+    .prepare(`
+      SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
+      FROM workflow_agent_mailbox_messages
+      WHERE session_id = ?
+    `)
+    .get(sessionId) as { sequence?: unknown };
+  if (typeof row.sequence !== 'number' || !Number.isSafeInteger(row.sequence)) {
+    throw new Error('Invalid next agent mailbox sequence');
+  }
+  database
+    .prepare(`
+      INSERT INTO workflow_agent_mailbox_messages(
+        session_id, sequence, message_id, team_id, parent_run_id,
+        scope_sequence, record_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      sessionId,
+      row.sequence,
+      message.id,
+      message.teamId,
+      message.parentRunId,
+      message.seq,
+      JSON.stringify(message),
+    );
+}
+
+function insertOrValidateAgentMailboxMessage(
+  database: DatabaseSync,
+  sessionId: string,
+  message: AgentMailboxMessage,
+): void {
+  const existing = database
+    .prepare(`
+      SELECT record_json
+      FROM workflow_agent_mailbox_messages
+      WHERE session_id = ? AND message_id = ?
+    `)
+    .get(sessionId, message.id) as { record_json?: unknown } | undefined;
+  if (existing) {
+    if (existing.record_json !== JSON.stringify(message)) {
+      throw new Error(`Agent mailbox cutover conflict: ${message.id}`);
+    }
+    return;
+  }
+  insertAgentMailboxMessage(database, sessionId, message);
 }
 
 function validateSendInput(input: AgentMailboxSendInput): void {

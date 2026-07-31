@@ -4,6 +4,7 @@ import {
   dequeueInteractionByToolUseId,
   enqueueInteraction,
   type InteractionQueues,
+  type LiveTurnProjection,
 } from '@maka/ui';
 import type {
   CreateSessionInput,
@@ -35,7 +36,7 @@ export interface CompanionSessionApi {
   branchFromTurn(sessionId: string, input: { sourceTurnId: string; name?: string }): Promise<SessionSummary>;
   create(input: Partial<CreateSessionInput>): Promise<SessionSummary>;
   setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary>;
-  remove(sessionId: string): Promise<void>;
+  cleanupQuoteCompanion(sessionId: string): Promise<void>;
   send(
     sessionId: string,
     command: { type: 'send'; turnId: string; text: string; quotes?: QuoteRef[] },
@@ -67,12 +68,44 @@ export interface EnsureCompanionForkDeps {
   /** Fired as soon as creation returns, before the permission pin round-trip.
    *  The host uses the id to hide this ephemeral child immediately. */
   onForkCreated?: (session: SessionSummary) => void;
+  /** Fired only after the main-process cleanup authority confirms deletion. */
+  onForkCleanupSucceeded?: (sessionId: string) => void;
 }
 
 /** The latest durable (settled) turn of the source session — the fork boundary.
  *  A `running` turn is skipped so a fork never branches mid-turn. */
 export function latestSettledTurnId(turns: readonly TurnRecord[]): string | undefined {
   return [...turns].reverse().find((turn) => turn.status !== 'running')?.turnId;
+}
+
+/**
+ * The shared Composer's `streaming` input means "a turn is interruptible", not
+ * merely "a text delta has arrived". Keep the companion interruptible from the
+ * optimistic waiting projection through live output; `processing` only chooses
+ * the quieter pre-first-token presentation inside that same in-flight window.
+ */
+export function deriveCompanionComposerState(
+  turnInFlight: boolean,
+  liveTurn: LiveTurnProjection | undefined,
+): { streaming: boolean; processing: boolean } {
+  const streaming = turnInFlight && liveTurn?.terminal !== true;
+  return {
+    streaming,
+    processing: streaming && (!liveTurn || liveTurn.phase === 'waiting'),
+  };
+}
+
+/**
+ * The main-process cleanup authority durably records the fork before attempting
+ * the complete session-removal path. A rejection here means the intent remains
+ * queued for the next `sessions.list` call or Desktop restart, so renderer
+ * lifecycle paths can remain fire-and-forget without losing recovery.
+ */
+function scheduleCompanionCleanup(deps: EnsureCompanionForkDeps, sessionId: string): void {
+  void deps.api
+    .cleanupQuoteCompanion(sessionId)
+    .then(() => deps.onForkCleanupSucceeded?.(sessionId))
+    .catch(() => {});
 }
 
 /**
@@ -121,7 +154,7 @@ export async function ensureCompanionFork(
   }
 
   if (isDisposed()) {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };
   }
   // `sessions:branchFromTurn` broadcasts `sessions:changed(created)` before the
@@ -135,15 +168,15 @@ export async function ensureCompanionFork(
   try {
     ready = await api.setPermissionMode(created.id, COMPANION_PERMISSION_MODE);
   } catch {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'error', code: 'permission_pin_failed' };
   }
   if (ready.permissionMode !== COMPANION_PERMISSION_MODE) {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'error', code: 'permission_pin_failed' };
   }
   if (isDisposed()) {
-    void api.remove(created.id).catch(() => {});
+    scheduleCompanionCleanup(deps, created.id);
     return { status: 'disposed' };
   }
 

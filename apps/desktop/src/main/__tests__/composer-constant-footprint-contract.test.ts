@@ -140,13 +140,25 @@ describe('PR-COMPOSER-CONSTANT-FOOTPRINT-0 contract (issue #740)', () => {
 
   it('stop and send use the governed 32px tier so streaming does not change toolbar height', async () => {
     const source = await readFile(COMPOSER_TSX, 'utf8');
-    const stopBlock = source.match(/props\.streaming\s*\?\s*\(\s*<UiButton[\s\S]*?<\/UiButton>/);
+    // #1565 PR 3: Astryx Button's default `md` tier is 32px
+    // (--size-element-md). Stop (streaming) and send (rest) both stay on that
+    // default, so neither may carry a size override that would change the
+    // toolbar height when streaming toggles.
+    const stopBlock = source.match(/props\.streaming \? \(\s*<UiButton[\s\S]*?\/>/);
     assert.ok(stopBlock, 'stop button block (streaming branch) not found');
-    assert.match(stopBlock[0], /size="md"/);
-    assert.match(source, /variant="default"\s+size="icon"[\s\S]*aria-label=\{copy\.sendLabel\}/);
+    assert.doesNotMatch(stopBlock[0], /size="/, 'stop button must stay on the default 32px md tier');
+    const sendBlock = source.match(
+      /<IconButton\s+variant="primary"[\s\S]*?icon=\{<ArrowUp/,
+    );
+    assert.ok(sendBlock, 'send button block (rest branch) not found');
+    assert.doesNotMatch(sendBlock[0], /size="/, 'send button must stay on the default 32px md tier');
+    assert.match(
+      source,
+      /<IconButton\s+variant="primary"\s+type="submit"[\s\S]*?label=\{copy\.sendLabel\}/,
+    );
   });
 
-  it('negative cases: same-block duplicate, selector-list companion, compound .maka-composer.composer padding return, .maka-composer padding return, textarea min-h-* return, stop md return', () => {
+  it('negative cases: same-block duplicate, selector-list companion, compound .maka-composer.composer padding return, .maka-composer padding return, textarea min-h-* return, stop off-tier return', () => {
     const sameBlock = '.composer { padding: var(--space-2) var(--space-6) var(--space-2); padding: var(--space-3) var(--space-6) var(--space-4); }';
     assert.throws(
       () => assertExactlyOnce(sameBlock, '.composer', 'padding', 'var(--space-2) var(--space-6) var(--space-2)', '.composer padding'),
@@ -169,9 +181,11 @@ describe('PR-COMPOSER-CONSTANT-FOOTPRINT-0 contract (issue #740)', () => {
     assert.equal(restBlocks(makaReturn, '.maka-composer').flatMap((b) => declarationsIn(b, 'padding')).length, 1, 'a .maka-composer padding return must be caught (form alias)');
     const tsxReturn = '          className="maka-composer-textarea min-h-11 resize-none"';
     assert.match(tsxReturn, /min-h-[a-z0-9]+/i, 'a returned textarea min-h-* utility must be caught');
-    const stopMdReturn = 'props.streaming ? (\n  <UiButton\n    className="maka-button"\n    variant="default"\n    type="button"\n  >\n    停止\n  </UiButton>\n)';
-    const stopMdBlock = stopMdReturn.match(/props\.streaming\s*\?\s*\(\s*<UiButton[\s\S]*?<\/UiButton>/);
-    assert.ok(stopMdBlock, 'stop block extraction must work on the fixture');
-    assert.throws(() => assert.match(stopMdBlock[0]!, /size="(?:icon-sm|sm)"/), 'a stop button defaulting to md (no size) must be caught end-to-end (h-9/36px ≠ send h-8/32px)');
+    // #1565 PR 3: with Astryx the governed 32px tier is the md default, so the
+    // regression to catch is a size override leaving the tier.
+    const stopOffTierReturn = 'props.streaming ? (\n  <UiButton\n    variant="primary"\n    size="lg"\n    label="停止"\n  />\n)';
+    const stopOffTierBlock = stopOffTierReturn.match(/props\.streaming \? \(\s*<UiButton[\s\S]*?\/>/);
+    assert.ok(stopOffTierBlock, 'stop block extraction must work on the fixture');
+    assert.throws(() => assert.doesNotMatch(stopOffTierBlock[0]!, /size="/), 'a stop button leaving the default md tier (size override) must be caught end-to-end (lg 36px ≠ md 32px)');
   });
 });

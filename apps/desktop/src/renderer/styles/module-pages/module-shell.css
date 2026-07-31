@@ -99,12 +99,6 @@
   min-width: 180px;
 }
 
-.maka-module-hub-selector-option {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
 .maka-module-main-actions {
   display: inline-flex;
   align-items: center;

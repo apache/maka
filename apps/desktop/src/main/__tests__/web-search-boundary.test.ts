@@ -222,10 +222,11 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     );
     assert.match(page![0], /const credentialActionBusy = pendingCredentialAction !== null \|\| testing/);
     assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
-    assert.match(page![0], /disabled=\{credentialActionBusy \|\| usingEnvKey \|\| draftKey\.length === 0\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| usingEnvKey \|\| draftKey\.length === 0\}/);
     assert.match(page![0], /pendingCredentialAction === 'save' \? copy\.saving : copy\.saveKey/);
-    assert.match(page![0], /disabled=\{credentialActionBusy \|\| \(draftKey\.length === 0 && !hasUsableKey\)\}/);
-    assert.match(page![0], /disabled=\{credentialActionBusy\}[\s\S]*pendingCredentialAction === 'clear' \? copy\.clearing : copy\.clearKey/);
+    assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| \(draftKey\.length === 0 && !hasUsableKey\)\}/);
+    assert.match(page![0], /isDisabled=\{credentialActionBusy\}[\s\S]*pendingCredentialAction === 'clear' \? copy\.clearing : copy\.clearKey/);
     assert.match(page![0], /onChange=\{\(event\) => updateLiveQuery\(event\.currentTarget\.value\)\}/);
     assert.match(page![0], /disabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
   });
@@ -321,7 +322,8 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.match(zhCopy.disabledReasons.noKey, /TAVILY_API_KEY/);
     assert.match(zhCopy.disabledReasons.disabled, /启用联网搜索/);
     assert.match(zhCopy.disabledReasons.noQuery, /输入查询/);
-    assert.match(settings, /disabled=\{liveQueryRunning \|\| queryDisabledReason !== null\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(settings, /isDisabled=\{liveQueryRunning \|\| queryDisabledReason !== null\}/);
     assert.match(settings, /\{queryDisabledReason\}/);
     assert.doesNotMatch(
       settings,

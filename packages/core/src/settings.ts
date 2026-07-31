@@ -20,6 +20,7 @@ import {
   isUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
+import { defaultVoiceSettings, normalizeVoiceSettings, type VoiceSettings } from './voice.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -303,6 +304,7 @@ export interface AppSettings {
   chatDefaults: ChatDefaultsSettings;
   notifications: NotificationSettings;
   system: SystemSettings;
+  voice: VoiceSettings;
 }
 
 export interface UsageRequestLog {
@@ -380,6 +382,10 @@ export type UpdateAppSettingsInput = Partial<{
   chatDefaults: Partial<ChatDefaultsSettings>;
   notifications: Partial<NotificationSettings>;
   system: Partial<SystemSettings>;
+  voice: Partial<{
+    recognition: Partial<VoiceSettings['recognition']>;
+    realtime: Partial<VoiceSettings['realtime']>;
+  }>;
   webSearch: WebSearchSettingsPatch;
 }>;
 
@@ -463,6 +469,7 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
+    voice: defaultVoiceSettings(),
   };
 }
 
@@ -523,6 +530,16 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
+    voice: normalizeVoiceSettings({
+      recognition: {
+        ...current.voice.recognition,
+        ...(patch.voice?.recognition ?? {}),
+      },
+      realtime: {
+        ...current.voice.realtime,
+        ...(patch.voice?.realtime ?? {}),
+      },
+    }),
     webSearch: mergeWebSearchSettings(current.webSearch, patch.webSearch),
   };
 }
@@ -545,6 +562,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     chatDefaults: value.chatDefaults,
     notifications: value.notifications,
     system: value.system,
+    voice: value.voice,
   });
   // PR110b: milestones bypass the generic patch surface so we can
   // sanitize them with the closed-enum + at-most-one validator on
@@ -621,6 +639,7 @@ export function normalizeSettings(input: unknown): AppSettings {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
     },
+    voice: normalizeVoiceSettings(base.voice),
   };
 }
 

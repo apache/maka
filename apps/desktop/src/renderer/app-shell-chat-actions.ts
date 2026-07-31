@@ -84,6 +84,9 @@ export interface AppShellChatActions {
       skillIds?: readonly string[];
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
+      displayText?: string;
+      voiceOperationId?: string;
+      onSessionResolved?: (sessionId: string) => void;
     },
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
@@ -259,6 +262,9 @@ export function createAppShellChatActions(deps: {
       skillIds?: readonly string[];
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
+      displayText?: string;
+      voiceOperationId?: string;
+      onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
     const skillIds = options.skillIds;
@@ -319,6 +325,8 @@ export function createAppShellChatActions(deps: {
           type: 'send',
           turnId,
           text,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
           ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
@@ -335,6 +343,7 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
+        options.onSessionResolved?.(session.id);
         if (newChatOwner && isNewChatSendSurfaceActive(newChatOwner)) {
           showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
         }
@@ -344,7 +353,8 @@ export function createAppShellChatActions(deps: {
           showOptimisticUserMessage(
             session.id,
             turnId,
-            skillInvocationDisplayText(text, sendResult.skillInvocation),
+            options.displayText ??
+              skillInvocationDisplayText(text, sendResult.skillInvocation),
             sendResult.attachments,
             {
               replaceCurrentMessages: true,
@@ -368,6 +378,8 @@ export function createAppShellChatActions(deps: {
         type: 'send',
         turnId,
         text,
+        ...(options.displayText ? { displayText: options.displayText } : {}),
+        ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
         ...(attachmentItems ? { attachmentItems } : {}),
@@ -382,13 +394,15 @@ export function createAppShellChatActions(deps: {
         restoreOptimisticStatus = undefined;
         return false;
       }
+      options.onSessionResolved?.(sessionId);
       if (activeIdRef.current === sessionId) {
         showSkillInvocationFeedback(uiLocale, toastApi, sendResult.skillInvocation);
       }
       showOptimisticUserMessage(
         sessionId,
         turnId,
-        skillInvocationDisplayText(text, sendResult.skillInvocation),
+        options.displayText ??
+          skillInvocationDisplayText(text, sendResult.skillInvocation),
         sendResult.attachments,
         { ...(quotes && quotes.length > 0 ? { quotes } : {}) },
       );

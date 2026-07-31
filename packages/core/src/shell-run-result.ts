@@ -373,7 +373,7 @@ function legacyPipeOutput(value: Record<string, unknown>): Extract<ShellOutput, 
 
 function isLegacyTerminalStatus(
   value: unknown,
-): value is Exclude<ShellRunStatus, 'running' | 'orphaned'> {
+): value is Exclude<ShellRunStatus, 'starting' | 'running' | 'orphaned'> {
   return (
     value === 'completed' || value === 'failed' || value === 'timed_out' || value === 'cancelled'
   );

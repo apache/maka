@@ -114,7 +114,6 @@ test('exports one session only and excludes credential/config canaries', async (
         '.maka_cli_claude_device_id',
         'credentials.json',
         'llm-connections.json',
-        'sessions.sqlite',
         `artifacts/${other.id}`,
         `sessions/${other.id}`,
       ].sort(),
@@ -182,7 +181,7 @@ test('exports one session only and excludes credential/config canaries', async (
   });
 });
 
-test('exports while the session metadata WAL remains open and protects its sidecars', async () => {
+test('exports while the operational DB remains open and protects its sidecars', async () => {
   await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
     const sessions = createSessionStore(stateRoot);
     try {
@@ -195,7 +194,7 @@ test('exports while the session metadata WAL remains open and protects its sidec
         text: 'selected transcript',
       });
 
-      const sidecars = ['sessions.sqlite-wal', 'sessions.sqlite-shm'];
+      const sidecars = ['runtime.sqlite-wal', 'runtime.sqlite-shm'];
       const liveEntries = await readdir(stateRoot);
       for (const sidecar of sidecars) {
         assert.ok(liveEntries.includes(sidecar), liveEntries.join(', '));

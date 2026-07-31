@@ -1,6 +1,39 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { createPinnedBottomFollower } from '../pinned-bottom.js';
+import {
+  createPinnedBottomFollower,
+  resolvePinnedBottomScroll,
+} from '../pinned-bottom.js';
+
+describe('resolvePinnedBottomScroll', () => {
+  it('re-follows a stale programmatic scroll event after pinned content grows again', () => {
+    assert.deepEqual(
+      resolvePinnedBottomScroll({
+        scrollTop: 500,
+        scrollHeight: 1_100,
+        clientHeight: 100,
+        threshold: 64,
+        wasPinned: true,
+        lastFollowedScrollTop: 500,
+      }),
+      { pinned: true, shouldFollow: true },
+    );
+  });
+
+  it('unpins when the user moves away from the last followed position', () => {
+    assert.deepEqual(
+      resolvePinnedBottomScroll({
+        scrollTop: 400,
+        scrollHeight: 1_100,
+        clientHeight: 100,
+        threshold: 64,
+        wasPinned: true,
+        lastFollowedScrollTop: 500,
+      }),
+      { pinned: false, shouldFollow: false },
+    );
+  });
+});
 
 describe('createPinnedBottomFollower', () => {
   it('follows every observed content growth while pinned', () => {
@@ -9,10 +42,12 @@ describe('createPinnedBottomFollower', () => {
     let notifyContentCommit!: () => void;
     let observed: Element | undefined;
     let disconnected = false;
+    const followed: number[] = [];
     const stop = createPinnedBottomFollower({
       viewport,
       content,
       isPinned: () => true,
+      onFollow: (scrollTop) => { followed.push(scrollTop); },
       createObserver: (callback) => {
         notifyContentCommit = callback;
         return {
@@ -29,6 +64,7 @@ describe('createPinnedBottomFollower', () => {
     viewport.scrollHeight = 320;
     notifyContentCommit();
     assert.equal(viewport.scrollTop, 320);
+    assert.deepEqual(followed, [260, 320]);
     stop();
     assert.equal(disconnected, true);
   });

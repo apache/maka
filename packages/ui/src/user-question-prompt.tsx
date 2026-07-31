@@ -3,7 +3,7 @@ import type { UserQuestionRequestEvent, UserQuestionResponse } from '@maka/core'
 import { ChoiceCard, ChoiceCardGroup } from './primitives/choice-card.js';
 import { Input } from './primitives/input.js';
 import { Pencil } from './icons.js';
-import { Button } from './ui.js';
+import { Button } from '@astryxdesign/core';
 import { useMountedRef } from './use-mounted-ref.js';
 import {
   buildUserQuestionResponse,
@@ -131,32 +131,23 @@ export function UserQuestionPrompt(props: {
 
         <footer className="maka-interaction-actions maka-question-actions">
           <Button
-            type="button"
             variant="ghost"
-            size="md"
-            disabled={props.stopPending}
+            isDisabled={props.stopPending}
             onClick={() => void props.onStop()}
-          >
-            {props.stopPending ? copy.stopping : copy.stop}
-          </Button>
+            label={props.stopPending ? copy.stopping : copy.stop}
+          />
           <Button
-            type="button"
             variant="ghost"
-            size="md"
-            disabled={questionIndex === 0 || interactionDisabled}
+            isDisabled={questionIndex === 0 || interactionDisabled}
             onClick={() => setQuestionIndex((current) => current - 1)}
-          >
-            {copy.previous}
-          </Button>
+            label={copy.previous}
+          />
           <Button
-            type="button"
-            variant="default"
-            size="md"
-            disabled={!canContinue}
-            onClick={() => isLast ? void submit() : setQuestionIndex((current) => current + 1)}
-          >
-            {responsePending ? copy.submitting : isLast ? copy.submit : copy.next}
-          </Button>
+            variant="primary"
+            isDisabled={!canContinue}
+            onClick={() => (isLast ? void submit() : setQuestionIndex((current) => current + 1))}
+            label={responsePending ? copy.submitting : isLast ? copy.submit : copy.next}
+          />
         </footer>
       </div>
     </section>

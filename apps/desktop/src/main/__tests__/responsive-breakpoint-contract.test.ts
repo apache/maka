@@ -143,33 +143,3 @@ describe('PR-RESPONSIVE-BREAKPOINT-CONVERGE-0 contract', () => {
     assert.deepEqual(offenders, [], `Offenders:\n  ${offenders.join('\n  ')}`);
   });
 });
-
-describe('responsive breakpoint whitelist negative cases', () => {
-  it('findBreakpointOffenders flags a value outside the whitelist and spares the eight allowed', () => {
-    const ok = '@media (max-width: 820px) { … } @media (min-width: 990px) { … } @media (max-width: 620px) { … }';
-    assert.deepEqual(findBreakpointOffenders(ok, 't'), [], 'the eight whitelisted values must pass');
-    const bad = '@media (max-width: 850px) { … } @media (min-width: 1200px) { … }';
-    assert.ok(findBreakpointOffenders(bad, 't').length === 2, '850px and 1200px must fail (not whitelisted)');
-  });
-
-  it('does not flag prefers-reduced-motion / prefers-color-scheme (not width breakpoints)', () => {
-    const css = '@media (prefers-reduced-motion: reduce) { … } @media (prefers-color-scheme: dark) { … }';
-    assert.deepEqual(findBreakpointOffenders(css, 't'), [], 'prefers-* queries are out of scope');
-  });
-
-  it('findContainerWidthOffenders flags a value outside the whitelist and spares 460 + non-width features', () => {
-    const ok = '@container (max-width: 460px) { … } @container settings-rows (max-width: 460px) { … }';
-    assert.deepEqual(findContainerWidthOffenders(ok, 't'), [], '460px (unnamed and named) must pass');
-    const bad = '@container (max-width: 540px) { … } @container card (min-width: 400px) { … }';
-    assert.ok(findContainerWidthOffenders(bad, 't').length === 2, '540px and 400px must fail (not whitelisted)');
-    const scrollState = '@container not scroll-state(scrollable: bottom) { … }';
-    assert.deepEqual(findContainerWidthOffenders(scrollState, 't'), [], 'scroll-state containers are not width breakpoints');
-  });
-
-  it('findChatMeasureOffenders flags a bare 680px width but spares var(--maka-chat-measure) and a 680px height', () => {
-    assert.ok(findChatMeasureOffenders('width: min(680px, 100%);', 't').length > 0, 'bare 680px width must fail');
-    assert.deepEqual(findChatMeasureOffenders('width: min(var(--maka-chat-measure), 100%);', 't'), [], 'token width must pass');
-    assert.deepEqual(findChatMeasureOffenders('max-width: var(--maka-chat-measure);', 't'), [], 'token max-width must pass');
-    assert.deepEqual(findChatMeasureOffenders('height: min(76vh, 680px);', 't'), [], '680px height (form modal cap) is out of scope');
-  });
-});

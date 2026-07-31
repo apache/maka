@@ -114,7 +114,8 @@ test('chip converge (#520 PR9)', async () => {
     'Chip accent variant must keep the nav-active /14 wash with foreground-secondary text (never raw nav-active text)',
   );
 
-  // 9. Badge primitive stays pill — dual-track Badge (pill) + Chip (squared) preserved
-  const badgeSrc = read('packages/ui/src/primitives/badge.tsx');
-  assert.match(badgeSrc, /rounded-\[var\(--radius-pill\)\]/, 'Badge stays pill (dual-track with Chip)');
+  // 9. Dual-track Badge (pill) + Chip (squared) preserved. #1565 PR 3: Badge
+  // is the Astryx primitive (its pill shape is Astryx-owned, not a local
+  // recipe this contract can inspect); the barrel re-export is pinned by
+  // badge-converge-contract.
 });

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Search } from '@maka/ui/icons';
-import { Button } from '../src/ui.js';
+import { Button } from '../src/index.js';
 import { Spinner } from '../src/primitives/spinner.js';
 import {
   Empty,
@@ -89,7 +89,7 @@ export const WithAction: Story = {
           <EmptyDescription>开始第一次对话吧。</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button variant="secondary" size="sm">新建会话</Button>
+          <Button variant="secondary" size="sm" label="新建会话" />
         </EmptyContent>
       </Empty>
     </Frame>

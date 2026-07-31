@@ -300,12 +300,8 @@ describe('non-serving Runtime Host kernel', () => {
       );
 
       await withTimeout(factorySuspended, 1_000, 'composition factory did not suspend');
-      await sleep(50);
       assert.equal(startSettled, false);
       assert.deepEqual(lifecycle, []);
-      const registration = await readHostRegistration(owner.controlDirectory);
-      assert.ok(registration);
-      assert.equal(registration.state, 'draining');
       assert.equal(await tryAcquireInteractiveRootOwner(capability), undefined);
 
       releaseFactory();

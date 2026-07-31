@@ -55,7 +55,7 @@ type ConnectionTestRunner = (
 export interface HostConnectionEffectCoordinatorOptions {
   readonly stores: RuntimePolicyStoresWriter;
   readonly activation: RuntimePolicyActivationGate;
-  readonly onCommittedMutation?: () => Promise<void>;
+  readonly onCommittedMutation?: () => void;
   readonly now?: () => number;
   readonly runModelDiscovery?: ModelDiscoveryRunner;
   readonly runConnectionTest?: ConnectionTestRunner;
@@ -73,7 +73,7 @@ export class HostConnectionEffectCoordinator {
 
   readonly #stores: RuntimePolicyStoresWriter;
   readonly #activation: RuntimePolicyActivationGate;
-  readonly #onCommittedMutation: () => Promise<void>;
+  readonly #onCommittedMutation: () => void;
   readonly #now: () => number;
   readonly #runModelDiscovery: ModelDiscoveryRunner;
   readonly #runConnectionTest: ConnectionTestRunner;
@@ -87,7 +87,7 @@ export class HostConnectionEffectCoordinator {
   constructor(options: HostConnectionEffectCoordinatorOptions) {
     this.#stores = authenticateRuntimePolicyStoresWriter(options.stores);
     this.#activation = options.activation;
-    this.#onCommittedMutation = options.onCommittedMutation ?? (async () => {});
+    this.#onCommittedMutation = options.onCommittedMutation ?? (() => {});
     this.#now = options.now ?? Date.now;
     this.#runModelDiscovery = options.runModelDiscovery ?? runConnectionModelDiscoveryEffect;
     this.#runConnectionTest = options.runConnectionTest ?? runConnectionTestEffect;
@@ -228,23 +228,15 @@ export class HostConnectionEffectCoordinator {
     return this.#activation.runMutation(async () => {
       try {
         const result = await commit();
-        if (result.kind === 'committed') await this.#invalidateCommittedPolicy();
+        if (result.kind === 'committed') this.#onCommittedMutation();
         return result;
       } catch (error) {
         if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
-          await this.#invalidateCommittedPolicy();
+          this.#onCommittedMutation();
         }
         throw error;
       }
     });
-  }
-
-  async #invalidateCommittedPolicy(): Promise<void> {
-    try {
-      await this.#onCommittedMutation();
-    } catch {
-      this.#activation.poison();
-    }
   }
 
   #enqueue<T>(connectionId: string, run: () => Promise<T>): Promise<T> {

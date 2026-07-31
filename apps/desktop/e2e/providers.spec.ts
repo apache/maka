@@ -54,6 +54,9 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(dialog.getByLabel('模型供应商连接标识')).toHaveCount(0);
   await expect(dialog.getByLabel('模型供应商服务地址')).toHaveCount(0);
   await expect(dialog.getByLabel('模型供应商默认模型')).toHaveCount(0);
+  await dialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
   const dialogBox = await dialog.boundingBox();
   expect(dialogBox?.width).toBeLessThanOrEqual(520);
   await expect(dialog.locator('.providerLogo')).toHaveCSS('width', '24px');
@@ -73,7 +76,7 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect((await dialog.boundingBox())?.width).toBe(dialogBox?.width);
   expect((await dialog.boundingBox())?.height).toBe(dialogBox?.height);
   await keyInput.fill('e2e-cerebras-key');
-  await dialog.getByRole('button', { name: '连接并使用', exact: true }).click();
+  await dialog.getByRole('button', { name: '保存供应商', exact: true }).click();
 
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('button', { name: /添加模型供应商：Cerebras/ })).toBeFocused();
@@ -90,20 +93,22 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   // (disabled until a new key is entered), so nothing is added or removed.
   const detailKeyField = detailDialog.getByRole('textbox', { name: /模型密钥/ });
   await expect(detailKeyField).toHaveAttribute('placeholder', '••••••••');
+  await detailDialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
   const detailHeightBefore = (await detailDialog.boundingBox())?.height;
   await detailKeyField.fill('sk-e2e-replacement-key');
   await expect(detailDialog.getByRole('button', { name: '更新密钥', exact: true })).toBeEnabled();
   expect((await detailDialog.boundingBox())?.height).toBe(detailHeightBefore);
   await detailKeyField.fill('');
 
-  await expect(detailDialog.getByText('GPT OSS 120B', { exact: true })).toBeHidden();
-  await detailDialog.getByText('高级设置', { exact: true }).click();
-
   // The full candidate catalog is shown persistently as one checkbox list; the
   // default model is checked and locked, and toggling a candidate flows through
   // the shared enabledModelIds path (no search-only "add" surface).
   const modelList = detailDialog.getByRole('list', { name: '模型列表' });
   await expect(modelList).toBeVisible();
+  await expect(detailDialog.getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
+  await expect(detailDialog.getByRole('button', { name: '更新模型目录', exact: true })).toBeVisible();
   const defaultRow = modelList.getByRole('checkbox', { name: /GPT OSS 120B/ });
   await expect(defaultRow).toBeChecked();
   await expect(defaultRow).toBeDisabled();
@@ -149,7 +154,16 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await toggledRow.click();
   await expect(toggledRow).toHaveAttribute('aria-checked', afterArrow.checked!);
 
+  // Default-model management is a visible searchable picker in the connection
+  // detail, rather than a trip through General Settings. Selecting an already
+  // enabled model persists immediately and locks that row as the new default.
+  await detailDialog.getByRole('button', { name: '此连接的默认模型', exact: true }).click();
+  await page.getByRole('option', { name: /Gemma/ }).first().click();
+  await expect(detailDialog.getByRole('button', { name: '此连接的默认模型', exact: true })).toContainText(/Gemma/);
+  await expect(modelList.getByRole('checkbox', { name: /Gemma/ }).first()).toBeDisabled();
+
   await expect(detailDialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
+  await detailDialog.getByText('高级设置', { exact: true }).click();
 
   // Short-viewport invariant: when the expanded detail content outgrows the
   // popup's 85dvh cap, the dialog must stay within the viewport and the BODY

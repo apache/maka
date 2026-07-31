@@ -31,9 +31,9 @@
 - 不要使用 `@layer { @import ... }` 这种写法。
 - 如果一个 selector 需要覆盖共享 primitive 自带的 Tailwind utility，就不要把它放进 `@layer components`。
 
-## 3. 必须保持 Unlayered 的规则
+## 3. 必须压过 Tailwind Utility 的规则
 
-下面这些选择器当前依赖“比 Tailwind utility 更晚生效”的级联位置，必须保持 unlayered；除非共享 primitive 的实现先改掉，否则不能随便塞进 `@layer components`：
+下面这些选择器依赖在同一元素上压过 Tailwind utility。自 #1565 PR 1 起，它们靠位于 `maka.legacy` 层实现（`cascade-layers.css` 把该层声明在 `utilities` 之后；在此之前靠保持 unlayered）。`cascade-layers.css` 里的层序声明只允许追加：后续迁移 PR 可以增加新层，但绝不能重排既有五层。除非共享 primitive 的实现先改掉，否则不能把这些选择器塞进 `@layer components`：
 
 - `.maka-nav-row`
 - `html[data-os="darwin"] .maka-nav-row`

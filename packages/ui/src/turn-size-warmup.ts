@@ -50,6 +50,31 @@ export function createTurnSizeWarmup(options: {
   turns: () => ArrayLike<WarmupTurnElement>;
   chunkSize?: number;
   scheduler?: WarmupScheduler;
+  /**
+   * The moment this walk is done: the queue has drained and the last chunk has
+   * been released.
+   *
+   * Scoped to the turns `turns()` returned when the walk was created — the
+   * queue is snapshotted once, below. A turn that appears afterwards is not
+   * walked and does not hold this back, so this says "every turn I was given
+   * has its final-layout size", not "the transcript will never move again".
+   * Warming a growing transcript would need a walk per batch, which nothing
+   * asks for: turns that arrive later arrive rendered.
+   *
+   * The walk is the only thing that knows this. From outside, the end looks
+   * exactly like the idle gap between two chunks — no chunk is forced, and the
+   * height holds still until the next one starts — so an outside observer has
+   * to guess, and guesses wrong both ways: calling a gap "done" reports an
+   * intermediate height, and waiting out a gap that never ends outlives its own
+   * budget. Both were observed against this module's own E2E.
+   *
+   * Fires exactly once per walk, by control flow rather than by a flag: the two
+   * terminal paths below — a queue that drained with nothing live left in it,
+   * and the release of the last chunk — are mutually exclusive within a step,
+   * and neither schedules further work. Cancelling reaches neither: nothing
+   * settled.
+   */
+  onSettled?: () => void;
 }): () => void {
   const scheduler = options.scheduler ?? defaultScheduler();
   if (!scheduler) return () => {};
@@ -75,7 +100,10 @@ export function createTurnSizeWarmup(options: {
     while (chunk.length === 0 && queue.length > 0) {
       chunk = queue.splice(0, chunkSize).filter((turn) => turn.isConnected);
     }
-    if (chunk.length === 0) return;
+    if (chunk.length === 0) {
+      options.onSettled?.();
+      return;
+    }
     forcedChunk = chunk;
     for (const turn of forcedChunk) {
       turn.style.contentVisibility = 'visible';
@@ -94,6 +122,7 @@ export function createTurnSizeWarmup(options: {
       cancelScheduled = scheduler.requestFrame(() => {
         release();
         if (queue.length > 0) cancelScheduled = scheduler.requestIdle(step);
+        else options.onSettled?.();
       });
     });
   };

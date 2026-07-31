@@ -367,7 +367,50 @@ function parseReducedMotionFlag(raw: string | undefined): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
+/**
+ * Sandbox-boundary requests the user has already answered.
+ *
+ * The fixture's requests are rebuilt from the scenario on every read, so
+ * answering one cannot retire it the way a real one is retired — the runtime
+ * drops an active request from its in-memory owner state when the decision is
+ * acknowledged, and the fixture's request has no such owner. Without somewhere
+ * to remember the answer the request keeps coming back, and a decision that
+ * leaves the request pending is not a decision.
+ *
+ * It lives here rather than at either exit because there are two: the sessions
+ * IPC serves the active-request list, and `e2eFixture:getState` hands the
+ * renderer a state it seeds its interaction queue from directly. A retirement
+ * either exit could not see would only move the resurrection to the other one.
+ *
+ * Deliberately not persisted: the answer belongs to the run, and every run
+ * starts from a throwaway userData dir with the request unanswered again.
+ */
+const answeredSandboxBoundaryRequests = new Set<string>();
+
+/** Retire an answered fixture request from every reader of fixture state. */
+export function retireE2eFixtureSandboxBoundaryRequest(requestId: string): void {
+  answeredSandboxBoundaryRequests.add(requestId);
+}
+
+/** Test seam: the retirement set is module state shared across cases. */
+export function resetE2eFixtureSandboxBoundaryRetirement(): void {
+  answeredSandboxBoundaryRequests.clear();
+}
+
 export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | null {
+  const state = buildE2eFixtureState(fixture);
+  if (!state?.sandboxBoundaryBySession) return state;
+  return {
+    ...state,
+    sandboxBoundaryBySession: Object.fromEntries(
+      Object.entries(state.sandboxBoundaryBySession).filter(
+        ([, request]) => !answeredSandboxBoundaryRequests.has(request.requestId),
+      ),
+    ),
+  };
+}
+
+function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | null {
   if (!fixture) return null;
   const state: E2eFixtureState = {
     enabled: true,

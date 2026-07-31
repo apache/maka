@@ -33,6 +33,7 @@ import {
   type ComposerHandle,
   type MakaUriDest,
   MakaUriContext,
+  AstryxLocaleProvider,
   LocaleProvider,
   ModuleHubSelector,
   ToastProvider,
@@ -54,6 +55,16 @@ import { ChatMessageSurface } from './chat-message-surface';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import { ChatWorkbar } from './chat-workbar';
+import {
+  consumeCompanionQuoteSnapshot,
+  removeStagedCompanionQuote,
+  stageCompanionQuote,
+  type QuoteCompanionPanelState,
+} from './quote-companion-panel-state';
+import {
+  applyCompanionForkVisibilityEvent,
+  reconcileCompanionForkVisibility,
+} from './quote-companion-visibility';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -108,6 +119,7 @@ import { createAppShellSessionRowActions } from './app-shell-session-row-actions
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
 import { useStableActions } from './use-stable-actions';
+import { useVoiceInput } from './use-voice-input';
 import {
   useActiveSessionEvents,
   useAppShellBootstrapSubscriptions,
@@ -174,17 +186,23 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
-      <ToastProvider>
-        <ErrorBoundary locale={uiLocale}>
-          <AppShellContent
-            initialOnboardingSnapshot={initialOnboardingSnapshot}
-            uiLocale={uiLocale}
-            uiLocaleOverride={uiLocaleOverride}
-            setUiLocaleOverride={setUiLocaleOverride}
-            setUiLocalePreference={setUiLocalePreference}
-          />
-        </ErrorBoundary>
-      </ToastProvider>
+      {/* #1565: Astryx's message catalog is keyed off OUR locale context, so it
+          must sit inside LocaleProvider — not at the `<Theme>` level, where
+          `useUiLocale()` throws before anything renders. Still above every
+          Astryx subtree. */}
+      <AstryxLocaleProvider>
+        <ToastProvider>
+          <ErrorBoundary locale={uiLocale}>
+            <AppShellContent
+              initialOnboardingSnapshot={initialOnboardingSnapshot}
+              uiLocale={uiLocale}
+              uiLocaleOverride={uiLocaleOverride}
+              setUiLocaleOverride={setUiLocaleOverride}
+              setUiLocalePreference={setUiLocalePreference}
+            />
+          </ErrorBoundary>
+        </ToastProvider>
+      </AstryxLocaleProvider>
     </LocaleProvider>
   );
 }
@@ -206,6 +224,7 @@ function AppShellContent({
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const {
     sessions,
+    authoritativeSessionIds,
     sessionsRef,
     setSessions,
     refreshSessions,
@@ -329,6 +348,7 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
+  const voiceCopy = getDesktopConversationCopy(uiLocale).voice;
   useEffect(() => {
     let cancelled = false;
     const refreshUpdateStatus = () => {
@@ -454,12 +474,26 @@ function AppShellContent({
   // `quotes` accumulates excerpts staged for the next follow-up — selecting more
   // text adds to the SAME panel rather than opening a new one; `sourceSessionId`
   // pins it to the main session the companion forks from.
-  const [quotePanel, setQuotePanel] = useState<
-    { sourceSessionId: string; quotes: QuoteRef[] } | null
-  >(null);
-  // The quote companion's ephemeral fork id, while its panel is open — hidden
-  // from the main session list (the fork is removed on panel dismiss).
-  const [companionForkId, setCompanionForkId] = useState<string | undefined>(undefined);
+  const [quotePanel, setQuotePanel] = useState<QuoteCompanionPanelState | null>(null);
+  // Created companion forks stay hidden until authoritative cleanup succeeds or
+  // a later authoritative session list confirms they are gone. A set preserves
+  // earlier failed cleanups when another companion opens.
+  const [hiddenCompanionForkIds, setHiddenCompanionForkIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const onCompanionForkVisibilityChange = useCallback(
+    (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
+      setHiddenCompanionForkIds((current) =>
+        applyCompanionForkVisibilityEvent(current, event),
+      ),
+    [],
+  );
+  useEffect(() => {
+    if (!authoritativeSessionIds) return;
+    setHiddenCompanionForkIds((current) =>
+      reconcileCompanionForkVisibility(current, authoritativeSessionIds),
+    );
+  }, [authoritativeSessionIds]);
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
   const commitRevisionDraft = useCallback((draft: TurnRevisionDraft | null) => {
@@ -515,9 +549,11 @@ function AppShellContent({
       // Exclude the quote companion's ephemeral fork so it stays hidden from the
       // main session list while its panel is open.
       filterLinkedSessionTree(sidebarSessionTree, (session) =>
-        session.id !== companionForkId ? sessionMatchesNavSelection(session, navSelection) : false,
+        !hiddenCompanionForkIds.has(session.id)
+          ? sessionMatchesNavSelection(session, navSelection)
+          : false,
       ),
-    [sidebarSessionTree, navSelection, companionForkId],
+    [sidebarSessionTree, navSelection, hiddenCompanionForkIds],
   );
   const visibleSessions = visibleSessionTree.roots;
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
@@ -999,8 +1035,12 @@ function AppShellContent({
     permissionMode: defaultPermissionMode,
         }
       : undefined);
-  const { boundary: activeExecutionBoundary, reload: reloadActiveExecutionBoundary } =
-    useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  const {
+    boundary: activeExecutionBoundary,
+    unreadable: activeExecutionBoundaryUnreadable,
+    reading: activeExecutionBoundaryReading,
+    reload: reloadActiveExecutionBoundary,
+  } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
   useEffect(() => {
     if (!activeId) return;
     let cancelled = false;
@@ -1121,6 +1161,21 @@ function AppShellContent({
     onboardingState.kind !== 'ready_with_history' &&
     onboardingState.kind !== 'ready_empty';
   const onboardingComposerHidden = isOnboardingLoading || (showOnboardingHero && onboardingState !== undefined);
+  // #1629: hiding the composer because the boundary is unknown is right, but
+  // hiding it silently and forever is not. Once the read has spent its retries
+  // the slot says so and hands the user another attempt; while it is still
+  // reading, or while onboarding owns the surface, there is nothing to say.
+  const boundaryUnreadableNotice =
+    activeId && activeExecutionBoundaryUnreadable && !onboardingComposerHidden
+      ? {
+          title: shellCopy.boundaryUnreadableTitle,
+          detail: shellCopy.boundaryUnreadableDetail,
+          retryLabel: shellCopy.boundaryUnreadableRetry,
+          retryPendingLabel: shellCopy.boundaryUnreadableRetrying,
+          retryPending: activeExecutionBoundaryReading,
+          onRetry: () => reloadActiveExecutionBoundary(activeId),
+        }
+      : undefined;
   const {
     sessionListWidth,
     setSessionListWidth,
@@ -1340,6 +1395,131 @@ function AppShellContent({
         ? 'swarm'
         : 'default',
     newChatProjectId: selectedProjectId,
+  });
+
+  const voiceInput = useVoiceInput({
+    getDraftKey: () => activeIdRef.current ?? 'new-session',
+    getCurrentAgent: () => {
+      if (activeIdRef.current && activeSessionForView) {
+        return {
+          connectionSlug: activeSessionForView.llmConnectionSlug,
+          model: activeSessionForView.model,
+        };
+      }
+      return newChatModel
+        ? {
+            connectionSlug: newChatModel.llmConnectionSlug,
+            model: newChatModel.model,
+          }
+        : undefined;
+    },
+    appendTranscript: (draftKey, text) => {
+      composerRef.current?.appendDraft?.(draftKey, text);
+    },
+    sendNativeVoice: (operationId) =>
+      send(
+        'Listen to the attached audio and carry out the user request. The audio is authoritative.',
+        undefined,
+        {
+          voiceOperationId: operationId,
+          displayText: voiceCopy.taskDisplayText,
+        },
+      ),
+    runCoordinatorTool: async (call, context) => {
+      if (call.name === 'start_task') {
+        if (!call.arguments.task) throw new Error('voice_task_missing');
+        let taskSessionId: string | undefined;
+        const ok = await send(call.arguments.task, undefined, {
+          onSessionResolved: (sessionId) => {
+            taskSessionId = sessionId;
+          },
+        });
+        return {
+          output: {
+            ok,
+            ...(taskSessionId ? { sessionId: taskSessionId } : {}),
+          },
+          ...(ok && taskSessionId ? { taskSessionId } : {}),
+        };
+      }
+      const sessionId = context.taskSessionId;
+      if (!sessionId) {
+        return { output: { ok: false, status: 'no_active_task' } };
+      }
+      if (call.name === 'steer_task') {
+        if (!call.arguments.guidance) throw new Error('voice_guidance_missing');
+        const outcome = await window.maka.sessions.steer(
+          sessionId,
+          call.arguments.guidance,
+        );
+        if (outcome.kind === 'fallback') {
+          const sendResult = await window.maka.sessions.send(sessionId, {
+            type: 'send',
+            turnId: crypto.randomUUID(),
+            text: call.arguments.guidance,
+          });
+          await refreshSessions();
+          if (activeIdRef.current === sessionId) {
+            await refreshMessages(sessionId);
+          }
+          return {
+            output: { ok: sendResult.ok, fallback: true, sessionId },
+            taskSessionId: sessionId,
+          };
+        }
+        return {
+          output: { ok: true, queued: true, sessionId },
+          taskSessionId: sessionId,
+        };
+      }
+      if (call.name === 'check_task') {
+        const authoritativeSessions = await refreshSessions();
+        const session = authoritativeSessions.find((candidate) => candidate.id === sessionId);
+        return {
+          output: session
+            ? { ok: true, sessionId: session.id, status: session.status }
+            : { ok: false, sessionId, status: 'task_not_found' },
+          ...(session ? { taskSessionId: sessionId } : {}),
+        };
+      }
+      const taskMessages = await window.maka.sessions.readMessages(sessionId);
+      const lastAssistant = [...taskMessages]
+        .reverse()
+        .find((message) => message.type === 'assistant');
+      return {
+        output: {
+          ok: true,
+          sessionId,
+          summary:
+            lastAssistant?.type === 'assistant'
+              ? lastAssistant.text.slice(-4_000)
+              : voiceCopy.noTaskResponse,
+        },
+        taskSessionId: sessionId,
+      };
+    },
+    onBlocked: (reason) => {
+      const configure =
+        reason === 'recognition_not_configured' ||
+        reason === 'realtime_not_configured';
+      toastApi.error(
+        voiceCopy.unavailableTitle,
+        configure
+          ? voiceCopy.configureDescription
+          : reason,
+      );
+      if (configure) openSettingsSection('voice');
+    },
+    onError: (error) => {
+      toastApi.error(
+        voiceCopy.operationFailedTitle,
+        localizedShellErrorMessage(
+          error,
+          voiceCopy.operationFailedFallback,
+          uiLocale,
+        ),
+      );
+    },
   });
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
@@ -2116,9 +2296,11 @@ function AppShellContent({
                         // Accumulate onto the open panel for this session rather
                         // than spawning a new one; otherwise start a fresh panel.
                         setQuotePanel((prev) =>
-                          prev && prev.sourceSessionId === activeId
-                            ? { ...prev, quotes: [...prev.quotes, quote] }
-                            : { sourceSessionId: activeId, quotes: [quote] },
+                          stageCompanionQuote(prev, {
+                            sourceSessionId: activeId,
+                            quote,
+                            newId: () => crypto.randomUUID(),
+                          }),
                         );
                         // Surface it inside the session workbar (as a tab) rather
                         // than a second right column — open the bar on the quote tab.
@@ -2182,6 +2364,7 @@ function AppShellContent({
                 onboardingComposerHidden={
                   onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
                 }
+                boundaryUnreadableNotice={boundaryUnreadableNotice}
                 activeInteraction={activeInteraction}
                 activeId={activeId}
                 stopPendingBySession={stopPendingBySession}
@@ -2210,6 +2393,12 @@ function AppShellContent({
                 // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
                 processing={showProcessingIndicator && !activeStreamingLive}
                 continuing={showContinuingIndicator && !activeStreamingLive}
+                voiceCaptureState={voiceInput.captureState}
+                realtimeVoiceState={voiceInput.realtimeState}
+                voiceProviderLabel={voiceInput.providerLabel}
+                onToggleVoiceCapture={voiceInput.toggleCapture}
+                onCancelVoiceCapture={voiceInput.cancelCapture}
+                onToggleRealtimeVoice={voiceInput.toggleRealtime}
                 onSend={sendWithAttachments}
                 onStop={stop}
                 revisionNotice={
@@ -2388,10 +2577,13 @@ function AppShellContent({
                   quotePanel && quotePanel.sourceSessionId === activeId ? quotePanel : null
                 }
                 onClearQuote={() => setQuotePanel(null)}
-                onQuotesConsumed={() =>
-                  setQuotePanel((prev) => (prev ? { ...prev, quotes: [] } : prev))
+                onQuotesConsumed={(snapshot) =>
+                  setQuotePanel((prev) => consumeCompanionQuoteSnapshot(prev, snapshot))
                 }
-                onForkChange={setCompanionForkId}
+                onRemoveQuote={(target) =>
+                  setQuotePanel((prev) => removeStagedCompanionQuote(prev, target))
+                }
+                onForkVisibilityChange={onCompanionForkVisibilityChange}
                 sourceSession={activeSessionForView}
                 modelChoices={chatModelChoices}
               />

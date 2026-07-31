@@ -262,7 +262,7 @@ export function decodePersistedLlmCallRecord(input: unknown): PersistedLlmCallRe
   ) {
     throw invalid('invalid optional LLM string');
   }
-  if (!optionalEnum(input.callKind, new Set(['main', 'semantic_compact']))) {
+  if (!optionalEnum(input.callKind, new Set(['main', 'semantic_compact', 'history_compact']))) {
     throw invalid('invalid callKind');
   }
   if (!optionalEnum(input.prefixChangeReason, PREFIX_CHANGE_REASONS)) {

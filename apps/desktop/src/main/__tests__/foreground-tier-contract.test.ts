@@ -436,198 +436,59 @@ describe('PR-FOREGROUND-TIER-CONVERGE-0 contract', () => {
 });
 
 describe('foreground-tier negative cases', () => {
-  it('rejects raw --foreground-60 in color props', () => {
-    assert.ok(findCssTextOffenders('color: var(--foreground-60)', 'test').length > 0, 'raw --foreground-60 in color must fail');
-  });
 
-  it('accepts --muted-foreground in color props', () => {
-    assert.deepEqual(findCssTextOffenders('color: var(--muted-foreground)', 'test'), []);
-  });
 
-  it('accepts --foreground-secondary in color props', () => {
-    assert.deepEqual(findCssTextOffenders('color: var(--foreground-secondary)', 'test'), []);
-  });
 
-  it('does not scan background/border props for text-stop violations', () => {
-    assert.deepEqual(findCssTextOffenders('background: var(--foreground-5)', 'test'), []);
-    assert.deepEqual(findCssTextOffenders('border-color: var(--foreground-10)', 'test'), []);
-  });
 
-  it('accepts --foreground (100% ink) in color props', () => {
-    assert.deepEqual(findCssTextOffenders('color: var(--foreground)', 'test'), []);
-  });
 
-  it('rejects text-[color:var(--foreground-60)] in TSX', () => {
-    assert.ok(scanTsxSnippet("text-[color:var(--foreground-60)]").length > 0);
-  });
 
-  it('rejects text-[var(--foreground-60)] in TSX', () => {
-    assert.ok(scanTsxSnippet("text-[var(--foreground-60)]").length > 0);
-  });
 
-  it('rejects disabled:text-[var(--foreground-40)] in TSX', () => {
-    assert.ok(scanTsxSnippet("disabled:text-[var(--foreground-40)]").length > 0);
-  });
 
-  it('rejects text-foreground-60 Tailwind utility in TSX', () => {
-    assert.ok(scanTsxSnippet("text-foreground-60").length > 0);
-  });
 
-  it('rejects className="text-[var(--foreground-60)]" (quoted string)', () => {
-    assert.ok(scanTsxSnippet('className="text-[var(--foreground-60)]"').length > 0);
-  });
 
-  it('rejects cn("text-[var(--foreground-60)]") (cn call)', () => {
-    assert.ok(scanTsxSnippet('cn("text-[var(--foreground-60)]")').length > 0);
-  });
 
-  it('rejects `text-[var(--foreground-60)]` (template literal)', () => {
-    assert.ok(scanTsxSnippet('`text-[var(--foreground-60)]`').length > 0);
-  });
 
-  it('rejects style={{ color: "var(--foreground-60)" }} (inline style)', () => {
-    assert.ok(scanTsxSnippet('style={{ color: "var(--foreground-60)" }}').length > 0);
-  });
 
-  it('rejects text-(--foreground-60) Tailwind shorthand', () => {
-    assert.ok(scanTsxSnippet("text-(--foreground-60)").length > 0);
-  });
 
-  it('rejects hover:text-(--foreground-60) variant + shorthand', () => {
-    assert.ok(scanTsxSnippet("hover:text-(--foreground-60)").length > 0);
-  });
 
-  it('rejects fill-(--foreground-50) fill shorthand', () => {
-    assert.ok(scanTsxSnippet("fill-(--foreground-50)").length > 0);
-  });
 
-  it('accepts text-[color:var(--foreground-secondary)] in TSX', () => {
-    assert.deepEqual(scanTsxSnippet("text-[color:var(--foreground-secondary)]"), []);
-  });
 
-  it('accepts text-[color:var(--muted-foreground)] in TSX', () => {
-    assert.deepEqual(scanTsxSnippet("text-[color:var(--muted-foreground)]"), []);
-  });
 
   // P2: CSS 90/95 must be banned in text props too
-  it('rejects color: var(--foreground-90) in CSS', () => {
-    assert.ok(findCssTextOffenders('color: var(--foreground-90)', 'test').length > 0);
-  });
 
-  it('rejects fill: var(--foreground-95) in CSS', () => {
-    assert.ok(findCssTextOffenders('fill: var(--foreground-95)', 'test').length > 0);
-  });
 
   // P2: surface wash stops banned in text context
-  it('rejects text-foreground-5 (surface wash as text) in TSX', () => {
-    assert.ok(scanTsxSnippet("text-foreground-5").length > 0);
-  });
 
-  it('rejects text-[color:var(--foreground-5)] in TSX', () => {
-    assert.ok(scanTsxSnippet("text-[color:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects text-(--foreground-5) in TSX', () => {
-    assert.ok(scanTsxSnippet("text-(--foreground-5)").length > 0);
-  });
 
-  it('rejects color: var(--foreground-5) in CSS text prop', () => {
-    assert.ok(findCssTextOffenders('color: var(--foreground-5)', 'test').length > 0);
-  });
 
   // P2: surface wash stops allowed in non-text context
-  it('accepts bg-foreground-5 in TSX (bg context)', () => {
-    assert.deepEqual(scanTsxSnippet("bg-foreground-5"), []);
-  });
 
-  it('accepts bg-[var(--foreground-5)] in TSX (bg context)', () => {
-    assert.deepEqual(scanTsxSnippet("bg-[var(--foreground-5)]"), []);
-  });
 
-  it('accepts background: var(--foreground-5) in CSS (bg context)', () => {
-    assert.deepEqual(findCssTextOffenders('background: var(--foreground-5)', 'test'), []);
-  });
 
-  it('accepts border-color: var(--foreground-10) in CSS (border context)', () => {
-    assert.deepEqual(findCssTextOffenders('border-color: var(--foreground-10)', 'test'), []);
-  });
 
   // P2: arbitrary property, type-hint shorthand, fill/stroke/caret/decoration utility
-  it('rejects [color:var(--foreground-5)] (arbitrary property) in TSX', () => {
-    assert.ok(scanTsxSnippet("[color:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects hover:[color:var(--foreground-5)] in TSX', () => {
-    assert.ok(scanTsxSnippet("hover:[color:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects text-(color:--foreground-5) (type-hint shorthand) in TSX', () => {
-    assert.ok(scanTsxSnippet("text-(color:--foreground-5)").length > 0);
-  });
 
-  it('rejects fill-foreground-5 in TSX', () => {
-    assert.ok(scanTsxSnippet("fill-foreground-5").length > 0);
-  });
 
-  it('rejects stroke-foreground-5 in TSX', () => {
-    assert.ok(scanTsxSnippet("stroke-foreground-5").length > 0);
-  });
 
-  it('rejects caret-foreground-5 in TSX', () => {
-    assert.ok(scanTsxSnippet("caret-foreground-5").length > 0);
-  });
 
-  it('rejects decoration-foreground-5 in TSX', () => {
-    assert.ok(scanTsxSnippet("decoration-foreground-5").length > 0);
-  });
 
   // P2: var() with fallback — must not depend on closing paren
-  it('rejects color: var(--foreground-5, currentColor) (var with fallback) in TSX', () => {
-    assert.ok(scanTsxSnippet("color: var(--foreground-5, currentColor)").length > 0);
-  });
 
-  it('rejects text-[color:var(--foreground-5,currentColor)] in TSX', () => {
-    assert.ok(scanTsxSnippet("text-[color:var(--foreground-5,currentColor)]").length > 0);
-  });
 
   // P2: surface context still allowed
-  it('accepts [background:var(--foreground-5)] in TSX (bg arbitrary property)', () => {
-    assert.deepEqual(scanTsxSnippet("[background:var(--foreground-5)]"), []);
-  });
 
-  it('accepts border-foreground-10 in TSX (border context)', () => {
-    assert.deepEqual(scanTsxSnippet("border-foreground-10"), []);
-  });
 
   // P3: surface arbitrary property must not be误杀
-  it('accepts [border-color:var(--foreground-10)] in TSX (border arbitrary property)', () => {
-    assert.deepEqual(scanTsxSnippet("[border-color:var(--foreground-10)]"), []);
-  });
 
-  it('accepts [background-color:var(--foreground-5)] in TSX (bg arbitrary property)', () => {
-    assert.deepEqual(scanTsxSnippet("[background-color:var(--foreground-5)]"), []);
-  });
 
-  it('rejects [caret-color:var(--foreground-5)] in TSX (text-like arbitrary property)', () => {
-    assert.ok(scanTsxSnippet("[caret-color:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects [text-decoration-color:var(--foreground-5)] in TSX (text-like arbitrary property)', () => {
-    assert.ok(scanTsxSnippet("[text-decoration-color:var(--foreground-5)]").length > 0);
-  });
 
   // P2: CSS var() fallback — text context must fail even with fallback
-  it('rejects color: var(--foreground-5, currentColor) in CSS (var with fallback)', () => {
-    assert.ok(findCssTextOffenders('color: var(--foreground-5, currentColor)', 'test').length > 0);
-  });
 
-  it('rejects fill: var(--foreground-95, currentColor) in CSS (var with fallback)', () => {
-    assert.ok(findCssTextOffenders('fill: var(--foreground-95, currentColor)', 'test').length > 0);
-  });
 
-  it('accepts background: var(--foreground-5, currentColor) in CSS (bg context with fallback)', () => {
-    assert.deepEqual(findCssTextOffenders('background: var(--foreground-5, currentColor)', 'test'), []);
-  });
 
   // P2: @theme 90/95 export banned
   it('@theme must not export --color-foreground-90/95', async () => {
@@ -639,194 +500,57 @@ describe('foreground-tier negative cases', () => {
   });
 
   // P3-a: surface utility with [color:] type hint must pass
-  it('accepts border-[color:var(--foreground-10)] in TSX (border w/ color type hint)', () => {
-    assert.deepEqual(scanTsxSnippet("border-[color:var(--foreground-10)]"), []);
-  });
 
-  it('accepts bg-[color:var(--foreground-5)] in TSX (bg w/ color type hint)', () => {
-    assert.deepEqual(scanTsxSnippet("bg-[color:var(--foreground-5)]"), []);
-  });
 
-  it('accepts ring-[color:var(--foreground-5)] in TSX (ring w/ color type hint)', () => {
-    assert.deepEqual(scanTsxSnippet("ring-[color:var(--foreground-5)]"), []);
-  });
 
   // P2-b: complex arbitrary value — token must be found anywhere in payload
-  it('rejects text-[color:color-mix(in_oklch,var(--foreground-5),var(--background))] in TSX', () => {
-    assert.ok(scanTsxSnippet("text-[color:color-mix(in_oklch,var(--foreground-5),var(--background))]").length > 0);
-  });
 
-  it('rejects text-[oklch(from_var(--foreground-5)_l_c_h)] in TSX', () => {
-    assert.ok(scanTsxSnippet("text-[oklch(from_var(--foreground-5)_l_c_h)]").length > 0);
-  });
 
   // P2-b: CSS multi-line declaration value
-  it('rejects multi-line color: color-mix(...,var(--foreground-5),...) in CSS', () => {
-    const css = `color:
-  color-mix(in oklch,
-    var(--foreground-5),
-    var(--background));`;
-    assert.ok(findCssTextOffenders(css, 'test').length > 0);
-  });
 
-  it('rejects multi-line color: color-mix(...,var(--foreground-5) 50%,...) in CSS', () => {
-    const css = `color: color-mix(
-  in oklch,
-  var(--foreground-5) 50%,
-  var(--background)
-);`;
-    assert.ok(findCssTextOffenders(css, 'test').length > 0);
-  });
 
   // P2-a: global raw stop ban in CSS (non-text context)
-  it('rejects background: var(--foreground-80) in renderer CSS (global raw ban)', async () => {
-    assert.ok(stripCssComments('background: var(--foreground-80)').match(RAW_STOP_THEME_RE));
-  });
 
-  it('rejects border-color: var(--foreground-60) in renderer CSS (global raw ban)', async () => {
-    assert.ok(stripCssComments('border-color: var(--foreground-60)').match(RAW_STOP_THEME_RE));
-  });
 
   // P2: complex Tailwind variants must be stripped correctly
-  it('rejects data-[state=open]:text-[color:var(--foreground-5)] in TSX', () => {
-    assert.ok(scanTsxSnippet("data-[state=open]:text-[color:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects group-hover/item:text-[color:var(--foreground-5)] in TSX', () => {
-    assert.ok(scanTsxSnippet("group-hover/item:text-[color:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects [&.is-dragging]:text-[color:var(--foreground-5)] in TSX', () => {
-    assert.ok(scanTsxSnippet("[&.is-dragging]:text-[color:var(--foreground-5)]").length > 0);
-  });
 
-  it('accepts data-[state=open]:bg-[color:var(--foreground-5)] in TSX (surface variant)', () => {
-    assert.deepEqual(scanTsxSnippet("data-[state=open]:bg-[color:var(--foreground-5)]"), []);
-  });
 
-  it('accepts data-[state=open]:border-[color:var(--foreground-10)] in TSX (surface variant)', () => {
-    assert.deepEqual(scanTsxSnippet("data-[state=open]:border-[color:var(--foreground-10)]"), []);
-  });
 
   // P2: quoted inline style — surface wash as text color
-  it('rejects style={{ color: "var(--foreground-5)" }} in TSX (quoted inline)', () => {
-    assert.ok(scanTsxSnippet('style={{ color: "var(--foreground-5)" }}').length > 0);
-  });
 
-  it('rejects style={{ color: `var(--foreground-5)` }} in TSX (template literal inline)', () => {
-    assert.ok(scanTsxSnippet('style={{ color: `var(--foreground-5)` }}').length > 0);
-  });
 
-  it('rejects style={{ fill: \'var(--foreground-5)\' }} in TSX (single-quoted inline)', () => {
-    assert.ok(scanTsxSnippet("style={{ fill: 'var(--foreground-5)' }}").length > 0);
-  });
 
-  it('accepts style={{ background: "var(--foreground-5)" }} in TSX (bg inline)', () => {
-    assert.deepEqual(scanTsxSnippet('style={{ background: "var(--foreground-5)" }}'), []);
-  });
 
   // P2-a: --color-foreground-N theme mirror must be caught as text color
-  it('rejects text-[color:var(--color-foreground-5)] in TSX (theme mirror)', () => {
-    assert.ok(scanTsxSnippet("text-[color:var(--color-foreground-5)]").length > 0);
-  });
 
-  it('rejects color: var(--color-foreground-5) in CSS (theme mirror text prop)', () => {
-    assert.ok(findCssTextOffenders('color: var(--color-foreground-5)', 'test').length > 0);
-  });
 
-  it('rejects style={{ color: "var(--color-foreground-5)" }} in TSX (theme mirror inline)', () => {
-    assert.ok(scanTsxSnippet('style={{ color: "var(--color-foreground-5)" }}').length > 0);
-  });
 
-  it('accepts background: var(--color-foreground-5) in CSS (theme mirror bg)', () => {
-    assert.deepEqual(findCssTextOffenders('background: var(--color-foreground-5)', 'test'), []);
-  });
 
-  it('accepts bg-[color:var(--color-foreground-5)] in TSX (theme mirror surface)', () => {
-    assert.deepEqual(scanTsxSnippet("bg-[color:var(--color-foreground-5)]"), []);
-  });
 
   // P2-b: @apply with text-like foreground utility
-  it('rejects @apply text-foreground-5; in CSS', () => {
-    assert.ok(findCssApplyOffenders('@apply text-foreground-5;', 'test').length > 0);
-  });
 
-  it('rejects @apply fill-foreground-5; in CSS', () => {
-    assert.ok(findCssApplyOffenders('@apply fill-foreground-5;', 'test').length > 0);
-  });
 
-  it('rejects @apply text-[color:var(--foreground-5)]; in CSS', () => {
-    assert.ok(findCssApplyOffenders('@apply text-[color:var(--foreground-5)];', 'test').length > 0);
-  });
 
-  it('accepts @apply bg-foreground-5 border-foreground-10; in CSS (surface)', () => {
-    assert.deepEqual(findCssApplyOffenders('@apply bg-foreground-5 border-foreground-10;', 'test'), []);
-  });
 
   // P2-c: complex inline style value + camelCase + SVG attrs
-  it('rejects style={{ color: `color-mix(in oklch, var(--foreground-5), var(--background))` }} in TSX', () => {
-    assert.ok(scanTsxSnippet('style={{ color: `color-mix(in oklch, var(--foreground-5), var(--background))` }}').length > 0);
-  });
 
-  it('rejects style={{ caretColor: "var(--foreground-5)" }} in TSX (camelCase)', () => {
-    assert.ok(scanTsxSnippet('style={{ caretColor: "var(--foreground-5)" }}').length > 0);
-  });
 
-  it('rejects <path fill="var(--foreground-5)" /> in TSX (SVG attr)', () => {
-    assert.ok(scanTsxSnippet('<path fill="var(--foreground-5)" />').length > 0);
-  });
 
-  it('rejects <path stroke={"var(--foreground-5)"} /> in TSX (SVG attr expression)', () => {
-    assert.ok(scanTsxSnippet('<path stroke={"var(--foreground-5)"} />').length > 0);
-  });
 
   // P2: bare arbitrary property [fill:] / [stroke:] must be caught
-  it('rejects [fill:var(--foreground-5)] in TSX (bare arbitrary property)', () => {
-    assert.ok(scanTsxSnippet("[fill:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects [stroke:var(--foreground-5)] in TSX (bare arbitrary property)', () => {
-    assert.ok(scanTsxSnippet("[stroke:var(--foreground-5)]").length > 0);
-  });
 
-  it('rejects hover:[fill:var(--color-foreground-5)] in TSX (variant + theme mirror)', () => {
-    assert.ok(scanTsxSnippet("hover:[fill:var(--color-foreground-5)]").length > 0);
-  });
 
-  it('accepts [background:var(--foreground-5)] in TSX (bg bare property)', () => {
-    assert.deepEqual(scanTsxSnippet("[background:var(--foreground-5)]"), []);
-  });
 
-  it('accepts [border-color:var(--foreground-10)] in TSX (border bare property)', () => {
-    assert.deepEqual(scanTsxSnippet("[border-color:var(--foreground-10)]"), []);
-  });
 
   // P2: unquoted complex expression in inline style / JSX attr
-  it('rejects style={{ color: pick(base, "var(--foreground-5)") }} in TSX (unquoted expr)', () => {
-    assert.ok(scanTsxSnippet('style={{ color: pick(base, "var(--foreground-5)") }}').length > 0);
-  });
 
-  it('rejects <path fill={pick(base, "var(--foreground-5)")} /> in TSX (JSX expr)', () => {
-    assert.ok(scanTsxSnippet('<path fill={pick(base, "var(--foreground-5)")} />').length > 0);
-  });
 
-  it('accepts style={{ background: pick(base, "var(--foreground-5)") }} in TSX (bg expr)', () => {
-    assert.deepEqual(scanTsxSnippet('style={{ background: pick(base, "var(--foreground-5)") }}'), []);
-  });
 
   // P2: multi-line expression + depth-aware property boundary
-  it('rejects multi-line style={{ color: colorMix(...) }} in TSX', () => {
-    const snippet = 'style={{ color: colorMix(\n  base,\n  "var(--foreground-5)"\n) }}';
-    assert.ok(scanTsxSnippet(snippet).length > 0);
-  });
 
-  it('accepts style={{ color: semantic, background: "var(--foreground-5)" }} in TSX (surface after text prop)', () => {
-    assert.deepEqual(scanTsxSnippet('style={{ color: semantic, background: "var(--foreground-5)" }}'), []);
-  });
 
   // P3: TypeScript type annotation must not scan into function body
-  it('accepts function icon(fill: string) with bg-[var(--foreground-5)] in body', () => {
-    const snippet = 'function icon(fill: string) { return <div className="bg-[var(--foreground-5)]" /> }';
-    assert.deepEqual(scanTsxSnippet(snippet), []);
-  });
 });

@@ -18,7 +18,11 @@ import { createGenesisExecutionBoundary, createReadOnlyPermissionProfile } from 
 import { permissionModeLabel } from '../pi-transcript.js';
 import { permissionModePickerItems } from '../pi-tui-pickers.js';
 import { createMakaSessionDriver } from '../session-driver.js';
-import type { RuntimeContinuation, SafeBoundaryContinuationPlan } from '@maka/runtime';
+import type {
+  ContextDiagnostics,
+  RuntimeContinuation,
+  SafeBoundaryContinuationPlan,
+} from '@maka/runtime';
 
 describe('Maka session driver', () => {
   test('creates an ask-permission session from the first prompt and streams the turn', async () => {
@@ -1108,6 +1112,35 @@ describe('Maka session driver', () => {
     assert.equal(driver.retractQueued?.(), '');
     assert.deepEqual(runtime.steered, []);
   });
+
+  test('context diagnostics follow the active persisted session across switch and resume', async () => {
+    const runtime = new RecordingRuntime();
+    const cwd = process.cwd();
+    runtime.sessionSummaries = [sessionSummary({ id: 'session-2', cwd })];
+    runtime.contextDiagnostics.set('session-2', {
+      status: 'available',
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      completedAt: 10,
+      inputTokens: 40,
+      contextWindow: 200,
+      segments: [],
+    });
+    const driver = createMakaSessionDriver({
+      runtime,
+      cwd,
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+
+    await driver.switchSession('session-2');
+    const beforeResume = await driver.getContextDiagnostics?.();
+    await collect(driver.resumeLatest!());
+    const afterResume = await driver.getContextDiagnostics?.();
+
+    assert.deepEqual(afterResume, beforeResume);
+    assert.deepEqual(runtime.contextReads, ['session-2', 'session-2']);
+  });
 });
 
 class RecordingRuntime {
@@ -1140,6 +1173,8 @@ class RecordingRuntime {
   readonly branchedBefore: Array<{ sessionId: string; sourceTurnId: string }> = [];
   readonly sessionMessages = new Map<string, StoredMessage[]>();
   readonly executionBoundaries = new Map<string, ExecutionBoundary>();
+  readonly contextDiagnostics = new Map<string, ContextDiagnostics>();
+  readonly contextReads: string[] = [];
   sessionSummaries: SessionSummary[] = [];
   updatedSessionName = 'New Chat';
 
@@ -1351,6 +1386,16 @@ class RecordingRuntime {
           network: { kind: 'restricted' },
         },
         revision: 0,
+      }
+    );
+  }
+
+  async getContextDiagnostics(sessionId: string): Promise<ContextDiagnostics> {
+    this.contextReads.push(sessionId);
+    return (
+      this.contextDiagnostics.get(sessionId) ?? {
+        status: 'unavailable',
+        reason: 'no_completed_request',
       }
     );
   }

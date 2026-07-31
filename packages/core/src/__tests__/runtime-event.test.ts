@@ -16,6 +16,7 @@ import {
   RUNTIME_EVENT_STATUSES,
   TERMINAL_RUNTIME_EVENT_STATUSES,
   createRuntimeEventId,
+  decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isRuntimeEventAuthor,
   isRuntimeEventRole,
@@ -372,6 +373,35 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('normalizes legacy permission requests only for persisted reads', () => {
+    const permissionRequest = {
+      requestId: 'pr-1',
+      toolUseId: 'tc-1',
+      toolName: 'Bash',
+      category: 'shell_unsafe',
+      reason: 'shell_dangerous',
+      args: { command: 'rm foo' },
+    };
+    const legacyEvent = baseEvent({ actions: { permissionRequest } as never });
+    assert.throws(() => decodeRuntimeEvent(legacyEvent), /Invalid RuntimeEvent schema/);
+    assert.deepEqual(decodePersistedRuntimeEvent(legacyEvent).actions?.permissionRequest, {
+      ...permissionRequest,
+      kind: 'tool_permission',
+      rememberForTurnAllowed: false,
+    });
+    assert.throws(
+      () =>
+        decodePersistedRuntimeEvent(
+          baseEvent({
+            actions: {
+              permissionRequest: { ...permissionRequest, kind: 'tool_permission' },
+            } as never,
+          }),
+        ),
+      /Invalid RuntimeEvent schema/,
+    );
+  });
+
   test('a terminal action can carry endInvocation + tokenUsage', () => {
     const actions: RuntimeEventActions = {
       endInvocation: true,

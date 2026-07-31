@@ -28,8 +28,9 @@ describe('Desktop Computer Use production wiring', () => {
     assert.match(main, /sessions:stop[\s\S]*computerUseOverlay\.clearForSession/);
     assert.match(main, /sessions:archive[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /sessions:archive[\s\S]*computerUseOverlay\.clearForSession/);
-    assert.match(main, /sessions:remove[\s\S]*computerUseTools\.clearSession/);
-    assert.match(main, /sessions:remove[\s\S]*computerUseOverlay\.clearForSession/);
+    assert.match(main, /const removeSession[\s\S]*computerUseTools\.clearSession/);
+    assert.match(main, /const removeSession[\s\S]*computerUseOverlay\.clearForSession/);
+    assert.match(main, /sessions:remove[\s\S]*await removeSession/);
     assert.match(main, /isTurnStatusChangingSessionEvent[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /catch \(error\)[\s\S]*computerUseTools\.clearSession/);
     assert.match(main, /Promise\.allSettled\(\[[\s\S]*computerUse\.backend\?\.dispose/);
@@ -65,9 +66,11 @@ describe('Desktop Computer Use production wiring', () => {
     ]);
     assert.match(main, /computerUseToolsForModel\([\s\S]*supportsVision/);
     assert.match(main, /projectEffectiveProductToolSurface\(\{[\s\S]*tools:\s*selectedTools/);
+    const scripts = (JSON.parse(packageJson) as { scripts?: Record<string, string> }).scripts ?? {};
+    assert.match(scripts['build:workspace-deps'] ?? '', /@maka\/computer-use run build/);
     assert.match(
-      packageJson,
-      /"smoke:browser":\s*"[^"]*@maka\/computer-use[^"]*build:main/,
+      scripts['smoke:browser'] ?? '',
+      /npm run build:workspace-deps && npm run build:main/,
     );
   });
 

@@ -4,34 +4,37 @@
  * This module is intentionally lightweight: it only owns the
  * `MakaUriContext` (which the renderer installs once at the App root)
  * and a thin `Markdown` wrapper that `React.lazy`-loads the heavy
- * streaming Markdown pipeline from `./markdown-body.js` on first use.
+ * Astryx Markdown renderer from `./markdown-body.js` on first use.
  *
  * Why the split: the markdown pipeline is by far the heaviest thing the
  * chat shell transitively imports, yet it's only needed once a message
  * actually renders. On a fresh launch (no active session) nothing ever
  * mounts `<Markdown>`, so forcing the browser to parse hundreds of KB
- * of highlight.js grammars before first paint was pure overhead. With
- * the lazy split, that code is parsed on demand the first time a
- * message appears, and cached for every subsequent render.
+ * the Markdown component before first paint was pure overhead. With the
+ * lazy split, that code is parsed on demand the first time a message appears,
+ * and cached for every subsequent render.
  *
- * The trust-boundary contract (URI allowlist, safe-scheme external
- * gate, broken-link inline errors) lives in `markdown-body.tsx`
- * alongside the `Markdown` body; see that file for the routing rationale.
+ * Secret redaction happens eagerly in this wrapper so the Suspense fallback
+ * is safe. The remaining trust-boundary contract (URI allowlist, safe-scheme
+ * external gate, broken-link inline errors) lives in `markdown-body.tsx`;
+ * see that file for the routing rationale.
  *
  * PR-UI-LIB-EXTRACT-6 (WAWQAQ msg `510fef52`, round 7/10): pulled out
  * of `components.tsx`. `MakaUriContext` was already a public export
  * (the renderer's main.tsx provides the dispatcher), so `index.ts`
  * re-exports the new module to keep the `@maka/ui` surface identical.
- * `Markdown` / `MarkdownLink` / `CodeBlock` and the helper functions
- * remain package-private — only consumed within `@maka/ui`.
+ * `Markdown` and its rendering helpers remain package-private — only consumed
+ * within `@maka/ui`.
  */
 
-import { createContext, lazy, Suspense, type ReactNode } from 'react';
+import { createContext, lazy, Suspense } from 'react';
+import { redactSecrets } from './redact.js';
 
 // Heavy pipeline — parsed on first `<Markdown>` mount, not at app boot.
 const MarkdownBody = lazy(() => import('./markdown-body.js').then((m) => ({ default: m.MarkdownBody })));
 
 export function Markdown(props: { text: string; streaming?: boolean }) {
+  const safeText = redactSecrets(props.text);
   return (
     <Suspense
       // Plain-text fallback so message content is visible immediately while
@@ -39,11 +42,11 @@ export function Markdown(props: { text: string; streaming?: boolean }) {
       // local file:// load; once cached, subsequent mounts are synchronous).
       fallback={
         <div className="maka-markdown maka-markdown-pending" style={{ whiteSpace: 'pre-wrap' }}>
-          {props.text}
+          {safeText}
         </div>
       }
     >
-      <MarkdownBody text={props.text} streaming={props.streaming} />
+      <MarkdownBody text={safeText} streaming={props.streaming} />
     </Suspense>
   );
 }
