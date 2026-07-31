@@ -56,9 +56,15 @@ describe('Settings navigation copy', () => {
   it('renders stable metadata with locale-specific labels', () => {
     assert.equal(navLabel('general', 'zh'), '通用');
     assert.equal(navLabel('general', 'en'), 'General');
-    assert.equal(groupedNav('en')[0]?.label, 'General');
-    assert.equal(groupedNav('en')[1]?.label, 'AI & Integrations');
-    assert.equal(groupedNav('en')[2]?.label, 'System');
+    assert.deepEqual(
+      groupedNav('en').map((group) => [group.label, group.items.map((item) => item.id)]),
+      [
+        ['Preferences', ['general', 'appearance']],
+        ['Capabilities', ['models', 'memory', 'voice', 'bot-chat', 'search']],
+        ['Activity', ['usage', 'daily-review']],
+        ['System', ['data', 'permissions', 'health', 'about']],
+      ],
+    );
     assert.equal(groupedNav('en').flatMap((group) => group.items).find((item) => item.id === 'search')?.badge, 'Beta');
   });
 
