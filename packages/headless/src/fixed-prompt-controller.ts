@@ -1157,7 +1157,7 @@ function structuredVerifierGrade(harbor: unknown): 'passed' | 'failed' | undefin
     !isRecord(verifier) ||
     !Array.isArray(verifier.attempts) ||
     verifier.attempts.length < 1 ||
-    verifier.attempts.length > 2
+    verifier.attempts.length > 3
   )
     return undefined;
   if (

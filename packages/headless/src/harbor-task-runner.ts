@@ -782,7 +782,11 @@ async function readVerifierOutcome(
   if (outcome !== 'passed' && outcome !== 'failed' && outcome !== 'candidate_timeout') {
     throw new HarborInfraError(`verifier outcome is malformed for task ${taskId}`);
   }
-  if (!Array.isArray(value.attempts) || value.attempts.length < 1 || value.attempts.length > 2) {
+  if (
+    !Array.isArray(value.attempts) ||
+    value.attempts.length < 1 ||
+    value.attempts.length > HARBOR_ORACLE_MAX_ATTEMPTS
+  ) {
     throw new HarborInfraError(`verifier outcome attempts are malformed for task ${taskId}`);
   }
   const attempts = value.attempts.map((attempt, index) =>
@@ -1093,6 +1097,8 @@ function harborVerifierConfig(verifier: ReturnType<typeof verifierPolicy>) {
     kwargs: {
       attempt_timeout_sec: verifier.attemptTimeoutSec,
       max_attempts: HARBOR_ORACLE_MAX_ATTEMPTS,
+      retry_backoff_sec: HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryBackoffSec,
+      total_timeout_sec: verifier.totalTimeoutSec,
     },
     override_timeout_sec: verifier.outerTimeoutSec,
   };
@@ -1100,16 +1106,18 @@ function harborVerifierConfig(verifier: ReturnType<typeof verifierPolicy>) {
 
 function verifierPolicy(task: TaskRunInput['task']): {
   attemptTimeoutSec: number;
+  totalTimeoutSec: number;
   outerTimeoutSec: number;
 } {
   const attemptTimeoutSec =
     task.metadata?.verifierTimeoutSec ??
     HARBOR_ORACLE_EXECUTION_POLICY.verifier.defaultAttemptTimeoutSec;
+  const totalTimeoutSec =
+    attemptTimeoutSec * HARBOR_ORACLE_EXECUTION_POLICY.verifier.totalAttemptBudgetMultiplier;
   return {
     attemptTimeoutSec,
-    outerTimeoutSec:
-      attemptTimeoutSec * HARBOR_ORACLE_MAX_ATTEMPTS +
-      HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryGraceSec,
+    totalTimeoutSec,
+    outerTimeoutSec: totalTimeoutSec + HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryGraceSec,
   };
 }
 

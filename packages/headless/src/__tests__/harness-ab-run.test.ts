@@ -257,13 +257,16 @@ describe('runHarnessAbComparison', () => {
             JSON.parse(line) as {
               taskId: string;
               type: string;
+              scored?: boolean;
+              eligible?: boolean;
             },
         );
-      assert.equal(
-        terminalEvents.find((event) => event.taskId === 'b' && event.type === 'task_infra_failed')
-          ?.type,
-        'task_infra_failed',
+      const terminalInfra = terminalEvents.find(
+        (event) => event.taskId === 'b' && event.type === 'task_infra_failed',
       );
+      assert.equal(terminalInfra?.type, 'task_infra_failed');
+      assert.equal(terminalInfra?.scored, false);
+      assert.equal(terminalInfra?.eligible, false);
       assert.equal(
         terminalEvents.filter((event) => event.taskId === 'c' && event.type === 'task_completed')
           .length,

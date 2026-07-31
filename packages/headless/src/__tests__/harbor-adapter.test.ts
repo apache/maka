@@ -4801,17 +4801,19 @@ verifier_mod.Verifier = Verifier
 verifier_mod.RewardFileNotFoundError = RewardFileNotFoundError
 
 sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
-from maka_verifier import MakaVerifier
+import maka_verifier as verifier_impl
+from maka_verifier import MakaVerifier, MakaVerifierInfrastructureError
 
 class FakeEnvironment:
     os = "linux"
     capabilities = types.SimpleNamespace(mounted=True)
     default_user = None
 
-    def __init__(self, trial_paths, outcomes):
+    def __init__(self, trial_paths, outcomes, clock=None):
         self.trial_paths = trial_paths
         self.outcomes = list(outcomes)
         self.commands = []
+        self.clock = clock
 
     async def exec(self, command, **kwargs):
         self.commands.append(command)
@@ -4821,6 +4823,9 @@ class FakeEnvironment:
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
         assert "timeout --signal=KILL" in command, command
         outcome = self.outcomes.pop(0)
+        if isinstance(outcome, tuple):
+            outcome, duration = outcome
+            self.clock[0] += duration
         if outcome == "infra":
             self.trial_paths.test_stdout_path.write_text("E: Failed to fetch https://deb.example.invalid/pkg.deb 502 Bad Gateway", encoding="utf-8")
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
@@ -4876,7 +4881,7 @@ class FakeEnvironment:
         self.trial_paths.reward_text_path.write_text("1\n", encoding="utf-8")
         return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
-async def run_case(outcomes):
+async def run_case(outcomes, retry_backoff_sec=0, total_timeout_sec=2, clock=None):
     temp = tempfile.TemporaryDirectory()
     trial = Path(temp.name)
     verifier_dir = trial / "verifier"
@@ -4887,15 +4892,20 @@ async def run_case(outcomes):
         reward_json_path=verifier_dir / "reward.json",
         test_stdout_path=verifier_dir / "test-stdout.txt",
     )
-    environment = FakeEnvironment(paths, outcomes)
+    environment = FakeEnvironment(paths, outcomes, clock)
     verifier = MakaVerifier(
         task=types.SimpleNamespace(config=types.SimpleNamespace(verifier=types.SimpleNamespace(env={})), paths=None),
         trial_paths=paths,
         environment=environment,
         attempt_timeout_sec=1,
-        max_attempts=2,
+        max_attempts=3,
+        retry_backoff_sec=retry_backoff_sec,
+        total_timeout_sec=total_timeout_sec,
     )
-    result = await verifier.verify()
+    try:
+        result = await verifier.verify()
+    except MakaVerifierInfrastructureError as error:
+        result = error
     outcome = json.loads((verifier_dir / "maka-verifier-outcome.json").read_text(encoding="utf-8"))
     temp.cleanup()
     return result, outcome, environment.commands
@@ -4906,6 +4916,57 @@ assert outcome["outcome"] == "passed", outcome
 assert [item["classification"] for item in outcome["attempts"]] == ["infra_setup_failed", "passed"], outcome
 assert len([command for command in commands if "timeout --signal=KILL" in command]) == 2, commands
 assert all("bash -lc" in command for command in commands if "timeout --signal=KILL" in command), commands
+
+result, outcome, commands = asyncio.run(run_case(["infra", "infra", "pass"]))
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert outcome["outcome"] == "passed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "passed",
+], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 3, commands
+
+delays = []
+original_sleep = verifier_impl.asyncio.sleep
+async def record_sleep(delay):
+    delays.append(delay)
+verifier_impl.asyncio.sleep = record_sleep
+try:
+    result, outcome, commands = asyncio.run(
+        run_case(["infra", "infra", "pass"], retry_backoff_sec=2, total_timeout_sec=10)
+    )
+finally:
+    verifier_impl.asyncio.sleep = original_sleep
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert delays == [2, 4], delays
+
+result, outcome, commands = asyncio.run(run_case(["infra", "infra", "infra"]))
+assert isinstance(result, MakaVerifierInfrastructureError), result
+assert outcome["outcome"] == "infra_failed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "infra_setup_failed",
+], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 3, commands
+
+clock = [0.0]
+original_monotonic = verifier_impl.time.monotonic
+verifier_impl.time.monotonic = lambda: clock[0]
+try:
+    result, outcome, commands = asyncio.run(
+        run_case([("infra", 0.6), ("infra", 0.6), "timeout"], clock=clock)
+    )
+finally:
+    verifier_impl.time.monotonic = original_monotonic
+assert isinstance(result, MakaVerifierInfrastructureError), result
+assert outcome["outcome"] == "infra_failed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "infra_failed",
+], outcome
 
 result, outcome, commands = asyncio.run(run_case(["infra_with_fail_reward", "pass"]))
 assert result.rewards == {"reward": 1.0}, result.rewards
