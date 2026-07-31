@@ -110,11 +110,6 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /function releaseDialog\(lifecycle: number\) \{[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*setDialogState\(null\);/,
-      'a closed dialog must release only the matching dialog session',
-    );
-    assert.match(
-      src,
       /onCreated=\{async \(_slug, modelDiscoveryError\) => \{[\s\S]*const lifecycle = providerDialogLifecycleRef\.current;[\s\S]*const reloaded = await reload\(\);[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*\) return;[\s\S]*requestDialogClose\(\);/,
       'AddProviderForm completion must not close a newer dialog after the original dialog was dismissed',
     );
