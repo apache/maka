@@ -45,6 +45,7 @@ describe('ProcessingBlock disclosure wiring (#1307)', () => {
     assert.match(markup, /class="[^"]*astryx-collapsible[^"]*"/);
     assert.match(markup, /<button[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/);
     assert.match(markup, /class="[^"]*astryx-collapsible-content[^"]*"/);
+    assert.doesNotMatch(markup, /data-trow="row"/);
     assert.doesNotMatch(processingTrigger(markup), /lucide-chevron-right/);
   });
 
@@ -119,5 +120,6 @@ describe('deep-thinking disclosure', () => {
     const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1];
     assert.ok(trigger, 'deep-thinking disclosure must expose a collapsed trigger');
     assert.doesNotMatch(trigger, /lucide-chevron-right/);
+    assert.doesNotMatch(markup, /private reasoning/);
   });
 });

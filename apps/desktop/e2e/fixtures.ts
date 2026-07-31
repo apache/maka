@@ -222,6 +222,7 @@ export const test = base.extend<{
   chatChromeDarwinWindow: Page;
   chatChromeWin32Window: Page;
   sidebarLongSessionsWindow: Page;
+  disclosureOutputWindow: Page;
   sandboxBoundaryWindow: Page;
   readOnlyBoundaryWindow: Page;
   staleSessionsWindow: Page;
@@ -305,6 +306,17 @@ export const test = base.extend<{
         seed: false,
         readinessSelector: '[data-sidebar-state="expanded"] .maka-list-row',
         e2eFixtureScenario: 'sidebar-long-sessions',
+        locale: 'zh',
+      },
+      use,
+    );
+  },
+  disclosureOutputWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-processing="block"] > button[aria-expanded="false"]',
+        e2eFixtureScenario: 'disclosure-output',
         locale: 'zh',
       },
       use,

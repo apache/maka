@@ -1,5 +1,5 @@
 import type { BotOnboardingProvider } from './bot-onboarding.js';
-import type { SandboxBoundaryRequestEvent, ToolResultContent } from './events.js';
+import type { SandboxBoundaryRequestEvent, ToolOutputStream, ToolResultContent } from './events.js';
 import type { SettingsSection } from './settings.js';
 import type { UiLocale } from './ui-locale.js';
 
@@ -21,6 +21,7 @@ export type E2eFixtureScenario =
   | 'artifact-pane'
   | 'artifact-errors'
   | 'streaming-sidebar'
+  | 'disclosure-output'
   // PR-STREAM-TURN-CENTER: streaming-sidebar only shows the SIDEBAR dot (its
   // active session is a committed one). This seeds an ACTIVE session whose
   // main panel renders the live answer bubble below a committed turn, so
@@ -151,6 +152,14 @@ export interface E2eFixtureLiveTool {
   args: unknown;
   result?: ToolResultContent;
   durationMs?: number;
+  outputChunks?: Array<{
+    seq: number;
+    stream: ToolOutputStream;
+    text: string;
+    redacted: boolean;
+    createdAt: number;
+  }>;
+  outputTruncated?: boolean;
 }
 
 export interface E2eFixtureLiveTurnStep {

@@ -11,6 +11,7 @@ import {
   PERMISSION_SESSION_ID,
   PROCESSING_SESSION_ID,
   STALE_FAKE_SESSION_ID,
+  STREAMING_SESSION_ID,
   TURN_CONTROL_BRANCH_ORPHAN_SESSION_ID,
   TURN_CONTROL_BRANCH_VISIBLE_SESSION_ID,
   TURN_CONTROL_PRIMARY_SESSION_ID,
@@ -91,6 +92,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'artifact-pane',
   'artifact-errors',
   'streaming-sidebar',
+  'disclosure-output',
   // PR-STREAM-TURN-CENTER: active session renders the live answer bubble in
   // the main panel (below a committed turn) so
   // streaming-vs-committed horizontal alignment is locked deterministically.
@@ -467,6 +469,12 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
+        liveTurnBySession: streamingLiveTurns(),
+      };
+    case 'disclosure-output':
+      return {
+        ...state,
+        activeSessionId: STREAMING_SESSION_ID,
         liveTurnBySession: streamingLiveTurns(),
       };
     case 'streaming-answer':

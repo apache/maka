@@ -297,6 +297,7 @@ export function streamingSession(now: number): SessionHeader {
     connection: 'zai-live',
     model: 'glm-5',
     now,
+    status: 'running',
     hasUnread: true,
     lastMessageAt: now - 2 * 60_000,
   });
@@ -397,6 +398,16 @@ export function streamingLiveTurns(): NonNullable<E2eFixtureState['liveTurnBySes
           intent: '模拟后台 stream 中的 tool activity',
           status: 'running',
           args: { cmd: 'npm run e2e-fixture:fixture' },
+          outputChunks: [{
+            seq: 1,
+            stream: 'stdout',
+            text: Array.from(
+              { length: 160 },
+              (_, index) => `diagnostic line ${String(index + 1).padStart(3, '0')}\n`,
+            ).join(''),
+            redacted: false,
+            createdAt: E2E_FIXTURE_NOW,
+          }],
         }],
       }],
     },

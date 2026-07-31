@@ -229,7 +229,7 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
         </span>
       )}
     >
-      <ToolCardBody item={item} />
+      {open ? <ToolCardBody item={item} /> : null}
     </AstryxCollapsible>
   );
 }
@@ -482,15 +482,17 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
         </span>
       )}
     >
-      {items.length === 1 ? (
-        <ToolCardBody item={items[0]!} />
-      ) : (
-        <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-          {items.map((item) => (
-            <ToolTrowRow key={item.toolUseId} item={item} />
-          ))}
-        </div>
-      )}
+      {disclosure.open
+        ? (items.length === 1 ? (
+            <ToolCardBody item={items[0]!} />
+          ) : (
+            <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+              {items.map((item) => (
+                <ToolTrowRow key={item.toolUseId} item={item} />
+              ))}
+            </div>
+          ))
+        : null}
     </AstryxCollapsible>
   );
 }
@@ -562,7 +564,7 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
         </span>
       )}
     >
-      <ToolCardBody item={item} />
+      {disclosure.open ? <ToolCardBody item={item} /> : null}
     </AstryxCollapsible>
   );
 }
@@ -728,7 +730,7 @@ export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
       className="mt-1"
       trigger={<span className="text-[length:var(--font-size-ui)] text-[color:var(--muted-foreground)]">{open ? copy.hideRaw : copy.showRaw}</span>}
     >
-      <div className="mt-1">{children}</div>
+      {open ? <div className="mt-1">{children}</div> : null}
     </AstryxCollapsible>
   );
 }

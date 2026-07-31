@@ -1022,15 +1022,17 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
         </span>
       )}
     >
-      <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-        {entries.map((entry, index) =>
-          entry.kind === 'tools' ? (
-            <ToolTrow key={timelineEntryKey(entry, index)} items={entry.items} variant="rows" />
-          ) : (
-            <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
-          ),
-        )}
-      </div>
+      {disclosure.open ? (
+        <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+          {entries.map((entry, index) =>
+            entry.kind === 'tools' ? (
+              <ToolTrow key={timelineEntryKey(entry, index)} items={entry.items} variant="rows" />
+            ) : (
+              <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
+            ),
+          )}
+        </div>
+      ) : null}
     </AstryxCollapsible>
   );
 }
@@ -1101,12 +1103,13 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
         </span>
       )}
     >
-        {/* Left-border-indented quiet detail block, one language with the tool
-            trow's expanded body. `live` and settled render the SAME plain-text
-            body at the caption tier so the two states never jump size; settled
-            is muted + regular weight (long reasoning in italic reads poorly).
-            The copy action is an icon-only hover affordance pinned top-right so
-            it never squeezes the reading column into a vertical char stack. */}
+      {/* Left-border-indented quiet detail block, one language with the tool
+          trow's expanded body. `live` and settled render the SAME plain-text
+          body at the caption tier so the two states never jump size; settled
+          is muted + regular weight (long reasoning in italic reads poorly).
+          The copy action is an icon-only hover affordance pinned top-right so
+          it never squeezes the reading column into a vertical char stack. */}
+      {open ? (
         <div className="group/reasoning relative mt-1 ml-2 border-l border-[var(--border)] pl-2.5 pr-7">
           {props.live ? (
             <pre
@@ -1131,6 +1134,7 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
             </>
           )}
         </div>
+      ) : null}
     </AstryxCollapsible>
   );
 }

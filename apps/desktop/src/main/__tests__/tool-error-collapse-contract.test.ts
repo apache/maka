@@ -14,9 +14,9 @@
  * past the banner's 240px truncation. The errored card itself now stays
  * collapsed by default (the failure signal lives on the row's status label),
  * so the body-level assertions render the expanded card via the `open` prop.
- * Astryx keeps collapsed content mounted and removes it from layout/hit-testing
- * with `display:none`, so the contract observes `aria-expanded` and the linked
- * Astryx content region instead of treating DOM absence as disclosure state.
+ * Astryx owns the linked disclosure region, trigger, focus, and keyboard
+ * behavior. Maka's existing product `open` state also gates the raw child so a
+ * collapsed diagnostic does not build a potentially large hidden result tree.
  */
 
 import { strict as assert } from 'node:assert';
@@ -113,7 +113,8 @@ describe('PR-TOOL-ERROR-COLLAPSE-0 contract (issue #741)', () => {
   it('marks the raw payload disclosure collapsed when open=false', () => {
     const markup = renderWithLocale(createElement(ToolErrorDetails, { open: false, children: TAIL_MARKER }));
     assert.match(markup, /aria-expanded="false"/);
-    assert.match(markup, new RegExp(TAIL_MARKER), 'Astryx keeps hidden content mounted');
+    assert.match(markup, /class="[^"]*astryx-collapsible-content[^"]*"/);
+    assert.doesNotMatch(markup, new RegExp(TAIL_MARKER), 'collapsed raw diagnostics must not build hidden content');
   });
 
   it('caps the banner summary at 4 logical lines so a multi-line error cannot grow it to ~2.6kpx', () => {
