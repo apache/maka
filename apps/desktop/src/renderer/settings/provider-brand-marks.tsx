@@ -388,6 +388,7 @@ export function ProviderBrandMark({ type }: { type: ProviderType }): ReactElemen
       return <ProviderAssetMask src={vercelBrandMark} />;
     case 'opencode':
     case 'opencode-go':
+    case 'opencode-free':
       return <ProviderAssetMask src={opencodeBrandMark} />;
     case 'anthropic':
     case 'anthropic-compatible':

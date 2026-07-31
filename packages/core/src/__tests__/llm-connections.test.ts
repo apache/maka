@@ -71,6 +71,7 @@ describe('provider compatibility contract', () => {
       'zenmux',
       'opencode',
       'opencode-go',
+      'opencode-free',
       'togetherai',
       'fireworks-ai',
       'nvidia',
@@ -102,6 +103,7 @@ describe('provider compatibility contract', () => {
       'gemini-cli',
     ]);
     assert.deepEqual(READY_PROVIDER_TYPES, [
+      'opencode-free',
       'anthropic',
       'openai',
       'google',
@@ -158,6 +160,7 @@ describe('provider compatibility contract', () => {
       'alibaba-token-plan',
     ]);
     assert.deepEqual(CATALOG_PROVIDER_TYPES, [
+      'opencode-free',
       'kimi-coding-plan',
       'minimax-coding-plan',
       'deepseek',
@@ -229,6 +232,7 @@ describe('provider compatibility contract', () => {
       'the compatibility export must not copy registry state',
     );
     assert.deepEqual(RECOMMENDED_PROVIDER_TYPES, [
+      'opencode-free',
       'siliconflow',
       'anthropic',
       'openai',

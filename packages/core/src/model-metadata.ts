@@ -31,11 +31,20 @@ const generatedModelProviderOverrides: Partial<
 
 export function lookupModelMetadata(providerType: ProviderType, modelId: string): ModelMetadata {
   const id = modelId.trim();
-  const metadataProviderType = providerType === 'xai-oauth' ? 'xai' : providerType;
+  const metadataProviderType =
+    providerType === 'xai-oauth'
+      ? 'xai'
+      : providerType === 'opencode-free'
+        ? 'opencode'
+        : providerType;
   const generated = generatedMetadata[metadataProviderType]?.[id];
   const override =
     STATIC_MODEL_METADATA[providerType]?.[id] ??
-    (providerType === 'xai-oauth' ? STATIC_MODEL_METADATA.xai?.[id] : undefined);
+    (providerType === 'xai-oauth'
+      ? STATIC_MODEL_METADATA.xai?.[id]
+      : providerType === 'opencode-free'
+        ? STATIC_MODEL_METADATA.opencode?.[id]
+        : undefined);
   if (!generated) return override ?? {};
   if (!override) return generated;
   return {

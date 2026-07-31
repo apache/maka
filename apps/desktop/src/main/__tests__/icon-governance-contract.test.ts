@@ -943,7 +943,7 @@ describe('icon + typography governance contract', () => {
     );
   });
 
-  it('vendors one byte-exact upstream OpenCode mark for both plans', async () => {
+  it('vendors one byte-exact upstream OpenCode mark for all OpenCode plans', async () => {
     const [componentSrc, asset, notices] = await Promise.all([
       readFile(PROVIDER_BRAND_MARKS_FILE, 'utf8'),
       readFile(OPENCODE_BRAND_ASSET_FILE),
@@ -958,8 +958,8 @@ describe('icon + typography governance contract', () => {
     assert.match(componentSrc, /import opencodeBrandMark from '\.\.\/assets\/provider-brands\/opencode\.svg';/);
     assert.match(
       componentSrc,
-      /case 'opencode':\s*case 'opencode-go':\s*return <ProviderAssetMask src=\{opencodeBrandMark\} \/>/,
-      'Zen and Go must share the single upstream monochrome mark through the governed currentColor seam',
+      /case 'opencode':\s*case 'opencode-go':\s*case 'opencode-free':\s*return <ProviderAssetMask src=\{opencodeBrandMark\} \/>/,
+      'Zen, Go, and Free must share the single upstream monochrome mark through the governed currentColor seam',
     );
     assert.match(
       notices,
