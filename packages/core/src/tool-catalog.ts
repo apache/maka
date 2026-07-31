@@ -97,6 +97,8 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'Skill' },
     { name: 'SkillSearch' },
     { name: 'WebSearch' },
+    { name: 'MakaSettingsGet', effects: ['read'] as const },
+    { name: 'MakaSettingsUpdate', effects: ['write'] as const },
     { name: 'ExploreAgent' },
     { name: 'Automation' },
     { name: 'GoalSet' },

@@ -10,12 +10,14 @@ import {
   resolveUiLocale,
 } from '@maka/core';
 import type {
+  AppSettings,
   BotProvider,
   ConnectionEvent,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
   SessionHeader,
+  UpdateAppSettingsInput,
 } from '@maka/core';
 import { deriveBotStatusPersistenceUpdate } from './bot-status-persistence.js';
 import { runThreadSearch } from './search/thread-search.js';
@@ -715,6 +717,7 @@ const {
   goalWiring,
   agentMailboxStore,
   settingsStore,
+  updateAgentSettings,
   shellRuns,
   snapshotReadImage,
   readArchivedToolResultResource,
@@ -1274,6 +1277,14 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     keepSystemAwake,
     safeSendToRenderer,
   });
+
+async function updateAgentSettings(patch: UpdateAppSettingsInput): Promise<AppSettings> {
+  const normalizedPatch = await normalizeSettingsPatch(patch);
+  const next = await settingsStore.update(normalizedPatch);
+  await applySettingsRuntimeEffects(next, patch);
+  safeSendToRenderer('settings:externalChanged', { ts: Date.now() });
+  return next;
+}
 
 const streamEvents = createSessionStreamer({
   sessionActivities,

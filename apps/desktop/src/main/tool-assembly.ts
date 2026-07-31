@@ -17,10 +17,12 @@ import {
   ShellRunProcessManager,
 } from '@maka/runtime';
 import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
+import { buildAgentSettingsTools } from './agent-settings-tools.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
@@ -58,6 +60,7 @@ export interface DesktopToolAssemblyDeps {
   goalWiring: GoalWiring;
   agentMailboxStore: AgentMailboxStore;
   settingsStore: SettingsStore;
+  updateAgentSettings: (patch: UpdateAppSettingsInput) => Promise<AppSettings>;
   shellRuns: ShellRunProcessManager;
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
@@ -86,6 +89,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     goalWiring,
     agentMailboxStore,
     settingsStore,
+    updateAgentSettings,
     shellRuns,
     snapshotReadImage,
     readArchivedToolResultResource,
@@ -193,6 +197,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     settingsStore,
     getPrivacyContext: getWorkspacePrivacyContext,
   });
+  const agentSettingsTools = buildAgentSettingsTools({
+    settingsStore,
+    updateSettings: updateAgentSettings,
+  });
   // Assemble product tools first, then derive skill host + deferred groups from
   // the shared catalog ∩ this binding (#1099 S2). Skill listing uses the same host.
   const toolsBeforeSkill: MakaTool[] = [
@@ -222,6 +230,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     // permission engine routes it through the `web_read` policy which
     // prompts the user in explore / ask modes.
     webSearchTool,
+    // Safe self-configuration surface: read a redacted projection and update
+    // only an explicit non-secret allowlist after an in-app confirmation.
+    ...agentSettingsTools,
     // Session task ledger: model manages a flat task list; the current list is
     // re-injected each turn tail. Pure local state, so no permission gate.
     ...taskLedgerWiring.tools,
