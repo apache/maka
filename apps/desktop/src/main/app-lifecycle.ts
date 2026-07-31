@@ -15,7 +15,7 @@ import type {
   createProjectCatalog,
   createSessionStore,
   createSettingsStore,
-  createTelemetryRepo,
+  createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
 import type { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -56,7 +56,7 @@ export interface AppLifecycleDeps {
   credentialStore: ReturnType<typeof createFileCredentialStore>;
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
-  telemetryRepo: ReturnType<typeof createTelemetryRepo>;
+  telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;

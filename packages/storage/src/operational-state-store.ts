@@ -20,6 +20,7 @@ import {
   migrateSqliteWorkflowDatabase,
   SQLITE_WORKFLOW_SCHEMA_VERSION,
 } from './sqlite-workflow-schema.js';
+import { migrateSqliteUsageDatabase, SQLITE_USAGE_SCHEMA_VERSION } from './sqlite-usage-schema.js';
 
 export const OPERATIONAL_STATE_DATABASE_NAME = 'runtime.sqlite';
 export const LEGACY_SESSION_METADATA_DATABASE_NAME = 'sessions.sqlite';
@@ -126,6 +127,7 @@ class OperationalStateDatabaseOwner {
       migrateSqliteSessionMetadataDatabase(this.database);
       migrateSqliteCoreExecutionDatabase(this.database);
       migrateSqliteWorkflowDatabase(this.database);
+      migrateSqliteUsageDatabase(this.database);
       migrateOperationalStateDatabase(this.database, options.now ?? Date.now);
       cutoverLegacySessionMetadata({
         destination: this.database,
@@ -204,6 +206,7 @@ function migrateOperationalStateDatabase(db: DatabaseSync, now: () => number): v
     registerSchema(db, 'session_metadata', SQLITE_SESSION_METADATA_SCHEMA_VERSION, appliedAt);
     registerSchema(db, 'core_execution', SQLITE_CORE_EXECUTION_SCHEMA_VERSION, appliedAt);
     registerSchema(db, 'workflow', SQLITE_WORKFLOW_SCHEMA_VERSION, appliedAt);
+    registerSchema(db, 'usage', SQLITE_USAGE_SCHEMA_VERSION, appliedAt);
     registerSchema(db, 'operational', OPERATIONAL_STATE_SCHEMA_VERSION, appliedAt);
     db.exec('COMMIT');
   } catch (error) {

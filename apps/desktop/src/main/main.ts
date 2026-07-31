@@ -73,7 +73,7 @@ import {
   createSettingsStore,
   createMcpConfigStore,
   createShellRunStore,
-  createTelemetryRepo,
+  createSqliteTelemetryRepo,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
@@ -291,7 +291,7 @@ function ensureMcpReady(): Promise<void> {
   }
   return mcpStartup;
 }
-const telemetryRepo = createTelemetryRepo(workspaceRoot);
+const telemetryRepo = createSqliteTelemetryRepo(workspaceRoot);
 const dailyReviewArchiveStore = createDailyReviewArchiveStore(workspaceRoot);
 const artifactStore = createArtifactStore(workspaceRoot);
 const deepResearchStore = createSqliteDeepResearchStore(workspaceRoot);

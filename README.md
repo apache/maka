@@ -217,11 +217,15 @@ Desktop and Runtime Host production wiring opens these SQLite repositories;
 their JSON/JSONL predecessors are read only during a fingerprinted, crash-safe
 cutover and are never updated by later mutations.
 
-The remaining structured operational stores are deliberately classified rather
-than implied complete:
+Usage telemetry and pricing authority now use that same operational database.
+Legacy `telemetry.json` and `pricing.json` sources are decoded together and
+fingerprinted before their rows and pricing revision are committed atomically.
+After cutover, Desktop and Runtime Host write only `runtime.sqlite`; the source
+files remain unchanged as migration evidence.
 
-- usage telemetry and pricing authority move in the next workflow-metadata
-  slice;
+The remaining storage work is deliberately classified rather than implied
+complete:
+
 - artifact metadata and lifecycle state move with a recoverable
   metadata/payload publication protocol, while payload bytes remain files;
 - StoredMessage transcript bodies remain append-only JSONL;
