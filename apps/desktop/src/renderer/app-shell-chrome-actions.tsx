@@ -103,6 +103,7 @@ export function AppShellWorkspaceTopActions(props: {
           variant: 'ghost',
           size: 'sm',
           className: 'maka-titlebar-action',
+          style: { borderRadius: 'var(--radius-control)' },
         }}
       >
           <MenuItem icon={<MessageCircleQuestion aria-hidden="true" />} label={copy.feedback} onClick={props.onOpenFeedback} />

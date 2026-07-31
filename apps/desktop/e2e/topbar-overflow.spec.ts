@@ -23,6 +23,14 @@ test('workspace topbar folds secondary actions into an overflow menu', async ({ 
 
   const overflow = toolbar.getByRole('button', { name: '更多操作' });
   await expect(overflow).toBeVisible();
+  await expect
+    .poll(async () => {
+      const radii = await toolbar.getByRole('button').evaluateAll((buttons) =>
+        buttons.map((button) => getComputedStyle(button).borderRadius),
+      );
+      return new Set(radii).size;
+    })
+    .toBe(1);
 
   // Each secondary action surfaces only behind the overflow menu, and clicking
   // a menuitem fires its callback (the destination opens) — not just visible.
