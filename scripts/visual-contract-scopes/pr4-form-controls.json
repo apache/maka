@@ -7,15 +7,24 @@
     },
     {
       "name": "settings-form-controls",
-      "selectors": ["[data-maka-contract=\"settings-rows\"]"]
+      "selectors": [
+        "[data-maka-contract=\"settings-rows\"]",
+        ".settingsStructuredPage:has([data-maka-contract=\"settings-rows\"])",
+        "[data-overlayscrollbars-viewport]:has([data-maka-contract=\"settings-rows\"])",
+        "[data-overlayscrollbars-content]:has([data-maka-contract=\"settings-rows\"])"
+      ]
     },
     {
       "name": "provider-form-controls",
-      "selectors": ["[data-maka-contract=\"providers-panel\"]"]
+      "selectors": [
+        ":is([data-maka-contract=\"providers-panel\"] :is(input, textarea), [data-maka-contract=\"providers-panel\"] :has(> :is(input, textarea)), [data-maka-contract=\"providers-panel\"] :has(> label):has(:is(input, textarea)))"
+      ]
     },
     {
       "name": "module-form-controls",
-      "selectors": ["[data-maka-contract=\"module-main\"]"]
+      "selectors": [
+        ":is([data-maka-contract=\"module-main\"] :is(input, textarea), [data-maka-contract=\"module-main\"] :has(> :is(input, textarea)), [data-maka-contract=\"module-main\"] :has(> label):has(:is(input, textarea)))"
+      ]
     }
   ]
 }
