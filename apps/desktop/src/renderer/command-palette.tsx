@@ -134,7 +134,7 @@ export function CommandPalette(props: {
 
   function commit(commandId: string) {
     const command = itemById.get(commandId)?.auxiliaryData?.command;
-    if (!command || command.disabled || pendingCommandRef.current) return;
+    if (!command || pendingCommandRef.current) return;
     pendingCommandRef.current = command;
     props.onOpenChange(false);
   }

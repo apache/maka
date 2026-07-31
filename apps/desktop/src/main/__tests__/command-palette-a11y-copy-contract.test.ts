@@ -75,8 +75,9 @@ describe('Command palette accessibility and visible copy', () => {
     assert.match(source, /const pendingCommandRef = useRef<Command \| null>\(null\)/);
     assert.match(
       source,
-      /function commit\(commandId: string\) \{[\s\S]*if \(!command \|\| command\.disabled \|\| pendingCommandRef\.current\) return;[\s\S]*pendingCommandRef\.current = command;[\s\S]*props\.onOpenChange\(false\);/,
+      /function commit\(commandId: string\) \{[\s\S]*if \(!command \|\| pendingCommandRef\.current\) return;[\s\S]*pendingCommandRef\.current = command;[\s\S]*props\.onOpenChange\(false\);/,
     );
+    assert.doesNotMatch(source, /command\.disabled/);
     assert.match(
       source,
       /if \(props\.isOpen\) return;[\s\S]*const command = pendingCommandRef\.current;[\s\S]*pendingCommandRef\.current = null;[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*Promise\.resolve\(command\.run\(\)\)\.catch/,
