@@ -399,7 +399,7 @@ export const test = base.extend<{
     );
   },
   // #1364: Usage with seeded request traffic + details-on settings, so the
-  // request-log DataTable actually renders (the default window fixture keeps
+  // request-log Table actually renders (the default window fixture keeps
   // `showDetails` false and has no logs — the table CSS could regress without
   // failing anything).
   usageSettingsWindow: async ({}, use) => {

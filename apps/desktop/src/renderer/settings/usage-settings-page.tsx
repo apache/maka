@@ -11,8 +11,6 @@ import {
   AlertAction,
   AlertDescription,
   Button,
-  DataTable,
-  type DataTableColumn,
   EmptyState,
   IconButton,
   TextInput,
@@ -22,6 +20,10 @@ import {
   Switch,
   Tab,
   TabList,
+  Table,
+  type TableColumn,
+  pixel,
+  proportional,
   useToast,
   useUiLocale,
 } from '@maka/ui';
@@ -422,16 +424,15 @@ function usageRequestStatusLabel(status: UsageStats['logs'][number]['status'], c
   }
 }
 
-// ── Shared table wrapper ────────────────────────────────────────────────────
-// The hairline/column-rhythm/tabular-nums recipe now lives in the shared
-// `DataTable` primitive (@maka/ui) — the #1252 table grew health + permission
-// consumers, so it was promoted. This thin wrapper keeps the usage-local
-// concern the primitive deliberately omits: routing an empty tab to the shared
-// EmptyState (icon + copy) instead of a bare header row. All five tabs funnel
-// through it, so every tab inherits the same table and the same empty surface.
+// ── Usage table mapping ─────────────────────────────────────────────────────
+// Astryx Table owns table geometry, scrolling, dividers, density, and cell
+// semantics. This page only maps its product rows and empty-state copy into
+// that public API.
 
-interface UsageColumn extends DataTableColumn {
+interface UsageColumn {
   header: string;
+  numeric?: boolean;
+  grow?: boolean;
 }
 
 interface UsageEmpty {
@@ -457,12 +458,35 @@ function UsageStatsTable(props: {
       />
     );
   }
+  type UsageTableRow = Record<string, unknown> & {
+    id: number;
+    cells: Array<ReactNode>;
+  };
+
+  const data: UsageTableRow[] = props.rows.map((cells, id) => ({ id, cells }));
+  const columns: Array<TableColumn<UsageTableRow>> = props.columns.map((column, index) => ({
+    key: `cell-${index}`,
+    header: column.header,
+    align: column.numeric ? 'end' : 'start',
+    width: column.grow ? proportional(1) : pixel(column.numeric ? 88 : 120),
+    renderCell: (row) => (
+      <span className={column.numeric ? 'settingsUsageNumericCell' : undefined}>
+        {row.cells[index]}
+      </span>
+    ),
+  }));
+
   return (
-    <DataTable
-      ariaLabel={props.ariaLabel}
-      columns={props.columns}
-      rows={props.rows}
-      className="settingsUsageTable"
-    />
+    <div className="settingsUsageTable">
+      <Table
+        aria-label={props.ariaLabel}
+        data={data}
+        columns={columns}
+        idKey="id"
+        density="compact"
+        dividers="rows"
+        textOverflow="truncate"
+      />
+    </div>
   );
 }

@@ -118,9 +118,9 @@ const connectionsBridge: ConnectionsBridge = {
 /**
  * #1364: request logs with deliberately hostile content — a dated preview
  * model id, a namespaced MCP tool name, and full-length UUIDs — so the
- * requests DataTable (8 columns, most `whitespace-nowrap` by primitive
- * recipe) is exercised at its real intrinsic width. `logs` used to be `[]`,
- * which meant no story ever rendered a DataTable at all.
+ * requests Astryx Table (8 explicitly sized columns) is exercised at its real
+ * intrinsic width. `logs` used to be `[]`, which meant no story ever rendered
+ * a table at all.
  */
 function makeUsageLog(input: {
   id: string;
@@ -1104,8 +1104,8 @@ export const Usage: Story = {
   render: () => <SettingsStory section="usage" />,
 };
 /**
- * #1364: the requests DataTable with hostile-width content (dated preview
- * model ids, namespaced MCP tool names). No story rendered a DataTable at
+ * #1364: the requests Astryx Table with hostile-width content (dated preview
+ * model ids, namespaced MCP tool names). No story rendered a table at
  * all before this — `logs` was `[]` and the requests tab defaulted to its
  * summary-only Alert.
  */

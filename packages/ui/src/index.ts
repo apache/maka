@@ -76,7 +76,13 @@ export * from './primitives/item.js';
 export * from './primitives/spinner.js';
 export * from './primitives/kbd.js';
 export * from './primitives/stat-tile.js';
-export * from './primitives/data-table.js';
+export {
+  Table,
+  pixel,
+  proportional,
+  type TableColumn,
+  type TableProps,
+} from '@astryxdesign/core';
 export * from './primitives/section-header.js';
 export { EmptyState } from './empty-state.js';
 export * from './primitives/toolbar.js';

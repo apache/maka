@@ -290,7 +290,7 @@ test('capability diagnostics stay contained when expanded at the window floor', 
 /**
  * #1364 — list-page geometry at the window floor.
  *
- * Usage: the requests DataTable's nowrap column recipe gives it an intrinsic
+ * Usage: the requests Astryx Table's explicit column widths give it an intrinsic
  * width wider than the settings column even at full window width; it must
  * scroll inside its own container (#1360 fix) instead of dragging the page
  * into horizontal scroll, and the five-tab bar scrolls within itself the same
@@ -342,7 +342,7 @@ test('usage and web search stay contained at the window floor', async ({ window:
 /**
  * #1364 review follow-up: the containment test above never reaches the two
  * long-content branches — the default fixture has no request logs (so the
- * requests DataTable never renders) and no Tavily key (so the page stops at
+ * requests Table never renders) and no Tavily key (so the page stops at
  * the no-key message). These two lock the actual fixes against the states
  * that broke: the request table scrolls inside its own container while the
  * page stays put, and the hostile-width results (bare-URL title, long
@@ -353,7 +353,7 @@ test('usage request log scrolls inside its own container at the window floor', a
 }) => {
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = page.getByRole('main', { name: '设置内容' });
-  const scroller = settings.locator('.settingsUsageTable');
+  const scroller = settings.locator('.settingsUsageTable .astryx-table-scroll-wrapper');
   // The renderer's first stats fetch can race the fixture seeding on boot;
   // refresh until the seeded request log lands.
   await expect(async () => {

@@ -374,6 +374,10 @@
   margin-top: var(--space-2-5);
 }
 
+.settingsUsageNumericCell {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Empty tab: the shared EmptyState card, nudged to the density of the
    stats surface rather than the full page hero. */
 .settingsUsageEmpty {
