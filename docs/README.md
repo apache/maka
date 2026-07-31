@@ -51,6 +51,10 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Product design](../DESIGN.md)
 - [Frontend CSS governance](./frontend-css-governance.md) ([中文](./frontend-css-governance.zh-CN.md))
 
+### Voice
+
+- [Background voice assistant product design](./architecture/background-voice-assistant-design.zh-CN.md)
+
 ### Security and privacy
 
 - [Workspace privacy context](./workspace-privacy-context.md)
