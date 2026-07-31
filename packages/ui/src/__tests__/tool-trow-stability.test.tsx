@@ -28,7 +28,8 @@ describe('ToolTrow stable structure', () => {
     assert.match(one, /data-trow="group"/);
     assert.doesNotMatch(one, /data-trow="row"/);
     assert.doesNotMatch(one, /data-panel-open/);
-    assert.doesNotMatch(one, /<pre/);
+    assert.match(one, /aria-expanded="false"/);
+    assert.match(one, /class="[^"]*astryx-collapsible-content[^"]*"/);
     assert.match(two, /data-trow="group"/);
   });
 });

@@ -206,9 +206,8 @@ describe('Storybook baseline contract', () => {
     // catalogue with no Maka-owned behavior.
     const curatedPrimitives = [
       'Button', 'Badge', 'TextInput', 'TextArea', 'Divider',
-      'Dialog', 'TabsRoot', 'Toggle', 'ToggleGroup',
-      'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
-      'DropdownMenu', 'Accordion', 'Toolbar', 'ToastProvider',
+      'Dialog', 'TabsRoot', 'Alert', 'Empty', 'Spinner', 'Kbd',
+      'DropdownMenu', 'Toolbar', 'ToastProvider',
     ];
     const missing = curatedPrimitives.filter(
       (name) => !new RegExp(`<${name}[\\s/>]`).test(allStorySrc),

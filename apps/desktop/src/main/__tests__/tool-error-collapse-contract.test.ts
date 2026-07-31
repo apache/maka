@@ -14,9 +14,9 @@
  * past the banner's 240px truncation. The errored card itself now stays
  * collapsed by default (the failure signal lives on the row's status label),
  * so the body-level assertions render the expanded card via the `open` prop.
- * The tail marker must NOT appear even in the expanded markup — it only
- * renders inside the inner CollapsiblePanel, which Base UI leaves unmounted
- * while closed.
+ * Astryx keeps collapsed content mounted and removes it from layout/hit-testing
+ * with `display:none`, so the contract observes `aria-expanded` and the linked
+ * Astryx content region instead of treating DOM absence as disclosure state.
  */
 
 import { strict as assert } from 'node:assert';
@@ -60,8 +60,8 @@ function renderExpanded(errorText: string): string {
 describe('PR-TOOL-ERROR-COLLAPSE-0 contract (issue #741)', () => {
   it('keeps the errored card collapsed by default, with the failure signal on the row', () => {
     const markup = renderErrored(LONG_ERROR);
-    assert.doesNotMatch(markup, /工具调用失败/, 'a collapsed errored tool must not mount the banner');
-    assert.doesNotMatch(markup, new RegExp(TAIL_MARKER), 'a collapsed errored tool must not mount the raw payload');
+    assert.match(markup, /<button[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/, 'the errored tool must start collapsed');
+    assert.match(markup, /class="[^"]*astryx-collapsible-content[^"]*"/, 'the collapsed body must use Astryx hit-test ownership');
     assert.match(markup, />失败</, 'the collapsed row still carries the failure status label');
   });
 
@@ -71,13 +71,11 @@ describe('PR-TOOL-ERROR-COLLAPSE-0 contract (issue #741)', () => {
     assert.match(markup, /Validation failed:/, 'banner must show the start of the error text');
   });
 
-  it('collapses the raw diagnostic payload behind the inner disclosure (tail marker not rendered alongside the banner)', () => {
+  it('collapses the raw diagnostic payload behind an Astryx-linked inner disclosure', () => {
     const markup = renderExpanded(LONG_ERROR);
-    assert.doesNotMatch(
-      markup,
-      new RegExp(TAIL_MARKER),
-      'raw payload tail must be collapsed by default — the banner already shows the first 240px, the rest must not render until expanded',
-    );
+    assert.match(markup, /显示原始诊断/);
+    assert.match(markup, /<button[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/);
+    assert.match(markup, /class="[^"]*astryx-collapsible-content[^"]*"/);
   });
 
   it('exposes a keyboard-reachable trigger to expand the raw diagnostics', () => {
@@ -112,9 +110,10 @@ describe('PR-TOOL-ERROR-COLLAPSE-0 contract (issue #741)', () => {
     assert.match(markup, new RegExp(TAIL_MARKER), 'an expanded disclosure must render the raw payload');
   });
 
-  it('hides the raw payload when the disclosure is collapsed (open=false)', () => {
+  it('marks the raw payload disclosure collapsed when open=false', () => {
     const markup = renderWithLocale(createElement(ToolErrorDetails, { open: false, children: TAIL_MARKER }));
-    assert.doesNotMatch(markup, new RegExp(TAIL_MARKER), 'a collapsed disclosure must not render the raw payload');
+    assert.match(markup, /aria-expanded="false"/);
+    assert.match(markup, new RegExp(TAIL_MARKER), 'Astryx keeps hidden content mounted');
   });
 
   it('caps the banner summary at 4 logical lines so a multi-line error cannot grow it to ~2.6kpx', () => {
@@ -126,5 +125,11 @@ describe('PR-TOOL-ERROR-COLLAPSE-0 contract (issue #741)', () => {
     const summary = m?.[1] ?? '';
     assert.ok(summary.split('\n').length <= 4, `banner summary must cap at 4 lines, got ${summary.split('\n').length}`);
     assert.ok(summary.endsWith('…'), 'a truncated multi-line summary must end with an ellipsis');
+  });
+
+  it('redacts secrets before diagnostics reach either the banner or disclosure content', () => {
+    const markup = renderExpanded('Authorization: Bearer sk-live-super-secret-value');
+    assert.doesNotMatch(markup, /sk-live-super-secret-value/);
+    assert.match(markup, /redacted|脱敏/i);
   });
 });

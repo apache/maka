@@ -82,9 +82,7 @@ const BARE_PX_RE = /(?<![\w-])-?\d+(?:\.\d+)?px(?![\w-])/;
  *  are allowlisted by SELECTOR so a new `border-width: 1px 2px` drift on
  *  any other selector is still caught — add a new caret here only after
  *  confirming it is geometry, not a stroke. */
-const TRIANGLE_CARET_SELECTORS = new Set([
-  '.maka-turn-thinking [data-slot="collapsible-trigger"]::before',
-]);
+const TRIANGLE_CARET_SELECTORS = new Set<string>();
 
 const BORDER_STYLE_KEYWORDS = new Set([
   'solid', 'dashed', 'dotted', 'double', 'groove', 'ridge', 'inset', 'outset',

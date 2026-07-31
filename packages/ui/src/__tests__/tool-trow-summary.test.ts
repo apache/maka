@@ -28,6 +28,12 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
+function firstDisclosureTrigger(markup: string): string {
+  const trigger = markup.match(/(<button[^>]*aria-expanded="[^"]+"[\s\S]*?<\/button>)/)?.[1];
+  assert.ok(trigger, 'tool trow must expose a disclosure trigger');
+  return trigger;
+}
+
 describe('tool trow summary aggregation', () => {
   it('multi-tool running summary shows aggregated bucket with 正在 prefix, not the active tool description', () => {
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
@@ -39,10 +45,11 @@ describe('tool trow summary aggregation', () => {
     }));
 
     // 整组 bucket 聚合 + "正在"前缀，不跟 active 工具走
-    assert.match(markup, /正在读取 2 个文件，搜索 1 次/);
+    const trigger = firstDisclosureTrigger(markup);
+    assert.match(trigger, /正在读取 2 个文件，搜索 1 次/);
     // 不显示 active 工具的具体描述（避免并发时 1234567 跳）
-    assert.doesNotMatch(markup, /搜索 foo/);
-    assert.doesNotMatch(markup, /读取 b\.ts/);
+    assert.doesNotMatch(trigger, /搜索 foo/);
+    assert.doesNotMatch(trigger, /读取 b\.ts/);
   });
 
   it('counts the whole group including settled tools, so the summary does not decrement as tools finish', () => {
@@ -65,8 +72,9 @@ describe('tool trow summary aggregation', () => {
       ] satisfies ToolActivityItem[],
     }));
     // 首个 bucket = read = FileText，不跟 active (Grep = Search) 切
-    assert.match(markup, /lucide-file-text/);
-    assert.doesNotMatch(markup, /lucide-search/);
+    const trigger = firstDisclosureTrigger(markup);
+    assert.match(trigger, /lucide-file-text/);
+    assert.doesNotMatch(trigger, /lucide-search/);
   });
 
   it('keeps the failed count visible in the live summary (the group no longer force-opens on error)', () => {

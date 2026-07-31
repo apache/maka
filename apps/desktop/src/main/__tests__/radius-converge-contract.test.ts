@@ -285,9 +285,7 @@ const ALL_TIER_CLASSES = ['rounded-sm', 'rounded-md', 'rounded-lg', 'rounded-xl'
 
 const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
   { file: 'packages/ui/src/ui.tsx', name: 'inputClasses', tier: 'control' },
-  { file: 'packages/ui/src/ui.tsx', name: 'Toggle', tier: 'control' },
   // Dialog radius is owned by Astryx Dialog.
-  { file: 'packages/ui/src/ui.tsx', name: 'ToggleGroup', tier: 'surface' },
   // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
   // them to primitives/tabs.tsx, on the stated grounds that they became
   // "governed by primitives-design-contract escape hatches". That file

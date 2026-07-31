@@ -1231,11 +1231,9 @@ html[data-os="darwin"].dark {
     content-visibility: visible;
   }
 
-  /* The streaming UI rework retired `.maka-turn-tools` (the tools-section
-     wrapper) and the `.maka-turn-thinking` reasoning `<details>` chrome. Tools
-     now render inline via the flat `ToolTrow` and reasoning via the
-     `DeepThinking` disclosure, both Tailwind-literal + the `TextShimmer`
-     primitive — see packages/ui/src/tool-activity.tsx and chat-view.tsx. */
+  /* Tools now render inline via the flat `ToolTrow`; reasoning uses Astryx
+     Collapsible through `DeepThinking`. Product text and shimmer remain local,
+     while disclosure focus, keyboard behavior, chevron, and chrome are Astryx-owned. */
 
   /* ---- Tool activity ---------------------------------------------- */
 

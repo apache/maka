@@ -1,7 +1,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
-import { AlertOctagon, Ban, Brain, Check, ChevronRight, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
+import { AlertOctagon, Ban, Brain, Check, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
@@ -9,6 +9,7 @@ import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
 import {
   Button as UiButton,
+  Collapsible as AstryxCollapsible,
   IconButton as UiIconButton,
 } from '@astryxdesign/core';
 import { Dialog } from '@astryxdesign/core/Dialog';
@@ -20,7 +21,6 @@ import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
-import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/collapsible.js';
 import { Bubble, Marker, markerVariants, Message, TextShimmer } from './primitives/chat.js';
 import { SETTLE_FADE, ToolKindIcon, ToolTrow, useToolDisclosure } from './tool-activity.js';
 import {
@@ -958,8 +958,8 @@ function TurnTimelineEntry(props: {
  * two answer texts (#1307; the fold is derived at render time by
  * `foldTimeline`, which only folds runs containing tool activity — a
  * pure-thinking run renders as the bare 深度思考 disclosure). Collapsed by
- * default (no defaultOpen — same disclosure-collapsible-contract as 深度思考 /
- * the tool trow): the summary line shows the current activity while running and
+ * default (controlled by the same product state machine as 深度思考 / the tool
+ * trow): the summary line shows the current activity while running and
  * freezes to the settled tool roll-up (tool counts + 「N 个失败」 in
  * destructive; folded reasoning is not counted) once the turn ends. A
  * `waiting_permission` prompt inside forces the block open (trowNeedsAttention);
@@ -1000,53 +1000,45 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   const activityKind = processingActivityKind(entries);
   const summary = summarizeProcessing(entries, { live: running, locale });
   return (
-    <Collapsible
+    <AstryxCollapsible
       className="flex flex-col"
       data-processing="block"
       data-settled={settled ? 'true' : undefined}
-      open={disclosure.open}
+      isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
-    >
-      {/* Same row language as the tool trow / 深度思考: [16px icon] + [label] +
-          hover/open chevron, one tier — hierarchy carried by color, not size. */}
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <ToolKindIcon
-          kind={activityKind}
-          size={16}
-          aria-hidden="true"
-          className={cn('shrink-0', settledTone)}
-        />
-        {running ? (
-          <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
-        ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
-        )}
-        <ChevronRight
-          size={14}
-          aria-hidden="true"
-          className="shrink-0 text-[color:var(--muted-foreground)] opacity-0 [transition:transform_var(--duration-quick)_var(--ease-out-strong),opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover:opacity-100 group-data-[panel-open]:rotate-90 group-data-[panel-open]:opacity-100"
-        />
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
-        <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-          {entries.map((entry, index) =>
-            entry.kind === 'tools' ? (
-              <ToolTrow key={timelineEntryKey(entry, index)} items={entry.items} variant="rows" />
-            ) : (
-              <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
-            ),
+      trigger={(
+        <span className="flex min-w-0 items-center gap-2 py-0.5">
+          <ToolKindIcon
+            kind={activityKind}
+            size={16}
+            aria-hidden="true"
+            className={cn('shrink-0', settledTone)}
+          />
+          {running ? (
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
+          ) : (
+            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
           )}
-        </div>
-      </CollapsiblePanel>
-    </Collapsible>
+        </span>
+      )}
+    >
+      <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+        {entries.map((entry, index) =>
+          entry.kind === 'tools' ? (
+            <ToolTrow key={timelineEntryKey(entry, index)} items={entry.items} variant="rows" />
+          ) : (
+            <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
+          ),
+        )}
+      </div>
+    </AstryxCollapsible>
   );
 }
 
 /**
  * "深度思考" — the unified reasoning disclosure for both live streaming and
- * committed history (replaces ReasoningPanel + the retired `.maka-turn-thinking`
- * disclosure). Controlled Collapsible, collapsed by default (no defaultOpen —
- * disclosure-collapsible-contract), fixed title "深度思考".
+ * committed history. Controlled Astryx Collapsible, collapsed by default, with
+ * the fixed title "深度思考".
  *
  * `live=true` (thinking still flowing): the title shimmers (TextShimmer) and the
  * expanded body streams plain redacted text through `useSmoothStreamContent`
@@ -1080,51 +1072,35 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
     if (el) el.scrollTop = el.scrollHeight;
   }, [displayed, props.live, open]);
   return (
-    <Collapsible
+    <AstryxCollapsible
       className="flex flex-col"
       data-deep-thinking={props.live ? 'live' : undefined}
-      open={open}
+      isOpen={open}
       onOpenChange={setOpen}
-    >
-      {/* Structurally identical to a tool trow row: [16px icon slot] + [label]
-          + [hover-reveal trailing chevron]. One font size (base 13px), one
-          weight (normal), muted color — the whole folded timeline reads as a
-          single tier, hierarchy carried by color, not by size/weight jitter. */}
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <Brain
-          size={16}
-          aria-hidden="true"
-          className="shrink-0 text-[color:var(--muted-foreground)]"
-        />
-        {props.live ? (
-          <TextShimmer active={!snap} className="min-w-0 truncate text-[length:var(--font-size-base)]">{copy.thinking}</TextShimmer>
-        ) : (
-          <span className="min-w-0 truncate text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{copy.thinking}</span>
-        )}
-        {/* "已截断" pill: the thinking cap (applyThinkingDelta /
-            applyThinkingComplete) dropped content; same chrome as the
-            tool-output truncated pill. */}
-        {props.truncated && (
-          <span
-            className="rounded-[var(--radius-control)] border border-[oklch(from_var(--warning)_l_c_h_/_0.30)] bg-[oklch(from_var(--warning)_l_c_h_/_0.06)] px-1 text-[length:var(--font-size-caption)] text-[color:var(--warning-text,var(--info-text))]"
-            data-truncated="true"
-            title={copy.thinkingTruncatedTitle}
-          >
-            {copy.truncated}
-          </span>
-        )}
-        {/* Quiet chevron sits right after the label (near the text, not pinned
-            to the far edge), rides in on hover / open, matching the tool trow
-            rows. No always-on affordance so the folded row stays calm. */}
-        <span className="inline-flex shrink-0 items-center text-[color:var(--muted-foreground)] opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover:opacity-100 group-data-[panel-open]:opacity-100">
-          <ChevronRight
-            size={14}
+      trigger={(
+        <span className="flex min-w-0 items-center gap-2 py-0.5">
+          <Brain
+            size={16}
             aria-hidden="true"
-            className="[transition:transform_var(--duration-quick)_var(--ease-out-strong)] group-data-[panel-open]:rotate-90"
+            className="shrink-0 text-[color:var(--muted-foreground)]"
           />
+          {props.live ? (
+            <TextShimmer active={!snap} className="min-w-0 truncate text-[length:var(--font-size-base)]">{copy.thinking}</TextShimmer>
+          ) : (
+            <span className="min-w-0 truncate text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{copy.thinking}</span>
+          )}
+          {props.truncated && (
+            <span
+              className="rounded-[var(--radius-control)] border border-[oklch(from_var(--warning)_l_c_h_/_0.30)] bg-[oklch(from_var(--warning)_l_c_h_/_0.06)] px-1 text-[length:var(--font-size-caption)] text-[color:var(--warning-text,var(--info-text))]"
+              data-truncated="true"
+              title={copy.thinkingTruncatedTitle}
+            >
+              {copy.truncated}
+            </span>
+          )}
         </span>
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
+      )}
+    >
         {/* Left-border-indented quiet detail block, one language with the tool
             trow's expanded body. `live` and settled render the SAME plain-text
             body at the caption tier so the two states never jump size; settled
@@ -1155,8 +1131,7 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
             </>
           )}
         </div>
-      </CollapsiblePanel>
-    </Collapsible>
+    </AstryxCollapsible>
   );
 }
 

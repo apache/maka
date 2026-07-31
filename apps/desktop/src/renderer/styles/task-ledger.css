@@ -54,6 +54,10 @@
 }
 
 .maka-task-ledger-terminal-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  width: 100%;
   min-height: 30px;
   justify-content: space-between;
   padding: var(--space-1) var(--space-2);
@@ -62,8 +66,6 @@
 }
 
 .maka-task-ledger-terminal-trigger > span { display: inline-flex; align-items: center; gap: var(--space-1-5); }
-.maka-task-ledger-terminal-trigger svg { transition: transform var(--duration-base) var(--ease-out-strong); }
-.maka-task-ledger-terminal-trigger svg[data-open="true"] { transform: rotate(180deg); }
 
 .maka-task-ledger-message {
   display: flex;
@@ -92,8 +94,4 @@
   .maka-task-ledger-row { grid-template-columns: 14px minmax(32px, auto) minmax(0, 1fr); }
   .maka-task-ledger-meta { grid-column: 3; justify-content: flex-start; }
   .maka-task-ledger-detail { grid-column: 3; white-space: normal; overflow-wrap: anywhere; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-task-ledger-terminal-trigger svg { transition: none; }
 }

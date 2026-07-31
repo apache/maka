@@ -3,7 +3,6 @@ import type { ToolResultContent } from '@maka/core';
 import {
   AlertOctagon,
   Check,
-  ChevronRight,
   Clock,
   Copy,
   FileText,
@@ -46,10 +45,9 @@ import {
 } from './tool-activity/result-projection.js';
 import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/alert.js';
-import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from './primitives/collapsible.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
-import { Button as UiButton } from '@astryxdesign/core';
+import { Button as UiButton, Collapsible as AstryxCollapsible } from '@astryxdesign/core';
 import { cn } from './ui.js';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
@@ -206,33 +204,33 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
   // Ordinary work stays summarized. A new permission prompt opens the
   // diagnostics (it is actionable); an errored tool stays collapsed — the
   // failure signal lives on the summary line. An explicit user toggle survives
-  // later ordinary status changes. See disclosure-collapsible-contract:
-  // defaultOpen is banned here.
+  // later ordinary status changes. Keep this controlled: an Astryx
+  // `defaultIsOpen` would lose that product-level state transition.
   const presentation = deriveToolActivityPresentation(item, locale);
   const disclosure = useToolDisclosure(presentation);
   const open = openProp ?? disclosure.open;
   const duration = formatDuration(item.durationMs);
   const visualStatus = isSandboxDeniedTool(item) ? 'blocked' : item.status;
   return (
-    <Collapsible
+    <AstryxCollapsible
       data-slot="tool"
       className={toolVariants({ part: 'item' })}
       data-status={visualStatus}
-      open={open}
+      isOpen={open}
       onOpenChange={disclosure.setOpen}
-    >
-      <CollapsibleTrigger className={toolVariants({ part: 'header' })}>
-        <span className={toolVariants({ part: 'dot' })} data-status={visualStatus} aria-hidden="true" />
-        <span className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</span>
-        <span className={toolVariants({ part: 'meta' })}>
-          {duration && <span className={toolVariants({ part: 'duration' })}>{duration}</span>}
-          <span className={toolVariants({ part: 'status-label' })}>{toolStatusLabel(item, locale)}</span>
+      trigger={(
+        <span className={cn('w-full', toolVariants({ part: 'header' }))}>
+          <span className={toolVariants({ part: 'dot' })} data-status={visualStatus} aria-hidden="true" />
+          <span className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</span>
+          <span className={toolVariants({ part: 'meta' })}>
+            {duration && <span className={toolVariants({ part: 'duration' })}>{duration}</span>}
+            <span className={toolVariants({ part: 'status-label' })}>{toolStatusLabel(item, locale)}</span>
+          </span>
         </span>
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
-        <ToolCardBody item={item} />
-      </CollapsiblePanel>
-    </Collapsible>
+      )}
+    >
+      <ToolCardBody item={item} />
+    </AstryxCollapsible>
   );
 }
 
@@ -467,32 +465,33 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
     ? (items.length > 1 ? summarizeTrowTools(items, { live: true, locale }) : firstPresentation.summary)
     : summarizeTrowTools(items, { locale });
   return (
-    <Collapsible className="flex flex-col" data-trow="group" data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('shrink-0', settledTone)} />
-        {running ? (
-          <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
-        ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
-        )}
-        <ChevronRight
-          size={14}
-          aria-hidden="true"
-          className="shrink-0 text-[color:var(--muted-foreground)] opacity-0 [transition:transform_var(--duration-quick)_var(--ease-out-strong),opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover:opacity-100 group-data-[panel-open]:rotate-90 group-data-[panel-open]:opacity-100"
-        />
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
-        {items.length === 1 ? (
-          <ToolCardBody item={items[0]!} />
-        ) : (
-          <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-            {items.map((item) => (
-              <ToolTrowRow key={item.toolUseId} item={item} />
-            ))}
-          </div>
-        )}
-      </CollapsiblePanel>
-    </Collapsible>
+    <AstryxCollapsible
+      className="flex flex-col"
+      data-trow="group"
+      data-settled={settled ? 'true' : undefined}
+      isOpen={disclosure.open}
+      onOpenChange={disclosure.setOpen}
+      trigger={(
+        <span className="flex min-w-0 items-center gap-2 py-0.5">
+          <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('shrink-0', settledTone)} />
+          {running ? (
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
+          ) : (
+            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
+          )}
+        </span>
+      )}
+    >
+      {items.length === 1 ? (
+        <ToolCardBody item={items[0]!} />
+      ) : (
+        <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+          {items.map((item) => (
+            <ToolTrowRow key={item.toolUseId} item={item} />
+          ))}
+        </div>
+      )}
+    </AstryxCollapsible>
   );
 }
 
@@ -529,42 +528,42 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   // spell out whether the operation failed or the sandbox blocked it.
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
-    <Collapsible className="flex flex-col" data-trow="row" data-status={sandboxBlocked ? 'blocked' : item.status} data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <ToolKindIcon
-          kind={presentation.kind}
-          size={16}
-          aria-hidden="true"
-          className={cn('shrink-0', summaryTone)}
-        />
-        {running ? (
-          <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
-        ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
-            {errored
-              ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
-              : sandboxBlocked
-                ? `${rowLabel} · ${getToolActivityCopy(locale).group.sandboxBlockedSuffix}`
-                : rowLabel}
-          </span>
-        )}
-        {/* Quiet meta sits right after the label (near the text, not pinned to
-            the far edge): duration + chevron ride in on hover / open, matching
-            the multi-tool summary row — status is carried by the shimmer /
-            destructive tint, so no always-on status word. */}
-        <span className="inline-flex shrink-0 items-center gap-2 text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)] opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover:opacity-100 group-data-[panel-open]:opacity-100">
-          {duration && <span className="[font-variant-numeric:tabular-nums]">{duration}</span>}
-          <ChevronRight
-            size={14}
+    <AstryxCollapsible
+      className="flex flex-col"
+      data-trow="row"
+      data-status={sandboxBlocked ? 'blocked' : item.status}
+      data-settled={settled ? 'true' : undefined}
+      isOpen={disclosure.open}
+      onOpenChange={disclosure.setOpen}
+      trigger={(
+        <span className="flex min-w-0 items-center gap-2 py-0.5">
+          <ToolKindIcon
+            kind={presentation.kind}
+            size={16}
             aria-hidden="true"
-            className="[transition:transform_var(--duration-quick)_var(--ease-out-strong)] group-data-[panel-open]:rotate-90"
+            className={cn('shrink-0', summaryTone)}
           />
+          {running ? (
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
+          ) : (
+            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
+              {errored
+                ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
+                : sandboxBlocked
+                  ? `${rowLabel} · ${getToolActivityCopy(locale).group.sandboxBlockedSuffix}`
+                  : rowLabel}
+            </span>
+          )}
+          {duration && (
+            <span className="shrink-0 text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]">
+              {duration}
+            </span>
+          )}
         </span>
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
-        <ToolCardBody item={item} />
-      </CollapsiblePanel>
-    </Collapsible>
+      )}
+    >
+      <ToolCardBody item={item} />
+    </AstryxCollapsible>
   );
 }
 
@@ -700,8 +699,8 @@ function ToolErrorBanner(props: {
  * validation/runtime failure cannot dominate the conversation. The ToolErrorBanner
  * already shows the first 240px of the error text + a copy action; this disclosure
  * owns the full raw payload (quiet JSON body / structured ToolResultPreview) so it
- * is reachable but not loud. Keyboard-accessible via CollapsibleTrigger (a real
- * <button>); secret redaction + size caps stay enforced upstream (redactSecrets,
+ * is reachable but not loud. Astryx owns the keyboard-accessible trigger;
+ * secret redaction + size caps stay enforced upstream (redactSecrets,
  * the banner's 240px truncation, and the result preview's own caps).
  */
 export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
@@ -723,19 +722,14 @@ export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
     onOpenChange?.(next);
   };
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mt-1">
-      <CollapsibleTrigger className="flex w-fit items-center gap-1 self-start rounded-[var(--radius-control)] text-[length:var(--font-size-ui)] text-[color:var(--muted-foreground)] outline-none transition-colors hover:text-[color:var(--foreground-secondary)] focus-visible:shadow-[0_0_0_var(--focus-ring-width)_oklch(from_var(--focus-ring)_l_c_h_/_0.14)]">
-        <ChevronRight
-          size={12}
-          aria-hidden="true"
-          className={cn('shrink-0 transition-transform duration-[var(--duration-quick)] [transition-timing-function:var(--ease-out-strong)]', open && 'rotate-90')}
-        />
-        <span>{open ? copy.hideRaw : copy.showRaw}</span>
-      </CollapsibleTrigger>
-      <CollapsiblePanel className="mt-1">
-        {children}
-      </CollapsiblePanel>
-    </Collapsible>
+    <AstryxCollapsible
+      isOpen={open}
+      onOpenChange={setOpen}
+      className="mt-1"
+      trigger={<span className="text-[length:var(--font-size-ui)] text-[color:var(--muted-foreground)]">{open ? copy.hideRaw : copy.showRaw}</span>}
+    >
+      <div className="mt-1">{children}</div>
+    </AstryxCollapsible>
   );
 }
 

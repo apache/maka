@@ -126,12 +126,6 @@ export function Bubble({
  * the only consumers import it by relative path, so the variant table stays an
  * internal, freely-removable styling detail rather than public API.
  *
- * NOTE: `.maka-turn-thinking` (the committed-turn reasoning `<details>`) is
- * deliberately NOT migrated here. Its chrome lives in `summary::before` /
- * `::-webkit-details-marker` pseudo-elements that don't reduce to leaf
- * utilities (so the source-string == computed-style proof wouldn't hold), and
- * `maka-tokens.css` already documents an intended
- * Base UI Accordion path for it. It stays hand-written for that later effort.
  */
 const markerVariants = cva("", {
   variants: {
@@ -309,23 +303,17 @@ export function TextShimmer({
  * self-evidently-equal translation and is immune to later scale/token re-tuning
  * (the visual refresh, not this governance pass, owns adopting the scale).
  *
- * Two pieces escape the computed-style proof and are NOT in this table — they
- * stay a small named residue keyed on `[data-slot="tool"]` in maka-tokens.css,
- * pinned by the PR3b cascade contract (source strings + keyframe frames) rather
- * than the diff harness:
- *   1. the running status dot's `[animation:maka-tool-pulse …]` breath (the
- *      shorthand rides in the `dot` part here; only the
- *      `@keyframes maka-tool-pulse` stays in CSS — a keyframe is a global rule,
- *      not an element property, and `getComputedStyle` reads a phase-dependent
- *      value). The running dot's box-shadow RING is a leaf rest-state literal, so
- *      it stays here and IS diff-proven.
- *   2. the native `<summary>` marker reset (`::-webkit-details-marker` /
- *      `::marker`) — pseudo-elements with no leaf-utility form. Kept as residue.
+ * The running status dot's `[animation:maka-tool-pulse …]` breath escapes the
+ * computed-style proof and stays as a small named residue keyed on
+ * `[data-slot="tool"]` in maka-tokens.css. The shorthand rides in the `dot`
+ * part here; only the `@keyframes maka-tool-pulse` global rule stays in CSS.
+ * The dot's box-shadow ring is a leaf rest-state literal, so it stays here and
+ * is diff-proven.
  * (The reduced-motion / e2e-fixture suppression both ride GLOBAL `*` rules in
  * maka-tokens.css / base.css, so the dot and card need no per-element motion
  * utilities; the same global rules cover them as before.)
  *
- * The single consumer (`ToolActivity`) renders a Base UI Collapsible and applies
+ * The single consumer (`ToolActivity`) renders an Astryx Collapsible and applies
  * these by `className`. `toolVariants` is kept OFF the package barrel for the
  * same reason as `markerVariants`: the only consumer imports
  * it by relative path, so the part set stays an internal, freely-removable
@@ -368,10 +356,10 @@ const toolVariants = cva("", {
         + " data-[status=blocked]:[border-color:oklch(from_var(--warning)_l_c_h_/_0.4)] data-[status=blocked]:bg-[oklch(from_var(--warning)_l_c_h_/_0.04)]"
         + " data-[status=errored]:[border-color:oklch(from_var(--destructive)_l_c_h_/_0.4)] data-[status=errored]:bg-[oklch(from_var(--destructive)_l_c_h_/_0.04)]"
         + " data-[status=interrupted]:[border-color:var(--border)] data-[status=interrupted]:bg-[var(--foreground-3)] data-[status=interrupted]:opacity-[0.7]",
-      // The Collapsible trigger/header: 8px · name · meta grid. The open-state
-      // divider reads Base UI's `[data-panel-open]` trigger attribute directly.
+      // The tool header's 8px · name · meta grid. Astryx owns the surrounding
+      // disclosure button, focus ring, chevron, and open-state chrome.
       header:
-        "list-none grid grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-2 text-[color:var(--foreground-secondary)] data-[panel-open]:[border-bottom:1px_solid_var(--border)]",
+        "list-none grid grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-2 text-[color:var(--foreground-secondary)]",
       // `.maka-tool-status-dot` (+ the `[data-status]` color swaps; running adds
       // the box-shadow ring + `maka-tool-pulse` breath — keyframe stays in CSS).
       dot:

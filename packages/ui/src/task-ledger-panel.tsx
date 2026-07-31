@@ -1,16 +1,15 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, type CSSProperties } from 'react';
+import { Collapsible } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
   AlertCircle,
   Ban,
   CheckCircle2,
-  ChevronDown,
   CircleGauge,
   Clock,
   RefreshCcw,
   X,
 } from './icons.js';
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from './primitives/collapsible.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy, type SharedUiCopy } from './shared-ui-copy.js';
 import { EmptyState } from './empty-state.js';
@@ -54,7 +53,6 @@ export function deriveTaskLedgerPanelModel(tasks: readonly Task[]): TaskLedgerPa
 
 export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
   const copy = getSharedUiCopy(useUiLocale()).taskLedger;
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const model = useMemo(() => deriveTaskLedgerPanelModel(props.tasks), [props.tasks]);
 
   return (
@@ -81,16 +79,19 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
             <EmptyState variant="inline" title={copy.empty} body="" />
           )}
           {model.recentTerminalCount > 0 && (
-            <Collapsible className="maka-task-ledger-terminal" open={terminalOpen} onOpenChange={setTerminalOpen}>
-              <CollapsibleTrigger className="maka-task-ledger-terminal-trigger">
-                <span>{copy.recent}</span>
-                <span>{model.recentTerminalCount}<ChevronDown size={14} aria-hidden="true" data-open={terminalOpen ? 'true' : 'false'} /></span>
-              </CollapsibleTrigger>
-              <CollapsiblePanel>
-                <div className="maka-task-ledger-tree" role="tree" aria-label={copy.recentAriaLabel}>
-                  {model.recentTerminalTree.map((task) => <TaskLedgerRow key={task.id} task={task} copy={copy} />)}
-                </div>
-              </CollapsiblePanel>
+            <Collapsible
+              className="maka-task-ledger-terminal"
+              defaultIsOpen={false}
+              trigger={(
+                <span className="maka-task-ledger-terminal-trigger">
+                  <span>{copy.recent}</span>
+                  <span>{model.recentTerminalCount}</span>
+                </span>
+              )}
+            >
+              <div className="maka-task-ledger-tree" role="tree" aria-label={copy.recentAriaLabel}>
+                {model.recentTerminalTree.map((task) => <TaskLedgerRow key={task.id} task={task} copy={copy} />)}
+              </div>
             </Collapsible>
           )}
         </>

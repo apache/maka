@@ -138,18 +138,15 @@ describe('chat tool-card migration contract (#332 PR3b)', () => {
         `tool dot must use the governed maka-tool-pulse ring, not "${banned}"`,
       );
     }
-    // The open/collapsed divider — the one card surface that differs by state
-    // (the collapsed default has no bottom border). Base UI puts
-    // `[data-panel-open]` directly on the Collapsible Trigger, so keep the border
-    // on the styled trigger/header part without adding a root group or crossing
-    // elements to read root state.
+    // Astryx owns the disclosure trigger, focus ring, chevron, and open-state
+    // chrome; the Maka header recipe only owns its product data grid.
     assert.ok(
       !rawSrc.includes('[open]>summary'),
       'tool card source must not keep the old native details `[open]>summary` selector, even in comments',
     );
     assert.ok(
       !rawSrc.includes('group-data-[open]/tool'),
-      'tool card source must not use a root group to read open state when Base UI Trigger exposes [data-panel-open]',
+      'tool card source must not keep the retired root-group disclosure state',
     );
     const itemStart = block.indexOf('item:');
     const headerStart = block.indexOf('header:', itemStart);
@@ -157,18 +154,9 @@ describe('chat tool-card migration contract (#332 PR3b)', () => {
     assert.ok(itemStart !== -1 && headerStart !== -1 && dotStart !== -1, 'toolVariants item/header/dot parts must stay parseable');
     const itemBlock = block.slice(itemStart, headerStart);
     const headerBlock = block.slice(headerStart, dotStart);
-    assert.ok(
-      !itemBlock.includes('group/tool'),
-      'tool card root must not add a named group for open state when Base UI Trigger exposes [data-panel-open]',
-    );
-    assert.ok(
-      !itemBlock.includes('border-bottom'),
-      'tool card root must not own the open-state divider; put the border on the trigger/header part',
-    );
-    assert.ok(
-      headerBlock.includes('data-[panel-open]:[border-bottom:1px_solid_var(--border)]'),
-      'tool card header must add the divider from Base UI Trigger [data-panel-open]',
-    );
+    assert.ok(!itemBlock.includes('group/tool'), 'tool card root must not add a named disclosure-state group');
+    assert.ok(!itemBlock.includes('border-bottom'), 'tool card root must not duplicate Astryx open-state chrome');
+    assert.ok(!headerBlock.includes('data-[panel-open]'), 'tool card header must not read the retired Base UI state hook');
     // Anti-drift: pin the distinctive literals and ban the semantic-scale
     // forms they would be swapped for. Radius uses the `--radius-surface`
     // token per #406 gap 4. Spacing now uses the Tailwind scale (gap-2.5)
