@@ -2,6 +2,7 @@ import { app, nativeImage, safeStorage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setActiveProxy } from '@maka/runtime';
+import { resolveBootstrapConnections } from '@maka/core';
 import type {
   AgentGraphCoordinator,
   AgentGraphSupervisorWakeCoordinator,
@@ -173,36 +174,34 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     await mkdir(workspaceRoot, { recursive: true });
     if ((await connectionStore.list()).length > 0) return;
 
-    if (process.env.ANTHROPIC_API_KEY) {
-      const slug = 'env-anthropic';
+    // opencode-free is seeded unconditionally so a fresh install is usable with
+    // zero credentials; env-keyed providers layer on top and take the default
+    // when present (Anthropic before OpenAI). See resolveBootstrapConnections.
+    const seeds = resolveBootstrapConnections({
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    });
+    for (const seed of seeds) {
       await connectionStore.create({
-        slug,
-        name: 'Anthropic (env)',
-        providerType: 'anthropic',
-        defaultModel: 'claude-sonnet-4-5-20250929',
+        slug: seed.slug,
+        name: seed.name,
+        providerType: seed.providerType,
+        defaultModel: seed.defaultModel,
       });
-      await credentialStore.setSecret(slug, 'api_key', process.env.ANTHROPIC_API_KEY);
-      await connectionStore.setDefault(slug);
-      // Bootstrap runs in BACKGROUND startup (#456): the renderer may have
-      // already seeded its connection list from the onboarding snapshot,
-      // so push the change or the model picker stays empty until an
-      // unrelated action refreshes it.
-      emitConnectionListChanged();
-      return;
+      const envApiKey =
+        seed.providerType === 'anthropic'
+          ? process.env.ANTHROPIC_API_KEY
+          : seed.providerType === 'openai'
+            ? process.env.OPENAI_API_KEY
+            : undefined;
+      if (envApiKey) await credentialStore.setSecret(seed.slug, 'api_key', envApiKey);
+      if (seed.isDefault) await connectionStore.setDefault(seed.slug);
     }
-
-    if (process.env.OPENAI_API_KEY) {
-      const slug = 'env-openai';
-      await connectionStore.create({
-        slug,
-        name: 'OpenAI (env)',
-        providerType: 'openai',
-        defaultModel: 'gpt-4o-mini',
-      });
-      await credentialStore.setSecret(slug, 'api_key', process.env.OPENAI_API_KEY);
-      await connectionStore.setDefault(slug);
-      emitConnectionListChanged();
-    }
+    // Bootstrap runs in BACKGROUND startup (#456): the renderer may have
+    // already seeded its connection list from the onboarding snapshot,
+    // so push the change or the model picker stays empty until an
+    // unrelated action refreshes it.
+    if (seeds.length > 0) emitConnectionListChanged();
   }
 
   app.whenReady().then(async () => {

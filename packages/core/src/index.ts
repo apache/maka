@@ -1438,6 +1438,13 @@ export {
   sanitizeOnboardingMilestones,
 } from './onboarding.js';
 
+// bootstrap-connections.ts
+export type {
+  BootstrapConnectionSeed,
+  BootstrapEnv,
+} from './bootstrap-connections.js';
+export { resolveBootstrapConnections } from './bootstrap-connections.js';
+
 // model-catalog.ts
 export type {
   BuildModelCatalogInput,
