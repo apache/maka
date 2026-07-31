@@ -108,16 +108,17 @@ export function PlanReminderPanel(props: {
   const planReminderMountedRef = useMountedRef();
   const refreshPendingRef = useRef(false);
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
-  const pendingReminderMenuIntentRef = useRef<(() => void) | null>(null);
+  const pendingReminderMenuIntentRef = useRef<((trigger?: HTMLButtonElement) => void) | null>(null);
   // A reminder row's menu trigger button, keyed by reminder id. When a
   // deferred menu intent (edit/duplicate/clear-runs/delete) opens a dialog
   // after the menu closes, Astryx Dialog restores focus on Esc to whatever
   // was `document.activeElement` when it opened. The menu's own close-focus-
-  // return and the deferred dialog open sit two `requestAnimationFrame`s
-  // apart, so on a loaded runner the captured element can land on <body>
-  // instead of the trigger and Esc strands focus away from the row. The
-  // deferred intent re-focuses the trigger right before opening the dialog,
-  // making that capture deterministic. See plan-reminders E2E.
+  // return and the deferred dialog open sit across animation frames, so on a
+  // loaded runner the captured element can land on <body> instead of the
+  // trigger and Esc strands focus away from the row. The trigger is passed to
+  // the deferred dialog intent and focused in the same frame that opens the
+  // dialog, making Astryx Dialog's own capture deterministic. See the
+  // plan-reminders E2E.
   const reminderMenuTriggerRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   // Issue #1044: all create/edit form fields + submit moved into
   // PlanReminderFormDialog. The panel owns its open state and seed;
@@ -212,12 +213,14 @@ export function PlanReminderPanel(props: {
     }
   }
 
-  function openReminderDialog(seed: PlanReminderFormSeed) {
+  function openReminderDialog(seed: PlanReminderFormSeed, trigger?: HTMLButtonElement) {
     setFormDialogOpen(false);
     setFormSeed(seed);
     setFormNonce((nonce) => nonce + 1);
     window.requestAnimationFrame(() => {
-      if (planReminderMountedRef.current) setFormDialogOpen(true);
+      if (!planReminderMountedRef.current) return;
+      trigger?.focus();
+      setFormDialogOpen(true);
     });
   }
 
@@ -225,15 +228,15 @@ export function PlanReminderPanel(props: {
     openReminderDialog(createPlanReminderFormSeed());
   }
 
-  function editReminder(reminder: PlanReminder) {
-    openReminderDialog(planReminderEditSeed(reminder));
+  function editReminder(reminder: PlanReminder, trigger?: HTMLButtonElement) {
+    openReminderDialog(planReminderEditSeed(reminder), trigger);
   }
 
-  function duplicateReminder(reminder: PlanReminder) {
-    openReminderDialog(planReminderDuplicateSeed(reminder, locale));
+  function duplicateReminder(reminder: PlanReminder, trigger?: HTMLButtonElement) {
+    openReminderDialog(planReminderDuplicateSeed(reminder, locale), trigger);
   }
 
-  function runReminderMenuIntentAfterClose(intent: () => void) {
+  function runReminderMenuIntentAfterClose(intent: (trigger?: HTMLButtonElement) => void) {
     pendingReminderMenuIntentRef.current = intent;
   }
 
@@ -245,12 +248,7 @@ export function PlanReminderPanel(props: {
     if (intent) {
       window.requestAnimationFrame(() => {
         if (!planReminderMountedRef.current) return;
-        // Re-establish the trigger as the active element before the intent
-        // opens a dialog, so the dialog captures and later restores focus to
-        // the row's menu trigger instead of whatever drifted to <body> during
-        // the menu-close → deferred-open window.
-        reminderMenuTriggerRefs.current.get(reminderId)?.focus();
-        intent();
+        intent(reminderMenuTriggerRefs.current.get(reminderId));
       });
     }
   }
@@ -519,7 +517,7 @@ export function PlanReminderPanel(props: {
                         >
                             <DropdownMenuItem
                               onClick={() =>
-                                runReminderMenuIntentAfterClose(() => editReminder(reminder))
+                                runReminderMenuIntentAfterClose((trigger) => editReminder(reminder, trigger))
                               }
                               isDisabled={reminderActionPending || reminder.status === 'completed'}
                               icon={<Pencil size={14} aria-hidden="true" />}
@@ -527,7 +525,7 @@ export function PlanReminderPanel(props: {
                             />
                             <DropdownMenuItem
                               onClick={() =>
-                                runReminderMenuIntentAfterClose(() => duplicateReminder(reminder))
+                                runReminderMenuIntentAfterClose((trigger) => duplicateReminder(reminder, trigger))
                               }
                               isDisabled={reminderActionPending}
                               icon={<Copy size={14} aria-hidden="true" />}
