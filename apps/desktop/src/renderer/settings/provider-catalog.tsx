@@ -1,6 +1,6 @@
 import { ChevronRight } from '@maka/ui/icons';
 import { PROVIDER_DEFAULTS, isWiredOAuthProvider, type ProviderType } from '@maka/core';
-import { Chip, Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle, useUiLocale } from '@maka/ui';
+import { Badge, Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle, useUiLocale } from '@maka/ui';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
@@ -36,14 +36,12 @@ export function ProviderCatalogCard(props: { type: ProviderType; count: number; 
           {/* Gated-provider state label — experimental (warning) / unavailable
               (info). Migrated onto the squared Chip primitive (tone→alpha
               authority); the row itself stays inert. */}
-          <Chip
-            size="sm"
+          <Badge
             variant={disabledStatus === 'experimental' ? 'warning' : 'info'}
             className="providerCatalogStateBadge"
             aria-hidden="true"
-          >
-            {disabledStatus === 'experimental' ? copy.experiment : copy.unavailable}
-          </Chip>
+            label={disabledStatus === 'experimental' ? copy.experiment : copy.unavailable}
+          />
         </ItemActions>
       </Item>
     );

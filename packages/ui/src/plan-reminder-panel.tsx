@@ -51,7 +51,7 @@ import {
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
-import { Chip, type ChipProps } from './primitives/chip.js';
+import type { BadgeProps } from '@astryxdesign/core/Badge';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
 import { EmptyState } from './empty-state.js';
@@ -63,15 +63,15 @@ import type {
 import { getPlanReminderCopy } from './plan-reminder-copy.js';
 import { useUiLocale } from './locale-context.js';
 
-// Run-history status Chip tone. triggered = it fired (info, informational,
+// Run-history status Badge tone. triggered = it fired (info, informational,
 // not a health signal), blocked = intentionally skipped (warning), failed =
 // delivery error (destructive). Exception-only: no success green for a plain
 // "it ran" record.
-function planRunStatusChipTone(
+function planRunStatusBadgeVariant(
   status: NonNullable<PlanReminder['lastRun']>['status'],
-): ChipProps['variant'] {
+): BadgeProps['variant'] {
   if (status === 'blocked') return 'warning';
-  if (status === 'failed') return 'destructive';
+  if (status === 'failed') return 'error';
   return 'info';
 }
 
@@ -482,9 +482,10 @@ export function PlanReminderPanel(props: {
                         </div>
                         {reminder.lastRun && (
                           <div className="maka-plan-card-run">
-                            <Chip size="sm" variant={planRunStatusChipTone(reminder.lastRun.status)}>
-                              {runStatusLabel(reminder.lastRun.status, locale)}
-                            </Chip>
+                            <Badge
+                              variant={planRunStatusBadgeVariant(reminder.lastRun.status)}
+                              label={runStatusLabel(reminder.lastRun.status, locale)}
+                            />
                             <span>{reminder.lastRun.message}</span>
                           </div>
                         )}
@@ -593,14 +594,12 @@ export function PlanReminderPanel(props: {
               <div className="maka-plan-run-list" aria-label={copy.page.runsAriaLabel}>
                 {visibleRunEntries.map(({ reminder, run }) => (
                   <article key={`${reminder.id}:${run.id}`} className="maka-plan-run-row">
-                    <Chip
-                      size="sm"
-                      variant={planRunStatusChipTone(run.status)}
+                    <Badge
+                      variant={planRunStatusBadgeVariant(run.status)}
                       className="maka-plan-run-status"
                       data-status={run.status}
-                    >
-                      {runStatusLabel(run.status, locale)}
-                    </Chip>
+                      label={runStatusLabel(run.status, locale)}
+                    />
                     <div className="maka-plan-run-main">
                       <strong>{reminder.title}</strong>
                       <span>{run.message}</span>

@@ -1,5 +1,5 @@
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, Chip, FormLayout, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Badge, Button, FormLayout, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { SettingsRows } from './settings-rows';
 import { MemoryEntryList } from './memory-entry-list';
@@ -13,6 +13,7 @@ import {
   memoryStatusLabel,
   memoryStatusTone,
 } from './memory-settings-labels';
+import { statusBadgeVariant } from './settings-status-badge';
 
 export function MemorySettingsPage(props: {
   settings: AppSettings;
@@ -93,9 +94,10 @@ export function MemorySettingsPage(props: {
               line together instead of holding the row horizontal and
               crushing the label. */}
           <span className="settingsFormRowControlCluster">
-            <Chip variant={memoryStatusTone(effective.status)}>
-              {memoryStatusLabel(effective.status, copy)}
-            </Chip>
+            <Badge
+              variant={statusBadgeVariant(memoryStatusTone(effective.status))}
+              label={memoryStatusLabel(effective.status, copy)}
+            />
             <Switch
               label={copy.text.enableLocalFile}
               isLabelHidden

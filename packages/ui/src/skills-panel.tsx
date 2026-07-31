@@ -14,9 +14,8 @@ import {
 } from './icons.js';
 import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
-import { Button as UiButton, IconButton, Switch } from '@astryxdesign/core';
+import { Badge, type BadgeProps, Button as UiButton, IconButton, Switch } from '@astryxdesign/core';
 import { TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
-import { Chip, type ChipProps } from './primitives/chip.js';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
 import {
@@ -346,7 +345,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Chip size="sm" variant="neutral" className="maka-skill-market-category">{copy.categories[source.category]}</Chip>
+                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[source.category]} />
                   <span>{installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -406,7 +405,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Chip size="sm" variant="neutral" className="maka-skill-market-category">{copy.categories[entry.category]}</Chip>
+                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[entry.category]} />
                   <span>{entry.installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -515,36 +514,28 @@ function SkillLibraryPanel(props: {
                           appears for states the switch can't express
                           (state_error). 已启用/已停用 stay in the hover text. */}
                       {skill.runtimeStatus === 'state_error' && (
-                        <Chip size="sm" variant="warning" className="maka-skill-library-runtime-label" data-status={skill.runtimeStatus}>{runtimeLabel}</Chip>
+                        <Badge variant="warning" className="maka-skill-library-runtime-label" data-status={skill.runtimeStatus} label={runtimeLabel} />
                       )}
                       {skill.scope && (
-                        <Chip size="sm" variant="neutral" className="maka-skill-library-scope-label" data-scope={skill.scope}>
-                          {copy.context.scope[skill.scope]}
-                        </Chip>
+                        <Badge variant="neutral" className="maka-skill-library-scope-label" data-scope={skill.scope} label={copy.context.scope[skill.scope]} />
                       )}
                       {skill.needsReview && (
-                        <Chip
-                          size="sm"
+                        <Badge
                           variant="warning"
                           className="maka-skill-library-review-label"
-                          title={copy.context.needsReviewTitle}
-                        >
-                          {copy.context.needsReview}
-                        </Chip>
+                          label={copy.context.needsReview}
+                        />
                       )}
-                      <Chip
-                        size="sm"
+                      <Badge
                         variant={contextStatus === 'advertised' ? 'neutral' : 'warning'}
                         className="maka-skill-library-context-label"
                         data-status={contextStatus}
-                      >
-                        {isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
+                        label={`${isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
                           ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
-                          : copy.context.decision[contextStatus]}
-                        {!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}
-                      </Chip>
+                          : copy.context.decision[contextStatus]}${!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}`}
+                      />
                       {!isDiscoveryDiagnostic && (
-                        <Chip size="sm" variant={skillStatusChipTone(skill)} className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'}>{statusLabel}</Chip>
+                        <Badge variant={skillStatusBadgeVariant(skill)} className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'} label={statusLabel} />
                       )}
                       {opening && <span>{copy.row.opening}</span>}
                       {updating && <span>{copy.row.updating}</span>}
@@ -746,13 +737,13 @@ function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): string {
   return skill.enabled ? copy.status.enabled : copy.status.disabled;
 }
 
-// Derive the source-status Chip tone from the same data-status the retired
+// Derive the source-status Badge tone from the same data-status the retired
 // .maka-skill-library-status-label CSS keyed off. Exception-only: 内置 / 本地
 // (expected states) stay neutral; only genuine attention states carry a tone.
 //   metadata_error / local_modified → warning (needs the user's attention)
 //   受管理 (managed base) → info (managed but nothing wrong)
 //   bundled / workspace default → neutral
-function skillStatusChipTone(skill: SkillEntry): ChipProps['variant'] {
+function skillStatusBadgeVariant(skill: SkillEntry): BadgeProps['variant'] {
   if (skill.validationStatus === 'metadata_error') return 'warning';
   if (skill.sourceType === 'managed') {
     if (skill.managedUpdateStatus === 'local_modified' || skill.managedUpdateStatus === 'metadata_error') return 'warning';

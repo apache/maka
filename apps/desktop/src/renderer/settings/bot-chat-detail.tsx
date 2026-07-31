@@ -16,7 +16,7 @@ import {
   AlertTitle,
   BOT_BRAND,
   Button,
-  Chip,
+  Badge,
   FormLayout,
   TextInput,
   RelativeTime,
@@ -40,6 +40,7 @@ import {
   type BotPendingActionName,
 } from './bot-chat-shared';
 import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
+import { statusBadgeVariant } from './settings-status-badge';
 
 function canEnableBotChannel(readiness: BotReadinessState): boolean {
   return readiness === 'credentials_valid' || readiness === 'operational' || readiness === 'degraded';
@@ -179,7 +180,7 @@ export function BotChatChannelDetail(props: {
           <div className="settingsBotDetailHeaderBody">
             <h3>
               {providerPresentation.label}
-              <Chip dot size="sm" variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
+              <Badge variant={statusBadgeVariant(readinessCopy.tone)} label={readinessCopy.label} />
             </h3>
             <p>{providerPresentation.help}</p>
             {enableSwitchHint && (

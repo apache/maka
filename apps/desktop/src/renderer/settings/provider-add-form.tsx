@@ -11,7 +11,7 @@ import {
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Alert, AlertDescription, AlertTitle, Button, Chip, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, AlertTitle, Badge, Button, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
@@ -206,7 +206,7 @@ export function AddProviderForm(props: {
   return (
     <div className="providerEditor">
       <div className="providerHeaderBadges">
-        <Chip variant="neutral" size="sm">{categoryLabel(defaults.category, locale)}</Chip>
+        <Badge variant="neutral" label={categoryLabel(defaults.category, locale)} />
       </div>
       {isExperimental && (
         <Alert variant="info">

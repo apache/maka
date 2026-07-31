@@ -20,12 +20,13 @@ import {
   formatDailyReviewModelLabel,
 } from './daily-review-helpers.js';
 import {
+  Badge,
+  type BadgeProps,
   Button as UiButton,
   IconButton,
   Selector,
   type SelectorOptionData,
 } from '@astryxdesign/core';
-import { Chip, type ChipProps } from './primitives/chip.js';
 import { Segmented } from './primitives/segmented.js';
 import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
 import { EmptyState } from './empty-state.js';
@@ -43,14 +44,14 @@ type DailyReviewArchiveSectionKey = keyof DailyReviewArchive['sections'];
 
 const EMPTY_MODEL_OPTIONS: SelectorOptionData[] = [];
 
-// Archive-status Chip tone. ok = generated cleanly (success), failed /
+// Archive-status Badge tone. ok = generated cleanly (success), failed /
 // no_model = the run could not produce a report (destructive). no_data /
 // skipped are expected non-events and stay neutral (exception-only color).
-function dailyReviewArchiveChipTone(status: DailyReviewArchive['status']): ChipProps['variant'] {
+function dailyReviewArchiveBadgeVariant(status: DailyReviewArchive['status']): BadgeProps['variant'] {
   // Status-color restraint (#651 rule): 已生成 is the EXPECTED outcome —
   // neutral ink, matching 健康 正常 and 权限 已授权. Color stays reserved
   // for the failures that need attention.
-  if (status === 'failed' || status === 'no_model') return 'destructive';
+  if (status === 'failed' || status === 'no_model') return 'error';
   return 'neutral';
 }
 
@@ -577,7 +578,7 @@ export function DailyReviewPanel(props: {
                 const selected = selectedArchiveId === archive.id;
                 // Status color is exception-only (#651): 已生成 / 无数据 / 已跳过
                 // are EXPECTED outcomes and stay as muted prose meta. Only a
-                // failed / no_model run raises a colored Chip that needs eyes.
+                // failed / no_model run raises a colored Badge that needs eyes.
                 const exceptional = archive.status === 'failed' || archive.status === 'no_model';
                 const meta = [
                   copy.archive.sessionCount(archive.totals.sessionCount),
@@ -600,14 +601,12 @@ export function DailyReviewPanel(props: {
                           <span className="maka-daily-review-archive-row-meta">{meta}</span>
                         </span>
                         {exceptional && (
-                          <Chip
-                            size="sm"
-                            variant={dailyReviewArchiveChipTone(archive.status)}
+                          <Badge
+                            variant={dailyReviewArchiveBadgeVariant(archive.status)}
                             className="maka-daily-review-report-status"
                             data-status={archive.status}
-                          >
-                            {copy.archive.status[archive.status]}
-                          </Chip>
+                            label={copy.archive.status[archive.status]}
+                          />
                         )}
                       </button>
                       {selected && (

@@ -9,7 +9,7 @@ import {
   AlertDescription,
   AlertTitle,
   Button,
-  Chip,
+  Badge,
   EmptyState,
   Item,
   ItemActions,
@@ -23,6 +23,7 @@ import {
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
+import { statusBadgeVariant } from './settings-status-badge';
 
 /**
  * Remote-access overview: the "正在使用" list of configured channels plus
@@ -113,7 +114,7 @@ export function BotChatOverview(props: {
               <ItemContent>
                 <ItemTitle>
                   {botCopy.providers[entry.provider].label}
-                  <Chip dot size="sm" variant={entry.copy.tone}>{entry.copy.label}</Chip>
+                  <Badge variant={statusBadgeVariant(entry.copy.tone)} label={entry.copy.label} />
                 </ItemTitle>
                 <ItemDescription id={`settings-remote-access-${entry.provider}-summary`}>
                   {botOverviewDetail(entry.status, entry.currentError, entry.copy.detail, entry.liveOperational, locale)}

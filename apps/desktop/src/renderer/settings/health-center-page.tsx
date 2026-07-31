@@ -5,10 +5,11 @@ import type {
   HealthSnapshot,
 } from '@maka/core';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core';
-import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, Chip, Item, ItemContent, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
+import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, Item, ItemContent, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
+import { statusBadgeVariant } from './settings-status-badge';
 
 /**
  * PR-UI-9 — Health Center read-only page. Consumes `window.maka.health.getSnapshot()`
@@ -201,15 +202,15 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
             <strong className="text-[length:var(--font-size-ui)] font-semibold text-foreground">{copy.signalLabel(signal)}</strong>
             <small className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-muted-foreground">{copy.scopes[signal.scope]}</small>
           </span>
-          <Chip variant={statusCopy.tone}>{statusCopy.label}</Chip>
+          <Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />
         </div>
         <p className="m-0 text-[length:var(--font-size-ui)] leading-normal text-foreground-secondary">{copy.signalMessage(signal)}</p>
         {detail && <small className="text-[length:var(--font-size-caption)] leading-normal text-foreground-secondary">{detail}</small>}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[length:var(--font-size-caption)] text-muted-foreground [font-variant-numeric:tabular-nums]">
           <span>{copy.source}{copy.sources[signal.source]}</span>
           <span>{copy.checked}<RelativeTime ts={signal.checkedAt} className="settingsHelpInlineTime" /></span>
-          {signal.blocksSend && <Chip size="sm" variant="destructive">{copy.blocksSend}</Chip>}
-          {signal.blocksCapability && <Chip size="sm" variant="warning">{copy.blocksCapability}</Chip>}
+          {signal.blocksSend && <Badge variant="error" label={copy.blocksSend} />}
+          {signal.blocksCapability && <Badge variant="warning" label={copy.blocksCapability} />}
         </div>
       </ItemContent>
     </Item>

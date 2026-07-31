@@ -11,7 +11,7 @@ import {
   type UiLocale,
 } from '@maka/core';
 import {
-  Chip,
+  Badge,
   TextInput,
   PrimitiveTabs, PrimitiveTabsList, PrimitiveTabsTrigger, PrimitiveTabsPanel,
   Item, ItemMedia, ItemContent, ItemTitle, ItemDescription, ItemActions,
@@ -21,6 +21,7 @@ import {
   useToast,
 } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
+import { statusBadgeVariant } from './settings-status-badge';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderCatalogCard } from './provider-catalog';
 import { ProviderConnectionDialog } from './provider-connection-dialog';
@@ -264,12 +265,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                       <ItemContent>
                         <ItemTitle>
                           {connection.name}
-                          {connection.slug === defaultSlug && <Chip size="sm" variant="accent">{copy.default}</Chip>}
+                          {connection.slug === defaultSlug && <Badge variant="neutral" label={copy.default} />}
                         </ItemTitle>
                         <ItemDescription>{providerDisplay(connection.providerType, locale).name}</ItemDescription>
                       </ItemContent>
                       <ItemActions>
-                        {status && <Chip dot size="sm" variant={status.tone}>{status.label}</Chip>}
+                        {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
                         <ChevronRight size={16} aria-hidden="true" />
                       </ItemActions>
                     </Item>

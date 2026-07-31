@@ -3,7 +3,7 @@ import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core
 import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Button,
-  Chip,
+  Badge,
   EmptyState,
   IconButton,
   PageHeader,
@@ -572,9 +572,9 @@ function McpServerRow(props: {
             <strong>{props.serverId}</strong>
             {/* Status-color restraint (#651): a healthy / expected server stays
                 neutral — its label rides plain muted text. Only an error /
-                unavailable server raises a toned Chip. */}
+                unavailable server raises a toned Badge. */}
             {state.exception
-              ? <Chip size="sm" variant={state.tone}>{state.label}</Chip>
+              ? <Badge variant={state.tone} label={state.label} />
               : <span className="maka-mcp-server-state">{state.label}</span>}
           </div>
           <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
@@ -809,15 +809,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-// `exception` marks the states that earn a toned Chip + colored status dot
+// `exception` marks the states that earn a toned Badge
 // (status-color restraint #651). 已停用 / 未连接 / 连接中 / 已连接 are all
 // expected states and stay neutral; only 连接失败 raises the destructive tone.
-function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'destructive'; exception: boolean } {
+function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'error'; exception: boolean } {
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, tone: 'neutral', exception: false };
   if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, tone: 'neutral', exception: false };
   if (status.state === 'connecting') return { label: copy.row.connecting, tone: 'info', exception: false };
   if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), tone: 'success', exception: false };
-  return { label: copy.row.failed, tone: 'destructive', exception: true };
+  return { label: copy.row.failed, tone: 'error', exception: true };
 }
 
 function exampleJson(): string {

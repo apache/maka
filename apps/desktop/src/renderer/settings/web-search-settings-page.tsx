@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
-import { Button, Chip, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Badge, Button, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsRows } from './settings-rows';
+import { statusBadgeVariant } from './settings-status-badge';
 import { useKeyedActionGuard } from './use-action-guard';
 
 /**
@@ -240,9 +241,7 @@ export function WebSearchSettingsPage(props: {
           </div>
           <div className="settingsWebSearchControlCluster">
             <div className="settingsWebSearchStatusCluster" role="group" aria-label={copy.statusAria}>
-              <Chip variant={statusCopy.tone}>
-                {statusCopy.label}
-              </Chip>
+              <Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />
               {hasCheckedAt && (
                 <small>
                   {copy.lastTest}<RelativeTime ts={checkedAtMs} />
