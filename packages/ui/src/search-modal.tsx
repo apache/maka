@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   SearchErrorReason,
   SearchRequest,
@@ -128,7 +128,8 @@ function searchModalThrownErrorMessage(
  * content.
  */
 export function SearchModal(props: {
-  onClose(options?: { restoreFocus?: boolean }): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onNavigateToSession?(sessionId: string, turnId?: string): void;
   deps?: SearchModalDeps;
 }) {
@@ -146,7 +147,21 @@ export function SearchModal(props: {
   } | null>(null);
   const [activeQuery, setActiveQuery] = useState('');
   const itemByIdRef = useRef(new Map<string, SearchItem>());
-  const restoreFocusOnCloseRef = useRef(true);
+  const pendingNavigationRef = useRef<{
+    sessionId: string;
+    turnId?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (props.isOpen) return;
+    const navigation = pendingNavigationRef.current;
+    pendingNavigationRef.current = null;
+    if (!navigation || !props.onNavigateToSession) return;
+    const frame = window.requestAnimationFrame(() => {
+      props.onNavigateToSession?.(navigation.sessionId, navigation.turnId);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.isOpen, props.onNavigateToSession]);
 
   const searchSource = useMemo<SearchSource<SearchItem>>(
     () =>
@@ -186,14 +201,8 @@ export function SearchModal(props: {
   return (
     <AstryxLocaleProvider overrides={astryxOverrides}>
       <AstryxCommandPalette
-        isOpen
-        onOpenChange={(isOpen) => {
-          if (!isOpen) {
-            props.onClose({
-              restoreFocus: restoreFocusOnCloseRef.current,
-            });
-          }
-        }}
+        isOpen={props.isOpen}
+        onOpenChange={props.onOpenChange}
         searchSource={searchSource}
         label={copy.title}
         width={560}
@@ -218,13 +227,10 @@ export function SearchModal(props: {
           const result =
             itemByIdRef.current.get(itemId)?.auxiliaryData?.result;
           if (result?.target?.kind !== 'thread') return;
-          if (result.target.turnId) {
-            restoreFocusOnCloseRef.current = false;
-          }
-          props.onNavigateToSession?.(
-            result.target.sessionId,
-            result.target.turnId,
-          );
+          pendingNavigationRef.current = {
+            sessionId: result.target.sessionId,
+            turnId: result.target.turnId,
+          };
         }}
         renderItem={(item) => {
           const result = item.auxiliaryData?.result;

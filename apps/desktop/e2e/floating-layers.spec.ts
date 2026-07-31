@@ -159,3 +159,17 @@ test('a title-only search result restores focus to the opener', async ({
   await expect(page.getByText('示例对话 01')).toBeVisible();
   await expect(opener).toBeFocused();
 });
+
+test('search dialog lets Astryx restore its opener on ordinary close', async ({
+  window: page,
+}) => {
+  const opener = page.getByRole('button', { name: '搜索对话' });
+  await opener.click();
+
+  const dialog = page.getByRole('dialog', { name: '搜索' });
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+});

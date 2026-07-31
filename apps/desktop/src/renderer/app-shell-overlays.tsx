@@ -60,7 +60,7 @@ export function AppShellOverlays(props: {
   helpOpen: boolean;
   closeHelp(): void;
   searchModalOpen: boolean;
-  closeSearchModal: SearchModalProps['onClose'];
+  closeSearchModal(): void;
   searchModalDeps: SearchModalProps['deps'];
   searchModalOnNavigate: NonNullable<SearchModalProps['onNavigateToSession']>;
   paletteOpen: boolean;
@@ -129,13 +129,14 @@ export function AppShellOverlays(props: {
           if (!open) closeHelp();
         }}
       />
-      {searchModalOpen && (
-        <SearchModal
-          onClose={closeSearchModal}
-          deps={searchModalDeps}
-          onNavigateToSession={searchModalOnNavigate}
-        />
-      )}
+      <SearchModal
+        isOpen={searchModalOpen}
+        onOpenChange={(open) => {
+          if (!open) closeSearchModal();
+        }}
+        deps={searchModalDeps}
+        onNavigateToSession={searchModalOnNavigate}
+      />
       <CommandPalette
         isOpen={paletteOpen}
         onOpenChange={(open) => {
