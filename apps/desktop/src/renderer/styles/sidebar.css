@@ -469,7 +469,7 @@
 
 .maka-list-row-menu-trigger:hover,
 .maka-list-row-menu-trigger:focus-visible,
-.maka-list-row-menu-trigger[data-popup-open] {
+.maka-list-row-menu-trigger[aria-expanded="true"] {
   background: var(--state-hover-bg);
   color: var(--foreground);
 }

@@ -50,6 +50,19 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
     const barrel = await readUiSource('index.ts');
     assert.doesNotMatch(barrel, /primitives\/menu/);
   });
+
+  it('styles open Astryx menu and picker triggers through their public ARIA state', async () => {
+    const [sidebar, modelSwitcher] = await Promise.all([
+      readFile(join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'sidebar.css'), 'utf8'),
+      readFile(join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'model-switcher.css'), 'utf8'),
+    ]);
+    const styles = `${sidebar}\n${modelSwitcher}`;
+
+    assert.doesNotMatch(styles, /(?:maka-list-row-menu|maka-model-switcher)[^{]*data-popup-open/);
+    assert.match(sidebar, /\.maka-list-row-menu-trigger\[aria-expanded="true"\]/);
+    assert.match(modelSwitcher, /\.maka-model-switcher-trigger\[aria-expanded="true"\]/);
+  });
+
   it('makes Astryx Dialog the only modal behavior authority', async () => {
     const [source, toast] = await Promise.all([
       readUiSource('ui.tsx'),

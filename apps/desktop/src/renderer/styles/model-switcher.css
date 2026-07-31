@@ -54,7 +54,7 @@
   }
 }
 
-.maka-model-switcher-trigger[data-popup-open] {
+.maka-model-switcher-trigger[aria-expanded="true"] {
   background: var(--background);
   box-shadow: var(--shadow-minimal-flat);
 }
