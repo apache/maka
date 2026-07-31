@@ -281,59 +281,15 @@
   justify-content: space-between;
 }
 
-.providerEnabledModels {
-  display: grid;
-  gap: var(--space-2);
+.providerAdvancedActions {
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
-.providerEnabledModelsHeader {
-  display: grid;
-  gap: var(--space-0-5);
+.providerAdvancedDanger {
+  margin-left: auto;
+  color: var(--destructive-text);
 }
-
-.providerEnabledModelsHeader strong {
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  font-variant-numeric: tabular-nums;
-}
-
-.providerEnabledModelsHeader span,
-.providerModelChoiceEmpty {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-}
-
-/* Fixed-height scroll region: the full candidate list scrolls internally, so
-   neither the provider's model count nor an active search filter changes the
-   dialog height. */
-.providerModelChoiceScroll {
-  height: 280px;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-}
-
-.providerModelChoiceList {
-  display: grid;
-  gap: var(--space-0-5);
-  margin: 0;
-  padding: var(--space-1);
-  list-style: none;
-}
-
-.providerModelChoiceRow {
-  min-height: 32px;
-}
-
-/* Fixed check column so enabled (checkmark) and disabled (empty) rows keep
-   their labels aligned. The checkmark itself signals the enabled state and
-   inherits the crisp foreground tint (matching the model-picker selected mark). */
-.providerModelChoiceEmpty {
-  display: block;
-  padding: var(--space-3);
-}
-
 
 .providerError {
   color: var(--destructive-text);

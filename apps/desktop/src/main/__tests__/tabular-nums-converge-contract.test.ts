@@ -55,9 +55,8 @@ const TABULAR_NUMS_SELECTORS = [
   '.maka-skill-section-row small',
   // search result counts
   '.maka-search-modal-result-summary',
-  // provider counts (the connected-section count converged onto SectionHeader,
-  // whose count slot bakes tabular-nums — pinned against the primitive below)
-  '.providerEnabledModelsHeader strong',
+  // provider connection counts converged onto SectionHeader, whose count slot
+  // bakes tabular-nums and is pinned against the primitive below
   // plan search count
   '.maka-plan-search-summary',
 ];

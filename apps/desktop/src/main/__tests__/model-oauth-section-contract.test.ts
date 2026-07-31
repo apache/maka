@@ -757,37 +757,34 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
   });
 
-  it('renders the full model catalog as one named checkbox list', async () => {
+  it('delegates enabled-model selection and search to Astryx MultiSelector', async () => {
     const src = await readProviderSettingsCombinedSource();
     const enabledModels = src.match(/function EnabledModelManager[\s\S]*?function modelDisplayLabel/)?.[0] ?? '';
 
-    // One persistent list of every candidate model; enabled state is a checkbox
-    // reflecting `enabledModelIds`, not a separate search-only "add" surface.
     assert.match(
       enabledModels,
-      /<ul\s+ref=\{modelListRef\}\s+className="providerModelChoiceList"\s+aria-label=\{copy\.modelListAria\}\s+onKeyDown=\{onModelListKeyDown\}\s*>/,
-      'the model catalog must use a single named native list with the roving-tabindex keyboard handler',
+      /<MultiSelector[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*description=\{copy\.enabledModelsHelp\}/,
+      'Astryx must own the visible field label and description',
     );
     assert.match(
       enabledModels,
-      /<CheckboxInput[\s\S]*value=\{isEnabled\}/,
-      'each model row is a checkbox reflecting its enabled state',
-    );
-    // Roving tabindex: exactly one row is a Tab stop; the rest are -1.
-    assert.match(
-      enabledModels,
-      /tabIndex=\{row\.id === resolvedActiveRowId \? 0 : -1\}/,
-      'model rows must rove a single tabIndex=0 so the list is one Tab stop',
+      /options=\{options\}[\s\S]*value=\{props\.enabledModelIds\}[\s\S]*onChange=\{props\.onChange\}/,
+      'the canonical selector must read and write the existing enabledModelIds authority directly',
     );
     assert.match(
       enabledModels,
-      /<OverlayScrollArea className="providerModelChoiceScroll">/,
-      'the list scrolls inside a fixed-height region so filtering never resizes the dialog',
+      /hasSearch[\s\S]*searchPlaceholder=\{copy\.searchModels\}/,
+      'Astryx must own catalog filtering',
+    );
+    assert.match(
+      enabledModels,
+      /disabled:\s*row\.id === props\.defaultModel/,
+      'the default model must remain selected and locked through option data',
     );
     assert.doesNotMatch(
       enabledModels,
-      /role="radio"|role="list"|role="listitem"/,
-      'native list markup must not add redundant or incorrect ARIA roles',
+      /CheckboxInput|OverlayScrollArea|modelListRef|activeRowId|onModelListKeyDown|visibleRows|query/,
+      'Maka must not duplicate MultiSelector search, focus, list, or checkbox behavior',
     );
   });
 
@@ -800,10 +797,10 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
       detail,
       /async function updateEnabledModels\(nextIds: string\[\]\)[\s\S]*connectionEnabledModelIds\([\s\S]*props\.bridge\.update\(connection\.slug, \{ enabledModelIds: next \}\)[\s\S]*await props\.onChanged\(\)/,
     );
-    // The default model row is checked and locked (disabled), never toggled off,
-    // and there is no second Save action inside the editor.
-    assert.match(enabledModels, /isDisabled=\{props\.disabled \|\| isDefault\}/);
-    assert.match(enabledModels, /description=\{isDefault \? copy\.defaultModel : undefined\}/);
+    // The default model option is selected and locked (disabled), never toggled
+    // off, and there is no second Save action inside the editor.
+    assert.match(enabledModels, /disabled:\s*row\.id === props\.defaultModel/);
+    assert.match(enabledModels, /description=\{copy\.enabledModelsHelp\}/);
     assert.doesNotMatch(enabledModels, /copy\.saving|copy\.saveEndpoint/);
   });
 

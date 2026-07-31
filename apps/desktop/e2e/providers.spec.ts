@@ -102,66 +102,31 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   expect((await detailDialog.boundingBox())?.height).toBe(detailHeightBefore);
   await detailKeyField.fill('');
 
-  // The full candidate catalog is shown persistently as one checkbox list; the
-  // default model is checked and locked, and toggling a candidate flows through
-  // the shared enabledModelIds path (no search-only "add" surface).
-  const modelList = detailDialog.getByRole('list', { name: '模型列表' });
+  await expect(detailDialog.getByText('GPT OSS 120B', { exact: true })).toBeHidden();
+  await detailDialog.getByText('高级设置', { exact: true }).click();
+
+  // Astryx MultiSelector owns search, checkbox semantics, focus, and popup
+  // layout. Maka only supplies catalog options and the enabledModelIds value.
+  const modelSelector = detailDialog.getByRole('button', { name: /启用模型/ });
+  await modelSelector.click();
+  const modelList = page.getByRole('listbox');
   await expect(modelList).toBeVisible();
-  await expect(detailDialog.getByRole('button', { name: '测试连接', exact: true })).toBeVisible();
-  await expect(detailDialog.getByRole('button', { name: '更新模型目录', exact: true })).toBeVisible();
-  const defaultRow = modelList.getByRole('checkbox', { name: /GPT OSS 120B/ });
-  await expect(defaultRow).toBeChecked();
-  await expect(defaultRow).toBeDisabled();
+  const defaultRow = modelList.getByRole('option', { name: /GPT OSS 120B · 默认/ });
+  await expect(defaultRow).toHaveAttribute('aria-selected', 'true');
+  await expect(defaultRow).toHaveAttribute('aria-disabled', 'true');
 
-  const gemmaRow = modelList.getByRole('checkbox', { name: /Gemma/ }).first();
-  await expect(gemmaRow).not.toBeChecked();
-  // Dialog height stays fixed as the list is filtered to a subset.
-  const advancedHeightBefore = (await detailDialog.boundingBox())?.height;
-  await detailDialog.getByLabel('搜索模型').fill('gemma');
-  expect((await detailDialog.boundingBox())?.height).toBe(advancedHeightBefore);
+  await page.getByPlaceholder('搜索模型', { exact: true }).fill('gemma');
+  const gemmaRow = modelList.getByRole('option', { name: /Gemma/ }).first();
+  await expect(gemmaRow).toHaveAttribute('aria-selected', 'false');
   await gemmaRow.click();
-  await expect(gemmaRow).toBeChecked();
-
-  // Roving tabindex: the whole model list is ONE Tab stop. Tab from the search
-  // field lands on the active row, a second Tab leaves the list entirely (no
-  // per-row Tab stops even with hundreds of rows), and ArrowDown + Space move
-  // activity and toggle the focused row.
-  await detailDialog.getByLabel('搜索模型').fill('');
-  await detailDialog.getByLabel('搜索模型').click();
-  await page.keyboard.press('Tab');
-  const firstStop = await page.evaluate(() => ({
-    tagName: document.activeElement?.tagName ?? null,
-    type: document.activeElement?.getAttribute('type') ?? null,
-    inList: Boolean(document.activeElement?.closest('.providerModelChoiceList')),
-  }));
-  expect(firstStop).toEqual({ tagName: 'INPUT', type: 'checkbox', inList: true });
-  await page.keyboard.press('Tab');
-  expect(await page.evaluate(() => Boolean(document.activeElement?.closest('.providerModelChoiceList')))).toBe(false);
-  await page.keyboard.press('Shift+Tab');
-  const beforeArrow = await page.evaluate(() => document.activeElement?.getAttribute('data-model-id') ?? null);
-  await page.keyboard.press('ArrowDown');
-  const afterArrow = await page.evaluate(() => ({
-    id: document.activeElement?.getAttribute('data-model-id') ?? null,
-    checked: document.activeElement instanceof HTMLInputElement ? document.activeElement.checked : null,
-  }));
-  expect(afterArrow.id).not.toBeNull();
-  expect(afterArrow.id).not.toBe(beforeArrow);
-  await page.keyboard.press('Space');
-  const toggledRow = detailDialog.locator(`[data-model-id="${afterArrow.id}"]`);
-  if (afterArrow.checked) {
-    await expect(toggledRow).not.toBeChecked();
-  } else {
-    await expect(toggledRow).toBeChecked();
-  }
-  // Restore the row's original state (rows freeze while the save is in
-  // flight — the existing busy-freeze contract — so wait until re-enabled).
-  await expect(toggledRow).toBeEnabled();
-  await toggledRow.click();
-  if (afterArrow.checked) {
-    await expect(toggledRow).toBeChecked();
-  } else {
-    await expect(toggledRow).not.toBeChecked();
-  }
+  await expect(gemmaRow).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Escape');
+  await expect(modelList).toBeHidden();
+  await expect(modelSelector).toBeEnabled();
+  await modelSelector.click();
+  await page.getByPlaceholder('搜索模型', { exact: true }).fill('gemma');
+  await expect(page.getByRole('listbox').getByRole('option', { name: /Gemma/ }).first()).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Escape');
 
   // Default-model management is a visible searchable picker in the connection
   // detail, rather than a trip through General Settings. Selecting an already
@@ -172,8 +137,6 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(modelList.getByRole('checkbox', { name: /Gemma/ }).first()).toBeDisabled();
 
   await expect(detailDialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
-  await detailDialog.getByText('高级设置', { exact: true }).click();
-
   // Short-viewport invariant: when the expanded detail content outgrows the
   // popup's 85dvh cap, the dialog must stay within the viewport and the BODY
   // must take over scrolling (grid-template-rows: auto minmax(0, 1fr)),
