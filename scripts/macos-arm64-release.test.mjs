@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const repoRoot = new URL('../', import.meta.url);
 const desktopRoot = new URL('../apps/desktop/', import.meta.url);
@@ -218,6 +221,24 @@ test('release package script refuses an unsupported host or incomplete signing i
     }),
     /CSC_LINK/,
   );
+});
+
+test('release filesystem smoke uses the current bundled worker protocol', async () => {
+  const { smokePackagedFilesystemWorker } = await import(
+    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
+  );
+  const workspace = await mkdtemp(join(tmpdir(), 'maka-release-worker-smoke-'));
+  const worker = fileURLToPath(
+    new URL('../packages/runtime/dist/workers/filesystem-worker.js', import.meta.url),
+  );
+
+  try {
+    await smokePackagedFilesystemWorker(process.execPath, worker, {
+      workingDirectory: workspace,
+    });
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 });
 
 test('packaged app verification proves identity, notarization, resources, PTY, and renderer launch', async () => {

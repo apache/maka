@@ -220,20 +220,16 @@ export async function smokePackagedFilesystemWorker(
   const workspace = await realpath(workingDirectory);
   const target = join(workspace, 'filesystem-worker-smoke.txt');
   const content = 'maka-filesystem-worker-ok';
-  const operationPermission = {
-    fileSystem: {
+  const operationBoundary = {
+    filesystem: {
       entries: [{ path: target, access: 'write', scope: 'exact' }],
     },
   };
-  const permissionsHash = `sha256:${createHash('sha256')
-    .update(JSON.stringify(operationPermission))
-    .digest('hex')}`;
   const request = {
-    version: 2,
+    version: 4,
     requestId: 'release-filesystem-worker-smoke',
     operation: { kind: 'write', cwd: workspace, path: target, content },
-    operationPermission,
-    permissionsHash,
+    operationBoundary,
     expectedTarget: {
       enforcementPath: target,
       access: 'write',
