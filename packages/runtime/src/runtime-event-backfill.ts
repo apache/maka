@@ -136,7 +136,8 @@ export function backfillRuntimeEventsFromStoredMessages(
         }
         break;
 
-      case 'tool_call':
+      case 'tool_call': {
+        const stateDelta = toolCallStateDelta(message);
         events.push({
           ...base,
           id: newId(),
@@ -151,14 +152,7 @@ export function backfillRuntimeEventsFromStoredMessages(
               ? { providerOptions: structuredClone(message.providerOptions) }
               : {}),
           },
-          actions: {
-            stateDelta: {
-              ...recoveryState(now, message),
-              ...(message.activityKind !== undefined ? { activityKind: message.activityKind } : {}),
-              ...(message.displayName !== undefined ? { displayName: message.displayName } : {}),
-              ...(message.intent !== undefined ? { intent: message.intent } : {}),
-            },
-          },
+          ...(stateDelta ? { actions: { stateDelta } } : {}),
           // Carry the persisted step id into refs.stepId so post-restart model
           // replay can re-pair this call with its assistant step, matching the
           // live tool_start path (see model-history step grouping).
@@ -169,6 +163,7 @@ export function backfillRuntimeEventsFromStoredMessages(
           },
         });
         break;
+      }
 
       case 'tool_result': {
         const call = safePriorToolCall(toolCalls, message);
@@ -198,12 +193,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             result: message.content,
             isError: message.isError,
           },
-          actions: {
-            stateDelta: {
-              ...recoveryState(now, message),
-              ...(message.durationMs !== undefined ? { durationMs: message.durationMs } : {}),
-            },
-          },
+          ...(message.durationMs !== undefined
+            ? { actions: { stateDelta: { durationMs: message.durationMs } } }
+            : {}),
           refs: { storedMessageId: message.id, toolCallId: message.toolUseId },
         });
         break;
@@ -305,6 +297,15 @@ function recoveryState(now: () => number, message: StoredMessage): Record<string
     version: 1,
   };
   return { [RUNTIME_EVENT_BACKFILL_STATE_KEY]: state };
+}
+
+function toolCallStateDelta(message: ToolCallMessage): Record<string, unknown> | undefined {
+  const stateDelta = {
+    ...(message.activityKind !== undefined ? { activityKind: message.activityKind } : {}),
+    ...(message.displayName !== undefined ? { displayName: message.displayName } : {}),
+    ...(message.intent !== undefined ? { intent: message.intent } : {}),
+  };
+  return Object.keys(stateDelta).length > 0 ? stateDelta : undefined;
 }
 
 function terminalRecoveryState(
