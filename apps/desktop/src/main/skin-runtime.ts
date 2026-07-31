@@ -17,7 +17,26 @@ const MAX_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 128;
 const MAX_SCRIPT_BYTES = 2 * 1024 * 1024;
 const MAX_STYLESHEET_BYTES = 4 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 4 * 1024 * 1024;
 const STATE_FILE = 'state.json';
+
+export const SKIN_PART_NAMES = [
+  'app',
+  'shell',
+  'titlebar',
+  'sidebar',
+  'main',
+  'detail-panel',
+  'chat',
+  'chat-header',
+  'transcript',
+  'composer',
+  'composer-interactions',
+  'settings',
+  'settings-sidebar',
+  'settings-content',
+  'command-palette',
+] as const;
 
 const ALLOWED_PERMISSIONS = new Set([
   'dom',
@@ -44,6 +63,7 @@ export interface SkinManifest {
 export interface InstalledSkin {
   manifest: SkinManifest;
   active: boolean;
+  previewDataUrl?: string;
 }
 
 export interface SkinRuntimeSnapshot {
@@ -79,6 +99,8 @@ export interface SkinRuntime {
   installFromFile(archivePath: string): Promise<SkinRuntimeSnapshot>;
   activate(id: string): Promise<SkinRuntimeSnapshot>;
   disable(): Promise<SkinRuntimeSnapshot>;
+  reload(): Promise<SkinRuntimeSnapshot>;
+  uninstall(id: string): Promise<SkinRuntimeSnapshot>;
 }
 
 export class SkinRuntimeError extends Error {
@@ -171,10 +193,11 @@ export function createSkinRuntime(options: {
     const manifests = await readInstalledManifests();
     return {
       activeSkinId: safeMode ? null : state.activeSkinId,
-      installed: manifests.map((manifest) => ({
+      installed: await Promise.all(manifests.map(async (manifest) => ({
         manifest,
         active: !safeMode && manifest.id === state.activeSkinId,
-      })),
+        previewDataUrl: await readSkinPreview(join(installedDir, manifest.id), manifest),
+      }))),
       safeMode,
       recoveredFromFailedActivation,
       lastError: state.lastError,
@@ -316,14 +339,17 @@ export function createSkinRuntime(options: {
       const manifest = parseSkinManifest(manifestValue);
       assertManifestFiles(manifest, normalizedFiles);
       const destination = join(installedDir, manifest.id);
+      let replacing = false;
       try {
         await readFile(join(destination, 'manifest.json'));
-        throw new SkinRuntimeError('already-installed', `Skin “${manifest.name}” is already installed.`);
-      } catch (error) {
-        if (error instanceof SkinRuntimeError) throw error;
-      }
+        replacing = true;
+      } catch {}
 
       const staging = join(rootDir, `.install-${randomUUID()}`);
+      const backup = join(rootDir, `.backup-${randomUUID()}`);
+      const wasActive = state.activeSkinId === manifest.id;
+      let backedUp = false;
+      let installedNewVersion = false;
       await mkdir(staging, { recursive: true });
       try {
         for (const [relativePath, bytes] of normalizedFiles) {
@@ -331,9 +357,41 @@ export function createSkinRuntime(options: {
           await mkdir(dirname(output), { recursive: true });
           await writeFile(output, bytes);
         }
-        await rename(staging, destination);
+        if (replacing) {
+          await rename(destination, backup);
+          backedUp = true;
+        }
+        try {
+          await rename(staging, destination);
+          installedNewVersion = true;
+          if (wasActive) await applyActiveSkin();
+        } catch (error) {
+          if (backedUp) {
+            if (installedNewVersion) {
+              await clearRendererSkin();
+              await rm(destination, { recursive: true, force: true });
+            }
+            await rename(backup, destination);
+            backedUp = false;
+            if (wasActive) {
+              state = {
+                activeSkinId: manifest.id,
+                activationPending: false,
+                lastError: null,
+              };
+              await persistState();
+              await applyActiveSkin().catch(() => undefined);
+            }
+          }
+          throw error;
+        }
+        if (backedUp) {
+          await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+          backedUp = false;
+        }
       } catch (error) {
         await rm(staging, { recursive: true, force: true });
+        if (backedUp) await rename(backup, destination).catch(() => undefined);
         throw error;
       }
       return snapshot();
@@ -365,6 +423,33 @@ export function createSkinRuntime(options: {
       };
       await persistState();
       await clearRendererSkin();
+      return snapshot();
+    }),
+    reload: () => serialize(async () => {
+      await applyActiveSkin();
+      return snapshot();
+    }),
+    uninstall: (id) => serialize(async () => {
+      await initialize();
+      if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(id)) {
+        throw new SkinRuntimeError('not-installed', 'Invalid skin id.');
+      }
+      const destination = join(installedDir, id);
+      try {
+        await readFile(join(destination, 'manifest.json'));
+      } catch {
+        throw new SkinRuntimeError('not-installed', `Skin “${id}” is not installed.`);
+      }
+      if (state.activeSkinId === id) {
+        state = {
+          activeSkinId: null,
+          activationPending: false,
+          lastError: null,
+        };
+        await persistState();
+        await clearRendererSkin();
+      }
+      await rm(destination, { recursive: true, force: true });
       return snapshot();
     }),
   };
@@ -514,6 +599,20 @@ async function readSkinAssets(skinDir: string): Promise<Record<string, string>> 
   return result;
 }
 
+async function readSkinPreview(
+  skinDir: string,
+  manifest: SkinManifest,
+): Promise<string | undefined> {
+  if (!manifest.preview) return undefined;
+  try {
+    const bytes = await readFile(join(skinDir, manifest.preview));
+    if (bytes.byteLength > MAX_PREVIEW_BYTES) return undefined;
+    return `data:${mimeType(manifest.preview)};base64,${bytes.toString('base64')}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export function inlineStylesheetAssets(
   stylesheet: string,
   stylesheetPath: string,
@@ -550,7 +649,126 @@ export function buildSkinActivationScript(
       document.body.appendChild(overlay);
       disposers.push(() => overlay.remove());
 
+      const root = document.documentElement;
+      const partNames = Object.freeze(${JSON.stringify(SKIN_PART_NAMES)});
+      const accessibilityQueries = Object.freeze({
+        forcedColors: matchMedia('(forced-colors: active)'),
+        prefersContrast: matchMedia('(prefers-contrast: more)'),
+        reducedMotion: matchMedia('(prefers-reduced-motion: reduce)'),
+        reducedTransparency: matchMedia('(prefers-reduced-transparency: reduce)'),
+      });
+      const readAppearance = () => Object.freeze({
+        preference: ['light', 'dark', 'auto'].includes(root.dataset.makaThemePreference)
+          ? root.dataset.makaThemePreference
+          : 'auto',
+        resolvedTheme: root.classList.contains('dark') ? 'dark' : 'light',
+        palette: root.getAttribute('data-maka-theme') || 'default',
+        colorScheme: root.classList.contains('dark') ? 'dark' : 'light',
+        forcedColors: accessibilityQueries.forcedColors.matches,
+        prefersContrast: accessibilityQueries.prefersContrast.matches,
+        reducedMotion: accessibilityQueries.reducedMotion.matches,
+        reducedTransparency: accessibilityQueries.reducedTransparency.matches,
+      });
+      const readState = () => Object.freeze({
+        section: root.dataset.makaSection || 'sessions',
+        module: root.dataset.makaModule || undefined,
+        hasActiveSession: root.dataset.makaHasActiveSession === 'true',
+        streaming: root.dataset.makaStreaming === 'true',
+        modalOpen: root.dataset.makaModalOpen === 'true',
+      });
+      const readEnvironment = () => Object.freeze({
+        locale: document.documentElement.lang || navigator.language,
+        platform: navigator.platform,
+        viewport: Object.freeze({ width: innerWidth, height: innerHeight }),
+        devicePixelRatio,
+        touch: navigator.maxTouchPoints > 0,
+        ...readAppearance(),
+      });
+      const onHostEvent = (type, handler, immediate) => {
+        if (typeof handler !== 'function') throw new TypeError('Skin event handler must be a function.');
+        const eventName = 'maka:' + String(type);
+        const listener = (event) => handler(event.detail, event);
+        window.addEventListener(eventName, listener);
+        const off = () => window.removeEventListener(eventName, listener);
+        disposers.push(off);
+        if (immediate) queueMicrotask(immediate);
+        return off;
+      };
+      const onMediaChanges = (handler) => {
+        for (const query of Object.values(accessibilityQueries)) query.addEventListener('change', handler);
+        const off = () => {
+          for (const query of Object.values(accessibilityQueries)) query.removeEventListener('change', handler);
+        };
+        disposers.push(off);
+        return off;
+      };
+      const normalizeTokenName = (name) => {
+        const normalized = String(name);
+        if (!/^--[a-z0-9][a-z0-9_-]{0,127}$/i.test(normalized)) {
+          throw new TypeError('Theme token names must be CSS custom properties.');
+        }
+        return normalized;
+      };
+      const changedInlineTokens = new Map();
+      const rememberInlineToken = (name) => {
+        if (!changedInlineTokens.has(name)) {
+          changedInlineTokens.set(name, {
+            value: root.style.getPropertyValue(name),
+            priority: root.style.getPropertyPriority(name),
+          });
+        }
+      };
+      const resetToken = (name) => {
+        const normalized = normalizeTokenName(name);
+        const previous = changedInlineTokens.get(normalized);
+        if (!previous) return;
+        if (previous.value) root.style.setProperty(normalized, previous.value, previous.priority);
+        else root.style.removeProperty(normalized);
+        changedInlineTokens.delete(normalized);
+      };
+      const resetAllTokens = () => {
+        for (const name of [...changedInlineTokens.keys()]) resetToken(name);
+      };
+      const setToken = (name, value) => {
+        const normalized = normalizeTokenName(name);
+        const next = String(value);
+        if (!next || next.length > 4096) throw new TypeError('Theme token value is invalid.');
+        rememberInlineToken(normalized);
+        root.style.setProperty(normalized, next);
+      };
+      const partSelector = (name) =>
+        '[data-maka-part="' + CSS.escape(String(name)) + '"]';
+      const findPart = (name) => document.querySelector(partSelector(name));
+      const signalAppearanceChange = () => {
+        root.dataset.makaSkinAppearanceRevision =
+          String((Number(root.dataset.makaSkinAppearanceRevision) || 0) + 1);
+      };
+      disposers.push(resetAllTokens);
+
+      const tokenApi = Object.freeze({
+        get(name) {
+          return getComputedStyle(root).getPropertyValue(normalizeTokenName(name)).trim();
+        },
+        all() {
+          const computed = getComputedStyle(root);
+          const values = {};
+          for (let index = 0; index < computed.length; index += 1) {
+            const name = computed.item(index);
+            if (name.startsWith('--')) values[name] = computed.getPropertyValue(name).trim();
+          }
+          return Object.freeze(values);
+        },
+        set: setToken,
+        setAll(values) {
+          if (!values || typeof values !== 'object') throw new TypeError('Theme token map is invalid.');
+          for (const [name, value] of Object.entries(values)) setToken(name, value);
+        },
+        reset(name) { resetToken(name); },
+        resetAll() { resetAllTokens(); },
+      });
+
       const api = Object.freeze({
+        apiVersion: 1,
         manifest,
         overlay,
         assets: Object.freeze({
@@ -561,17 +779,130 @@ export function buildSkinActivationScript(
           list() { return Object.keys(assetTable); },
         }),
         parts: Object.freeze({
-          one(name) { return document.querySelector('[data-maka-part="' + CSS.escape(String(name)) + '"]'); },
-          all(name) { return [...document.querySelectorAll('[data-maka-part="' + CSS.escape(String(name)) + '"]')]; },
+          names: partNames,
+          one: findPart,
+          all(name) { return [...document.querySelectorAll(partSelector(name))]; },
+          observe(name, handler) {
+            if (typeof handler !== 'function') throw new TypeError('Part observer must be a function.');
+            const selector = partSelector(name);
+            let previous = null;
+            const publish = () => {
+              const next = [...document.querySelectorAll(selector)];
+              if (previous && next.length === previous.length && next.every((node, index) => node === previous[index])) return;
+              previous = next;
+              handler(Object.freeze([...next]));
+            };
+            const observer = new MutationObserver(publish);
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+            const off = () => observer.disconnect();
+            disposers.push(off);
+            queueMicrotask(publish);
+            return off;
+          },
+          wait(name, timeoutMs = 5000) {
+            const current = findPart(name);
+            if (current) return Promise.resolve(current);
+            return new Promise((resolve, reject) => {
+              const selector = partSelector(name);
+              const observer = new MutationObserver(() => {
+                const match = document.querySelector(selector);
+                if (!match) return;
+                observer.disconnect();
+                clearTimeout(timer);
+                resolve(match);
+              });
+              const timer = setTimeout(() => {
+                observer.disconnect();
+                reject(new Error('Timed out waiting for Maka part “' + String(name) + '”.'));
+              }, Math.max(0, Math.min(Number(timeoutMs) || 0, 60000)));
+              observer.observe(document.documentElement, { childList: true, subtree: true });
+              disposers.push(() => {
+                observer.disconnect();
+                clearTimeout(timer);
+              });
+            });
+          },
+        }),
+        appearance: Object.freeze({
+          current: readAppearance,
+          tokens: tokenApi,
+          onDidChange(handler) {
+            if (typeof handler !== 'function') throw new TypeError('Appearance handler must be a function.');
+            const notify = () => handler(readAppearance());
+            const offEvent = onHostEvent('appearance', notify, notify);
+            const observer = new MutationObserver(notify);
+            observer.observe(root, {
+              attributes: true,
+              attributeFilter: ['class', 'style', 'data-maka-theme', 'data-maka-theme-preference', 'data-maka-color-scheme'],
+            });
+            const offMedia = onMediaChanges(notify);
+            const off = () => {
+              offEvent();
+              offMedia();
+              observer.disconnect();
+            };
+            disposers.push(off);
+            return off;
+          },
+        }),
+        state: Object.freeze({
+          current: readState,
+          onDidChange(handler) {
+            return onHostEvent('state', handler, () => handler(readState()));
+          },
+        }),
+        environment: Object.freeze({
+          current: readEnvironment,
+          onDidChange(handler) {
+            if (typeof handler !== 'function') throw new TypeError('Environment handler must be a function.');
+            const notify = () => handler(readEnvironment());
+            addEventListener('resize', notify);
+            addEventListener('languagechange', notify);
+            const offMedia = onMediaChanges(notify);
+            const off = () => {
+              removeEventListener('resize', notify);
+              removeEventListener('languagechange', notify);
+              offMedia();
+            };
+            disposers.push(off);
+            queueMicrotask(notify);
+            return off;
+          },
+        }),
+        styles: Object.freeze({
+          add(css, id = '') {
+            const style = document.createElement('style');
+            style.dataset.makaSkinStyle = manifest.id + (id ? ':' + String(id) : '');
+            style.textContent = String(css);
+            document.head.appendChild(style);
+            signalAppearanceChange();
+            const handle = Object.freeze({
+              update(nextCss) {
+                style.textContent = String(nextCss);
+                signalAppearanceChange();
+              },
+              dispose() {
+                style.remove();
+                signalAppearanceChange();
+              },
+            });
+            disposers.push(handle.dispose);
+            return handle;
+          },
         }),
         events: Object.freeze({
           on(type, handler) {
-            const eventName = 'maka:' + String(type);
-            const listener = (event) => handler(event.detail, event);
-            window.addEventListener(eventName, listener);
-            const off = () => window.removeEventListener(eventName, listener);
-            disposers.push(off);
-            return off;
+            return onHostEvent(type, handler);
+          },
+        }),
+        lifecycle: Object.freeze({
+          onDispose(handler) {
+            if (typeof handler !== 'function') throw new TypeError('Dispose handler must be a function.');
+            disposers.push(handler);
+            return () => {
+              const index = disposers.indexOf(handler);
+              if (index >= 0) disposers.splice(index, 1);
+            };
           },
         }),
         storage: Object.freeze({

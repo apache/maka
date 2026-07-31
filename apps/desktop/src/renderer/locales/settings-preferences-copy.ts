@@ -37,6 +37,8 @@ export type SettingsPreferencesCopy = {
       openFolder: string;
       activate: string;
       disable: string;
+      reload: string;
+      remove: string;
       active: string;
       empty: string;
       safeMode: string;
@@ -137,7 +139,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       paletteGroups: { editor: '编辑器主题', product: '产品色调' }, persistenceHelp: '切换会立即生效，并保存在本地外观设置里供下次启动使用。',
       skins: {
         title: '界面皮肤', help: '导入 .maka-skin，可使用完整 CSS 和隔离世界 JavaScript 改造整个界面。皮肤能读取并修改可见页面，只安装你信任的包。',
-        import: '导入皮肤', openFolder: '打开目录', activate: '启用', disable: '停用', active: '使用中', empty: '还没有安装皮肤。',
+        import: '导入或更新', openFolder: '打开目录', activate: '启用', disable: '停用', reload: '重新加载', remove: '移除', active: '使用中', empty: '还没有安装皮肤。',
         safeMode: '安全模式已开启；所有皮肤暂时停用。移除 --disable-skins 后重启可恢复。', actionFailed: '皮肤操作失败',
       },
     },
@@ -159,7 +161,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, persistenceHelp: 'Changes apply immediately and are saved locally for the next launch.',
       skins: {
         title: 'Interface skins', help: 'Import a .maka-skin package with full CSS and isolated-world JavaScript. Skins can read and modify visible page content, so install only packages you trust.',
-        import: 'Import skin', openFolder: 'Open folder', activate: 'Activate', disable: 'Disable', active: 'Active', empty: 'No skins are installed yet.',
+        import: 'Import or update', openFolder: 'Open folder', activate: 'Activate', disable: 'Disable', reload: 'Reload', remove: 'Remove', active: 'Active', empty: 'No skins are installed yet.',
         safeMode: 'Safe mode is active and all skins are disabled. Restart without --disable-skins to restore them.', actionFailed: 'Skin action failed',
       },
     },

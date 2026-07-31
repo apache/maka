@@ -9,8 +9,63 @@ import type { ThemePalette, ThemePreference } from '@maka/core';
 import { safeLocalStorageSet } from './browser-storage';
 
 const DARK_CLASS = 'dark';
+const APPEARANCE_EVENT = 'maka:appearance';
 
 let unsubscribeMediaQuery: (() => void) | null = null;
+let appearanceObserver: MutationObserver | null = null;
+let activeThemePreference: ThemePreference = 'auto';
+let activeThemePalette: ThemePalette = 'default';
+
+export interface MakaAppearanceSnapshot {
+  preference: ThemePreference;
+  resolvedTheme: 'light' | 'dark';
+  palette: ThemePalette;
+  colorScheme: 'light' | 'dark';
+  forcedColors: boolean;
+  prefersContrast: boolean;
+  reducedMotion: boolean;
+  reducedTransparency: boolean;
+}
+
+export function readMakaAppearance(): MakaAppearanceSnapshot {
+  const root = document.documentElement;
+  const resolvedTheme = root.classList.contains(DARK_CLASS) ? 'dark' : 'light';
+  return {
+    preference: activeThemePreference,
+    resolvedTheme,
+    palette: activeThemePalette,
+    colorScheme: resolvedTheme,
+    forcedColors: window.matchMedia('(forced-colors: active)').matches,
+    prefersContrast: window.matchMedia('(prefers-contrast: more)').matches,
+    reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    reducedTransparency: window.matchMedia('(prefers-reduced-transparency: reduce)').matches,
+  };
+}
+
+function publishAppearance(): void {
+  window.dispatchEvent(new CustomEvent(APPEARANCE_EVENT, {
+    detail: readMakaAppearance(),
+  }));
+}
+
+function ensureAppearanceObserver(): void {
+  if (appearanceObserver) return;
+  const root = document.documentElement;
+  appearanceObserver = new MutationObserver(() => {
+    syncTitleBarOverlay(root);
+    publishAppearance();
+  });
+  appearanceObserver.observe(root, {
+    attributes: true,
+    attributeFilter: [
+      'class',
+      'style',
+      'data-maka-theme',
+      'data-maka-skin',
+      'data-maka-skin-appearance-revision',
+    ],
+  });
+}
 
 /**
  * Apply a theme preference to <html>. Returns an unsubscribe function for the
@@ -24,6 +79,9 @@ let unsubscribeMediaQuery: (() => void) | null = null;
 export function applyTheme(pref: ThemePreference): () => void {
   unsubscribeMediaQuery?.();
   unsubscribeMediaQuery = null;
+  activeThemePreference = pref;
+  document.documentElement.dataset.makaThemePreference = pref;
+  ensureAppearanceObserver();
 
   // Cache the user-facing preference (not the resolved light/dark). The
   // pre-React paint reapplies the auto → system-matchMedia branch itself.
@@ -53,10 +111,12 @@ export function applyTheme(pref: ThemePreference): () => void {
 function setDarkClass(isDark: boolean): void {
   const root = document.documentElement;
   root.classList.toggle(DARK_CLASS, isDark);
+  root.dataset.makaColorScheme = isDark ? 'dark' : 'light';
   // Lets native form controls and scrollbars pick up the right base colors per
   // the Vercel Web Interface Guidelines dark-mode rule.
   root.style.colorScheme = isDark ? 'dark' : 'light';
   syncTitleBarOverlay(root);
+  publishAppearance();
 }
 
 /**
@@ -70,6 +130,7 @@ function setDarkClass(isDark: boolean): void {
  */
 export function applyThemePalette(palette: ThemePalette): void {
   const root = document.documentElement;
+  activeThemePalette = palette;
   if (palette === 'default') {
     root.removeAttribute('data-maka-theme');
   } else {
@@ -80,6 +141,7 @@ export function applyThemePalette(palette: ThemePalette): void {
   // Re-sync after changing the attribute so the native Windows controls never
   // retain the previous palette's titlebar color.
   syncTitleBarOverlay(root);
+  publishAppearance();
 }
 
 function syncTitleBarOverlay(root: HTMLElement): void {

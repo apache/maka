@@ -229,7 +229,7 @@ export function SettingsSurface(props: {
 
   return (
     <main className="settingsSurface agents-layout-body" data-modal="true" aria-label={copy.contentLabel}>
-      <aside className="settingsSidebar agents-sidebar" data-settings-nav-column aria-label={copy.sidebarLabel}>
+      <aside className="settingsSidebar agents-sidebar" data-settings-nav-column data-maka-part="settings-sidebar" aria-label={copy.sidebarLabel}>
         <div className="settingsSidebarInner">
           {/* PR-SETTINGS-NO-PANE-BORDER-0 (WAWQAQ msg `8effe691`):
               reference sidebar has just `← 返回应用` then straight
@@ -275,7 +275,7 @@ export function SettingsSurface(props: {
         </div>
       </aside>
 
-      <section className="settingsMainPane agents-content-area" data-agents-view="settings">
+      <section className="settingsMainPane agents-content-area" data-agents-view="settings" data-maka-part="settings-content">
         <header className="settingsPageHeader">
           <div className="settingsPageHeaderTitleStack">
             <h2>{headerCopy.label}</h2>

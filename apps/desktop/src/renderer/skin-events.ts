@@ -15,5 +15,12 @@ export function publishMakaSkinEvent(
     modalOpen: boolean;
   },
 ): void {
+  const root = document.documentElement;
+  root.dataset.makaSection = detail.section;
+  if (detail.module) root.dataset.makaModule = detail.module;
+  else root.removeAttribute('data-maka-module');
+  root.dataset.makaHasActiveSession = String(detail.hasActiveSession);
+  root.dataset.makaStreaming = String(detail.streaming);
+  root.dataset.makaModalOpen = String(detail.modalOpen);
   window.dispatchEvent(new CustomEvent(`maka:${type}`, { detail }));
 }

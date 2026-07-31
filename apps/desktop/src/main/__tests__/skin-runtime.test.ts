@@ -6,10 +6,12 @@ import test from 'node:test';
 import { strToU8, zipSync } from 'fflate';
 import {
   createSkinRuntime,
+  buildSkinActivationScript,
   inlineStylesheetAssets,
   normalizeArchiveFiles,
   parseSkinManifest,
   SkinRuntimeError,
+  type SkinManifest,
   type SkinWebContents,
 } from '../skin-runtime.js';
 
@@ -18,6 +20,7 @@ class FakeWebContents implements SkinWebContents {
   readonly insertedCss: string[] = [];
   readonly isolatedScripts: string[] = [];
   readonly removedCss: string[] = [];
+  failurePattern: RegExp | null = null;
 
   insertCSS(css: string): Promise<string> {
     this.insertedCss.push(css);
@@ -34,6 +37,9 @@ class FakeWebContents implements SkinWebContents {
     scripts: Array<{ code: string }>,
   ): Promise<unknown> {
     this.isolatedScripts.push(...scripts.map((script) => script.code));
+    if (this.failurePattern && scripts.some((script) => this.failurePattern?.test(script.code))) {
+      return Promise.resolve({ ok: false, error: 'simulated activation failure' });
+    }
     return Promise.resolve({ ok: true });
   }
 
@@ -49,7 +55,7 @@ class FakeWebContents implements SkinWebContents {
   }
 }
 
-const validManifest = {
+const validManifest: SkinManifest = {
   schemaVersion: 1,
   id: 'test.neon',
   name: 'Test Neon',
@@ -94,6 +100,26 @@ test('inlineStylesheetAssets converts local asset URLs to data URLs', () => {
     ),
     '.hero { background: url("data:image/png;base64,AAAA"); }',
   );
+});
+
+test('activation API exposes host appearance, state, environment, tokens, parts, styles, and lifecycle', () => {
+  const script = buildSkinActivationScript(
+    validManifest,
+    'export function activate(api) { api.log(api.apiVersion); }',
+    {},
+  );
+  for (const contract of [
+    'appearance:',
+    'state:',
+    'environment:',
+    'tokens: tokenApi',
+    'observe(name, handler)',
+    'wait(name, timeoutMs = 5000)',
+    'styles:',
+    'lifecycle:',
+  ]) {
+    assert.match(script, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
 });
 
 test('runtime installs, activates, and disables a high-freedom skin', async () => {
@@ -147,6 +173,57 @@ test('runtime recovers from an activation interrupted by a crash', async () => {
     assert.equal(snapshot.activeSkinId, null);
     assert.equal(snapshot.recoveredFromFailedActivation, true);
     assert.match(snapshot.lastError ?? '', /disabled the previous skin/);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('runtime updates, reloads, and uninstalls a skin without restarting', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'maka-skin-update-test-'));
+  try {
+    const archivePath = join(temporaryRoot, 'neon.maka-skin');
+    const writeArchive = (
+      version: string,
+      color: string,
+      entry = 'export function activate() {}',
+    ) =>
+      writeFile(archivePath, zipSync({
+        'manifest.json': strToU8(JSON.stringify({ ...validManifest, version, preview: 'preview.svg' })),
+        'theme.css': strToU8(`:root { --accent: ${color}; }`),
+        'entry.mjs': strToU8(entry),
+        'preview.svg': strToU8('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+      }));
+    await writeArchive('1.0.0', 'red');
+
+    const runtime = createSkinRuntime({ rootDir: join(temporaryRoot, 'runtime') });
+    const webContents = new FakeWebContents();
+    runtime.attach(webContents);
+    await runtime.installFromFile(archivePath);
+    await runtime.activate('test.neon');
+
+    await writeArchive('1.1.0', 'blue');
+    const updated = await runtime.installFromFile(archivePath);
+    assert.equal(updated.installed[0]?.manifest.version, '1.1.0');
+    assert.match(updated.installed[0]?.previewDataUrl ?? '', /^data:image\/svg\+xml;base64,/);
+    assert.match(webContents.insertedCss.at(-1) ?? '', /blue/);
+
+    await runtime.reload();
+    assert.equal(webContents.insertedCss.length, 3);
+
+    webContents.failurePattern = /BROKEN_SKIN/;
+    await writeArchive('2.0.0', 'orange', 'export function activate() { /* BROKEN_SKIN */ }');
+    await assert.rejects(
+      runtime.installFromFile(archivePath),
+      (error: unknown) =>
+        error instanceof SkinRuntimeError && error.code === 'activation-failed',
+    );
+    const rolledBack = await runtime.list();
+    assert.equal(rolledBack.installed[0]?.manifest.version, '1.1.0');
+    assert.equal(rolledBack.activeSkinId, 'test.neon');
+
+    const uninstalled = await runtime.uninstall('test.neon');
+    assert.equal(uninstalled.activeSkinId, null);
+    assert.deepEqual(uninstalled.installed, []);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

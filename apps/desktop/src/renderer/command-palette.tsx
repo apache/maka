@@ -173,6 +173,7 @@ export function CommandPalette(props: {
     >
       <DialogContent
         className="maka-modal maka-palette-modal top-[12vh] -translate-y-0"
+        data-maka-part="command-palette"
         aria-label={copy.label}
         initialFocus={inputRef}
         showClose={false}

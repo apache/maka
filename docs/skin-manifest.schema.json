@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maka.dev/schemas/skin-manifest-v1.json",
+  "title": "Maka Skin Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "version", "permissions"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "author": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "styles": {
+      "type": "string",
+      "pattern": "^[^\\\\]*\\.css$"
+    },
+    "entry": {
+      "type": "string",
+      "pattern": "^[^\\\\]*\\.m?js$"
+    },
+    "preview": {
+      "type": "string",
+      "pattern": "^[^\\\\]*\\.(png|jpe?g|webp|gif|svg)$"
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["dom", "canvas", "audio", "storage"]
+      }
+    }
+  },
+  "anyOf": [
+    { "required": ["styles"] },
+    { "required": ["entry"] }
+  ]
+}

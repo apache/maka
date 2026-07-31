@@ -84,6 +84,7 @@ export function SettingsModal(props: {
       aria-label={copy.modalLabel}
       className="settingsModal settingsPage agents-layout-root"
       data-agents-page
+      data-maka-part="settings"
     >
       <SettingsSurface
         connections={props.connections}

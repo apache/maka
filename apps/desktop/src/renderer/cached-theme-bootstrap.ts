@@ -12,6 +12,12 @@ export function applyCachedThemeBeforeMount(): void {
   const shouldApplyDarkTheme =
     cachedThemePreference === 'dark' ||
     (cachedThemePreference !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.makaThemePreference =
+    cachedThemePreference === 'light' || cachedThemePreference === 'dark'
+      ? cachedThemePreference
+      : 'auto';
+  document.documentElement.dataset.makaColorScheme =
+    shouldApplyDarkTheme ? 'dark' : 'light';
   if (shouldApplyDarkTheme) {
     document.documentElement.classList.add('dark');
     document.documentElement.style.colorScheme = 'dark';

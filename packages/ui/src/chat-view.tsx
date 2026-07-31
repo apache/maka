@@ -356,7 +356,7 @@ export function ChatView(props: {
 
   if (!props.activeSession) {
     return (
-      <main className="maka-main detailPane agents-chat-panel agents-chat-view-root">
+      <main className="maka-main detailPane agents-chat-panel agents-chat-view-root" data-maka-part="chat">
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -376,6 +376,7 @@ export function ChatView(props: {
           className="maka-chat messages"
           viewportClassName="maka-chatViewport"
           contentClassName="maka-chatContent"
+          data-maka-part="transcript"
         >
           {props.emptyOverride ?? <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />}
           {props.conversationItems?.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
@@ -387,14 +388,14 @@ export function ChatView(props: {
   const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
 
   return (
-    <main className="maka-main detailPane agents-chat-panel agents-chat-view-root">
+    <main className="maka-main detailPane agents-chat-panel agents-chat-view-root" data-maka-part="chat">
       {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d): no more browser-style
           session tab in the chat header. Session name + model live in
           the sidebar; the new-task button at the top of the sidebar is
           the canonical create-session entry. The chat header is now
           just a thin chrome strip carrying the permission-mode
           switcher and the per-session memory/mode chips. */}
-      <header className="maka-chat-header">
+      <header className="maka-chat-header" data-maka-part="chat-header">
         {props.memoryActive && (
           /* This status pill is a semantic header control rather than a
              shared Button size or neutral variant. */
@@ -466,6 +467,7 @@ export function ChatView(props: {
           className="maka-chat messages"
           viewportClassName="maka-chatViewport"
           contentClassName="maka-chatContent"
+          data-maka-part="transcript"
           onScroll={onScroll}
         >
           {chat.length === 0 && !streamingActive && (

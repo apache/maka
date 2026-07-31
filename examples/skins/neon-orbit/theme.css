@@ -1,16 +1,39 @@
 html[data-maka-skin="maka.neon-orbit"] {
+  --background: oklch(0.98 0.014 260);
+  --background-elevated: oklch(1 0 0 / 0.76);
+  --surface-canvas: oklch(0.94 0.035 272);
+  --foreground: oklch(0.22 0.035 274);
+  --accent: oklch(0.58 0.22 306);
+  --info: oklch(0.62 0.17 232);
+  --success: oklch(0.58 0.16 158);
+  --destructive: oklch(0.58 0.22 25);
+  --border: oklch(0.45 0.12 282 / 0.24);
+  --border-strong: oklch(0.45 0.14 282 / 0.38);
+  --shadow-blur-opacity: 0.12;
+}
+
+html.dark[data-maka-skin="maka.neon-orbit"] {
   --background: oklch(0.16 0.035 274);
+  --background-elevated: oklch(0.24 0.045 274 / 0.72);
+  --surface-canvas: oklch(0.13 0.035 276);
   --foreground: oklch(0.95 0.02 255);
-  --card: oklch(0.24 0.045 274 / 0.72);
-  --card-foreground: oklch(0.96 0.02 255);
-  --border: oklch(0.72 0.14 286 / 0.28);
-  --primary: oklch(0.76 0.18 202);
-  --primary-foreground: oklch(0.14 0.03 270);
   --accent: oklch(0.68 0.24 306);
-  --accent-foreground: white;
+  --info: oklch(0.76 0.18 202);
+  --success: oklch(0.72 0.15 158);
+  --destructive: oklch(0.7 0.2 25);
+  --border: oklch(0.72 0.14 286 / 0.28);
+  --border-strong: oklch(0.72 0.14 286 / 0.42);
+  --shadow-blur-opacity: 0.2;
 }
 
 html[data-maka-skin="maka.neon-orbit"] body {
+  background:
+    radial-gradient(circle at 15% 20%, oklch(0.68 0.16 300 / 0.2), transparent 34%),
+    radial-gradient(circle at 82% 76%, oklch(0.72 0.14 203 / 0.2), transparent 38%),
+    linear-gradient(145deg, oklch(0.96 0.025 276), oklch(0.92 0.045 260));
+}
+
+html.dark[data-maka-skin="maka.neon-orbit"] body {
   background:
     radial-gradient(circle at 15% 20%, oklch(0.54 0.23 300 / 0.24), transparent 34%),
     radial-gradient(circle at 82% 76%, oklch(0.65 0.18 203 / 0.2), transparent 38%),
@@ -19,8 +42,8 @@ html[data-maka-skin="maka.neon-orbit"] body {
 
 html[data-maka-skin="maka.neon-orbit"] [data-maka-part="sidebar"],
 html[data-maka-skin="maka.neon-orbit"] [data-maka-part="detail-panel"] {
-  background: oklch(0.22 0.045 270 / 0.62) !important;
-  border-color: oklch(0.72 0.14 286 / 0.28) !important;
+  background: color-mix(in oklab, var(--background-elevated) 78%, transparent) !important;
+  border-color: var(--border) !important;
   box-shadow:
     0 24px 70px rgb(0 0 0 / 0.28),
     inset 0 1px 0 rgb(255 255 255 / 0.08);

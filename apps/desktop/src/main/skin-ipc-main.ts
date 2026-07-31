@@ -53,6 +53,24 @@ export function registerSkinIpc(options: {
     return publish(await runtime.activate(id));
   });
   ipcMain.handle('skins:disable', async () => publish(await runtime.disable()));
+  ipcMain.handle('skins:reload', async () => publish(await runtime.reload()));
+  ipcMain.handle('skins:uninstall', async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid skin id.');
+    const installed = (await runtime.list()).installed.find(({ manifest }) => manifest.id === id);
+    if (!installed) throw new Error('Skin is not installed.');
+    const confirmation = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Remove Maka skin?',
+      message: `Remove “${installed.manifest.name}” from this device?`,
+      detail: 'The installed skin files will be deleted. You can import the .maka-skin package again later.',
+      buttons: ['Cancel', 'Remove'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (confirmation.response !== 1) return runtime.list();
+    return publish(await runtime.uninstall(id));
+  });
   ipcMain.handle('skins:openFolder', async () => {
     const error = await shell.openPath(runtime.rootDir);
     if (error) throw new Error(error);

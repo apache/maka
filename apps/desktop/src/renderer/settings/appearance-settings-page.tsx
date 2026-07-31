@@ -336,9 +336,14 @@ function SkinSettingsSection() {
               {copy.openFolder}
             </Button>
             {snapshot?.activeSkinId ? (
-              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.disable())}>
-                {copy.disable}
-              </Button>
+              <>
+                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.reload())}>
+                  {copy.reload}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.disable())}>
+                  {copy.disable}
+                </Button>
+              </>
             ) : null}
           </div>
         </div>
@@ -360,25 +365,35 @@ function SkinSettingsSection() {
             <div><small>{copy.empty}</small></div>
           </div>
         ) : null}
-        {snapshot?.installed.map(({ manifest, active }) => (
+        {snapshot?.installed.map(({ manifest, active, previewDataUrl }) => (
           <div className="settingsFormRow" key={manifest.id}>
-            <div>
-              <strong>{manifest.name}</strong>
-              <small>
-                {manifest.author ? `${manifest.author} · ` : ''}
-                v{manifest.version}
-                {active ? ` · ${copy.active}` : ''}
-              </small>
+            <div className="settingsSkinIdentity">
+              {previewDataUrl ? (
+                <img className="settingsSkinPreview" src={previewDataUrl} alt="" />
+              ) : null}
+              <div>
+                <strong>{manifest.name}</strong>
+                <small>
+                  {manifest.author ? `${manifest.author} · ` : ''}
+                  v{manifest.version}
+                  {active ? ` · ${copy.active}` : ''}
+                </small>
+              </div>
             </div>
-            {active ? (
-              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.disable())}>
-                {copy.disable}
+            <div className="settingsActionRow">
+              {active ? (
+                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.disable())}>
+                  {copy.disable}
+                </Button>
+              ) : (
+                <Button type="button" variant="secondary" size="sm" disabled={busy || snapshot.safeMode} onClick={() => void run(() => window.maka.skins.activate(manifest.id))}>
+                  {copy.activate}
+                </Button>
+              )}
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.uninstall(manifest.id))}>
+                {copy.remove}
               </Button>
-            ) : (
-              <Button type="button" variant="secondary" size="sm" disabled={busy || snapshot.safeMode} onClick={() => void run(() => window.maka.skins.activate(manifest.id))}>
-                {copy.activate}
-              </Button>
-            )}
+            </div>
           </div>
         ))}
       </SettingsRows>

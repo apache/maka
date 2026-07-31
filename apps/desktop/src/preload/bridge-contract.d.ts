@@ -231,7 +231,7 @@ export interface SkinManifest {
 
 export interface SkinRuntimeSnapshot {
   activeSkinId: string | null;
-  installed: Array<{ manifest: SkinManifest; active: boolean }>;
+  installed: Array<{ manifest: SkinManifest; active: boolean; previewDataUrl?: string }>;
   safeMode: boolean;
   recoveredFromFailedActivation: boolean;
   lastError: string | null;
@@ -244,6 +244,8 @@ export interface MakaBridge {
     install(): Promise<{ canceled: boolean; snapshot: SkinRuntimeSnapshot }>;
     activate(id: string): Promise<SkinRuntimeSnapshot>;
     disable(): Promise<SkinRuntimeSnapshot>;
+    reload(): Promise<SkinRuntimeSnapshot>;
+    uninstall(id: string): Promise<SkinRuntimeSnapshot>;
     openFolder(): Promise<void>;
     subscribeChanges(handler: (snapshot: SkinRuntimeSnapshot) => void): () => void;
   };

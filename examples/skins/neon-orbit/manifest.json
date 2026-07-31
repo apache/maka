@@ -7,5 +7,6 @@
   "author": "Maka",
   "styles": "theme.css",
   "entry": "entry.mjs",
+  "preview": "preview.svg",
   "permissions": ["dom", "canvas", "storage"]
 }

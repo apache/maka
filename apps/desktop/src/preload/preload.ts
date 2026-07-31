@@ -139,6 +139,12 @@ const makaBridge = {
     disable(): Promise<SkinRuntimeSnapshot> {
       return ipcRenderer.invoke('skins:disable');
     },
+    reload(): Promise<SkinRuntimeSnapshot> {
+      return ipcRenderer.invoke('skins:reload');
+    },
+    uninstall(id: string): Promise<SkinRuntimeSnapshot> {
+      return ipcRenderer.invoke('skins:uninstall', id);
+    },
     openFolder(): Promise<void> {
       return ipcRenderer.invoke('skins:openFolder');
     },

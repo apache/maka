@@ -1,4 +1,27 @@
 /* Appearance theme and palette previews. */
+
+.settingsSkinIdentity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.settingsSkinIdentity > div {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-0-5);
+}
+
+.settingsSkinPreview {
+  width: 64px;
+  aspect-ratio: 16 / 10;
+  flex: none;
+  border: var(--border-width-hairline) solid var(--border);
+  border-radius: var(--radius-control);
+  object-fit: cover;
+  background: var(--surface-canvas);
+}
 .settingsThemeOptions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
