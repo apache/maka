@@ -990,7 +990,6 @@ const SessionRow = memo(function SessionRow(props: {
             variant: 'ghost',
             size: 'sm',
             className: 'maka-list-row-menu-trigger',
-            isDisabled: actionBusy,
             'aria-hidden': actionTriggerVisible ? undefined : 'true',
             'data-visible': actionTriggerVisible ? 'true' : undefined,
             tabIndex: actionTriggerVisible ? 0 : -1,

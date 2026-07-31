@@ -65,6 +65,29 @@ test('session grouping menu fits its Chinese labels instead of inheriting the ge
   expect(width).toBeLessThan(128);
 });
 
+test('session delete intent opens only after its menu closes and restores the trigger', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  const row = sidebar.locator('.maka-list-row').filter({ hasText: '会话 00' }).first();
+  const rowButton = row.locator('[data-session-id]').first();
+  await rowButton.focus();
+
+  const trigger = row.getByRole('button', { name: '对话操作' });
+  await trigger.press('Enter');
+  const menu = page.getByRole('menu').filter({ has: page.getByRole('menuitem', { name: '删除', exact: true }) });
+  await expect(menu).toBeVisible();
+  await menu.getByRole('menuitem', { name: '删除', exact: true }).press('Enter');
+
+  await expect(menu).toBeHidden();
+  const confirm = page.getByRole('alertdialog', { name: '删除 "会话 00"' });
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(confirm).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
 test('session heading stays singular and the default list has no redundant heading', async ({
   sidebarLongSessionsWindow: page,
 }) => {
