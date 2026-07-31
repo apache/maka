@@ -1,8 +1,12 @@
 import type { ReactNode } from 'react';
+import {
+  DropdownMenu,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@astryxdesign/core/DropdownMenu';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { Blocks, CalendarCheck, ChevronDown, Plug, Sun } from './icons.js';
-import { Menu, MenuRadioGroup, MenuRadioItem } from './primitives/menu.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 export type ModuleHubHeader = {
@@ -37,7 +41,7 @@ function Selector(props: {
   return (
     <span className="maka-module-hub-selector">
       <span className="maka-module-hub-separator" aria-hidden="true">/</span>
-      <Menu
+      <DropdownMenu
         button={{
           label: props.ariaLabel,
           icon: selected[2],
@@ -55,12 +59,12 @@ function Selector(props: {
         }}
         className="maka-module-hub-selector-menu"
       >
-          <MenuRadioGroup value={props.value} onChange={props.onChange} aria-label={props.ariaLabel}>
+          <DropdownMenuRadioGroup value={props.value} onChange={props.onChange} aria-label={props.ariaLabel}>
             {props.options.map(([value, label, icon]) => (
-              <MenuRadioItem key={value} value={value} icon={icon} label={label} />
+              <DropdownMenuRadioItem key={value} value={value} icon={icon} label={label} />
             ))}
-          </MenuRadioGroup>
-      </Menu>
+          </DropdownMenuRadioGroup>
+      </DropdownMenu>
     </span>
   );
 }

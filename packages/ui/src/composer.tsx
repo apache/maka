@@ -35,11 +35,16 @@ import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
 import { Button as UiButton, IconButton } from '@astryxdesign/core';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import { Divider } from '@astryxdesign/core/Divider';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Kbd } from './primitives/kbd.js';
 import { PermissionModeSelect } from './permission-mode-menu.js';
-import { Menu, MenuCheckboxItem, MenuItem, MenuSeparator } from './primitives/menu.js';
 
 const COMPOSER_MAX_HEIGHT = 240;
 
@@ -815,7 +820,7 @@ export const Composer = forwardRef<
                 target), so the attach item is disabled rather than
                 vanishing the whole menu (and Plan/Swarm / expert teams). */}
             {(props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 || props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange) ? (
-              <Menu
+              <DropdownMenu
                 placement="above"
                 button={{
                   label:
@@ -834,7 +839,7 @@ export const Composer = forwardRef<
                 className="maka-composer-context-menu"
               >
                   {props.onPickAttachments ? (
-                    <MenuItem
+                    <DropdownMenuItem
                       isDisabled={props.disabled || props.streaming === true || importActionBusy}
                       onClick={() => void runImportAction('pick', props.onPickAttachments)}
                       icon={<Paperclip size={13} aria-hidden="true" />}
@@ -843,9 +848,9 @@ export const Composer = forwardRef<
                   ) : null}
                   {(props.expertTeams?.length ?? 0) > 0 ? (
                     <>
-                      <MenuSeparator label={copy.expertTeam} />
+                      <Divider orientation="horizontal" label={copy.expertTeam} />
                         {props.expertTeams?.map((team) => (
-                          <MenuItem
+                          <DropdownMenuItem
                             key={team.id}
                             isDisabled={props.disabled}
                             onClick={() => props.onStartExpertTeam?.(team.id)}
@@ -865,10 +870,10 @@ export const Composer = forwardRef<
                           precedes it — a modes-only menu must not lead with
                           a divider (review P3). */}
                       {props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 ? (
-                        <MenuSeparator />
+                        <Divider orientation="horizontal" />
                       ) : null}
                       {props.onPlanModeChange ? (
-                        <MenuCheckboxItem
+                        <DropdownMenuCheckboxItem
                           label={copy.planModeLabel}
                           value={props.planModeActive === true}
                           isDisabled={
@@ -884,7 +889,7 @@ export const Composer = forwardRef<
                         />
                       ) : null}
                       {props.onSwarmModeChange ? (
-                        <MenuCheckboxItem
+                        <DropdownMenuCheckboxItem
                           label={copy.swarmModeLabel}
                           value={props.swarmModeActive === true}
                           isDisabled={
@@ -900,7 +905,7 @@ export const Composer = forwardRef<
                         />
                       ) : null}
                       {props.onGraphModeChange ? (
-                        <MenuCheckboxItem
+                        <DropdownMenuCheckboxItem
                           label={copy.graphModeLabel}
                           value={props.graphModeActive === true}
                           isDisabled={
@@ -917,7 +922,7 @@ export const Composer = forwardRef<
                       ) : null}
                     </>
                   ) : null}
-              </Menu>
+              </DropdownMenu>
             ) : null}
             {/* PR-MOVE-PERMISSION-MODE: the static "通用" role chip
                 was replaced by the permission-mode dropdown — that

@@ -9,8 +9,11 @@
  */
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
 import { useMountedRef } from './use-mounted-ref.js';
-import { Menu, MenuItem } from './primitives/menu.js';
 import { Button as UiButton } from '@astryxdesign/core';
 import { ModelPicker } from './model-picker.js';
 import { Settings } from './icons.js';
@@ -51,7 +54,7 @@ function ThinkingLevelSection(props: {
 
   return (
     <div className="maka-thinking-section">
-      <Menu
+      <DropdownMenu
         isMenuOpen={open}
         onOpenChange={setOpen}
         placement="end"
@@ -76,14 +79,14 @@ function ThinkingLevelSection(props: {
       >
         {hasVariants && (
           <>
-            <MenuItem
+            <DropdownMenuItem
               onClick={() => choose(undefined)}
               className="maka-thinking-flyout-item"
               label={copy.defaultLevel}
               endContent={!props.current ? <span className="maka-thinking-flyout-check" aria-hidden="true">✓</span> : undefined}
             />
             {props.levels.map((level) => (
-              <MenuItem
+              <DropdownMenuItem
                 key={level}
                 onClick={() => choose(level)}
                 className="maka-thinking-flyout-item"
@@ -93,7 +96,7 @@ function ThinkingLevelSection(props: {
             ))}
           </>
         )}
-      </Menu>
+      </DropdownMenu>
     </div>
   );
 }

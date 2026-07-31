@@ -139,7 +139,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     for (const css of [paletteCss, composerCss, navCss]) {
       assert.doesNotMatch(css, /\.maka-shortcut-(?:kbd|group)\b/, 'Renderer CSS must not maintain a parallel keycap recipe');
     }
-    assert.doesNotMatch(tokens, /^\s*kbd\s*\{/m, 'Global element CSS must not add a third outer keycap or override MenuShortcut');
+    assert.doesNotMatch(tokens, /^\s*kbd\s*\{/m, 'Global element CSS must not override component-owned keycaps');
   });
 
   it('keeps keyboard help on the shared DialogHeader with a single title', async () => {

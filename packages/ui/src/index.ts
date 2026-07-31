@@ -76,7 +76,6 @@ export * from './primitives/empty.js';
 export * from './primitives/item.js';
 export * from './primitives/spinner.js';
 export * from './primitives/kbd.js';
-export * from './primitives/menu.js';
 export * from './primitives/dialog-header.js';
 export * from './primitives/stat-tile.js';
 export * from './primitives/data-table.js';

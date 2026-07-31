@@ -1,4 +1,9 @@
 import type { PlanReminder, SessionSummary } from '@maka/core';
+import {
+  DropdownMenu,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@astryxdesign/core/DropdownMenu';
 import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import {
   SessionHistoryList,
@@ -7,7 +12,6 @@ import {
   type SessionRowActions,
 } from './session-history-list.js';
 import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } from './session-sidebar-nav.js';
-import { Menu, MenuRadioGroup, MenuRadioItem } from './primitives/menu.js';
 import { ListTodo } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -58,7 +62,7 @@ export function SessionListPanel(props: {
       {onViewModeChange && (
         <div className="maka-session-list-toolbar">
           <span className="maka-session-list-heading">{copy.title}</span>
-          <Menu
+          <DropdownMenu
             button={{
               label: copy.groupingAriaLabel,
               icon: <ListTodo size={15} aria-hidden="true" />,
@@ -68,15 +72,15 @@ export function SessionListPanel(props: {
               tooltip: copy.groupingAriaLabel,
             }}
           >
-              <MenuRadioGroup
+              <DropdownMenuRadioGroup
                 value={viewMode}
                 onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
                 aria-label={copy.groupingAriaLabel}
               >
-                <MenuRadioItem value="conversation" label={copy.groupByTime} />
-                <MenuRadioItem value="project" label={copy.groupByProject} />
-              </MenuRadioGroup>
-          </Menu>
+                <DropdownMenuRadioItem value="conversation" label={copy.groupByTime} />
+                <DropdownMenuRadioItem value="project" label={copy.groupByProject} />
+              </DropdownMenuRadioGroup>
+          </DropdownMenu>
         </div>
       )}
       <SessionHistoryList

@@ -413,7 +413,7 @@
           See styles/segmented.css.
        2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
           overlay at inset-0 hugging the inner edge of a 1px border.
-          See primitives/menu.tsx and primitives/empty.tsx.
+          See primitives/empty.tsx.
      Both are corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */

@@ -247,7 +247,7 @@ describe('issue #406 design-system governance contract', () => {
     assert.doesNotMatch(appearance, /\b(?:ChoiceCard|SelectableCard)\b/);
     assert.match(ui, /<BaseProgress\.Indicator className="[^"]*bg-control/);
 
-    const menu = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/menu.tsx'), 'utf8');
+    const menu = await readFile(resolve(REPO_ROOT, 'packages/ui/src/composer.tsx'), 'utf8');
     const tabs = await readFile(resolve(REPO_ROOT, 'packages/ui/src/primitives/tabs.tsx'), 'utf8');
     assert.match(menu, /from '@astryxdesign\/core\/DropdownMenu'/);
     assert.match(tabs, /from "@base-ui\/react\/tabs"/);

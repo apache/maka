@@ -19,7 +19,7 @@
  *
  * The other legitimate form is the 1px border inset — a ::before overlay
  * at inset-0 hugging the inner edge of a 1px border, spelled
- * `calc(var(--radius-*) - 1px)` (primitives/menu.tsx, primitives/empty.tsx).
+ * `calc(var(--radius-*) - 1px)` (for example primitives/empty.tsx).
  * Those live in Tailwind class strings, not renderer CSS, so they are
  * governed by the radius-converge contract's calc allowlist instead.
  */

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { REPO_ROOT } from './css-test-helpers.js';
@@ -27,10 +27,6 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
   });
 
   it('makes Astryx DropdownMenu the only menu behavior authority', async () => {
-    const source = await readUiSource('primitives/menu.tsx');
-    assert.match(source, /from '@astryxdesign\/core\/DropdownMenu'/);
-    assert.doesNotMatch(source, /@base-ui\/react\/menu/);
-
     const consumerPaths = [
       'chat-model-switcher.tsx',
       'composer-workspace-row.tsx',
@@ -44,7 +40,15 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
     const consumers = (
       await Promise.all(consumerPaths.map((path) => readUiSource(path)))
     ).join('\n');
-    assert.doesNotMatch(consumers, /<Menu(?:Trigger|Popup|Sub)/);
+    await assert.rejects(access(join(UI_ROOT, 'primitives', 'menu.tsx')));
+    assert.match(consumers, /from '@astryxdesign\/core\/DropdownMenu'/);
+    assert.doesNotMatch(
+      consumers,
+      /from ['"].*primitives\/menu|queueMicrotask|<Menu(?:Trigger|Popup|Sub)/,
+    );
+
+    const barrel = await readUiSource('index.ts');
+    assert.doesNotMatch(barrel, /primitives\/menu/);
   });
   it('makes Astryx Dialog the only modal behavior authority', async () => {
     const [source, header, toast] = await Promise.all([

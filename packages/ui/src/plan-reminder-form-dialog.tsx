@@ -41,6 +41,10 @@ import {
   TextInput,
 } from '@astryxdesign/core';
 import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
+import {
   buttonVariants,
   cn,
   DialogClose,
@@ -48,10 +52,6 @@ import {
   DialogRoot,
 } from './ui.js';
 import { TextArea as UiTextarea } from '@astryxdesign/core';
-import {
-  Menu,
-  MenuItem,
-} from './primitives/menu.js';
 import {
   getPlanReminderCopy,
   type PlanReminderExampleTemplate,
@@ -205,7 +205,7 @@ export function PlanReminderFormDialog(props: {
             </div>
             <div className="maka-plan-form-header-actions">
               {!isEditing && (
-                <Menu
+                <DropdownMenu
                   button={{
                     label: copy.useTemplate,
                     variant: 'ghost',
@@ -216,14 +216,14 @@ export function PlanReminderFormDialog(props: {
                   className="maka-plan-template-menu"
                 >
                     {templates.map((template) => (
-                      <MenuItem
+                      <DropdownMenuItem
                         key={template.id}
                         onClick={() => applyTemplate(template)}
                         label={template.title}
                         endContent={template.scheduleLabel}
                       />
                     ))}
-                </Menu>
+                </DropdownMenu>
               )}
               {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
               <DialogClose

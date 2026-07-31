@@ -28,7 +28,6 @@ describe('sidebar session row menu', () => {
       styles,
       /\.maka-list-row\[data-menu-open="true"\] \.maka-list-row-meta,[\s\S]*?\.maka-list-row\[data-menu-open="true"\] \.maka-list-row-unread\s*\{[\s\S]*?visibility:\s*hidden;/,
     );
-    assert.doesNotMatch(source, /<MenuPopup[^>]*sideOffset=\{4\}/);
     assert.doesNotMatch(styles, /\.maka-list-row-menu\s*\{[\s\S]*?min-width:\s*144px;/);
   });
 });

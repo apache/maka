@@ -234,9 +234,9 @@ describe('sidebar project view mode', () => {
     assert.ok(trigger, 'the grouping trigger must render');
     assert.doesNotMatch(trigger, />按时间|>按项目/);
     assert.match(markup, /role="menuitemradio"/);
-    assert.match(panel, /<MenuRadioGroup[\s\S]*?value=\{viewMode\}/);
-    assert.match(panel, /<MenuRadioItem value="conversation" label=\{copy\.groupByTime\} \/>/);
-    assert.match(panel, /<MenuRadioItem value="project" label=\{copy\.groupByProject\} \/>/);
+    assert.match(panel, /<DropdownMenuRadioGroup[\s\S]*?value=\{viewMode\}/);
+    assert.match(panel, /<DropdownMenuRadioItem value="conversation" label=\{copy\.groupByTime\} \/>/);
+    assert.match(panel, /<DropdownMenuRadioItem value="project" label=\{copy\.groupByProject\} \/>/);
   });
 
   it('renders lifecycle state only on non-active conversation rows', () => {

@@ -13,11 +13,14 @@ import {
 } from '@maka/ui/icons';
 import {
   IconButton,
-  Menu,
-  MenuItem,
   useUiLocale,
 } from '@maka/ui';
+import {
+  DropdownMenu,
+  DropdownMenuItem,
+} from '@astryxdesign/core/DropdownMenu';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { useRef, useState } from 'react';
 import { getShellCopy } from './locales/shell-copy';
 
 export function AppShellTopbarActions(props: {
@@ -81,10 +84,24 @@ export function AppShellWorkspaceTopActions(props: {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).chrome;
   const workbarLabel = props.workbarCollapsed ? copy.expandWorkbar : copy.collapseWorkbar;
+  const pendingMenuIntentRef = useRef<(() => void) | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const scheduleAfterMenuClose = (intent: () => void) => {
+    pendingMenuIntentRef.current = intent;
+  };
 
   return (
     <div className="maka-workspace-top-actions" role="toolbar" aria-label={copy.workspaceActions}>
-      <Menu
+      <DropdownMenu
+        isMenuOpen={menuOpen}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (open) return;
+          const intent = pendingMenuIntentRef.current;
+          pendingMenuIntentRef.current = null;
+          intent?.();
+        }}
         button={{
           label: copy.moreActions,
           icon: <MoreHorizontal aria-hidden="true" />,
@@ -92,14 +109,13 @@ export function AppShellWorkspaceTopActions(props: {
           variant: 'ghost',
           size: 'sm',
           className: 'maka-titlebar-action',
-          style: { borderRadius: 'var(--radius-control)' },
         }}
       >
-          <MenuItem icon={<MessageCircleQuestion aria-hidden="true" />} label={copy.feedback} onClick={props.onOpenFeedback} />
-          <MenuItem icon={<Grid3X3 aria-hidden="true" />} label={copy.openCommandPalette} onClick={props.onOpenPalette} />
-          <MenuItem icon={<HelpCircle aria-hidden="true" />} label={copy.openHelp} onClick={props.onOpenHelp} />
-          <MenuItem icon={<CircleGauge aria-hidden="true" />} label={copy.openHealth} onClick={props.onOpenHealth} />
-      </Menu>
+          <DropdownMenuItem icon={<MessageCircleQuestion aria-hidden="true" />} label={copy.feedback} onClick={() => scheduleAfterMenuClose(props.onOpenFeedback)} />
+          <DropdownMenuItem icon={<Grid3X3 aria-hidden="true" />} label={copy.openCommandPalette} onClick={() => scheduleAfterMenuClose(props.onOpenPalette)} />
+          <DropdownMenuItem icon={<HelpCircle aria-hidden="true" />} label={copy.openHelp} onClick={() => scheduleAfterMenuClose(props.onOpenHelp)} />
+          <DropdownMenuItem icon={<CircleGauge aria-hidden="true" />} label={copy.openHealth} onClick={() => scheduleAfterMenuClose(props.onOpenHealth)} />
+      </DropdownMenu>
       {props.workbarAvailable && (
         <Tooltip content={workbarLabel}>
           <IconButton
