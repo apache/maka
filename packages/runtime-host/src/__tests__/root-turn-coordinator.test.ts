@@ -1067,6 +1067,91 @@ test('Client Capability ambiguity fails before durable root admission', async ()
   }
 });
 
+test('an exact active retry preserves the Client Capability admission binding', {
+  timeout: 20_000,
+}, async () => {
+  const clientCapabilities = new HostClientCapabilityCoordinator({
+    activation: new RuntimePolicyActivationGate(),
+    onRegistryChanged: () => undefined,
+  });
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    clientCapabilities,
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  const first = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+  const second = clientCapabilities.attachConnection('provider-b', { send: async () => {} });
+
+  try {
+    for (const [connectionId, registrationId] of [
+      ['provider-a', 'registration-a'],
+      ['provider-b', 'registration-b'],
+    ] as const) {
+      const replaced = await clientCapabilities.handlers['client.capability.replace'](
+        {
+          registrationId,
+          offers: [
+            {
+              offerId: 'browser',
+              version: '0',
+              affinity: 'turn',
+              label: 'Browser',
+              tools: [
+                {
+                  serverId: 'browser',
+                  name: 'navigate',
+                  inputSchema: { type: 'object' },
+                },
+              ],
+            },
+          ],
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency, connectionId),
+      );
+      assert.equal(replaced.ok, true);
+    }
+
+    const input = {
+      sessionId: fixture.sessionId,
+      turnId: 'turn-client-capability-exact-retry',
+      content: { text: HOLD_EXTERNAL_PROMPT },
+    } as const;
+    const started = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-a'),
+    );
+    assert.equal(started.ok, true);
+    const retried = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency, 'provider-b'),
+    );
+    assert.equal(retried.ok, true);
+
+    const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.deepEqual(snapshot?.registrationIds, ['registration-a']);
+    snapshot?.release();
+
+    if (started.ok) {
+      await fixture.coordinator.stopRoot({
+        sessionId: fixture.sessionId,
+        turnId: input.turnId,
+        runId: started.result.runId,
+      });
+    }
+  } finally {
+    backend?.release();
+    first.close();
+    second.close();
+    clientCapabilities.close();
+    await fixture.dispose();
+  }
+});
+
 test('queued follow-up binds Client Capabilities to its submitting connection', {
   timeout: 20_000,
 }, async () => {

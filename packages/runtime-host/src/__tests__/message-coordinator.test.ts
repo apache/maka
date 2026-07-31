@@ -72,7 +72,7 @@ test('invalidates the canonical projection after each observable queue mutation'
   await fixture.coordinator.close();
 });
 
-test('preserves the first folded follow-up Client identity across root handoff', async () => {
+test('partitions a mixed-Client follow-up queue across root handoffs', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);
   const owner = fixture.coordinator.bindRun(ROOT);
@@ -99,7 +99,7 @@ test('preserves the first folded follow-up Client identity across root handoff',
   const batch = fixture.coordinator.beginTerminalTransition(ROOT);
   assert.deepEqual(
     batch.sources.map((source) => source.messageId),
-    ['steering-from-b', 'followup-from-c'],
+    ['steering-from-b'],
   );
   assert.equal(batch.initiatingConnectionId, 'connection-b');
 
@@ -108,17 +108,40 @@ test('preserves the first folded follow-up Client identity across root handoff',
     turnId: 'turn-2',
     runId: 'run-2',
   });
+  assert.equal(fixture.liveResidencies(), 1);
   const nextOwner = fixture.coordinator.bindRun({
     sessionId: ROOT.sessionId,
     turnId: 'turn-2',
     runId: 'run-2',
   });
   nextOwner.release();
+  const secondBatch = fixture.coordinator.beginTerminalTransition({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-2',
+    runId: 'run-2',
+  });
+  assert.deepEqual(
+    secondBatch.sources.map((source) => source.messageId),
+    ['followup-from-c'],
+  );
+  assert.equal(secondBatch.initiatingConnectionId, 'connection-c');
+  fixture.coordinator.commitNextRoot(secondBatch, {
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  assert.equal(fixture.liveResidencies(), 0);
+  const finalOwner = fixture.coordinator.bindRun({
+    sessionId: ROOT.sessionId,
+    turnId: 'turn-3',
+    runId: 'run-3',
+  });
+  finalOwner.release();
   fixture.coordinator.completeIdle(
     fixture.coordinator.beginTerminalTransition({
       sessionId: ROOT.sessionId,
-      turnId: 'turn-2',
-      runId: 'run-2',
+      turnId: 'turn-3',
+      runId: 'run-3',
     }),
   );
   await fixture.coordinator.close();

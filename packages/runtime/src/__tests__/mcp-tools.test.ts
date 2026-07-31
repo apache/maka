@@ -119,9 +119,10 @@ test('a trusted composition can apply the Client Capability permission floor and
         return { content: [{ type: 'text', text: 'ok' }] };
       },
     ),
-    { categoryHint: 'client_capability' },
+    { categoryHint: 'client_capability', recoveryMode: 'outcome_unknown' },
   );
   assert.equal(tool?.categoryHint, 'client_capability');
+  assert.equal(tool?.recoveryMode, 'outcome_unknown');
   await tool?.impl(
     {},
     {

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { jsonSchema } from 'ai';
 import type { McpCallResult, McpToolDescriptor } from '@maka/core/mcp';
 import type { ToolCategory } from '@maka/core/permission';
+import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
 import type { MakaTool } from './tool-runtime.js';
 
@@ -37,6 +38,7 @@ export interface McpToolInvocationContext {
 export interface BuildMcpToolsOptions {
   callTimeoutMs?: number;
   categoryHint?: ToolCategory;
+  recoveryMode?: ToolRecoveryMode;
 }
 
 export function buildMcpTools(
@@ -63,6 +65,7 @@ export function buildMcpTools(
       // The trusted composition may select a stricter open-world category;
       // ordinary MCP servers retain the side-effecting network default.
       categoryHint: options.categoryHint ?? 'network_send',
+      ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
       parameters: jsonSchema(descriptor.inputSchema),
       permissionArgs: (args) => ({
         serverId: descriptor.serverId,

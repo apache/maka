@@ -348,6 +348,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     const tools = buildMcpTools(proxyProvider, {
       callTimeoutMs: DEFAULT_CALL_TIMEOUT_MS,
       categoryHint: 'client_capability',
+      recoveryMode: 'outcome_unknown',
     });
     const groups = selected.map(({ offer: binding }) => ({
       id: binding.contractId,

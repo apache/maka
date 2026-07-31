@@ -17,6 +17,7 @@ import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
+import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { createHostAiSdkBackend } from './execution-model-composition.js';
@@ -169,6 +170,7 @@ export async function createExecutionRuntimeHostComposition(
         artifacts: openedArtifactStore,
         usage: openedUsageStores,
         clientCapabilities: requireClientCapabilities(clientCapabilities),
+        runtimeCommitSink: stores.runtimeEventStore,
         requestDrain: context.requestDrain,
       }),
     );
@@ -184,6 +186,7 @@ export async function createExecutionRuntimeHostComposition(
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
+      toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
       backends,
       newId: randomUUID,
       now: Date.now,
@@ -295,6 +298,10 @@ export async function createExecutionRuntimeHostComposition(
             session.id,
           );
         }
+        await recoverClientCapabilityOutcomes(
+          stores.runtimeEventStore,
+          sessions.map((session) => session.id),
+        );
         await coordinator.prepareRecovery();
         await openedArtifactStore.recover();
         await interactions.recoverPendingAfterHostRestart();

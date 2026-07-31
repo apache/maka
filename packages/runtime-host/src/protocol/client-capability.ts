@@ -749,10 +749,17 @@ function decodeContentBlock(value: unknown): ClientCapabilityContentBlock {
         'data',
         'mimeType',
       ]);
+      const data = requireBoundedString(record.data, 'data', CLIENT_CAPABILITY_MAX_RESULT_BYTES);
+      if (!isCanonicalBase64(data)) {
+        throw invalidProtocolFrame(`Invalid Client Capability ${record.type} data`);
+      }
       return {
         type: record.type,
-        data: requireBoundedString(record.data, 'data', CLIENT_CAPABILITY_MAX_RESULT_BYTES),
-        mimeType: requireString(record.mimeType, 'mimeType', 256),
+        data,
+        mimeType:
+          record.type === 'image'
+            ? requireImageMimeType(record.mimeType)
+            : requireString(record.mimeType, 'mimeType', 256),
       };
     case 'resource':
       assertOptionalExactKeys(
@@ -775,7 +782,7 @@ function decodeContentBlock(value: unknown): ClientCapabilityContentBlock {
         ...(record.blob === undefined
           ? {}
           : {
-              blob: requireBoundedString(record.blob, 'blob', CLIENT_CAPABILITY_MAX_RESULT_BYTES),
+              blob: requireCanonicalBase64(record.blob, 'blob', CLIENT_CAPABILITY_MAX_RESULT_BYTES),
             }),
       };
     case 'resource_link':
@@ -868,6 +875,20 @@ function requireBoundedString(value: unknown, label: string, maxLength: number):
     throw invalidProtocolFrame(`Invalid ${label}`);
   }
   return value;
+}
+
+function requireCanonicalBase64(value: unknown, label: string, maxLength: number): string {
+  const data = requireBoundedString(value, label, maxLength);
+  if (!isCanonicalBase64(data)) throw invalidProtocolFrame(`Invalid ${label}`);
+  return data;
+}
+
+function requireImageMimeType(value: unknown): string {
+  const mimeType = requireString(value, 'mimeType', 256);
+  if (!/^image\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/u.test(mimeType)) {
+    throw invalidProtocolFrame('Invalid Client Capability image MIME type');
+  }
+  return mimeType;
 }
 
 function assertOptionalExactKeys(

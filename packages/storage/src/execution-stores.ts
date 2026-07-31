@@ -7,6 +7,7 @@ import type {
   SessionListFilter,
   SessionSummary,
   StoredMessage,
+  ToolBoundaryProtocol,
   TurnRecord,
 } from '@maka/core';
 import {
@@ -37,6 +38,12 @@ import {
   openRuntimeEventPersistence,
   openRuntimeEventReadPersistence,
 } from './runtime-event-transfer.js';
+import type {
+  CommitToolOutcomeInput,
+  CommitToolPreparedInput,
+  ToolCommitResult,
+  ToolOperationRecord,
+} from './sqlite-runtime-store.js';
 
 const executionStoresWriterBrand: unique symbol = Symbol('ExecutionStoresWriter');
 const executionStoresReaderBrand: unique symbol = Symbol('ExecutionStoresReader');
@@ -77,7 +84,12 @@ export type {
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
 export type ExecutionAgentRunWriter = DurableAgentRunStore;
-export type ExecutionRuntimeEventWriter = DurableRuntimeEventStore;
+export interface ExecutionRuntimeEventWriter extends DurableRuntimeEventStore {
+  readonly toolBoundaryProtocol: ToolBoundaryProtocol;
+  commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult>;
+  commitToolOutcome(input: CommitToolOutcomeInput): Promise<ToolCommitResult>;
+  listUnsettledToolOperations(sessionId: string): Promise<ToolOperationRecord[]>;
+}
 export type ExecutionMessageReceiptWriter = MessageReceiptStore;
 
 interface ExecutionStoresWriterBase<K extends StorageRootKind> {
@@ -328,6 +340,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
     },
     runtimeEventStore: {
       durability: runtimeEventStore.durability,
+      toolBoundaryProtocol: runtimePersistence.runtimeCommitStore.toolBoundaryProtocol,
       appendRuntimeEvent: (sessionId, runId, event, options) =>
         run(() => runtimeEventStore.appendRuntimeEvent(sessionId, runId, event, options)),
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>
@@ -342,6 +355,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId)),
       repairImmutableSteeringMessageProofsForRecovery: (sessionId) =>
         run(() => runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(sessionId)),
+      commitToolPrepared: (input) =>
+        run(() => runtimePersistence.runtimeCommitStore.commitToolPrepared(input)),
+      commitToolOutcome: (input) =>
+        run(() => runtimePersistence.runtimeCommitStore.commitToolOutcome(input)),
+      listUnsettledToolOperations: (sessionId) =>
+        run(() => runtimePersistence.runtimeCommitStore.listUnsettledToolOperations(sessionId)),
     },
     messageReceiptStore: {
       beginHostEpoch: (hostEpoch) => run(() => messageReceiptStore.beginHostEpoch(hostEpoch)),

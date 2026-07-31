@@ -363,7 +363,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       this.#mutated(state);
     }
     state.run = undefined;
-    const entries = [...state.followup];
+    const entries = sameInitiatingClientPrefix(state.followup);
     const followup = canonicalFollowupBatch(entries);
     const transition: TerminalTransition = {
       transitionId: this.#createId(),
@@ -1152,8 +1152,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   #commitTransition(state: SessionState): void {
     const transition = state.transition;
     if (!transition) throw new RuntimeMessageAuthorityInvariantError('Missing terminal transition');
+    if (transition.entries.some((entry, index) => state.followup[index] !== entry)) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Terminal transition no longer owns the queued follow-up prefix',
+      );
+    }
     for (const entry of transition.entries) this.#releaseEntry(entry);
-    state.followup = [];
+    state.followup.splice(0, transition.entries.length);
     state.transition = undefined;
     state.reservedRoot = undefined;
     state.stopFence = undefined;
@@ -1461,6 +1466,15 @@ function canonicalFollowupBatch(entries: readonly LiveEntry[]): {
       'Accepted follow-up batch violates the durable root admission contract',
     );
   }
+}
+
+function sameInitiatingClientPrefix(entries: readonly LiveEntry[]): LiveEntry[] {
+  const initiatingConnectionId = entries[0]?.initiatingConnectionId;
+  if (!initiatingConnectionId) return [];
+  const boundary = entries.findIndex(
+    (entry) => entry.initiatingConnectionId !== initiatingConnectionId,
+  );
+  return entries.slice(0, boundary === -1 ? entries.length : boundary);
 }
 
 function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): boolean {

@@ -688,13 +688,6 @@ export class RootTurnCoordinator {
               return completedStart({ ok: true, result: snapshot });
             }
           }
-          const binding = await this.clientCapabilities?.bindSession(
-            input.sessionId,
-            context.connectionId,
-          );
-          if (binding && !binding.ok) {
-            return completedStart(operationConflict(binding.message));
-          }
           return this.prepareAdmittedTurn(
             canonicalInput,
             existing,

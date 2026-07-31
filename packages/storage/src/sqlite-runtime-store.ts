@@ -594,9 +594,8 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
     return this.readToolOperationSync(operationId);
   }
 
-  async listUnsettledToolOperations(): Promise<ToolOperationRecord[]> {
-    const rows = this.db
-      .prepare(`
+  async listUnsettledToolOperations(sessionId?: string): Promise<ToolOperationRecord[]> {
+    const query = `
       SELECT operation_id, invocation_id, run_id, turn_id, provider_tool_call_id,
         tool_name, canonical_args_hash, recovery_mode, current_state,
         call_event_id, dispatch_event_id, result_event_id, version
@@ -604,9 +603,17 @@ export class SqliteRuntimeStore implements RuntimeRecoveryBundleStore {
       WHERE current_state = 'prepared'
         AND result_event_id IS NULL
         AND dispatch_event_id IS NOT NULL
+        ${
+          sessionId === undefined
+            ? ''
+            : 'AND call_event_id IN (SELECT event_id FROM runtime_events WHERE session_id = ?)'
+        }
       ORDER BY invocation_id ASC, operation_id ASC
-    `)
-      .all() as unknown as ToolOperationRow[];
+    `;
+    const statement = this.db.prepare(query);
+    const rows = (sessionId === undefined
+      ? statement.all()
+      : statement.all(sessionId)) as unknown as ToolOperationRow[];
     return rows.map(toolOperationFromRow);
   }
 

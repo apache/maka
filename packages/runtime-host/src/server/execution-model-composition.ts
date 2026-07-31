@@ -35,6 +35,7 @@ import {
   type BackendFactoryContext,
   type MakaTool,
   type ProxiedFetchProxy,
+  type RuntimeCommitSink,
   type ScannedSkill,
   type SkillCatalogBudgetOptions,
   type SkillInventoryResolver,
@@ -187,6 +188,7 @@ export interface HostAiSdkBackendInput {
   readonly usage: InteractiveUsageStoresWriter;
   readonly requestDrain: () => void;
   readonly clientCapabilities: HostClientCapabilityCoordinator;
+  readonly runtimeCommitSink?: RuntimeCommitSink;
 }
 
 /** Builds one real provider backend from canonical Host state. */
@@ -368,6 +370,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         lookupPricing: pricing,
         recordLlmCall: recordLlmUsage,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
+        ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
         ...(providerRequestCapture
           ? {
               recordProviderRequestCapture: providerRequestCapture,

@@ -4,6 +4,7 @@ import {
   CLIENT_CAPABILITY_MAX_MANIFEST_BYTES,
   CLIENT_CAPABILITY_MAX_OFFERS,
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
+  decodeClientCapabilityResult,
   decodeClientFrame,
   decodeHostFrame,
   RuntimeHostProtocolError,
@@ -289,6 +290,39 @@ describe('Client Capability protocol', () => {
         ),
       (error: unknown) => error instanceof RuntimeHostProtocolError,
     );
+  });
+
+  test('rejects non-canonical media data and invalid image MIME types', () => {
+    assert.deepEqual(
+      decodeClientCapabilityResult({
+        content: [
+          { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+          { type: 'audio', data: 'YQ==', mimeType: 'audio/wav' },
+          { type: 'resource', uri: 'file:///result.bin', blob: 'AQI=' },
+        ],
+      }),
+      {
+        content: [
+          { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+          { type: 'audio', data: 'YQ==', mimeType: 'audio/wav' },
+          { type: 'resource', uri: 'file:///result.bin', blob: 'AQI=' },
+        ],
+      },
+    );
+
+    for (const content of [
+      [{ type: 'image', data: 'aGVsbG8', mimeType: 'image/png' }],
+      [{ type: 'audio', data: '!!!!', mimeType: 'audio/wav' }],
+      [{ type: 'resource', uri: 'file:///result.bin', blob: 'AQI' }],
+      [{ type: 'image', data: 'YQ==', mimeType: 'text/plain' }],
+      [{ type: 'image', data: 'YQ==', mimeType: 'image/' }],
+      [{ type: 'image', data: 'YQ==', mimeType: 'image/png; charset=binary' }],
+    ]) {
+      assert.throws(
+        () => decodeClientCapabilityResult({ content }),
+        (error: unknown) => error instanceof RuntimeHostProtocolError,
+      );
+    }
   });
 });
 
