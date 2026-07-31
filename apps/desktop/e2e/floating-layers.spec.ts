@@ -74,7 +74,8 @@ test('daily review uses the canonical time field and persists its value', async 
 
   const time = settings.getByRole('textbox', { name: '每日回顾执行时间' });
   await expect(time).toHaveValue('08:00');
-  await time.press('ArrowUp');
+  await time.fill('08:05');
+  await time.blur();
   await expect(time).toHaveValue('08:05');
 
   await settings.getByRole('button', { name: '通用', exact: true }).click();
