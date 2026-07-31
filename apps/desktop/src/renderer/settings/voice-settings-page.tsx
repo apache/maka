@@ -26,6 +26,7 @@ import { AddProviderForm } from './provider-add-form';
 import { ProviderConnectionDialog } from './provider-connection-dialog';
 import { providerPanelActionErrorMessage } from './provider-panel-shared';
 import { useActionGuard } from './use-action-guard';
+import { VoiceRecognitionConnectionForm } from './voice-recognition-connection-form';
 import { startVoiceCapture } from '../voice-audio-capture';
 
 type VoiceSmokeState =
@@ -50,15 +51,20 @@ export function VoiceModelsSettingsPage(props: {
   const [isBusy, setIsBusy] = useState(false);
   const [recognitionTest, setRecognitionTest] = useState<string>();
   const [creatingRecognitionConnection, setCreatingRecognitionConnection] = useState(false);
+  const [editingRecognitionConnection, setEditingRecognitionConnection] = useState(false);
   const [saving, setSaving] = useState(false);
   const captureSmokeGuard = useActionGuard<'smoke'>();
   const voicePageMountedRef = useMountedRef();
   const activeVoiceCaptureStreamRef = useRef<MediaStream | null>(null);
   const createRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
+  const editRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
   const toast = useToast();
   const caps = defaultVoiceCaptureCaps();
   const smokeStatusId = useId();
   const enabledConnections = props.connections.filter((connection) => connection.enabled);
+  const selectedRecognitionConnection = enabledConnections.find(
+    (connection) => connection.slug === props.settings.voice.recognition.connectionSlug,
+  );
   const connectionOptions = [
     ['', copy.notConfigured],
     ...enabledConnections.map(
@@ -123,6 +129,28 @@ export function VoiceModelsSettingsPage(props: {
         providerPanelActionErrorMessage(error, locale),
       );
     }
+  }
+
+  async function finishEditingRecognitionConnection(
+    connection: LlmConnection,
+    model: string,
+  ): Promise<void> {
+    const saved = await updateVoice({
+      recognition: {
+        connectionSlug: connection.slug,
+        model,
+      },
+    });
+    if (!saved || !voicePageMountedRef.current) {
+      throw new Error(copy.recognitionConnectionUpdateFailed);
+    }
+    await props.onRefreshConnections();
+    if (!voicePageMountedRef.current) return;
+    setEditingRecognitionConnection(false);
+    toast.success(
+      copy.recognitionConnectionUpdated,
+      copy.recognitionConnectionUpdatedDetail(connection.name, model),
+    );
   }
 
   async function runRecognitionTest(): Promise<void> {
@@ -378,6 +406,15 @@ export function VoiceModelsSettingsPage(props: {
           {copy.createRecognitionConnection}
         </Button>
         <Button
+          ref={editRecognitionConnectionButtonRef}
+          variant="secondary"
+          type="button"
+          disabled={saving || isBusy || !selectedRecognitionConnection}
+          onClick={() => setEditingRecognitionConnection(true)}
+        >
+          {copy.editRecognitionConnection}
+        </Button>
+        <Button
           type="button"
           disabled={saving || isBusy}
           onClick={() => void runRecognitionTest()}
@@ -407,6 +444,24 @@ export function VoiceModelsSettingsPage(props: {
             onCreated={async (slug) => {
               await finishCreatingRecognitionConnection(slug);
             }}
+          />
+        </ProviderConnectionDialog>
+      ) : null}
+
+      {editingRecognitionConnection && selectedRecognitionConnection ? (
+        <ProviderConnectionDialog
+          title={copy.editRecognitionConnectionTitle}
+          subtitle={copy.editRecognitionConnectionSubtitle(selectedRecognitionConnection.name)}
+          providerType={selectedRecognitionConnection.providerType}
+          onClose={() => setEditingRecognitionConnection(false)}
+          finalFocus={() => editRecognitionConnectionButtonRef.current}
+        >
+          <VoiceRecognitionConnectionForm
+            bridge={window.maka.connections}
+            connection={selectedRecognitionConnection}
+            model={props.settings.voice.recognition.model}
+            onCancel={() => setEditingRecognitionConnection(false)}
+            onSaved={finishEditingRecognitionConnection}
           />
         </ProviderConnectionDialog>
       ) : null}

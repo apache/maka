@@ -54,6 +54,23 @@ export type VoiceSettingsCopy = {
   recognitionConnectionCreatedDetail(connection: string, model: string): string;
   recognitionConnectionCreateFailed: string;
   recognitionConnectionModelMissing: string;
+  editRecognitionConnection: string;
+  editRecognitionConnectionTitle: string;
+  editRecognitionConnectionSubtitle(connection: string): string;
+  recognitionConnectionEndpoint: string;
+  recognitionConnectionEndpointHelp: string;
+  recognitionConnectionEndpointMissing: string;
+  recognitionConnectionApiKey: string;
+  recognitionConnectionApiKeyPlaceholder: string;
+  recognitionConnectionApiKeyHelp: string;
+  recognitionConnectionModel: string;
+  recognitionConnectionModelPlaceholder: string;
+  recognitionConnectionSave: string;
+  recognitionConnectionSaving: string;
+  recognitionConnectionUpdated: string;
+  recognitionConnectionUpdatedDetail(connection: string, model: string): string;
+  recognitionConnectionUpdateFailed: string;
+  cancel: string;
   saveFailed: string;
 };
 
@@ -128,7 +145,24 @@ const SETTINGS_VOICE_COPY = {
     recognitionConnectionCreated: '语音识别连接已创建',
     recognitionConnectionCreatedDetail: (connection, model) => `已选择 ${connection} · ${model}`,
     recognitionConnectionCreateFailed: '新建语音识别连接失败',
-    recognitionConnectionModelMissing: '新连接缺少默认 ASR 模型 ID。',
+    recognitionConnectionModelMissing: 'ASR 模型 ID 不能为空。',
+    editRecognitionConnection: '修改当前配置',
+    editRecognitionConnectionTitle: '修改语音识别连接',
+    editRecognitionConnectionSubtitle: (connection) => `直接修改 ${connection} 的服务地址、API Key 和 ASR 模型；保存后继续使用该连接。`,
+    recognitionConnectionEndpoint: '服务地址',
+    recognitionConnectionEndpointHelp: '填写 API 根地址，例如 https://api.siliconflow.cn/v1；不要包含 /audio/transcriptions。',
+    recognitionConnectionEndpointMissing: '服务地址不能为空。',
+    recognitionConnectionApiKey: 'API Key',
+    recognitionConnectionApiKeyPlaceholder: '留空则保留现有 API Key',
+    recognitionConnectionApiKeyHelp: '只有填写新值时才会替换现有 API Key。',
+    recognitionConnectionModel: 'ASR 模型 ID',
+    recognitionConnectionModelPlaceholder: '例如 FunAudioLLM/SenseVoiceSmall',
+    recognitionConnectionSave: '保存配置',
+    recognitionConnectionSaving: '保存中…',
+    recognitionConnectionUpdated: '语音识别配置已更新',
+    recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
+    recognitionConnectionUpdateFailed: '修改语音识别连接失败',
+    cancel: '取消',
     saveFailed: '保存语音设置失败',
   },
   en: {
@@ -201,7 +235,24 @@ const SETTINGS_VOICE_COPY = {
     recognitionConnectionCreated: 'Speech recognition connection created',
     recognitionConnectionCreatedDetail: (connection, model) => `Selected ${connection} · ${model}`,
     recognitionConnectionCreateFailed: 'Could not create speech recognition connection',
-    recognitionConnectionModelMissing: 'The new connection is missing a default ASR model ID.',
+    recognitionConnectionModelMissing: 'The ASR model ID is required.',
+    editRecognitionConnection: 'Edit current configuration',
+    editRecognitionConnectionTitle: 'Edit speech recognition connection',
+    editRecognitionConnectionSubtitle: (connection) => `Edit the endpoint, API key, and ASR model for ${connection}. This connection remains selected after saving.`,
+    recognitionConnectionEndpoint: 'Endpoint',
+    recognitionConnectionEndpointHelp: 'Enter the API root, such as https://api.siliconflow.cn/v1. Do not include /audio/transcriptions.',
+    recognitionConnectionEndpointMissing: 'The endpoint is required.',
+    recognitionConnectionApiKey: 'API Key',
+    recognitionConnectionApiKeyPlaceholder: 'Leave blank to keep the existing API key',
+    recognitionConnectionApiKeyHelp: 'The existing API key is replaced only when a new value is entered.',
+    recognitionConnectionModel: 'ASR model ID',
+    recognitionConnectionModelPlaceholder: 'For example, FunAudioLLM/SenseVoiceSmall',
+    recognitionConnectionSave: 'Save configuration',
+    recognitionConnectionSaving: 'Saving…',
+    recognitionConnectionUpdated: 'Speech recognition configuration updated',
+    recognitionConnectionUpdatedDetail: (connection, model) => `${connection} · ${model}`,
+    recognitionConnectionUpdateFailed: 'Could not update speech recognition connection',
+    cancel: 'Cancel',
     saveFailed: 'Could not save voice settings',
   },
 } satisfies UiCatalog<VoiceSettingsCopy>;

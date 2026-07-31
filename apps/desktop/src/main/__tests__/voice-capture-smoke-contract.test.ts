@@ -66,6 +66,47 @@ describe('voice capture smoke Settings contract', () => {
     assert.match(zhCopy.createRecognitionConnectionSubtitle, /ASR 模型 ID/);
   });
 
+  it('edits the selected recognition connection in Voice without exposing its saved API key', async () => {
+    const pageSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-settings-page.tsx'),
+      'utf8',
+    );
+    const formSource = await readFile(
+      join(REPO_ROOT, 'apps/desktop/src/renderer/settings/voice-recognition-connection-form.tsx'),
+      'utf8',
+    );
+    const zhCopy = getVoiceSettingsCopy('zh');
+
+    assert.match(
+      pageSource,
+      /const selectedRecognitionConnection = enabledConnections\.find\([\s\S]*settings\.voice\.recognition\.connectionSlug/,
+      'the edit action must target the currently selected recognition connection',
+    );
+    assert.match(
+      pageSource,
+      /disabled=\{saving \|\| isBusy \|\| !selectedRecognitionConnection\}[\s\S]*copy\.editRecognitionConnection/,
+      'Voice must disable the edit action until a recognition connection is selected',
+    );
+    assert.match(pageSource, /<VoiceRecognitionConnectionForm[\s\S]*onSaved=\{finishEditingRecognitionConnection\}/);
+    assert.match(
+      formSource,
+      /bridge\.update\(props\.connection\.slug,\s*\{[\s\S]*baseUrl: normalizedBaseUrl,[\s\S]*defaultModel: normalizedModel,[\s\S]*apiKey: apiKey\.trim\(\)/,
+      'the editor must save endpoint, ASR model, and an explicitly entered replacement key',
+    );
+    assert.match(
+      formSource,
+      /apiKey\.trim\(\) \? \{ apiKey: apiKey\.trim\(\) \} : \{\}/,
+      'an empty API key field must preserve the stored secret',
+    );
+    assert.doesNotMatch(
+      formSource,
+      /resolveConnectionSecret|credentialStore|apiKey:\s*props\.connection/,
+      'the renderer editor must never read the stored API key back',
+    );
+    assert.match(zhCopy.recognitionConnectionEndpointHelp, /不要包含 \/audio\/transcriptions/);
+    assert.match(zhCopy.recognitionConnectionApiKeyHelp, /只有填写新值时才会替换/);
+  });
+
   it('keeps success and permission states as deterministic stories', async () => {
     const stories = await readFile(
       join(REPO_ROOT, 'apps/desktop/stories/settings/settings-pages.stories.tsx'),
