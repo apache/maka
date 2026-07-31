@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
-import { Collapsible } from '@astryxdesign/core';
+import { Collapsible, Item } from '@astryxdesign/core';
 import {
   Button,
   Badge,
@@ -584,40 +584,48 @@ function McpServerRow(props: {
     : props.server.transport ?? 'auto';
   return (
     <li className="maka-mcp-server-row">
-      <div className="maka-mcp-server-summary">
-        <span className="maka-mcp-status-dot" data-tone={state.exception ? state.tone : 'neutral'} aria-hidden="true" />
-        <div className="maka-mcp-server-identity">
-          <div>
-            <strong>{props.serverId}</strong>
+      <Item
+        className="maka-mcp-server-summary"
+        align="start"
+        label={(
+          <span className="maka-mcp-server-heading">
+            <span>{props.serverId}</span>
             {/* Status-color restraint (#651): a healthy / expected server stays
                 neutral — its label rides plain muted text. Only an error /
                 unavailable server raises a toned Badge. */}
-            {state.exception
-              ? <Badge variant={state.tone} label={state.label} />
-              : <span className="maka-mcp-server-state">{state.label}</span>}
+            {state.exception ? <Badge variant={state.tone} label={state.label} /> : null}
+          </span>
+        )}
+        description={(
+          <span className="maka-mcp-server-description">
+            {!state.exception ? <span>{state.label} · </span> : null}
+            <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
+          </span>
+        )}
+        endContent={(
+          <div className="maka-mcp-server-controls">
+            <Switch
+              value={props.server.enabled !== false}
+              onChange={props.onToggle}
+              isDisabled={props.busy === `toggle:${props.serverId}`}
+              label={props.copy.row.enabledAria(props.serverId)}
+              isLabelHidden
+            />
+            <div className="maka-mcp-server-actions">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={props.onTest}
+                isDisabled={props.busy === `test:${props.serverId}`}
+                icon={<RefreshCcw aria-hidden="true" />}
+                label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
+              />
+              <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
+              <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
+            </div>
           </div>
-          <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
-        </div>
-        <Switch
-          value={props.server.enabled !== false}
-          onChange={props.onToggle}
-          isDisabled={props.busy === `toggle:${props.serverId}`}
-          label={props.copy.row.enabledAria(props.serverId)}
-          isLabelHidden
-        />
-        <div className="maka-mcp-server-actions">
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={props.onTest}
-            isDisabled={props.busy === `test:${props.serverId}`}
-            icon={<RefreshCcw aria-hidden="true" />}
-            label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
-          />
-          <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
-          <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
-        </div>
-      </div>
+        )}
+      />
       {props.status?.error && <div className="maka-mcp-server-error" role="alert">{props.status.error}</div>}
       {(props.status?.tools.length || props.status?.stderrTail?.length) ? (
         <Collapsible

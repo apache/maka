@@ -34,3 +34,15 @@ test('horizontal setting controls use Astryx Item slots', () => {
   const css = read('apps/desktop/src/renderer/styles/settings/rows.css');
   assert.doesNotMatch(css, /\.settingsRow\b|\.settingsFormRow\b/);
 });
+
+test('MCP server entities use Astryx Item slots and supporting-text status', () => {
+  const source = read('apps/desktop/src/renderer/mcp-page.tsx');
+  const css = read('apps/desktop/src/renderer/styles/module-pages/mcp.css');
+
+  assert.match(source, /<Item[\s\S]*?className="maka-mcp-server-summary"/);
+  assert.match(source, /\blabel=/);
+  assert.match(source, /\bdescription=/);
+  assert.match(source, /\bendContent=/);
+  assert.doesNotMatch(source, /maka-mcp-status-dot/);
+  assert.doesNotMatch(css, /\.maka-mcp-status-dot\b/);
+});
