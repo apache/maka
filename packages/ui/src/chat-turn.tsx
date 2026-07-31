@@ -7,7 +7,10 @@ import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
-import { Button as UiButton } from '@astryxdesign/core';
+import {
+  Button as UiButton,
+  IconButton as UiIconButton,
+} from '@astryxdesign/core';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { cn, DialogContent, DialogRoot } from './ui.js';
 import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
@@ -178,10 +181,9 @@ const MessageBody = memo(function MessageBody(props: {
           <MessageCopyButton text={props.text} footerStyle />
           {props.onEditUserMessage && (
             <Tooltip content={editActionLabel}>
-              <UiButton
+              <UiIconButton
                 label={editActionLabel}
                 icon={<Pencil size={12} aria-hidden="true" />}
-                isIconOnly
                 variant="ghost"
                 size="sm"
                 className={markerVariants({ variant: 'footer-action' })}
@@ -244,10 +246,9 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     // so the user-message copy and the assistant copy read as one button.
     return (
       <Tooltip content={actionLabel}>
-        <UiButton
+        <UiIconButton
           label={baseLabel}
           icon={icon}
-          isIconOnly
           variant="ghost"
           size="sm"
           className={markerVariants({ variant: 'footer-action' })}
@@ -737,10 +738,9 @@ function TurnFooterActions(props: {
           : STATUS_FOOTER_ICON[action.id];
         return (
           <Tooltip key={action.id} content={tooltipText}>
-            <UiButton
+            <UiIconButton
               label={action.label}
               icon={icon}
-              isIconOnly
               variant="ghost"
               size="sm"
               className={markerVariants({ variant: 'footer-action' })}
