@@ -45,7 +45,7 @@ export const Basic: Story = {
   render: () => (
     <div style={{ width: 640 }}>
       <Table
-        aria-label="Providers table"
+        aria-label="提供商表格"
         density="compact"
         idKey="provider"
         columns={[
