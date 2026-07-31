@@ -13,7 +13,12 @@ import type {
   AgentGraphSupervisorObservation,
 } from '../stream-graph-dispatch.js';
 import { fingerprintAgentGraphRunnableIntent } from '../stream-graph-admission.js';
-import { reconcileAgentGraphSchedule } from '../stream-graph-schedule-reconcile.js';
+import type { AgentGraphRecord } from '../stream-graph-projection.js';
+import type { AgentGraphInputHandoff } from '../stream-graph-handoff.js';
+import {
+  reconcileAgentGraphSchedule,
+  type RenderAgentGraphScheduledWorkPromptInput,
+} from '../stream-graph-schedule-reconcile.js';
 import {
   compileAgentGraphScheduleUpdate,
   type UpdateAgentGraphToolInput,
@@ -28,6 +33,32 @@ describe('stream graph schedule reconciliation', () => {
     const stopController = new MemoryStopController(observation);
     let observedSnapshots = 0;
     let observedActivations = 0;
+    const hydrateInputHandoffs = async (
+      records: readonly AgentGraphRecord[],
+    ): Promise<AgentGraphInputHandoff[]> =>
+      records.map((record) => ({
+        schemaVersion: 1,
+        record: {
+          recordId: record.recordId,
+          operatorId: record.operatorId,
+          activationId: record.activationId,
+          facets: record.facets,
+          source: record.source,
+        },
+        conclusion: {
+          format: 'operator_handoff_markdown_v1',
+          sourceRuntimeEventId: record.source.runtimeEventId,
+          text: 'Outcome: upstream parser review completed.',
+          originalBytes: 42,
+          textTruncated: false,
+        },
+      }));
+    const renderPrompt = ({
+      work,
+      inputRecords,
+      inputHandoffs,
+    }: RenderAgentGraphScheduledWorkPromptInput): string =>
+      `${work.instruction}\nInputs: ${inputRecords.map((record) => record.recordId).join(',')}\nHandoff: ${inputHandoffs[0]?.conclusion?.text ?? 'none'}`;
     try {
       await commitSchedule(store, 'tool-add', {
         add_work: [
@@ -52,8 +83,8 @@ describe('stream graph schedule reconciliation', () => {
         newId: nextId(),
         maxNewActivations: 1,
         observeGraph: () => observation.read(),
-        renderPrompt: ({ work, inputRecords }) =>
-          `${work.instruction}\nInputs: ${inputRecords.map((record) => record.recordId).join(',')}`,
+        hydrateInputHandoffs,
+        renderPrompt,
         supervisor: {
           onObservation() {
             observedSnapshots += 1;
@@ -76,6 +107,7 @@ describe('stream graph schedule reconciliation', () => {
         ['agent_topology_required'],
       );
       assert.equal(executor.backendInvocations, 1);
+      assert.match(executor.lastPrompt ?? '', /Handoff: Outcome: upstream parser review completed/);
       assert.ok(observedSnapshots >= 2);
       assert.equal(observedActivations, 1);
 
@@ -87,8 +119,8 @@ describe('stream graph schedule reconciliation', () => {
         newId: nextId(),
         maxNewActivations: 0,
         observeGraph: () => observation.read(),
-        renderPrompt: ({ work, inputRecords }) =>
-          `${work.instruction}\nInputs: ${inputRecords.map((record) => record.recordId).join(',')}`,
+        hydrateInputHandoffs,
+        renderPrompt,
       });
 
       assert.equal(retry.status, 'waiting');
@@ -623,6 +655,7 @@ class MemoryGraphObservation {
 
 class MemoryScheduleExecutor implements AgentGraphIntentExecutor {
   backendInvocations = 0;
+  lastPrompt?: string;
   private readonly results = new Map<
     string,
     Awaited<ReturnType<AgentGraphIntentExecutor['runClaimedAgentGraphIntent']>>
@@ -658,6 +691,7 @@ class MemoryScheduleExecutor implements AgentGraphIntentExecutor {
     ) {
       throw new Error('scheduled graph execution does not match its durable claim');
     }
+    this.lastPrompt = input.prompt;
     this.backendInvocations += 1;
     this.observation.setActivation(claim.targetSessionId, claim.targetRunId, this.status);
     await input.onReady?.({

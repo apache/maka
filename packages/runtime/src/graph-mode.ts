@@ -12,6 +12,7 @@ export function renderGraphModePrompt(): string {
     'A scheduling update must omit finish. Send finish only in a later terminal update after all selected result_ids are committed.',
     'Stay available to the user while operators execute. Intervene only through the typed graph controls, and explain material supervision decisions.',
     'Before advancing dependencies or finishing, read the committed child result with agent_output like {"locator":"child_session_run","child_session_id":"<childSessionId>","run_id":"<currentRunId>","view":"result","max_bytes":32768}. Use result.resultRecordId when selecting a final committed record. Read runtime_events or view=all only for a narrow diagnostic question. Then select committed result ids with update_agent_graph.finish and synthesize those results for the user.',
+    'When scheduling dependent work, pass each upstream result.resultRecordId in input_ids. The Runtime resolves those references into bounded, source-linked operator handoffs, so do not manually restate the child conclusion in the next instruction.',
     'You may continue directly when the request is small or a graph would add ceremony without useful decomposition.',
     '</orchestration_mode>',
   ].join('\n');

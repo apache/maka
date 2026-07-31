@@ -16,10 +16,11 @@ import {
 } from '@maka/core';
 import type { MakaTool } from './tool-runtime.js';
 import type { SessionManager } from './session-manager.js';
+import { readCommittedAgentGraphProjection } from './stream-graph-projection.js';
 import {
-  readCommittedAgentGraphProjection,
-  type AgentGraphRecord,
-} from './stream-graph-projection.js';
+  hydrateAgentGraphInputHandoffs,
+  renderAgentGraphScheduledWorkPrompt,
+} from './stream-graph-handoff.js';
 import {
   buildAgentGraphReadinessSnapshot,
   type AgentGraphReadinessPolicy,
@@ -538,7 +539,20 @@ export class AgentGraphCoordinator {
       newId: this.#input.newId,
       maxNewActivations: this.#input.maxNewActivations!,
       observeGraph: (topology) => this.#observeTopology(topology),
-      renderPrompt: this.#input.renderPrompt ?? renderDefaultScheduledWorkPrompt,
+      hydrateInputHandoffs: (records) =>
+        hydrateAgentGraphInputHandoffs({
+          records,
+          runtimeEventStore: {
+            readImmutableRuntimeEvents: (sessionId, runId) => {
+              const read = this.#input.runtimeEventStore.readImmutableRuntimeEvents;
+              if (!read) {
+                throw new Error('Agent graph handoffs require immutable RuntimeEvent reads');
+              }
+              return read.call(this.#input.runtimeEventStore, sessionId, runId);
+            },
+          },
+        }),
+      renderPrompt: this.#input.renderPrompt ?? renderAgentGraphScheduledWorkPrompt,
       abortSignal,
       supervisor: {
         onObservation: (observation) => {
@@ -1064,22 +1078,6 @@ export function topologyFromProvisions(
     graphId,
     operators: [...operators.values()].sort((a, b) => a.operatorId.localeCompare(b.operatorId)),
     edges: [...edges.values()].sort((a, b) => a.edgeId.localeCompare(b.edgeId)),
-  };
-}
-
-function renderDefaultScheduledWorkPrompt(input: RenderAgentGraphScheduledWorkPromptInput): string {
-  if (input.inputRecords.length === 0) return input.work.instruction;
-  const references = input.inputRecords.map((record) => graphRecordReference(record));
-  return `${input.work.instruction}\n\nCommitted graph input references:\n${JSON.stringify(references, null, 2)}`;
-}
-
-function graphRecordReference(record: AgentGraphRecord): object {
-  return {
-    recordId: record.recordId,
-    operatorId: record.operatorId,
-    activationId: record.activationId,
-    facets: [...record.facets],
-    source: { ...record.source },
   };
 }
 

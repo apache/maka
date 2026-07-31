@@ -151,6 +151,18 @@ export type {
   RenderAgentGraphScheduledWorkPromptInput,
 } from './stream-graph-schedule-reconcile.js';
 export {
+  AGENT_GRAPH_HANDOFF_SCHEMA_VERSION,
+  DEFAULT_AGENT_GRAPH_HANDOFF_MAX_CONCLUSION_BYTES,
+  DEFAULT_AGENT_GRAPH_HANDOFF_MAX_TOTAL_CONCLUSION_BYTES,
+  hydrateAgentGraphInputHandoffs,
+  renderAgentGraphScheduledWorkPrompt,
+} from './stream-graph-handoff.js';
+export type {
+  AgentGraphHandoffRecordReference,
+  AgentGraphInputHandoff,
+  HydrateAgentGraphInputHandoffsInput,
+} from './stream-graph-handoff.js';
+export {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
 } from './agent-graph-supervisor-wake.js';
