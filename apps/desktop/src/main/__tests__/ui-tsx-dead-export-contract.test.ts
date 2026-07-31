@@ -48,20 +48,9 @@ const ALLOWED_PENDING: ReadonlyArray<{ name: string; reason: string }> = [
   // intentionally empty
 ];
 
-// Issue #1565 freezes the public barrel while replacing Base UI internals.
-// These inert names remain only for source compatibility; internal product
-// code must not consume them or revive the retired implementation.
+// AlertDialog is owned by the modal slice. Form-control compatibility exports
+// are deliberately not frozen: Slice 4 deletes them with their last consumer.
 const FROZEN_COMPATIBILITY = new Set([
-  'SelectRoot',
-  'SelectTrigger',
-  'SelectValue',
-  'SelectPortal',
-  'SelectPositioner',
-  'SelectPopup',
-  'SelectGroup',
-  'SelectGroupLabel',
-  'SelectSeparator',
-  'SelectItem',
   'AlertDialogRoot',
   'AlertDialogContent',
 ]);

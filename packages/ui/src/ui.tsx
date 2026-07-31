@@ -8,7 +8,6 @@ import {
   type DialogProps as AstryxDialogProps,
   type DialogPurpose,
 } from '@astryxdesign/core/Dialog';
-import { Selector } from '@astryxdesign/core/Selector';
 import { cva, type VariantProps } from 'class-variance-authority';
 import {
   useModalFocusLifecycle,
@@ -22,7 +21,7 @@ export type PickerTriggerAppearance = 'field' | 'quiet';
 
 // Legacy field recipe retained only for model-picker triggers until their
 // owning migration slice moves to Astryx. Form controls no longer consume it.
-export const inputClasses = [
+const inputClasses = [
   'flex min-h-9 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm text-foreground transition-[border-color,box-shadow,background-color]',
   'placeholder:text-foreground-secondary/70',
   'hover:not-focus-visible:border-foreground/20 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/16',
@@ -278,132 +277,6 @@ export { LayerProvider } from '@astryxdesign/core/Layer';
 // Re-exporting unifies on one primitive so every tab surface gets variant +
 // maka-tab + the correct data-active attribute.
 export { Tabs as TabsRoot, TabsList, TabsTab as TabsTrigger, TabsPanel } from './primitives/tabs.js';
-
-interface LegacySelectItem {
-  value: string;
-  label?: string;
-}
-
-interface LegacySelectContextValue {
-  value: string | null;
-  items: LegacySelectItem[];
-  disabled?: boolean;
-  setValue(value: string): void;
-}
-
-const LegacySelectContext =
-  React.createContext<LegacySelectContextValue | null>(null);
-
-/**
- * Frozen compound Select compatibility shell.
- *
- * Remaining compatibility call sites use PermissionModeSelect, where Astryx
- * Selector owns the full implementation. These exports remain append-only
- * API compatibility: the trigger renders that same Astryx authority and the
- * retired popup marker components contribute no second listbox or layer.
- */
-export function SelectRoot(props: {
-  children?: React.ReactNode;
-  value?: string | null;
-  defaultValue?: string | null;
-  items?: LegacySelectItem[];
-  disabled?: boolean;
-  onValueChange?(value: string | null): void;
-}) {
-  const [uncontrolledValue, setUncontrolledValue] = React.useState(
-    props.defaultValue ?? null,
-  );
-  const controlled = props.value !== undefined;
-  const value = controlled ? props.value ?? null : uncontrolledValue;
-  const context = React.useMemo<LegacySelectContextValue>(
-    () => ({
-      value,
-      items: props.items ?? [],
-      disabled: props.disabled,
-      setValue(nextValue) {
-        if (!controlled) setUncontrolledValue(nextValue);
-        props.onValueChange?.(nextValue);
-      },
-    }),
-    [controlled, props.disabled, props.items, props.onValueChange, value],
-  );
-  return (
-    <LegacySelectContext.Provider value={context}>
-      {props.children}
-    </LegacySelectContext.Provider>
-  );
-}
-
-export const SelectTrigger = forwardRef<
-  HTMLButtonElement,
-  React.ButtonHTMLAttributes<HTMLButtonElement> & {
-    appearance?: PickerTriggerAppearance;
-  }
->(function SelectTrigger(
-  { appearance: _appearance = 'field', className, children: _children, ...props },
-  _ref,
-) {
-  const context = React.useContext(LegacySelectContext);
-  if (!context) throw new Error('SelectTrigger must be used inside SelectRoot');
-  const label =
-    props['aria-label'] ??
-    context.items.find((item) => item.value === context.value)?.label ??
-    '';
-  return (
-    <Selector
-      label={String(props['aria-label'] ?? label)}
-      isLabelHidden
-      value={context.value ?? undefined}
-      placeholder={label}
-      options={context.items}
-      onChange={context.setValue}
-      isDisabled={context.disabled ?? props.disabled}
-      className={className}
-    />
-  );
-});
-
-export function SelectValue(props: {
-  children?: React.ReactNode | ((value: string) => React.ReactNode);
-}) {
-  const context = React.useContext(LegacySelectContext);
-  if (!context?.value) return null;
-  return typeof props.children === 'function'
-    ? props.children(context.value)
-    : props.children;
-}
-
-export function SelectPortal(_props: { children?: React.ReactNode }) {
-  return null;
-}
-
-export function SelectPositioner(_props: React.HTMLAttributes<HTMLDivElement>) {
-  return null;
-}
-
-export function SelectPopup(_props: React.HTMLAttributes<HTMLDivElement>) {
-  return null;
-}
-
-export function SelectGroup(_props: React.HTMLAttributes<HTMLDivElement>) {
-  return null;
-}
-
-export function SelectGroupLabel(
-  _props: React.HTMLAttributes<HTMLDivElement>,
-) {
-  return null;
-}
-
-export function SelectSeparator(_props: React.HTMLAttributes<HTMLDivElement>) {
-  return null;
-}
-
-export function SelectItem(
-  _props: React.HTMLAttributes<HTMLDivElement> & { value: string },
-) {
-  return null;
-}
 
 // =============================================================
 // Toggle + ToggleGroup
