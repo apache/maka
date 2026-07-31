@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
-import { Badge, Button, Card, SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core';
+import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
+import { Badge, Button, Card, IconButton, SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core';
 import { ArrowLeft } from '@maka/ui/icons';
 import type {
   AppSettings,
@@ -37,6 +37,21 @@ import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 
+const NARROW_SETTINGS_QUERY = '(max-width: 760px)';
+
+function subscribeToNarrowSettings(onChange: () => void) {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
+  const query = window.matchMedia(NARROW_SETTINGS_QUERY);
+  query.addEventListener('change', onChange);
+  return () => query.removeEventListener('change', onChange);
+}
+
+function getNarrowSettingsSnapshot() {
+  return typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia(NARROW_SETTINGS_QUERY).matches;
+}
+
 export function SettingsSurface(props: {
   connections: LlmConnection[];
   defaultSlug: string | null;
@@ -60,6 +75,11 @@ export function SettingsSurface(props: {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
+  const isNarrowSettings = useSyncExternalStore(
+    subscribeToNarrowSettings,
+    getNarrowSettingsSnapshot,
+    () => false,
+  );
   const [section, setSection] = useState<SettingsSection>(() => props.requestedSection ?? readLastSettingsSection());
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
@@ -230,18 +250,27 @@ export function SettingsSurface(props: {
     <main className="settingsSurface agents-layout-body" data-modal="true" aria-label={copy.contentLabel}>
       <SideNav
         className="settingsSidebar agents-sidebar"
+        collapsible={{ isCollapsed: isNarrowSettings, hasButton: false }}
         data-maka-contract="settings-sidebar"
         data-settings-nav-column
         aria-label={copy.navigationLabel}
         topContent={(
-          <Button
-            className="settingsBackButton"
-            variant="ghost"
-            width="100%"
-            label={copy.backToApp}
-            icon={<ArrowLeft size={16} aria-hidden="true" />}
-            onClick={props.onClose}
-          />
+          isNarrowSettings
+            ? <IconButton
+                variant="ghost"
+                label={copy.backToApp}
+                tooltip={copy.backToApp}
+                icon={<ArrowLeft size={16} aria-hidden="true" />}
+                onClick={props.onClose}
+              />
+            : <Button
+                className="settingsBackButton"
+                variant="ghost"
+                width="100%"
+                label={copy.backToApp}
+                icon={<ArrowLeft size={16} aria-hidden="true" />}
+                onClick={props.onClose}
+              />
         )}
       >
         {localizedNav.map(({ group, label, items }) => (

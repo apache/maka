@@ -54,9 +54,15 @@
 .settingsSurface[data-modal="true"] {
   position: relative;
   background: transparent;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 260px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
+}
+
+@media (max-width: 760px) {
+  .settingsSurface[data-modal="true"] {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
 }
 
 .settingsActionRow {

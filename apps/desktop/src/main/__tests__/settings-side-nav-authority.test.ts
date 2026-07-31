@@ -18,3 +18,12 @@ test('settings navigation delegates grouping and row interaction to Astryx SideN
   const css = read('apps/desktop/src/renderer/styles/settings/nav-sidebar.css');
   assert.doesNotMatch(css, /\.settingsNav(?:Group|GroupLabel|Item|Glyph|Badge)\b/);
 });
+
+test('settings navigation collapses through the Astryx API at the narrow window floor', () => {
+  const source = read('apps/desktop/src/renderer/settings/settings-surface.tsx');
+  const css = read('apps/desktop/src/renderer/styles/settings/form.css');
+
+  assert.match(source, /useSyncExternalStore/);
+  assert.match(source, /collapsible=\{\{[\s\S]*?isCollapsed: isNarrowSettings/);
+  assert.match(css, /@media \(max-width: 760px\)[\s\S]*?grid-template-columns: 48px minmax\(0, 1fr\)/);
+});
