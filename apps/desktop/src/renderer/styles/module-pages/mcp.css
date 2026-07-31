@@ -130,7 +130,6 @@
 
 .maka-mcp-search {
   width: min(300px, 38vw);
-  height: var(--h-control-sm);
   margin-bottom: var(--space-2);
   flex: 0 0 auto;
 }

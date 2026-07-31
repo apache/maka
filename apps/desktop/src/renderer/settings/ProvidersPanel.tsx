@@ -270,16 +270,18 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                 </PrimitiveTabsTrigger>
               ))}
             </PrimitiveTabsList>
-            <TextInput
-              ref={providerCatalogSearchRef}
-              className="providerCatalogSearch"
-              value={catalogQuery}
-              onChange={setCatalogQuery}
-              placeholder={copy.searchPlaceholder}
-              label={copy.searchAria}
-              isLabelHidden
-              startIcon={<Search aria-hidden="true" />}
+            <div className="providerCatalogSearch">
+              <TextInput
+                ref={providerCatalogSearchRef}
+                value={catalogQuery}
+                onChange={setCatalogQuery}
+                placeholder={copy.searchPlaceholder}
+                label={copy.searchAria}
+                isLabelHidden
+                startIcon={<Search aria-hidden="true" />}
+                width="100%"
               />
+            </div>
             <PrimitiveTabsPanel value={catalogCategory}>
               {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (
                 <ModelOAuthSection

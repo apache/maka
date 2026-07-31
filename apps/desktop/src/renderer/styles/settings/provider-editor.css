@@ -356,7 +356,6 @@
 
 .providerCatalogSearch {
   width: min(100%, 360px);
-  min-height: var(--h-control-lg);
   margin-top: var(--space-3);
 }
 

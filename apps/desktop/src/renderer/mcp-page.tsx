@@ -327,7 +327,17 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               <TabsTrigger className="maka-mcp-tab" value="market">{copy.page.market} <span>{catalog.length}</span></TabsTrigger>
               <TabsTrigger className="maka-mcp-tab" value="installed">{copy.page.installed} <span>{entries.length}</span></TabsTrigger>
             </TabsList>
-            <TextInput className="maka-mcp-search" value={query} onChange={setQuery} placeholder={copy.page.searchPlaceholder} label={copy.page.searchAria} isLabelHidden startIcon={<Search aria-hidden="true" />} />
+            <div className="maka-mcp-search">
+              <TextInput
+                value={query}
+                onChange={setQuery}
+                placeholder={copy.page.searchPlaceholder}
+                label={copy.page.searchAria}
+                isLabelHidden
+                startIcon={<Search aria-hidden="true" />}
+                width="100%"
+              />
+            </div>
           </div>
 
           <TabsPanel className="maka-mcp-tab-panel" value="market">
