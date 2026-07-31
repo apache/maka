@@ -138,6 +138,7 @@ export function UserQuestionPrompt(props: {
           />
           <Button
             variant="primary"
+            className="maka-question-submit"
             isDisabled={!canContinue}
             onClick={() => (isLast ? void submit() : setQuestionIndex((current) => current + 1))}
             label={responsePending ? copy.submitting : isLast ? copy.submit : copy.next}

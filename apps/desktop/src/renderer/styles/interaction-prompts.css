@@ -109,7 +109,7 @@
   grid-template-columns: auto auto minmax(0, 1fr) auto;
 }
 
-.maka-question-actions > .astryx-button:last-child {
+.maka-question-submit {
   grid-column: 4;
 }
 
@@ -154,11 +154,11 @@
     flex-direction: initial;
   }
 
-  .maka-question-actions > .astryx-button {
+  .maka-question-actions > button {
     width: 100%;
   }
 
-  .maka-question-actions > .astryx-button:last-child {
+  .maka-question-submit {
     grid-column: auto;
   }
 }

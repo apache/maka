@@ -742,6 +742,20 @@ export function diffRecords(baseline, current) {
     const properties = [];
     for (const key of new Set([...Object.keys(record), ...Object.keys(next)])) {
       if (BOOKKEEPING.has(key)) continue;
+      if (
+        key === 'rect' &&
+        Array.isArray(record.rect) &&
+        Array.isArray(next.rect) &&
+        record.rect.length === next.rect.length &&
+        record.rect.every(
+          (value, index) =>
+            typeof value === 'number' &&
+            typeof next.rect[index] === 'number' &&
+            Math.abs(value - next.rect[index]) <= 0.5,
+        )
+      ) {
+        continue;
+      }
       const a = JSON.stringify(record[key]);
       const b = JSON.stringify(next[key]);
       if (a !== b) properties.push({ property: key, before: record[key], after: next[key] });

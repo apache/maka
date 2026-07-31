@@ -212,8 +212,6 @@ export {
   type RadioListProps,
   RadioListItem,
   type RadioListItemProps,
-  SelectableCard,
-  type SelectableCardProps,
   Selector,
   SelectorOption,
   type SelectorProps,

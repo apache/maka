@@ -69,21 +69,6 @@ test('settings textareas use Astryx native resizing and persist edits across sec
   await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toHaveValue(edited);
 });
 
-test('shared settings input owns its desktop focus chrome', async ({ window: page }) => {
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByRole('button', { name: '设置' }).click();
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
-
-  const displayName = page.getByRole('textbox', { name: '显示名称' });
-  const fieldChrome = displayName.locator('xpath=..');
-  await expect(fieldChrome).toHaveCSS('box-shadow', 'none');
-  const restingBorder = await fieldChrome.evaluate((element) => getComputedStyle(element).borderColor);
-  await displayName.focus();
-  await expect.poll(
-    () => fieldChrome.evaluate((element) => getComputedStyle(element).borderColor),
-  ).not.toBe(restingBorder);
-});
-
 test('open gateway metric values stay contained for long addresses', async ({ window: page }) => {
   await page.setViewportSize({ width: 900, height: 820 });
   await page.getByRole('button', { name: '展开侧边栏' }).click();

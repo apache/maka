@@ -67,6 +67,7 @@ test("the public form surface does not preserve Maka compatibility adapters", ()
     "MultiSelector",
     "TimeInput",
     "DateTimeInput",
+    "SelectableCard",
   ]) {
     assert.equal(retired in MakaUi, false, `${retired} must not remain public`);
   }

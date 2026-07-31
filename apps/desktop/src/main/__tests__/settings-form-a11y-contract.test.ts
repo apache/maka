@@ -133,28 +133,17 @@ describe('Settings form accessibility labels', () => {
     for (const name of ['Button', 'PrimitiveTabs', 'PrimitiveTabsList', 'PrimitiveTabsTrigger', 'TextInput', 'RelativeTime', 'TextArea', 'useToast']) {
       assert.ok(providersPanelUiImports.includes(name), `Providers provider files should import ${name} from @maka/ui`);
     }
-    // ThemeSettingsPage uses Astryx SelectableCard for its preview-rich
-    // single-selection grids. Strip that block before checking the remaining
-    // settings form controls because SelectableCard owns its internal checkbox.
-    const themeBlockRange = (() => {
-      const start = settings.indexOf('function ThemeSettingsPage(');
-      const end = settings.indexOf('function WebSearchSettingsPage(', start);
-      return { start, end };
-    })();
-    assert.ok(themeBlockRange.start >= 0 && themeBlockRange.end > themeBlockRange.start, 'ThemeSettingsPage block must exist for the radio-card exception window');
-    const settingsExceptTheme =
-      settings.slice(0, themeBlockRange.start) + settings.slice(themeBlockRange.end);
     // Item's Base UI `render` target is the semantic element the primitive
     // enhances, not a separate hand-rolled control. Keep the same exception
     // already used for ProvidersPanel below so Settings pages can adopt Item
     // without layering Button chrome onto full-row navigation targets.
-    const settingsPrimitiveButtons = settingsExceptTheme.replace(
+    const settingsPrimitiveButtons = settings.replace(
       /render=\{\s*\(\s*<button[\s\S]*?\/>\s*\)\s*\}/g,
       'render={<primitiveTarget/>}',
     );
 
     for (const [path, source] of [
-      ['SettingsModal.tsx (outside ThemeSettingsPage)', settingsPrimitiveButtons],
+      ['SettingsModal.tsx', settingsPrimitiveButtons],
       ['password-input.tsx', passwordInput],
     ] as const) {
       assert.doesNotMatch(source, /<input\b/, `${path} must use the shared TextInput primitive for Settings text fields`);

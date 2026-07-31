@@ -116,8 +116,7 @@ export type E2eFixtureScenario =
   | 'sidebar-search-modal-open'
   // PR-shared primitive-COMMAND-INPUT-0: reuse the long sidebar seed and
   // auto-open the command palette so the
-  // shared primitive InputGroup command input shell is exercised without requiring a key
-  // chord.
+  // Astryx CommandPalette is exercised without requiring a key chord.
   | 'command-palette-open'
   // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
   // kenji `b3d156e9`): seed the same 60-session sidebar and

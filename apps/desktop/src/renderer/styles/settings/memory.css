@@ -425,11 +425,6 @@
   line-height: var(--leading-snug);
 }
 
-.settingsMemoryEditor {
-  display: grid;
-  gap: var(--space-2);
-}
-
 /* Memory page meta row — relocated from connection.css — issue #546 PR1. */
 /* Memory page meta row: the absolute MEMORY.md path used to render
      full-width mono text that shoved the sibling status words into a

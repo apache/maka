@@ -127,10 +127,10 @@ export function HealthCenterPage() {
       {(blocksSendCount > 0 || blocksCapabilityCount > 0) && (
         <div className="settingsHealthBlockers" role="status">
           {blocksSendCount > 0 && (
-            <Badge variant="error" label={copy.blockers.send(blocksSendCount)} />
+            <Badge className="settingsHealthBlockerBadge" variant="error" label={copy.blockers.send(blocksSendCount)} />
           )}
           {blocksCapabilityCount > 0 && (
-            <Badge variant="warning" label={copy.blockers.capability(blocksCapabilityCount)} />
+            <Badge className="settingsHealthBlockerBadge" variant="warning" label={copy.blockers.capability(blocksCapabilityCount)} />
           )}
         </div>
       )}

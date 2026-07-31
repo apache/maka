@@ -369,18 +369,16 @@ export function MemorySettingsPage(props: {
         </div>
       )}
 
-      <div className="settingsMemoryEditor">
-        <TextArea
-          ref={editorRef}
-          value={draft}
-          onChange={(value) => setDraft(value)}
-          isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
-          rows={12}
-          hasSpellCheck={false}
-          label={copy.text.fileContent}
-          width="100%"
-        />
-      </div>
+      <TextArea
+        ref={editorRef}
+        value={draft}
+        onChange={(value) => setDraft(value)}
+        isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
+        rows={12}
+        hasSpellCheck={false}
+        label={copy.text.fileContent}
+        width="100%"
+      />
 
       {effective.reason && (
         <Alert variant="passive" role="status">

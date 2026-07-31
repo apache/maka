@@ -170,7 +170,7 @@ export function PersonalizationSettingsPage(props: {
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
       <SettingsRows>
-        <div className="settingsFormRow">
+        <div className="settingsFormRow settingsPersonalizationDisplayName">
           <div>
             <strong>{copy.displayName}</strong>
             <small>{copy.displayNameHelp}</small>
@@ -183,6 +183,7 @@ export function PersonalizationSettingsPage(props: {
             placeholder={copy.displayNamePlaceholder}
             label={copy.displayName}
             isLabelHidden
+            width="100%"
           />
         </div>
 
@@ -219,7 +220,7 @@ export function PersonalizationSettingsPage(props: {
             }}
             onBlur={() => flushTone(assistantTone)}
             placeholder={copy.assistantTonePlaceholder}
-            rows={4}
+            rows={3}
             maxLength={500}
             hasSpellCheck={false}
             label={copy.assistantTone}

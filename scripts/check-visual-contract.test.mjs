@@ -36,6 +36,23 @@ describe('diffRecords', () => {
     assert.deepEqual(changes[0].properties, [{ property: 'color', before: 'red', after: 'blue' }]);
   });
 
+  it('ignores half-pixel rect jitter but reports larger layout changes', () => {
+    assert.deepEqual(
+      diffRecords(
+        [record('body>div', { rect: [0, 0, 10, 10] })],
+        [record('body>div', { rect: [0.5, 0, 10, 10.5] })],
+      ),
+      [],
+    );
+    assert.equal(
+      diffRecords(
+        [record('body>div', { rect: [0, 0, 10, 10] })],
+        [record('body>div', { rect: [1, 0, 10, 10] })],
+      )[0]?.properties[0]?.property,
+      'rect',
+    );
+  });
+
   it('reports a property that appeared as a diff from absent', () => {
     // The omission scheme reads "absent means the initial or inherited value",
     // so a migration that starts setting one has to show up.

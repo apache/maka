@@ -155,16 +155,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     <div className="providerEditor providerConnectionManager">
       {supportsApiKey && (
         <div className="providerCredentialTask">
-          <div className="grid gap-1.5">
-            <PasswordInput
-              value={apiKey}
-              onChange={setApiKey}
-              placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-              label={copy.modelKeyAria(display.name)}
-              description={apiKeyStatusHint}
-              isDisabled={detailActionBusy}
-            />
-          </div>
+          <PasswordInput
+            value={apiKey}
+            onChange={setApiKey}
+            placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
+            label={copy.modelKeyAria(display.name)}
+            description={apiKeyStatusHint}
+            isDisabled={detailActionBusy}
+          />
           <div className="providerCredentialActions">
             {defaults.signupUrl && (
               <a
@@ -315,17 +313,15 @@ function ConnectionEndpointField(props: {
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   return (
-    <div className="grid gap-1.5">
-      <TextInput
-        label={copy.endpoint}
-        description={props.fixedOAuth ? copy.oauthFixed : undefined}
-        value={props.baseUrl}
-        onChange={(value) => props.onChange(value)}
-        placeholder={props.defaultsBaseUrl}
-        isDisabled={props.disabled || props.fixedOAuth}
-        disabledMessage={props.fixedOAuth ? copy.oauthFixed : undefined}
-      />
-    </div>
+    <TextInput
+      label={copy.endpoint}
+      description={props.fixedOAuth ? copy.oauthFixed : undefined}
+      value={props.baseUrl}
+      onChange={(value) => props.onChange(value)}
+      placeholder={props.defaultsBaseUrl}
+      isDisabled={props.disabled || props.fixedOAuth}
+      disabledMessage={props.fixedOAuth ? copy.oauthFixed : undefined}
+    />
   );
 }
 
