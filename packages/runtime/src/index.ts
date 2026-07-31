@@ -35,6 +35,7 @@ export type {
   AgentListItem,
   AgentListResult,
   SubagentExecutionListItem,
+  AgentOutputCommittedResult,
   AgentOutputInput,
   AgentOutputResult,
   StopSessionInput,
@@ -131,8 +132,16 @@ export type {
   ReconcileAgentGraphScheduleInput,
   RenderAgentGraphScheduledWorkPromptInput,
 } from './stream-graph-schedule-reconcile.js';
-export { AgentGraphSupervisorWakeCoordinator } from './agent-graph-supervisor-wake.js';
-export type { AgentGraphSupervisorWakeInput } from './agent-graph-supervisor-wake.js';
+export {
+  AgentGraphSupervisorContextOverflowError,
+  AgentGraphSupervisorWakeCoordinator,
+} from './agent-graph-supervisor-wake.js';
+export type {
+  AgentGraphSupervisorContextRecoveryDiagnostic,
+  AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorWakeDiagnostic,
+  AgentGraphSupervisorWakeInput,
+} from './agent-graph-supervisor-wake.js';
 export {
   AGENT_GRAPH_SUPERVISOR_TOOL_NAMES,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
@@ -218,8 +227,6 @@ export type {
   BuildAgentGraphReadinessSnapshotInput,
 } from './stream-graph-readiness.js';
 
-export { PermissionEngine, createDefaultPermissionEngineDeps } from './permission-engine.js';
-export type { EvaluateResult, EvaluateInput, PermissionEngineDeps } from './permission-engine.js';
 export { renderSwarmModePrompt } from './swarm-mode.js';
 export { renderGraphModePrompt } from './graph-mode.js';
 export {
@@ -253,72 +260,12 @@ export type {
   RuntimeInteractionRunFacet,
   RuntimeInteractionRunIdentity,
   RuntimeInteractionRunOwner,
-  RuntimePermissionAnswer,
-  RuntimePermissionContinuation,
-  RuntimePermissionOutcome,
   RuntimeUserQuestionAnswer,
   RuntimeUserQuestionClosureReason,
   RuntimeUserQuestionContinuation,
   RuntimeUserQuestionOutcome,
 } from './interaction-authority.js';
 
-export {
-  MAX_ADDITIONAL_PERMISSION_JUSTIFICATION_CHARS,
-  DEFAULT_ADDITIONAL_PERMISSION_GRANT_TTL_MS,
-  AdditionalPermissionError,
-  assertAdditionalPermissionProposal,
-  buildAdditionalPermissionProposal,
-  freezeAdditionalPermissionProposal,
-  freezeAdditionalPermissionGrant,
-  normalizeAdditionalPermissionPath,
-  normalizeAdditionalPermissionProfile,
-  planDeclaredBashAdditionalPermission,
-  planFileToolAdditionalPermission,
-  revalidateAdditionalPermissionGrant,
-  revalidateAdditionalPermissionProposal,
-} from './additional-permissions.js';
-export type {
-  AdditionalPermissionErrorReason,
-  AdditionalPermissionGrant,
-  AdditionalPermissionPlanResult,
-  AdditionalPermissionPlannerContext,
-  AdditionalPermissionPlanningContext,
-  AdditionalPermissionProposal,
-  NormalizedAdditionalPermissionPath,
-  ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-export { hashAdditionalPermissionProfile } from './additional-permission-hash.js';
-export {
-  DEFAULT_SANDBOX_ESCALATION_GRANT_TTL_MS,
-  MAX_SANDBOX_ESCALATION_JUSTIFICATION_CHARS,
-  SandboxEscalationError,
-  assertSandboxEscalationGrantForExecution,
-  assertSandboxEscalationProposal,
-  freezeSandboxEscalationGrant,
-  freezeSandboxEscalationProposal,
-  planDeclaredBashSandboxEscalation,
-  sandboxEscalationCommandHash,
-} from './sandbox-escalation.js';
-export type {
-  SandboxEscalationErrorReason,
-  SandboxEscalationGrant,
-  SandboxEscalationPlanResult,
-  SandboxEscalationPlannerContext,
-  SandboxEscalationProposal,
-} from './sandbox-escalation.js';
-export {
-  AiSdkAutoApprovalReviewer,
-  ApprovalCoordinator,
-  DEFAULT_AUTO_APPROVAL_REVIEW_TIMEOUT_MS,
-  MAX_AUTO_APPROVAL_RATIONALE_CHARS,
-} from './approval-reviewer.js';
-export type {
-  AiSdkAutoApprovalReviewerInput,
-  ApprovalCoordinatorObserver,
-  AutoApprovalReviewContext,
-  AutoApprovalReviewDecision,
-  AutoApprovalReviewer,
-} from './approval-reviewer.js';
 export {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
@@ -340,6 +287,13 @@ export { AiSdkBackend } from './ai-sdk-backend.js';
 export { isSupportedImagePath, validateImageBytes } from './image-file.js';
 export { findFirstChangedCacheableSegment } from './request-shape.js';
 export { createProviderRequestCaptureRecorder } from './provider-request-telemetry.js';
+export { readLatestContextDiagnostics } from './context-diagnostics.js';
+export type {
+  ContextDiagnostics,
+  ContextDiagnosticsCompaction,
+  ContextDiagnosticsSegment,
+  ContextDiagnosticsUnavailableReason,
+} from './context-diagnostics.js';
 export type {
   PreparedProviderRequestCapture,
   PreparedRequestSegment,
@@ -356,6 +310,7 @@ export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
 export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
+export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
 export type { PlanToolResult } from './plan-tools.js';
 export {
@@ -470,8 +425,8 @@ export {
   createOpenAIResponsesTransport,
 } from './openai-responses-transport.js';
 export type { OpenAIResponsesTransportOptions } from './openai-responses-transport.js';
+export type { ComputerUseToolSet } from './computer-use-tools.js';
 export type {
-  ComputerUseToolSet,
   CuAppSummary,
   CuDispatchBackend,
   CuDispatchEvidence,
@@ -485,7 +440,7 @@ export type {
   CuRunResult,
   CuScreenshot,
   CuSemanticAction,
-} from './computer-use-tools.js';
+} from './computer-use-types.js';
 export {
   bindCuaAction,
   bindCuaActionToObservation,
@@ -518,14 +473,11 @@ export {
   buildStopBackgroundTaskTool,
   buildWriteStdinTool,
   shapeTerminalResult,
-  bashSandboxPermissionsSchema,
 } from './shell-tools.js';
 export type {
-  BashSandboxPermissionsDeclaration,
   BuildForegroundBashToolOptions,
   ForegroundBashExecuteInput,
   ForegroundBashResult,
-  ManagedBashPermissionArgs,
   ShellRunLauncher,
 } from './shell-tools.js';
 export {
@@ -1080,14 +1032,37 @@ export type {
   SemanticCompactSummarizer,
   SemanticCompactSummaryRequest,
 } from './semantic-compact.js';
-export { testConnection } from './test-connection.js';
+export { runConnectionTestEffect, testConnection } from './test-connection.js';
 export {
   fetchGitHubCopilotModels,
   fetchOpenAiCodexModels,
   fetchProviderModels,
   OpenAiCodexDiscoveryError,
   ProviderModelDiscoveryHttpError,
+  runConnectionModelDiscoveryEffect,
 } from './model-fetcher.js';
+export type {
+  ConnectionEffectFetch,
+  ConnectionEffectFetchDependency,
+  ConnectionEffectFetchOptions,
+} from './connection-effect-fetch.js';
+export type {
+  ConnectionEffectConnection,
+  ConnectionEffectError,
+  ConnectionEffectErrorKind,
+  ConnectionModelDiscoveryEffectOutcome,
+  ConnectionTestEffectOutcome,
+} from './connection-effect-outcome.js';
+export {
+  createConnectionEffectFetchTransport,
+  createProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
+export type {
+  ConnectionEffectFetchTransport,
+  ConnectionEffectProxySnapshot,
+  ProxiedFetchProxy,
+  ProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
 
 export { materializeSession, applyAppendedMessage, setToolStatus } from './materializer.js';
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
@@ -1121,7 +1096,6 @@ export {
   normalizeWechatBridgeUrl,
   normalizeWechatIlinkBaseUrl,
   proxiedFetch,
-  startWhatsAppQrLogin,
   testBotChannel,
   testWechatBridge,
   testWechatIlinkCredentials,
@@ -1134,8 +1108,6 @@ export type {
   BotPlatform,
   BotStatus,
   BotTestResult,
-  WhatsAppQrLogin,
-  WhatsAppQrLoginPollResult,
   WechatBridgeQrCodeResult,
   SendCapable,
 } from './bots/index.js';
@@ -1218,7 +1190,7 @@ export type {
   RuntimeReadModelProjectionCache,
   RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
-export { RuntimeKernel } from './runtime-kernel.js';
+export { RuntimeKernel, RuntimeOwnerCleanupError } from './runtime-kernel.js';
 export type {
   RuntimeExecutionClaim,
   RuntimeKernelDeps,
@@ -1375,6 +1347,13 @@ export {
   assertProductBindingCatalogClean,
   buildDeferredToolGroupsFromCatalog,
   buildHostCapabilitiesFromBinding,
+  projectEffectiveProductToolSurface,
+} from './tool-catalog-derive.js';
+export type {
+  EffectiveProductToolSurface,
+  NormalizedProductToolSurfacePolicy,
+  ProductToolSurfaceIdentity,
+  ProductToolSurfacePolicy,
 } from './tool-catalog-derive.js';
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1493,9 +1472,34 @@ export {
   parseSkillFrontMatter,
   validateSkillMetadata,
   // skills-state
+  clearResolvedSkillPreferenceReviews,
+  encodeSkillRuntimePreferences,
+  getSkillRuntimePreference,
+  isSkillPreferenceReviewPending,
+  migrateSkillRuntimePreferences,
+  patchSkillRuntimePreference,
   readSkillRuntimeState,
+  resolveSkillPreferenceTarget,
   writeSkillRuntimeState,
   writeSkillRuntimePreferences,
+  // managed skill sources
+  listManagedSkillSources,
+  MANAGED_SKILL_CATEGORIES,
+  normalizeManagedSkillCategory,
+  readManagedSkillSources,
+  readManagedSkillSource,
+  resolveManagedSkillSourcesRoot,
+  toManagedSkillSourceEntry,
+  // skill governance
+  createBundledSkillLock,
+  createManagedSkillLock,
+  getBundledSkillSource,
+  invalidSkillLockStatus,
+  isCurrentBundledSkillLock,
+  MANAGED_SKILL_BASELINE_RELATIVE_PATH,
+  missingSkillLockStatus,
+  validateSkillLock,
+  BUNDLED_SKILL_CATALOG,
   // skills-discovery
   resolveSkillDiscoveryPaths,
   scanSkills,
@@ -1509,6 +1513,7 @@ export {
   SKILLS_PROMPT_CONTEXT_RATIO,
   resolveSkillsPromptCharBudget,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   selectSkillsForContext,
   selectSkillScanForContext,
@@ -1517,10 +1522,14 @@ export {
   gateSkillsByHostCapabilities,
   // skills-agent-tools
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   SkillShadowSelectionTracker,
   SKILL_TOOL_NAME,
   SKILL_SEARCH_TOOL_NAME,
+  // skills-starter
+  buildStarterSkillTemplate,
 } from './skills.js';
 export {
   // path-containment (contained I/O moved in #1408)
@@ -1555,9 +1564,27 @@ export { isPathInside, isSafeSkillId, toRelative } from './path-containment.js';
 export type { PathInsideApi } from './path-containment.js';
 export type {
   // skills-state
+  ResolveSkillPreferenceTargetResult,
+  SkillPreferenceMigration,
+  SkillPreferenceTarget,
   SkillRuntimeStatus,
   SkillRuntimePreference,
   SkillRuntimeStateReadResult,
+  // managed skill sources
+  ManagedSkillCategory,
+  ManagedSkillSourceEntry,
+  ManagedSkillSourceRecord,
+  ReadManagedSkillSourcesResult,
+  ReadManagedSkillSourceResult,
+  // skill governance
+  BundledSkillSource,
+  ManagedSkillUpdateStatus,
+  ManagedSourceSnapshot,
+  SkillGovernanceStatus,
+  SkillLockFile,
+  SkillLockValidationCode,
+  SkillSourceType,
+  SkillValidationStatus,
   // skills-discovery
   SkillScope,
   SkillDiscoverySource,
@@ -1592,5 +1619,6 @@ export type {
   LoadedSkillInstructions,
   LoadSkillInstructionsResult,
   // skills-agent-tools
+  SkillInventoryResolver,
   SkillToolOptions,
 } from './skills.js';

@@ -10,8 +10,11 @@ import {
   MIN_SKILLS_PROMPT_TOKENS,
   MAX_SKILL_TOOL_BODY_CHARS,
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   gateSkillsByHostCapabilities,
   loadSkillInstructions,
@@ -31,6 +34,7 @@ import {
   type HostCapabilities,
   type ScannedSkill,
 } from '../skills.js';
+import { resolveSkillInvocations } from '../skill-invocation.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 describe('runtime skills', () => {
@@ -358,7 +362,7 @@ Do not ask permission for shell commands.`,
       assert.ok(prompt);
       assert.match(prompt, /Available local skills/);
       assert.match(prompt, /call the Skill tool/);
-      assert.match(prompt, /PermissionEngine remains the authority/);
+      assert.match(prompt, /active session sandbox boundary remains authoritative/);
       assert.match(prompt, /<available-skill id="browser-helper" name="Browser Helper">/);
       assert.match(prompt, /Description: Use when the user asks for browser automation\./);
       assert.match(prompt, /Declared tools: Bash, Read/);
@@ -651,7 +655,6 @@ Make every slide carry one idea.`,
 
       const tool = buildSkillAgentTool(workspaceRoot);
       assert.equal(tool.name, 'Skill');
-      assert.equal(tool.permissionRequired, false);
       const result = await tool.impl(
         { name: 'Deck Helper' },
         {
@@ -757,19 +760,19 @@ ${'A'.repeat(MAX_SKILL_TOOL_BODY_CHARS + 1000)}`,
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Office document work.
+name: Gated Helper
+description: Host-specific work.
 allowed-tools: [Read]
-required-tools: [OfficeDocument]
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Use Office tools.`,
+# Gated Helper
+Use host tools.`,
       );
 
       const tool = buildSkillAgentTool(workspaceRoot, { toolNames: new Set(['Read']) });
-      const result = await tool.impl({ name: 'office-helper' }, {} as unknown as MakaToolContext);
+      const result = await tool.impl({ name: 'gated-helper' }, {} as unknown as MakaToolContext);
       assert.equal(result.ok, false);
       if (result.ok) return;
       assert.equal(result.reason, 'host_incompatible');
@@ -777,7 +780,7 @@ Use Office tools.`,
       // without host: legacy behavior, loads ok.
       const legacyTool = buildSkillAgentTool(workspaceRoot);
       const legacy = await legacyTool.impl(
-        { name: 'office-helper' },
+        { name: 'gated-helper' },
         {} as unknown as MakaToolContext,
       );
       assert.equal(legacy.ok, true);
@@ -788,19 +791,19 @@ Use Office tools.`,
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Office document work.
+name: Gated Helper
+description: Host-specific work.
 allowed-tools: [Read]
-required-tools: [OfficeDocument]
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Use Office tools.`,
+# Gated Helper
+Use host tools.`,
       );
 
-      // host without OfficeDocument: load returns host_incompatible, no available skills.
-      const hidden = await loadSkillInstructions(workspaceRoot, 'office-helper', {
+      // Host without the required tool: load returns host_incompatible, no available skills.
+      const hidden = await loadSkillInstructions(workspaceRoot, 'gated-helper', {
         toolNames: new Set(['Read']),
       });
       assert.equal(hidden.ok, false);
@@ -808,14 +811,14 @@ Use Office tools.`,
       assert.equal(hidden.reason, 'host_incompatible');
       assert.deepEqual(hidden.availableSkills, []);
 
-      // host with OfficeDocument: load ok.
-      const ok = await loadSkillInstructions(workspaceRoot, 'office-helper', {
-        toolNames: new Set(['Read', 'OfficeDocument']),
+      // Host with the required tool: load succeeds.
+      const ok = await loadSkillInstructions(workspaceRoot, 'gated-helper', {
+        toolNames: new Set(['Read', 'ImaginaryTool']),
       });
       assert.equal(ok.ok, true);
 
       // no host: legacy behavior, load ok.
-      const legacy = await loadSkillInstructions(workspaceRoot, 'office-helper');
+      const legacy = await loadSkillInstructions(workspaceRoot, 'gated-helper');
       assert.equal(legacy.ok, true);
     });
   });
@@ -824,32 +827,32 @@ Use Office tools.`,
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Office document work.
-required-tools: [OfficeDocument]
+name: Gated Helper
+description: Host-specific work.
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Use Office tools.`,
+# Gated Helper
+Use host tools.`,
       );
       const hosts = new Map([
         ['text-session', { toolNames: new Set<string>(['Read']) }],
-        ['office-session', { toolNames: new Set<string>(['Read', 'OfficeDocument']) }],
+        ['full-session', { toolNames: new Set<string>(['Read', 'ImaginaryTool']) }],
       ]);
       const tool = buildSkillAgentTool(
         workspaceRoot,
         ({ sessionId }) => hosts.get(sessionId) ?? { toolNames: new Set<string>() },
       );
 
-      const hidden = await tool.impl({ name: 'office-helper' }, {
+      const hidden = await tool.impl({ name: 'gated-helper' }, {
         sessionId: 'text-session',
       } as unknown as MakaToolContext);
       assert.equal(hidden.ok, false);
       if (!hidden.ok) assert.equal(hidden.reason, 'host_incompatible');
 
-      const loaded = await tool.impl({ name: 'office-helper' }, {
-        sessionId: 'office-session',
+      const loaded = await tool.impl({ name: 'gated-helper' }, {
+        sessionId: 'full-session',
       } as unknown as MakaToolContext);
       assert.equal(loaded.ok, true);
     });
@@ -859,15 +862,15 @@ Use Office tools.`,
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Office document work.
+name: Gated Helper
+description: Host-specific work.
 allowed-tools: [Read]
-required-tools: [OfficeDocument]
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Use Office tools.`,
+# Gated Helper
+Use host tools.`,
       );
       await writeSkill(
         workspaceRoot,
@@ -881,71 +884,40 @@ allowed-tools: [Read]
 Plain work.`,
       );
 
-      // host without OfficeDocument: office-helper hard-hidden, plain-helper shown.
+      // Host without the required tool: gated-helper is hidden, plain-helper is shown.
       const prompt = await buildSkillsPromptFragment(workspaceRoot, {
         toolNames: new Set(['Read']),
       });
       assert.ok(prompt);
       assert.match(prompt, /<available-skill id="plain-helper"/);
-      assert.doesNotMatch(prompt, /<available-skill id="office-helper"/);
+      assert.doesNotMatch(prompt, /<available-skill id="gated-helper"/);
 
-      // host with OfficeDocument: both shown.
+      // Host with the required tool: both are shown.
       const full = await buildSkillsPromptFragment(workspaceRoot, {
-        toolNames: new Set(['Read', 'OfficeDocument']),
+        toolNames: new Set(['Read', 'ImaginaryTool']),
       });
       assert.ok(full);
       assert.match(full, /<available-skill id="plain-helper"/);
-      assert.match(full, /<available-skill id="office-helper"/);
+      assert.match(full, /<available-skill id="gated-helper"/);
 
       // no host (undefined): legacy behavior, both shown (no gating).
       const legacy = await buildSkillsPromptFragment(workspaceRoot);
       assert.ok(legacy);
       assert.match(legacy, /<available-skill id="plain-helper"/);
-      assert.match(legacy, /<available-skill id="office-helper"/);
-    });
-  });
-
-  it('gate hard-hides legacy v2 Office skills (no required-tools front matter) on a host without Office tools', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      // v2 OfficeCLI template: allowed-tools includes OfficeDocument, but no required-tools.
-      await writeSkill(
-        workspaceRoot,
-        'officecli-docx',
-        `---
-name: OfficeCLI DOCX
-description: Legacy v2 Office skill without required-tools.
-allowed-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
-  - Read
----
-# OfficeCLI DOCX
-Legacy v2 body.`,
-      );
-      const host: HostCapabilities = { toolNames: new Set(['Read', 'Bash']) };
-
-      // Prompt hard-hides the legacy Office skill (fallback requiredTools for bundled officecli-*).
-      const prompt = await buildSkillsPromptFragment(workspaceRoot, host);
-      assert.ok(!prompt || !prompt.includes('id="officecli-docx"'));
-
-      // Loader rejects it as host_incompatible.
-      const loaded = await loadSkillInstructions(workspaceRoot, 'officecli-docx', host);
-      assert.equal(loaded.ok, false);
-      if (loaded.ok) return;
-      assert.equal(loaded.reason, 'host_incompatible');
+      assert.match(legacy, /<available-skill id="gated-helper"/);
     });
   });
 
   it('gateSkillsByHostCapabilities hard-hides skills whose required tools are missing and only hints at missing declared tools', () => {
     const skills: ScannedSkill[] = [
       {
-        ref: 'workspace:legacy:office',
-        id: 'office',
-        name: 'Office',
+        ref: 'workspace:legacy:gated',
+        id: 'gated',
+        name: 'Gated',
         description: '',
         path: '/p',
-        declaredTools: ['Read', 'OfficeDocument'],
-        requiredTools: ['OfficeDocument'],
+        declaredTools: ['Read', 'ImaginaryTool'],
+        requiredTools: ['ImaginaryTool'],
         requiredCapabilities: [],
         enabled: true,
         pinned: false,
@@ -979,10 +951,10 @@ Legacy v2 body.`,
     ];
     const host: HostCapabilities = { toolNames: new Set(['Read']) };
     const gated = gateSkillsByHostCapabilities(skills, host);
-    const office = gated.find((g) => g.id === 'office')!;
-    assert.equal(office.eligible, false);
-    assert.equal(office.hiddenReason, 'required_tools_missing');
-    assert.deepEqual(office.missingDeclaredTools, ['OfficeDocument']);
+    const gatedSkill = gated.find((g) => g.id === 'gated')!;
+    assert.equal(gatedSkill.eligible, false);
+    assert.equal(gatedSkill.hiddenReason, 'required_tools_missing');
+    assert.deepEqual(gatedSkill.missingDeclaredTools, ['ImaginaryTool']);
     const plain = gated.find((g) => g.id === 'plain')!;
     assert.equal(plain.eligible, true);
     assert.equal(plain.hiddenReason, undefined);
@@ -999,7 +971,7 @@ Legacy v2 body.`,
         path: '/p',
         declaredTools: [],
         requiredTools: [],
-        requiredCapabilities: ['office'],
+        requiredCapabilities: ['specialized'],
         enabled: true,
         pinned: false,
         runtimeStatus: 'enabled',
@@ -1019,7 +991,7 @@ Legacy v2 body.`,
     assert.equal(noCap[0].hiddenReason, 'required_capabilities_missing');
     const withCap = gateSkillsByHostCapabilities(skills, {
       toolNames: new Set(),
-      capabilities: new Set(['office']),
+      capabilities: new Set(['specialized']),
     });
     assert.equal(withCap[0].eligible, true);
     assert.equal(withCap[0].hiddenReason, undefined);
@@ -1029,24 +1001,24 @@ Legacy v2 body.`,
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Office document work.
+name: Gated Helper
+description: Host-specific work.
 allowed-tools: [Read]
-required-tools: [OfficeDocument, OfficeDocumentEdit]
-required-capabilities: [office]
+required-tools: [ImaginaryTool, ImaginaryEditTool]
+required-capabilities: [specialized]
 ---
-# Office Helper
-Route through Office tools.`,
+# Gated Helper
+Route through host tools.`,
       );
 
       const skills = await scanWorkspaceSkills(workspaceRoot);
       assert.equal(skills.length, 1);
-      assert.equal(skills[0].id, 'office-helper');
+      assert.equal(skills[0].id, 'gated-helper');
       assert.deepEqual(skills[0].declaredTools, ['Read']);
-      assert.deepEqual(skills[0].requiredTools, ['OfficeDocument', 'OfficeDocumentEdit']);
-      assert.deepEqual(skills[0].requiredCapabilities, ['office']);
+      assert.deepEqual(skills[0].requiredTools, ['ImaginaryTool', 'ImaginaryEditTool']);
+      assert.deepEqual(skills[0].requiredCapabilities, ['specialized']);
     });
   });
 
@@ -1186,25 +1158,25 @@ Body.`,
   it('parseSkillFrontMatter parses required-tools and required-capabilities alongside allowed-tools', () => {
     assert.deepEqual(
       parseSkillFrontMatter(
-        '---\nname: A\ndescription: Desc one.\nallowed-tools: [Read]\nrequired-tools: [OfficeDocument, OfficeDocumentEdit]\nrequired-capabilities: [office]\n---\nbody',
+        '---\nname: A\ndescription: Desc one.\nallowed-tools: [Read]\nrequired-tools: [ImaginaryTool, ImaginaryEditTool]\nrequired-capabilities: [specialized]\n---\nbody',
       ),
       {
         name: 'A',
         description: 'Desc one.',
         allowedTools: ['Read'],
-        requiredTools: ['OfficeDocument', 'OfficeDocumentEdit'],
-        requiredCapabilities: ['office'],
+        requiredTools: ['ImaginaryTool', 'ImaginaryEditTool'],
+        requiredCapabilities: ['specialized'],
       },
     );
     assert.deepEqual(
       parseSkillFrontMatter(
-        '---\nname: B\ndescription: Desc two.\nallowed-tools:\n  - Read\nrequired-tools:\n  - OfficeDocument\n---\nbody',
+        '---\nname: B\ndescription: Desc two.\nallowed-tools:\n  - Read\nrequired-tools:\n  - ImaginaryTool\n---\nbody',
       ),
       {
         name: 'B',
         description: 'Desc two.',
         allowedTools: ['Read'],
-        requiredTools: ['OfficeDocument'],
+        requiredTools: ['ImaginaryTool'],
         requiredCapabilities: [],
       },
     );
@@ -1304,6 +1276,64 @@ Body.`,
     });
   });
 
+  it('uses one canonical inventory for prompt, Skill, and SkillSearch without exposing shadowed duplicates', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir, { recursive: true });
+      await writeSkillInDirectory(
+        join(projectRoot, '.maka', 'skills'),
+        'writer',
+        'Project Writer',
+        'Project active quill workflow.',
+      );
+      await writeSkillInDirectory(
+        join(homeDir, '.agents', 'skills'),
+        'writer',
+        'User Writer',
+        'Obsidian lantern archival workflow.',
+      );
+
+      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
+      const scan = await scanSkillsWithDiagnostics(source);
+      const prompt = buildSkillsPromptFragmentFromInventoryWithReport(scan.inventory);
+      assert.match(prompt.text ?? '', /Project active quill workflow/);
+      assert.doesNotMatch(prompt.text ?? '', /Obsidian lantern archival workflow/);
+      assert.equal(
+        prompt.report.decisions.some(
+          (decision) => decision.ref === 'user:agents:writer' && decision.reason === 'shadowed',
+        ),
+        true,
+      );
+
+      const resolveInventory = async () => scan.inventory;
+      const skillTool = buildSkillAgentToolFromInventory(resolveInventory);
+      const searchTool = buildSkillSearchAgentToolFromInventory(resolveInventory);
+      const context = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: projectRoot,
+      } as MakaToolContext;
+
+      const loaded = await skillTool.impl({ name: 'writer' }, context);
+      assert.equal(loaded.ok, true);
+      if (!loaded.ok) return;
+      assert.equal(loaded.skill.ref, 'project:maka:writer');
+      assert.match(loaded.skill.instructions, /Project Writer/);
+      assert.doesNotMatch(loaded.skill.instructions, /User Writer/);
+
+      const shadowed = await skillTool.impl({ name: 'user:agents:writer' }, context);
+      assert.equal(shadowed.ok, false);
+      if (shadowed.ok) return;
+      assert.equal(shadowed.reason, 'not_found');
+
+      const searched = await searchTool.impl({ query: 'obsidian lantern' }, context);
+      assert.equal(searched.totalEligible, 1);
+      assert.deepEqual(searched.matches, []);
+    });
+  });
+
   it('reads v1 id preferences and writes v2 scope-aware pinned preferences', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(
@@ -1344,6 +1374,107 @@ Body.`,
       const skill = (await scanWorkspaceSkills(workspaceRoot))[0];
       assert.equal(skill.ref, ref);
       assert.equal(skill.pinned, true);
+    });
+  });
+
+  it('applies case-only legacy preferences across real multi-scope consumers', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir);
+      await writeSkillInDirectory(
+        join(projectRoot, '.maka', 'skills'),
+        'Writer',
+        'Writer',
+        'Draft project prose.',
+      );
+      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, '.maka', 'skills-state.json'),
+        JSON.stringify({ schemaVersion: 1, skills: { writer: { enabled: false } } }),
+        'utf8',
+      );
+
+      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
+      const scan = await scanSkillsWithDiagnostics(source);
+      assert.equal(scan.inventory[0].ref, 'project:maka:Writer');
+      assert.equal(scan.inventory[0].runtimeStatus, 'disabled');
+      assert.equal(await buildSkillsPromptFragment(source), undefined);
+
+      const context = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        cwd: projectRoot,
+      } as MakaToolContext;
+      const skillTool = buildSkillAgentTool(source);
+      const loaded = await skillTool.impl({ name: 'Writer' }, context);
+      assert.deepEqual(
+        { ok: loaded.ok, reason: loaded.ok ? undefined : loaded.reason },
+        { ok: false, reason: 'disabled' },
+      );
+
+      const searchTool = buildSkillSearchAgentTool(source);
+      const searched = await searchTool.impl({ query: 'project prose' }, context);
+      assert.equal(searched.matches.length, 0);
+      assert.equal(searched.totalEligible, 0);
+
+      const [invoked] = await resolveSkillInvocations(source, undefined, ['Writer']);
+      assert.deepEqual(
+        {
+          ok: invoked.result.ok,
+          reason: invoked.result.ok ? undefined : invoked.result.reason,
+        },
+        { ok: false, reason: 'disabled' },
+      );
+    });
+  });
+
+  it('re-evaluates zero-match schema v2 bare preferences after multi-scope discovery changes', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const projectRoot = join(workspaceRoot, 'project');
+      const homeDir = join(workspaceRoot, 'home');
+      await mkdir(projectRoot, { recursive: true });
+      await mkdir(homeDir);
+      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
+      await writeFile(
+        join(workspaceRoot, '.maka', 'skills-state.json'),
+        JSON.stringify({
+          schemaVersion: 2,
+          skills: { Future: { enabled: false, pinned: true } },
+        }),
+        'utf8',
+      );
+      const source = resolveSkillDiscoveryPaths(projectRoot, workspaceRoot, homeDir);
+
+      const beforeDiscovery = await scanSkillsWithDiagnostics(source);
+      assert.equal(beforeDiscovery.runtimeState.ok, true);
+      if (!beforeDiscovery.runtimeState.ok) return;
+      assert.equal(beforeDiscovery.runtimeState.preferences.has('Future'), true);
+      assert.equal(beforeDiscovery.runtimeState.needsReview.size, 0);
+
+      await writeSkillInDirectory(
+        join(projectRoot, '.maka', 'skills'),
+        'future',
+        'Project Future',
+        'Project future workflow.',
+      );
+      await writeSkillInDirectory(
+        join(homeDir, '.agents', 'skills'),
+        'Future',
+        'User Future',
+        'User future workflow.',
+      );
+
+      const afterDiscovery = await scanSkillsWithDiagnostics(source);
+      assert.equal(afterDiscovery.runtimeState.ok, true);
+      if (!afterDiscovery.runtimeState.ok) return;
+      assert.deepEqual([...afterDiscovery.runtimeState.needsReview], ['Future']);
+      assert.equal(afterDiscovery.inventory.length, 2);
+      assert.equal(
+        afterDiscovery.inventory.every((skill) => !skill.enabled && skill.pinned),
+        true,
+      );
     });
   });
 

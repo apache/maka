@@ -192,6 +192,7 @@ test('exports the Run-header trace failure latch when its sentinel event is miss
         captureArtifactId: 'artifact-capture-1',
         providerId: 'openai',
         modelId: 'k3',
+        contextWindow: 200_000,
         requestHash: 'sha256:request-1',
         requestBytes: 100,
         segments: [],
@@ -213,6 +214,7 @@ test('exports the Run-header trace failure latch when its sentinel event is miss
     });
     const result = await traceAnalysis.readProviderRequestTrace(traceEventsPath);
 
+    assert.equal(result.attempts[0]?.contextWindow, 200_000);
     assert.throws(
       () => traceAnalysis.assertProviderRequestTraceComplete(result),
       /trace write failed evidence/i,

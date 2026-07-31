@@ -44,7 +44,7 @@ Maka 不只回答问题。它可以在受控权限下阅读项目、执行工具
 
 - 会话创建、归档、搜索、重命名、重试、重新生成和从 Turn 分支；
 - Artifact 列表与预览、workspace instructions、模型与权限设置；
-- 本地记忆、联网搜索、开放 HTTP/SSE gateway、机器人入口和 Office 工作流；
+- 本地记忆、联网搜索、开放 HTTP/SSE gateway 和机器人入口；
 - 不同集成需要单独配置，并非所有实验入口默认可用。
 
 ### Durable Tasks and Evolution
@@ -119,8 +119,14 @@ npm run build
 ```sh
 npm --workspace maka-agent exec -- maka
 npm --workspace maka-agent exec -- maka run "总结当前仓库并指出最重要的风险"
+npm --workspace maka-agent exec -- maka run --graph "并行实现两个切片，完成集成，然后独立审查"
 npm --workspace maka-agent exec -- maka --help
 ```
+
+TUI 同时支持 `/graph on`、`/graph off` 和 `/graph <任务>`。非交互
+`--graph` 会等待持久化 Graph 真正结束，再输出 supervisor 的最终结果。
+Graph 的 implementation operator 使用隔离的 Git worktree，因此源项目必须是干净的
+Git worktree。
 
 CLI 读取 Desktop 写入的同一份模型连接和 workspace 配置。Headless 的完整命令与 trust posture 见 [`packages/headless/README.md`](./packages/headless/README.md)。
 
@@ -180,13 +186,12 @@ Maka 默认把 workspace 数据放在 Electron `userData` 下：
 
 ## 实验性 Runtime 恢复开关
 
-Runtime 恢复目前仍需显式开启，以下两个开关默认都是关闭的：
+RuntimeEvent 现在始终以 `runtime.sqlite` 为 canonical store。首次写入时，Maka
+会批量、幂等导入 legacy RuntimeEvent JSONL，且不会改写旧文件；在首次写入前，
+仅包含 legacy 数据的 workspace 仍可由只读检查路径读取。
 
-- `MAKA_RUNTIME_SQLITE_CANONICAL=1` 会把当前 workspace 的 canonical
-  RuntimeEvent store 迁移到 `runtime.sqlite`。这是一个**单向、sticky 的迁移触发器**，
-  不是可来回切换的存储开关：一旦 workspace 中出现 `runtime.sqlite`，之后即使
-  关闭环境变量，也不会切回 JSONL。自动迁移前备份和有存量数据的 v2→v4 升级覆盖
-  尚未补齐，开启前请先备份 workspace。
+Runtime continuation 仍需显式开启：
+
 - `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` 会开启 Desktop 中断横幅的“安全恢复”按钮、
   CLI/TUI 的 `/resume` 命令和 Desktop 启动时自动续跑。这些路径都可能调用已配置的模型 provider 并消耗 token，
   只应在你明确需要这一行为时开启。

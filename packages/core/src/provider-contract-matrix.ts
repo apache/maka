@@ -109,7 +109,7 @@ export type ProviderContractReverseAssertion = 'must-not-request-models-endpoint
 export interface ProviderContractNotApplicableCell {
   state: 'not-applicable';
   dimension: ProviderContractDimension;
-  /** Machine-readable justification derived from the declaration. */
+  /** Human-readable justification derived from the provider declaration. */
   reason: string;
   /** An assertion the executor must still hold even though the dimension is N/A. */
   reverseAssertion?: ProviderContractReverseAssertion;
@@ -266,8 +266,15 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
       return {
         state: 'not-applicable',
         dimension: 'discovery',
-        reason: 'declares-static-fallback-model-snapshot',
+        reason: discovery.reason,
         reverseAssertion: 'must-not-request-models-endpoint',
+      };
+    case 'cloudflare':
+      return {
+        state: 'override',
+        dimension: 'discovery',
+        overrideKey: overrideKeyFor(providerType, 'discovery'),
+        contract: 'Cloudflare Workers AI native paginated /ai/models/search discovery',
       };
     case 'fireworks':
       return {
@@ -382,8 +389,22 @@ function reasoningReplayCell(
       },
     };
   }
+  if (
+    providerType === 'volcengine-agent-plan' &&
+    adapter.kind === 'openai' &&
+    adapter.apiProtocol === 'openai-responses'
+  ) {
+    return {
+      state: 'override',
+      dimension: 'reasoning-replay',
+      overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
+      contract:
+        'Stateless OpenAI Responses reasoning items retain their encrypted content across Maka-owned durable replay',
+    };
+  }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay
-  // opaquely; the maka provider layer adds no wire transform to derive from.
+  // opaquely; except for the stateless Agent Plan contract above, the Maka
+  // provider layer adds no wire transform to derive from.
   return {
     state: 'not-applicable',
     dimension: 'reasoning-replay',

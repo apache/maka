@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type {
   PrefixChangeReason,
   ToolSchemaChangeReason,
@@ -17,7 +17,7 @@ export interface CanonicalToolSet {
 }
 
 export interface RequestShapeInput {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   modelId: string;
   systemPrompt?: string;
   providerOptions?: Record<string, unknown>;

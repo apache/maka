@@ -12,14 +12,11 @@ import type {
   SessionEvent,
   SessionHeader,
 } from '@maka/core';
-import type {
-  BackendSendInput,
-  BackendStopMode,
-  PermissionDecision,
-} from '@maka/core/backend-types';
+import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import {
   BackendRegistry,
-  PermissionEngine,
   PiAgentBackend,
   type AgentBackend,
   type AiSdkBackendInput,
@@ -32,6 +29,7 @@ import {
   type ToolResultArchiveReader,
   type ToolResultArchiveRecorder,
 } from '@maka/runtime';
+import { createReadImageSnapshotter } from '@maka/storage';
 import { Agent } from 'undici';
 import type { Config } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
@@ -62,8 +60,9 @@ import {
   writeHarborCellUsageCheckpoint,
 } from '../harbor-cell.js';
 import { resolveHarborRunOptions } from '../harbor-cli.js';
+import { createHeadlessSessionCapabilityBridge } from '../session-capabilities.js';
 import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
-import { buildIsolatedBashTool } from '../tools.js';
+import { buildIsolatedBashTool, buildIsolatedHeadlessProductToolSurface } from '../tools.js';
 
 const config: Config = {
   id: 'cell-cfg',
@@ -72,6 +71,16 @@ const config: Config = {
   model: 'fake-model',
   systemPrompt: 'You are a benchmark cell agent.',
 };
+
+const AGENT_RUNTIME_CAPABILITIES = [
+  'spawnChildAgent',
+  'spawnChildSession',
+  'prepareChildAgentResume',
+  'resumeChildAgent',
+  'retryChildAgent',
+  'listChildAgents',
+  'readChildAgentOutput',
+] as const satisfies readonly (keyof AiSdkBackendInput)[];
 
 function registerTestPiAgentBackend(
   registry: BackendRegistry,
@@ -85,7 +94,6 @@ function registerTestPiAgentBackend(
         header: ctx.header,
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        permissionEngine: new PermissionEngine({ newId: () => 'perm-id', now: () => 123 }),
         transport: transportFactory({ header: ctx.header, store: ctx.store }),
       }),
   );
@@ -133,7 +141,7 @@ class CellReportingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -177,7 +185,7 @@ class CellChildAdmissionProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -206,7 +214,7 @@ class RunStartOrderingProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -231,7 +239,7 @@ class ThrowingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -284,7 +292,7 @@ class DeadlineSettlingBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -345,7 +353,7 @@ class NonCooperativeDeadlineBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -411,7 +419,7 @@ class ActiveIsolatedToolDeadlineBackend implements AgentBackend {
     if (mode === 'immediate') this.controller.abort();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -449,7 +457,7 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
     this.stopCalls += 1;
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -527,7 +535,7 @@ class StepCapThenCompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1001,13 +1009,22 @@ describe('runHarborCell', () => {
       );
       assert.match(runtimeEvents, /"id":"cell-usage"/);
       assert.match(runtimeEvents, /"systemPromptHash":"sha256:cell-prompt"/);
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.invocation.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 
   test('does not provision child tools when Agent tools are disabled by default', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       const observed: { spawned?: boolean; error?: string } = {};
-      await runHarborCell({
+      const result = await runHarborCell({
         config: { ...config, backend: 'ai-sdk' },
         instruction: 'probe child admission',
         cwd: workspaceDir,
@@ -1032,6 +1049,10 @@ describe('runHarborCell', () => {
 
       assert.equal(observed.spawned, false);
       assert.match(observed.error ?? '', /missing tools/i);
+      assert.deepEqual(result.output.executionIdentity?.productToolSurface, {
+        policy: { economy: true, disabledSurfaceIds: ['agent'] },
+        productToolNames: ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'Write'],
+      });
     });
   });
 
@@ -1079,6 +1100,53 @@ describe('runHarborCell', () => {
           resumeSessionId: first.invocation.sessionId,
         }),
         /resume session model.*different-model.*fake-model/i,
+      );
+    });
+  });
+
+  test('uses the external boundary instead of a legacy Execute mode authority', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const result = await runHarborCell({
+        config,
+        instruction: 'run under harness isolation',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+      });
+      const sessions = createSessionStore(storageRoot);
+
+      const header = await sessions.readHeaderSnapshot(result.invocation.sessionId);
+      const boundary = await sessions.readExecutionBoundary(result.invocation.sessionId);
+      await sessions.close?.();
+
+      assert.equal(header?.permissionMode, 'ask');
+      assert.equal(boundary.kind, 'external');
+    });
+  });
+
+  test('rejects resuming a session that is not externally isolated', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const sessions = createSessionStore(storageRoot);
+      const managed = await sessions.create({
+        cwd: workspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'execute',
+        name: 'managed-session',
+      });
+      await sessions.close?.();
+
+      await assert.rejects(
+        runHarborCell({
+          config,
+          instruction: 'resume without external isolation',
+          cwd: workspaceDir,
+          outputDir,
+          storageRoot,
+          resumeSessionId: managed.id,
+        }),
+        /external execution boundary/i,
       );
     });
   });
@@ -1289,7 +1357,7 @@ describe('runHarborCell', () => {
         }
 
         async stop(): Promise<void> {}
-        async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+        async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
         async dispose(): Promise<void> {}
       }
 
@@ -1344,7 +1412,7 @@ describe('runHarborCell', () => {
     });
   });
 
-  test('env entrypoint enables Agent tools only for canonical MAKA_AGENT_TOOLS=true', async () => {
+  test('env entrypoint parses canonical MAKA_AGENT_TOOLS without attesting tools for fake', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       let observedAgentTools: boolean | undefined;
       const result = await runHarborCellFromEnv(
@@ -1366,7 +1434,7 @@ describe('runHarborCell', () => {
       );
 
       assert.equal(observedAgentTools, true);
-      assert.equal(result.output.executionIdentity?.agentTools, true);
+      assert.equal(result.output.executionIdentity?.agentTools, false);
     });
   });
 
@@ -2263,7 +2331,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2277,21 +2345,11 @@ describe('runHarborCell', () => {
         artifactStore,
         realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
         toolExecutor,
+        ...createHeadlessSessionCapabilityBridge().capabilities,
       });
 
       const backend = await registry.build('ai-sdk', backendContext(workspaceDir));
-      const backendInput = (
-        backend as unknown as {
-          input: {
-            tools: Array<{ name: string; permissionRequired?: boolean }>;
-            systemPrompt?: string;
-            streamConnectTimeoutMs?: number;
-            streamIdleTimeoutMs?: number;
-            supportsVision?: boolean;
-            readAttachmentBytes?: unknown;
-          };
-        }
-      ).input;
+      const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
       const toolNames = backendInput.tools.map((tool) => tool.name);
 
       for (const expected of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
@@ -2300,19 +2358,17 @@ describe('runHarborCell', () => {
       for (const unexpected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
         assert.ok(!toolNames.includes(unexpected), `unexpected default Agent tool ${unexpected}`);
       }
-      assert.equal(
-        backendInput.tools.find((tool) => tool.name === 'Bash')?.permissionRequired,
-        false,
+      assert.match(
+        typeof backendInput.systemPrompt === 'string' ? backendInput.systemPrompt : '',
+        /Prefer Read, Glob, and Grep/,
       );
-      assert.equal(
-        backendInput.tools.find((tool) => tool.name === 'Write')?.permissionRequired,
-        false,
-      );
-      assert.match(backendInput.systemPrompt ?? '', /Prefer Read, Glob, and Grep/);
       assert.equal(backendInput.streamConnectTimeoutMs, 456_000);
       assert.equal(backendInput.streamIdleTimeoutMs, 789_000);
       assert.equal(backendInput.supportsVision, true);
       assert.equal(typeof backendInput.readAttachmentBytes, 'function');
+      for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+        assert.equal(backendInput[capability], undefined, `unexpected root ${capability}`);
+      }
 
       const scopedBackend = await registry.build('ai-sdk', {
         ...backendContext(workspaceDir),
@@ -2332,7 +2388,10 @@ describe('runHarborCell', () => {
         ['ReadOnlyProbe'],
       );
       assert.equal(scopedInput.systemPrompt, 'Durable child prompt.');
-      assert.equal(scopedInput.toolAvailability, undefined);
+      assert.deepEqual(scopedInput.toolAvailability, { economy: true, groups: [] });
+      for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+        assert.equal(scopedInput[capability], undefined, `unexpected scoped ${capability}`);
+      }
     });
   });
 
@@ -2347,7 +2406,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk-agent-tools',
           backend: 'ai-sdk',
@@ -2362,17 +2421,11 @@ describe('runHarborCell', () => {
         artifactStore,
         realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
         toolExecutor,
+        ...createHeadlessSessionCapabilityBridge().capabilities,
       });
 
       const backend = await registry.build('ai-sdk', backendContext(workspaceDir));
-      const backendInput = (
-        backend as unknown as {
-          input: {
-            tools: Array<{ name: string }>;
-            toolAvailability?: { groups?: Array<{ id: string; toolNames: string[] }> };
-          };
-        }
-      ).input;
+      const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
       const toolNames = backendInput.tools.map((tool) => tool.name);
 
       for (const expected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
@@ -2382,6 +2435,9 @@ describe('runHarborCell', () => {
         backendInput.toolAvailability?.groups?.find((group) => group.id === 'agent')?.toolNames,
         ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output'],
       );
+      for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+        assert.equal(typeof backendInput[capability], 'function', `expected root ${capability}`);
+      }
     });
   });
 
@@ -2401,7 +2457,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2522,7 +2578,7 @@ describe('runHarborCell', () => {
       const recorders: Array<NonNullable<AiSdkBackendInput['recordUsageCheckpoint']>> = [];
       for (const sessionId of ['attempt-1', 'attempt-2']) {
         const registry = new BackendRegistry();
-        await register(registry, context);
+        await registerProjectedAiSdkBackend(register, registry, context);
         const backendContextInput = backendContext(workspaceDir);
         const backend = await registry.build('ai-sdk', {
           ...backendContextInput,
@@ -2595,7 +2651,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2703,7 +2759,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2796,7 +2852,7 @@ describe('runHarborCell', () => {
         },
       });
       const toolExecutor = fakeToolExecutor();
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -2894,7 +2950,7 @@ describe('runHarborCell', () => {
       assert.ok(options.registerBackends);
       const registry = new BackendRegistry();
       const toolExecutor = fakeToolExecutor();
-      await options.registerBackends(registry, {
+      await registerProjectedAiSdkBackend(options.registerBackends, registry, {
         config: options.config,
         task: { id: 'harbor-cell', instruction: 'solve', workspaceDir },
         storageRoot,
@@ -2997,7 +3053,7 @@ describe('runHarborCell', () => {
       assert.ok(options.registerBackends);
       const registry = new BackendRegistry();
       const toolExecutor = fakeToolExecutor();
-      await options.registerBackends(registry, {
+      await registerProjectedAiSdkBackend(options.registerBackends, registry, {
         config: options.config,
         task: { id: 'harbor-cell', instruction: 'solve', workspaceDir },
         storageRoot,
@@ -3104,7 +3160,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3182,7 +3238,7 @@ describe('runHarborCell', () => {
         realBackendIsolation: { kind: 'external', label: 'Harbor task container', toolExecutor },
         toolExecutor,
       };
-      await register(registry, context);
+      await registerProjectedAiSdkBackend(register, registry, context);
 
       const backend = await registry.build('ai-sdk', {
         ...backendContext(workspaceDir),
@@ -3295,7 +3351,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3370,7 +3426,7 @@ describe('runHarborCell', () => {
         newId: testIdFactory(),
       });
       const toolExecutor = fakeToolExecutor();
-      await offRegister(offRegistry, {
+      await registerProjectedAiSdkBackend(offRegister, offRegistry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3404,7 +3460,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: testIdFactory(),
       });
-      await todoRegister(todoRegistry, {
+      await registerProjectedAiSdkBackend(todoRegister, todoRegistry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3484,7 +3540,7 @@ describe('runHarborCell', () => {
       });
       // Trailing newline kept on purpose: the controller hashes these exact bytes.
       const candidatePrompt = 'CANDIDATE SYSTEM PROMPT — exact bytes.\n';
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3526,7 +3582,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3586,7 +3642,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3687,7 +3743,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3736,7 +3792,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -3782,7 +3838,7 @@ describe('runHarborCell', () => {
               now: () => 123,
               newId: () => 'id',
             });
-            await register(registry, {
+            await registerProjectedAiSdkBackend(register, registry, {
               config: {
                 id: 'harbor-ai-sdk',
                 backend: 'ai-sdk',
@@ -3861,7 +3917,7 @@ describe('runHarborCell', () => {
           now: () => 123,
           newId: () => 'id',
         });
-        await register(registry, {
+        await registerProjectedAiSdkBackend(register, registry, {
           config: {
             id: 'harbor-ai-sdk',
             backend: 'ai-sdk',
@@ -3901,7 +3957,7 @@ describe('runHarborCell', () => {
         now: () => 123,
         newId: () => 'id',
       });
-      await register(registry, {
+      await registerProjectedAiSdkBackend(register, registry, {
         config: {
           id: 'harbor-ai-sdk',
           backend: 'ai-sdk',
@@ -4141,13 +4197,12 @@ describe('runHarborCell', () => {
     assert.equal(snapshot.synthesisCache?.schemaVersion, 1);
   });
 
-  test('Harbor tool builder keeps the six container-native tools non-interactive', () => {
+  test('Harbor tool builder exposes the six container-native tools', () => {
     const tools = buildHarborCellAiSdkTools(fakeToolExecutor());
     const names = tools.map((tool) => tool.name);
 
     for (const expected of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
       assert.ok(names.includes(expected), `expected Harbor tool ${expected}`);
-      assert.equal(tools.find((tool) => tool.name === expected)?.permissionRequired, false);
     }
   });
 
@@ -4195,6 +4250,7 @@ describe('runHarborCell', () => {
       const result = await runHarborCellFromEnv(
         {
           MAKA_BACKEND: 'pi-agent',
+          MAKA_AGENT_TOOLS: 'true',
           MAKA_INSTRUCTION: 'solve through pi',
           MAKA_MODEL: 'pi-test',
           MAKA_WORKDIR: workspaceDir,
@@ -4223,6 +4279,9 @@ describe('runHarborCell', () => {
       assert.equal(seenContexts[0]?.realBackendIsolation?.kind, 'external');
       assert.equal(seenContexts[0]?.realBackendIsolation?.label, 'Harbor task container');
       assert.equal(typeof seenContexts[0]?.realBackendIsolation?.toolExecutor?.exec, 'function');
+      assert.equal(seenContexts[0]?.productToolSurface, undefined);
+      assert.equal(result.output.executionIdentity?.agentTools, false);
+      assert.equal(result.output.executionIdentity?.productToolSurface, undefined);
     });
   });
 
@@ -4698,6 +4757,39 @@ setTimeout(() => {
         }),
       /account-discovered model protocol/,
     );
+  });
+
+  test('preserves an explicit Kimi Coding Plan protocol without duplicating the provider', () => {
+    const resolved = resolveHarborCellAiSdkEnv({
+      provider: 'kimi-coding-plan',
+      model: 'k3',
+      env: {
+        ANTHROPIC_API_KEY: 'kimi-plan-key',
+        MAKA_MODEL_API_PROTOCOL: 'openai-chat',
+      },
+      ts: 123,
+    });
+
+    assert.equal(resolved.connection.providerType, 'kimi-coding-plan');
+    assert.deepEqual(resolved.connection.models, [{ id: 'k3', apiProtocol: 'openai-chat' }]);
+  });
+
+  test('rejects unsupported explicit Kimi Coding Plan protocol overrides', () => {
+    for (const env of [
+      { MAKA_MODEL_API_PROTOCOL: 'openai-responses' },
+      { MAKA_HOST_MODEL_API_PROTOCOL: 'typo' },
+    ]) {
+      assert.throws(
+        () =>
+          resolveHarborCellAiSdkEnv({
+            provider: 'kimi-coding-plan',
+            model: 'k3',
+            env: { ANTHROPIC_API_KEY: 'kimi-plan-key', ...env },
+            ts: 123,
+          }),
+        /Kimi Coding Plan protocol must be anthropic-messages or openai-chat/,
+      );
+    }
   });
 
   test('resolves LM Studio headless configuration without credentials', () => {
@@ -5919,6 +6011,21 @@ function fakeToolExecutor(): IsolatedToolExecutor {
       return { exitCode: 0, stdout: '', stderr: '' };
     },
   };
+}
+
+async function registerProjectedAiSdkBackend(
+  register: (registry: BackendRegistry, context: HeadlessBackendContext) => void | Promise<void>,
+  registry: BackendRegistry,
+  context: HeadlessBackendContext,
+): Promise<void> {
+  assert.ok(context.toolExecutor);
+  await register(registry, {
+    ...context,
+    productToolSurface: buildIsolatedHeadlessProductToolSurface(context.toolExecutor, {
+      agentTools: context.config.agentTools,
+      snapshotImage: createReadImageSnapshotter(context.artifactStore),
+    }),
+  });
 }
 
 function testIdFactory(): () => string {

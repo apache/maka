@@ -70,16 +70,20 @@ export interface ModelDiscoveryResult {
 
 export type ConnectionLastTestStatus = 'verified' | 'needs_reauth' | 'error';
 
-export interface LlmConnection {
+/** Non-secret provider/model configuration required by runtime execution. */
+export interface RuntimeExecutionConnection {
   slug: string;
-  name: string;
   providerType: ProviderType;
   baseUrl?: string;
   defaultModel: string;
+  models?: ModelInfo[];
+}
+
+export interface LlmConnection extends RuntimeExecutionConnection {
+  name: string;
   enabled: boolean;
   /** Model ids shown in model pickers. Legacy connections omit this and enable only their default model. */
   enabledModelIds?: string[];
-  models?: ModelInfo[];
   modelSource?: ModelDiscoverySource;
   /** Unix ms timestamp for the last successful model discovery result. */
   modelsFetchedAt?: number;
@@ -206,6 +210,11 @@ export function providerAuthSupportsApiKey(providerType: ProviderType): boolean 
   return authKind === 'api_key' || authKind === 'optional_api_key';
 }
 
+export function providerSupportsModelDiscovery(providerType: ProviderType): boolean {
+  const discovery = PROVIDER_DEFAULTS[providerType]?.modelDiscovery;
+  return discovery !== undefined && discovery.kind !== 'fallback';
+}
+
 export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → treat as non-real,
@@ -247,6 +256,20 @@ export function validateSlug(slug: string): string | null {
   }
   if (slug.length > 64) return 'Slug must be 64 characters or fewer';
   return null;
+}
+
+/** Derive an unused connection slug from a catalog provider type. */
+export function deriveConnectionSlug(
+  providerType: ProviderType,
+  existingSlugs: readonly string[] = [],
+): string {
+  const base = providerType.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  if (!existingSlugs.includes(base)) return base;
+
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!existingSlugs.includes(candidate)) return candidate;
+  }
 }
 
 /**

@@ -1,5 +1,10 @@
 import type { StorageRef } from '@maka/core';
-import { isPathInside, type ShellPlan } from '@maka/runtime';
+import {
+  isPathInside,
+  type EffectiveProductToolSurface,
+  type ProductToolSurfaceIdentity,
+  type ShellPlan,
+} from '@maka/runtime';
 import { isAbsolute } from 'node:path';
 import type { Config, Task } from './contracts.js';
 import type { HeavyTaskEvidenceRecorder } from './heavy-task-evidence.js';
@@ -10,6 +15,7 @@ import type {
   EnvNetworkSecretPolicy,
   TaskIsolationFacts,
   ToolExecutorIdentity,
+  SupplementalToolSetIdentity,
 } from './task-contracts.js';
 import type { HeadlessSessionCapabilities } from './session-capabilities.js';
 import type { HeadlessArtifactStore } from './headless-storage.js';
@@ -212,6 +218,8 @@ export interface HeadlessBackendContext extends Partial<HeadlessSessionCapabilit
   realBackendIsolation?: RealBackendIsolation;
   /** Convenience alias for realBackendIsolation.toolExecutor. */
   toolExecutor?: IsolatedToolExecutor;
+  /** One policy-filtered product-tool surface for this root Session / TaskRun. */
+  productToolSurface?: EffectiveProductToolSurface;
   /** Heavy-task selection resolved for this task run. */
   heavyTaskMode?: HeavyTaskModeSelection;
   /** Present only when heavy-task mode is enabled for task-run backed tooling. */
@@ -294,14 +302,28 @@ export function toolExecutorIdentity(input: {
   attemptId?: string;
   isolation?: RealBackendIsolation;
   toolNames?: string[];
+  productToolSurface?: ProductToolSurfaceIdentity;
+  supplementalToolSets?: SupplementalToolSetIdentity[];
 }): ToolExecutorIdentity {
   const isolationMode = input.isolation ? 'external' : 'inert_fake_backend';
+  const supplementalToolSets = input.supplementalToolSets?.map((entry) => ({
+    label: entry.label,
+    toolNames: [...entry.toolNames],
+  }));
+  const toolNames = input.productToolSurface
+    ? [
+        ...input.productToolSurface.productToolNames,
+        ...(supplementalToolSets?.flatMap((entry) => entry.toolNames) ?? []),
+      ]
+    : (input.toolNames ?? ['headless_runtime']);
   return {
     schemaVersion: 1,
     executorId: input.executorId,
     taskRunId: input.taskRunId,
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),
-    toolNames: input.toolNames ?? ['headless_runtime'],
+    toolNames,
+    ...(input.productToolSurface ? { productToolSurface: input.productToolSurface } : {}),
+    ...(supplementalToolSets && supplementalToolSets.length > 0 ? { supplementalToolSets } : {}),
     isolationMode,
     label: input.isolation?.label ?? 'fake backend inert tool boundary',
     commandPolicy: defaultEnvNetworkSecretPolicy(input.isolation),

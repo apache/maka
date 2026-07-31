@@ -226,6 +226,82 @@ describe('ModelCatalogEntry', () => {
     });
   });
 
+  it('uses the official Volcengine Agent Plan text-model snapshot without inventing data-plane discovery', () => {
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: 'volcengine-agent-plan',
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'ark-code-latest',
+      },
+    });
+
+    assert.equal(entries[0]?.id, 'ark-code-latest');
+    assert.equal(entries[0]?.displayName, 'Ark Code Latest');
+    assert.equal(entries[0]?.source, 'static_catalog');
+    assert.equal(entries[0]?.provenance.modelSource, 'fallback');
+    assert.equal(entries[0]?.contextWindow, 256_000);
+    assert.equal(entries[0]?.maxOutputTokens, 32_000);
+    assert.deepEqual(entries[0]?.capabilities, {
+      vision: true,
+      reasoning: true,
+      functionCalling: true,
+    });
+
+    for (const entry of entries) {
+      assert.equal(entry.docsUrl, 'https://www.volcengine.com/docs/82379/2366394', entry.id);
+      assert.ok(entry.contextWindow, entry.id);
+      assert.ok(entry.maxOutputTokens, entry.id);
+      assert.equal(entry.capabilities.reasoning, true, entry.id);
+      assert.equal(entry.capabilities.functionCalling, true, entry.id);
+    }
+
+    for (const modelId of [
+      'ark-code-latest',
+      'doubao-seed-2.0-mini',
+      'doubao-seed-2.0-lite',
+      'doubao-seed-2.1-turbo',
+      'doubao-seed-evolving',
+      'minimax-m3',
+      'kimi-k2.6',
+      'kimi-k2.7-code',
+      'kimi-k3',
+    ]) {
+      assert.equal(
+        entries.find((entry) => entry.id === modelId)?.capabilities.vision,
+        true,
+        modelId,
+      );
+    }
+
+    for (const modelId of [
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'glm-5.2',
+      'glm-latest',
+      'minimax-m2.7',
+    ]) {
+      assert.equal(
+        entries.find((entry) => entry.id === modelId)?.capabilities.vision,
+        undefined,
+        modelId,
+      );
+    }
+
+    const glmLatest = entries.find((entry) => entry.id === 'glm-latest');
+    assert.equal(glmLatest?.contextWindow, 1_024_000);
+    assert.equal(glmLatest?.maxOutputTokens, 128_000);
+
+    const deepseek = entries.find((entry) => entry.id === 'deepseek-v4-pro');
+    assert.equal(deepseek?.contextWindow, 1_024_000);
+    assert.equal(deepseek?.maxOutputTokens, 384_000);
+    assert.equal(deepseek?.capabilities.vision, undefined);
+
+    const retiring = entries.find((entry) => entry.id === 'doubao-seed-2.0-code');
+    assert.equal(retiring?.lifecycle, 'deprecated');
+    assert.equal(retiring?.contextWindow, 256_000);
+    assert.equal(retiring?.maxOutputTokens, 128_000);
+  });
+
   it('uses the checked-in StepFun China snapshot until account discovery succeeds', () => {
     const entries = buildConnectionModelCatalogEntries({
       connection: {
@@ -1087,6 +1163,24 @@ describe('ModelCatalogEntry', () => {
         ['gpt-5.5-pro', 'static_catalog', 'fallback'],
       ],
     );
+  });
+
+  it('treats the registry snapshot as authoritative for fallback-only providers', () => {
+    const entries = buildConnectionModelCatalogEntries({
+      connection: {
+        slug: 'volcengine-ark',
+        providerType: 'volcengine-ark',
+        defaultModel: 'doubao-seed-2-0-pro-260215',
+        models: [{ id: 'stale-cli-snapshot' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      },
+    });
+
+    assert.ok(entries.some((entry) => entry.id === 'doubao-seed-2-0-pro-260215'));
+    assert.ok(!entries.some((entry) => entry.id === 'stale-cli-snapshot'));
+    assert.ok(entries.every((entry) => entry.source === 'static_catalog'));
+    assert.ok(entries.every((entry) => entry.provenance.modelSource === 'fallback'));
   });
 
   it('carries display names separately from stable model ids', () => {

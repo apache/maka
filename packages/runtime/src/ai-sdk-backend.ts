@@ -3,8 +3,8 @@
  *
  * Provides one `streamText` API across Anthropic / OpenAI / Google / DeepSeek /
  * OpenAI-compatible endpoints, while keeping all of our home-grown
- * machinery: PermissionEngine (policy + park/resume), materializer,
- * AsyncEventQueue, SessionStore JSONL persistence.
+ * machinery: session sandbox boundaries, materializer, AsyncEventQueue,
+ * SessionStore JSONL persistence.
  *
  * Maka owns the agent loop. Each ModelAdapter call performs exactly one
  * provider request; returned tool calls settle through ToolRuntime, become
@@ -38,6 +38,7 @@ import type {
 import type {
   StoredMessage,
   AssistantMessage,
+  AssistantThinkingPart,
   ToolCallMessage,
   ToolResultMessage,
   PermissionDecisionMessage,
@@ -51,11 +52,10 @@ import type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
   BackendSendInput,
-  PermissionDecision,
 } from '@maka/core/backend-types';
 import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { ToolPermissionRule } from '@maka/core/permission';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import {
   resolveEffectiveOrchestration,
@@ -77,6 +77,7 @@ import type {
   JSONValue,
   ModelFinishReason,
   ModelMessage,
+  ReasoningPart,
   ModelToolSet,
   NormalizedUsage,
   ModelFailureKind,
@@ -85,14 +86,8 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import { z } from 'zod';
+import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 
-import { PermissionEngine } from './permission-engine.js';
-import {
-  AiSdkAutoApprovalReviewer,
-  ApprovalCoordinator,
-  type AutoApprovalReviewContext,
-  type AutoApprovalReviewer,
-} from './approval-reviewer.js';
 import { AsyncEventQueue } from './async-queue.js';
 import { StreamWatchdog, formatStreamWatchdogError } from './stream-watchdog.js';
 import {
@@ -137,7 +132,6 @@ import { kimiReasoningFieldFromProviderOptions } from './kimi-openai-transport.j
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import {
   toSandboxRunTraceProjection,
-  type SandboxDiagnosticCapability,
   type SandboxDiagnosticsSnapshot,
 } from './sandbox/diagnostics.js';
 import { renderSandboxTurnTailPrompt } from './system-prompt/sandbox-context-prompt.js';
@@ -234,32 +228,6 @@ function joinPromptFragments(fragments: readonly (string | undefined)[]): string
   return joined.length > 0 ? joined : undefined;
 }
 
-function autoApprovalSandboxContext(
-  snapshot: SandboxDiagnosticsSnapshot,
-): NonNullable<AutoApprovalReviewContext['sandbox']> {
-  const { command, filesystem } = snapshot.capabilities;
-  return {
-    platform: snapshot.platform,
-    profileName: snapshot.profile.name,
-    fileSystem: snapshot.profile.fileSystem,
-    network: snapshot.profile.network,
-    commandSandbox: formatSandboxCapability(command),
-    filesystemSandbox: formatSandboxCapability(filesystem),
-    ...(command.selectionReason ? { commandSandboxSelectionReason: command.selectionReason } : {}),
-    ...(filesystem.selectionReason
-      ? { filesystemSandboxSelectionReason: filesystem.selectionReason }
-      : {}),
-    ...(command.failure ? { commandSandboxFailureReason: command.failure.reason } : {}),
-    ...(filesystem.failure ? { filesystemSandboxFailureReason: filesystem.failure.reason } : {}),
-  };
-}
-
-function formatSandboxCapability(capability: SandboxDiagnosticCapability): string {
-  return capability.backend === 'none'
-    ? capability.status
-    : `${capability.status} (${capability.backend})`;
-}
-
 // ============================================================================
 // Constructor input — single object matches @kabi's BackendRegistry call site
 // ============================================================================
@@ -300,13 +268,13 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   header: SessionHeader;
   /** Append-message function bound to this session (e.g. SessionStore wrapper). */
   appendMessage: AppendMessageFn;
+  /** Reads the authoritative session boundary immediately before every local tool invocation. */
+  readExecutionBoundary: ToolRuntimeInput['readExecutionBoundary'];
+  createSandboxBoundaryRequest?: ToolRuntimeInput['createSandboxBoundaryRequest'];
+  settleSandboxBoundaryRequest?: ToolRuntimeInput['settleSandboxBoundaryRequest'];
 
   // ── Process-singleton deps ─────────────────────────────────────────────
-  permissionEngine: PermissionEngine;
-  /** Optional override for execute-mode automatic permission review. */
-  autoApprovalReviewer?: AutoApprovalReviewer;
-  /** Canonical-named tools available this session. Backend wraps each with
-   *  permission gating before passing to ai-sdk. */
+  /** Canonical-named tools available this session. */
   tools: MakaTool[];
   /** Active profile and enforcement capability snapshot for this session backend. */
   sandboxDiagnosticsSnapshot?: SandboxDiagnosticsSnapshot;
@@ -340,14 +308,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   maxSteps?: number;
   /** Timeout before first SDK stream event; default 30s. */
   streamConnectTimeoutMs?: number;
-  /** Timeout between SDK/tool events; paused while waiting on permission. Default 120s. */
+  /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */
   streamIdleTimeoutMs?: number;
   /** Test seam for the Runtime-owned provider retry clock. */
   providerRetrySleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
-  /** Timeout for a renderer/user permission decision. Default 300s. */
-  permissionTimeoutMs?: number;
-  /** Invocation-local allow/deny rules evaluated before the session mode. */
-  permissionRules?: readonly ToolPermissionRule[];
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
   systemPrompt?:
     | string
@@ -440,6 +404,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 
 export interface SystemPromptContext {
   sessionId: string;
+  turnId: string;
   cwd: string;
   workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
@@ -593,19 +558,15 @@ export class AiSdkBackend implements AgentBackend {
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
-    const autoApprovalReviewer =
-      input.autoApprovalReviewer ??
-      new AiSdkAutoApprovalReviewer({
-        resolveModel: () => this.modelAdapter.resolveModel(),
-        ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
-      });
     this.toolRuntime = new ToolRuntime({
       sessionId: input.sessionId,
       header: input.header,
       connection: input.connection,
       modelId: input.modelId,
       appendMessage: input.appendMessage,
-      permissionEngine: input.permissionEngine,
+      readExecutionBoundary: input.readExecutionBoundary,
+      createSandboxBoundaryRequest: input.createSandboxBoundaryRequest,
+      settleSandboxBoundaryRequest: input.settleSandboxBoundaryRequest,
       newId: this.newId,
       now: this.now,
       getPermissionPauseTarget: () => this.currentWatchdog,
@@ -615,7 +576,6 @@ export class AiSdkBackend implements AgentBackend {
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
         this.materializeToolResultOutput(output, false, toolCallId),
       getCurrentOrchestration: () => this.currentOrchestration,
-      permissionRules: input.permissionRules,
       spawnChildAgent: input.spawnChildAgent,
       spawnChildSession: input.spawnChildSession,
       prepareChildAgentResume: input.prepareChildAgentResume,
@@ -624,47 +584,9 @@ export class AiSdkBackend implements AgentBackend {
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
       getRunTrace: () => this.currentRunTrace,
-      permissionTimeoutMs: input.permissionTimeoutMs,
       recordToolInvocation: input.recordToolInvocation,
       runtimeCommitSink: input.runtimeCommitSink,
       recordToolArtifacts: input.recordToolArtifacts,
-      approvalCoordinator: new ApprovalCoordinator({
-        autoReviewer: autoApprovalReviewer,
-        observer: {
-          onAutoReviewStarted: (request) =>
-            this.currentRunTrace?.emit(
-              'permission',
-              'auto_review_started',
-              'Automatic permission review started',
-              { requestId: request.requestId, toolUseId: request.toolUseId, kind: request.kind },
-            ),
-          onAutoReviewDecided: (request, decision) =>
-            this.currentRunTrace?.emit(
-              'permission',
-              'auto_review_decided',
-              'Automatic permission review decided',
-              {
-                requestId: request.requestId,
-                toolUseId: request.toolUseId,
-                decision: decision.outcome,
-                riskLevel: decision.riskLevel,
-              },
-            ),
-          onAutoReviewFailed: (request) =>
-            this.currentRunTrace?.emit(
-              'permission',
-              'auto_review_failed',
-              'Automatic permission review failed closed',
-              { requestId: request.requestId, toolUseId: request.toolUseId },
-            ),
-        },
-      }),
-      getAutoApprovalReviewContext: () => ({
-        ...(this.currentUserIntent !== undefined ? { userIntent: this.currentUserIntent } : {}),
-        ...(input.sandboxDiagnosticsSnapshot
-          ? { sandbox: autoApprovalSandboxContext(input.sandboxDiagnosticsSnapshot) }
-          : {}),
-      }),
     });
   }
 
@@ -690,7 +612,6 @@ export class AiSdkBackend implements AgentBackend {
       input.orchestration ??
       resolveEffectiveOrchestration(this.input.header.orchestrationMode, undefined);
     this.currentUserIntent = input.text;
-    this.input.permissionEngine.beginTurn(turnId);
     this.toolRuntime.beginTurn(turnId, input.hostedInteraction);
     const turnAbortController = new AbortController();
     this.abortController = turnAbortController;
@@ -711,6 +632,7 @@ export class AiSdkBackend implements AgentBackend {
     let stepThinking = '';
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
+    let stepResponsesThinkingParts: AssistantThinkingPart[] = [];
     let stepSignature: string | undefined;
     const startedAt = this.now();
 
@@ -727,6 +649,18 @@ export class AiSdkBackend implements AgentBackend {
       const hasThinking = sawStepThinking || stepSignature !== undefined;
       if (stepText.length === 0 && !hasThinking) return;
       const stepId = currentStepMessageId;
+      const thinkingParts: AssistantThinkingPart[] =
+        stepResponsesThinkingParts.length > 0
+          ? stepResponsesThinkingParts
+          : [
+              {
+                text: stepThinking,
+                ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
+                ...(stepThinkingProviderOptions !== undefined
+                  ? { providerOptions: stepThinkingProviderOptions }
+                  : {}),
+              },
+            ];
       const msg: AssistantMessage = {
         type: 'assistant',
         id: stepId,
@@ -738,28 +672,33 @@ export class AiSdkBackend implements AgentBackend {
           ? {
               thinking: {
                 text: stepThinking,
-                ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
-                ...(stepThinkingProviderOptions !== undefined
-                  ? { providerOptions: stepThinkingProviderOptions }
+                ...(thinkingParts.length === 1 && thinkingParts[0]!.signature !== undefined
+                  ? { signature: thinkingParts[0]!.signature }
                   : {}),
+                ...(thinkingParts.length === 1 && thinkingParts[0]!.providerOptions !== undefined
+                  ? { providerOptions: thinkingParts[0]!.providerOptions }
+                  : {}),
+                ...(thinkingParts.length > 1 ? { parts: thinkingParts } : {}),
               },
             }
           : {}),
       };
       await this.input.appendMessage(msg);
       if (hasThinking) {
-        queue.push({
-          type: 'thinking_complete',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          messageId: stepId,
-          text: stepThinking,
-          ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
-          ...(stepThinkingProviderOptions !== undefined
-            ? { providerOptions: stepThinkingProviderOptions }
-            : {}),
-        } satisfies ThinkingCompleteEvent);
+        for (const part of thinkingParts) {
+          queue.push({
+            type: 'thinking_complete',
+            id: this.newId(),
+            turnId,
+            ts: this.now(),
+            messageId: stepId,
+            text: part.text,
+            ...(part.signature !== undefined ? { signature: part.signature } : {}),
+            ...(part.providerOptions !== undefined
+              ? { providerOptions: part.providerOptions }
+              : {}),
+          } satisfies ThinkingCompleteEvent);
+        }
       }
       queue.push({
         type: 'text_complete',
@@ -773,6 +712,7 @@ export class AiSdkBackend implements AgentBackend {
       stepThinking = '';
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
+      stepResponsesThinkingParts = [];
       stepSignature = undefined;
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
@@ -838,6 +778,10 @@ export class AiSdkBackend implements AgentBackend {
       ? new ProviderRequestTracker({
           traceId: providerRequestTraceId,
           turnId,
+          contextWindow: resolveSelectedModelContextWindow(
+            this.input.connection,
+            this.input.modelId,
+          ),
           now: this.now,
           newId: this.newId,
           persistCapture: recordProviderRequestCapture!,
@@ -861,7 +805,7 @@ export class AiSdkBackend implements AgentBackend {
         stopReason: 'error',
       } satisfies CompleteEvent);
       queue.close();
-      this.cleanupAfterTurn(turnId);
+      await this.cleanupAfterTurn(turnId);
       yield* this.drain(queue);
       return;
     }
@@ -922,7 +866,7 @@ export class AiSdkBackend implements AgentBackend {
         stopReason: 'error',
       } satisfies CompleteEvent);
       queue.close();
-      this.cleanupAfterTurn(turnId);
+      await this.cleanupAfterTurn(turnId);
       yield* this.drain(queue);
       return;
     }
@@ -957,14 +901,14 @@ export class AiSdkBackend implements AgentBackend {
         watchdog.start();
         const activeTools = plan.activeTools;
         const systemPrompt = joinPromptFragments([
-          await this.resolveSystemPrompt(),
+          await this.resolveSystemPrompt(turnId),
           this.currentOrchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
           this.currentOrchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
         ]);
         const turnTailPrompt = input.continuation
           ? undefined
           : joinPromptFragments([
-              await this.resolveTurnTailPrompt(),
+              await this.resolveTurnTailPrompt(turnId),
               await this.resolveShellRunContextSummary(),
               this.input.sandboxDiagnosticsSnapshot
                 ? renderSandboxTurnTailPrompt(this.input.sandboxDiagnosticsSnapshot)
@@ -1372,6 +1316,33 @@ export class AiSdkBackend implements AgentBackend {
                   stepThinking += event.text;
                   if (event.providerOptions !== undefined) {
                     stepThinkingProviderOptions = event.providerOptions;
+                  }
+                  const openai = event.providerOptions?.openai;
+                  const itemId =
+                    openai && typeof openai === 'object' && !Array.isArray(openai)
+                      ? (openai as { itemId?: unknown }).itemId
+                      : undefined;
+                  if (typeof itemId === 'string' && itemId.length > 0) {
+                    let part = stepResponsesThinkingParts.find(
+                      (candidate) =>
+                        (candidate.providerOptions?.openai as { itemId?: unknown } | undefined)
+                          ?.itemId === itemId,
+                    );
+                    if (!part) {
+                      part = {
+                        text:
+                          stepResponsesThinkingParts.length === 0 && event.text.length === 0
+                            ? stepThinking
+                            : '',
+                        providerOptions: event.providerOptions,
+                      };
+                      stepResponsesThinkingParts.push(part);
+                    } else {
+                      part.providerOptions = event.providerOptions;
+                    }
+                    part.text += event.text;
+                  } else if (stepResponsesThinkingParts.length > 0) {
+                    stepResponsesThinkingParts.at(-1)!.text += event.text;
                   }
                   queue.push({
                     type: 'thinking_delta',
@@ -1858,21 +1829,7 @@ export class AiSdkBackend implements AgentBackend {
             connectionSlug: this.input.connection.slug,
             providerId: this.input.connection.providerType,
             modelId: this.input.modelId,
-            inputTokens: tokenUsage.inputTokens,
-            outputTokens: tokenUsage.outputTokens,
-            cacheHitInputTokens: tokenUsage.cacheHitInputTokens,
-            cacheMissInputTokens: tokenUsage.cacheMissInputTokens,
-            ...(tokenUsage.cacheMissInputSource !== undefined
-              ? { cacheMissInputSource: tokenUsage.cacheMissInputSource }
-              : {}),
-            cachedInputTokens: tokenUsage.cachedInputTokens,
-            cacheWriteInputTokens: tokenUsage.cacheWriteInputTokens,
-            reasoningTokens: tokenUsage.reasoningTokens,
-            totalTokens: tokenUsage.totalTokens,
-            ...(tokenUsage.rawFinishReason !== undefined
-              ? { rawFinishReason: tokenUsage.rawFinishReason }
-              : {}),
-            ...(tokenUsage.raw !== undefined ? { rawUsage: tokenUsage.raw } : {}),
+            ...llmCallUsageFields(tokenUsage),
             latencyMs: Math.max(0, this.now() - startedAt),
             status: streamStatus,
             ...(streamErrorClass ? { errorClass: streamErrorClass } : {}),
@@ -1913,7 +1870,7 @@ export class AiSdkBackend implements AgentBackend {
     } finally {
       if (!drainedNormally) turnAbortController.abort();
       await pumpDone.catch(() => {});
-      this.cleanupAfterTurn(turnId);
+      await this.cleanupAfterTurn(turnId);
     }
   }
 
@@ -1977,17 +1934,16 @@ export class AiSdkBackend implements AgentBackend {
     this.abortController?.abort();
     this.compaction.abortHistoryCompact();
     if (this.currentTurnId !== null) {
-      this.input.permissionEngine.endTurn(this.currentTurnId, 'aborted');
-      this.toolRuntime.endTurn(this.currentTurnId, 'aborted');
+      await this.toolRuntime.endTurn(this.currentTurnId, 'aborted');
     }
     this.currentRunTrace?.abortRequested(_reason);
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
-    if (this.currentTurnId === null) return;
-    this.input.permissionEngine.recordResponse(this.currentTurnId, decision);
-    // PermissionDecisionMessage + ack event are written inside ToolRuntime settlement
-    // after parked.resolve() returns, so no further work here.
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
+    if (await this.toolRuntime.respondToSandboxBoundaryResponse(decision)) {
+      return;
+    }
+    throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 
   async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
@@ -2379,14 +2335,18 @@ export class AiSdkBackend implements AgentBackend {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
     type ToolResultItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
     type ThinkingItem = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
+    type ReplayReasoning = {
+      part?: ReasoningPart;
+      providerOptions?: NonNullable<ModelMessage['providerOptions']>;
+    };
     const out: ModelMessage[] = [];
     let bufferedCalls: ToolCallItem[] = [];
     const results = new Map<string, ToolResultItem>();
-    const reasoningByStep = new Map<string, ThinkingItem>();
+    const reasoningByStep = new Map<string, ThinkingItem[]>();
     const textByStep = new Map<string, string>();
 
     const replaySupport = this.modelAdapter.runtimeEventReplaySupport();
-    const reasoningReplay = (item: ThinkingItem) => {
+    const reasoningReplay = (item: ThinkingItem): ReplayReasoning | undefined => {
       if (item.signature) {
         return replaySupport.signedThinking
           ? {
@@ -2397,6 +2357,32 @@ export class AiSdkBackend implements AgentBackend {
               },
             }
           : undefined;
+      }
+      if (replaySupport.openAiResponsesThinking) {
+        const openai = item.providerOptions?.openai;
+        if (openai && typeof openai === 'object' && !Array.isArray(openai)) {
+          const { itemId, reasoningEncryptedContent } = openai as {
+            itemId?: unknown;
+            reasoningEncryptedContent?: unknown;
+          };
+          if (typeof itemId === 'string' && itemId.length > 0) {
+            return {
+              part: {
+                type: 'reasoning' as const,
+                text: item.text,
+                providerOptions: {
+                  openai: {
+                    itemId,
+                    ...(typeof reasoningEncryptedContent === 'string' ||
+                    reasoningEncryptedContent === null
+                      ? { reasoningEncryptedContent }
+                      : {}),
+                  },
+                },
+              },
+            };
+          }
+        }
       }
       if (!replaySupport.unsignedThinking) return undefined;
       const kimiReasoningField = kimiReasoningFieldFromProviderOptions(item.providerOptions);
@@ -2442,13 +2428,17 @@ export class AiSdkBackend implements AgentBackend {
     // Emit one assistant message for a step: reasoning (if any), text (if any),
     // then the step's tool calls, followed by those calls' tool results.
     const emitStep = async (
-      reasoning: ThinkingItem | undefined,
+      reasoning: readonly ThinkingItem[] | undefined,
       text: string,
       calls: readonly ToolCallItem[],
     ) => {
       const content: unknown[] = [];
-      const replayReasoning = reasoning ? reasoningReplay(reasoning) : undefined;
-      if (replayReasoning?.part) content.push(replayReasoning.part);
+      const replayReasoning = reasoning
+        ?.map(reasoningReplay)
+        .filter((item): item is ReplayReasoning => item !== undefined);
+      for (const item of replayReasoning ?? []) {
+        if (item.part) content.push(item.part);
+      }
       if (text.length > 0) content.push({ type: 'text', text });
       for (const call of calls) {
         content.push({
@@ -2459,13 +2449,14 @@ export class AiSdkBackend implements AgentBackend {
           ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
         });
       }
-      if (content.length > 0 || replayReasoning?.providerOptions) {
+      const replayProviderOptions = replayReasoning?.find(
+        (item) => item.providerOptions !== undefined,
+      )?.providerOptions;
+      if (content.length > 0 || replayProviderOptions) {
         out.push({
           role: 'assistant',
           content,
-          ...(replayReasoning?.providerOptions
-            ? { providerOptions: replayReasoning.providerOptions }
-            : {}),
+          ...(replayProviderOptions ? { providerOptions: replayProviderOptions } : {}),
         } as ModelMessage);
       }
       await pushToolResults(calls);
@@ -2527,7 +2518,9 @@ export class AiSdkBackend implements AgentBackend {
           break;
         case 'thinking':
           if (item.stepId !== undefined) {
-            reasoningByStep.set(item.stepId, item);
+            const stepReasoning = reasoningByStep.get(item.stepId) ?? [];
+            stepReasoning.push(item);
+            reasoningByStep.set(item.stepId, stepReasoning);
           } else {
             // Legacy standalone reasoning (pure-reasoning turn): emit on its own.
             await flushPendingSteps();
@@ -2796,10 +2789,11 @@ export class AiSdkBackend implements AgentBackend {
     );
   }
 
-  private async resolveSystemPrompt(): Promise<string | undefined> {
+  private async resolveSystemPrompt(turnId: string): Promise<string | undefined> {
     if (typeof this.input.systemPrompt === 'function') {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
+        turnId,
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>
@@ -2809,10 +2803,11 @@ export class AiSdkBackend implements AgentBackend {
     return this.input.systemPrompt;
   }
 
-  private async resolveTurnTailPrompt(): Promise<string | undefined> {
+  private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {
     if (typeof this.input.turnTailPrompt === 'function') {
       return await this.input.turnTailPrompt({
         sessionId: this.sessionId,
+        turnId,
         cwd: this.input.header.cwd,
         workspaceRoot: this.input.header.workspaceRoot,
       });
@@ -2843,8 +2838,7 @@ export class AiSdkBackend implements AgentBackend {
     }
   }
 
-  private cleanupAfterTurn(turnId: string): void {
-    this.input.permissionEngine.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
+  private async cleanupAfterTurn(turnId: string): Promise<void> {
     this.abortController = null;
     this.currentQueue = null;
     this.currentTurnId = null;
@@ -2856,8 +2850,11 @@ export class AiSdkBackend implements AgentBackend {
     this.loopStopRequested = false;
     this.handoffStopReason = undefined;
     this.injectedSteeringMessages = [];
-    this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
-    this.aborted = false;
+    try {
+      await this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
+    } finally {
+      this.aborted = false;
+    }
   }
 
   /**
@@ -3018,7 +3015,6 @@ function buildInvalidMakaTool(): MakaTool<{ tool?: string; error?: string }, nev
       tool: z.string().optional(),
       error: z.string().optional(),
     }),
-    permissionRequired: false,
     impl: ({ tool, error }) => {
       const requested = tool ? ` "${tool}"` : '';
       throw new Error(

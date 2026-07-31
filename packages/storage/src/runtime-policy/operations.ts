@@ -1,13 +1,24 @@
 import type {
   ConnectionCatalogEntry,
+  ConnectionCatalogSnapshot,
+  ConnectionModelDiscoveryResult,
+  ConnectionTestSummary,
   CredentialLocator,
   CredentialStatus,
   CredentialVersionBasis,
   RuntimePolicy,
 } from '@maka/core/runtime-policy';
+import type { ProviderAuthActionAvailability } from '@maka/core/provider-auth';
 import type { ProviderDefaults } from '@maka/core/llm-connections';
 
+declare const operationTicketBrand: unique symbol;
+
 export type ProviderAuthKind = ProviderDefaults['authKind'];
+export type ConnectionEffectChangedDomain = 'connection' | 'credential' | 'network_proxy';
+export type UnavailableProviderActionAvailability = Exclude<
+  ProviderAuthActionAvailability,
+  'available'
+>;
 
 export interface RuntimePolicyCredentialMaterial extends CredentialVersionBasis {
   readonly secret: string;
@@ -22,6 +33,51 @@ export type CredentialStatusQueryResult =
   | { readonly kind: 'status'; readonly status: CredentialStatus }
   | { readonly kind: 'connection_not_found' };
 
+export interface ModelFetchTicket {
+  readonly [operationTicketBrand]: 'model_fetch';
+}
+
+export interface ConnectionTestTicket {
+  readonly [operationTicketBrand]: 'connection_test';
+}
+
+export type ConnectionEffectPreparationFailure =
+  | { readonly kind: 'connection_not_found' }
+  | { readonly kind: 'connection_disabled' }
+  | {
+      readonly kind: 'provider_action_unavailable';
+      readonly availability: UnavailableProviderActionAvailability;
+    }
+  | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus };
+
+export type BeginModelFetchResult =
+  | ConnectionEffectPreparationFailure
+  | {
+      readonly kind: 'ready';
+      readonly ticket: ModelFetchTicket;
+      readonly connection: ConnectionCatalogEntry;
+      readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+    };
+
+export type BeginConnectionTestResult =
+  | ConnectionEffectPreparationFailure
+  | {
+      readonly kind: 'ready';
+      readonly ticket: ConnectionTestTicket;
+      readonly connection: ConnectionCatalogEntry;
+      readonly modelId: string | null;
+      readonly secretMaterial: RuntimePolicyOperationSecretMaterial;
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+    };
+
+export type ConnectionEffectCompletionResult =
+  | { readonly kind: 'committed'; readonly snapshot: ConnectionCatalogSnapshot }
+  | {
+      readonly kind: 'superseded';
+      readonly changed: readonly ConnectionEffectChangedDomain[];
+    };
+
 export type ResolveExecutionConnectionResult =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'disabled' }
@@ -35,6 +91,19 @@ export type ResolveExecutionConnectionResult =
 
 export interface RuntimePolicyOperationCoordinator {
   resolveExecutionConnection(connectionSlug: string): Promise<ResolveExecutionConnectionResult>;
+  beginModelFetch(connectionId: string): Promise<BeginModelFetchResult>;
+  completeModelFetch(
+    ticket: ModelFetchTicket,
+    result: ConnectionModelDiscoveryResult,
+  ): Promise<ConnectionEffectCompletionResult>;
+  beginConnectionTest(
+    connectionId: string,
+    modelId: string | null,
+  ): Promise<BeginConnectionTestResult>;
+  completeConnectionTest(
+    ticket: ConnectionTestTicket,
+    result: ConnectionTestSummary,
+  ): Promise<ConnectionEffectCompletionResult>;
 }
 
 export function connectionCredentialLocator(

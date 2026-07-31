@@ -2,6 +2,7 @@ import {
   PROVIDER_DEFAULTS,
   isWiredOAuthProvider,
   providerAuthRequiresSecret,
+  providerSupportsModelDiscovery,
   type ConnectionAuth,
   type ConnectionLastTestStatus,
   type LlmConnection,
@@ -84,7 +85,7 @@ export function deriveProviderAuthContract(input: ProviderAuthContractInput): Pr
       },
     };
   }
-  const supportsModelDiscovery = defaults.modelDiscovery.kind !== 'fallback';
+  const supportsModelDiscovery = providerSupportsModelDiscovery(input.providerType);
   const actionAvailability = hiddenActions();
 
   if (!enabled) {

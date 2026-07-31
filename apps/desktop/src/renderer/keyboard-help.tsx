@@ -64,14 +64,17 @@ export function KeyboardHelpModal(props: { onClose(): void }) {
         if (!open) props.onClose();
       }}
     >
-      <DialogContent className="maka-modal maka-help-modal" aria-labelledby="maka-help-title" showClose={false}>
+      <DialogContent
+        className="maka-help-modal"
+        width={560}
+        maxHeight="calc(100dvh - 96px)"
+      >
         <DialogHeader
           icon={<Keyboard aria-hidden="true" />}
           title={copy.title}
-          titleId="maka-help-title"
           onClose={props.onClose}
         />
-        <div className="maka-modal-body maka-help-body">
+        <div className="maka-help-body">
           {copy.sections.map((section) => (
             <section key={section.heading} className="maka-help-section">
               <h3>{section.heading}</h3>

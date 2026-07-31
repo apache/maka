@@ -9,6 +9,8 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   GIVE_UP_MS,
@@ -132,8 +134,8 @@ describe('drag-to-grant permission overlay', () => {
   it('only recognises the two drag-to-grant permissions', () => {
     assert.equal(isDragGrantPermission('accessibility'), true);
     assert.equal(isDragGrantPermission('screen_recording'), true);
-    // Microphone and notifications have real programmatic consent dialogs;
-    // routing them through a drag card would be theatre.
+    // Microphone has a real consent dialog; notifications and Automation
+    // have ordinary System Settings rows. None belongs in a drag card.
     assert.equal(isDragGrantPermission('microphone'), false);
     assert.equal(isDragGrantPermission('notifications'), false);
     assert.equal(isDragGrantPermission('automation'), false);
@@ -292,6 +294,19 @@ describe('drag-to-grant permission overlay', () => {
 });
 
 describe('app bundle resolution for the drag', () => {
+  it('asks macOS for the bundle icon instead of trying to decode .icns directly', async () => {
+    const source = await readFile(
+      resolve(
+        process.cwd().endsWith('apps/desktop') ? process.cwd() : resolve(process.cwd(), 'apps/desktop'),
+        'src/main/permission-overlay/permission-overlay-main.ts',
+      ),
+      'utf8',
+    );
+    assert.match(source, /app\.getFileIcon\(bundlePath, \{ size: 'large' \}\)/);
+    assert.match(source, /app\.getFileIcon\(resolved\.bundlePath, \{ size: 'large' \}\)/);
+    assert.doesNotMatch(source, /nativeImage\.createFromPath\([^)]*\.icns/);
+  });
+
   it('walks three levels up from the executable to the .app', () => {
     assert.deepEqual(
       resolveAppBundle({

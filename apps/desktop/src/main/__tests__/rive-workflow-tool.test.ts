@@ -15,11 +15,10 @@ import {
 } from '../rive-workflow-tool.js';
 
 describe('RiveWorkflow tool and CLI bridge', { concurrency: false }, () => {
-  it('registers as a permission-gated custom MakaTool', () => {
+  it('registers as a categorized custom MakaTool', () => {
     const tool = buildRiveWorkflowTool();
     assert.equal(tool.name, RIVE_WORKFLOW_TOOL_NAME);
     assert.equal(tool.displayName, 'Rive 工作流');
-    assert.equal(tool.permissionRequired, true);
     assert.equal(tool.categoryHint, 'custom_tool');
     assert.match(tool.description, /Rive remains the source of truth/);
     assert.ok('action' in ((tool.parameters as { shape: Record<string, unknown> }).shape));

@@ -1,24 +1,41 @@
 /**
  * Shared, searchable model picker popup: one component behind both the chat
- * composer's model switcher and Settings → 通用 → 默认模型, so grouping,
- * provider marks, and search behavior cannot drift between the two surfaces.
+ * composer's model switcher and Settings → 通用 → 默认模型.
+ *
+ * Astryx owns the combobox keyboard contract and native-popover layer. Maka
+ * keeps only the product-specific grouped catalog, provider marks, and static
+ * thinking-level footer that the generic Selector component cannot express.
  */
 
-import { type ReactNode, forwardRef, useMemo, useState } from 'react';
-import { Combobox as BaseCombobox } from '@base-ui/react/combobox';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import {
+  useCombobox,
+  type SelectorOptionData,
+} from '@astryxdesign/core/Selector';
+import { usePopover } from '@astryxdesign/core/Popover';
 import type { ProviderType } from '@maka/core';
-import { type ModelMenuGroup } from './chat-model-helpers.js';
+import type { ModelMenuGroup } from './chat-model-helpers.js';
 import { Check, ChevronDown } from './icons.js';
 import {
   buildModelPickerGroups,
   filterModelPickerOption,
   modelPickerHasCatalogMatches,
   type ModelPickerOption,
-  type ModelPickerOptionGroup,
   type ModelPickerPinnedItem,
 } from './model-picker-internals.js';
 import { cn } from './utils.js';
-import { pickerTriggerClasses, type PickerTriggerAppearance } from './ui.js';
+import {
+  pickerTriggerClasses,
+  type PickerTriggerAppearance,
+} from './ui.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
@@ -43,203 +60,225 @@ export interface ModelPickerProps {
   children: ReactNode;
 }
 
-const ModelPickerTrigger = forwardRef<
-  HTMLButtonElement,
-  React.ComponentPropsWithoutRef<typeof BaseCombobox.Trigger> & { appearance?: PickerTriggerAppearance }
->(function ModelPickerTrigger(
-  { appearance = 'field', className, children, ...props },
-  ref,
-) {
-  return (
-    <BaseCombobox.Trigger
-      ref={ref}
-      className={cn(pickerTriggerClasses(appearance), 'justify-between', className)}
-      {...props}
-    >
-      {children}
-      <BaseCombobox.Icon>
-        <ChevronDown size={14} aria-hidden="true" />
-      </BaseCombobox.Icon>
-    </BaseCombobox.Trigger>
-  );
-});
-
-const ModelPickerInput = forwardRef<HTMLInputElement, React.ComponentPropsWithoutRef<typeof BaseCombobox.Input>>(function ModelPickerInput(
-  { className, ...props },
-  ref,
-) {
-  return <BaseCombobox.Input ref={ref} className={cn('w-full bg-transparent text-sm outline-none placeholder:text-foreground-secondary', className)} {...props} />;
-});
-
-const ModelPickerPopup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseCombobox.Popup>>(function ModelPickerPopup(
-  { className, ...props },
-  ref,
-) {
-  return <BaseCombobox.Popup ref={ref} className={cn('z-[var(--z-overlay)] min-w-40 rounded-md bg-popover p-1 text-popover-foreground shadow-maka-panel', className)} {...props} />;
-});
-
-const ModelPickerGroup = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseCombobox.Group>>(function ModelPickerGroup(
-  { className, ...props },
-  ref,
-) {
-  return <BaseCombobox.Group ref={ref} className={cn('py-1', className)} {...props} />;
-});
-
-const ModelPickerGroupLabel = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseCombobox.GroupLabel>>(function ModelPickerGroupLabel(
-  { className, ...props },
-  ref,
-) {
-  return <BaseCombobox.GroupLabel ref={ref} className={cn('px-2 py-1 text-xs font-medium text-foreground-secondary', className)} {...props} />;
-});
-
-const ModelPickerItem = forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<typeof BaseCombobox.Item>>(function ModelPickerItem(
-  { className, children, ...props },
-  ref,
-) {
-  return (
-    <BaseCombobox.Item
-      ref={ref}
-      className={cn('grid cursor-default grid-cols-[1rem_1fr] items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-muted data-[selected]:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50', className)}
-      {...props}
-    >
-      <span className="flex h-4 w-4 items-center justify-center" aria-hidden="true">
-        <BaseCombobox.ItemIndicator>
-          <Check size={13} aria-hidden="true" />
-        </BaseCombobox.ItemIndicator>
-      </span>
-      <span className="min-w-0">{children}</span>
-    </BaseCombobox.Item>
-  );
-});
-
-function ModelPickerOptions(props: {
-  query: string;
-  hasPinnedItem: boolean;
-  emptyMessage?: string;
-  renderProviderMark?(type: ProviderType): ReactNode;
-}) {
+export function ModelPicker(props: ModelPickerProps) {
   const copy = getSharedUiCopy(useUiLocale()).modelPicker;
-  const filteredGroups = BaseCombobox.useFilteredItems<ModelPickerOptionGroup>();
-  const filteredOptions = filteredGroups.flatMap((group) => group.items);
-  const noMatches = !modelPickerHasCatalogMatches(filteredOptions) && (props.query.trim().length > 0 || !props.hasPinnedItem);
+  const listboxId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState('');
+  const groups = useMemo(
+    () => buildModelPickerGroups(props.groups, props.pinnedItem),
+    [props.groups, props.pinnedItem],
+  );
+  const filteredGroups = useMemo(
+    () =>
+      groups
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) =>
+            filterModelPickerOption(item, query),
+          ),
+        }))
+        .filter((group) => group.items.length > 0),
+    [groups, query],
+  );
+  const filteredOptions = useMemo(
+    () => filteredGroups.flatMap((group) => group.items),
+    [filteredGroups],
+  );
+
+  const handleLayerHide = useCallback(() => {
+    setQuery('');
+  }, []);
+  const popover = usePopover({
+    onHide: handleLayerHide,
+    hasLightDismiss: true,
+    hasCloseButton: false,
+    hasAutoFocus: false,
+    role: 'none',
+  });
+  const { hide, isOpen, render, show, triggerRef } = popover;
+
+  const open = useCallback(() => {
+    show({ skipAutoFocus: true });
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [show]);
+  const close = useCallback(() => {
+    hide();
+    setQuery('');
+  }, [hide]);
+
+  const {
+    highlightedIndex,
+    setHighlightedIndex,
+    getItemId,
+    onTriggerClick,
+    onKeyDown,
+    onItemSelect,
+    onItemMouseEnter,
+  } = useCombobox({
+    selectableItems: filteredOptions as SelectorOptionData[],
+    value: props.value,
+    isDisabled: props.disabled,
+    isOpen,
+    hasSearch: true,
+    onOpen: open,
+    onClose: close,
+    onSelect: props.onValueChange,
+    listboxId,
+  });
+
+  useEffect(() => {
+    if (!isOpen) setHighlightedIndex(-1);
+  }, [isOpen, setHighlightedIndex]);
+
+  const noMatches =
+    !modelPickerHasCatalogMatches(filteredOptions) &&
+    (query.trim().length > 0 || !props.pinnedItem);
+  const activeIndex = filteredOptions[highlightedIndex]
+    ? highlightedIndex
+    : -1;
+
+  useEffect(() => {
+    if (!isOpen || activeIndex < 0) return;
+    document
+      .getElementById(getItemId(activeIndex))
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeIndex, getItemId, isOpen]);
+
+  let optionIndex = 0;
 
   return (
     <>
-      {noMatches && (
-        <div className="modelPickerEmpty">{props.emptyMessage ?? copy.empty}</div>
-      )}
-      <BaseCombobox.List className="modelPickerList">
-        {filteredGroups.map((group) => {
-          if (!group.heading) {
-            return group.items.map((item) => (
-              <ModelPickerItem key={item.value} value={item}>
-                <span className="settingsSelectMenuOption">{item.label}</span>
-              </ModelPickerItem>
-            ));
-          }
-
-          const logo = group.providerType ? props.renderProviderMark?.(group.providerType) : null;
-          return (
-            <ModelPickerGroup key={group.key} items={group.items}>
-              <ModelPickerGroupLabel className="settingsSelectMenuGroupLabel">
-                {logo ? (
-                  <span className="settingsSelectMenuGroupLogo" aria-hidden="true">{logo}</span>
-                ) : (
-                  <span aria-hidden="true" />
-                )}
-                <span>{group.heading}</span>
-              </ModelPickerGroupLabel>
-              <BaseCombobox.Collection>
-                {(item: ModelPickerOption) => (
-                  <ModelPickerItem key={item.value} value={item}>
-                    <span className="settingsSelectMenuOption">{item.label}</span>
-                  </ModelPickerItem>
-                )}
-              </BaseCombobox.Collection>
-            </ModelPickerGroup>
-          );
-        })}
-      </BaseCombobox.List>
-    </>
-  );
-}
-
-export function ModelPicker(props: ModelPickerProps) {
-  const copy = getSharedUiCopy(useUiLocale()).modelPicker;
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const groups = useMemo(() => buildModelPickerGroups(props.groups, props.pinnedItem), [props.groups, props.pinnedItem]);
-  const allOptions = useMemo(() => groups.flatMap((group) => group.items), [groups]);
-  const selectedItem = useMemo(
-    () => allOptions.find((item) => item.value === props.value) ?? null,
-    [allOptions, props.value],
-  );
-
-  return (
-    <BaseCombobox.Root<ModelPickerOption>
-      items={groups}
-      value={selectedItem}
-      inputValue={query}
-      open={open}
-      onOpenChange={(nextOpen, details) => {
-        const target = details.event?.target;
-        if (
-          !nextOpen &&
-          details.reason === 'outside-press' &&
-          target instanceof Element &&
-          target.closest('[data-model-picker-nested-popup]')
-        ) {
-          details.cancel();
-          return;
-        }
-        setOpen(nextOpen);
-        if (!nextOpen) setQuery('');
-      }}
-      onValueChange={(item) => {
-        if (!item) return;
-        props.onValueChange(item.value);
-        setQuery('');
-        setOpen(false);
-      }}
-      onInputValueChange={(next) => setQuery(String(next))}
-      filter={filterModelPickerOption}
-      isItemEqualToValue={(item, value) => item.value === value.value}
-      itemToStringLabel={(item) => item.label}
-      disabled={props.disabled}
-    >
-      <ModelPickerTrigger
-        appearance={props.triggerAppearance}
-        className={props.triggerClassName}
+      <button
+        ref={triggerRef}
+        type="button"
+        className={cn(
+          pickerTriggerClasses(props.triggerAppearance),
+          'modelPickerTrigger',
+          props.triggerClassName,
+        )}
         aria-label={props.ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        aria-controls={listboxId}
         title={props.title}
         disabled={props.disabled}
+        onClick={onTriggerClick}
+        onKeyDown={onKeyDown}
       >
         {props.children}
-      </ModelPickerTrigger>
-      <BaseCombobox.Portal>
-        <BaseCombobox.Positioner sideOffset={8} className="settingsSelectPositioner">
-          <ModelPickerPopup className={props.popupClassName ?? 'settingsSelectMenuPopup modelPickerPopup'}>
-            <ModelPickerInput
-              className="modelPickerSearchInput"
-              placeholder={props.searchPlaceholder ?? copy.searchPlaceholder}
-              aria-label={props.searchPlaceholder ?? copy.searchAriaLabel}
-            />
-            <ModelPickerOptions
-              query={query}
-              hasPinnedItem={Boolean(props.pinnedItem)}
-              emptyMessage={props.emptyMessage}
-              renderProviderMark={props.renderProviderMark}
-            />
-            {props.footer?.({
-              open,
-              close: () => {
-                setOpen(false);
-                setQuery('');
-              },
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+
+      {render(
+        <div
+          className={cn(
+            'modelPickerPopup',
+            props.popupClassName,
+          )}
+        >
+          <input
+            ref={inputRef}
+            className="modelPickerSearchInput"
+            role="combobox"
+            aria-label={
+              props.searchPlaceholder ?? copy.searchAriaLabel
+            }
+            aria-expanded={isOpen}
+            aria-controls={listboxId}
+            aria-autocomplete="list"
+            aria-activedescendant={
+              activeIndex >= 0
+                ? getItemId(activeIndex)
+                : undefined
+            }
+            value={query}
+            placeholder={
+              props.searchPlaceholder ?? copy.searchPlaceholder
+            }
+            onChange={(event) => {
+              setQuery(event.currentTarget.value);
+              setHighlightedIndex(0);
+            }}
+            onKeyDown={onKeyDown}
+          />
+
+          {noMatches && (
+            <div className="modelPickerEmpty">
+              {props.emptyMessage ?? copy.empty}
+            </div>
+          )}
+          <div
+            id={listboxId}
+            role="listbox"
+            aria-label={props.ariaLabel}
+            className="modelPickerList"
+          >
+            {filteredGroups.map((group) => {
+              const groupItems = group.items.map((item) => {
+                const index = optionIndex++;
+                const highlighted = index === activeIndex;
+                const selected = item.value === props.value;
+                return (
+                  <div
+                    key={item.value}
+                    id={getItemId(index)}
+                    role="option"
+                    aria-selected={selected}
+                    data-highlighted={highlighted ? '' : undefined}
+                    data-selected={selected ? '' : undefined}
+                    className="modelPickerOption"
+                    onClick={() => onItemSelect(item)}
+                    onMouseEnter={() =>
+                      onItemMouseEnter(item, index)
+                    }
+                  >
+                    <span
+                      className="modelPickerOptionIndicator"
+                      aria-hidden="true"
+                    >
+                      {selected ? <Check size={13} /> : null}
+                    </span>
+                    <span className="modelPickerOptionLabel">
+                      {item.label}
+                    </span>
+                  </div>
+                );
+              });
+
+              if (!group.heading) return groupItems;
+              const logo = group.providerType
+                ? props.renderProviderMark?.(group.providerType)
+                : null;
+              return (
+                <div
+                  key={group.key}
+                  role="group"
+                  aria-label={group.heading}
+                  className="modelPickerGroup"
+                >
+                  <div className="modelPickerGroupLabel">
+                    {logo ? (
+                      <span
+                        className="modelPickerGroupLogo"
+                        aria-hidden="true"
+                      >
+                        {logo}
+                      </span>
+                    ) : (
+                      <span aria-hidden="true" />
+                    )}
+                    <span>{group.heading}</span>
+                  </div>
+                  {groupItems}
+                </div>
+              );
             })}
-          </ModelPickerPopup>
-        </BaseCombobox.Positioner>
-      </BaseCombobox.Portal>
-    </BaseCombobox.Root>
+          </div>
+          {props.footer?.({ open: isOpen, close })}
+        </div>,
+        { placement: 'below', alignment: 'start' },
+      )}
+    </>
   );
 }

@@ -1,4 +1,4 @@
-import { isDeepStrictEqual } from 'node:util';
+import * as nodeUtil from 'node:util';
 import type { RuntimeEvent } from './runtime-event.js';
 import { canonicalToolArgsHash } from './tool-args-identity.js';
 
@@ -153,7 +153,7 @@ export function validateToolLedgerTransition(input: {
       candidates.push(candidate);
       continue;
     }
-    if (!isDeepStrictEqual(prior, candidate)) {
+    if (!nodeUtil.isDeepStrictEqual(prior, candidate)) {
       return { ok: false, code: 'duplicate_event_id', eventId: candidate.id };
     }
   }

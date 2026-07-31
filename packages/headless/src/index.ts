@@ -135,6 +135,7 @@ export type {
   TaskRunError,
   TaskRunResult,
   TaskRunStatus,
+  SupplementalToolSetIdentity,
   ToolExecutorIdentity,
   ToolExecutorIdentityRecordedEvent,
   VerifierResult,
@@ -147,15 +148,6 @@ export {
   isTerminalTaskRunStatus,
   taxonomyFromResultRecord,
 } from './task-contracts.js';
-export {
-  commandResourceScope,
-  hashNormalizedArgs,
-  matchPermissionGrant,
-  normalizePermissionArgs,
-  permissionPreview,
-  resourceScopeEquals,
-  type NormalizedPermissionArgs,
-} from './permission-grants.js';
 export type { TaskRunProjection } from './task-run-projection.js';
 export { projectTaskRun } from './task-run-projection.js';
 export type {
@@ -457,7 +449,8 @@ export {
   buildIsolatedEditTool,
   buildIsolatedGlobTool,
   buildIsolatedGrepTool,
-  buildIsolatedHeadlessToolAvailability,
+  buildIsolatedHeadlessProductToolSurface,
+  buildIsolatedHeadlessSupplementalTools,
   buildIsolatedHeadlessTools,
   buildIsolatedReadTool,
   buildIsolatedWriteTool,

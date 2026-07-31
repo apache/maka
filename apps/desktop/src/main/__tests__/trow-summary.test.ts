@@ -36,7 +36,7 @@ describe('trowActivityKind', () => {
     assert.equal(trowActivityKind('stop_background_task'), 'command');
     assert.equal(trowActivityKind('ExploreAgent'), 'explore');
     assert.equal(trowActivityKind('browser_click'), 'browser');
-    assert.equal(trowActivityKind('OfficeDocument'), 'tool');
+    assert.equal(trowActivityKind('ImaginaryTool'), 'tool');
   });
 });
 
@@ -67,7 +67,7 @@ describe('summarizeTrowTools', () => {
   });
 
   it('falls back to the generic bucket for unknown tools', () => {
-    assert.equal(summarizeTrowTools([tool('OfficeDocument'), tool('RiveWorkflow')]), '调用 2 个工具');
+    assert.equal(summarizeTrowTools([tool('ImaginaryTool'), tool('RiveWorkflow')]), '调用 2 个工具');
   });
 });
 

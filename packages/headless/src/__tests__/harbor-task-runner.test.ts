@@ -777,7 +777,17 @@ describe('createHarborTaskRunner', () => {
       const upstream = createServer((request, response) => {
         upstreamApiKey = String(request.headers['x-api-key'] ?? '');
         upstreamPath = request.url ?? '';
-        response.writeHead(200).end('ok');
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          [
+            'event: message_start',
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":70,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":1}}}',
+            '',
+            'event: message_delta',
+            'data: {"type":"message_delta","usage":{"output_tokens":25}}',
+            '',
+          ].join('\n'),
+        );
       });
       await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
       const address = upstream.address();
@@ -793,7 +803,16 @@ describe('createHarborTaskRunner', () => {
           provider: 'kimi-coding-plan',
           reasoningEffort: 'max',
           apiKeyFile: keyFile,
-          agentEnv: { MAKA_BASE_URL: `http://127.0.0.1:${address.port}/coding/v1` },
+          pricing: {
+            inputUsdPer1M: 0,
+            cacheReadUsdPer1M: 0,
+            cacheWriteUsdPer1M: 0,
+            outputUsdPer1M: 0,
+          },
+          agentEnv: {
+            MAKA_BASE_URL: `http://127.0.0.1:${address.port}/coding/v1`,
+            MAKA_MODEL_API_PROTOCOL: 'anthropic-messages',
+          },
           runHarbor: async (request) => {
             const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
               'host.docker.internal',
@@ -807,13 +826,99 @@ describe('createHarborTaskRunner', () => {
               body: '{}',
             });
             assert.equal(response.status, 200);
-            return fakeRunner({ reward: '1\n' })(request);
+            await response.text();
+            return fakeRunner({
+              reward: '1\n',
+              cell: cellOutput({ tokenSummary: undefined }),
+            })(request);
           },
         });
 
-        await runner(runInput());
+        const output = await runner(runInput());
         assert.equal(upstreamApiKey, 'sk-secret');
         assert.equal(upstreamPath, '/coding/v1/messages');
+        assert.deepEqual(output.cell.tokenSummary, {
+          input: 100,
+          output: 25,
+          cachedInput: 20,
+          cacheHitInput: 20,
+          cacheMissInput: 70,
+          cacheWriteInput: 10,
+          cacheMissInputSource: 'explicit',
+          reasoning: 0,
+          total: 125,
+          costUsd: 0,
+          pricingSource: 'runtime',
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+  });
+
+  test('uses the host-selected OpenAI protocol for the default Maka Kimi Coding Plan proxy', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      let upstreamAuthorization = '';
+      let upstreamPath = '';
+      const upstream = createServer((request, response) => {
+        upstreamAuthorization = request.headers.authorization ?? '';
+        upstreamPath = request.url ?? '';
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          [
+            'data: {"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":25,"prompt_tokens_details":{"cached_tokens":20},"completion_tokens_details":{"reasoning_tokens":15}}}',
+            '',
+            'data: [DONE]',
+            '',
+          ].join('\n'),
+        );
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      const address = upstream.address();
+      assert.ok(address && typeof address !== 'string');
+      try {
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          model: 'kimi-coding-plan/k3',
+          provider: 'kimi-coding-plan',
+          reasoningEffort: 'max',
+          resolveProviderCredential: async () => ({ value: 'sk-secret' }),
+          pricing: {
+            inputUsdPer1M: 0,
+            cacheReadUsdPer1M: 0,
+            cacheWriteUsdPer1M: 0,
+            outputUsdPer1M: 0,
+          },
+          agentEnv: {
+            MAKA_BASE_URL: `http://127.0.0.1:${address.port}/coding/v1`,
+            MAKA_HOST_MODEL_API_PROTOCOL: 'openai-chat',
+          },
+          runHarbor: async (request) => {
+            const proxyUrl = request.env?.MAKA_HOST_BASE_URL;
+            const proxyToken = request.env?.MAKA_HOST_API_KEY;
+            assert.ok(proxyUrl && proxyToken);
+            const response = await fetch(`${proxyUrl}/v1/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${proxyToken}` },
+              body: '{}',
+            });
+            assert.equal(response.status, 200);
+            await response.text();
+            return fakeRunner({
+              reward: '1\n',
+              cell: cellOutput({ tokenSummary: undefined }),
+            })(request);
+          },
+        });
+
+        const output = await runner(runInput());
+        assert.equal(upstreamAuthorization, 'Bearer sk-secret');
+        assert.equal(upstreamPath, '/coding/v1/chat/completions');
+        assert.equal(output.cell.tokenSummary?.total, 125);
+        assert.equal(output.cell.tokenSummary?.reasoning, 15);
       } finally {
         await new Promise<void>((resolve, reject) =>
           upstream.close((error) => (error ? reject(error) : resolve())),
@@ -2448,6 +2553,33 @@ describe('createHarborTaskRunner timeout', () => {
             id: 'task-1',
             path: '/tasks/task-1',
             metadata: { agentTimeoutSec: 7_200, verifierTimeoutSec: 600 },
+          },
+        }),
+      );
+      assert.equal(seenTimeout, (7_200 + 1_320 + 15 * 60) * 1_000);
+    });
+  });
+
+  test('derives the outer Harbor timeout from a configured cell budget above the task limit', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      let seenTimeout: number | undefined;
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'kimi-coding-plan/k3',
+        provider: 'kimi-coding-plan',
+        agentEnv: { MAKA_CELL_TIMEOUT_SEC: '7200' },
+        runHarbor: async (request) => {
+          seenTimeout = request.timeoutMs;
+          return fakeRunner({ reward: '1\n' })(request);
+        },
+      });
+      await runner(
+        runInput({
+          task: {
+            id: 'task-1',
+            path: '/tasks/task-1',
+            metadata: { agentTimeoutSec: 600, verifierTimeoutSec: 600 },
           },
         }),
       );

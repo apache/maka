@@ -17,8 +17,8 @@ import {
   type CuObservation,
   type CuSemanticAction,
 } from '../computer-use-tools.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const ZERO_USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
@@ -360,7 +360,7 @@ function createRuntime(input: {
   durable?: ReturnType<typeof createDurableTurnHarness>;
 }): AiSdkBackend {
   const selectedConnection = input.connection ?? connection('openai');
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async (message) => {
@@ -369,10 +369,6 @@ function createRuntime(input: {
     connection: selectedConnection,
     apiKey: 'test-key',
     modelId: 'mock-computer-model',
-    permissionEngine: new PermissionEngine({
-      newId: () => 'permission-id',
-      now: () => 1,
-    }),
     modelFactory: () => input.model,
     tools: [input.computerTool],
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),

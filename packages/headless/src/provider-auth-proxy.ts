@@ -7,6 +7,22 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { Socket } from 'node:net';
+import { Agent, type Dispatcher, Headers, fetch as upstreamFetch } from 'undici';
+
+/** Upstream connections must stay on HTTP/1.1. Providers negotiate h2 via
+ * ALPN, and undici <= 8.7 (bundled in Node 26) refuses to multiplex
+ * stream/async-iterable request bodies on an h2 session with requests in
+ * flight, while its fetch wraps every non-empty body into an async iterable —
+ * so concurrent streaming completions from parallel cells serialized behind
+ * each other's full generation streams, recorded as provider first-token
+ * latency. undici 8.8 removed that gate, but forcing h1 keeps the proxy
+ * independent of which undici build serves the fetch: h1 pools sidestep the
+ * whole class by dialing parallel connections. */
+export function createProviderUpstreamDispatcher(options: Agent.Options = {}): Dispatcher {
+  return new Agent({ ...options, allowH2: false });
+}
+
+const defaultUpstreamDispatcher = createProviderUpstreamDispatcher();
 
 export interface ProviderAuthProxy {
   baseUrl: string;
@@ -38,6 +54,12 @@ export interface ProviderRequestTelemetry {
   protocol?: ProviderUsageProtocol;
   status?: number;
   outcome: 'completed' | 'interrupted' | 'failed' | 'aborted';
+  /** When the dispatcher started writing the request to an upstream
+   * connection. Time before this is credential resolution, request-body read,
+   * and the dispatcher's connection queue; `responseHeadersMs` minus this is
+   * pure upstream wait. The h2 serialization defect hid inside this interval
+   * while `responseHeadersMs` alone read as provider latency. */
+  upstreamStartMs?: number;
   responseHeadersMs?: number;
   firstBodyChunkMs?: number;
   firstOutputTokenMs?: number;
@@ -153,6 +175,9 @@ type ProviderAuthProxyRouteConfig = {
   usageProtocol?: ProviderUsageProtocol;
   /** Injectable monotonic clock for deterministic tests. */
   now?: () => number;
+  /** Injectable upstream dispatcher for tests (e.g. to trust a test CA).
+   * Build it with createProviderUpstreamDispatcher to keep h2 disabled. */
+  upstreamDispatcher?: Dispatcher;
 } & (
   | { apiKeyFile: string; resolveUpstreamCredential?: never }
   | { apiKeyFile?: never; resolveUpstreamCredential: ProviderUpstreamCredentialResolver }
@@ -208,6 +233,7 @@ interface ProviderAuthProxyRoute {
   readonly usage: ProviderUsageAccumulator;
   readonly telemetry: ProviderTelemetryAccumulator;
   readonly now: () => number;
+  readonly upstreamDispatcher: Dispatcher;
   readonly activeRequests: Set<AbortController>;
   readonly activeResponses: Set<ServerResponse>;
   readonly activeForwards: Set<Promise<void>>;
@@ -248,6 +274,7 @@ export async function startProviderAuthProxyHub(
       usage: route.usage,
       telemetry: route.telemetry,
       now: route.now,
+      upstreamDispatcher: route.upstreamDispatcher,
       signal: controller.signal,
     }).finally(() => {
       request.off('aborted', abortOnRequest);
@@ -335,6 +362,7 @@ function providerAuthProxyRoute(input: ProviderAuthProxyRouteInput): ProviderAut
     usage: new ProviderUsageAccumulator(),
     telemetry: new ProviderTelemetryAccumulator(),
     now: input.now ?? performance.now.bind(performance),
+    upstreamDispatcher: input.upstreamDispatcher ?? defaultUpstreamDispatcher,
     activeRequests: new Set<AbortController>(),
     activeResponses: new Set<ServerResponse>(),
     activeForwards: new Set<Promise<void>>(),
@@ -373,6 +401,7 @@ async function forwardProviderRequest(input: {
   usage: ProviderUsageAccumulator;
   telemetry: ProviderTelemetryAccumulator;
   now: () => number;
+  upstreamDispatcher: Dispatcher;
   signal: AbortSignal;
 }): Promise<void> {
   let requestTelemetry: MutableProviderRequestTelemetry | null = null;
@@ -423,10 +452,16 @@ async function forwardProviderRequest(input: {
       input.request.method === 'GET' || input.request.method === 'HEAD'
         ? undefined
         : await readRequestBody(input.request);
-    const upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamResponse = await upstreamFetch(upstreamUrl, {
       method: input.request.method,
       headers,
       signal: input.signal,
+      dispatcher: upstreamStartTimedDispatcher(
+        input.upstreamDispatcher,
+        requestTelemetry,
+        startedAt,
+        input.now,
+      ),
       ...(body ? { body: new Uint8Array(body) } : {}),
     });
     requestTelemetry.status = upstreamResponse.status;
@@ -499,6 +534,27 @@ async function forwardProviderRequest(input: {
     if (!input.response.headersSent) input.response.writeHead(502);
     input.response.end('provider proxy request failed');
   }
+}
+
+/** Stamp `upstreamStartMs` when the dispatcher begins writing the request to
+ * an upstream connection, so connection-queue time is separable from upstream
+ * wait in the recorded telemetry. */
+function upstreamStartTimedDispatcher(
+  dispatcher: Dispatcher,
+  requestTelemetry: MutableProviderRequestTelemetry,
+  startedAt: number,
+  now: () => number,
+): Dispatcher {
+  return dispatcher.compose((dispatch) => (options, handler) => {
+    const timed: Dispatcher.DispatchHandler = Object.create(handler);
+    timed.onRequestStart = function (controller, context) {
+      requestTelemetry.upstreamStartMs ??= elapsedMs(startedAt, now());
+      // Keep `this` = the wrapper for the delegated call too, so handler state
+      // written across callbacks always lands on one object.
+      return handler.onRequestStart?.call(this, controller, context);
+    };
+    return dispatch(options, timed);
+  });
 }
 
 async function resolveUpstreamCredentialUntilAborted(

@@ -72,7 +72,10 @@ describe('Custom relay provider setup contract', () => {
     assert.match(form, /if \(isCustomRelay && !normalizedDefaultModel\) return setError\(copy\.defaultModelRequired\);/);
     assert.match(form, /baseUrl: resolvedBaseUrl,/);
     assert.match(form, /defaultModel: normalizedDefaultModel \|\| recommendedDefaultModel,/);
-    assert.match(form, /if \(isCustomRelay\) await props\.bridge\.fetchModels\(connection\.slug\)\.catch\(\(\) => undefined\);/);
+    assert.match(
+      form,
+      /const supportsRemoteDiscovery = providerSupportsModelDiscovery\(props\.providerType\);[\s\S]*if \(supportsRemoteDiscovery\) \{[\s\S]*await props\.bridge\.fetchModels\(connection\.slug\)[\s\S]*if \(!isCustomRelay\) modelDiscoveryError = error/,
+    );
     assert.match(form, /aria-label=\{copy\.defaultModelAria\}/);
     assert.match(form, /<small>\{copy\.defaultModelHelp\}<\/small>/);
 

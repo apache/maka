@@ -20,7 +20,9 @@ import {
   isBudgetExhaustedTrialException,
   mergeAgentEnv,
   modelIdForProvider,
+  providerProxyApiProtocol,
   providerProxyAuthMode,
+  providerProxyUpstreamBaseUrl,
   providerProxyUsageProtocol,
   providerRequiresSecret,
   providerTelemetryArtifactRefs,
@@ -303,7 +305,11 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
     const launchAttempt = async (): Promise<PierRunResult> => {
       // Proxy bind errors surface raw, before the launch try, with their own
       // message — they are configuration faults, not infra flakes.
-      const providerRuntime = await pierProviderRuntime(options, agent, traceMode);
+      const providerRuntime = await pierProviderRuntime(
+        { ...options, agentEnv: attemptAgentEnv },
+        agent,
+        traceMode,
+      );
       const envFileEntries = providerRuntime?.envFile ?? {};
       const usesEnvFile = Object.keys(envFileEntries).length > 0;
       try {
@@ -803,13 +809,14 @@ async function pierProviderRuntime(
   // host.docker.internal unless native Linux supplies an explicit bridge host.
   const advertisedHost =
     agent === 'maka' && !makaContainerTaskRun ? '127.0.0.1' : options.providerProxyAdvertisedHost;
+  const apiProtocol = providerProxyApiProtocol(agent, options.agentEnv);
   const routeInput: ProviderAuthProxyRouteInput = {
-    upstreamBaseUrl: baseUrl,
+    upstreamBaseUrl: providerProxyUpstreamBaseUrl(baseUrl, provider, apiProtocol),
     ...(options.resolveProviderCredential
       ? { resolveUpstreamCredential: options.resolveProviderCredential }
       : { apiKeyFile: options.apiKeyFile! }),
-    authMode: agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider),
-    usageProtocol: providerProxyUsageProtocol(agent, provider),
+    authMode: agent === 'kimi-code' ? 'bearer' : providerProxyAuthMode(provider, apiProtocol),
+    usageProtocol: providerProxyUsageProtocol(agent, provider, apiProtocol),
   };
   const proxy =
     options.providerProxyHub && proxyPort !== undefined

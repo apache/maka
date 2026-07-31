@@ -77,9 +77,7 @@ export function BotChatOverview(props: {
           <AlertTitle>{copy.loadFailed}</AlertTitle>
           <AlertDescription>{props.statusLoadError}</AlertDescription>
           <AlertAction>
-            <Button type="button" variant="secondary" onClick={() => void props.onRefreshStatuses()}>
-              {copy.reload}
-            </Button>
+            <Button variant="secondary" onClick={() => void props.onRefreshStatuses()} label={copy.reload} />
           </AlertAction>
         </Alert>
       )}

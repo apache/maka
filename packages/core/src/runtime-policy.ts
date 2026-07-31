@@ -9,7 +9,11 @@ import type { ChatDefaultPermissionMode, ProxyProtocol } from './settings.js';
 import { WEB_SEARCH_PROVIDERS, type WebSearchProvider } from './web-search.js';
 
 export { WEB_SEARCH_PROVIDERS };
-export { RuntimePolicyDomainDecodeError } from './runtime-policy/domain-codec.js';
+export type { ConnectionTestErrorClass, ModelDiscoverySource } from './llm-connections.js';
+export {
+  decodeRuntimePolicyEntityId,
+  RuntimePolicyDomainDecodeError,
+} from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
   normalizeRuntimePolicyMutation,
@@ -34,6 +38,7 @@ export {
   normalizeConnectionCatalogEntryDraft,
   normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionCatalogEntryUpdateForProvider,
+  normalizeConnectionModelDiscoveryResult,
   normalizeCreateCatalogConnectionInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeSetDefaultConnectionTargetInput,

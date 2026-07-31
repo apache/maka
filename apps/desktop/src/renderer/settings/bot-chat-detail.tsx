@@ -97,7 +97,7 @@ export function BotChatChannelDetail(props: {
   const readiness = viewState.readiness;
   const readinessCopy = botReadinessCopyForSupport(support, readiness, locale);
   const quickOnboarding = supportsQuickOnboarding(provider);
-  const qrOnlyOnboarding = provider === 'wechat' || provider === 'whatsapp';
+  const qrOnlyOnboarding = provider === 'wechat';
   // PR1197 review (P1-8): the scan-login action row belongs to quick mode only.
   // WeChat has no manual mode, so it always uses the scan affordance. In manual
   // mode the runtime providers (e.g. DingTalk) must fall through to the shared
@@ -138,16 +138,14 @@ export function BotChatChannelDetail(props: {
   return (
     <div className="settingsRemoteAccessDetail">
       <Button
-        type="button"
-        variant="quiet"
+        variant="ghost"
         className="settingsRemoteAccessBack"
         aria-label={detailCopy.back}
-        disabled={props.actionBusy}
+        isDisabled={props.actionBusy}
         onClick={props.onBack}
-      >
-        <ArrowLeft size={16} aria-hidden="true" />
-        {detailCopy.back}
-      </Button>
+        icon={<ArrowLeft size={16} aria-hidden="true" />}
+        label={detailCopy.back}
+      />
       <section className="settingsBotDetail">
         <header className="settingsBotDetailHeader" data-support={support}>
           <BotBrandLogo provider={provider} size="large" />
@@ -194,43 +192,22 @@ export function BotChatChannelDetail(props: {
             <div className="settingsBotActionStack" role="group" aria-label={detailCopy.actionsAria(providerPresentation.label)}>
               {inQuickOnboarding ? (
                 <>
-                  <Button type="button" disabled={props.actionBusy} onClick={() => setScanLoginOpen(true)}>
-                    {provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect}
-                  </Button>
-                  {(
-                    (provider === 'wechat' && (channel.token || status?.identity))
-                    || (provider === 'whatsapp' && channel.sessionConfigured)
-                  ) && (
-                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onDisconnectSession()}>
-                      {props.pendingAction === 'disconnect'
-                        ? detailCopy.disconnecting
-                        : provider === 'whatsapp'
-                          ? detailCopy.disconnectWhatsapp
-                          : detailCopy.disconnectWechat}
-                    </Button>
+                  <Button variant="primary" isDisabled={props.actionBusy} onClick={() => setScanLoginOpen(true)} label={provider === 'wecom' ? detailCopy.quickBind : provider === 'wechat' ? detailCopy.scanLogin : detailCopy.scanConnect} />
+                  {provider === 'wechat' && (channel.token || status?.identity) && (
+                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onDisconnectSession()} label={props.pendingAction === 'disconnect' ? detailCopy.disconnecting : detailCopy.disconnectWechat} />
                   )}
                   {provider === 'wechat' && (
-                    <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => setWechatQrOpen(true)}>
-                      {detailCopy.bridgeQr}
-                    </Button>
+                    <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => setWechatQrOpen(true)} label={detailCopy.bridgeQr} />
                   )}
-                  <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onTest()}>
-                    {props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test}
-                  </Button>
+                  <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : detailCopy.test} />
                 </>
               ) : support === 'runtime' && !status?.running ? (
-                <Button type="button" disabled={props.actionBusy} onClick={() => void props.onTestAndConnect()}>
-                  {props.pendingAction === 'connect' ? detailCopy.connecting : detailCopy.testAndConnect}
-                </Button>
+                <Button variant="primary" isDisabled={props.actionBusy} onClick={() => void props.onTestAndConnect()} label={props.pendingAction === 'connect' ? detailCopy.connecting : detailCopy.testAndConnect} />
               ) : (
-                <Button type="button" variant="secondary" disabled={props.actionBusy || support === 'planned'} onClick={() => void props.onTest()}>
-                  {props.pendingAction === 'test' ? detailCopy.testing : support === 'runtime' ? detailCopy.test : detailCopy.testAndConnect}
-                </Button>
+                <Button variant="secondary" isDisabled={props.actionBusy || support === 'planned'} onClick={() => void props.onTest()} label={props.pendingAction === 'test' ? detailCopy.testing : support === 'runtime' ? detailCopy.test : detailCopy.testAndConnect} />
               )}
               {support === 'runtime' && (status?.running || props.restarting) && provider !== 'wechat' && (
-                <Button type="button" variant="secondary" disabled={props.actionBusy} onClick={() => void props.onRestart()}>
-                  {props.restarting ? detailCopy.restarting : detailCopy.restart}
-                </Button>
+                <Button variant="secondary" isDisabled={props.actionBusy} onClick={() => void props.onRestart()} label={props.restarting ? detailCopy.restarting : detailCopy.restart} />
               )}
             </div>
           </div>
@@ -280,7 +257,7 @@ export function BotChatChannelDetail(props: {
           />
         )}
 
-        {quickOnboarding && provider !== 'wechat' && (provider === 'whatsapp' || setupMode === 'quick') && (
+        {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
           <section className="settingsBotQuickSetup" aria-label={detailCopy.quickAria(providerPresentation.label)}>
             <div>
               <strong>
@@ -288,18 +265,14 @@ export function BotChatChannelDetail(props: {
                   ? detailCopy.quickWecomTitle
                   : provider === 'qq'
                     ? detailCopy.quickQqTitle
-                    : provider === 'whatsapp'
-                      ? detailCopy.quickWhatsappTitle
-                      : detailCopy.quickTitle}
+                    : detailCopy.quickTitle}
               </strong>
               <p>
                 {provider === 'wecom'
                   ? detailCopy.quickWecomDetail
                   : provider === 'qq'
                     ? detailCopy.quickQqDetail
-                    : provider === 'whatsapp'
-                      ? detailCopy.quickWhatsappDetail
-                      : detailCopy.quickDetail}
+                    : detailCopy.quickDetail}
               </p>
             </div>
             {provider === 'feishu' ? (
@@ -314,16 +287,8 @@ export function BotChatChannelDetail(props: {
                 onChange={setFeishuBrand}
               />
             ) : null}
-            <Button type="button" onClick={() => setScanLoginOpen(true)}>
-              {provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)}
-            </Button>
+            <Button variant="primary" onClick={() => setScanLoginOpen(true)} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
           </section>
-        )}
-
-        {provider === 'whatsapp' && (
-          <Alert variant="warning">
-            <AlertDescription>{detailCopy.whatsappProtocolNotice}</AlertDescription>
-          </Alert>
         )}
 
         {/* PR-BOT-WECHAT-SCAN-LOGIN-0 (WAWQAQ msg `2fa6ada6` screenshots):

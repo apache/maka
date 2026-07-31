@@ -51,12 +51,13 @@ describe('session workbar contract', () => {
     );
   });
 
-  it('starts its tabs below the shared titlebar action row', async () => {
-    const css = await readRendererContractCss();
-    assert.match(
-      css,
-      /\.maka-session-workbar\s*\{[\s\S]*?padding-top:\s*var\(--h-titlebar\)/,
-      'workbar tabs must not sit underneath the top-right workspace actions',
-    );
-  });
+  // "workbar tabs must not sit underneath the top-right workspace actions" used
+  // to be checked here as `padding-top: var(--h-titlebar)` on
+  // `.maka-session-workbar`. The workspace actions were absolutely positioned
+  // over the detail panel then, so every surface underneath had to reserve their
+  // height. They are now an in-flow cluster of the shell's titlebar row and the
+  // workbar is in the content row, so the two cannot overlap — the invariant
+  // holds by construction and the padding it needed is gone.
+  // `window-titlebar-contract.test.ts` asserts that no surface reserves the
+  // titlebar height again, which is what would break this.
 });

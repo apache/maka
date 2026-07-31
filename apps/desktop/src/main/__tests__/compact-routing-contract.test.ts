@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { readRendererShellSource } from './renderer-shell-source-helpers.js';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
@@ -36,12 +35,16 @@ describe('/compact routing contract', () => {
   });
 
   it('main sessions:compact IPC drives runtime.compactSession via streamEvents', async () => {
-    const main = await readMainProcessCombinedSource();
-    const handler = main.match(/ipcMain\.handle\('sessions:compact'[\s\S]*?\n  \}\);/)?.[0] ?? '';
+    const main = await readFile(
+      resolve(REPO_ROOT, 'apps/desktop/src/main/session-execution-ipc-main.ts'),
+      'utf8',
+    );
+    const handler =
+      main.match(/deps\.ipcMain\.handle\('sessions:compact'[\s\S]*?\n  \}\);/)?.[0] ?? '';
 
-    assert.match(handler, /await ensureSessionCanSend\(sessionId\);/);
-    assert.match(handler, /runtime\.compactSession\(sessionId, \{ turnId \}\)/);
-    assert.match(handler, /streamEvents\(sessionId, runtime\.compactSession/);
+    assert.match(handler, /await deps\.ensureSessionCanSend\(sessionId\);/);
+    assert.match(handler, /deps\.runtime\.compactSession\(sessionId, \{ turnId \}\)/);
+    assert.match(handler, /deps\.streamEvents\(sessionId, deps\.runtime\.compactSession/);
   });
 
   it('preload exposes compact() bound to the sessions:compact IPC', async () => {

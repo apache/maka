@@ -14,7 +14,7 @@ export type { SessionViewMode } from './session-list-panel.js';
 export type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
 export { formatBytes, OverlayHost, ToolActivity, ToolErrorDetails } from './tool-activity.js';
-export { PermissionPrompt } from './permission-dialog.js';
+export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
 export { ChatView } from './chat-view.js';
 export type { TurnFooterActionMeta, TurnLineageBadge } from './chat-turn.js';
 export { AutomationsPage, DailyReviewPage, SkillsPage } from './module-pages.js';

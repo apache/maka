@@ -70,7 +70,6 @@ function buildTeamMessageTool(mailbox: AgentMailboxStore): MakaTool {
         content: z.string().min(1).max(AGENT_MAILBOX_CONTENT_MAX_CHARS),
       }),
     ]),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (input: unknown, ctx) => {
       const execution = requireAgentTeamExecution(ctx);
@@ -105,7 +104,6 @@ function buildTeamInboxTool(mailbox: AgentMailboxStore): MakaTool {
       after_seq: z.number().int().min(0).optional(),
       limit: z.number().int().min(1).max(AGENT_MAILBOX_LIST_MAX).optional(),
     }),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (input: unknown, ctx) => {
       const execution = requireAgentTeamExecution(ctx);
@@ -128,7 +126,6 @@ function buildTeamTaskListTool(taskLedger: TaskLedgerStore): MakaTool {
     description:
       'List Task Ledger items shared by the current lead AgentRun and eligible for atomic child self-claim.',
     parameters: z.object({}),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (_input, ctx) => {
       const execution = requireMemberExecution(ctx);
@@ -174,7 +171,6 @@ function buildTeamTaskClaimTool(taskLedger: TaskLedgerStore): MakaTool {
         .refine(isSafeTaskId)
         .describe('Task UUID or short key from team_task_list.'),
     }),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (input: unknown, ctx) => {
       const execution = requireMemberExecution(ctx);

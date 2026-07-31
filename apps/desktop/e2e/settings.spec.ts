@@ -241,8 +241,7 @@ test('capability diagnostics stay contained when expanded at the window floor', 
   await expect(capabilityList).toHaveAttribute('data-diagnostics-open', 'true');
 
   // The layers grid used to hold a hard `minmax(150px, …)` floor, wider than the
-  // whole content column; the OfficeCLI guidance buttons then pushed the
-  // overflow up through the row. The install command keeps its own scroller.
+  // whole content column and pushed overflow up through the row.
   await expect(settings.locator('.settingsCapabilityLayers').first()).toBeVisible();
   await expect.poll(
     () =>

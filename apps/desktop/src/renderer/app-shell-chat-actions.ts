@@ -1,7 +1,7 @@
 import type {
   CollaborationMode,
   OrchestrationMode,
-  PermissionResponse,
+  SandboxBoundaryResponse,
   QuoteRef,
   SessionSummary,
   StoredMessage,
@@ -86,7 +86,7 @@ export interface AppShellChatActions {
       quotes?: readonly QuoteRef[];
     },
   ): Promise<boolean>;
-  respondToPermission(response: PermissionResponse): Promise<void>;
+  respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
@@ -138,6 +138,9 @@ export function createAppShellChatActions(deps: {
    * window opens before any SessionEvent arrives (turn_started is not one). */
   setLiveTurnBySession: LiveTurnRecordUpdater;
   setInteractionBySession: InteractionQueueUpdater;
+  onSandboxBoundaryInteractionChanged?: (sessionId: string) => void;
+  /** A boundary decision settled: the session's execution boundary may have moved. */
+  onExecutionBoundaryChanged?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   upsertSessionSummary: (session: SessionSummary) => void;
@@ -166,6 +169,8 @@ export function createAppShellChatActions(deps: {
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged,
+    onExecutionBoundaryChanged,
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
@@ -431,11 +436,20 @@ export function createAppShellChatActions(deps: {
     }
   }
 
-  async function respondToPermission(response: PermissionResponse) {
+  async function respondToSandboxBoundary(response: SandboxBoundaryResponse) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
     try {
-      await window.maka.sessions.respondToPermission(sessionId, response);
+      await window.maka.sessions.respondToSandboxBoundary(sessionId, response);
+      onSandboxBoundaryInteractionChanged?.(sessionId);
+      // #1611: the answer has been applied to the authoritative boundary, so
+      // the permission label must stop describing the pre-decision one. The
+      // ack event covers decisions settled on other surfaces; this covers the
+      // one the user just made here, without waiting for the round trip.
+      onExecutionBoundaryChanged?.(sessionId);
+      setInteractionBySession((current) =>
+        dequeueInteractionByRequestId(current, sessionId, response.requestId),
+      );
     } catch (error) {
       // Same fire-and-forget call site as stop(), wrap so a failed
       // permission response (main process busy / session dropped)
@@ -539,7 +553,7 @@ export function createAppShellChatActions(deps: {
 
   return {
     send,
-    respondToPermission,
+    respondToSandboxBoundary,
     respondToUserQuestion,
     refreshMessages,
     retryMessages,

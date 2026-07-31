@@ -2,6 +2,7 @@ import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
 import {
   formatQuietJsonValue,
   formatToolInvocationLine,
+  isActiveShellRunStatus,
   ptyTuiTerminalRows,
   ptyTuiTerminalView,
   readWriteStdinInputPreview,
@@ -232,7 +233,7 @@ function compactToolSummary(entry: MakaPiToolEntry): CompactToolSummary | undefi
     }
     // A settled background run reports its outcome, not its output: the status
     // and exit code are the signal, the stream body lives in the expanded card.
-    if (result.status !== 'running' && result.status !== 'completed') {
+    if (!isActiveShellRunStatus(result.status) && result.status !== 'completed') {
       const parts: string[] = [result.status];
       if (result.exitCode !== undefined) parts.push(`exit ${result.exitCode}`);
       return { text: ansi.red(parts.join(' · ')), protect: true };
@@ -532,7 +533,7 @@ function renderToolResult(entry: MakaPiToolEntry, width: number): string[] {
     return renderCappedResultText(plainResultText(entry), width);
   }
   // Everything else — json lists (Grep/Glob), agent reports, web-search results,
-  // subagent / workflow summaries, office-doc output — is content the user
+  // subagent / workflow summaries, structured tool output — is content the user
   // expands to read in full, so render it without the cap, like a diff.
   return renderToolText(plainResultText(entry), width);
 }
@@ -645,7 +646,7 @@ function renderShellRunResult(
     lines.push(...renderIndented(ansi.dim(`$ ${content.cmd}`), width, 2));
   }
   lines.push(...renderIndented(ansi.dim(`cwd: ${content.cwd}`), width, 2));
-  const settled = content.status !== 'running' && content.status !== 'completed';
+  const settled = !isActiveShellRunStatus(content.status) && content.status !== 'completed';
   const parts: string[] = [content.status];
   if (content.exitCode !== undefined) parts.push(`exit ${content.exitCode}`);
   if (content.failureMessage) parts.push(content.failureMessage);

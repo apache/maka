@@ -81,6 +81,7 @@ function makeOptions(partial: Partial<AppShellCommandListOptions> = {}): AppShel
       error: () => undefined,
     },
     ...partial,
+    canSetPermissionMode: partial.canSetPermissionMode ?? true,
     uiLocale: partial.uiLocale ?? 'zh',
   };
 }
@@ -98,6 +99,16 @@ describe('app-shell command freeze + live session rows (#1045)', () => {
       // @ts-expect-error test cleanup may drop clipboard
       delete globalThis.navigator.clipboard;
     }
+  });
+
+  test('omits permission commands when the active boundary is not locally interactive', () => {
+    const options = makeOptions({ canSetPermissionMode: false });
+    const commands = buildAppShellCommandList({ current: options });
+
+    assert.equal(
+      commands.some((command) => command.id.startsWith('perm:set-')),
+      false,
+    );
   });
 
   test('base command identity stays stable across message churn; export run uses latest messages', async () => {

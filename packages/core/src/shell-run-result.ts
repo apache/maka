@@ -2,6 +2,7 @@ import type {
   ShellRunSnapshotResult,
   ShellRunStateResult,
   ShellRunUpdate,
+  SandboxDenialSignal,
   SandboxDenialRecovery,
   ToolResultContent,
 } from './events.js';
@@ -101,7 +102,12 @@ const CURRENT_SHELL_RUN_RESULT_SHAPE = defineObjectShape<ShellRunToolResultRecor
   ],
 );
 
-const SANDBOX_DENIAL_SHAPE = defineObjectShape<SandboxDenialRecovery>()(
+const SANDBOX_DENIAL_SIGNAL_SHAPE = defineObjectShape<SandboxDenialSignal>()(
+  ['likely'],
+  ['backend'],
+);
+
+const SANDBOX_DENIAL_RECOVERY_SHAPE = defineObjectShape<SandboxDenialRecovery>()(
   ['likely', 'recovery'],
   ['backend'],
 );
@@ -367,7 +373,7 @@ function legacyPipeOutput(value: Record<string, unknown>): Extract<ShellOutput, 
 
 function isLegacyTerminalStatus(
   value: unknown,
-): value is Exclude<ShellRunStatus, 'running' | 'orphaned'> {
+): value is Exclude<ShellRunStatus, 'starting' | 'running' | 'orphaned'> {
   return (
     value === 'completed' || value === 'failed' || value === 'timed_out' || value === 'cancelled'
   );
@@ -483,11 +489,21 @@ function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
 
+export function isSandboxDenialSignal(value: unknown): value is SandboxDenialSignal {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SANDBOX_DENIAL_SIGNAL_SHAPE) &&
+    value.likely === true &&
+    (value.backend === undefined || value.backend === 'macos-seatbelt' || value.backend === 'linux')
+  );
+}
+
 function isOptionalSandboxDenial(value: unknown): boolean {
   return (
     value === undefined ||
+    isSandboxDenialSignal(value) ||
     (isRecord(value) &&
-      hasExactShape(value, SANDBOX_DENIAL_SHAPE) &&
+      hasExactShape(value, SANDBOX_DENIAL_RECOVERY_SHAPE) &&
       value.likely === true &&
       (value.backend === undefined ||
         value.backend === 'macos-seatbelt' ||

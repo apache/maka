@@ -1,5 +1,4 @@
 import type { PermissionProfile } from '@maka/core/permission-profile';
-import type { AdditionalPermissionProfile } from '@maka/core/additional-permissions';
 import type { ChildFdInput } from '../child-fd-input.js';
 
 export type SandboxType = 'none' | 'macos-seatbelt' | 'linux';
@@ -28,9 +27,19 @@ export interface SandboxPathContext {
   executableRoots?: readonly string[];
   /** Host directories a trusted helper needs writable to materialize an exact result. */
   runtimeWritableRoots?: readonly string[];
-  /** Exact writable files pinned by an open host descriptor until sandbox launch. */
-  pinnedWritableFiles?: readonly {
+  /** Runtime-writable roots pinned by open host descriptors until sandbox launch. */
+  pinnedRuntimeWritableRoots?: readonly {
     path: string;
+    fd: number;
+    sourceFd: number;
+    releaseSource?: () => void;
+  }[];
+  /** Profile roots observed as unavailable while preparing this invocation. */
+  unavailableProfilePaths?: readonly string[];
+  /** Profile roots pinned by open host descriptors until sandbox launch. */
+  pinnedProfilePaths?: readonly {
+    path: string;
+    access: 'read' | 'write';
     fd: number;
     sourceFd: number;
     releaseSource?: () => void;
@@ -82,8 +91,6 @@ export type SandboxSelectionResult =
 
 export interface SandboxTransformRequest {
   command: SandboxCommand;
-  /** One-call permissions merged into command.profile for this transform only. */
-  additionalPermissions?: AdditionalPermissionProfile;
   preference?: SandboxablePreference;
   platform?: SandboxPlatform;
 }

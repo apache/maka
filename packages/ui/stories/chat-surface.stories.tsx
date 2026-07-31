@@ -655,6 +655,26 @@ export const ComposerPendingAndDisabled: Story = {
   ),
 };
 
+// Real path: the three states the permission control can display (#1611 / #1616).
+// `explore` is what a session running under a managed read-only boundary shows —
+// it is never an option in the popup, only a state, so this is the one place the
+// trigger can be reviewed against Auto and full access side by side.
+export const ComposerPermissionModes: Story = {
+  render: () => (
+    <ComposerTray>
+      {(['explore', 'ask', 'bypass'] as const).map((mode) => (
+        <Composer
+          key={mode}
+          {...baseComposerProps}
+          draftKey={`composer-permission-${mode}`}
+          permissionMode={mode}
+          activeSession={session({ permissionMode: mode })}
+        />
+      ))}
+    </ComposerTray>
+  ),
+};
+
 // Real path: 新任务 → ＋ in the composer → the add-context menu, which is where attachment
 // and file import start.
 export const ImportActions: Story = {

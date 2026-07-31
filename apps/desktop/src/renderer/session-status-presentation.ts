@@ -21,6 +21,7 @@
  *     vocabulary.
  */
 
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
 import type { SessionBlockedReason, SessionStatus, SessionSummary, UiLocale } from '@maka/core';
 import {
   describeBlockedReason,
@@ -116,6 +117,10 @@ export function describeTurnErrorClass(errorClass: string | undefined, locale: U
   const reasonDescription = describeSessionErrorReason(errorClass, locale);
   if (reasonDescription) return reasonDescription;
   const lower = errorClass.toLowerCase();
+  // Checked before the generic prefix list: a boundary closure is a specific
+  // restart outcome the user must be able to tell apart from a bare restart
+  // (#1612), and it must never fall through to the "permission"/"tool" catch-alls.
+  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) return copy.sandboxBoundaryClosed;
   if (lower === 'timeout' || lower.includes('timeout')) return copy.timeout;
   if (lower === 'auth' || lower.includes('auth') || lower === '401' || lower === '403') return copy.auth;
   if (lower === 'rate_limit' || lower.includes('rate')) return copy.rateLimit;
@@ -154,6 +159,12 @@ export interface FailedTurnRecoveryInput {
 export function deriveFailedTurnRecovery(input: FailedTurnRecoveryInput, locale: UiLocale = 'zh'): FailedTurnRecoveryPresentation {
   const copy = getDesktopConversationCopy(locale).turnError.recovery;
   const lower = input.errorClass?.toLowerCase() ?? '';
+  if (lower === SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS) {
+    // Not `continue`: the request was denied and its backend generation is
+    // gone, so there is nothing to resume into — retrying the turn is the
+    // only path that lets the agent ask again.
+    return { action: 'retry', label: copy.sandboxBoundaryClosed };
+  }
   if (lower === 'app_restarted') {
     return { action: 'continue', label: copy.safeResume };
   }

@@ -15,12 +15,15 @@ import {
   type CapabilitySnapshotCollection,
   type OsPermissionId,
   type OsPermissionSnapshot,
-  type OsPermissionState,
   type PermissionSnapshot,
 } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
-import type { OfficeCliProbe } from './officecli-probe.js';
 import type { computerUseServiceHealth } from './computer-use-host.js';
+import {
+  mapMediaAccessStatus,
+  mediaPermissionActions,
+  supportsMediaPermissionProbe,
+} from './os-permission-policy.js';
 
 const MAC_TCC_PERMISSIONS: OsPermissionId[] = ['accessibility', 'screen_recording', 'microphone', 'automation'];
 
@@ -42,7 +45,6 @@ export function buildCapabilitySnapshotCollection(input: {
   settings: AppSettings;
   permissions: PermissionSnapshot;
   botStatuses: Record<BotProvider, BotStatus>;
-  officeCliProbe?: OfficeCliProbe;
   computerUse?: {
     backendId: 'cua-driver' | 'none';
     health: ReturnType<typeof computerUseServiceHealth>;
@@ -129,7 +131,6 @@ export function buildCapabilitySnapshotCollection(input: {
         reason: '透明本地记忆为文件读写能力，不做后台探测',
       },
     }),
-    officeDocumentsCapability(input.officeCliProbe, now),
     ...BOT_PROVIDERS.map((provider) =>
       botCapability(provider, input.settings, input.botStatuses[provider], now),
     ),
@@ -208,61 +209,6 @@ function computerUseCapabilityReason(
       break;
   }
   return reasons.join('');
-}
-
-function officeDocumentsCapability(probe: OfficeCliProbe | undefined, now: number): CapabilitySnapshot {
-  const available = probe?.available === true;
-  const feature: CapabilityFeatureSignal = {
-    state: available ? 'enabled' : 'partial',
-    source: 'runtime',
-    reason: available
-      ? 'Office 文档可通过本地 officecli 读取、校验与按次授权编辑。'
-      : 'Office 文档工作流已接入；安装 officecli 并确认版本探测通过后即可读取、校验与按次授权编辑。',
-  };
-  const runtimeProbe: CapabilityRuntimeProbeSignal = available
-    ? {
-        state: 'healthy',
-        source: 'runtime_probe',
-        lastCheckedAt: probe.checkedAt,
-        reason: `officecli ${probe.version}`,
-      }
-    : {
-        state: 'not_run',
-        source: 'runtime_probe',
-        lastCheckedAt: probe?.checkedAt ?? now,
-        reason: officeCliProbeReason(probe),
-      };
-  const guidance = available
-    ? []
-    : [
-        '安装 officecli 后重启 Maka 或刷新能力快照。',
-        '安装后在终端确认 `officecli --version` 可以输出版本号。',
-      ];
-
-  return staticCapability({
-    id: 'office_documents',
-    label: 'Office 文档',
-    now,
-    feature,
-    requiredPermissions: [],
-    actionApproval: { state: 'required_per_action', source: 'capability_policy' },
-    memoryAcceptance: { state: 'not_applicable', source: 'not_applicable' },
-    runtimeProbe,
-    guidance,
-  });
-}
-
-function officeCliProbeReason(probe: OfficeCliProbe | undefined): string {
-  if (!probe) return '等待刷新 OfficeCLI 状态。';
-  if (probe.available) return `officecli ${probe.version}`;
-  switch (probe.reason) {
-    case 'missing':
-      return '未在 PATH 中找到 officecli。';
-    case 'timeout':
-      return 'officecli 版本探测超时。';
-    case 'failed':
-      return 'officecli 版本探测失败。';
-  }
 }
 
 function staticCapability(input: {
@@ -368,18 +314,24 @@ function mediaPermissionSnapshot(
   now: number,
   platform: NodeJS.Platform,
 ): OsPermissionSnapshot {
-  if (platform !== 'darwin' && id === 'screen_recording') {
-    return unsupportedPermission(id, now, '仅 macOS TCC 权限适用');
+  if (!supportsMediaPermissionProbe(id, platform)) {
+    return unsupportedPermission(
+      id,
+      now,
+      id === 'screen_recording'
+        ? '屏幕录制权限状态仅能在 macOS 上读取'
+        : '当前平台无法读取麦克风系统权限状态',
+    );
   }
   try {
     const status = mapMediaAccessStatus(systemPreferences.getMediaAccessStatus(mediaType));
+    const actions = mediaPermissionActions({ id, platform, status });
     return {
       id,
       status,
       source: 'electron',
       checkedAt: now,
-      canOpenSettings: platform === 'darwin',
-      canRequest: id === 'microphone' && status === 'not_determined',
+      ...actions,
     };
   } catch (error) {
     return unknownPermission(id, now, generalizedReason(error), platform === 'darwin');
@@ -387,14 +339,22 @@ function mediaPermissionSnapshot(
 }
 
 function notificationSnapshot(now: number, platform: NodeJS.Platform): OsPermissionSnapshot {
+  const supported = Notification.isSupported();
   return {
     id: 'notifications',
-    status: Notification.isSupported() ? 'unknown' : 'unsupported',
+    status: supported ? 'unknown' : 'unsupported',
     source: 'electron',
     checkedAt: now,
-    reason: Notification.isSupported() ? '主进程暂时无法读取通知授权状态' : 'Electron 通知能力不可用',
+    reason: supported
+      ? platform === 'darwin'
+        ? 'Electron 无法可靠读取 macOS 通知授权状态，请在系统设置中确认'
+        : 'Electron 无法可靠读取当前系统的通知授权状态'
+      : 'Electron 通知能力不可用',
     canOpenSettings: platform === 'darwin',
-    canRequest: Notification.isSupported(),
+    // Showing a Notification is not an authorization API and does not report
+    // whether macOS delivered or suppressed it. Never present that probe as a
+    // successful permission request.
+    canRequest: false,
   };
 }
 
@@ -438,20 +398,6 @@ function unknownPermission(
     canOpenSettings,
     canRequest: false,
   };
-}
-
-function mapMediaAccessStatus(status: string): OsPermissionState {
-  switch (status) {
-    case 'granted':
-      return 'granted';
-    case 'denied':
-    case 'restricted':
-      return 'denied';
-    case 'not-determined':
-      return 'not_determined';
-    default:
-      return 'unknown';
-  }
 }
 
 function generalizedReason(error: unknown): string {

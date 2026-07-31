@@ -3,6 +3,10 @@ import { describe, it } from 'node:test';
 import { readMainProcessCombinedSourceSync } from './main-process-contract-source-helpers.js';
 
 const mainSource = readMainProcessCombinedSourceSync();
+const discoveryService =
+  mainSource.match(
+    /export async function discoverConnectionModels\([\s\S]*?\n\}/,
+  )?.[0] ?? '';
 
 function handlerBlock(channel: string): string {
   const start = mainSource.indexOf(`ipcMain.handle('${channel}'`);
@@ -111,6 +115,7 @@ describe('connection credential IPC hardening contract', () => {
         'resolveConnectionSecret(',
         'testConnection(',
         'fetchProviderModels(',
+        'discoverConnectionModels(',
       ]) {
         const sideEffectAt = handler.indexOf(sideEffect);
         if (sideEffectAt !== -1) {
@@ -153,7 +158,7 @@ describe('connection credential IPC hardening contract', () => {
       'update must preserve the main-owned account endpoint for OAuth providers',
     );
     assert.match(mainSource, /connections:test[\s\S]*const apiKey = await resolveConnectionSecret\(slug\)/);
-    assert.match(mainSource, /connections:fetchModels[\s\S]*const apiKey = await resolveConnectionSecret\(slug\)/);
+    assert.match(discoveryService, /const apiKey = await deps\.resolveConnectionSecret\(slug\)/);
     // hasSecret is the exception: a read-only status probe (session
     // health notice) that must use the read-only hasConnectionSecret,
     // so observing it never refreshes OAuth tokens or hits the network.
@@ -169,7 +174,11 @@ describe('connection credential IPC hardening contract', () => {
     const testHandler = handlerBlock('connections:test');
     const fetchHandler = handlerBlock('connections:fetchModels');
     assert.match(testHandler, /providerAuthRequiresSecret\(connection\.providerType\)[\s\S]*!apiKey/);
-    assert.match(fetchHandler, /providerAuthRequiresSecret\(connection\.providerType\)[\s\S]*!apiKey/);
+    assert.match(fetchHandler, /discoverConnectionModels\(\{[\s\S]*resolveConnectionSecret/);
+    assert.match(
+      discoveryService,
+      /providerAuthRequiresSecret\(connection\.providerType\)[\s\S]*!apiKey/,
+    );
     assert.match(
       mainSource,
       /async function resolveModelContext[\s\S]*providerAuthRequiresSecret\(connection\.providerType\)[\s\S]*!apiKey/,

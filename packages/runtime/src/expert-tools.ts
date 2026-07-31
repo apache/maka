@@ -75,7 +75,6 @@ export function buildExpertDispatchTool(
           'The bounded, self-contained task for the member, including the exact scope and evidence to return.',
         ),
     }),
-    permissionRequired: true,
     categoryHint: 'subagent',
     impl: async (input, ctx) => {
       const member = team.members.find((entry) => entry.id === input.member);

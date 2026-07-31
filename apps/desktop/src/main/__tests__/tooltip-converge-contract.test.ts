@@ -41,22 +41,28 @@ const TOOLTIP_PRIMITIVE = 'packages/ui/src/primitives/tooltip.tsx';
  *  `const title =` has a space before `=` so it does not match. */
 const TITLE_ATTR_RE = /\btitle=/;
 
-/** A Tooltip import from the barrel / primitives / @base-ui. */
-const TOOLTIP_IMPORT_RE = /import\s+\{[^}]*\bTooltip\b[^}]*\}\s+from\s+['"][^'"]*(?:@maka\/ui|primitives\/tooltip|@base-ui\/react\/tooltip)[^'"]*['"]/;
+/** A Tooltip import from the barrel / primitives (the Astryx-backed wrapper). */
+const TOOLTIP_IMPORT_RE = /import\s+\{[^}]*\bTooltip\b[^}]*\}\s+from\s+['"][^'"]*(?:@maka\/ui|primitives\/tooltip)[^'"]*['"]/;
 
 describe('PR-TOOLTIP-CONVERGE-0 contract', () => {
-  it('the icon-action tooltip files use Base UI Tooltip (no native title= attribute)', async () => {
+  it('the icon-action tooltip files use the shared Tooltip primitive (no native title= attribute)', async () => {
     for (const rel of MIGRATED_FILES) {
       const src = await readFile(resolve(REPO_ROOT, rel), 'utf8');
-      assert.ok(!TITLE_ATTR_RE.test(src), `${rel}: must not use native title= (migrate icon-action tooltips to Base UI Tooltip)`);
-      assert.match(src, TOOLTIP_IMPORT_RE, `${rel}: must import Tooltip from @maka/ui / primitives/tooltip / @base-ui/react/tooltip`);
+      assert.ok(!TITLE_ATTR_RE.test(src), `${rel}: must not use native title= (migrate icon-action tooltips to the shared Tooltip primitive)`);
+      assert.match(src, TOOLTIP_IMPORT_RE, `${rel}: must import Tooltip from @maka/ui / primitives/tooltip`);
     }
   });
 
-  it('primitives/tooltip.tsx wraps Base UI Tooltip with data-slot on Root / Trigger / Content', async () => {
+  it('primitives/tooltip.tsx wraps Astryx useTooltip with data-slot on Trigger / Content', async () => {
     const src = await readFile(resolve(REPO_ROOT, TOOLTIP_PRIMITIVE), 'utf8');
-    assert.match(src, /@base-ui\/react\/tooltip/, 'must import from @base-ui/react/tooltip');
-    for (const slot of ['tooltip', 'tooltip-trigger', 'tooltip-content']) {
+    // #1565 PR 5: behavior authority moved from Base UI to Astryx. The frozen
+    // Tooltip/TooltipTrigger/TooltipContent composition API stays; behind it a
+    // single useTooltip instance drives a native-Popover top-layer surface.
+    // The root is a context provider with no DOM node, so only the trigger and
+    // content carry data-slot hooks (style-hook convention, item 23).
+    assert.match(src, /@astryxdesign\/core\/Tooltip/, 'must import from @astryxdesign/core/Tooltip');
+    assert.doesNotMatch(src, /@base-ui\/react\/tooltip/, 'Base UI tooltip must not return — one behavior authority per component (#1565)');
+    for (const slot of ['tooltip-trigger', 'tooltip-content']) {
       assert.match(src, new RegExp(`data-slot="${slot}"`), `must expose data-slot="${slot}" (style-hook convention, item 23)`);
     }
   });

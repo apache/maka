@@ -8,121 +8,45 @@
 //                       role=switch is pill by design and exempt)
 // Usage: node scripts/audit-alignment.mjs   (expects a built renderer)
 // Rule of thumb: mixed types align CENTERS; same types also match heights.
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+//
+// Deliberate change from the original raw-spawn launcher: fixture windows now
+// launch through `withFixtureWindow`, which means MAKA_E2E=1, a throwaway
+// userData dir, and a sandboxed $HOME. The audit used to run against the real
+// userData path — a developer with Maka open lost the single-instance lock —
+// and could enumerate the real `~/.maka/skills`. Fixture pages render fixture
+// data either way, so control geometry is unaffected; the isolation is the
+// point.
+import { withFixtureWindow } from './fixture-window.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DESKTOP_DIR = join(ROOT, 'apps', 'desktop');
+// Each fixture names the element that means "this surface has rendered", so
+// the audit never measures a half-mounted page. The module pages share one
+// shell (`.maka-module-main`), every settings scenario mounts the settings
+// modal (`.settingsSurface`), and turn-narrative is the chat surface.
 const FIXTURES = [
-  'module-skills',
-  'module-mcp',
-  'module-daily-review',
-  'plan-reminders',
-  'settings-general',
-  'fetched-empty',
-  'settings-data',
-  'settings-gateway',
+  ['module-skills', '.maka-module-main'],
+  ['module-mcp', '.maka-module-main'],
+  ['module-daily-review', '.maka-module-main'],
+  ['plan-reminders', '.maka-module-main'],
+  ['settings-general', '.settingsSurface'],
+  ['fetched-empty', '.settingsSurface'],
+  ['settings-data', '.settingsSurface'],
+  ['settings-gateway', '.settingsSurface'],
   // 使用统计 restyle: the range/refresh row, underline tab bar, and stats
   // tables now sit under the alignment auditor's watch.
-  'settings-usage',
-  'turn-narrative',
-  'settings-permissions',
+  ['settings-usage', '.settingsSurface'],
+  ['turn-narrative', '.maka-session-workbar'],
+  ['settings-permissions', '.settingsSurface'],
   // #1233 deferral: bot QR-onboarding modal in its deterministic waiting state.
-  'settings-bots-onboarding',
+  ['settings-bots-onboarding', '.settingsSurface'],
 ];
-const BOOT_TIMEOUT_MS = Number(process.env.AUDIT_BOOT_TIMEOUT_MS ?? 30_000);
+// 2500ms, not the capture harness's 1000ms: this audit is a CI gate, and its
+// slowest surfaces (the QR-onboarding modal, the usage stats tables) populate
+// after their settings shell mounts. The readiness selector proves the shell
+// rendered; the settle budget is what covers content that arrives after it,
+// and CI runners are the slow end of the fleet.
 const SETTLE_MS = Number(process.env.AUDIT_SETTLE_MS ?? 2_500);
-let port = Number(process.env.AUDIT_PORT_BASE ?? 14_600);
 let totalIssues = 0;
 let fixtureErrors = 0;
-
-// Resolve via the electron package export so Linux CI gets
-// `electron/dist/electron` and macOS gets `Electron.app/.../Electron`.
-// Hardcoding the .app path is what broke the ubuntu-latest e2e job in #695.
-async function resolveElectronBin() {
-  try {
-    const bin = (await import('electron')).default;
-    if (typeof bin === 'string') return bin;
-  } catch (err) {
-    console.error('[audit-alignment] electron not resolvable (run `npm install`):', err);
-    process.exit(2);
-  }
-  console.error(
-    '[audit-alignment] electron resolved but exposed no binary path; run `npm install`.',
-  );
-  process.exit(2);
-}
-
-function launchArgs(debugPort, userDataDir) {
-  // Chromium/Electron switches must come before the app path. Mirror the
-  // Playwright e2e launch: cwd=apps/desktop, app=''.
-  const args = [`--remote-debugging-port=${debugPort}`, `--user-data-dir=${userDataDir}`];
-  // Headless Linux runners (GitHub Actions) need these; macOS/Windows e2e
-  // already pass without them. Playwright's chromium launcher adds the same
-  // set — raw electron spawn does not.
-  if (process.platform === 'linux') {
-    args.push('--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage');
-  }
-  args.push('.');
-  return args;
-}
-
-function tail(buf, n = 600) {
-  const s = buf.toString();
-  return s.length <= n ? s : s.slice(-n);
-}
-
-/** Poll CDP until a page target appears, or the process exits / times out. */
-async function waitForPageTarget(debugPort, child, stderrBuf, stdoutBuf) {
-  const started = Date.now();
-  while (Date.now() - started < BOOT_TIMEOUT_MS) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `electron exited code=${child.exitCode} signal=${child.signalCode}` +
-          ` stderr=${JSON.stringify(tail(stderrBuf))}` +
-          ` stdout=${JSON.stringify(tail(stdoutBuf))}`,
-      );
-    }
-    try {
-      const list = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
-      const page = list.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-      if (page) return page;
-    } catch {
-      // not listening yet
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  throw new Error(
-    `CDP timeout after ${BOOT_TIMEOUT_MS}ms` +
-      ` stderr=${JSON.stringify(tail(stderrBuf))}` +
-      ` stdout=${JSON.stringify(tail(stdoutBuf))}`,
-  );
-}
-
-function cdpSend(ws) {
-  let id = 0;
-  return (method, params) =>
-    new Promise((res, rej) => {
-      const i = ++id;
-      const onMessage = (e) => {
-        let d;
-        try {
-          d = JSON.parse(e.data);
-        } catch (err) {
-          rej(err);
-          return;
-        }
-        if (d.id !== i) return;
-        ws.removeEventListener('message', onMessage);
-        if (d.error) rej(new Error(d.error.message ?? JSON.stringify(d.error)));
-        else res(d.result);
-      };
-      ws.addEventListener('message', onMessage);
-      ws.send(JSON.stringify({ id: i, method, params }));
-    });
-}
 
 const EXPR = `(()=>{
   const controls=[...document.querySelectorAll('button,[role=button],[role=switch],input,select,[role=combobox],[role=tab]')].filter(e=>{
@@ -148,7 +72,6 @@ const EXPR = `(()=>{
     const sameType=new Set(horiz.map(({e})=>type(e))).size===1;
     const hs=horiz.map(({r})=>+r.height.toFixed(1));
     const cys=horiz.map(({r})=>+(r.top+r.height/2).toFixed(1));
-    const rads=horiz.map(({cs})=>cs.borderRadius);
     const label=(e)=>((e.getAttribute('aria-label')||e.textContent||e.className||'').trim().slice(0,16));
     const hSpread=Math.max(...hs)-Math.min(...hs);
     const cySpread=Math.max(...cys)-Math.min(...cys);
@@ -160,73 +83,21 @@ const EXPR = `(()=>{
   return JSON.stringify(issues.slice(0,12));
 })()`;
 
-const ELECTRON = await resolveElectronBin();
-
-for (const fx of FIXTURES) {
-  const P = port++;
-  const userDataDir = join(tmpdir(), `maka-audit-${P}-${process.pid}`);
-  const stderrBuf = {
-    s: '',
-    toString() {
-      return this.s;
-    },
-  };
-  const stdoutBuf = {
-    s: '',
-    toString() {
-      return this.s;
-    },
-  };
-  const child = spawn(ELECTRON, launchArgs(P, userDataDir), {
-    cwd: DESKTOP_DIR,
-    env: {
-      ...process.env,
-      MAKA_E2E_FIXTURE: fx,
-      MAKA_E2E_FIXTURE_THEME: 'light',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  child.stderr?.on('data', (d) => {
-    stderrBuf.s += d;
-    if (stderrBuf.s.length > 8_000) stderrBuf.s = stderrBuf.s.slice(-4_000);
-  });
-  child.stdout?.on('data', (d) => {
-    stdoutBuf.s += d;
-    if (stdoutBuf.s.length > 8_000) stdoutBuf.s = stdoutBuf.s.slice(-4_000);
-  });
-  // Surface spawn failures (ENOENT etc.) into the try/catch instead of an
-  // unhandled 'error' event that crashes the process before fixtureErrors++.
-  const launchError = new Promise((_, rej) => child.once('error', rej));
+for (const [fixture, readySelector] of FIXTURES) {
   try {
-    const page = await Promise.race([
-      waitForPageTarget(P, child, stderrBuf, stdoutBuf),
-      launchError,
-    ]);
-    // Fixture paint settles after the page target appears; fixed 8.5s was both
-    // slow on warm macOS and still insufficient when boot itself never finished.
-    await new Promise((r) => setTimeout(r, SETTLE_MS));
-    const ws = new WebSocket(page.webSocketDebuggerUrl);
-    await new Promise((r, j) => {
-      ws.addEventListener('open', r, { once: true });
-      ws.addEventListener('error', () => j(new Error('cdp websocket error')), { once: true });
-    });
-    const send = cdpSend(ws);
-    const r = await send('Runtime.evaluate', { expression: EXPR, returnByValue: true });
-    console.log('==', fx, '==');
-    const arr = JSON.parse(r.result.value);
-    for (const i of arr) console.log(JSON.stringify(i));
-    totalIssues += arr.length;
-    if (!arr.length) console.log('(clean)');
-    try {
-      ws.close();
-    } catch {
-      /* ignore */
-    }
-  } catch (e) {
-    console.log('==', fx, '== ERROR', e.message);
+    const issues = await withFixtureWindow(
+      fixture,
+      { theme: 'light', readySelector, settleMs: SETTLE_MS },
+      async ({ evaluate }) => JSON.parse(await evaluate(EXPR)),
+    );
+    console.log('==', fixture, '==');
+    for (const issue of issues) console.log(JSON.stringify(issue));
+    totalIssues += issues.length;
+    if (!issues.length) console.log('(clean)');
+  } catch (err) {
+    console.log('==', fixture, '== ERROR', err.message);
     fixtureErrors++;
   }
-  child.kill('SIGKILL');
 }
 
 // CI semantics: alignment findings fail the run; fixture-level launch errors

@@ -168,6 +168,7 @@ describe('default SQLite session metadata store', () => {
       const parent = await store.create(makeInput({ name: 'Parent' }));
       const childInput = makeInput({
         name: 'Child',
+        permissionMode: 'execute',
         subagentParent: {
           kind: 'subagent',
           parentSessionId: parent.id,
@@ -187,7 +188,6 @@ describe('default SQLite session metadata store', () => {
           systemPrompt: 'Read the assigned workspace task.',
           toolNames: ['Read', 'Glob', 'Grep'],
           categoryPolicy: { read: 'allow' },
-          permissionCeiling: 'ask',
         },
         subagentSpawn: {
           schemaVersion: 1,

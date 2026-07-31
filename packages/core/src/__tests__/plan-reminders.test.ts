@@ -155,7 +155,6 @@ describe('plan reminder contract', () => {
       'dingtalk',
       'qq',
       'slack',
-      'whatsapp',
     ]);
     assert.equal(isBotDeliveryProvider('telegram'), true);
     assert.equal(isBotDeliveryProvider('wechat'), true);
@@ -163,7 +162,6 @@ describe('plan reminder contract', () => {
     assert.equal(isBotDeliveryProvider('dingtalk'), true);
     assert.equal(isBotDeliveryProvider('qq'), true);
     assert.equal(isBotDeliveryProvider('slack'), true);
-    assert.equal(isBotDeliveryProvider('whatsapp'), true);
     for (const provider of BOT_PROVIDERS) {
       const result = normalizePlanReminderDeliveryTarget({
         channel: 'bot',

@@ -21,8 +21,6 @@ describe('stream graph supervisor tools', () => {
     try {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
       assert.equal(updateTool.name, UPDATE_AGENT_GRAPH_TOOL_NAME);
-      assert.equal(viewTool.permissionRequired, false);
-      assert.equal(updateTool.permissionRequired, false);
       assert.equal(viewTool.recoveryMode, 'replay_safe');
       assert.equal(updateTool.recoveryMode, 'idempotent');
 
@@ -118,6 +116,11 @@ describe('stream graph supervisor tools', () => {
 
       const viewed = await viewTool.impl({}, toolContext('tool-view'));
       assert.deepEqual(viewed.schedule, finished.schedule);
+      const providerFilledLatest = await viewTool.impl(
+        { mode: 'latest', cursor: 'provider-placeholder' },
+        toolContext('tool-view-provider-filled'),
+      );
+      assert.deepEqual(providerFilledLatest.schedule, finished.schedule);
       await assert.rejects(
         async () =>
           updateTool.impl(
@@ -196,6 +199,49 @@ describe('stream graph supervisor tools', () => {
         }).success,
         false,
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('uses explicit discriminators when a provider fills unrelated optional fields', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const [, updateTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-provider-filled',
+      scheduleStore: store,
+      observeGraph: async () => observationWithRecords('graph-provider-filled'),
+    });
+    try {
+      const result = await updateTool.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'new_agent',
+              agent_id: 'implementation',
+              operator_id: 'provider-placeholder',
+              instruction: 'Implement node A.',
+              input_ids: [],
+              replaces: 'provider-placeholder',
+              replacement_mode: 'none',
+            },
+          ],
+          stop: [],
+          finish: {
+            result_ids: ['provider-placeholder'],
+            reason: 'provider-placeholder',
+          },
+        },
+        toolContext('tool-provider-filled'),
+      );
+
+      assert.equal(result.schedule.closed, false);
+      assert.equal(result.schedule.finish, undefined);
+      assert.deepEqual(result.schedule.work[0]?.target, {
+        kind: 'agent',
+        agentId: 'implementation',
+      });
+      assert.equal(result.schedule.work[0]?.replaces, undefined);
     } finally {
       store.close();
     }

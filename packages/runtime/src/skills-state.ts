@@ -26,6 +26,20 @@ export interface SkillRuntimePreference {
   updatedAt?: string;
 }
 
+export interface SkillPreferenceTarget {
+  ref: string;
+  id: string;
+}
+
+export type ResolveSkillPreferenceTargetResult =
+  | { ok: true; target: SkillPreferenceTarget }
+  | { ok: false; reason: 'not_found' | 'needs_review' };
+
+export interface SkillPreferenceMigration {
+  preferences: Map<string, SkillRuntimePreference>;
+  needsReview: Set<string>;
+}
+
 export type SkillRuntimeStateReadResult =
   | {
       ok: true;
@@ -151,6 +165,22 @@ export async function writeSkillRuntimePreferences(
 ): Promise<{ ok: true } | { ok: false; reason: 'blocked_path' | 'write_failed' }> {
   const resolved = await resolveSkillRuntimeStateDirForWrite(root);
   if (!resolved.ok) return resolved;
+  const content = encodeSkillRuntimePreferences(preferences, {
+    ...options,
+    defaultUpdatedAt: new Date().toISOString(),
+  });
+  const ok = await writeContainedRegularTextFile(
+    resolved.metadataDir,
+    join(resolved.metadataDir, 'skills-state.json'),
+    content,
+  );
+  return ok ? { ok: true } : { ok: false, reason: 'write_failed' };
+}
+
+export function encodeSkillRuntimePreferences(
+  preferences: ReadonlyMap<string, SkillRuntimePreference>,
+  options: { defaultUpdatedAt: string; needsReview?: ReadonlySet<string> },
+): string {
   const sortedPreferences = [...preferences.entries()]
     .filter(([key]) => isSafeSkillPreferenceKey(key))
     .sort(([a], [b]) => a.localeCompare(b));
@@ -162,7 +192,7 @@ export async function writeSkillRuntimePreferences(
         {
           enabled: preference.enabled,
           pinned: preference.pinned,
-          updatedAt: preference.updatedAt ?? new Date().toISOString(),
+          updatedAt: preference.updatedAt ?? options.defaultUpdatedAt,
         },
       ]),
     ),
@@ -170,15 +200,132 @@ export async function writeSkillRuntimePreferences(
       ? { migration: { needsReview: [...options.needsReview].filter(isSafeSkillId).sort() } }
       : {}),
   };
-  const ok = await writeContainedRegularTextFile(
-    resolved.metadataDir,
-    join(resolved.metadataDir, 'skills-state.json'),
-    `${JSON.stringify(file, null, 2)}\n`,
+  return `${JSON.stringify(file, null, 2)}\n`;
+}
+
+export function resolveSkillPreferenceTarget(
+  inventory: readonly SkillPreferenceTarget[],
+  refOrId: string,
+): ResolveSkillPreferenceTargetResult {
+  const exactTarget = inventory.find((skill) => skill.ref === refOrId);
+  if (exactTarget) return { ok: true, target: exactTarget };
+  const normalized = normalizeLegacyId(refOrId);
+  const idMatches = inventory.filter((skill) => skill.id.toLowerCase() === normalized);
+  if (idMatches.length > 1) return { ok: false, reason: 'needs_review' };
+  if (idMatches.length === 0) return { ok: false, reason: 'not_found' };
+  return { ok: true, target: idMatches[0] };
+}
+
+export function migrateSkillRuntimePreferences(
+  state: Extract<SkillRuntimeStateReadResult, { ok: true }>,
+  inventory: readonly SkillPreferenceTarget[],
+): SkillPreferenceMigration {
+  const preferences = new Map(state.preferences);
+  const needsReview = new Set(state.needsReview);
+  const inventoryByLegacyId = groupPreferenceTargetsByNormalizedId(inventory);
+  for (const [legacyId, preference] of state.preferences) {
+    if (legacyId.includes(':')) continue;
+    const matches = inventoryByLegacyId.get(normalizeLegacyId(legacyId)) ?? [];
+    if (matches.length === 1) {
+      if (!preferences.has(matches[0].ref)) preferences.set(matches[0].ref, preference);
+      preferences.delete(legacyId);
+    } else if (matches.length > 1) {
+      needsReview.add(legacyId);
+    }
+  }
+  return { preferences, needsReview };
+}
+
+export function patchSkillRuntimePreference(
+  migration: SkillPreferenceMigration,
+  target: SkillPreferenceTarget,
+  patch: { enabled?: boolean; pinned?: boolean },
+  updatedAt = new Date().toISOString(),
+): SkillPreferenceMigration {
+  const preferences = new Map(migration.preferences);
+  const prior = getSkillRuntimePreference(migration, target);
+  preferences.set(target.ref, {
+    enabled: patch.enabled ?? prior.enabled,
+    pinned: patch.pinned ?? prior.pinned,
+    updatedAt,
+  });
+  return { preferences, needsReview: new Set(migration.needsReview) };
+}
+
+export function getSkillRuntimePreference(
+  migration: SkillPreferenceMigration,
+  target: SkillPreferenceTarget,
+): SkillRuntimePreference {
+  return (
+    migration.preferences.get(target.ref) ??
+    findLegacyPreference(migration.preferences, target.id) ?? {
+      enabled: true,
+      pinned: false,
+    }
   );
-  return ok ? { ok: true } : { ok: false, reason: 'write_failed' };
+}
+
+export function isSkillPreferenceReviewPending(
+  migration: Pick<SkillPreferenceMigration, 'needsReview'>,
+  skillId: string,
+): boolean {
+  const normalizedId = normalizeLegacyId(skillId);
+  return [...migration.needsReview].some(
+    (legacyId) => normalizeLegacyId(legacyId) === normalizedId,
+  );
+}
+
+export function clearResolvedSkillPreferenceReviews(
+  migration: SkillPreferenceMigration,
+  inventory: readonly SkillPreferenceTarget[],
+): SkillPreferenceMigration {
+  const preferences = new Map(migration.preferences);
+  const needsReview = new Set(migration.needsReview);
+  const inventoryByLegacyId = groupPreferenceTargetsByNormalizedId(inventory);
+  for (const legacyId of [...needsReview]) {
+    const normalizedId = normalizeLegacyId(legacyId);
+    const matches = inventoryByLegacyId.get(normalizedId) ?? [];
+    if (matches.length > 1 && matches.every((skill) => preferences.has(skill.ref))) {
+      for (const key of [...preferences.keys()]) {
+        if (normalizeLegacyId(key) === normalizedId) preferences.delete(key);
+      }
+      for (const pendingId of [...needsReview]) {
+        if (normalizeLegacyId(pendingId) === normalizedId) needsReview.delete(pendingId);
+      }
+    }
+  }
+  return { preferences, needsReview };
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────
+
+function normalizeLegacyId(value: string): string {
+  return value.toLowerCase();
+}
+
+function groupPreferenceTargetsByNormalizedId(
+  inventory: readonly SkillPreferenceTarget[],
+): Map<string, SkillPreferenceTarget[]> {
+  const targets = new Map<string, SkillPreferenceTarget[]>();
+  for (const target of inventory) {
+    const normalizedId = normalizeLegacyId(target.id);
+    const matches = targets.get(normalizedId);
+    if (matches) matches.push(target);
+    else targets.set(normalizedId, [target]);
+  }
+  return targets;
+}
+
+function findLegacyPreference(
+  preferences: ReadonlyMap<string, SkillRuntimePreference>,
+  skillId: string,
+): SkillRuntimePreference | undefined {
+  const normalizedId = normalizeLegacyId(skillId);
+  for (const [key, preference] of preferences) {
+    if (normalizeLegacyId(key) === normalizedId) return preference;
+  }
+  return undefined;
+}
 
 function isSafeSkillPreferenceKey(value: string): boolean {
   return (

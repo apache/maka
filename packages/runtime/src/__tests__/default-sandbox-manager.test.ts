@@ -31,10 +31,17 @@ describe('createDefaultSandboxManager', () => {
 });
 
 describe('createBuiltinSandboxManager', () => {
-  it('enables production sandbox backends on macOS and Linux', () => {
+  it('always returns a manager so managed execution fails closed on unsupported platforms', () => {
     assert.ok(createBuiltinSandboxManager('linux'));
     assert.ok(createBuiltinSandboxManager('darwin'));
-    assert.equal(createBuiltinSandboxManager('win32'), undefined);
+    const unsupported = createBuiltinSandboxManager('win32');
+    assert.ok(unsupported);
+    const selection = unsupported.selectInitial({
+      profile: createWorkspaceWritePermissionProfile(),
+      platform: 'win32',
+    });
+    assert.equal(selection.ok, false);
+    if (!selection.ok) assert.equal(selection.reason, 'unsupported_platform');
   });
 });
 

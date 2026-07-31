@@ -478,6 +478,40 @@ describe('history compact checkpoint', () => {
     assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
   });
 
+  test('replays a durable pre_turn checkpoint below the current high water', () => {
+    const events = Array.from({ length: 6 }, (_, index) => ({
+      ...textEvent(index),
+      content: {
+        kind: 'text' as const,
+        text: `small-payload-${index} `.repeat(index < 4 ? 200 : 1),
+      },
+    }));
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: events.slice(0, 4),
+      summary: 'recovery checkpoint summary',
+    });
+
+    // The raw history is deliberately far below high water. Once a durable
+    // checkpoint exists, replaying it is nevertheless mandatory: otherwise a
+    // recovery/manual compaction only affects its own turn and the next turn
+    // resurrects the covered raw prefix.
+    const replay = applyRuntimeEventHistoryCompact(
+      events,
+      { enabled: true, mode: 'read_write', checkpoint },
+      4,
+      1_000_000,
+    );
+
+    assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
+    assert.deepEqual(
+      replay.events.map((event) => event.id),
+      [`history-compact:${checkpoint.checkpointId}`, 'event-4', 'event-5'],
+    );
+    assert.equal(replay.diagnosticPatch.historyCompactBlocksSelected, 1);
+    assert.equal(replay.diagnosticPatch.historyCompactSkippedReasonCounts, undefined);
+  });
+
   test('accepts a complete checkpoint above legacy block limits when the full replay fits', () => {
     const events = Array.from({ length: 8 }, (_, index) => ({
       ...textEvent(index),

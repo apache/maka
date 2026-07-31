@@ -24,7 +24,6 @@ export function buildAskUserQuestionTool(): MakaTool<
     parameters: z.object({
       questions: z.array(questionSchema).min(1).max(3),
     }),
-    permissionRequired: false,
     impl: ({ questions }, context) => {
       if (!context.askUserQuestion)
         throw new Error('AskUserQuestion is unavailable on this surface');

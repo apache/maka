@@ -26,6 +26,11 @@ export interface RuntimeHostedRootExecutionInput extends RuntimeMessageRunIdenti
   readonly userMessageId: string | null;
   readonly execution: RootExecutionDescriptor;
   readonly content: MessageContent;
+  /**
+   * First-admission control-plane gate. Existing durable admissions bypass it
+   * so recovery never depends on mutable scheduling state.
+   */
+  readonly admitExecution?: () => Promise<'executing' | 'cancelled'>;
   readonly start: (input: {
     readonly runId: string;
     readonly userMessageId: string | null;

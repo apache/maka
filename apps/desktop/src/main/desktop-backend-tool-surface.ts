@@ -3,7 +3,6 @@ import {
   DEFAULT_SESSION_NAME,
   expertTeamIdFromLabels,
   isDeepResearchSession,
-  isPermissionModeWithinCeiling,
   resolveModelVisionSupport,
 } from '@maka/core';
 import type {
@@ -19,13 +18,14 @@ import {
   type PlanStore,
 } from '@maka/core/plan';
 import {
+  AGENT_TOOL_GROUP_ID,
   buildCancelPlanTool,
   buildExpertDispatchToolForTeamId,
-  buildHostCapabilitiesFromBinding,
   buildMcpTools,
   buildSubmitPlanTool,
   buildToolsForAgentDefinition,
   buildUpdatePlanTool,
+  projectEffectiveProductToolSurface,
   selectCollaborationTools,
 } from '@maka/runtime';
 import type {
@@ -35,10 +35,7 @@ import type {
   ToolAvailabilityConfig,
 } from '@maka/runtime';
 import type { McpClientManager } from '@maka/mcp';
-import {
-  computerUseAvailabilityForModel,
-  computerUseToolsForModel,
-} from './computer-use-model-tools.js';
+import { computerUseToolsForModel } from './computer-use-model-tools.js';
 import type { ReadyConnection } from './chat-readiness.js';
 
 export interface DesktopBackendToolSurfaceDeps {
@@ -54,7 +51,7 @@ export interface DesktopBackendToolSurfaceDeps {
   computerUseTools: readonly MakaTool[];
   agentTeamLeadTools: readonly MakaTool[];
   builtinTools: readonly MakaTool[];
-  toolAvailability: ToolAvailabilityConfig;
+  toolEconomy: boolean;
   planStore: PlanStore;
   getAgentGraphSupervisorTools?: (
     sessionId: string,
@@ -89,6 +86,7 @@ export interface DesktopBackendToolSurface {
   selectedTools: MakaTool[];
   toolAvailability: ToolAvailabilityConfig;
   skillHost: HostCapabilities;
+  admitsAgentChildren: boolean;
 }
 
 export interface DesktopNewSessionSkillContext {
@@ -205,7 +203,7 @@ export async function resolveDesktopBackendToolSurface(
     deps.getAgentGraphSupervisorTools
       ? await deps.getAgentGraphSupervisorTools(input.sessionId, input.header)
       : [];
-  const candidateTools = input.tools
+  const unscopedCandidateTools = input.tools
     ? [...input.tools]
     : deps.isComputerUseRealModelE2e
       ? [...deps.computerUseTools]
@@ -215,9 +213,11 @@ export async function resolveDesktopBackendToolSurface(
           ...buildMcpTools(deps.mcpManager),
           ...(isDeepResearchSession(input.header.labels) ? deps.deepResearchTools : []),
         ];
-  const candidateToolAvailability = deps.isComputerUseRealModelE2e
-    ? { economy: false, groups: [] }
-    : deps.toolAvailability;
+  const candidateTools =
+    !input.tools && isDeepResearchSession(input.header.labels)
+      ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
+      : unscopedCandidateTools;
+  const toolEconomy = deps.isComputerUseRealModelE2e ? false : deps.toolEconomy;
 
   // Expert-team lead: a main session labeled `mode:expert-team:<teamId>`
   // gets expert_dispatch. Child turns inherit the label but receive scoped
@@ -248,10 +248,6 @@ export async function resolveDesktopBackendToolSurface(
     deps.computerUseTools,
     supportsVision,
   );
-  const toolAvailability = computerUseAvailabilityForModel(
-    candidateToolAvailability,
-    supportsVision,
-  );
   const selectedTools = selectCollaborationTools({
     mode: collaborationMode,
     tools: expertDispatchTool
@@ -259,8 +255,11 @@ export async function resolveDesktopBackendToolSurface(
       : backendTools,
     hasActiveExecution: activeExecution !== undefined,
   });
-  const backendToolNames = new Set(selectedTools.map((tool) => tool.name));
-  const backendSkillHost = buildHostCapabilitiesFromBinding(backendToolNames);
+  const productToolSurface = projectEffectiveProductToolSurface({
+    host: 'desktop',
+    tools: selectedTools,
+    policy: { economy: toolEconomy },
+  });
 
   return {
     connection,
@@ -272,10 +271,26 @@ export async function resolveDesktopBackendToolSurface(
     activeExecution,
     interruptedExecution,
     agentTeam,
-    selectedTools,
-    toolAvailability,
-    skillHost: backendSkillHost,
+    selectedTools: [...productToolSurface.tools],
+    toolAvailability: productToolSurface.toolAvailability,
+    skillHost: productToolSurface.hostCapabilities,
+    admitsAgentChildren: productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID),
   };
+}
+
+const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
+  'AskUserQuestion',
+  'Read',
+  'ArchiveRead',
+  'Glob',
+  'Grep',
+  'WebSearch',
+]);
+
+function isDeepResearchToolAllowed(tool: MakaTool): boolean {
+  return (
+    DEEP_RESEARCH_ALLOWED_TOOL_NAMES.has(tool.name) || tool.name.startsWith('deep_research_')
+  );
 }
 
 function modelSupportsVision(connection: LlmConnection, model: string): boolean {
@@ -296,14 +311,10 @@ function resolveDurableChildTools(
   if (!header.subagentParent) {
     throw new Error('Subagent runtime snapshot requires a linked child session');
   }
-  if (!isPermissionModeWithinCeiling(header.permissionMode, snapshot.permissionCeiling)) {
-    throw new Error('Subagent runtime permission mode exceeds its durable ceiling');
-  }
   const tools = buildToolsForAgentDefinition(availableChildTools, {
     id: snapshot.agentId,
     permissionMode: header.permissionMode,
     tools: snapshot.toolNames,
-    categoryPolicy: snapshot.categoryPolicy,
   });
   if (tools.length !== snapshot.toolNames.length) {
     throw new Error('Subagent runtime tool snapshot is unavailable');

@@ -25,7 +25,6 @@ import {
   isCollaborationMode,
   isOrchestrationMode,
   isPermissionMode,
-  isPermissionModeWithinCeiling,
   isSessionBlockedReason,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
@@ -38,11 +37,16 @@ import {
 import type {
   AgentGraphOperatorProvisionRequest,
   AgentGraphOperatorProvisionResult,
+  CreateSandboxBoundaryRequest,
   CreateSessionInput,
+  ExecutionBoundary,
+  SandboxBoundaryRequest,
+  SandboxBoundarySettlement,
   SessionHeader,
   SessionListFilter,
   SessionSummary,
   StoredMessage,
+  SettleSandboxBoundaryRequest,
   TurnRecord,
   UserMessage,
 } from '@maka/core';
@@ -64,13 +68,35 @@ export function isSessionNotFoundError(error: unknown): error is SessionNotFound
 }
 
 export interface SessionStore {
-  create(input: CreateSessionInput): Promise<SessionHeader>;
-  createSubagent(input: CreateSessionInput): Promise<{ header: SessionHeader; created: boolean }>;
+  create(input: CreateSessionInput, initialBoundary?: ExecutionBoundary): Promise<SessionHeader>;
+  createSubagent(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<{ header: SessionHeader; created: boolean }>;
   createAgentGraphOperator(
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
+  createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest>;
+  listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  /** Requests already closed against the user because the host restarted. */
+  listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
+  settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement>;
+  setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary>;
   list(filter?: SessionListFilter): Promise<SessionSummary[]>;
   /** Enumerate durable metadata without reading transcript bodies. */
   listHeaders(): Promise<SessionHeader[]>;
@@ -126,14 +152,17 @@ class SqliteSessionStore implements SessionStore {
     void this.ready.catch(() => {});
   }
 
-  async create(input: CreateSessionInput): Promise<SessionHeader> {
+  async create(
+    input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionHeader> {
     await this.ensureReady();
     if (input.subagentSpawn) {
       throw new Error('Subagent spawn metadata requires createSubagent()');
     }
     const staged = await this.files.createTranscript(input);
     try {
-      return (await this.metadata.create(staged)).header;
+      return (await this.metadata.create(staged, initialBoundary)).header;
     } catch (error) {
       await this.files.remove(staged.id).catch(() => {});
       throw error;
@@ -142,11 +171,12 @@ class SqliteSessionStore implements SessionStore {
 
   async createSubagent(
     input: CreateSessionInput,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader; created: boolean }> {
     await this.ensureReady();
     const staged = await this.files.createTranscript(input);
     try {
-      const result = await this.metadata.createSubagent(staged);
+      const result = await this.metadata.createSubagent(staged, initialBoundary);
       if (!result.created) await this.files.remove(staged.id);
       return { header: result.record.header, created: result.created };
     } catch (error) {
@@ -159,6 +189,7 @@ class SqliteSessionStore implements SessionStore {
     input: CreateSessionInput,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     await this.ensureReady();
     const staged = await this.files.createTranscript(input);
@@ -167,6 +198,7 @@ class SqliteSessionStore implements SessionStore {
         staged,
         request,
         expectedRevision,
+        initialBoundary,
       );
       if (!result.created) await this.files.remove(staged.id);
       return {
@@ -178,6 +210,47 @@ class SqliteSessionStore implements SessionStore {
       await this.files.remove(staged.id).catch(() => {});
       throw error;
     }
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    await this.ensureReady();
+    return this.metadata.readExecutionBoundary(sessionId);
+  }
+
+  async createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    await this.ensureReady();
+    return this.metadata.createSandboxBoundaryRequest(input);
+  }
+
+  async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    await this.ensureReady();
+    return this.metadata.listPendingSandboxBoundaryRequests(sessionId);
+  }
+
+  async listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    await this.ensureReady();
+    return this.metadata.listSandboxBoundaryRestartClosures(sessionId);
+  }
+
+  async settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    await this.ensureReady();
+    return this.metadata.settleSandboxBoundaryRequest(input);
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary> {
+    await this.ensureReady();
+    return this.metadata.setExecutionBoundaryKind(sessionId, kind, projection);
   }
 
   async list(filter?: SessionListFilter): Promise<SessionSummary[]> {
@@ -412,6 +485,41 @@ class FileSessionStore implements SessionStore {
     _expectedRevision: number,
   ): Promise<{ header: SessionHeader } & AgentGraphOperatorProvisionResult> {
     throw new Error('Graph operator provisioning requires the SQLite metadata control plane');
+  }
+
+  async readExecutionBoundary(_sessionId: string): Promise<ExecutionBoundary> {
+    throw new Error('Execution boundaries require the SQLite metadata control plane');
+  }
+
+  async createSandboxBoundaryRequest(
+    _input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async listPendingSandboxBoundaryRequests(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async listSandboxBoundaryRestartClosures(_sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async settleSandboxBoundaryRequest(
+    _input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    throw new Error('Sandbox boundary requests require the SQLite metadata control plane');
+  }
+
+  async setExecutionBoundaryKind(
+    _sessionId: string,
+    _kind: 'managed' | 'bypass',
+    _projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary> {
+    throw new Error('Execution boundaries require the SQLite metadata control plane');
   }
 
   async createTranscript(input: CreateSessionInput): Promise<SessionHeader> {
@@ -1291,11 +1399,7 @@ function isValidSubagentSessionLineage(header: SessionHeader): boolean {
     (isSubagentSessionRuntime(header.subagentRuntime) &&
       isSubagentSessionSpawn(header.subagentSpawn) &&
       (header.subagentWorkspace === undefined ||
-        isSubagentWorkspaceBinding(header.subagentWorkspace)) &&
-      isPermissionModeWithinCeiling(
-        header.permissionMode,
-        header.subagentRuntime.permissionCeiling,
-      ))
+        isSubagentWorkspaceBinding(header.subagentWorkspace)))
   );
 }
 

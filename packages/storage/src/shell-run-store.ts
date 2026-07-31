@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -7,11 +7,14 @@ import {
   isShellOutput,
   isShellRunId,
   isShellRunStatus,
+  isTerminalShellRunStatus,
   isValidShellRunState,
+  isValidShellRunStatusTransition,
   type ShellRunRecord,
   type ShellRunPatch,
   type ShellRunStore,
 } from '@maka/core';
+import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -75,10 +78,12 @@ export function createShellRunStore(workspaceRoot: string): ShellRunStore {
 }
 
 class FileShellRunStore implements ShellRunStore {
+  private readonly durabilityRoot: string;
   private readonly sessionsRoot: string;
   private readonly writeQueues = new Map<string, Promise<void>>();
 
   constructor(workspaceRoot: string) {
+    this.durabilityRoot = workspaceRoot;
     this.sessionsRoot = join(workspaceRoot, 'sessions');
   }
 
@@ -94,6 +99,8 @@ class FileShellRunStore implements ShellRunStore {
       await writeAtomic(
         this.shellRunPath(record.sessionId, record.shellRunId),
         JSON.stringify(normalized, sanitizeJson) + '\n',
+        this.durabilityRoot,
+        true,
       );
     });
     return normalized;
@@ -107,6 +114,7 @@ class FileShellRunStore implements ShellRunStore {
     let next: ShellRunRecord | undefined;
     await this.withQueue(sessionId, shellRunId, async () => {
       assertShellRunPatch(patch);
+      const hasDurableIntent = Object.hasOwn(patch, 'status') || Object.hasOwn(patch, 'observedAt');
       const current = await this.readShellRunUnlocked(sessionId, shellRunId);
       if (patch.output && patch.output.mode !== current.output.mode) {
         throw new Error(`ShellRun output mode is immutable: ${current.output.mode}`);
@@ -120,7 +128,13 @@ class FileShellRunStore implements ShellRunStore {
         sessionId,
         shellRunId,
       );
+      assertShellRunTransition(current, candidate);
       if (isDeepStrictEqual(candidate, current)) {
+        if (hasDurableIntent) {
+          const path = this.shellRunPath(sessionId, shellRunId);
+          await syncFile(path);
+          await syncDirectoryChain(dirname(path), this.durabilityRoot);
+        }
         next = current;
         return;
       }
@@ -132,6 +146,8 @@ class FileShellRunStore implements ShellRunStore {
       await writeAtomic(
         this.shellRunPath(sessionId, shellRunId),
         JSON.stringify(next, sanitizeJson) + '\n',
+        this.durabilityRoot,
+        hasDurableIntent,
       );
     });
     if (!next) throw new Error(`Failed to update shell run ${shellRunId}`);
@@ -204,11 +220,23 @@ class FileShellRunStore implements ShellRunStore {
   }
 }
 
-async function writeAtomic(path: string, content: string): Promise<void> {
+async function writeAtomic(
+  path: string,
+  content: string,
+  durabilityRoot: string,
+  durable: boolean,
+): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tempPath, content, 'utf8');
-  await rename(tempPath, path);
+  try {
+    await writeFile(tempPath, content, 'utf8');
+    if (durable) await syncFile(tempPath);
+    await rename(tempPath, path);
+    if (durable) await syncDirectoryChain(dirname(path), durabilityRoot);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -389,6 +417,20 @@ function assertShellRunPatch(patch: ShellRunPatch): void {
     if (!SHELL_RUN_PATCH_KEYS.has(key)) {
       throw new Error(`ShellRun field is immutable: ${key}`);
     }
+  }
+}
+
+function assertShellRunTransition(current: ShellRunRecord, candidate: ShellRunRecord): void {
+  if (!isValidShellRunStatusTransition(current.status, candidate.status)) {
+    throw new Error(`Invalid ShellRun status transition: ${current.status} -> ${candidate.status}`);
+  }
+  if (
+    isTerminalShellRunStatus(current.status) &&
+    (candidate.completedAt !== current.completedAt ||
+      candidate.exitCode !== current.exitCode ||
+      candidate.failureMessage !== current.failureMessage)
+  ) {
+    throw new Error(`ShellRun terminal outcome is immutable: ${current.status}`);
   }
 }
 

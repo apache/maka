@@ -27,12 +27,18 @@ import {
   persistedBaseUrl,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
 
 describe('provider compatibility contract', () => {
+  it('derives remote model discovery support from the registry strategy', () => {
+    assert.equal(providerSupportsModelDiscovery('openai'), true);
+    assert.equal(providerSupportsModelDiscovery('volcengine-ark'), false);
+  });
+
   it('exposes only supported first-class provider ids in stable order', () => {
     assert.deepEqual(Object.keys(PROVIDER_DEFAULTS), [
       'anthropic',
@@ -40,6 +46,7 @@ describe('provider compatibility contract', () => {
       'minimax-coding-plan',
       'tencent-coding-plan',
       'volcengine-coding-plan',
+      'volcengine-agent-plan',
       'tencent-token-plan',
       'openai',
       'google',
@@ -129,6 +136,7 @@ describe('provider compatibility contract', () => {
       'stepfun-ai',
       'volcengine-ark',
       'volcengine-coding-plan',
+      'volcengine-agent-plan',
       'tencent-token-plan',
       'stepfun-step-plan',
       'deepinfra',
@@ -184,6 +192,7 @@ describe('provider compatibility contract', () => {
       'stepfun-ai',
       'volcengine-ark',
       'volcengine-coding-plan',
+      'volcengine-agent-plan',
       'tencent-token-plan',
       'stepfun-step-plan',
       'deepinfra',
@@ -300,7 +309,7 @@ describe('provider compatibility contract', () => {
     assert.ok(!provider.baseUrl.includes('models.github.ai'));
   });
 
-  it('owns Volcengine Ark Coding Plan as a fallback-only interactive coding access path', () => {
+  it('owns Volcengine Ark Coding Plan as a remotely discoverable coding access path', () => {
     const provider = (
       PROVIDER_REGISTRY as Partial<
         Record<string, (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]>
@@ -313,7 +322,7 @@ describe('provider compatibility contract', () => {
     assert.equal(provider.authKind, 'api_key');
     assert.equal(provider.protocol, 'openai');
     assert.deepEqual(provider.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(provider.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(provider.modelDiscovery, { kind: 'protocol' });
     assert.equal(provider.catalogGroup, 'plans');
     assert.deepEqual(provider.fallbackModels, [
       'ark-code-latest',
@@ -700,7 +709,7 @@ describe('provider compatibility contract', () => {
       requireBaseUrl: true,
       replayAssistantReasoningAs: 'reasoning',
     });
-    assert.deepEqual(cloudflare.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(cloudflare.modelDiscovery, { kind: 'cloudflare' });
     assert.equal(cloudflare.category, 'overseas');
     assert.equal(cloudflare.catalogGroup, 'api');
     assert.equal(cloudflare.modelsDevId, 'cloudflare-workers-ai');
@@ -882,7 +891,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.authKind, 'api_key');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'domestic');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Coding');
@@ -904,7 +913,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.authKind, 'api_key');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'domestic');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Token');
@@ -957,7 +966,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.status, 'ready');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'domestic');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Plan');
@@ -981,7 +990,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.status, 'ready');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'overseas');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Plan');
@@ -1042,7 +1051,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.authKind, 'api_key');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'domestic');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Token');
@@ -1081,7 +1090,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.authKind, 'api_key');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'overseas');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Token');
@@ -1131,7 +1140,7 @@ describe('provider compatibility contract', () => {
       assert.equal(plan.authKind, 'api_key');
       assert.equal(plan.protocol, 'openai');
       assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-      assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+      assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
       assert.equal(plan.category, region.category);
       assert.equal(plan.catalogGroup, 'plans');
       assert.equal(plan.catalogBadge, 'Token');
@@ -1187,7 +1196,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.authKind, 'api_key');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'domestic');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Plan');
@@ -1214,7 +1223,7 @@ describe('provider compatibility contract', () => {
     assert.equal(plan.authKind, 'api_key');
     assert.equal(plan.protocol, 'openai');
     assert.deepEqual(plan.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(plan.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(plan.modelDiscovery, { kind: 'protocol' });
     assert.equal(plan.category, 'overseas');
     assert.equal(plan.catalogGroup, 'plans');
     assert.equal(plan.catalogBadge, 'Plan');
@@ -1268,12 +1277,62 @@ describe('provider compatibility contract', () => {
     assert.equal(ark.authKind, 'api_key');
     assert.equal(ark.protocol, 'openai');
     assert.deepEqual(ark.runtimeAdapter, { kind: 'openai-compatible', name: 'provider' });
-    assert.deepEqual(ark.modelDiscovery, { kind: 'fallback' });
+    assert.deepEqual(ark.modelDiscovery, {
+      kind: 'fallback',
+      reason:
+        'Ark model discovery is a control-plane API that requires AK/SK signing; inference API keys cannot call it',
+    });
     assert.equal(ark.category, 'domestic');
     assert.equal(ark.catalogGroup, 'api');
     assert.equal(ark.signupUrl, 'https://console.volcengine.com/ark/region:ark+cn-beijing/model');
     assert.equal(ark.modelsDevId, undefined);
     assert.deepEqual(ark.fallbackModels, ['doubao-seed-2-0-pro-260215']);
+  });
+
+  it('owns Volcengine Agent Plan as an independent Responses access path', () => {
+    const agentPlan = (
+      PROVIDER_REGISTRY as Partial<
+        Record<string, (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]>
+      >
+    )['volcengine-agent-plan'];
+
+    assert.ok(agentPlan, 'Volcengine Agent Plan must have its own persisted provider id');
+    assert.equal(agentPlan.label, 'Volcengine Ark Agent Plan (China)');
+    assert.equal(agentPlan.baseUrl, 'https://ark.cn-beijing.volces.com/api/plan/v3');
+    assert.equal(agentPlan.authKind, 'api_key');
+    assert.equal(agentPlan.protocol, 'openai');
+    assert.deepEqual(agentPlan.runtimeAdapter, {
+      kind: 'openai',
+      apiProtocol: 'openai-responses',
+    });
+    assert.deepEqual(agentPlan.modelDiscovery, {
+      kind: 'fallback',
+      reason:
+        'Agent Plan inference data plane does not expose a model-list endpoint for its dedicated API key',
+    });
+    assert.equal(agentPlan.category, 'domestic');
+    assert.equal(agentPlan.catalogGroup, 'plans');
+    assert.equal(agentPlan.catalogBadge, 'Agent');
+    assert.equal(agentPlan.signupUrl, 'https://console.volcengine.com/ark/agent-plan');
+    assert.equal(agentPlan.modelsDevId, undefined);
+    assert.deepEqual(agentPlan.fallbackModels, [
+      'ark-code-latest',
+      'doubao-seed-2.0-mini',
+      'doubao-seed-2.0-lite',
+      'deepseek-v4-flash',
+      'doubao-seed-2.1-turbo',
+      'doubao-seed-evolving',
+      'doubao-seed-2.0-code',
+      'doubao-seed-2.0-pro',
+      'minimax-m2.7',
+      'minimax-m3',
+      'glm-5.2',
+      'glm-latest',
+      'kimi-k2.6',
+      'kimi-k2.7-code',
+      'deepseek-v4-pro',
+      'kimi-k3',
+    ]);
   });
 });
 

@@ -2,7 +2,7 @@
 
 # Maka Backend Architecture
 
-> 这是 Maka Agent 后端架构的总入口。它不重复每篇专题文章，而是先给出系统主线，再帮助读者按问题快速找到对应章节。当前系列聚焦 Runtime、工具与上下文、Headless 长程任务、Self-check、AHE 自迭代边界，以及建立在 child Session 之上的 Graph 调度。
+> 这是 Maka Agent 后端架构的总入口。它不重复每篇专题文章，而是先给出系统主线，再帮助读者按问题快速找到对应章节。当前系列聚焦 Runtime、工具与上下文、Headless 长程任务、Self-check、AHE 自迭代边界、建立在 child Session 之上的 Graph 调度，以及 crash-safe Runtime continuation。
 
 ## 一句话架构
 
@@ -21,6 +21,7 @@ flowchart LR
 
     L --> C["Provider Context Projection"]
     L --> V["Session / UI Read Models"]
+    L --> X["Crash Recovery / Continuation"]
     L --> GP["Graph Records / Client Projection"]
     GP --> G
     L -. "trajectory refs" .-> H
@@ -31,7 +32,7 @@ flowchart LR
     E --> A["External Evolution Loop"]
 ```
 
-从左向右读：入口把用户意图交给 Runtime；模型和工具执行产生事实；同一组事实随后被投影成模型上下文、交互界面、Graph 调度输入、长程任务状态和演化证据。Graph 从持久 schedule metadata 协调 child Session，但执行仍回到同一套 Runtime。图中省略了 provider、具体存储实现和 UI 组件，只保留本系列文档共同解释的后端主线。
+从左向右读：入口把用户意图交给 Runtime；模型和工具执行产生事实；同一组事实随后被投影成模型上下文、交互界面、崩溃恢复判定、Graph 调度输入、长程任务状态和演化证据。Graph 从持久 schedule metadata 协调 child Session，但执行仍回到同一套 Runtime。图中省略了 provider、具体存储实现和 UI 组件，只保留本系列文档共同解释的后端主线。
 
 ## 四层心智模型
 
@@ -39,7 +40,7 @@ flowchart LR
 
 一次 Agent Run 产生模型消息、Tool Call、Tool Result、权限和终止事实。除 hosted permission answer 外，Runtime Event Log 是这些交互语义的 canonical source；hosted permission answer 以 InteractionStore 为 canonical authority，Runtime ledger 只保存 answer identity 与 audit fact。embedded/legacy 路径保留既有的 decision-event 语义。上下文裁剪与 Compaction 可以改变模型下一次看到什么，但不能反向改写已经发生的事实。
 
-对应章节：第一章、第二章、第三章。
+对应章节：第一章、第二章、第三章、第八章。
 
 ### 2. Agent work 协调层
 
@@ -59,7 +60,7 @@ AHE 把多次 TaskRun 的结果和 trace 组织成带 target identity 的演化�
 
 对应章节：第六章。
 
-## 七章索引
+## 八章索引
 
 | 章节 | 核心问题 | 实现状态 | 阅读 |
 |---|---|---|---|
@@ -70,6 +71,7 @@ AHE 把多次 TaskRun 的结果和 trace 组织成带 target identity 的演化�
 | 5. Self-Check Is Not Self-Trust | Agent 如何检查和修复自己的工作，而不把自述变成 authority？ | Current + Target | [中文](./docs/architecture/self-check-bounded-feedback-loop-draft.zh-CN.md) · [English](./docs/architecture/self-check-bounded-feedback-loop-draft.md) |
 | 6. Self-Iteration Happens Outside the Runtime | Maka 如何把运行经验变成可证伪、可回滚的系统改进？ | Current + Target | [中文](./docs/architecture/ahe-self-iteration-boundary-draft.zh-CN.md) · [English](./docs/architecture/ahe-self-iteration-boundary-draft.md) |
 | 7. Graph Is a Schedule, Not a Second Runtime | Maka 如何协调动态依赖的 Agent work，同时让主 Agent 始终在 data path 旁监督？ | Current | [中文](./docs/architecture/agent-graph-stream-scheduling-draft.zh-CN.md) · [English](./docs/architecture/agent-graph-stream-scheduling-draft.md) |
+| 8. Resume Is Not Retry | Maka 如何恢复 crash facts、避免重复副作用，并建立一个可证明安全的新执行？ | Current + Target | [中文](./docs/architecture/runtime-resume-architecture.zh-CN.md) · [English](./docs/architecture/runtime-resume-architecture.md) |
 
 这里的 **Current + Target** 表示文章同时记录已验证实现与明确标注的目标方向，不表示 Target 部分已经落地。每篇文章 front matter 中的 `implementation_status` 和 `last_verified` 是更细的状态来源。
 
@@ -77,15 +79,19 @@ AHE 把多次 TaskRun 的结果和 trace 组织成带 target identity 的演化�
 
 ### 第一次进入 Runtime
 
-按 `1 → 2 → 3` 阅读。你会先理解事实日志，再理解工具证据和上下文投影。
+按 `1 → 2 → 3 → 8` 阅读。先理解事实日志，再理解恢复会消费的工具证据和上下文投影，最后进入崩溃修复与安全续跑。
 
 ### 修改 Tool、Context 或 Compaction
 
-先读 `1` 建立 canonical fact 边界，再读 `2 → 3`。如果改动会影响长程任务的证据消费，再补 `4`。
+先读 `1` 建立 canonical fact 边界，再读 `2 → 3`。如果改动涉及 T1/T2、恢复或 continuation，再补 `8`；如果影响长程任务的证据消费，再补 `4`。
+
+### 修改 crash recovery、durable Tool boundary 或 workspace continuity
+
+按 `1 → 8` 阅读。第一章建立 RuntimeEvent 与 AgentRun authority；第八章解释 startup repair、T1/T2、RecoveryResolver、safe-boundary continuation 和 Phase 3–4 workspace 路线。如果涉及 Headless Attempt recovery，再补 `4`；如果恢复会影响 Graph activation 或 supervisor wake，再补 `7`。
 
 ### 修改 Headless 或任务恢复
 
-按 `1 → 4 → 5` 阅读。第四章解释 durability，第三章可以补充上下文恢复，第二章可以补充 Tool Result 的证据边界。
+按 `1 → 8 → 4 → 5` 阅读。第八章区分 Runtime continuation、Attempt retry 和 workspace restore；第四章解释 durability，第三章可以补充上下文恢复，第二章可以补充 Tool Result 的证据边界。
 
 ### 修改 Self-check 或完成条件
 
@@ -115,7 +121,7 @@ AHE 把多次 TaskRun 的结果和 trace 组织成带 target identity 的演化�
 - [`docs/archive/runtime-v2-architecture-evolution.md`](./docs/archive/runtime-v2-architecture-evolution.md)
 - [`docs/archive/runtime-v2-implementation-notes.md`](./docs/archive/runtime-v2-implementation-notes.md)
 
-这些文档提供历史设计背景和实现笔记；本页索引的七章是当前后端机制的叙事入口。
+这些文档提供历史设计背景和实现笔记；本页索引的八章是当前后端机制的叙事入口。
 
 ## 文档目录约定
 

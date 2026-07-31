@@ -1,4 +1,4 @@
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { LlmCallRecord } from '@maka/core/usage-stats/types';
 
@@ -139,7 +139,7 @@ export type SemanticCompactBlockRecorder = (block: SemanticCompactBlock) => void
 
 /** Provider and persistence capabilities used by the compaction collaborator. */
 export interface AiSdkCompactionCapabilities {
-  connection: LlmConnection;
+  connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
   modelFactory: ModelFactory;

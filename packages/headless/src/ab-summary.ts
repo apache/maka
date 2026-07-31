@@ -1,7 +1,5 @@
-import {
-  BUDGET_EXHAUSTED_RUNTIME_UNAVAILABLE_REASON,
-  type FixedPromptTaskWalEvent,
-} from './fixed-prompt-controller.js';
+import { BUDGET_EXHAUSTED_RUNTIME_UNAVAILABLE_REASON } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import type { HarborCellTokenSummary } from './cell-output.js';
 import { assertRatio } from './numeric-guards.js';
 import type {

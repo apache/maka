@@ -97,7 +97,8 @@ describe('ArtifactPane async lifecycle contract', () => {
       'manual artifact-list retry must use a ref-backed pending gate so repeated clicks cannot fan out list IPC calls',
     );
     assert.match(src, /onClick=\{\(\) => void retryArtifactListRefresh\(\)\}/);
-    assert.match(src, /disabled=\{pendingArtifactListRetry\}/);
+    // #1565 PR 3: Astryx Button spells the disabled prop `isDisabled`.
+    assert.match(src, /isDisabled=\{pendingArtifactListRetry\}/);
     assert.match(src, /aria-busy=\{pendingArtifactListRetry \? 'true' : undefined\}/);
     assert.match(src, /data-pending=\{pendingArtifactListRetry \? 'true' : undefined\}/);
     assert.match(src, /pendingArtifactListRetry \? copy\.pane\.retrying : copy\.pane\.retry/);
@@ -202,7 +203,8 @@ describe('ArtifactPane async lifecycle contract', () => {
         `${action} action must run through the pending gate`,
       );
     }
-    assert.match(toolbarBlock, /disabled=\{artifactActionBusy\}/, 'toolbar buttons must be disabled while any artifact action is pending');
+    // #1565 PR 3: Astryx Button spells the disabled prop `isDisabled`.
+    assert.match(toolbarBlock, /isDisabled=\{artifactActionBusy\}/, 'toolbar buttons must be disabled while any artifact action is pending');
     assert.match(toolbarBlock, /aria-busy=\{pendingArtifactAction === `\$\{selected\.id\}:open` \? 'true' : undefined\}/);
     assert.match(toolbarBlock, /copy\.pane\.opening/);
     assert.match(toolbarBlock, /copy\.pane\.saving/);
@@ -210,6 +212,8 @@ describe('ArtifactPane async lifecycle contract', () => {
     assert.match(toolbarBlock, /copy\.pane\.deleting/);
     assert.doesNotMatch(css, /\.maka-artifact-toolbar-button\b/, 'artifact actions must not restore consumer-owned Button states');
     assert.match(toolbarBlock, /variant="secondary"\s+size="sm"/);
-    assert.match(toolbarBlock, /variant="destructive" size="icon-sm"/);
+    // #1565 PR 3: the delete action is a Tooltip render-prop composition kept on
+    // legacy buttonVariants; lock the source form instead of JSX props.
+    assert.match(toolbarBlock, /buttonVariants\(\{ variant: 'destructive', size: 'icon-sm' \}\)/);
   });
 });

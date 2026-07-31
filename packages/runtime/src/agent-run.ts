@@ -487,12 +487,9 @@ export class AgentRun {
     options: { requireTerminalWrite?: boolean; allowInteractionResume?: boolean } = {},
   ): Promise<void> {
     if (isTerminalRuntimeEvent(runtimeEvent)) {
-      if (!isPermissionHandoffTerminal(runtimeEvent)) {
-        await this.recordRuntimeEvents([runtimeEvent], {
-          requireTerminalWrite:
-            options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
-        });
-      }
+      await this.recordRuntimeEvents([runtimeEvent], {
+        requireTerminalWrite: options.requireTerminalWrite ?? Boolean(this.input.runtimeEventStore),
+      });
       await this.recordSessionEvent(sessionEvent, options);
       return;
     }
@@ -506,6 +503,10 @@ export class AgentRun {
     }
     await this.recordSessionEvent(sessionEvent, options);
     if (sessionEvent.type === 'provider_retry') return;
+    // ToolRuntime already persisted protocol-tagged tool calls/results through
+    // the atomic RuntimeCommitSink. Re-appending the mapped UI event through
+    // the generic lane would duplicate the fact and violate that boundary.
+    if (isAtomicToolBoundaryProjection(runtimeEvent, this.toolBoundaryProtocol)) return;
     if (!isNonTerminalErrorRuntimeEvent(runtimeEvent)) {
       // A steered user message is fail-CLOSED: the backend's delivery ack
       // waits on this consume, and the provider must never execute a
@@ -1551,19 +1552,25 @@ function redactTraceString(value: string): string {
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
 }
-function isPermissionHandoffTerminal(event: RuntimeEvent): boolean {
-  return event.actions?.stateDelta?.stopReason === 'permission_handoff';
-}
-
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
-    event.type === 'permission_answer_ack' ||
-    event.type === 'permission_closure_ack' ||
-    (event.type === 'permission_decision_ack' && event.decision === 'allow') ||
-    event.type === 'user_question_answer_ack'
+    event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'
   );
 }
 
-function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
+/**
+ * Non-terminal error content never reaches the ledger: the trailing terminal
+ * event carries the failure. Exported so readers can reason about which mapped
+ * RuntimeEvents a projection will ever be asked to read.
+ */
+export function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {
   return event.content?.kind === 'error' && !isTerminalRuntimeEvent(event);
+}
+
+function isAtomicToolBoundaryProjection(
+  event: RuntimeEvent,
+  protocol: ToolBoundaryProtocol | undefined,
+): boolean {
+  if (!protocol || event.refs?.operationId === undefined) return false;
+  return event.content?.kind === 'function_call' || event.content?.kind === 'function_response';
 }

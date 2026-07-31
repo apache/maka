@@ -3,13 +3,22 @@ import { describe, it } from 'node:test';
 import type { LlmConnection, SessionHeader, TaskLedgerStore } from '@maka/core';
 import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { McpClientManager } from '@maka/mcp';
-import type { MakaTool, ToolAvailabilityConfig } from '@maka/runtime';
+import {
+  type AiSdkBackendInput,
+  type BackendFactoryContext,
+  type MakaTool,
+  type ToolAvailabilityConfig,
+} from '@maka/runtime';
 import {
   resolveDesktopBackendToolSurface,
   resolveDesktopNewSessionSkillHost,
   resolveDesktopSessionSkillHost,
   type DesktopBackendToolSurfaceDeps,
 } from '../desktop-backend-tool-surface.js';
+import {
+  createAiSdkBackendFactory,
+  type AiSdkBackendFactoryDeps,
+} from '../session-stream.js';
 
 const readTool = tool('Read', 'read');
 const writeTool = tool('Write', 'file_write');
@@ -23,6 +32,46 @@ const availability: ToolAvailabilityConfig = {
 };
 
 describe('Desktop backend tool surface', () => {
+  it('builds the Memory prompt for the backend session identity', async () => {
+    const deps = makeFactoryDeps();
+    let memorySessionId: string | undefined;
+    deps.systemPromptService = {
+      ...deps.systemPromptService,
+      buildLocalMemoryPromptFragment: async (sessionId) => {
+        memorySessionId = sessionId;
+        return '';
+      },
+    };
+
+    await backendInput(createAiSdkBackendFactory(deps), undefined);
+
+    assert.equal(memorySessionId, 'session-1');
+  });
+
+  it('uses the effective Agent surface as the complete child-runtime capability boundary', async () => {
+    const agentTools = [
+      tool('agent_spawn', 'subagent'),
+      tool('agent_swarm', 'subagent'),
+      tool('agent_list', 'read'),
+      tool('agent_output', 'read'),
+    ];
+    const factory = createAiSdkBackendFactory(
+      makeFactoryDeps({
+        builtinTools: [readTool, writeTool, computerTool, ...agentTools],
+      }),
+    );
+
+    const rootInput = await backendInput(factory, undefined);
+    for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+      assert.equal(typeof rootInput[capability], 'function', `expected root ${capability}`);
+    }
+
+    const scopedInput = await backendInput(factory, [readTool]);
+    for (const capability of AGENT_RUNTIME_CAPABILITIES) {
+      assert.equal(scopedInput[capability], undefined, `unexpected scoped ${capability}`);
+    }
+  });
+
   it('derives model-gated Skill capabilities from the current session header', async () => {
     const deps = makeDeps();
 
@@ -107,6 +156,11 @@ describe('Desktop backend tool surface', () => {
       },
     });
     assert.deepEqual([...child.skillHost.toolNames], ['Read']);
+    assert.deepEqual(
+      child.selectedTools.map((candidate) => candidate.name),
+      ['Read'],
+    );
+    assert.deepEqual(child.toolAvailability.groups, []);
   });
 
   it('keeps scoped child tools ahead of root-only computer-use and Plan controls', async () => {
@@ -189,6 +243,31 @@ describe('Desktop backend tool surface', () => {
     assert.equal(host.toolNames.has('Write'), false);
   });
 
+  it('does not use the legacy permission ceiling as child admission authority', async () => {
+    const header = inputFor('claude-sonnet-4-5-20250929').header;
+    header.permissionMode = 'execute';
+    header.subagentParent = {} as SessionHeader['subagentParent'];
+    header.subagentRuntime = {
+      schemaVersion: 1,
+      definitionVersion: 1,
+      agentId: 'implementation-child',
+      agentName: 'Implementation child',
+      profile: 'implementation',
+      systemPrompt: 'Implement.',
+      toolNames: ['Write'],
+      categoryPolicy: {},
+      permissionCeiling: 'ask',
+    };
+
+    const host = await resolveDesktopSessionSkillHost(makeDeps(), {
+      sessionId: header.id,
+      header,
+      childTools: [readTool, writeTool],
+    });
+
+    assert.deepEqual([...host.toolNames], ['Write']);
+  });
+
   it('never previews Deep Research tools — the preview stands in for a plain chat', async () => {
     // #1433: this used to branch on a `mode` the Quick Chat panel passed in
     // before its session existed. That panel is gone; the only entry point
@@ -210,6 +289,26 @@ describe('Desktop backend tool surface', () => {
     });
 
     assert.equal(preview.toolNames.has('deep_research_status'), false);
+  });
+
+  it('keeps Deep Research on a read-only local tool surface without boundary expansion', async () => {
+    const requestBoundary = tool('request_sandbox_boundary', 'custom_tool');
+    const bash = tool('Bash', 'shell_unsafe');
+    const webSearch = tool('WebSearch', 'web_read');
+    const deepResearchStatus = tool('deep_research_status', 'read');
+    const deps = makeDeps({
+      builtinTools: [readTool, writeTool, requestBoundary, bash, webSearch],
+      deepResearchTools: [deepResearchStatus],
+    });
+    const input = inputFor('claude-sonnet-4-5-20250929');
+    input.header.labels = ['mode:deep_research'];
+
+    const surface = await resolveDesktopBackendToolSurface(deps, input);
+
+    assert.deepEqual(
+      surface.selectedTools.map((candidate) => candidate.name),
+      ['Read', 'WebSearch', 'deep_research_status'],
+    );
   });
 
   it('uses explicit preview inputs without reading a nonexistent session plan', async () => {
@@ -265,7 +364,7 @@ function makeDeps(
     computerUseTools: [computerTool],
     agentTeamLeadTools: [],
     builtinTools: [readTool, writeTool, computerTool],
-    toolAvailability: availability,
+    toolEconomy: availability.economy,
     planStore,
     ...overrides,
   };
@@ -308,4 +407,66 @@ function tool(
   categoryHint: MakaTool['categoryHint'],
 ): MakaTool {
   return { name, categoryHint } as MakaTool;
+}
+
+const AGENT_RUNTIME_CAPABILITIES = [
+  'spawnChildAgent',
+  'spawnChildSession',
+  'prepareChildAgentResume',
+  'resumeChildAgent',
+  'retryChildAgent',
+  'listChildAgents',
+  'readChildAgentOutput',
+] as const satisfies readonly (keyof AiSdkBackendInput)[];
+
+function makeFactoryDeps(
+  overrides: Partial<DesktopBackendToolSurfaceDeps> = {},
+): AiSdkBackendFactoryDeps {
+  const runtime = {
+    spawnChildAgent: async () => undefined,
+    spawnChildSession: async () => undefined,
+    prepareChildAgentResume: async () => ({}) as never,
+    resumeChildAgent: async () => undefined,
+    retryChildAgent: async () => undefined,
+    listChildAgents: async () => [],
+    readChildAgentOutput: async () => ({}),
+  };
+  return {
+    ...makeDeps(overrides),
+    buildSubscriptionModelFetch: () => undefined,
+    systemPromptService: {
+      buildLocalMemoryPromptFragment: async () => '',
+    },
+    telemetryRepo: {},
+    ensureUsageReady: async () => {},
+    artifactStore: {},
+    desktopSessionSkillHosts: new Map(),
+    sandboxDiagnosticsProvider: { resolve: async () => undefined },
+    persistToolArtifacts: async () => {},
+    persistArchivedToolResult: async () => undefined,
+    readArchivedToolResult: async () => undefined,
+    runtimeCommitStore: undefined,
+    safeSendToRenderer: () => {},
+    openGateway: {},
+    emitSessionsChanged: () => {},
+    getRuntime: () => runtime,
+    getLookupPricing: () => () => null,
+  } as unknown as AiSdkBackendFactoryDeps;
+}
+
+async function backendInput(
+  factory: ReturnType<typeof createAiSdkBackendFactory>,
+  tools: readonly MakaTool[] | undefined,
+): Promise<AiSdkBackendInput> {
+  const base = inputFor('claude-sonnet-4-5-20250929');
+  const context: BackendFactoryContext = {
+    ...base,
+    workspaceRoot: base.header.workspaceRoot,
+    store: {
+      appendMessage: async () => {},
+    } as unknown as BackendFactoryContext['store'],
+    ...(tools ? { tools } : {}),
+  };
+  const backend = await factory(context);
+  return (backend as unknown as { input: AiSdkBackendInput }).input;
 }

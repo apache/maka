@@ -23,6 +23,7 @@ import {
 } from '@maka/core';
 import {
   createAgentRunStore,
+  createRuntimeEventStore,
   ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES,
   ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
   ROOT_TURN_ADMISSION_SCHEMA_VERSION,
@@ -109,6 +110,62 @@ describe('execution stores', () => {
         );
       } finally {
         await owner.close();
+      }
+    });
+  });
+
+  test('routes Headless RuntimeEvents through SQLite after importing legacy JSONL once', async () => {
+    await withRoot(async ({ root }) => {
+      const capability = await resolveStorageRoot({
+        path: root,
+        kind: 'headless',
+      });
+      const sessionId = 'legacy-session';
+      const runId = 'legacy-run';
+      await createAgentRunStore(root).createRun(runHeader(sessionId, runId));
+      const legacy = createRuntimeEventStore(root);
+      await legacy.appendRuntimeEvent(
+        sessionId,
+        runId,
+        runtimeEvent(sessionId, runId, 'legacy-event', 1),
+      );
+      const legacyPath = join(root, 'sessions', sessionId, 'runs', runId, 'runtime-events.jsonl');
+      const legacyBytes = await readFile(legacyPath);
+
+      const writer = await openHeadlessExecutionStoresForWrite(
+        createHeadlessRootLease(capability, 'write'),
+      );
+      try {
+        assert.deepEqual(
+          (await writer.runtimeEventStore.readRuntimeEvents(sessionId, runId)).map(
+            (event) => event.id,
+          ),
+          ['legacy-event'],
+        );
+        await writer.runtimeEventStore.appendRuntimeEvent(
+          sessionId,
+          runId,
+          runtimeEvent(sessionId, runId, 'sqlite-event', 2),
+        );
+
+        const reader = await openHeadlessExecutionStoresForRead(
+          createHeadlessRootLease(capability, 'read'),
+        );
+        try {
+          assert.deepEqual(
+            (await reader.runtimeEventStore.readRuntimeEvents(sessionId, runId)).map(
+              (event) => event.id,
+            ),
+            ['legacy-event', 'sqlite-event'],
+          );
+        } finally {
+          await reader.sessionStore.close?.();
+        }
+
+        assert.ok((await stat(join(root, 'runtime.sqlite'))).isFile());
+        assert.deepEqual(await readFile(legacyPath), legacyBytes);
+      } finally {
+        await writer.sessionStore.close?.();
       }
     });
   });
@@ -1291,7 +1348,7 @@ describe('execution stores', () => {
     });
   });
 
-  test('repairs only an unterminated JSONL tail before the next durable append', async () => {
+  test('repairs JSONL stores without rewriting the retired RuntimeEvent JSONL', async () => {
     await withRoot(async ({ root }) => {
       const capability = await resolveStorageRoot({
         path: root,
@@ -1364,6 +1421,7 @@ describe('execution stores', () => {
           ),
           ['runtime-1'],
         );
+        assert.equal(await readFile(runtimeEventsPath, 'utf8'), '{"id":"truncated"');
         const steering = {
           ...runtimeEvent(session.id, header.runId, 'runtime-steering', 16),
           content: { kind: 'text' as const, text: 'steer', steering: true as const },
@@ -1376,22 +1434,6 @@ describe('execution stores', () => {
             'message-steering',
           ),
           { event: steering },
-        );
-        const steeringProofPath = join(
-          root,
-          'sessions',
-          session.id,
-          'message-proofs',
-          'steering',
-          'message-steering.json',
-        );
-        await rm(steeringProofPath);
-        assert.equal(
-          await stores.runtimeEventStore.readImmutableSteeringMessageProof(
-            session.id,
-            'message-steering',
-          ),
-          undefined,
         );
         await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(session.id);
         assert.deepEqual(
@@ -1409,10 +1451,11 @@ describe('execution stores', () => {
           undefined,
         );
 
-        for (const path of [sessionPath, eventsPath, runtimeEventsPath]) {
+        for (const path of [sessionPath, eventsPath]) {
           const lines = (await readFile(path, 'utf8')).split('\n').filter(Boolean);
           for (const line of lines) assert.doesNotThrow(() => JSON.parse(line));
         }
+        assert.equal(await readFile(runtimeEventsPath, 'utf8'), '{"id":"truncated"');
       } finally {
         await owner.close();
       }

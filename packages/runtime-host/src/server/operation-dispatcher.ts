@@ -39,6 +39,10 @@ export type RuntimePolicyOperationKey = Extract<
   OperationKey,
   `runtime.policy.${string}` | `connection.catalog.${string}` | `credential.vault.${string}`
 >;
+export type ConnectionEffectOperationKey = Extract<
+  OperationKey,
+  'connection.models.fetch' | 'connection.test.run'
+>;
 export type MessageOperationKey = Extract<
   OperationKey,
   'turn.message.submit' | 'queue.retract' | 'turn.interrupt'
@@ -50,9 +54,16 @@ export type SessionContinuityOperationKey = Extract<
 >;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
+export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
+export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
+export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
+export type ConnectionEffectOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ConnectionEffectOperationKey
+>;
 export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
 export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, InteractionOperationKey>;
 export type SessionContinuityOperationHandlerMap = Pick<
@@ -61,6 +72,9 @@ export type SessionContinuityOperationHandlerMap = Pick<
 >;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
+export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
+export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
+export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

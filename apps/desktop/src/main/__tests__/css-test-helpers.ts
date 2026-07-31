@@ -13,6 +13,9 @@ export async function readCssTree(dir: string): Promise<string[]> {
   const files = await Promise.all(entries.map(async (entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
+      // Generated Astryx theme output (#1565 PR 3) — see the note on
+      // expandCssImports below.
+      if (entry.name === 'astryx-theme') return [];
       return readCssTree(path);
     }
     return entry.name.endsWith('.css') ? [path] : [];
@@ -22,6 +25,11 @@ export async function readCssTree(dir: string): Promise<string[]> {
 
 const CSS_IMPORT_RE = /@import\s+"([^"]+\.css)"(?:\s+layer\([^)]+\))?\s*;/g;
 
+// Generated Astryx theme output (#1565 PR 3). The converge contracts govern
+// Maka's hand-written CSS vocabulary; astryx-theme/maka.css is an
+// `astryx theme build` artifact with Astryx's own token system, excluded here
+// for the same reason node_modules sheets never entered the scan (bare
+// imports are skipped below).
 export async function expandCssImports(file: string, seen: Set<string>): Promise<string> {
   const source = await readFile(file, 'utf8');
   let expanded = source;
@@ -29,6 +37,7 @@ export async function expandCssImports(file: string, seen: Set<string>): Promise
   for (const match of source.matchAll(CSS_IMPORT_RE)) {
     const importPath = match[1];
     if (!importPath.startsWith('.')) continue;
+    if (importPath.includes('astryx-theme/')) continue;
 
     const resolvedPath = resolve(dirname(file), importPath);
     if (seen.has(resolvedPath)) continue;

@@ -17,6 +17,7 @@ import type { FoldedTimelineChild } from '../timeline-fold.js';
 import { loadToolDisplayName } from '../tool-format.js';
 import { getToolActivityCopy } from './copy.js';
 import { formatUserVisibleToolText } from './preview-utils.js';
+import { isSandboxDeniedTool } from './sandbox-denial.js';
 
 export type TrowActivityKind = ToolActivityKind;
 
@@ -92,9 +93,9 @@ export function trowActivityKind(
   }
 }
 
-/** Chinese count clause per bucket, e.g. read(3) → "读取 3 个文件". */
-function isFailed(status: ToolActivityItem['status']): boolean {
-  return status === 'errored';
+/** Count clause per bucket, e.g. read(3) -> "读取 3 个文件". */
+function isFailed(item: ToolActivityItem): boolean {
+  return item.status === 'errored' && !isSandboxDeniedTool(item);
 }
 
 /**
@@ -114,13 +115,16 @@ export function summarizeTrowTools(
   const order: TrowActivityKind[] = [];
   const counts = new Map<TrowActivityKind, number>();
   let failed = 0;
+  let sandboxBlocked = 0;
   for (const item of items) {
     const kind = trowActivityKind(item.toolName, item.activityKind);
     if (!counts.has(kind)) order.push(kind);
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
-    if (isFailed(item.status)) failed += 1;
+    if (isSandboxDeniedTool(item)) sandboxBlocked += 1;
+    else if (isFailed(item)) failed += 1;
   }
   const clauses = order.map((kind) => copy.kind[kind](counts.get(kind) ?? 0));
+  if (sandboxBlocked > 0) clauses.push(copy.sandboxBlocked(sandboxBlocked));
   if (failed > 0) clauses.push(copy.failed(failed));
   const base = copy.join(clauses);
   return options?.live ? copy.live(base) : base;
@@ -208,8 +212,13 @@ function processingLiveSummary(
 ): string {
   const copy = getToolActivityCopy(locale).summary;
   const line = copy.live(currentProcessingActivity(children, locale) ?? copy.thinkingActivity);
-  const failed = processingTools(children).filter((tool) => isFailed(tool.status)).length;
-  return failed > 0 ? copy.join([line, copy.failed(failed)]) : line;
+  const tools = processingTools(children);
+  const sandboxBlocked = tools.filter(isSandboxDeniedTool).length;
+  const failed = tools.filter(isFailed).length;
+  const clauses = [line];
+  if (sandboxBlocked > 0) clauses.push(copy.sandboxBlocked(sandboxBlocked));
+  if (failed > 0) clauses.push(copy.failed(failed));
+  return copy.join(clauses);
 }
 
 /**

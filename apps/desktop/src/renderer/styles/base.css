@@ -108,13 +108,15 @@ button {
     scroll-behavior: auto !important;
   }
 /* E2E-fixture renders must be deterministic. We still exercise the
-     normal DOM for every scenario, but pause purely decorative animation,
+     normal DOM for every scenario, but remove purely decorative animation,
      transitions, and caret blink so the rendered state does not depend on
-     the exact millisecond the fixture settles. */
+     the exact millisecond the fixture settles. `paused` is not equivalent:
+     an animation with `fill-mode: backwards` would be frozen in its hidden
+     entry frame instead of the component's settled state. */
 [data-maka-e2e-fixture="true"] *,
   [data-maka-e2e-fixture="true"] *::before,
   [data-maka-e2e-fixture="true"] *::after {
-    animation-play-state: paused !important;
+    animation: none !important;
     transition-duration: 0.01ms !important;
     caret-color: transparent !important;
   }

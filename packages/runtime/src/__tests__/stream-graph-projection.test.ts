@@ -412,6 +412,47 @@ describe('committed stream graph projection', () => {
     assert.equal(replayAgentGraphRecords(records).appliedRecordIds.length, 2);
   });
 
+  test('projects concurrent tool commits whose immutable event times are not commit-monotonic', () => {
+    const run = runHeader({
+      sessionId: 'child-concurrent',
+      runId: 'run-concurrent',
+      turnId: 'turn-concurrent',
+      status: 'running',
+      createdAt: baseTs,
+    });
+    const { records } = projectAgentGraphRecords({
+      graphId: 'graph-concurrent-tools',
+      streams: [
+        {
+          operator: { operatorId: 'implementation', sessionId: run.sessionId },
+          run,
+          // Canonical stores return commit/event-sequence order. A later-started
+          // concurrent tool may commit after a newer progress fact.
+          events: [
+            runtimeEvent(run, { id: 'newer-progress', ts: baseTs + 20 }),
+            runtimeEvent(run, {
+              id: 'earlier-tool-call',
+              ts: baseTs + 10,
+              role: 'model',
+              author: 'agent',
+              content: { kind: 'function_call', id: 'call-1', name: 'Read', args: {} },
+            }),
+          ],
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      records.map((record) => record.source.runtimeEventId),
+      ['earlier-tool-call', 'newer-progress'],
+    );
+    assert.deepEqual(
+      records.map((record) => record.orderKey.committedEventOrdinal),
+      [1, 0],
+      'the stable source ordinal continues to describe canonical commit order',
+    );
+  });
+
   test('orders locale-equivalent Unicode source identities independently of stream input order', () => {
     const precomposedId = '\u00e9';
     const decomposedId = 'e\u0301';

@@ -1,0 +1,35 @@
+/* #1565 PR 2 — keep the Astryx Theme wrapper visually inert while legacy CSS
+   owns the screen.
+
+   The root <Theme> renders a display:contents wrapper that establishes
+   Astryx's inheritance baseline: color: var(--color-text-primary) and
+   font-family: var(--font-family-body). It paints nothing itself, but every
+   descendant that inherits text color or font from body would inherit
+   Astryx's values instead — a global repaint smuggled in through
+   inheritance, which the layer order alone cannot stop (the rule targets the
+   wrapper, and nothing else competes on that element).
+
+   Living in maka.legacy is the point: this neutralizer wins only while the
+   legacy layer exists, and is deleted with it in PR 11 — at which point
+   Astryx is supposed to own the inheritance baseline. color-scheme is left
+   alone: the wrapper's mode comes from the same resolved `.dark` source as
+   the product's, so the values always agree.
+
+   Scoped under #root: Theme also mirrors data-astryx-theme (and data-theme)
+   onto <html>, and a bare [data-astryx-theme] would quietly pin html-level
+   text properties too. Product CSS has retired html[data-theme] selectors
+   and astryx.css has no [data-theme] rules, so those html attributes stay
+   inert until reset.css lands — PR 12 should re-check that assumption. */
+#root [data-astryx-theme] {
+  color: inherit;
+  font-family: inherit;
+  /* theme.css declares its tokens ON the wrapper (@scope root), so a name
+     both sides define is shadowed for the entire subtree no matter what the
+     layer order says — custom properties resolve by tree distance, not by
+     layer. The only name both maka-tokens.css and the Astryx theme define
+     AND product CSS consumes is --font-size-base (13px vs 0.875rem);
+     `inherit` reopens the path to the product's :root value. Re-derive this
+     list (astryx theme defs ∩ product defs ∩ product var() usage) whenever
+     the Astryx pin moves. */
+  --font-size-base: inherit;
+}

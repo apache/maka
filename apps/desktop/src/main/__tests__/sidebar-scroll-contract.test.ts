@@ -107,13 +107,20 @@ describe('sidebar session list CSS scroll contract (PR-SIDEBAR-IA-0 Phase 1)', (
     );
   });
 
-  it('.maka-session-panel reserves explicit rows for header, nav, session heading, list, and footer', async () => {
+  it('.maka-session-panel reserves explicit rows for nav, session heading, list, and footer', async () => {
     const css = await readRendererContractCss();
     const ruleBody = extractRuleBody(css, '.maka-session-panel');
     assert.ok(ruleBody, '.maka-session-panel rule must exist');
+    // Four rows, not five: the panel used to lead with a row holding an empty
+    // `<header>` that existed only to donate a window-drag strip. The window
+    // titlebar is its own shell row now, so the panel starts below it and needs
+    // neither the placeholder nor a clearance of its own. What this contract
+    // actually protects is unchanged — the session heading keeps its own row
+    // above a `minmax(0, 1fr)`-constrained list, which is what keeps the footer
+    // on screen.
     assert.match(
       ruleBody,
-      /grid-template-rows:\s*auto\s+auto\s+auto\s+minmax\(\s*0\s*,\s*1fr\s*\)\s+auto/,
+      /grid-template-rows:\s*auto\s+auto\s+minmax\(\s*0\s*,\s*1fr\s*\)\s+auto/,
       'sidebar panel must keep the session heading in its own row above the constrained session list',
     );
   });

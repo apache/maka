@@ -2,14 +2,16 @@ import type { StoredMessage, UiLocale } from '@maka/core';
 import {
   deriveTurnLineageMap,
   formatTurnDuration,
+  isSandboxDeniedTool,
   materializeTurns,
   type TurnFooterActionMeta,
   type TurnLineageBadge,
+  type TurnViewModel,
 } from '@maka/ui';
-import { deriveFailedTurnRecovery, describeTurnErrorClass } from './session-status-presentation';
-import { deriveTurnFooterActions } from './turn-footer-actions';
-import { deriveTurnLineageBadges } from './derive-turn-lineage-badges';
-import { latestInterruptedResumeTurnId } from './interrupted-resume';
+import { deriveFailedTurnRecovery, describeTurnErrorClass } from './session-status-presentation.js';
+import { deriveTurnFooterActions } from './turn-footer-actions.js';
+import { deriveTurnLineageBadges } from './derive-turn-lineage-badges.js';
+import { latestInterruptedResumeTurnId } from './interrupted-resume.js';
 
 export interface AppShellTurnViewModel {
   turnFooterActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
@@ -17,6 +19,20 @@ export interface AppShellTurnViewModel {
   turnFailedRecoveryLabels: Record<string, string>;
   turnLineageBadgesByTurn: Record<string, TurnLineageBadge[]>;
   resumeCandidateTurnId?: string;
+}
+
+function isSandboxOnlyToolFailure(turn: TurnViewModel): boolean {
+  const erroredTools = turn.tools.filter((tool) => tool.status === 'errored');
+  if (erroredTools.length === 0 || !erroredTools.every(isSandboxDeniedTool)) return false;
+
+  const errorClass = turn.errorClass?.toLowerCase();
+  return (
+    errorClass === undefined
+    || errorClass === 'unknown'
+    || errorClass === 'tool_failed'
+    || errorClass === 'sandbox_denial'
+    || errorClass === 'sandbox_denied'
+  );
 }
 
 export function deriveAppShellTurnViewModel(input: {
@@ -61,7 +77,7 @@ export function deriveAppShellTurnViewModel(input: {
       ...(metaSummary ? { metaSummary } : {}),
     });
 
-    if (turn.status === 'failed') {
+    if (turn.status === 'failed' && !isSandboxOnlyToolFailure(turn)) {
       failedLabels[turn.turnId] = describeTurnErrorClass(turn.errorClass, input.uiLocale);
       failedRecoveryLabels[turn.turnId] = deriveFailedTurnRecovery({
         errorClass: turn.errorClass,

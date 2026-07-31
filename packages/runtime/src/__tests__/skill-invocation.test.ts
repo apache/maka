@@ -32,14 +32,14 @@ Do plain things.`,
       );
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Needs the Office tools.
-required-tools: [OfficeDocument]
+name: Gated Helper
+description: Needs a host-specific tool.
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Do office things.`,
+# Gated Helper
+Do gated things.`,
       );
       await writeSkill(
         workspaceRoot,
@@ -56,7 +56,7 @@ description: Disabled by workspace state.
       const all = await listInvocableSkills(source);
       assert.deepEqual(
         all.map((skill) => skill.id).sort(),
-        ['office-helper', 'plain-helper'],
+        ['gated-helper', 'plain-helper'],
         'disabled skills are not invocable',
       );
       assert.deepEqual(
@@ -73,12 +73,9 @@ description: Disabled by workspace state.
         'required-tools mismatch is hidden',
       );
 
-      const officeHost: HostCapabilities = { toolNames: new Set(['Read', 'OfficeDocument']) };
-      const officeGated = await listInvocableSkills(source, officeHost);
-      assert.deepEqual(officeGated.map((skill) => skill.id).sort(), [
-        'office-helper',
-        'plain-helper',
-      ]);
+      const gatedHost: HostCapabilities = { toolNames: new Set(['Read', 'ImaginaryTool']) };
+      const eligible = await listInvocableSkills(source, gatedHost);
+      assert.deepEqual(eligible.map((skill) => skill.id).sort(), ['gated-helper', 'plain-helper']);
     });
   });
 

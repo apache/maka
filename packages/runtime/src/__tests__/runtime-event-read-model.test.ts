@@ -3,6 +3,7 @@ import type {
   AgentRunHeader,
   CreateSessionInput,
   RuntimeEvent,
+  RuntimeEventActions,
   SessionHeader,
   SessionListFilter,
   SessionSummary,
@@ -13,6 +14,8 @@ import { deriveTurnRecords } from '@maka/core';
 import { expect } from '../test-helpers.js';
 import {
   compareRuntimeReadModelMessages,
+  isHardRuntimeEventReadModelDiagnostic,
+  isUnclaimedRuntimeEventDiagnostic,
   projectRuntimeEventsToStoredMessages,
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
@@ -982,6 +985,202 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('sandbox boundary request and decision facts are accepted without creating legacy message rows', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'sandbox-boundary-request',
+          ts: ts + 1,
+          role: 'system',
+          author: 'system',
+          actions: {
+            stateDelta: {
+              sandboxBoundaryRequest: {
+                requestId: 'boundary-1',
+                toolUseId: 'tool-1',
+                justification: 'read a file outside the workspace',
+                expansion: {
+                  filesystem: {
+                    entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }],
+                  },
+                },
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+        ev({
+          id: 'sandbox-boundary-decision',
+          ts: ts + 2,
+          role: 'system',
+          author: 'user',
+          actions: {
+            stateDelta: {
+              sandboxBoundaryDecision: {
+                requestId: 'boundary-1',
+                decision: 'allow',
+                status: 'approved',
+                revision: 2,
+              },
+            },
+          },
+          refs: { toolCallId: 'tool-1' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
+  });
+
+  // Claiming the key alone would let any shape ride in under a control-fact
+  // name. Only what AiSdkFlow actually emits is a canonical fact: every field,
+  // the system/user identity, and the tool-call reference.
+  const wellFormedBoundaryRequest = () =>
+    ev({
+      id: 'sandbox-boundary-request-case',
+      ts: ts + 1,
+      role: 'system',
+      author: 'system',
+      actions: {
+        stateDelta: {
+          sandboxBoundaryRequest: {
+            requestId: 'boundary-1',
+            toolUseId: 'tool-1',
+            justification: 'read a file outside the workspace',
+            expansion: {
+              filesystem: {
+                entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }],
+              },
+            },
+          },
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+
+  const wellFormedBoundaryDecision = () =>
+    ev({
+      id: 'sandbox-boundary-decision-case',
+      ts: ts + 2,
+      role: 'system',
+      author: 'user',
+      actions: {
+        stateDelta: {
+          sandboxBoundaryDecision: {
+            requestId: 'boundary-1',
+            decision: 'allow',
+            status: 'approved',
+            revision: 2,
+          },
+        },
+      },
+      refs: { toolCallId: 'tool-1' },
+    });
+
+  function corruptedBoundaryEvent(
+    base: RuntimeEvent,
+    key: 'sandboxBoundaryRequest' | 'sandboxBoundaryDecision',
+    mutate: (payload: Record<string, unknown>, event: RuntimeEvent) => RuntimeEvent | void,
+  ): RuntimeEvent {
+    const clone = structuredClone(base) as RuntimeEvent;
+    const payload = clone.actions?.stateDelta?.[key] as Record<string, unknown>;
+    return mutate(payload, clone) ?? clone;
+  }
+
+  const malformedBoundaryCases: Array<[string, () => RuntimeEvent]> = [
+    [
+      'request without a justification',
+      () =>
+        corruptedBoundaryEvent(wellFormedBoundaryRequest(), 'sandboxBoundaryRequest', (payload) => {
+          delete payload.justification;
+        }),
+    ],
+    [
+      'request with an unusable expansion',
+      () =>
+        corruptedBoundaryEvent(wellFormedBoundaryRequest(), 'sandboxBoundaryRequest', (payload) => {
+          payload.expansion = {};
+        }),
+    ],
+    [
+      'request that lost its tool-call reference',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryRequest(),
+          'sandboxBoundaryRequest',
+          (_payload, event) => ({ ...event, refs: undefined }),
+        ),
+    ],
+    [
+      'request attributed to someone other than the system',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryRequest(),
+          'sandboxBoundaryRequest',
+          (_payload, event) => ({ ...event, role: 'user', author: 'tool' }),
+        ),
+    ],
+    [
+      'decision without a status',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            delete payload.status;
+          },
+        ),
+    ],
+    [
+      'decision with a status the boundary never settles to',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            payload.status = 'pending';
+          },
+        ),
+    ],
+    [
+      'decision without a revision',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (payload) => {
+            delete payload.revision;
+          },
+        ),
+    ],
+    [
+      'decision attributed to the agent instead of the user',
+      () =>
+        corruptedBoundaryEvent(
+          wellFormedBoundaryDecision(),
+          'sandboxBoundaryDecision',
+          (_payload, event) => ({ ...event, author: 'agent' }),
+        ),
+    ],
+  ];
+
+  for (const [name, makeEvent] of malformedBoundaryCases) {
+    // The claim stays exact: a malformed shape is never admitted as a canonical
+    // boundary fact. Its severity is a separate question, and a control fact
+    // owns no chat row, so a broken one costs a reader nothing the session view
+    // would otherwise show.
+    test(`a sandbox boundary ${name} stays unclaimed`, () => {
+      const out = projectRuntimeEventsToStoredMessages([makeEvent()], { runHeaders: [header] });
+
+      expect(out.messages).toEqual([]);
+      expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+        'unclaimed_control_fact',
+      ]);
+    });
+  }
+
   test('model thinking attaches to the assistant text row that shares its step message id', () => {
     // Real emission and backfill give a step's thinking and text the same message
     // id (providerEventId / storedMessageId), so the projection pairs by id.
@@ -1133,13 +1332,64 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     expect(out.messages).toEqual([]);
+    // The orphaned permission decision carries no content, so its catch-all is
+    // the soft code — but the projector that tried to build its row and failed
+    // still reports `incomplete_event`, which stays hard. Downgrading the
+    // catch-all never downgrades a projector that attempted a message.
     expect(out.diagnostics.map((diag) => diag.code)).toEqual([
       'incomplete_event',
-      'unsupported_event',
+      'unclaimed_control_fact',
       'incomplete_event',
       'unsupported_event',
       'unsupported_event',
     ]);
+  });
+
+  // Where the projection draws the line between a view it can still serve and
+  // one it must refuse: an unclaimed event that carries no content owns no chat
+  // row, so nothing a reader would have seen is missing.
+  test('an unclaimed control-only event is soft and leaves every message intact', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({ id: 'evt-user', role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } }),
+        ev({
+          id: 'evt-control',
+          actions: { stateDelta: { somethingTheProjectionWasNeverTaught: true } },
+        }),
+        ev({
+          id: 'evt-assistant',
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'text', text: 'hello' },
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages.map((message) => message.id)).toEqual(['evt-user', 'evt-assistant']);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'unclaimed_control_fact',
+    ]);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.eventId)).toEqual(['evt-control']);
+    expect(out.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)).toBe(false);
+  });
+
+  test('an unclaimed event that carries content stays hard', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-future-content',
+          role: 'model',
+          author: 'agent',
+          content: { kind: 'not_yet_projected', text: 'a reader would have seen this' } as never,
+        }),
+      ],
+      { runHeaders: [header] },
+    );
+
+    expect(out.messages).toEqual([]);
+    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(['unsupported_event']);
+    expect(out.diagnostics.every(isHardRuntimeEventReadModelDiagnostic)).toBe(true);
   });
 
   test('failed terminal RuntimeEvent maps to failed turn state when run header carries failure class', () => {
@@ -1315,6 +1565,143 @@ describe('projectRuntimeEventsToStoredMessages', () => {
   });
 });
 
+/**
+ * One reachable event per `RuntimeEventActions` field, each entry typed to its
+ * own key so it cannot drift onto another field or be filled with a placeholder.
+ *
+ * This is the premise the read model's soft path rests on. An unclaimed
+ * content-free event degrades the view instead of withholding it, which is only
+ * safe while every action a reader can meet is claimed — several of them
+ * (`permissionDecision`, `tokenUsage`, the terminal fact) do produce rows, and
+ * `runtime-event-backfill.ts` already writes a content-free event that becomes a
+ * visible `permission_decision`. The SessionEvent contract in ai-sdk-flow.test.ts
+ * only covers events built by `mapSessionEventToRuntimeEvent`; tool-runtime,
+ * terminal-run-commit and the backfill write RuntimeEvents directly. Keying this
+ * table on the action surface itself covers those paths too.
+ */
+type ActionCoverageSamples = {
+  [K in keyof Required<RuntimeEventActions>]: {
+    /** The action value under test, typed to its own key. */
+    action: Required<RuntimeEventActions>[K];
+    /** The rest of the event, as the field's real emitter writes it. */
+    event?: Partial<RuntimeEvent>;
+  };
+};
+
+const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
+  // `stateDelta` is an open record, so only named shapes are claimed and this
+  // entry covers the field, not its contents. A new key inside a state delta is
+  // out of reach of any contract keyed on the action surface.
+  stateDelta: { action: { continuationStart: true } },
+  continuationStart: {
+    action: {
+      protocol: 'continuation_start_v2',
+      provenance: 'runtime_admission',
+      claimId: 'coverage-claim',
+      boundaryDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      immediateSource: {
+        sessionId: 'coverage-session',
+        invocationId: 'coverage-invocation',
+        runId: 'coverage-run',
+        turnId: 'coverage-turn',
+        highWater: 1,
+        prefixDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+      replayManifestDigest:
+        'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      providerProjectionVersion: 1,
+      providerReplayDigest:
+        'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    },
+  },
+  artifactDelta: { action: { 'artifact-1': 42 } },
+  permissionRequest: {
+    action: {
+      kind: 'tool_permission',
+      requestId: 'coverage-request',
+      toolUseId: 'coverage-tool',
+      toolName: 'Read',
+      category: 'read',
+      reason: 'custom',
+      args: { path: '/tmp/a.txt' },
+      rememberForTurnAllowed: true,
+    },
+    event: { refs: { toolCallId: 'coverage-tool' } },
+  },
+  permissionDecision: {
+    action: { requestId: 'coverage-request', decision: 'allow', toolName: 'Read' },
+    event: { refs: { toolCallId: 'coverage-tool' } },
+  },
+  // The canonical outcome lives in InteractionStore, so a standalone acceptance
+  // reports an `incomplete_event`. That is a completeness diagnostic, not a
+  // coverage gap: the projection still claims the field.
+  permissionAnswerAccepted: {
+    action: { requestId: 'coverage-request' },
+    event: { author: 'user', refs: { toolCallId: 'coverage-tool' } },
+  },
+  permissionClosureAccepted: {
+    action: { requestId: 'coverage-request', reason: 'timed_out' },
+  },
+  userQuestionRequest: {
+    action: {
+      requestId: 'coverage-question',
+      toolUseId: 'coverage-question-tool',
+      questions: [{ question: 'Choose', options: [{ label: 'Extend' }] }],
+    },
+    event: { refs: { toolCallId: 'coverage-question-tool' } },
+  },
+  userQuestionAnswerAccepted: {
+    action: { requestId: 'coverage-question' },
+    event: { author: 'user', refs: { toolCallId: 'coverage-question-tool' } },
+  },
+  transferToAgent: { action: 'agent-b' },
+  // The terminal fact is one of the actions that does own a row.
+  endInvocation: { action: true },
+  tokenUsage: { action: { input: 10, output: 5 } },
+  toolDispatch: {
+    action: {
+      protocol: 't1_after_preflight_v1',
+      operationId: 'coverage-op',
+      providerToolCallId: 'coverage-tool',
+      toolName: 'Bash',
+      canonicalArgsHash: 'sha256:args',
+      recoveryMode: 'reconcile',
+    },
+    event: { refs: { toolCallId: 'coverage-tool', operationId: 'coverage-op' } },
+  },
+  toolRecovery: {
+    action: {
+      kind: 'maka.tool.reconcile_result',
+      version: 1,
+      payload: {
+        protocol: 'tool_reconcile_v1',
+        operationId: 'coverage-op',
+        observation: 'unreadable',
+        observationSchema: 'state_identity_v1',
+        observationDigest:
+          'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+    },
+    event: { refs: { toolCallId: 'coverage-tool', operationId: 'coverage-op' } },
+  },
+  runtimeProtocol: { action: { toolBoundary: 't1_after_preflight_v1' } },
+};
+
+describe('RuntimeEventActions projection coverage', () => {
+  for (const [field, sample] of Object.entries(ACTION_COVERAGE_SAMPLES)) {
+    test(`actions.${field} projects without an unclaimed-event diagnostic`, () => {
+      const actions = { [field]: sample.action } as RuntimeEventActions;
+      // Guards an entry that names a field but leaves it absent at runtime.
+      expect(field in actions).toBe(true);
+      const out = projectRuntimeEventsToStoredMessages([ev({ ...sample.event, actions })], {
+        runHeaders: [header],
+      });
+
+      expect(out.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic)).toEqual([]);
+    });
+  }
+});
+
 describe('compareRuntimeReadModelMessages', () => {
   test('accepts semantically equivalent projected and legacy messages despite id differences', () => {
     const projected = projectRuntimeEventsToStoredMessages(baseEvents(), { runHeaders: [header] });
@@ -1477,6 +1864,14 @@ class ReadOnlyStore implements SessionStore {
   }
 
   async create(_input: CreateSessionInput): Promise<SessionHeader> {
+    throw new Error('not implemented');
+  }
+
+  async setExecutionBoundaryKind(): Promise<never> {
+    throw new Error('not implemented');
+  }
+
+  async readExecutionBoundary(): Promise<never> {
     throw new Error('not implemented');
   }
 

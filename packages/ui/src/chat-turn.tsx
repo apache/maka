@@ -7,7 +7,8 @@ import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
 import { tokenizeFade, useStreamFade, type StreamFade } from './stream-fade.js';
-import { Button as UiButton, cn, DialogContent, DialogRoot } from './ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { buttonVariants, cn, DialogContent, DialogRoot } from './ui.js';
 import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
@@ -23,6 +24,7 @@ import {
   processingNeedsAttention,
   summarizeProcessing,
 } from './tool-activity/trow-summary.js';
+import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -92,7 +94,11 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
         <img className="h-32 w-32 object-cover transition group-hover:opacity-90" src={src} alt={props.attachment.name} />
       </button>
       <DialogRoot open={lightboxOpen} onOpenChange={setLightboxOpen}>
-        <DialogContent className="!w-auto !max-w-[90vw] !max-h-[90vh] !bg-transparent !p-0 !shadow-none !rounded-md overflow-visible">
+        <DialogContent
+          width="auto"
+          maxHeight="90vh"
+          aria-label={copy.imageAriaLabel(props.attachment.name)}
+        >
           <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
         </DialogContent>
       </DialogRoot>
@@ -172,13 +178,12 @@ const MessageBody = memo(function MessageBody(props: {
           <MessageCopyButton text={props.text} footerStyle />
           {props.onEditUserMessage && (
             <Tooltip>
+              {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
               <TooltipTrigger
                 render={
-                  <UiButton
+                  <button
                     type="button"
-                    variant="quiet"
-                    size="icon-sm"
-                    className={markerVariants({ variant: 'footer-action' })}
+                    className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
                     aria-label={editActionLabel}
                     aria-disabled={props.editDisabled === true ? 'true' : undefined}
                     data-action="edit"
@@ -244,13 +249,12 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     // so the user-message copy and the assistant copy read as one button.
     return (
       <Tooltip>
+        {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
         <TooltipTrigger
           render={
-            <UiButton
+            <button
               type="button"
-              variant="quiet"
-              size="icon-sm"
-              className={markerVariants({ variant: 'footer-action' })}
+              className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
               aria-label={baseLabel}
               aria-busy={copyPending ? 'true' : undefined}
               disabled={copyPending}
@@ -392,6 +396,7 @@ export const TurnView = memo(function TurnView(props: {
   return (
     <section
       className="maka-turn"
+      data-maka-contract="markdown-flow"
       data-turn-id={turn.turnId}
       data-live-streaming={props.liveStreaming ? 'true' : undefined}
       data-search-highlight={props.searchHighlighted ? 'true' : undefined}
@@ -402,17 +407,15 @@ export const TurnView = memo(function TurnView(props: {
           {forwardBadges.map((badge) => (
             <UiButton
               key={badge.id}
-              type="button"
-              variant="quiet"
+              variant="ghost"
               size="sm"
               className={markerVariants({ variant: 'lineage-badge' })}
               data-direction="forward"
-              title={badge.tooltip ?? badge.label}
+              tooltip={badge.tooltip ?? badge.label}
               onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-            >
-              <GitBranch size={11} aria-hidden="true" />
-              <span>{badge.label}</span>
-            </UiButton>
+              icon={<GitBranch size={11} aria-hidden="true" />}
+              label={badge.label}
+            />
           ))}
         </Marker>
       )}
@@ -530,15 +533,13 @@ export const TurnView = memo(function TurnView(props: {
                 )}
                 {props.safeResumeAction && (
                   <UiButton
-                    type="button"
-                    variant="quiet"
+                    variant="ghost"
                     size="sm"
                     className="maka-turn-failed-resume"
-                    disabled={props.safeResumeAction.pending}
+                    isDisabled={props.safeResumeAction.pending}
                     onClick={props.safeResumeAction.onResume}
-                  >
-                    {props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume}
-                  </UiButton>
+                    label={props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume}
+                  />
                 )}
               </Marker>
             )}
@@ -576,17 +577,15 @@ export const TurnView = memo(function TurnView(props: {
               {reverseBadges.map((badge) => (
                 <UiButton
                   key={badge.id}
-                  type="button"
-                  variant="quiet"
+                  variant="ghost"
                   size="sm"
                   className={markerVariants({ variant: 'lineage-badge' })}
                   data-direction="reverse"
-                  title={badge.tooltip ?? badge.label}
+                  tooltip={badge.tooltip ?? badge.label}
                   onClick={() => props.onLineageBadgeClick?.(badge.targetTurnId)}
-                >
-                  <GitBranch size={11} aria-hidden="true" />
-                  <span>{badge.label}</span>
-                </UiButton>
+                  icon={<GitBranch size={11} aria-hidden="true" />}
+                  label={badge.label}
+                />
               ))}
             </Marker>
           )}
@@ -748,13 +747,12 @@ function TurnFooterActions(props: {
           : STATUS_FOOTER_ICON[action.id];
         return (
           <Tooltip key={action.id}>
+            {/* #1565 PR 3: render-prop composition stays on legacy buttonVariants until its owning slice retires it. */}
             <TooltipTrigger
               render={
-                <UiButton
+                <button
                   type="button"
-                  variant="quiet"
-                  size="icon-sm"
-                  className={markerVariants({ variant: 'footer-action' })}
+                  className={cn(buttonVariants({ variant: 'quiet', size: 'icon-sm' }), markerVariants({ variant: 'footer-action' }))}
                   aria-label={action.label}
                   data-action={action.id}
                   data-pending={isActionPending || undefined}
@@ -988,7 +986,21 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   if (running) everRunningRef.current = true;
   const settled = !running;
   const settling = settled && everRunningRef.current;
-  const hasError = entries.some((entry) => entry.kind === 'tools' && entry.items.some((item) => item.status === 'errored'));
+  const hasSandboxBlocked = entries.some(
+    (entry) => entry.kind === 'tools' && entry.items.some(isSandboxDeniedTool),
+  );
+  const hasError = entries.some(
+    (entry) =>
+      entry.kind === 'tools' &&
+      entry.items.some(
+        (item) => item.status === 'errored' && !isSandboxDeniedTool(item),
+      ),
+  );
+  const settledTone = hasError
+    ? 'text-[color:var(--destructive)]'
+    : hasSandboxBlocked
+      ? 'text-[color:var(--warning-text,var(--info-text))]'
+      : 'text-[color:var(--muted-foreground)]';
   const activityKind = processingActivityKind(entries);
   const summary = summarizeProcessing(entries, { live: running, locale });
   return (
@@ -1006,12 +1018,12 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
           kind={activityKind}
           size={16}
           aria-hidden="true"
-          className={cn('shrink-0', hasError ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]')}
+          className={cn('shrink-0', settledTone)}
         />
         {running ? (
           <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
         ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', hasError ? 'text-[color:var(--destructive)]' : 'text-[color:var(--muted-foreground)]', settling && SETTLE_FADE)}>{summary}</span>
+          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
         )}
         <ChevronRight
           size={14}

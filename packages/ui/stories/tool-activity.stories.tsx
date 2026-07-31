@@ -6,7 +6,6 @@ import {
   denseMixedResultItems,
   errorsAndPermissionDeniedItems,
   fileDiffAndWebSearchItems,
-  officeDocumentItems,
   statusOverviewItems,
   subagentAndExploreItems,
   terminalAndLiveOutputItems,
@@ -129,12 +128,6 @@ export const FileDiffAndWebSearch: Story = {
 export const SubagentAndExplore: Story = {
   args: { items: subagentAndExploreItems },
   render: (args) => <ToolActivityBoard items={args.items} expandAll />,
-};
-
-// Real path: the agent reads an office document → the document preview row.
-export const OfficeDocument: Story = {
-  args: { items: officeDocumentItems },
-  render: (args) => <ToolActivityBoard items={args.items} width={860} expandAll />,
 };
 
 // Real path: a tool call fails, or the user denies it in the permission prompt → the

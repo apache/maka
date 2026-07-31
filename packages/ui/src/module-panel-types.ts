@@ -19,8 +19,8 @@ export interface SkillEntry {
   path: string;
   /**
    * Tools the skill *declares* it would like to use. This is a request, not
-   * a grant — PermissionEngine still applies. We surface the list so users
-   * can see what a skill is asking for before they install / enable it.
+   * a grant — the active session sandbox boundary still applies. We surface
+   * the list so users can see what a skill is asking for before installation.
    */
   declaredTools?: string[];
   sourceType?: 'workspace' | 'bundled' | 'managed' | 'unknown';

@@ -404,9 +404,8 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   ): Promise<boolean> {
     const header = await deps.readSessionHeader(sessionId);
     assertSessionCanSendFromHeader(header);
-    if (header.permissionMode === 'explore') return true;
     try {
-      await deps.runtime.updateSession(sessionId, { permissionMode: 'explore' });
+      await deps.runtime.setPermissionMode(sessionId, 'explore');
       deps.emitSessionsChanged('updated', sessionId);
       return true;
     } catch {

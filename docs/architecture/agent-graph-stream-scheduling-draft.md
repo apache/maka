@@ -189,7 +189,12 @@ This separation matters:
 - access control and archival stay on the original resource;
 - a read model cannot silently become a competing event store.
 
-When the main Agent needs the actual answer behind a candidate record, it uses `agent_output` with the operator's `childSessionId` and `currentRunId`.
+When the main Agent needs the actual answer behind a candidate record, it uses
+`agent_output` with the operator's `childSessionId`, `currentRunId`, and
+`view=result`. That projection returns only the final committed model text,
+its Graph result/terminal record IDs, and bounded artifact references. Raw
+Runtime events remain an explicit diagnostic view rather than the normal
+supervisor data path.
 
 ### Commit is the stream boundary
 
@@ -373,6 +378,12 @@ pending → running → delivered
 For each delivery attempt, the host preallocates a root Turn identity and starts a normal root Session turn with an `agent_graph` origin. The prompt asks the main Agent to inspect the Graph, read child output when necessary, and either schedule more work or finish.
 
 “Prompt persisted” does not mean “wake delivered.” Delivery is complete only when the host observes the root AgentRun complete. A permission suspension is parked explicitly. After restart, the wake coordinator compares stored attempts with AgentRun facts, marks interrupted attempts retryable, and resumes only safe deliveries.
+
+Context overflow is handled separately from an ordinary transient failure. The
+host records an overflow diagnostic, runs at most one aggressive compaction,
+and reports the before/after token estimates and dropped event counts when
+available. A second overflow stops immediately with a bounded durable partial
+result; it is never retried a third time with an identical oversized context.
 
 The Session activity registry serializes this host-created turn with other root Session activity. Multiple clients can observe the same durable Session and Graph state without becoming scheduler owners.
 

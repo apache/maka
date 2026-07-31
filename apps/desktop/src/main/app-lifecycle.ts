@@ -1,7 +1,7 @@
 import { app, nativeImage, safeStorage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildPricingLookup, setActiveProxy } from '@maka/runtime';
+import { setActiveProxy } from '@maka/runtime';
 import type {
   AgentGraphCoordinator,
   AgentGraphSupervisorWakeCoordinator,
@@ -36,12 +36,19 @@ import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { runProjectStartupMigration } from './project-startup-migration.js';
+import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { resolveDockPresentation } from './dock-presentation.js';
+import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
-type PricingLookup = ReturnType<typeof buildPricingLookup>;
-
 export interface AppLifecycleDeps {
-  isIsolatedE2e: boolean;
+  // Whether this run stays out of the developer's way. main.ts owns the
+  // condition; the dock icon follows it so window visibility and dock
+  // presence can never drift apart. A fixture window someone asked to see
+  // (MAKA_E2E_SHOW_WINDOW) opts out of both together: as an accessory app it
+  // has no dock tile and no Cmd+Tab entry, so switching away during a manual
+  // review would leave no way back.
+  startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
@@ -50,6 +57,7 @@ export interface AppLifecycleDeps {
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
   telemetryRepo: ReturnType<typeof createTelemetryRepo>;
+  ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
   openGateway: OpenGatewayService;
@@ -70,16 +78,13 @@ export interface AppLifecycleDeps {
   streamEvents: StreamEvents;
   /** Focus-or-create for the main window; stays in main.ts next to the
    *  controller and is registered here on `second-instance` / `activate`. */
-  focusOrCreateMainWindow: () => void;
+  focusOrCreateMainWindow: (signal: AbortSignal) => void;
   emitConnectionListChanged: () => void;
   emitSessionsChanged: (reason: 'migrated') => void;
   handleExternalSettingsChange: () => Promise<void>;
   /** Accessor for the settings IPC handle, which is assigned inside
    *  main.ts's `registerIpc()`; teardown disposes it if present. */
   getSettingsIpc: () => SettingsIpcHandle | undefined;
-  /** Reassigns the module-scoped pricing lookup in main.ts, which is read
-   *  live by the session streamer and the usage IPC handler. */
-  setLookupPricing: (value: PricingLookup) => void;
 }
 
 /**
@@ -96,7 +101,7 @@ export interface AppLifecycleDeps {
  */
 export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
-    isIsolatedE2e,
+    startHidden,
     e2eFixture,
     workspaceRoot,
     sessionStore,
@@ -105,6 +110,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     connectionStore,
     settingsStore,
     telemetryRepo,
+    ensureUsageReady,
     keepSystemAwake,
     botRegistry,
     openGateway,
@@ -128,10 +134,16 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     emitSessionsChanged,
     handleExternalSettingsChange,
     getSettingsIpc,
-    setLookupPricing,
   } = deps;
 
+  let backgroundStartup: Promise<void> | undefined;
   let configWatcher: ConfigFileWatcher | undefined;
+  const quitCoordinator = createAppQuitCoordinator({
+    cleanup: runBeforeQuitCleanup,
+    focusOrCreateWindow: focusOrCreateMainWindow,
+    onCleanupError: (error) => console.error('[shutdown] cleanup failed:', error),
+    resumeQuit: () => app.quit(),
+  });
 
   async function recoverInterruptedSessionsOnStartup(): Promise<void> {
     try {
@@ -139,15 +151,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await agentGraphSupervisorWakeCoordinator.recover();
       await agentGraphCoordinator.recover();
       if (process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1') return;
-      for (const session of await runtime.listSessions()) {
-        const plan = await runtime.planLatestAuthoritativeSafeBoundaryContinuation(session.id);
-        if (!plan.continuation) continue;
-        const iterator = runtime.resumeSafeBoundaryContinuation(plan.continuation);
-        void streamEvents(session.id, iterator, {
-          turnId: plan.continuation.turnId,
-          goalBoundary: 'none',
-        });
-      }
+      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents, console.error);
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.
@@ -200,19 +204,13 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   }
 
   app.whenReady().then(async () => {
-    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20): set the
-    // app's dock icon (macOS) so the dev `npm start` run shows Maka's
-    // brand mark instead of the generic Electron icon. Packaged
-    // builds get the icon via .app bundle Info.plist; this covers the
-    // dev path.
-    if (process.platform === 'darwin' && app.dock) {
-      if (process.env.MAKA_E2E_FIXTURE || isIsolatedE2e) {
-        // PR-VISUAL-SMOKE-HEADLESS: hide the dock icon so the spawned
-        // Electron runs as an accessory app — no dock bounce, and it
-        // never becomes frontmost / steals focus from the developer's
-        // active window during a capture run or an E2E run.
+    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20) and
+    // PR-VISUAL-SMOKE-HEADLESS: see resolveDockPresentation for the rule.
+    const dockPresentation = resolveDockPresentation(process.platform, startHidden);
+    if (app.dock) {
+      if (dockPresentation === 'hide') {
         app.dock.hide();
-      } else {
+      } else if (dockPresentation === 'icon') {
         try {
           const iconPath = join(import.meta.dirname, '..', '..', 'assets', 'icon.png');
           app.dock.setIcon(nativeImage.createFromPath(iconPath));
@@ -237,10 +235,12 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // main.ts. SQLite keeps live file handles, so resetting the workspace
     // here after store construction would detach the canonical database.
     await runCredentialStartup();
-    app.on('second-instance', focusOrCreateMainWindow);
-    app.on('activate', focusOrCreateMainWindow);
-    const backgroundStartup = runBackgroundStartup();
-    await mainWindowController.createWindow();
+    const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
+    if (!initialWindowSignal) return;
+    app.on('second-instance', quitCoordinator.focusOrCreateWindow);
+    app.on('activate', quitCoordinator.focusOrCreateWindow);
+    backgroundStartup = runBackgroundStartup();
+    await mainWindowController.createWindow(initialWindowSignal);
     // Keep the process alive until background work settles so schedulers
     // / bridges aren't torn down mid-start by a fast window-all-closed.
     await backgroundStartup;
@@ -285,8 +285,8 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
    * Non-critical startup work that must NOT block the first window paint.
    *
    * `setActiveProxy` must be applied before any network-bearing step
-   * (`botRegistry.applySettings`, `openGateway.sync`); pricing depends on
-   * `telemetryRepo.load()`. Everything here is best-effort and logged on
+   * (`botRegistry.applySettings`, `openGateway.sync`); usage readiness loads
+   * the embedded telemetry compatibility repo. Everything here is best-effort and logged on
    * failure — none of it should prevent the user from seeing and interacting
    * with the app shell.
    */
@@ -301,8 +301,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // Re-hold the power-save blocker at launch if the user left it enabled, so
     // scheduled tasks survive machine sleep across restarts.
     keepSystemAwake.apply(settings.system.keepSystemAwake);
-    await telemetryRepo.load();
-    setLookupPricing(buildPricingLookup(telemetryRepo.listPricingOverrides()));
+    await ensureUsageReady();
     await migrateSessionProjectsOnStartup();
     await recoverInterruptedSessionsOnStartup();
     await botRegistry.applySettings(settings.botChat);
@@ -321,21 +320,14 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     if (process.platform !== 'darwin') app.quit();
   });
 
-  let beforeQuitCleanupComplete = false;
-  let beforeQuitCleanupStarted = false;
-
-  app.on('before-quit', (event) => {
-    if (beforeQuitCleanupComplete) return;
-    event.preventDefault();
-    if (beforeQuitCleanupStarted) return;
-    beforeQuitCleanupStarted = true;
-    void runBeforeQuitCleanup().finally(() => {
-      beforeQuitCleanupComplete = true;
-      app.quit();
-    });
-  });
+  app.on('before-quit', quitCoordinator.handleBeforeQuit);
 
   async function runBeforeQuitCleanup(): Promise<void> {
+    try {
+      await backgroundStartup;
+    } catch (error) {
+      console.error('[shutdown] background startup failed:', error);
+    }
     automationWiring.scheduler.dispose();
     goalWiring.coordinator.dispose();
     goalWiring.manager.dispose();
@@ -353,6 +345,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       mcpManager.close(),
       agentGraphCoordinator.close(),
       agentGraphSupervisorWakeCoordinator.close(),
+      telemetryRepo.close(),
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);

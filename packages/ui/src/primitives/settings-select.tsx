@@ -1,45 +1,17 @@
-"use client";
+'use client';
 
-import type { ReactElement, ReactNode } from "react";
-import { cn } from "../utils.js";
 import {
-  SelectGroup,
-  SelectGroupLabel,
-  SelectItem,
-  SelectPopup,
-  SelectPortal,
-  SelectPositioner,
-  SelectRoot,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from "../ui.js";
+  Selector,
+  SelectorOption,
+  type SelectorOptionType,
+} from '@astryxdesign/core/Selector';
+import type { ReactElement, ReactNode } from 'react';
 
 /**
- * Unified Select primitive for settings-style pickers.
+ * Stable Maka select contract backed by Astryx Selector.
  *
- * Consolidates three local wrappers that all wrapped the same Base UI
- * Select primitives with slightly-different option shapes (audit msg
- * `e4cfbfb0`):
- *
- *   - `apps/desktop/.../SettingsModal.tsx :: SettingsSelect`
- *     `[value, label]` tuples, fixed `.settingsBaseSelectTrigger` chrome.
- *   - `packages/ui/src/components.tsx :: PlanReminderSelect`
- *     `[value, label, icon?]` tuples, rich trigger renderer.
- *
- * The two had drifted into independent option shapes and CSS recipes;
- * a real bug (selected trigger losing the icon) only got fixed in the
- * Plan Reminder copy, not the Settings copy. This primitive collapses
- * both into one component so the same affordance behaves the same
- * everywhere.
- *
- * Option shape `[value, label, icon?]`: the third tuple slot is an
- * optional ReactNode rendered as a 16px leading icon on both the
- * selected trigger and each popup item.
- *
- * `width` controls the trigger max-width — `compact` (140px) is the
- * default for inputs/time pickers, `select` (320px) matches the
- * existing settings select width, `full` lets the parent constrain.
+ * Callers keep the tuple API while Astryx owns the trigger, native-popover
+ * layer, listbox semantics, keyboard navigation, selected state, and styling.
  */
 export type SettingsSelectOption<T extends string> =
   | readonly [T, string]
@@ -58,113 +30,69 @@ export interface SettingsSelectProps<T extends string> {
   onChange(value: T): void;
   ariaLabel: string;
   disabled?: boolean;
-  /** Visual width bucket for the trigger. Defaults to `'select'`. */
-  width?: "compact" | "select" | "full";
-  /** Extra class names appended to the trigger element. */
+  /** Visual width bucket for the field. Defaults to `'select'`. */
+  width?: 'compact' | 'select' | 'full';
+  /** Surface-owned layout hook applied to the Astryx field root. */
   className?: string;
 }
 
-const WIDTH_CLASS: Record<NonNullable<SettingsSelectProps<string>["width"]>, string> = {
-  compact: "max-w-[140px] w-full",
-  select: "max-w-[320px] w-full",
-  full: "w-full",
+const WIDTH: Record<
+  NonNullable<SettingsSelectProps<string>['width']>,
+  number | string
+> = {
+  compact: 140,
+  select: 320,
+  full: '100%',
 };
+
+function toOption<T extends string>(
+  option: SettingsSelectOption<T>,
+): { value: T; label: string; icon?: ReactNode } {
+  const [value, label] = option;
+  return {
+    value,
+    label,
+    ...(option.length === 3 ? { icon: option[2] } : {}),
+  };
+}
 
 export function SettingsSelect<T extends string>(
   props: SettingsSelectProps<T>,
 ): ReactElement {
-  const width = props.width ?? "select";
-  const groupedValues = new Set<T>();
-  for (const group of props.optionGroups ?? []) {
-    for (const [value] of group.options) groupedValues.add(value);
-  }
-  const ungroupedOptions = props.optionGroups
-    ? props.options.filter(([value]) => !groupedValues.has(value))
-    : props.options;
-  const hasOptionGroups = Boolean(props.optionGroups && props.optionGroups.length > 0);
-  // Build a value → {label, icon} lookup so the selected-state trigger
-  // can render the same icon + label row as the popup items. Without
-  // this the collapsed trigger drops the icon — see Plan Reminder bug
-  // kenji audit msg `232aec0f` finding #2.
-  const optionByValue = new Map<T, { label: string; icon: ReactNode | null }>();
-  for (const option of props.options) {
-    const [value, label] = option;
-    optionByValue.set(value, {
-      label,
-      icon: option.length === 3 ? option[2] : null,
-    });
-  }
-  const renderOptionRow = (label: string, icon: ReactNode | null) =>
-    icon ? (
-      <span className="settingsSelectOption">
-        <span className="settingsSelectOptionIcon" aria-hidden="true">{icon}</span>
-        <span>{label}</span>
-      </span>
-    ) : (
-      <>{label}</>
-    );
+  const groupedValues = new Set(
+    props.optionGroups?.flatMap((group) =>
+      group.options.map(([value]) => value),
+    ),
+  );
+  const options: SelectorOptionType[] = [
+    ...props.options
+      .filter(([value]) => !groupedValues.has(value))
+      .map(toOption),
+    ...(props.optionGroups ?? []).map((group) => ({
+      type: 'section' as const,
+      title: group.label,
+      options: group.options.map(toOption),
+    })),
+  ];
+  const selected = props.options.find(([value]) => value === props.value);
+
   return (
-    <SelectRoot
+    <Selector
+      label={props.ariaLabel}
+      isLabelHidden
       value={props.value}
-      items={props.options.map(([value, label]) => ({ value, label }))}
-      disabled={props.disabled}
-      onValueChange={(value) => {
-        if (value !== null) props.onChange(value);
-      }}
-    >
-      <SelectTrigger
-        className={cn("settingsSelectTrigger", WIDTH_CLASS[width], props.className)}
-        aria-label={props.ariaLabel}
-      >
-        <SelectValue>
-          {(value: T) => {
-            const entry = optionByValue.get(value);
-            if (!entry) return null;
-            return renderOptionRow(entry.label, entry.icon);
-          }}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectPortal>
-        <SelectPositioner alignItemWithTrigger={false} sideOffset={6} className="settingsSelectPositioner">
-          <SelectPopup className={cn("settingsSelectPopup", hasOptionGroups ? "settingsSelectMenuPopup" : null)}>
-            {ungroupedOptions.map((option) => {
-              const [value, label] = option;
-              const icon = option.length === 3 ? option[2] : null;
-              return (
-                <SelectItem key={value} value={value}>
-                  {renderOptionRow(label, icon)}
-                </SelectItem>
-              );
-            })}
-            {ungroupedOptions.length > 0 && props.optionGroups && props.optionGroups.length > 0 && (
-              <SelectSeparator />
-            )}
-            {props.optionGroups?.map((group) => (
-              <SelectGroup key={group.label}>
-                <SelectGroupLabel className="settingsSelectMenuGroupLabel">
-                  {group.icon ? (
-                    <span className="settingsSelectMenuGroupLogo" aria-hidden="true">{group.icon}</span>
-                  ) : (
-                    <span aria-hidden="true" />
-                  )}
-                  <span>{group.label}</span>
-                </SelectGroupLabel>
-                {group.options.map((option) => {
-                  const [value, label] = option;
-                  const icon = option.length === 3 ? option[2] : null;
-                  return (
-                    <SelectItem key={value} value={value}>
-                      <span className="settingsSelectMenuOption">
-                        {renderOptionRow(label, icon)}
-                      </span>
-                    </SelectItem>
-                  );
-                })}
-              </SelectGroup>
-            ))}
-          </SelectPopup>
-        </SelectPositioner>
-      </SelectPortal>
-    </SelectRoot>
+      options={options}
+      onChange={(value) => props.onChange(value as T)}
+      isDisabled={props.disabled}
+      width={WIDTH[props.width ?? 'select']}
+      className={props.className}
+      startIcon={selected?.length === 3 ? selected[2] : undefined}
+      renderOption={(option) => (
+        <SelectorOption
+          icon={option.icon}
+          label={option.label ?? option.value}
+        />
+      )}
+    />
   );
 }

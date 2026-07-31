@@ -1,20 +1,37 @@
-import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
+  BUNDLED_SKILL_CATALOG,
+  buildStarterSkillTemplate,
+  clearResolvedSkillPreferenceReviews,
+  createBundledSkillLock,
+  createManagedSkillLock,
+  getSkillRuntimePreference,
+  getBundledSkillSource,
+  invalidSkillLockStatus,
   isPathInside,
-  isRecord,
   isSafeSkillId,
+  isSkillPreferenceReviewPending,
+  MANAGED_SKILL_BASELINE_RELATIVE_PATH,
+  MANAGED_SKILL_CATEGORIES,
+  migrateSkillRuntimePreferences,
+  missingSkillLockStatus,
   parseSkillFrontMatter,
+  patchSkillRuntimePreference,
   readContainedRegularTextFile,
-  readSkillRuntimeState,
+  readManagedSkillSource,
   resolveSkillDiscoveryPaths,
+  resolveManagedSkillSourcesRoot,
+  resolveSkillPreferenceTarget,
   scanSkillsWithDiagnostics,
   scanWorkspaceSkills,
   selectSkillScanForContext,
+  validateSkillLock,
   writeContainedRegularTextFile,
   writeSkillRuntimePreferences,
   type HostCapabilities,
+  type ManagedSkillCategory,
+  type ManagedSkillUpdateStatus,
   type RejectedSkillDefinition,
   type RuntimeSkillDefinition,
   type ScannedSkill,
@@ -23,19 +40,16 @@ import {
   type SkillDiscoveryDiagnostic,
   type SkillRuntimeStatus,
   type SkillSelectionReport,
+  type SkillSourceType,
   type SkillScope,
+  type SkillValidationStatus,
+  type SkillLockFile,
+  type SkillLockValidationCode,
 } from '@maka/runtime';
-import {
-  MANAGED_SKILL_CATEGORIES,
-  type ManagedSkillCategory,
-  readManagedSkillSource,
-  resolveManagedSkillSourcesRoot,
-} from './managed-skill-sources.js';
-import { BUNDLED_REVERSE_ENGINEERED_SKILLS } from './bundled-skill-catalog.generated.js';
 
 // Re-export runtime-facing skill exports so existing call sites and tests
 // keep importing from './skills.js' unchanged. Governance (lock, provenance,
-// managed-source status, Office seeding) stays defined below.
+// managed-source status and built-in skill seeding) stays defined below.
 export {
   buildSkillAgentTool,
   buildSkillSearchAgentTool,
@@ -51,24 +65,8 @@ export {
 } from '@maka/runtime';
 export type { LoadSkillInstructionsResult, LoadedSkillInstructions, SkillRuntimeStatus } from '@maka/runtime';
 
-export type SkillSourceType = 'workspace' | 'bundled' | 'managed' | 'unknown';
-export type SkillValidationStatus = 'ok' | 'missing_lock' | 'modified' | 'metadata_error';
-export type ManagedSkillUpdateStatus =
-  | 'not_managed'
-  | 'source_missing'
-  | 'up_to_date'
-  | 'update_available'
-  | 'local_modified'
-  | 'metadata_error';
-export type SkillValidationCode =
-  | 'missing_lock'
-  | 'modified'
-  | 'invalid_json'
-  | 'id_mismatch'
-  | 'unsupported_schema'
-  | 'invalid_hash'
-  | 'write_failed'
-  | 'lock_symlink';
+export type { SkillSourceType, SkillValidationStatus, ManagedSkillUpdateStatus };
+export type SkillValidationCode = SkillLockValidationCode;
 
 export interface InstalledSkill extends RuntimeSkillDefinition {
   sourceType: SkillSourceType;
@@ -198,18 +196,6 @@ interface InstalledSkillDefinition extends InstalledSkill {
   content: string;
 }
 
-interface SkillLockFile {
-  schemaVersion: 1;
-  id: string;
-  sourceType: 'bundled' | 'managed';
-  sourceName?: string;
-  sourceVersion?: string;
-  contentSha256: string;
-  installedAt: string;
-  sourceId?: string;
-  sourceContentSha256?: string;
-}
-
 interface SkillReadOptions {
   managedSourceRoot?: string;
   cwd?: string;
@@ -226,49 +212,12 @@ interface ManagedSkillUpdateOptions {
   expectedSourceSha256?: string;
 }
 
-const BUNDLED_OFFICE_SKILLS: Array<{ id: string; body: string }> = [
-  { id: 'officecli-docx', body: officeCliDocxSkillTemplate() },
-  { id: 'officecli-xlsx', body: officeCliXlsxSkillTemplate() },
-  { id: 'officecli-pptx', body: officeCliPptxSkillTemplate() },
-];
-const BUNDLED_OFFICE_SKILL_IDS = new Set(BUNDLED_OFFICE_SKILLS.map((skill) => skill.id));
-const BUNDLED_OFFICE_SKILL_HASH_BY_ID = new Map(
-  BUNDLED_OFFICE_SKILLS.map((skill) => [skill.id, `sha256:${sha256(skill.body)}`]),
-);
-
-const BUNDLED_OFFICE_SKILL_SOURCE_NAME = 'maka-officecli';
-const BUNDLED_OFFICE_SKILL_SOURCE_VERSION = '1';
-
-// Reverse-engineered built-in skills (shipped, install-on-demand). Distinct
-// from the auto-seeded Office skills above: these never auto-install — the 内置
-// tab offers a per-skill install action (installBundledSkill). Their installed
-// copies carry a trusted `bundled` lock (sourceName maka-bundled) validated
-// against these hashes.
-const BUNDLED_CATALOG_SOURCE_NAME = 'maka-bundled';
-const BUNDLED_CATALOG_SOURCE_VERSION = '1';
-const BUNDLED_CATALOG_BODY_BY_ID = new Map(BUNDLED_REVERSE_ENGINEERED_SKILLS.map((skill) => [skill.id, skill.body]));
-const BUNDLED_CATALOG_HASH_BY_ID = new Map(
-  BUNDLED_REVERSE_ENGINEERED_SKILLS.map((skill) => [skill.id, `sha256:${sha256(skill.body)}`]),
+// Shipped built-in skills are installed on demand from the 内置 tab. Their
+// installed copies carry a trusted `bundled` lock (sourceName maka-bundled).
+const BUNDLED_CATALOG_BODY_BY_ID = new Map(
+  BUNDLED_SKILL_CATALOG.map((skill) => [skill.id, skill.body]),
 );
 const BUNDLED_CATALOG_CATEGORY_DEFAULT: ManagedSkillCategory = '效率工具';
-
-const LEGACY_BUNDLED_OFFICE_SKILL_SHA256: Record<string, string[]> = {
-  // v1 (legacy `officecli open/close` template) — migrated by the first tool-routed release.
-  'officecli-docx': [
-    '63f1690d1e9dea0a4e574bc3644222279fcfee336371d842c9669fbc91e89821',
-    // v2 (tool-routed template without required-tools) — migrated to v3 so the
-    // host-compatibility gate can see the Office tool requirement.
-    'c0bcc16adcaa10329b4f3bbc7679f9e1c7bf99368af7fcbec8e870f5c0c5c039',
-  ],
-  'officecli-xlsx': [
-    'dca3471c36da0628b6764711bde714958fcced13008cd8dfd4d548a5f02eda82',
-    'cc13a4c0f17bb73d1fee6a0797cd4befa34ef1d8abcb7d6ea57bce26f5abd218',
-  ],
-  'officecli-pptx': [
-    '21a933a459c921c3d7b14c7fc1cad59c7f72b7752903cd7d4e9083a1c835d302',
-    'b9845739f855250fe55fb44efc4019856d566c7f8b299741df5c5c0fd70d6e5c',
-  ],
-};
 
 /**
  * Scan `{workspaceRoot}/skills/` for directories that contain a SKILL.md.
@@ -277,7 +226,7 @@ const LEGACY_BUNDLED_OFFICE_SKILL_SHA256: Record<string, string[]> = {
  * the listing.
  *
  * `allowed-tools` is intentionally surfaced as "declared/requested" - never
- * granted. PermissionEngine remains the only authority over tool calls.
+ * granted. The active session ExecutionBoundary remains authoritative.
  */
 export async function listInstalledSkills(root: string, options: SkillReadOptions = {}): Promise<InstalledSkill[]> {
   const definitions = await readInstalledSkillDefinitions(root, options);
@@ -288,43 +237,62 @@ export async function listGovernedSkillEntries(
   root: string,
   options: SkillReadOptions = {},
 ): Promise<SkillEntry[]> {
-  const [installed, scan, runtimeState] = await Promise.all([
-    listInstalledSkills(root, options),
-    scanSkillsWithDiagnostics(
-      resolveSkillDiscoveryPaths(options.cwd ?? root, root, options.homeDir),
-    ),
-    readSkillRuntimeState(root),
-  ]);
-  const needsReview = new Set(runtimeState.ok ? runtimeState.needsReview : []);
-  if (runtimeState.ok && runtimeState.schemaVersion === 1) {
-    for (const legacyId of runtimeState.preferences.keys()) {
-      if (
-        scan.inventory.filter(
-          (skill) => skill.id.toLowerCase() === legacyId.toLowerCase(),
-        ).length > 1
-      ) {
-        needsReview.add(legacyId);
-      }
-    }
-  }
-  const report = options.selectionReport ?? selectSkillScanForContext(scan, options.host, {
-    contextWindow: options.contextWindow,
-  }).report;
+  const scan = await scanSkillsWithDiagnostics(
+    resolveSkillDiscoveryPaths(options.cwd ?? root, root, options.homeDir),
+  );
+  const installed = (
+    await enrichInstalledSkillDefinitions(
+      scan.inventory.filter(
+        (skill) => skill.scope === 'workspace' && skill.source === 'legacy',
+      ),
+      options,
+    )
+  ).map(({ content: _content, ...skill }) => skill);
+  const runtimeState = scan.runtimeState;
+  const migration = runtimeState.ok
+    ? migrateSkillRuntimePreferences(runtimeState, scan.inventory)
+    : null;
+  const effectiveInventory: ScannedSkill[] = scan.inventory.map((skill) => {
+    const preference =
+      migration === null ? undefined : getSkillRuntimePreference(migration, skill);
+    const enabled = preference?.enabled ?? skill.enabled;
+    return {
+      ...skill,
+      enabled,
+      pinned: preference?.pinned ?? skill.pinned,
+      runtimeStatus:
+        skill.runtimeStatus === 'state_error'
+          ? 'state_error'
+          : enabled
+            ? 'enabled'
+            : 'disabled',
+    };
+  });
+  const report = options.selectionReport ?? selectSkillScanForContext(
+    { ...scan, inventory: effectiveInventory },
+    options.host,
+    { contextWindow: options.contextWindow },
+  ).report;
   const decisionByRef = new Map(report.decisions.map((decision) => [decision.ref, decision]));
   const installedByPath = new Map(installed.map((skill) => [skill.path, skill]));
-  const validEntries = scan.inventory.map((skill) => {
+  const validEntries = effectiveInventory.map((skill) => {
     const governed = installedByPath.get(skill.path);
     const decision = decisionByRef.get(skill.ref);
     return toSkillEntry(
-      governed ?? {
-        ...skill,
-        sourceType: 'unknown',
-        userModified: false,
-        validationStatus: 'ok',
-        validationCodes: [],
+      {
+        ...(governed ?? {
+          ...skill,
+          sourceType: 'unknown',
+          userModified: false,
+          validationStatus: 'ok',
+          validationCodes: [],
+        }),
+        enabled: skill.enabled,
+        pinned: skill.pinned,
+        runtimeStatus: skill.runtimeStatus,
       },
       decision,
-      needsReview.has(skill.id),
+      migration === null ? false : isSkillPreferenceReviewPending(migration, skill.id),
     );
   });
   return [
@@ -415,117 +383,6 @@ export function toSkillEntry(
   };
 }
 
-export async function ensureBundledOfficeSkills(root: string): Promise<{ created: string[]; updated: string[]; skipped: string[]; failed: string[] }> {
-  const created: string[] = [];
-  const updated: string[] = [];
-  const skipped: string[] = [];
-  const failed: string[] = [];
-  const skillsDir = join(root, 'skills');
-
-  let rootReal: string;
-  let skillsReal: string;
-  try {
-    await mkdir(skillsDir, { recursive: true, mode: 0o700 });
-    const skillsStat = await lstat(skillsDir);
-    if (!skillsStat.isDirectory() || skillsStat.isSymbolicLink()) {
-      return { created, updated, skipped, failed: BUNDLED_OFFICE_SKILLS.map((skill) => skill.id) };
-    }
-    [rootReal, skillsReal] = await Promise.all([realpath(root), realpath(skillsDir)]);
-    if (!isPathInside(rootReal, skillsReal)) {
-      return { created, updated, skipped, failed: BUNDLED_OFFICE_SKILLS.map((skill) => skill.id) };
-    }
-  } catch {
-    return { created, updated, skipped, failed: BUNDLED_OFFICE_SKILLS.map((skill) => skill.id) };
-  }
-
-  for (const skill of BUNDLED_OFFICE_SKILLS) {
-    const skillDir = join(skillsDir, skill.id);
-    const skillFile = join(skillDir, 'SKILL.md');
-    try {
-      await mkdir(skillDir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== 'EEXIST') throw error;
-      });
-      const skillReal = await realpath(skillDir);
-      if (!isPathInside(skillsReal, skillReal)) {
-        failed.push(skill.id);
-        continue;
-      }
-      await writeFile(skillFile, skill.body, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-      if (!await writeBundledSkillLock(skillDir, skill.id, skill.body)) {
-        throw new Error('failed to write bundled skill lock');
-      }
-      created.push(skill.id);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        const migration = await migrateLegacyBundledOfficeSkill(skill.id, skillFile, skill.body);
-        if (migration === 'updated') {
-          updated.push(skill.id);
-          continue;
-        }
-        if (migration === 'failed') {
-          failed.push(skill.id);
-          continue;
-        }
-        skipped.push(skill.id);
-        continue;
-      }
-      failed.push(skill.id);
-    }
-  }
-
-  return { created, updated, skipped, failed };
-}
-
-async function migrateLegacyBundledOfficeSkill(id: string, skillFile: string, currentBody: string): Promise<'updated' | 'skipped' | 'failed'> {
-  const legacyHashes = LEGACY_BUNDLED_OFFICE_SKILL_SHA256[id] ?? [];
-  if (legacyHashes.length === 0) return 'skipped';
-  try {
-    const existingStat = await lstat(skillFile);
-    if (!existingStat.isFile() || existingStat.isSymbolicLink()) return 'skipped';
-    const existing = await readFile(skillFile, 'utf8');
-    if (!legacyHashes.includes(sha256(existing))) {
-      if (sha256(existing) === sha256(currentBody)) {
-        if (!await writeBundledSkillLock(dirname(skillFile), id, currentBody)) return 'failed';
-      }
-      return 'skipped';
-    }
-    await writeFile(skillFile, currentBody, { encoding: 'utf8', mode: 0o600 });
-    if (!await writeBundledSkillLock(dirname(skillFile), id, currentBody)) return 'failed';
-    return 'updated';
-  } catch {
-    return 'failed';
-  }
-}
-
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
-
-async function writeBundledSkillLock(skillDir: string, id: string, body: string): Promise<boolean> {
-  const lockPath = join(skillDir, 'skill.lock.json');
-  const contentSha256 = BUNDLED_OFFICE_SKILL_HASH_BY_ID.get(id) ?? `sha256:${sha256(body)}`;
-  const existing = await readExistingRegularFile(lockPath);
-  if (existing.kind === 'blocked') return false;
-  if (existing.kind === 'file') {
-    try {
-      const parsed = JSON.parse(existing.content);
-      if (isMatchingBundledSkillLock(parsed, id, contentSha256)) return true;
-    } catch {
-      // Invalid lock metadata is replaced by the trusted bundled writer.
-    }
-  }
-
-  return writeSkillLock(skillDir, {
-    schemaVersion: 1,
-    id,
-    sourceType: 'bundled',
-    sourceName: BUNDLED_OFFICE_SKILL_SOURCE_NAME,
-    sourceVersion: BUNDLED_OFFICE_SKILL_SOURCE_VERSION,
-    contentSha256,
-    installedAt: new Date().toISOString(),
-  });
-}
-
 async function writeSkillLock(skillDir: string, lock: SkillLockFile): Promise<boolean> {
   const lockPath = join(skillDir, 'skill.lock.json');
   const tempPath = join(skillDir, `.skill.lock.json.${process.pid}.${Date.now()}.tmp`);
@@ -542,30 +399,6 @@ async function writeSkillLock(skillDir: string, lock: SkillLockFile): Promise<bo
     await unlink(tempPath).catch(() => {});
     return false;
   }
-}
-
-async function readExistingRegularFile(path: string): Promise<{ kind: 'missing' } | { kind: 'blocked' } | { kind: 'file'; content: string }> {
-  try {
-    const existingStat = await lstat(path);
-    if (!existingStat.isFile() || existingStat.isSymbolicLink()) return { kind: 'blocked' };
-    return { kind: 'file', content: await readFile(path, 'utf8') };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
-    return { kind: 'blocked' };
-  }
-}
-
-function isMatchingBundledSkillLock(value: unknown, id: string, contentSha256: string): boolean {
-  if (!isRecord(value)) return false;
-  return value.schemaVersion === 1 &&
-    value.id === id &&
-    value.sourceType === 'bundled' &&
-    value.sourceName === BUNDLED_OFFICE_SKILL_SOURCE_NAME &&
-    value.sourceVersion === BUNDLED_OFFICE_SKILL_SOURCE_VERSION &&
-    typeof value.installedAt === 'string' &&
-    value.installedAt.length > 0 &&
-    typeof value.contentSha256 === 'string' &&
-    value.contentSha256.toLowerCase() === contentSha256.toLowerCase();
 }
 
 const STARTER_SKILL_ID_PATTERN = /^starter-skill(?:-(\d+))?$/;
@@ -631,7 +464,11 @@ export async function createStarterSkill(root: string): Promise<CreateStarterSki
       }
 
       const filePath = join(skillDir, 'SKILL.md');
-      await writeFile(filePath, starterSkillTemplate(id, name), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      await writeFile(filePath, buildStarterSkillTemplate(id, name), {
+        encoding: 'utf8',
+        flag: 'wx',
+        mode: 0o600,
+      });
       return {
         ok: true,
         created: true,
@@ -830,7 +667,12 @@ export async function installManagedSkill(
       return { ok: false, reason: 'blocked_path' };
     }
     await writeFile(skillFile, source.content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    if (!await writeSkillLock(skillDir, managedSkillLock(sourceId, source.contentSha256, source.contentSha256))) {
+    if (
+      !await writeSkillLock(
+        skillDir,
+        createManagedSkillLock(sourceId, source.contentSha256, source.contentSha256),
+      )
+    ) {
       if (createdSkillDir) await rm(skillDir, { recursive: true, force: true }).catch(() => {});
       return { ok: false, reason: 'write_failed' };
     }
@@ -881,14 +723,13 @@ function parseBundledSkillCategory(body: string): ManagedSkillCategory {
 }
 
 /**
- * The built-in (内置) catalog: the auto-seeded Office skills plus the
- * reverse-engineered skills. `installed` reflects whether the current workspace
- * already has skills/<id>. The renderer surfaces this under the 内置 tab with a
- * per-entry install action that calls `installBundledSkill`.
+ * The built-in (内置) catalog. `installed` reflects whether the current
+ * workspace already has skills/<id>. The renderer surfaces this under the 内置
+ * tab with a per-entry install action that calls `installBundledSkill`.
  */
 export async function listBundledSkillCatalog(root: string): Promise<BundledSkillCatalogEntry[]> {
   const installedIds = new Set((await listInstalledSkills(root)).map((skill) => skill.id));
-  return [...BUNDLED_OFFICE_SKILLS, ...BUNDLED_REVERSE_ENGINEERED_SKILLS]
+  return BUNDLED_SKILL_CATALOG
     .map(({ id, body }) => {
       const { name, description, allowedTools } = parseSkillFrontMatter(body);
       return {
@@ -904,28 +745,19 @@ export async function listBundledSkillCatalog(root: string): Promise<BundledSkil
 }
 
 async function writeBundledCatalogLock(skillDir: string, id: string, body: string): Promise<boolean> {
-  const contentSha256 = BUNDLED_CATALOG_HASH_BY_ID.get(id) ?? `sha256:${sha256(body)}`;
-  return writeSkillLock(skillDir, {
-    schemaVersion: 1,
-    id,
-    sourceType: 'bundled',
-    sourceName: BUNDLED_CATALOG_SOURCE_NAME,
-    sourceVersion: BUNDLED_CATALOG_SOURCE_VERSION,
-    contentSha256,
-    installedAt: new Date().toISOString(),
-  });
+  const source = getBundledSkillSource(id);
+  if (!source || source.body !== body) return false;
+  return writeSkillLock(skillDir, createBundledSkillLock(source));
 }
 
 /**
  * Install a built-in catalog skill into {root}/skills/<id> on demand. Mirrors
  * installManagedSkill's hardened write path (containment checks, fail-if-exists)
- * but sources the body from the shipped catalog. Office ids get the Office
- * bundled lock; reverse-engineered ids get the maka-bundled catalog lock.
+ * but sources the body from the shipped catalog.
  */
 export async function installBundledSkill(root: string, id: string): Promise<InstallBundledSkillResult> {
   if (!isSafeSkillId(id)) return { ok: false, reason: 'not_found' };
-  const officeBody = BUNDLED_OFFICE_SKILLS.find((skill) => skill.id === id)?.body;
-  const body = officeBody ?? BUNDLED_CATALOG_BODY_BY_ID.get(id);
+  const body = BUNDLED_CATALOG_BODY_BY_ID.get(id);
   if (body === undefined) return { ok: false, reason: 'not_found' };
 
   const skillsDir = join(root, 'skills');
@@ -953,9 +785,7 @@ export async function installBundledSkill(root: string, id: string): Promise<Ins
       return { ok: false, reason: 'blocked_path' };
     }
     await writeFile(skillFile, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    const lockWritten = officeBody !== undefined
-      ? await writeBundledSkillLock(skillDir, id, body)
-      : await writeBundledCatalogLock(skillDir, id, body);
+    const lockWritten = await writeBundledCatalogLock(skillDir, id, body);
     if (!lockWritten) {
       await rm(skillDir, { recursive: true, force: true }).catch(() => {});
       return { ok: false, reason: 'write_failed' };
@@ -1041,7 +871,17 @@ export async function updateManagedSkill(
     if (!await writeContainedRegularTextFile(skillDir, skillFile, source.content)) {
       return { ok: false, reason: 'write_failed' };
     }
-    if (!await writeSkillLock(skillDir, managedSkillLock(skillId, source.contentSha256, source.contentSha256, skill.managedSourceId))) {
+    if (
+      !await writeSkillLock(
+        skillDir,
+        createManagedSkillLock(
+          skillId,
+          source.contentSha256,
+          source.contentSha256,
+          skill.managedSourceId,
+        ),
+      )
+    ) {
       await restorePrevious();
       return { ok: false, reason: 'write_failed' };
     }
@@ -1193,18 +1033,19 @@ async function toSkillGovernanceDetails(skill: InstalledSkill, sourceRoot: strin
 
 async function writeManagedSkillBaseline(skillDir: string, content: string): Promise<boolean> {
   try {
-    const metadataDir = join(skillDir, '.maka');
+    const baselineFile = join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH);
+    const baselineDir = dirname(baselineFile);
+    const metadataDir = dirname(baselineDir);
     await mkdir(metadataDir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error;
     });
-    const baselineDir = join(metadataDir, 'baseline');
     await mkdir(baselineDir, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error;
     });
 
     const resolved = await resolveManagedSkillBaselineDir(skillDir);
     if (!resolved.ok) return false;
-    return writeContainedRegularTextFile(resolved.baselineDir, join(resolved.baselineDir, 'SKILL.md'), content);
+    return writeContainedRegularTextFile(resolved.baselineDir, baselineFile, content);
   } catch {
     return false;
   }
@@ -1213,7 +1054,7 @@ async function writeManagedSkillBaseline(skillDir: string, content: string): Pro
 async function readManagedSkillBaseline(skillDir: string): Promise<string | undefined> {
   const resolved = await resolveManagedSkillBaselineDir(skillDir);
   if (!resolved.ok) return undefined;
-  const baselineFile = join(resolved.baselineDir, 'SKILL.md');
+  const baselineFile = join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH);
   const baseline = await readContainedRegularTextFile(resolved.baselineDir, baselineFile);
   return baseline.ok ? baseline.content : undefined;
 }
@@ -1221,7 +1062,7 @@ async function readManagedSkillBaseline(skillDir: string): Promise<string | unde
 async function removeManagedSkillBaseline(skillDir: string): Promise<void> {
   const resolved = await resolveManagedSkillBaselineDir(skillDir);
   if (!resolved.ok) return;
-  const baselineFile = join(resolved.baselineDir, 'SKILL.md');
+  const baselineFile = join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH);
   const [baselineReal, fileStat] = await Promise.all([
     realpath(resolved.baselineDir),
     lstat(baselineFile).catch((error: NodeJS.ErrnoException) => {
@@ -1241,8 +1082,10 @@ async function resolveManagedSkillBaselineDir(skillDir: string): Promise<
   | { ok: false }
 > {
   try {
-    const metadataDir = join(skillDir, '.maka');
-    const baselineDir = join(metadataDir, 'baseline');
+    const baselineDir = dirname(
+      join(skillDir, MANAGED_SKILL_BASELINE_RELATIVE_PATH),
+    );
+    const metadataDir = dirname(baselineDir);
     const [skillReal, metadataStat, baselineStat] = await Promise.all([
       realpath(skillDir),
       lstat(metadataDir),
@@ -1290,50 +1133,24 @@ async function setSkillPreference(
 ): Promise<SetSkillEnabledResult> {
   const source = resolveSkillDiscoveryPaths(options.cwd ?? root, root, options.homeDir);
   const scan = await scanSkillsWithDiagnostics(source);
-  const normalized = skillRefOrId.toLowerCase();
-  const exactTarget = scan.inventory.find((skill) => skill.ref.toLowerCase() === normalized);
-  const idMatches = scan.inventory.filter((skill) => skill.id.toLowerCase() === normalized);
-  if (!exactTarget && idMatches.length > 1) return { ok: false, reason: 'needs_review' };
-  const target = exactTarget ?? idMatches[0];
-  if (!target) return { ok: false, reason: 'not_found' };
-  const current = await readSkillRuntimeState(root);
+  const resolvedTarget = resolveSkillPreferenceTarget(scan.inventory, skillRefOrId);
+  if (!resolvedTarget.ok) return resolvedTarget;
+  const target = resolvedTarget.target;
+  const current = scan.runtimeState;
   if (!current.ok) {
     return { ok: false, reason: current.reason === 'blocked_path' ? 'blocked_path' : 'state_error' };
   }
-  const preferences = new Map(current.preferences);
-  const needsReview = new Set(current.needsReview);
-  // Migrate unambiguous v1 id keys to stable v2 refs on the first mutation.
-  if (current.schemaVersion === 1) {
-    for (const [legacyId, preference] of current.preferences) {
-      const matches = scan.inventory.filter(
-        (skill) => skill.id.toLowerCase() === legacyId.toLowerCase(),
-      );
-      if (matches.length === 1) {
-        if (!preferences.has(matches[0].ref)) preferences.set(matches[0].ref, preference);
-        preferences.delete(legacyId);
-      } else if (matches.length > 1) {
-        needsReview.add(legacyId);
-      }
-    }
-  }
-  const prior = preferences.get(target.ref)
-    ?? current.preferences.get(target.id)
-    ?? { enabled: true, pinned: false };
-  preferences.set(target.ref, {
-    enabled: patch.enabled ?? prior.enabled,
-    pinned: patch.pinned ?? prior.pinned,
-    updatedAt: new Date().toISOString(),
+  const migration = clearResolvedSkillPreferenceReviews(
+    patchSkillRuntimePreference(
+      migrateSkillRuntimePreferences(current, scan.inventory),
+      target,
+      patch,
+    ),
+    scan.inventory,
+  );
+  const written = await writeSkillRuntimePreferences(root, migration.preferences, {
+    needsReview: migration.needsReview,
   });
-  for (const legacyId of needsReview) {
-    const matches = scan.inventory.filter(
-      (skill) => skill.id.toLowerCase() === legacyId.toLowerCase(),
-    );
-    if (matches.length > 1 && matches.every((skill) => preferences.has(skill.ref))) {
-      preferences.delete(legacyId);
-      needsReview.delete(legacyId);
-    }
-  }
-  const written = await writeSkillRuntimePreferences(root, preferences, { needsReview });
   if (!written.ok) return written;
 
   const refreshed = await listGovernedSkillEntries(root, options);
@@ -1364,25 +1181,6 @@ function diffSummary(currentContent: string, sourceContent: string): ManagedSkil
 function splitLines(content: string): string[] {
   if (content.length === 0) return [];
   return content.replace(/\r\n/g, '\n').split('\n');
-}
-
-function managedSkillLock(
-  id: string,
-  contentSha256: string,
-  sourceContentSha256: string,
-  sourceId = id,
-): SkillLockFile {
-  return {
-    schemaVersion: 1,
-    id,
-    sourceType: 'managed',
-    sourceName: 'local-library',
-    sourceVersion: '1',
-    contentSha256,
-    installedAt: new Date().toISOString(),
-    sourceId,
-    sourceContentSha256,
-  };
 }
 
 export async function resolveSkillOpenPath(
@@ -1447,6 +1245,13 @@ export async function resolveSkillOpenPath(
 
 async function readInstalledSkillDefinitions(root: string, options: SkillReadOptions = {}): Promise<InstalledSkillDefinition[]> {
   const scanned = await scanWorkspaceSkills(root);
+  return enrichInstalledSkillDefinitions(scanned, options);
+}
+
+async function enrichInstalledSkillDefinitions(
+  scanned: readonly ScannedSkill[],
+  options: SkillReadOptions = {},
+): Promise<InstalledSkillDefinition[]> {
   const out: InstalledSkillDefinition[] = [];
   for (const skill of scanned) {
     const status = await readSkillLockStatus(skill.path, skill.id, skill.contentSha256, options);
@@ -1478,275 +1283,42 @@ async function readSkillLockStatus(skillPath: string, id: string, currentHash: s
   try {
     lockStat = await lstat(lockPath);
   } catch {
-    return {
-      sourceType: 'workspace',
-      userModified: false,
-      validationStatus: 'missing_lock',
-      validationCodes: ['missing_lock'],
-      managedUpdateStatus: 'not_managed',
-    };
+    return missingSkillLockStatus();
   }
 
   if (!lockStat.isFile() || lockStat.isSymbolicLink()) {
-    return metadataError(['lock_symlink'], 'Skill lock is not a regular file.');
+    return invalidSkillLockStatus('lock_symlink', 'Skill lock is not a regular file.');
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(lockPath, 'utf8'));
   } catch {
-    return metadataError(['invalid_json'], 'Skill lock JSON is invalid.');
+    return invalidSkillLockStatus('invalid_json', 'Skill lock JSON is invalid.');
   }
 
-  if (!isRecord(parsed)) return metadataError(['invalid_json'], 'Skill lock JSON must be an object.');
-  if (parsed.schemaVersion !== 1) return metadataError(['unsupported_schema'], 'Skill lock schema is unsupported.');
-  if (parsed.id !== id) return metadataError(['id_mismatch'], 'Skill lock id does not match the skill directory.');
-  if (parsed.sourceType !== 'bundled' && parsed.sourceType !== 'managed') {
-    return metadataError(['unsupported_schema'], 'Skill lock source type is unsupported.');
-  }
-  if (typeof parsed.contentSha256 !== 'string' || !/^sha256:[a-f0-9]{64}$/i.test(parsed.contentSha256)) {
-    return metadataError(['invalid_hash'], 'Skill lock hash is invalid.');
-  }
-  if (parsed.sourceType === 'bundled' && !isTrustedBundledSkillLockSource(parsed, id)) {
-    return metadataError(['unsupported_schema'], 'Skill lock source is not trusted in this Maka version.');
-  }
-
-  const userModified = parsed.contentSha256.toLowerCase() !== currentHash.toLowerCase();
-  const managed = parsed.sourceType === 'managed'
-    ? await managedStatusForLock(parsed, userModified, options.managedSourceRoot)
-    : { managedUpdateStatus: 'not_managed' as const };
-  if (managed.managedUpdateStatus === 'metadata_error') {
-    return metadataError(['unsupported_schema'], 'Managed skill lock source metadata is invalid.');
-  }
-  return {
-    sourceType: parsed.sourceType,
-    ...(typeof parsed.sourceName === 'string' && parsed.sourceName ? { sourceName: parsed.sourceName } : {}),
-    ...(typeof parsed.sourceVersion === 'string' && parsed.sourceVersion ? { sourceVersion: parsed.sourceVersion } : {}),
-    ...(typeof parsed.installedAt === 'string' && parsed.installedAt ? { installedAt: parsed.installedAt } : {}),
-    contentSha256: parsed.contentSha256,
-    userModified,
-    validationStatus: userModified ? 'modified' : 'ok',
-    validationCodes: userModified ? ['modified'] : [],
-    ...managed,
-  };
-}
-
-async function managedStatusForLock(
-  lock: Record<string, unknown>,
-  userModified: boolean,
-  managedSourceRoot = resolveManagedSkillSourcesRoot(),
-): Promise<Pick<InstalledSkill, 'managedSourceId' | 'managedUpdateStatus' | 'sourceContentSha256'>> {
-  if (lock.sourceName !== 'local-library' || lock.sourceVersion !== '1') {
-    return { managedUpdateStatus: 'metadata_error' };
-  }
-  const sourceId = typeof lock.sourceId === 'string' && isSafeSkillId(lock.sourceId) ? lock.sourceId : undefined;
-  const sourceContentSha256 = typeof lock.sourceContentSha256 === 'string' && /^sha256:[a-f0-9]{64}$/i.test(lock.sourceContentSha256)
-    ? lock.sourceContentSha256
-    : undefined;
-  if (!sourceId || !sourceContentSha256) {
-    return {
-      ...(sourceId ? { managedSourceId: sourceId } : {}),
-      managedUpdateStatus: 'metadata_error',
-      ...(sourceContentSha256 ? { sourceContentSha256 } : {}),
-    };
-  }
+  let managedSource: { status: 'available'; contentSha256: string } | { status: 'missing' } | undefined;
   if (
-    typeof lock.contentSha256 !== 'string' ||
-    lock.contentSha256.toLowerCase() !== sourceContentSha256.toLowerCase()
+    parsed &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    (parsed as Record<string, unknown>).sourceType === 'managed'
   ) {
-    return { managedSourceId: sourceId, managedUpdateStatus: 'metadata_error', sourceContentSha256 };
+    const sourceId = (parsed as Record<string, unknown>).sourceId;
+    if (typeof sourceId === 'string' && isSafeSkillId(sourceId)) {
+      const source = await readManagedSkillSource(
+        options.managedSourceRoot ?? resolveManagedSkillSourcesRoot(),
+        sourceId,
+      );
+      managedSource = source.ok
+        ? { status: 'available', contentSha256: source.contentSha256 }
+        : { status: 'missing' };
+    }
   }
-  if (userModified) {
-    return { managedSourceId: sourceId, managedUpdateStatus: 'local_modified', sourceContentSha256 };
-  }
-  const source = await readManagedSkillSource(managedSourceRoot, sourceId);
-  if (!source.ok) {
-    return { managedSourceId: sourceId, managedUpdateStatus: 'source_missing', sourceContentSha256 };
-  }
-  return {
-    managedSourceId: sourceId,
-    managedUpdateStatus: source.contentSha256 === sourceContentSha256 ? 'up_to_date' : 'update_available',
-    sourceContentSha256,
-  };
-}
-
-function isTrustedBundledSkillLockSource(lock: Record<string, unknown>, id: string): boolean {
-  if (lock.sourceType !== 'bundled' || typeof lock.contentSha256 !== 'string') return false;
-  const lockHash = lock.contentSha256.replace(/^sha256:/i, '').toLowerCase();
-
-  if (BUNDLED_OFFICE_SKILL_IDS.has(id)) {
-    if (lock.sourceName !== BUNDLED_OFFICE_SKILL_SOURCE_NAME || lock.sourceVersion !== BUNDLED_OFFICE_SKILL_SOURCE_VERSION) return false;
-    // A bundled lock is trusted if its content hash matches the current bundled
-    // template or any legacy bundled template that desktop still migrates from.
-    // This keeps user-modified legacy skills at validationStatus 'modified'
-    // instead of 'metadata_error' across a template bump.
-    const newHash = BUNDLED_OFFICE_SKILL_HASH_BY_ID.get(id)?.replace(/^sha256:/i, '').toLowerCase();
-    const trusted = new Set<string>([
-      ...(newHash ? [newHash] : []),
-      ...(LEGACY_BUNDLED_OFFICE_SKILL_SHA256[id] ?? []),
-    ]);
-    return trusted.has(lockHash);
-  }
-
-  // Reverse-engineered built-in catalog skills.
-  const catalogHash = BUNDLED_CATALOG_HASH_BY_ID.get(id)?.replace(/^sha256:/i, '').toLowerCase();
-  if (!catalogHash) return false;
-  return lock.sourceName === BUNDLED_CATALOG_SOURCE_NAME &&
-    lock.sourceVersion === BUNDLED_CATALOG_SOURCE_VERSION &&
-    lockHash === catalogHash;
-}
-
-function metadataError(validationCodes: SkillValidationCode[], message: string): Pick<
-  InstalledSkill,
-  'sourceType' | 'userModified' | 'validationStatus' | 'validationCodes' | 'validationMessages' | 'managedUpdateStatus'
-> {
-  return {
-    sourceType: 'unknown',
-    userModified: false,
-    validationStatus: 'metadata_error',
-    validationCodes,
-    validationMessages: [message],
-    managedUpdateStatus: 'metadata_error',
-  };
-}
-
-function starterSkillTemplate(id: string, name: string): string {
-  return `---
-name: ${name}
-description: 把常用工作流写成可复用的本地指令。
-allowed-tools:
-  - Read
----
-
-# ${name}
-
-当用户要求你按固定流程完成某类任务时，先加载这个技能。
-
-## 使用方式
-
-1. 先确认用户的目标、输入材料和交付格式。
-2. 阅读必要的本地文件或上下文，只收集完成任务需要的信息。
-3. 按步骤输出结果；如果需要改文件，先说明要改哪里和原因。
-
-## 边界
-
-- 这个技能声明的工具只是需求提示，不会自动获得权限。
-- 不要把敏感内容写进这里；它会作为本地技能指令进入模型上下文。
-- 如果这个模板不适合你的工作流，可以直接改名或删除 ${id}。
-`;
-}
-
-function officeCliDocxSkillTemplate(): string {
-  return `---
-name: OfficeCLI DOCX
-description: Use when a .docx, Word document, report, memo, proposal, letter, tracked changes, comments, header/footer, table of contents, or Word template is involved.
-allowed-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
-  - Read
-required-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
----
-
-# OfficeCLI DOCX
-
-Use this skill for Word document work. Route document inspection and edits through Maka's bounded Office document tools.
-
-## Boundary
-
-- Use \`OfficeDocument\` for read-only inspection: \`help\`, \`view\`, \`get\`, \`query\`, and \`validate\`.
-- Use \`OfficeDocumentEdit\` only for supported writes: \`create\`, \`add\`, \`set\`, and \`remove\`. It is permission-gated and path-bound to the session cwd.
-- Do not call Bash or raw \`officecli\` directly unless the user explicitly asks for shell-level debugging and the normal permission flow allows it.
-- Prefer \`OfficeDocument\` \`help\` with \`topic: "docx"\` before guessing selectors or properties. Installed help is authoritative.
-- Quote semantic paths: \`"/body/p[1]"\`, \`"/footer[1]"\`.
-- Unsupported paths stay unsupported: no resident \`open\`/\`close\`, \`html\` view, \`raw\`, \`watch\`, or \`batch\`.
-
-## Workflow
-
-1. Orient with \`OfficeDocument\` \`view\` \`outline\`, then \`view\` \`text\` or \`get\` the needed paths.
-2. For edits, use \`OfficeDocumentEdit\` in small steps and verify each structural step with \`OfficeDocument\` \`get\` or \`view\`.
-3. For generated documents, build hierarchy first: Title, Heading 1, Heading 2, body; then tables/images/fields; then headers/footers.
-4. Use explicit typography. Body 11-12pt; H1 at least 18pt; H2 around 14pt; spacing via paragraph properties, not blank paragraphs.
-5. Add live page-number fields for documents longer than one page when the installed adapter supports the needed field properties. Verify fields with \`OfficeDocument\` \`get\` on \`"/footer[1]"\` at bounded depth.
-6. Final QA: \`OfficeDocument\` \`validate\` plus \`view\` \`outline\`, \`stats\`, \`issues\`, or \`annotated\`. Fix placeholder tokens, clipped tables, empty-paragraph spacing, static page numbers, and missing TOC on heading-heavy documents before reporting done.
-`;
-}
-
-function officeCliXlsxSkillTemplate(): string {
-  return `---
-name: OfficeCLI XLSX
-description: Use when a .xlsx, Excel workbook, spreadsheet, CSV/TSV import, tracker, dashboard, financial model, formula, chart, pivot table, or worksheet template is involved.
-allowed-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
-  - Read
-required-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
----
-
-# OfficeCLI XLSX
-
-Use this skill for spreadsheet work. Route workbook inspection and edits through Maka's bounded Office document tools.
-
-## Boundary
-
-- Use \`OfficeDocument\` for read-only inspection: \`help\`, \`view\`, \`get\`, \`query\`, and \`validate\`.
-- Use \`OfficeDocumentEdit\` only for supported writes: \`create\`, \`add\`, \`set\`, and \`remove\`. It is permission-gated and path-bound to the session cwd.
-- Do not call Bash or raw \`officecli\` directly unless the user explicitly asks for shell-level debugging and the normal permission flow allows it.
-- Prefer \`OfficeDocument\` \`help\` with \`topic: "xlsx"\` before guessing selectors or properties. Installed help is authoritative.
-- Quote paths such as \`"/Sheet1/A1"\`, \`"/Sheet1/col[B]"\`, and \`"/Sheet1/row[1]"\`.
-- Single-quote values containing \`$\`, especially number formats: \`--prop numFmt='$#,##0'\`.
-- Unsupported paths stay unsupported: no resident \`open\`/\`close\`, \`html\` view, \`raw\`, \`watch\`, or \`batch\`.
-
-## Workflow
-
-1. Orient with \`OfficeDocument\` \`view\` \`outline\`; use \`view\` \`text\`, \`get\`, and \`query\` for targeted inspection.
-2. For CSV/TSV, prefer native import, then set widths and number formats.
-3. For generated workbooks, create sheets, enter assumptions, formulas, formats, charts, then validate.
-4. Use formulas rather than hardcoded derived values. Put assumptions in cells and cite sources in adjacent notes or comments.
-5. Set readable widths explicitly; default Excel widths often render as \`###\`.
-6. Financial-model convention: blue font for hardcoded inputs, black for formulas, green for same-workbook links, red for external links, yellow fill for assumptions needing review.
-7. Final QA: \`OfficeDocument\` \`validate\` plus \`view\` \`outline\`, \`stats\`, \`issues\`, or \`annotated\`. Fix formula errors, \`###\`, truncated headers, hidden assumptions, placeholder tokens, and chart labels before reporting done.
-`;
-}
-
-function officeCliPptxSkillTemplate(): string {
-  return `---
-name: OfficeCLI PPTX
-description: Use when a .pptx, slide deck, presentation, pitch deck, speaker notes, layout, chart, template, or slides file is involved.
-allowed-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
-  - Read
-required-tools:
-  - OfficeDocument
-  - OfficeDocumentEdit
----
-
-# OfficeCLI PPTX
-
-Use this skill for presentation work. Route deck inspection and edits through Maka's bounded Office document tools.
-
-## Boundary
-
-- Use \`OfficeDocument\` for read-only inspection: \`help\`, \`view\`, \`get\`, \`query\`, and \`validate\`.
-- Use \`OfficeDocumentEdit\` only for supported writes: \`create\`, \`add\`, \`set\`, and \`remove\`. It is permission-gated and path-bound to the session cwd.
-- Do not call Bash or raw \`officecli\` directly unless the user explicitly asks for shell-level debugging and the normal permission flow allows it.
-- Prefer \`OfficeDocument\` \`help\` with \`topic: "pptx"\` before guessing selectors or properties. Installed help is authoritative.
-- Quote paths such as \`"/slide[1]"\` and \`"/slide[1]/shape[2]"\`.
-- Single-quote text containing \`$\`: \`--prop text='$15M ARR'\`.
-- Unsupported paths stay unsupported: no resident \`open\`/\`close\`, \`html\` view, \`raw\`, \`watch\`, or \`batch\`.
-
-## Workflow
-
-1. Orient with \`OfficeDocument\` \`view\` \`outline\`, \`view\` \`text\`, and targeted \`get\` calls.
-2. For generated decks, use one idea per slide. Dense multi-topic slides should be split.
-3. Set explicit type hierarchy: titles at least 36pt, body text at least 18pt, captions 10-12pt.
-4. Use two fonts max and one coherent palette. Every content slide should carry a non-text visual: chart, shape, icon, screenshot, or image region.
-5. Add speaker notes to content slides.
-6. Check layout math. For 16:9 slides, keep shapes inside 33.87cm x 19.05cm and maintain edge margins.
-7. Final QA: \`OfficeDocument\` \`validate\` plus \`view\` \`outline\`, \`stats\`, \`issues\`, or \`annotated\`. Fix placeholders, overflow, clipped text, low contrast, bullet-only slides, and missing notes before reporting done.
-`;
+  return validateSkillLock({
+    lock: parsed,
+    skillId: id,
+    currentContentSha256: currentHash,
+    ...(managedSource ? { managedSource } : {}),
+  });
 }

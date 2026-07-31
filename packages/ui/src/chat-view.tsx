@@ -367,9 +367,11 @@ export function ChatView(props: {
             permission-mode chips — the picker lives inside the composer's
             left controls so the new-session screen and active-session
             screen share the same "create / pick mode / send" rhythm. */}
-        <header className="maka-chat-header" data-empty="true">
-          <span className="maka-chat-header-spacer" />
-        </header>
+        {/* No status strip on the empty-session screen: it has no session, so
+            none of the chips (memory / deep-research / goal) can apply. The
+            header used to be rendered here anyway, holding a lone spacer, to
+            occupy the window titlebar line — which the shell's titlebar row now
+            owns. */}
         <OverlayScrollArea
           className="maka-chat messages"
           viewportClassName="maka-chatViewport"
@@ -393,7 +395,6 @@ export function ChatView(props: {
           just a thin chrome strip carrying the permission-mode
           switcher and the per-session memory/mode chips. */}
       <header className="maka-chat-header">
-        <span className="maka-chat-header-spacer" />
         {props.memoryActive && (
           /* This status pill is a semantic header control rather than a
              shared Button size or neutral variant. */

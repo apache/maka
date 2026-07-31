@@ -133,7 +133,6 @@ export function buildAutomationTool(deps: AutomationToolDeps): MakaTool<Automati
         : '') +
       'Automations auto-expire after 7 days unless deleted earlier.',
     parameters: cronEnabled ? AUTOMATION_SCHEMA_WITH_CRON : AUTOMATION_SCHEMA_HEARTBEAT_ONLY,
-    permissionRequired: false,
     impl: (input, ctx) => {
       let result: string;
       switch (input.mode) {

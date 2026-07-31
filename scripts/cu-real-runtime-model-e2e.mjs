@@ -1,9 +1,4 @@
-import {
-  AiSdkBackend,
-  PermissionEngine,
-  buildComputerUseTools,
-  getAIModel,
-} from '../packages/runtime/dist/index.js';
+import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
 import {
   createSyntheticComputerScenario,
   canonicalizeSyntheticComputerArgs,
@@ -139,10 +134,7 @@ const runtime = new AiSdkBackend({
   connection,
   apiKey: 'bridge-managed',
   modelId,
-  permissionEngine: new PermissionEngine({
-    newId: () => `permission-${++nextId}`,
-    now: () => ++now,
-  }),
+  readExecutionBoundary: async () => ({ kind: 'bypass', revision: 0 }),
   modelFactory: (input) => getAIModel(input),
   tools: [computerTool],
   maxSteps: 8,

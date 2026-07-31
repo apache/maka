@@ -82,12 +82,6 @@ test('Fake question publication waits for exact hosted admission', async () => {
     {
       bindRun: (identity) => ({
         ...identity,
-        acceptPermissionRequest: async () => ({ state: 'pending' }),
-        commitPermissionAnswer: async ({ answer }) => ({
-          kind: 'permission_answer',
-          answer,
-        }),
-        commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
         acceptUserQuestionRequest: async ({ continuation: admitted }) => {
           continuation = admitted;
           admissionStarted.resolve();

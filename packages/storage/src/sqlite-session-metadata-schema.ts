@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 12;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 14;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -423,13 +423,56 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       ON agent_graph_supervisor_wakes(status, updated_at, graph_id, wake_id);
   `,
   ],
+  [
+    13,
+    `
+    CREATE TABLE sandbox_boundary_log (
+      session_id TEXT NOT NULL,
+      entry_id TEXT NOT NULL,
+      entry_kind TEXT NOT NULL
+        CHECK (entry_kind IN ('genesis', 'expansion_request', 'user_change')),
+      request_id TEXT,
+      status TEXT NOT NULL
+        CHECK (status IN ('applied', 'pending', 'approved', 'denied', 'conflict')),
+      base_revision INTEGER CHECK (base_revision >= 0),
+      applied_revision INTEGER CHECK (applied_revision >= 0),
+      boundary_json TEXT,
+      expansion_json TEXT,
+      justification TEXT,
+      outcome_reason TEXT,
+      created_at INTEGER NOT NULL CHECK (created_at >= 0),
+      settled_at INTEGER CHECK (settled_at >= 0),
+      PRIMARY KEY(session_id, entry_id),
+      UNIQUE(session_id, request_id),
+      FOREIGN KEY(session_id) REFERENCES session_metadata(session_id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX sandbox_boundary_log_applied_revision
+      ON sandbox_boundary_log(session_id, applied_revision)
+      WHERE applied_revision IS NOT NULL;
+
+    CREATE INDEX sandbox_boundary_log_pending_requests
+      ON sandbox_boundary_log(session_id, status, created_at, entry_id);
+  `,
+  ],
+  [
+    14,
+    `
+    ALTER TABLE sandbox_boundary_log ADD COLUMN turn_id TEXT;
+    ALTER TABLE sandbox_boundary_log ADD COLUMN run_id TEXT;
+
+    CREATE INDEX sandbox_boundary_log_settled_closures
+      ON sandbox_boundary_log(session_id, outcome_reason, created_at, entry_id)
+      WHERE outcome_reason IS NOT NULL;
+  `,
+  ],
 ]);
 
 export function configureSqliteSessionMetadataDatabase(db: DatabaseSync): void {
+  db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA synchronous = FULL');
   db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
 }
 
 export function migrateSqliteSessionMetadataDatabase(db: DatabaseSync): void {

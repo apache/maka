@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { Button, IconButton } from '../index.js';
+import { X } from '../icons.js';
 import { buttonVariants } from '../ui.js';
 import { cn } from '../utils.js';
 
-test('Button exposes only the governed 32px and 28px geometry tiers', () => {
+test('legacy buttonVariants exposes only the governed 32px and 28px geometry tiers', () => {
   const medium = buttonVariants({ size: 'md' });
   const small = buttonVariants({ size: 'sm' });
   const icon = buttonVariants({ size: 'icon' });
@@ -19,7 +23,7 @@ test('Button exposes only the governed 32px and 28px geometry tiers', () => {
   assert.match(iconSmall, /\bw-7\b/);
 });
 
-test('Button neutral variants share one restrained interaction hierarchy', () => {
+test('legacy buttonVariants neutral variants share one restrained interaction hierarchy', () => {
   const secondary = buttonVariants({ variant: 'secondary' });
   const ghost = buttonVariants({ variant: 'ghost' });
   const quiet = buttonVariants({ variant: 'quiet' });
@@ -33,7 +37,7 @@ test('Button neutral variants share one restrained interaction hierarchy', () =>
   }
 });
 
-test('Button focus and solid states stay visibly distinct without elevation', () => {
+test('legacy buttonVariants focus and solid states stay visibly distinct without elevation', () => {
   const primary = buttonVariants({ variant: 'default' });
   const destructive = buttonVariants({ variant: 'destructive' });
 
@@ -45,7 +49,7 @@ test('Button focus and solid states stay visibly distinct without elevation', ()
   assert.notEqual(destructive.match(/hover:[^ ]+/)?.[0], destructive.match(/active:[^ ]+/)?.[0]);
 });
 
-test('aria-disabled Button variants keep their resting tone during hover and active', () => {
+test('legacy aria-disabled buttonVariants keep their resting tone during hover and active', () => {
   const quiet = buttonVariants({ variant: 'quiet' });
   const primary = buttonVariants({ variant: 'default' });
 
@@ -56,7 +60,7 @@ test('aria-disabled Button variants keep their resting tone during hover and act
   assert.match(primary, /aria-disabled:active:bg-primary/);
 });
 
-test('Button pill shape lands on the governed pill radius tier', () => {
+test('legacy buttonVariants pill shape lands on the governed pill radius tier', () => {
   const pill = cn(buttonVariants({ size: 'icon', shape: 'pill' }));
   const resting = cn(buttonVariants({ size: 'icon' }));
 
@@ -66,4 +70,36 @@ test('Button pill shape lands on the governed pill radius tier', () => {
   assert.ok(!pill.includes('rounded-sm'), 'pill shape must override the base rounded-sm');
   assert.match(resting, /\brounded-sm\b/);
   assert.ok(!resting.includes('rounded-full'));
+});
+
+test('the public Button preserves native and tooltip-disabled semantics', () => {
+  const nativeDisabled = renderToStaticMarkup(
+    createElement(Button, { label: 'Send', isDisabled: true }),
+  );
+  const tooltipDisabled = renderToStaticMarkup(
+    createElement(Button, {
+      label: 'Send',
+      isDisabled: true,
+      tooltip: 'Enter a message first',
+    }),
+  );
+
+  assert.match(nativeDisabled, /^<button[^>]* disabled=""/);
+  assert.doesNotMatch(nativeDisabled, /aria-disabled="true"/);
+  assert.match(tooltipDisabled, /^<button[^>]* aria-disabled="true"/);
+  assert.doesNotMatch(tooltipDisabled, / disabled=""/);
+  assert.match(tooltipDisabled, /role="tooltip"/);
+});
+
+test('the public IconButton renders an accessible icon-only control', () => {
+  const markup = renderToStaticMarkup(
+    createElement(IconButton, {
+      label: 'Close',
+      icon: createElement(X, { 'aria-hidden': 'true' }),
+    }),
+  );
+
+  assert.match(markup, /^<button[^>]* aria-label="Close"/);
+  assert.doesNotMatch(markup, />Close</);
+  assert.match(markup, /<svg/);
 });

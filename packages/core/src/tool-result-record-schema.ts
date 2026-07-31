@@ -1,9 +1,11 @@
 import {
   decodeCanonicalShellToolResultContent,
+  isSandboxDenialSignal,
   normalizeShellToolResultContent,
 } from './shell-run-result.js';
 import { isPermissionMode } from './permission.js';
 import { isStorageRef, type ToolResultContent } from './events.js';
+import { validateSandboxBoundaryExpansion } from './sandbox-boundary.js';
 import {
   defineObjectShape,
   hasExactShape,
@@ -19,7 +21,14 @@ type ExploreResult = Result<'explore_agent'>;
 type AgentSwarmResult = Result<'agent_swarm'>;
 type RiveResult = Result<'rive_workflow'>;
 
-const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(['kind', 'text'], []);
+const TEXT_SHAPE = defineObjectShape<Result<'text'>>()(
+  ['kind', 'text'],
+  ['sandboxDenial', 'sandboxFailure'],
+);
+const SANDBOX_FAILURE_SHAPE = defineObjectShape<NonNullable<Result<'text'>['sandboxFailure']>>()(
+  ['reason'],
+  ['requiredExpansion'],
+);
 const JSON_SHAPE = defineObjectShape<Result<'json'>>()(['kind', 'value'], []);
 const FILE_DIFF_SHAPE = defineObjectShape<Result<'file_diff'>>()(['kind', 'paths', 'diff'], []);
 const FILE_WRITE_SHAPE = defineObjectShape<Result<'file_write'>>()(['kind', 'path', 'bytes'], []);
@@ -54,10 +63,6 @@ const WEB_SEARCH_ROW_SHAPE = defineObjectShape<WebSearchRow>()(
 const WEB_SEARCH_ERROR_SHAPE = defineObjectShape<Result<'web_search_error'>>()(
   ['kind', 'ok', 'provider', 'reason', 'message'],
   ['query', 'credentialSource'],
-);
-const OFFICE_DOCUMENT_SHAPE = defineObjectShape<Result<'office_document'>>()(
-  ['kind', 'ok'],
-  ['operation', 'path', 'args', 'stdout', 'stderr', 'truncated', 'reason', 'message'],
 );
 const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
   [
@@ -219,7 +224,18 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   switch (value.kind) {
     case 'text':
-      return hasExactShape(value, TEXT_SHAPE) && typeof value.text === 'string';
+      return (
+        hasExactShape(value, TEXT_SHAPE) &&
+        typeof value.text === 'string' &&
+        (value.sandboxDenial === undefined || isSandboxDenialSignal(value.sandboxDenial)) &&
+        (value.sandboxFailure === undefined ||
+          (isRecord(value.sandboxFailure) &&
+            hasExactShape(value.sandboxFailure, SANDBOX_FAILURE_SHAPE) &&
+            (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
+              value.sandboxFailure.reason === 'requires_bypass') &&
+            (value.sandboxFailure.requiredExpansion === undefined ||
+              validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok)))
+      );
     case 'json':
       return hasExactShape(value, JSON_SHAPE) && Object.hasOwn(value, 'value');
     case 'file_diff':
@@ -278,19 +294,6 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.reason === 'string' &&
         typeof value.message === 'string' &&
         isOptionalString(value.credentialSource)
-      );
-    case 'office_document':
-      return (
-        hasExactShape(value, OFFICE_DOCUMENT_SHAPE) &&
-        typeof value.ok === 'boolean' &&
-        isOptionalString(value.operation) &&
-        isOptionalString(value.path) &&
-        (value.args === undefined || isStringArray(value.args)) &&
-        isOptionalString(value.stdout) &&
-        isOptionalString(value.stderr) &&
-        (value.truncated === undefined || typeof value.truncated === 'boolean') &&
-        isOptionalString(value.reason) &&
-        isOptionalString(value.message)
       );
     case 'explore_agent':
       return isExploreResult(value);

@@ -7,11 +7,14 @@ import {
   readRendererShellSource,
   readRendererShellSources,
 } from './renderer-shell-source-helpers.js';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
+import {
+  readMainProcessCombinedSource,
+  readSessionsIpcSource,
+} from './main-process-contract-source-helpers.js';
 
 import {
   normalizeBranchFromTurnInput,
-  normalizePermissionResponse,
+  normalizeSandboxBoundaryResponse,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeSessionSendCommand,
@@ -64,9 +67,9 @@ describe('permission response IPC boundary', () => {
     assert.match(globalTypes, /respondToUserQuestion\(sessionId: string, response: UserQuestionResponse\): Promise<void>/);
   });
 
-  it('normalizes valid allow / deny responses into the core shape', () => {
+  it('normalizes boundary allow / deny responses without legacy grant fields', () => {
     assert.deepEqual(
-      normalizePermissionResponse({
+      normalizeSandboxBoundaryResponse({
         requestId: 'permission-1',
         decision: 'allow',
         rememberForTurn: true,
@@ -75,43 +78,42 @@ describe('permission response IPC boundary', () => {
       {
         requestId: 'permission-1',
         decision: 'allow',
-        rememberForTurn: true,
       },
     );
     assert.deepEqual(
-      normalizePermissionResponse({ requestId: 'permission-2', decision: 'deny' }),
+      normalizeSandboxBoundaryResponse({ requestId: 'permission-2', decision: 'deny' }),
       { requestId: 'permission-2', decision: 'deny' },
     );
   });
 
   it('rejects malformed renderer decisions instead of treating them as allow', () => {
-    assert.throws(() => normalizePermissionResponse(null), /Invalid permission response/);
-    assert.throws(() => normalizePermissionResponse({ requestId: '', decision: 'allow' }), /requestId/);
+    assert.throws(() => normalizeSandboxBoundaryResponse(null), /Invalid sandbox boundary response/);
     assert.throws(
-      () => normalizePermissionResponse({ requestId: 'permission-1', decision: 'approve' }),
-      /decision/,
+      () => normalizeSandboxBoundaryResponse({ requestId: '', decision: 'allow' }),
+      /requestId/,
     );
     assert.throws(
-      () => normalizePermissionResponse({ requestId: 'permission-1', decision: 'deny', rememberForTurn: 'yes' }),
-      /rememberForTurn/,
+      () =>
+        normalizeSandboxBoundaryResponse({ requestId: 'permission-1', decision: 'approve' }),
+      /decision/,
     );
   });
 
-  it('routes sessions:respondToPermission through the main-process normalizer', async () => {
+  it('routes sessions:respondToSandboxBoundary through the main-process normalizer', async () => {
     const mainPath = fileURLToPath(new URL('../../../src/main/main.ts', import.meta.url));
     const main = await readMainProcessCombinedSource();
-    const handler = main.match(/ipcMain\.handle\('sessions:respondToPermission'[\s\S]*?\n  \}\);/)?.[0] ?? '';
+    const handler = main.match(/ipcMain\.handle\('sessions:respondToSandboxBoundary'[\s\S]*?\n  \}\);/)?.[0] ?? '';
 
-    assert.match(handler, /normalizePermissionResponse\(response\)/);
+    assert.match(handler, /normalizeSandboxBoundaryResponse\(response\)/);
     assert.match(
       handler,
       /if \(normalized\.decision === 'allow'\) \{[\s\S]*await ensureSessionWorkspaceAvailable\(sessionId\)/,
       'allow must revalidate the workspace before resuming a parked tool; deny must remain available',
     );
-    assert.doesNotMatch(handler, /runtime\.respondToPermission\(sessionId,\s*response\)/);
+    assert.doesNotMatch(handler, /runtime\.respondToSandboxBoundary\(sessionId,\s*response\)/);
     assert.match(
       handler,
-      /await runtime\.respondToPermission\(sessionId, normalized\);[\s\S]*notifyAgentGraphPermissionResponse\?\.\(sessionId\)/,
+      /await runtime\.respondToSandboxBoundary\(sessionId, normalized\);[\s\S]*notifyAgentGraphPermissionResponse\?\.\(sessionId\)/,
       'graph wake settlement must run only after the normalized permission response is accepted',
     );
   });
@@ -139,7 +141,14 @@ describe('permission response IPC boundary', () => {
 
   it('routes turn actions through main-process normalizers', async () => {
     const main = await readMainProcessCombinedSource();
-    const regenerateHandler = main.match(/ipcMain\.handle\('sessions:regenerateTurn'[\s\S]*?\n  \);/)?.[0] ?? '';
+    const execution = await readFile(
+      fileURLToPath(new URL('../../../src/main/session-execution-ipc-main.ts', import.meta.url)),
+      'utf8',
+    );
+    const regenerateHandler =
+      execution.match(
+        /deps\.ipcMain\.handle\(\s*'sessions:regenerateTurn'[\s\S]*?\n  \);/,
+      )?.[0] ?? '';
     const branchHandler = main.match(/ipcMain\.handle\('sessions:branchFromTurn'[\s\S]*?\n  \);/)?.[0] ?? '';
     const reviseBeforeHandler = main.match(/ipcMain\.handle\('sessions:reviseBeforeTurn'[\s\S]*?\n  \);/)?.[0] ?? '';
 
@@ -279,17 +288,18 @@ describe('permission response IPC boundary', () => {
     assert.match(stopHandler, /emitSessionsChanged\('turn-status-change',\s*sessionId\)/);
     assert.match(stopHandler, /emitSessionsChanged\('message-appended',\s*sessionId\)/);
     assert.match(sendHandler, /normalizeSessionSendCommand\(command\)/);
+    assert.match(sendHandler, /ensureSessionCanSend/);
     assert.doesNotMatch(sendHandler, /command\.text/);
     assert.doesNotMatch(sendHandler, /command\.attachments/);
   });
 
-  it('renderer stop() and respondToPermission() surface IPC failures only for the source session', async () => {
+  it('renderer stop() and respondToSandboxBoundary() surface IPC failures only for the source session', async () => {
     // The Composer wires onStop via both the button onClick and the
     // Escape key handler, neither of which awaits the returned
     // promise. If stop() lets the IPC reject without try/catch the
     // failure dies as UnhandledPromiseRejection and the user sees
     // nothing while the model keeps streaming. Same applies to
-    // respondToPermission().
+    // respondToSandboxBoundary().
     const renderer = await readRendererShellSources([
       'app-shell.tsx',
       'app-shell-stop-action.ts',
@@ -317,14 +327,14 @@ describe('permission response IPC boundary', () => {
       'stop failure feedback must not expose raw IPC/provider/storage details',
     );
     assert.match(stop[0], /finally \{[\s\S]*?clearPendingSessionAction\(sessionId, stopPendingRef, setStopPendingBySession\);[\s\S]*?\}/);
-    const respond = renderer.match(/async function respondToPermission\([\s\S]*?\n  \}/);
-    assert.ok(respond, 'respondToPermission() must exist');
+    const respond = renderer.match(/async function respondToSandboxBoundary\([\s\S]*?\n  \}/);
+    assert.ok(respond, 'respondToSandboxBoundary() must exist');
     assert.match(respond[0], /const sessionId = activeIdRef\.current;/);
     assert.match(respond[0], /if \(!sessionId\) return;/);
-    assert.match(respond[0], /try\s*\{[\s\S]*?await window\.maka\.sessions\.respondToPermission\(sessionId, response\);/);
+    assert.match(respond[0], /try\s*\{[\s\S]*?await window\.maka\.sessions\.respondToSandboxBoundary\(sessionId, response\);/);
     assert.doesNotMatch(
       respond[0],
-      /respondToPermission\(activeId, response\)/,
+      /respondToSandboxBoundary\(activeId, response\)/,
       'permission response IPC must use the captured source session, not render-time activeId',
     );
     assert.match(
@@ -352,6 +362,18 @@ describe('permission response IPC boundary', () => {
     assert.match(respond, /catch \(error\)[\s\S]*activeIdRef\.current !== sessionId\) return/);
   });
 
+  it('renderer dequeues a boundary prompt only after main accepts its decision', async () => {
+    const renderer = await readRendererShellSource('app-shell-chat-actions.ts');
+    const respond =
+      renderer.match(/async function respondToSandboxBoundary\([\s\S]*?\n  \}/)?.[0] ?? '';
+
+    assert.match(
+      respond,
+      /await window\.maka\.sessions\.respondToSandboxBoundary\(sessionId, response\);[\s\S]*dequeueInteractionByRequestId\(current, sessionId, response\.requestId\)/,
+    );
+    assert.match(respond, /catch \(error\)[\s\S]*activeIdRef\.current !== sessionId\) return/);
+  });
+
   it('renderer lets either interaction type take over the mounted composer slot', async () => {
     const shell = await readRendererShellSource('app-shell.tsx');
     const composerRegion = await readRendererShellSource('chat-composer-region.tsx');
@@ -360,53 +382,101 @@ describe('permission response IPC boundary', () => {
     assert.match(composerRegion, /hidden=\{[^}]*Boolean\(activeInteraction\)[^}]*\}/);
   });
 
-  it('renderer clears the permission prompt when a session completes (PR-PERMISSION-UI-CLEANUP-0)', async () => {
-    // Without this, a session that finishes for a reason other than
-    // permission_handoff would leave a stranded permission entry in
+  it('renderer reload rehydrates only main-owned live sandbox boundary requests', async () => {
+    const shell = await readRendererShellSource('app-shell.tsx');
+    assert.match(
+      shell,
+      /listActiveSandboxBoundaryRequests\(activeId\)[\s\S]*reconcileSandboxBoundaryInteractions\(current, activeId, requests\)/,
+    );
+    assert.match(shell, /sandboxBoundaryInteractionEpochRef[\s\S]*hydrationEpoch/);
+    assert.doesNotMatch(
+      shell,
+      /listPendingSandboxBoundaryRequests/,
+      'the renderer must not turn ownerless persisted rows into actionable prompts',
+    );
+  });
+
+  it('retires an answered e2e-fixture boundary request through the one fixture-state owner', async () => {
+    const sessionsIpc = await readSessionsIpcSource();
+    const respondHandler =
+      sessionsIpc.match(/ipcMain\.handle\('sessions:respondToSandboxBoundary'[\s\S]*?\n  \}\);/)?.[0] ??
+      '';
+
+    // The fixture request is rebuilt from its scenario on every read, so unless
+    // the answer is remembered the prompt returns and retakes the composer
+    // slot. It must be remembered at the fixture-state owner, not next to one
+    // of its two exits: the sessions IPC serves the active-request list, and
+    // `e2eFixture:getState` hands the renderer a state it seeds its interaction
+    // queue from directly, bypassing that list entirely.
+    assert.match(respondHandler, /retireE2eFixtureSandboxBoundaryRequest\(normalized\.requestId\)/);
+    assert.doesNotMatch(
+      sessionsIpc,
+      /answeredFixtureSandboxBoundaryRequests/,
+      'retirement must not live in a side table only the sessions IPC can see',
+    );
+
+    // Allow retires only after the grant lands, matching the runtime, which
+    // drops an active request on the acknowledged decision rather than the
+    // received one. Deny has nothing to write, so it retires straight away.
+    assert.match(
+      respondHandler,
+      /await applyFixtureSandboxBoundaryExpansion\([\s\S]*?\)\;\s*\}\s*retireE2eFixtureSandboxBoundaryRequest/,
+      'a failed expansion must leave the request answerable instead of hiding it',
+    );
+  });
+
+  it('command palette receives the active boundary-derived mode', async () => {
+    const shell = await readRendererShellSource('app-shell.tsx');
+    assert.match(
+      shell,
+      /const commandOptions:[\s\S]*?activeId,\s*activePermissionMode,\s*canSetPermissionMode: activeBoundarySurface\.localInteractionAvailable,\s*connections,/,
+    );
+    assert.match(shell, /deriveDesktopExecutionBoundarySurface\(/);
+    assert.doesNotMatch(shell, /activePermissionMode:\s*activeSessionForView\?\.permissionMode/);
+  });
+
+  it('keeps every requested scope inspectable without pushing decisions off-screen', async () => {
+    const styles = await readFile(
+      fileURLToPath(new URL('../../../src/renderer/styles/interaction-prompts.css', import.meta.url)),
+      'utf8',
+    );
+    const scopes = styles.match(/\.maka-sandbox-boundary-scopes\s*\{[\s\S]*?\}/)?.[0] ?? '';
+    const path = styles.match(/\.maka-sandbox-boundary-scopes code\s*\{[\s\S]*?\}/)?.[0] ?? '';
+
+    assert.match(scopes, /max-height:/);
+    assert.match(scopes, /overflow-y:\s*auto/);
+    assert.match(path, /overflow-wrap:\s*anywhere/);
+    assert.match(path, /white-space:\s*normal/);
+    assert.doesNotMatch(path, /text-overflow:\s*ellipsis/);
+  });
+
+  it('renderer clears the boundary prompt when a session completes', async () => {
+    // Without this, a completed session would leave a stranded boundary entry in
     // `interactionBySession[sessionId]`, keeping the prompt visible
     // and blocking the session UI until the user manually navigates
     // away. Mirrors the existing `abort` cleanup.
     const renderer = await readRendererShellSource('app-shell-session-events.ts');
     // Find the 'complete' case in handleSessionEvent — the body must
-    // clear the session's permission queue when stopReason is not
-    // permission_handoff.
+    // clear the session's interaction queue for every terminal completion.
     const completeCase = renderer.match(/case 'complete':[\s\S]*?break;/);
     assert.ok(completeCase, "'complete' case must exist in renderer event handler");
     assert.match(
       completeCase[0],
       /setInteractionBySession\(\(current\) => clearInteractions\(current, sessionId\)\)/,
-      "'complete' case must clear the session's permission queue — mirrors the abort handler",
+      "'complete' case must clear the session's interaction queue — mirrors the abort handler",
     );
   });
 
-  it('PermissionPrompt submit() awaits onRespond and resets pending in finally (PR-PERMISSION-UI-CLEANUP-0)', async () => {
-    // Critical interaction with PR-STOP-ERROR-SURFACE-0: the parent
-    // respondToPermission now swallows IPC errors via toast. If
-    // submit() doesn't reset pending on resolve OR catch, the
-    // prompt buttons lock up forever after a failed IPC.
-    const componentsPath = fileURLToPath(new URL('../../../../../packages/ui/src/permission-dialog.tsx', import.meta.url));
-    const components = await readFile(componentsPath, 'utf8');
-    const submit = components.match(/async function submit\(decision:[\s\S]*?\n  \}/);
-    assert.ok(submit, 'PermissionPrompt submit() must be async');
-    assert.match(components, /const permissionMountedRef = useMountedRef\(\);/);
-    assert.match(components, /const activePermissionRequestIdRef = useRef\(props\.request\.requestId\);/);
-    assert.match(components, /activePermissionRequestIdRef\.current = props\.request\.requestId;/);
-    assert.match(submit[0], /const requestId = props\.request\.requestId;/);
-    assert.match(submit[0], /await props\.onRespond\(/);
-    assert.match(
-      submit[0],
-      /\}\s*finally\s*\{[\s\S]*?if \(activePermissionRequestIdRef\.current === requestId\) \{[\s\S]*?responsePendingRef\.current\s*=\s*false[\s\S]*?if \(permissionMountedRef\.current\) setResponsePending\(false\)/,
-    );
-  });
-
-  it('toast items carry role="alert" so screen readers announce them (PR-PERMISSION-UI-CLEANUP-0)', async () => {
+  it('error toasts delegate assertive announcement semantics to Astryx', async () => {
     const toastPath = fileURLToPath(new URL('../../../../../packages/ui/src/toast.tsx', import.meta.url));
     const toast = await readFile(toastPath, 'utf8');
     assert.match(
       toast,
-      /<li[^>]*role="alert"/,
-      'each toast <li> must declare role="alert" — the parent aria-live region alone is unreliable on macOS VoiceOver / NVDA',
+      /type: input\.variant === 'error' \? 'error' : 'info'/,
+      'error notifications must select Astryx Toast error semantics (role=alert/assertive)',
     );
+    assert.match(toast, /useToast as useAstryxToast/);
+    assert.doesNotMatch(toast, /role="alert"|aria-live=/, 'Maka must not duplicate Astryx Toast announcement semantics');
   });
 
   it('refreshes active messages when a sessions:changed message-appended event arrives', async () => {
@@ -609,7 +679,7 @@ describe('permission response IPC boundary', () => {
       'app-shell.tsx',
     ]);
     const sendBlock = renderer.match(
-      /async function send\([\s\S]*?\n  async function respondToPermission/,
+      /async function send\([\s\S]*?\n  async function respondToSandboxBoundary/,
     )?.[0] ?? '';
     const newSessionBranch = sendBlock.match(/if \(!initialSessionId\) \{[\s\S]*?return true;/)?.[0] ?? '';
     const existingSessionBranch = sendBlock.match(/const sessionId = initialSessionId;[\s\S]*?return true;/)?.[0] ?? '';

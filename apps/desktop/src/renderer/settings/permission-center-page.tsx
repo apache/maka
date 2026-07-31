@@ -51,9 +51,6 @@ const OS_PERMISSION_ICONS: Record<OsPermissionId, ComponentType<LucideProps>> = 
   automation: MousePointer2,
 };
 
-const OFFICECLI_INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash';
-const OFFICECLI_RELEASES_URL = 'https://github.com/iOfficeAI/OfficeCLI/releases';
-
 export function PermissionCenterPage() {
   const locale = useUiLocale();
   const copy = getPermissionCenterCopy(locale);
@@ -92,6 +89,20 @@ export function PermissionCenterPage() {
     };
   }, [locale, refreshTick]);
 
+  useEffect(() => {
+    const refreshAfterSystemSettings = () => {
+      if (document.visibilityState === 'visible') {
+        setRefreshTick((tick) => tick + 1);
+      }
+    };
+    window.addEventListener('focus', refreshAfterSystemSettings);
+    document.addEventListener('visibilitychange', refreshAfterSystemSettings);
+    return () => {
+      window.removeEventListener('focus', refreshAfterSystemSettings);
+      document.removeEventListener('visibilitychange', refreshAfterSystemSettings);
+    };
+  }, []);
+
   async function runPermissionAction(
     permId: OsPermissionId,
     kind: 'request' | 'openSettings' | 'dragGrant',
@@ -107,9 +118,12 @@ export function PermissionCenterPage() {
             ? await window.maka.permissions.startDragOnboarding(permId)
             : await window.maka.permissions.openSystemSettings(permId);
       if (result.ok) {
-        // Refresh snapshot so the user sees the new state when they
-        // return from System Settings.
-        if (mountedRef.current) setRefreshTick((tick) => tick + 1);
+        // A direct request resolves after the user has answered, so refresh
+        // now. Deep links and the drag guide resolve as soon as System
+        // Settings opens; those refresh when Maka regains focus instead.
+        if (kind === 'request' && mountedRef.current) {
+          setRefreshTick((tick) => tick + 1);
+        }
       } else if (mountedRef.current) {
         toast.error(copy.actionFailed, permissionActionFailureCopy(result.reason, result.message, copy));
       }
@@ -135,9 +149,7 @@ export function PermissionCenterPage() {
         <div className="settingsPermissionError" role="alert">
           <strong>{copy.readFailed}</strong>
           <small>{error ?? copy.noData}</small>
-          <Button type="button" onClick={() => setRefreshTick((tick) => tick + 1)}>
-            {copy.readAgain}
-          </Button>
+          <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
         </div>
       </div>
     );
@@ -162,13 +174,11 @@ export function PermissionCenterPage() {
               {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
-            >
-              {copy.detectAgain}
-            </Button>
+              label={copy.detectAgain}
+            />
           </>
         }
       />
@@ -193,7 +203,15 @@ export function PermissionCenterPage() {
               copy={copy}
               locale={locale}
               busy={pendingPermAction !== null}
-              pendingKey={pendingPermAction === `${id}:request` ? 'request' : pendingPermAction === `${id}:openSettings` ? 'openSettings' : null}
+              pendingKey={
+                pendingPermAction === `${id}:request`
+                  ? 'request'
+                  : pendingPermAction === `${id}:openSettings`
+                    ? 'openSettings'
+                    : pendingPermAction === `${id}:dragGrant`
+                      ? 'dragGrant'
+                      : null
+              }
               onRequest={() => void runPermissionAction(id, 'request')}
               onOpenSettings={() => void runPermissionAction(id, 'openSettings')}
               onDragGrant={() => void runPermissionAction(id, 'dragGrant')}
@@ -210,14 +228,12 @@ export function PermissionCenterPage() {
           subtitle={copy.capabilitiesHelp}
           action={
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setDiagnosticsOpen((open) => !open)}
               aria-expanded={diagnosticsOpen}
-            >
-              {diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
-            </Button>
+              label={diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
+            />
           }
         />
         <ul className="settingsCapabilityList" aria-label={copy.capabilityListAria} data-diagnostics-open={diagnosticsOpen ? 'true' : undefined}>
@@ -288,6 +304,12 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
       return copy.actionFailures.unsupported_platform;
     case 'unsupported_permission':
       return copy.actionFailures.unsupported_permission;
+    case 'denied':
+      return copy.actionFailures.denied;
+    case 'already_open':
+      return copy.actionFailures.already_open;
+    case 'open_settings_failed':
+      return copy.actionFailures.open_settings_failed;
     case 'failed':
       return message ?? copy.actionFailures.failed;
     default:
@@ -298,38 +320,12 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
 function CapabilityRow(props: { capability: CapabilitySnapshot; copy: PermissionCenterCopy; locale: UiLocale }) {
   const { capability } = props;
   const { copy, locale } = props;
-  const toast = useToast();
-  const [copyingOfficeCliInstall, setCopyingOfficeCliInstall] = useState(false);
-  const copyOfficeCliInstallGuard = useActionGuard<'copy'>();
-  const capabilityRowMountedRef = useMountedRef();
   const readinessCopy = copy.readiness[capability.readiness];
   const capabilityLabel = localizedCapabilityLabel(capability, locale);
   const featureReason = localizedSnapshotText(capability.feature.reason, locale);
   const configurationReason = localizedSnapshotText(capability.configuration.reason, locale);
   const runtimeReason = localizedSnapshotText(capability.runtimeProbe.reason, locale);
   const guidance = localizedCapabilityGuidance(capability, locale, copy);
-  const showOfficeCliInstallActions =
-    capability.id === 'office_documents' && capability.runtimeProbe.state !== 'healthy';
-
-  async function copyOfficeCliInstallCommand() {
-    if (!copyOfficeCliInstallGuard.begin('copy')) return;
-    setCopyingOfficeCliInstall(true);
-    try {
-      await navigator.clipboard.writeText(OFFICECLI_INSTALL_COMMAND);
-      if (capabilityRowMountedRef.current) {
-        toast.success(copy.installCopied, copy.installCopiedDetail);
-      }
-    } catch {
-      if (capabilityRowMountedRef.current) {
-        toast.error(copy.copyFailed, copy.copyFailedDetail);
-      }
-    } finally {
-      copyOfficeCliInstallGuard.finish();
-      if (capabilityRowMountedRef.current) {
-        setCopyingOfficeCliInstall(false);
-      }
-    }
-  }
 
   return (
     <li className="settingsCapabilityRow" data-readiness={capability.readiness}>
@@ -399,24 +395,6 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
               <li key={`${capability.id}-guidance-${index}`}>{item}</li>
             ))}
           </ul>
-          {showOfficeCliInstallActions && (
-            <div className="settingsCapabilityGuidanceActions" role="group" aria-label={copy.officeAria}>
-              <code>{OFFICECLI_INSTALL_COMMAND}</code>
-              <div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  disabled={copyingOfficeCliInstall}
-                  onClick={() => void copyOfficeCliInstallCommand()}
-                >
-                  {copyingOfficeCliInstall ? copy.copying : copy.copyInstall}
-                </Button>
-                <a href={OFFICECLI_RELEASES_URL} target="_blank" rel="noreferrer noopener" aria-label={copy.openDownload}>
-                  {copy.openDownload}
-                </a>
-              </div>
-            </div>
-          )}
         </div>
       )}
       {/*
@@ -479,7 +457,7 @@ function OsPermissionRow(props: {
       <div className="settingsOsPermissionBody">
         <div className="settingsOsPermissionHeading">
           <strong>{label}</strong>
-          <Badge variant={statusBadgeVariant(stateCopy.tone)}>{stateCopy.label}</Badge>
+          <Badge variant={statusBadgeVariant(stateCopy.tone)} label={stateCopy.label} />
         </div>
         <small className="settingsOsPermissionPurpose">{purpose}</small>
         {impact ? (
@@ -507,40 +485,36 @@ function OsPermissionRow(props: {
             请求授权 without hiding that it's a button. */}
         {showOpenSettings && (
           <Button
-            type="button"
-            variant={showRequest || showDragGrant ? 'secondary' : 'default'}
+            variant={showRequest || showDragGrant ? 'secondary' : 'primary'}
             size="sm"
             onClick={props.onOpenSettings}
-            disabled={busy}
+            isDisabled={busy}
             aria-busy={pendingKey === 'openSettings' ? 'true' : undefined}
-          >
-            {pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
-          </Button>
+            label={pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
+          />
         )}
         {/* The guided flow is the primary action where it exists: it does
             what 前往系统设置 does and then stays to help. The plain link
             keeps its place beside it so the manual route is never removed. */}
         {showDragGrant && (
           <Button
-            type="button"
+            variant="primary"
             size="sm"
             onClick={props.onDragGrant}
-            disabled={busy}
+            isDisabled={busy}
             aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
-          >
-            {pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
-          </Button>
+            label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
+          />
         )}
         {showRequest && (
           <Button
-            type="button"
+            variant="primary"
             size="sm"
             onClick={props.onRequest}
-            disabled={busy}
+            isDisabled={busy}
             aria-busy={pendingKey === 'request' ? 'true' : undefined}
-          >
-            {pendingKey === 'request' ? props.copy.requesting : props.copy.request}
-          </Button>
+            label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
+          />
         )}
       </div>
     </li>
@@ -552,7 +526,6 @@ function prettyCapabilityId(id: CapabilityId): string {
 }
 
 function localizedCapabilityLabel(capability: CapabilitySnapshot, locale: UiLocale): string {
-  if (locale === 'en' && capability.id === 'office_documents') return 'Office documents';
   return capability.label;
 }
 
@@ -566,7 +539,6 @@ function localizedCapabilityGuidance(
   locale: UiLocale,
   copy: PermissionCenterCopy,
 ): readonly string[] {
-  if (locale === 'en' && capability.id === 'office_documents') return copy.officeGuidance;
   return capability.guidance.filter((item) => locale === 'zh' || !/[\u3400-\u9fff]/u.test(item));
 }
 

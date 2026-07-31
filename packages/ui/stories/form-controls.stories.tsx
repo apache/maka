@@ -3,8 +3,8 @@ import {
   FieldDescription,
   FieldRoot,
   Label,
-  Separator,
 } from '../src/ui.js';
+import { Divider } from '../src/index.js';
 import { Input } from '../src/primitives/input.js';
 import { Textarea } from '../src/primitives/textarea.js';
 
@@ -81,22 +81,25 @@ export const Field: Story = {
   ),
 };
 
-export const SeparatorStates: Story = {
+export const DividerStates: Story = {
   render: () => (
     <div style={{ display: 'grid', gap: 20, maxWidth: 440 }}>
       <Section title="横向排列">
         <div style={{ display: 'grid', gap: 8 }}>
           <span style={{ fontSize: 13 }}>上方</span>
-          <Separator />
+          <Divider />
           <span style={{ fontSize: 13 }}>下方</span>
         </div>
       </Section>
       <Section title="纵向排列">
         <div style={{ alignItems: 'center', display: 'flex', gap: 12, height: 48 }}>
           <span style={{ fontSize: 13 }}>左</span>
-          <Separator orientation="vertical" />
+          <Divider orientation="vertical" />
           <span style={{ fontSize: 13 }}>右</span>
         </div>
+      </Section>
+      <Section title="带标签">
+        <Divider label="更多设置" />
       </Section>
     </div>
   ),

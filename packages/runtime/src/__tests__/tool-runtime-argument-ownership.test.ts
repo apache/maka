@@ -1,8 +1,8 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
+import type { LlmConnection, SessionHeader } from '@maka/core';
 
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 interface InvocationArgs {
@@ -22,16 +22,7 @@ describe('ToolRuntime argument ownership', () => {
     };
     const providerArgs = structuredClone(initialArgs);
     const observed = new Map<string, InvocationArgs>();
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-    permissionEngine.beginTurn('turn-1');
-
-    let resolvePermission!: (event: Extract<SessionEvent, { type: 'permission_request' }>) => void;
-    const permissionRequested = new Promise<Extract<SessionEvent, { type: 'permission_request' }>>(
-      (resolve) => {
-        resolvePermission = resolve;
-      },
-    );
-    const runtime = new ToolRuntime({
+    const runtime = createTestToolRuntime({
       sessionId: 'session-1',
       header: testHeader(),
       connection: testConnection(),
@@ -40,7 +31,6 @@ describe('ToolRuntime argument ownership', () => {
         if (message.type !== 'tool_call') return;
         observeAndMutate(observed, 'storage', message.args);
       },
-      permissionEngine,
       newId: nextId(),
       now: () => 1,
       getPermissionPauseTarget: () => null,
@@ -52,20 +42,12 @@ describe('ToolRuntime argument ownership', () => {
       name: 'Write',
       description: 'Write a file',
       parameters: {},
-      permissionArgs: (args) => {
-        observeAndMutate(observed, 'permissionProjection', args);
-        return structuredClone(initialArgs);
-      },
-      sandbox: ({ args }) => {
-        observeAndMutate(observed, 'sandbox', args);
-        return { platformSandboxAvailable: false };
-      },
       impl: async (args) => {
         observeAndMutate(observed, 'implementation', args);
         return { ok: true, path: '/tmp/maka/notes.md' };
       },
     };
-    const pending = runtime.settleToolCall({
+    await runtime.settleToolCall({
       tool,
       turnId: 'turn-1',
       toolCallId: 'tool-1',
@@ -75,40 +57,18 @@ describe('ToolRuntime argument ownership', () => {
         push: (event) => {
           if (event.type === 'tool_start') {
             observeAndMutate(observed, 'event', event.args);
-          } else if (event.type === 'permission_request') {
-            observed.set('permission', structuredClone(event.args) as InvocationArgs);
-            resolvePermission(event);
           }
         },
         pushAndWaitUntilConsumed: async (event) => {
           if (event.type === 'tool_start') {
             observeAndMutate(observed, 'event', event.args);
-          } else if (event.type === 'permission_request') {
-            observed.set('permission', structuredClone(event.args) as InvocationArgs);
-            resolvePermission(event);
           }
         },
       },
     });
     mutateArgs(providerArgs, 'provider');
-    const request = await permissionRequested;
-    permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'allow',
-    });
 
-    await pending;
-    permissionEngine.endTurn('turn-1');
-
-    const owners = [
-      'storage',
-      'event',
-      'permissionProjection',
-      'sandbox',
-      'permission',
-      'implementation',
-      'artifact',
-    ];
+    const owners = ['storage', 'event', 'implementation', 'artifact'];
     for (const owner of owners) {
       assert.deepEqual(observed.get(owner), initialArgs);
     }

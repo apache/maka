@@ -44,6 +44,7 @@ export interface AppShellCommandListOptions {
   uiLocale: UiLocale;
   activeId: string | undefined;
   activePermissionMode: PermissionMode | undefined;
+  canSetPermissionMode: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
   dailyReviewBridge: DailyReviewBridge;
@@ -243,7 +244,9 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onSetPermissionMode: (mode) => optionsRef.current.setPermissionMode(mode),
+    onSetPermissionMode: options.canSetPermissionMode
+      ? (mode) => optionsRef.current.setPermissionMode(mode)
+      : undefined,
     activePermissionMode: options.activePermissionMode,
     onCopyTodayDailyReview: async () => {
       const { dailyReviewBridge, toastApi } = optionsRef.current;

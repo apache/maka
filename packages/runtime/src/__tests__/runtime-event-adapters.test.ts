@@ -325,6 +325,47 @@ describe('storedMessageToRuntimeEvents', () => {
     expect(out[1]?.refs?.storedMessageId).toBe('a2');
   });
 
+  test('assistant with multiple reasoning parts → one replay event per part', () => {
+    const out = storedMessageToRuntimeEvents(
+      assistant('a-parts', 'answer', {
+        text: 'firstsecond',
+        parts: [
+          {
+            text: 'first',
+            providerOptions: {
+              openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+            },
+          },
+          {
+            text: 'second',
+            providerOptions: {
+              openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+            },
+          },
+        ],
+      }),
+      ctx,
+    );
+
+    expect(out.map((event) => event.content)).toEqual([
+      { kind: 'text', text: 'answer' },
+      {
+        kind: 'thinking',
+        text: 'first',
+        providerOptions: {
+          openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+        },
+      },
+      {
+        kind: 'thinking',
+        text: 'second',
+        providerOptions: {
+          openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+        },
+      },
+    ]);
+  });
+
   test('user message → single event (same as singular)', () => {
     const out = storedMessageToRuntimeEvents(user('u', 'hello'), ctx);
     expect(out).toHaveLength(1);
@@ -976,7 +1017,7 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     ]);
   });
 
-  test('runtime replay plan normalizes an exact legacy terminal result', () => {
+  test('runtime replay plan normalizes a legacy Bash result without changing durable input', () => {
     const events: RuntimeEvent[] = [
       ev({
         role: 'model',
@@ -1017,7 +1058,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(result?.kind === 'tool_result' ? result.output : undefined).toEqual({
       kind: 'terminal',
       cwd: '/tmp/work',
-      cmd: 'printf ok',
       status: 'completed',
       exitCode: 0,
       output: {
@@ -1029,6 +1069,11 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
         redacted: false,
       },
     });
+    expect(
+      events[1]?.content?.kind === 'function_response'
+        ? (events[1].content.result as { cmd?: unknown }).cmd
+        : undefined,
+    ).toBe('printf ok');
   });
 
   test('runtime replay plan rejects a mixed legacy/current shell result', () => {

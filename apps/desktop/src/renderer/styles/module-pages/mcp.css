@@ -456,11 +456,6 @@
   text-align: center;
 }
 
-.maka-mcp-editor-dialog {
-  width: min(92vw, var(--maka-chat-measure));
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
 .maka-mcp-editor-mode {
   display: grid;
   grid-template-columns: 1fr 1fr;

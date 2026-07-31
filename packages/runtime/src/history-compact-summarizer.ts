@@ -1,8 +1,18 @@
-import type { ModelMessage } from './model-protocol.js';
+import { rawFinishReasonString, type ModelMessage } from './model-protocol.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
 import { toolResultOutput } from './tool-result-output.js';
-import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
+import type {
+  HistoryCompactSummaryInput,
+  LlmTelemetryRecorder,
+} from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
+import { normalizeAiSdkUsage, type AiSdkUsageLike } from './model-adapter.js';
+import {
+  ProviderRequestTracker,
+  type ProviderGenerateResult,
+  type ProviderRequestTrackerInput,
+} from './provider-request-telemetry.js';
+import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 
 export { HistoryCompactSummarizerError } from './history-compact-error.js';
 
@@ -17,7 +27,13 @@ export interface AiSdkGenerateTextOptions {
 
 export type AiSdkGenerateTextLike = (
   options: AiSdkGenerateTextOptions,
-) => Promise<{ text: string; finishReason?: string }>;
+) => Promise<{ text: string; finishReason?: unknown; usage?: AiSdkUsageLike }>;
+
+interface ProviderMiddlewareGenerateInput {
+  doGenerate: () => PromiseLike<ProviderGenerateResult>;
+  params: Record<string, unknown> & { abortSignal?: AbortSignal };
+  model: { provider: string; modelId: string };
+}
 
 export interface BuildLlmHistorySummarizerOptions {
   /** Resolve the AI SDK model used for summarization. Reuses the session model. */
@@ -26,6 +42,17 @@ export interface BuildLlmHistorySummarizerOptions {
   providerOptions?: Record<string, unknown>;
   /** Injectable `generateText` for tests; defaults to the real AI SDK export. */
   generateText?: AiSdkGenerateTextLike;
+  /** Physical provider-call capture and attempt tracking for generated summaries. */
+  providerRequestTracking?: Omit<ProviderRequestTrackerInput, 'traceId' | 'turnId'>;
+  /** Usage attribution for the auxiliary history-compaction call. */
+  telemetry?: {
+    connectionSlug: string;
+    providerId: string;
+    modelId: string;
+    newId: () => string;
+    now: () => number;
+    recordLlmCall: LlmTelemetryRecorder;
+  };
 }
 
 // Conversation-summarization prompt (sectioned, modelled on pi/opencode):
@@ -79,9 +106,38 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           ],
         });
       }
-      const generateText = options.generateText ?? (await loadAiSdkGenerateText());
+      const providerRequestTracker = options.providerRequestTracking
+        ? new ProviderRequestTracker({
+            ...options.providerRequestTracking,
+            traceId: options.providerRequestTracking.newId(),
+            turnId: input.turnId,
+          })
+        : undefined;
+      const ai =
+        options.generateText && !providerRequestTracker ? undefined : await loadAiSdkTextModule();
+      const generateText = options.generateText ?? ai!.generateText;
+      const model = providerRequestTracker
+        ? ai!.wrapLanguageModel({
+            model: options.resolveModel(),
+            middleware: {
+              wrapGenerate: async ({
+                doGenerate,
+                params,
+                model: providerModel,
+              }: ProviderMiddlewareGenerateInput) =>
+                await providerRequestTracker.trackGenerate({
+                  providerId: providerModel.provider,
+                  modelId: providerModel.modelId,
+                  params,
+                  abortSignal: input.abortSignal,
+                  doGenerate,
+                }),
+            },
+          })
+        : options.resolveModel();
+      const startedAt = options.telemetry?.now();
       const result = await generateText({
-        model: options.resolveModel(),
+        model,
         instructions: SUMMARIZATION_SYSTEM_PROMPT,
         messages,
         ...(options.providerOptions !== undefined
@@ -89,7 +145,10 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
           : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
-      if (result.finishReason === 'length') {
+      if (options.telemetry && startedAt !== undefined) {
+        recordHistoryCompactCall(options.telemetry, input, startedAt, result);
+      }
+      if (rawFinishReasonString(result.finishReason) === 'length') {
         throw new HistoryCompactSummarizerError('output_length');
       }
       return result.text;
@@ -100,14 +159,46 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
   };
 }
 
-async function loadAiSdkGenerateText(): Promise<AiSdkGenerateTextLike> {
+function recordHistoryCompactCall(
+  telemetry: NonNullable<BuildLlmHistorySummarizerOptions['telemetry']>,
+  input: HistoryCompactSummaryInput,
+  startedAt: number,
+  result: Awaited<ReturnType<AiSdkGenerateTextLike>>,
+): void {
+  const usage = normalizeAiSdkUsage(result.usage, { rawFinishReason: result.finishReason });
+  if (!usage) return;
+  const completedAt = telemetry.now();
+  try {
+    telemetry.recordLlmCall({
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      callKind: 'history_compact',
+      callId: `history_compact_${input.turnId}_${telemetry.newId()}`,
+      connectionSlug: telemetry.connectionSlug,
+      providerId: telemetry.providerId,
+      modelId: telemetry.modelId,
+      ...llmCallUsageFields(usage),
+      latencyMs: Math.max(0, completedAt - startedAt),
+      status: 'success',
+      startedAt,
+    });
+  } catch {
+    // Usage telemetry is diagnostic. The summary remains authoritative.
+  }
+}
+
+interface AiSdkTextModule {
+  generateText: AiSdkGenerateTextLike;
+  wrapLanguageModel(input: Record<string, unknown>): unknown;
+}
+
+async function loadAiSdkTextModule(): Promise<AiSdkTextModule> {
   const ai = await import('ai').catch((err) => {
     throw new Error(
       `Failed to load 'ai' package for history summarization. Run \`npm install ai\`. Inner: ${(err as Error).message}`,
     );
   });
-  const { generateText } = ai as { generateText: AiSdkGenerateTextLike };
-  return generateText;
+  return ai as unknown as AiSdkTextModule;
 }
 
 type ReplayPlanItems = ReturnType<typeof buildRuntimeEventModelReplayPlan>['items'];

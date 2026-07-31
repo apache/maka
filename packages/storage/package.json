@@ -12,9 +12,11 @@
     "./execution-stores": "./dist/execution-stores.js",
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",
     "./interaction-store": "./dist/interaction-store.js",
+    "./memory-bundle-store": "./dist/memory-bundle-store.js",
     "./root-authority": "./dist/root-authority.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
     "./task-ledger-authority": "./dist/task-ledger-authority.js",
+    "./usage-stores": "./dist/usage-stores.js",
     "./workspace-identity": "./dist/workspace-identity.js",
     "./write-queue": "./dist/write-queue.js"
   },

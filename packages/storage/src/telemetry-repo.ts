@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   PricingConfig,
@@ -7,210 +8,389 @@ import type {
   UsageLogRow,
   UsageQuery,
   UsageSummaryV2,
-  LlmCallRecord,
-  ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
+import { throwDeduplicatedFailures } from './failure-utils.js';
+import { createPricingStore, type PricingStore } from './pricing-store.js';
+import { syncDirectory } from './stable-storage.js';
+import {
+  decodeTelemetryFile,
+  decodePersistedLlmCallRecord,
+  decodePersistedToolInvocationRecord,
+  emptyTelemetryFile,
+  type PersistedLlmCallRecord,
+  type PersistedToolInvocationRecord,
+  type TelemetryFile,
+} from './telemetry-file-schema.js';
 
-type PersistedLlmCallRecord = LlmCallRecord & {
-  id: string;
-  cacheHitInputTokens: number;
-  cacheMissInputTokens: number;
-  cachedInputTokens: number;
-  cacheWriteInputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-  costUsd: number;
-  date: string;
-  ts: number;
-};
+export type {
+  PersistedLlmCallRecord,
+  PersistedToolInvocationRecord,
+} from './telemetry-file-schema.js';
 
-type PersistedToolInvocationRecord = ToolInvocationRecord & {
-  id: string;
-  argsSummary?: string;
-  bytesIn: number;
-  bytesOut: number;
-  date: string;
-  ts: number;
-};
-
-interface TelemetryFile {
-  usageRecords: PersistedLlmCallRecord[];
-  toolInvocations: PersistedToolInvocationRecord[];
-  pricingOverrides: PricingConfig[];
+export interface ToolUsageQuery {
+  readonly range: UsageQuery['range'];
+  readonly toolName?: string;
+  readonly status?: UsageQuery['status'];
 }
 
 export interface TelemetryRepo {
-  insertLlmCall(record: PersistedLlmCallRecord): void;
-  insertToolInvocation(record: PersistedToolInvocationRecord): void;
+  insertLlmCall(record: PersistedLlmCallRecord): Promise<void>;
+  insertToolInvocation(record: PersistedToolInvocationRecord): Promise<void>;
   summary(query: UsageQuery): UsageSummaryV2;
   buckets(query: UsageQuery, groupBy: UsageGroupBy): UsageBucket[];
   logs(query: UsageQuery, offset?: number, limit?: number): { rows: UsageLogRow[]; total: number };
+  toolLogs(
+    query: ToolUsageQuery,
+    offset?: number,
+    limit?: number,
+  ): { rows: PersistedToolInvocationRecord[]; total: number };
   latestLlmRuntimeProbe(connectionSlug: string, modelId?: string): UsageLogRow | undefined;
   listPricingOverrides(): PricingConfig[];
   upsertPricing(pricing: PricingConfig): Promise<void>;
   deletePricing(modelKey: string): Promise<void>;
+  legacyPricingOverrides(): readonly unknown[];
+  publishCanonical(): Promise<void>;
   load(): Promise<void>;
+  flush(): Promise<void>;
+  close(): Promise<void>;
 }
 
-export function createTelemetryRepo(workspaceRoot: string): TelemetryRepo {
-  return new FileTelemetryRepo(workspaceRoot);
+export interface CreateTelemetryRepoOptions {
+  readonly createIfMissing?: boolean;
+  readonly managePricing?: boolean;
+}
+
+export class TelemetryRepoClosedError extends Error {
+  constructor() {
+    super('Telemetry repository is draining or closed');
+    this.name = 'TelemetryRepoClosedError';
+  }
+}
+
+export class TelemetryRepoNotLoadedError extends Error {
+  constructor() {
+    super('Telemetry repository has not been loaded');
+    this.name = 'TelemetryRepoNotLoadedError';
+  }
+}
+
+export class TelemetryQueryValidationError extends Error {
+  constructor(message: string) {
+    super(`Invalid telemetry query: ${message}`);
+    this.name = 'TelemetryQueryValidationError';
+  }
+}
+
+export class TelemetryRepoPublicationError extends Error {
+  readonly domain = 'telemetry_authority';
+
+  constructor(
+    readonly commitUnknown: boolean,
+    options: { cause: unknown },
+  ) {
+    super(
+      commitUnknown
+        ? 'Telemetry publication outcome is unknown; reopen before retrying'
+        : 'Unable to publish telemetry',
+      options,
+    );
+    this.name = 'TelemetryRepoPublicationError';
+  }
+}
+
+export function createTelemetryRepo(
+  workspaceRoot: string,
+  options: CreateTelemetryRepoOptions = {},
+): TelemetryRepo {
+  return new FileTelemetryRepo(
+    workspaceRoot,
+    options.createIfMissing ?? true,
+    options.managePricing ?? true,
+  );
 }
 
 class FileTelemetryRepo implements TelemetryRepo {
   private readonly path: string;
-  private file: TelemetryFile = emptyFile();
+  private file: TelemetryFile = emptyTelemetryFile();
+  private legacyPricing: readonly unknown[] = [];
+  private requiresCanonicalPublication = false;
+  private pricingStore: PricingStore | undefined;
   private loaded = false;
   private queue: Promise<void> = Promise.resolve();
+  private failure: TelemetryRepoPublicationError | undefined;
+  private state: 'open' | 'draining' | 'closed' = 'open';
+  private loadPromise: Promise<void> | undefined;
+  private closePromise: Promise<void> | undefined;
 
-  constructor(workspaceRoot: string) {
+  constructor(
+    workspaceRoot: string,
+    private readonly createIfMissing: boolean,
+    private readonly managePricing: boolean,
+  ) {
     this.path = join(workspaceRoot, 'telemetry.json');
   }
 
-  async load(): Promise<void> {
-    if (this.loaded) return;
+  load(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    this.assertOpen();
+    if (this.loadPromise) return this.loadPromise;
+    const operation = this.loadFromDisk();
+    this.loadPromise = operation;
+    void operation.catch(() => {
+      if (this.state === 'open' && this.loadPromise === operation) {
+        this.loadPromise = undefined;
+      }
+    });
+    return operation;
+  }
+
+  private async loadFromDisk(): Promise<void> {
+    let missing = false;
+    let file: TelemetryFile;
+    let legacyPricing: readonly unknown[];
+    let requiresCanonicalPublication: boolean;
+    let pricingStore: PricingStore | undefined;
     try {
-      const text = await readFile(this.path, 'utf8');
-      this.file = normalizeFile(JSON.parse(text));
+      const decoded = decodeTelemetryFile(JSON.parse(await readFile(this.path, 'utf8')));
+      file = decoded.file;
+      legacyPricing = decoded.legacyPricingOverrides;
+      requiresCanonicalPublication = decoded.requiresCanonicalPublication;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      this.file = emptyFile();
-      await this.write();
+      missing = true;
+      file = emptyTelemetryFile();
+      legacyPricing = [];
+      requiresCanonicalPublication = false;
     }
+
+    if (this.managePricing) {
+      pricingStore = createPricingStore(dirname(this.path), {
+        createIfMissing: this.createIfMissing,
+        initialOverrides: legacyPricing,
+      });
+      await pricingStore.load();
+    }
+    if (this.createIfMissing && (missing || (this.managePricing && requiresCanonicalPublication))) {
+      await this.publish(file);
+      requiresCanonicalPublication = false;
+    }
+
+    this.file = file;
+    this.legacyPricing = legacyPricing;
+    this.requiresCanonicalPublication = requiresCanonicalPublication;
+    this.pricingStore = pricingStore;
     this.loaded = true;
   }
 
-  insertLlmCall(record: PersistedLlmCallRecord): void {
-    this.file.usageRecords = upsertById(this.file.usageRecords, record);
-    void this.enqueueWrite();
+  insertLlmCall(record: PersistedLlmCallRecord): Promise<void> {
+    let admitted: PersistedLlmCallRecord;
+    try {
+      admitted = decodePersistedLlmCallRecord(record);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.enqueueMutation((file) => ({
+      ...file,
+      usageRecords: upsertById(file.usageRecords, admitted),
+    }));
   }
 
-  insertToolInvocation(record: PersistedToolInvocationRecord): void {
-    this.file.toolInvocations = upsertById(this.file.toolInvocations, record);
-    void this.enqueueWrite();
+  insertToolInvocation(record: PersistedToolInvocationRecord): Promise<void> {
+    let admitted: PersistedToolInvocationRecord;
+    try {
+      admitted = decodePersistedToolInvocationRecord(record);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.enqueueMutation((file) => ({
+      ...file,
+      toolInvocations: upsertById(file.toolInvocations, admitted),
+    }));
   }
 
   summary(query: UsageQuery): UsageSummaryV2 {
+    this.assertReady();
     const { from, to } = resolveRange(query.range);
     const rows = this.filteredUsageRows(query, from, to);
-    const input = sum(rows.map((row) => row.inputTokens));
-    const output = sum(rows.map((row) => row.outputTokens));
-    const cacheMiss = sum(rows.map((row) => row.cacheMissInputTokens));
-    const cacheRead = sum(rows.map((row) => row.cacheHitInputTokens));
-    const cacheWrite = sum(rows.map((row) => row.cacheWriteInputTokens));
-    const reasoning = sum(rows.map((row) => row.reasoningTokens));
-    return {
+    return detached({
       range: { from, to },
       totalRequests: rows.length,
       totalCostUsd: sum(rows.map((row) => row.costUsd)),
       totalTokens: {
-        input,
-        output,
-        cacheMiss,
-        cacheRead,
-        cacheWrite,
-        reasoning,
+        input: sum(rows.map((row) => row.inputTokens)),
+        output: sum(rows.map((row) => row.outputTokens)),
+        cacheMiss: sum(rows.map((row) => row.cacheMissInputTokens)),
+        cacheRead: sum(rows.map((row) => row.cacheHitInputTokens)),
+        cacheWrite: sum(rows.map((row) => row.cacheWriteInputTokens)),
+        reasoning: sum(rows.map((row) => row.reasoningTokens)),
         total: sum(rows.map((row) => row.totalTokens)),
       },
       cacheHitRequests: rows.filter((row) => row.cacheHitInputTokens > 0).length,
       cacheCreateRequests: rows.filter((row) => row.cacheWriteInputTokens > 0).length,
       errorRequests: rows.filter((row) => row.status === 'error').length,
-    };
+    });
   }
 
   buckets(query: UsageQuery, groupBy: UsageGroupBy): UsageBucket[] {
+    this.assertReady();
     const { from, to } = resolveRange(query.range);
-    if (groupBy === 'tool') return toolBuckets(this.filteredToolRows(query, from, to));
-    const rows = this.filteredUsageRows(query, from, to);
-    const groups = new Map<string, PersistedLlmCallRecord[]>();
-    for (const row of rows) {
-      const key = bucketKey(row, groupBy);
-      const list = groups.get(key) ?? [];
-      list.push(row);
-      groups.set(key, list);
+    if (groupBy === 'tool') {
+      return detached(toolBuckets(this.filteredToolRows(query, from, to)));
     }
-    return [...groups.entries()]
-      .map(([key, groupRows]) => usageBucket(key, groupRows))
-      .sort((a, b) => b.requests - a.requests);
+    const groups = new Map<string, PersistedLlmCallRecord[]>();
+    for (const row of this.filteredUsageRows(query, from, to)) {
+      const key = bucketKey(row, groupBy);
+      let group = groups.get(key);
+      if (!group) {
+        group = [];
+        groups.set(key, group);
+      }
+      group.push(row);
+    }
+    return detached(
+      [...groups.entries()]
+        .map(([key, rows]) => usageBucket(key, rows))
+        .sort((left, right) => right.requests - left.requests),
+    );
   }
 
   logs(query: UsageQuery, offset = 0, limit = 100): { rows: UsageLogRow[]; total: number } {
+    this.assertReady();
+    if (query.toolName !== undefined) {
+      throw new TelemetryQueryValidationError('toolName is not applicable to LLM logs');
+    }
     const { from, to } = resolveRange(query.range);
-    const rows = this.filteredUsageRows(query, from, to)
-      .sort((a, b) => b.ts - a.ts)
-      .map(
-        (row) =>
-          ({
-            id: row.id,
-            ts: row.ts,
-            ...(row.callKind ? { callKind: row.callKind } : {}),
-            ...(row.callId ? { callId: row.callId } : {}),
-            ...(row.connectionSlug ? { connectionSlug: row.connectionSlug } : {}),
-            providerId: row.providerId,
-            modelId: row.modelId,
-            inputTokens: row.inputTokens,
-            outputTokens: row.outputTokens,
-            cacheMissTokens: row.cacheMissInputTokens,
-            cacheReadTokens: row.cacheHitInputTokens,
-            cacheWriteTokens: row.cacheWriteInputTokens,
-            ...(row.cacheMissInputSource ? { cacheMissInputSource: row.cacheMissInputSource } : {}),
-            reasoningTokens: row.reasoningTokens,
-            totalTokens: row.totalTokens,
-            costUsd: row.costUsd,
-            latencyMs: row.latencyMs,
-            status: row.status,
-            ...(row.errorClass ? { errorClass: row.errorClass } : {}),
-            ...(row.sessionId ? { sessionId: row.sessionId } : {}),
-            ...(row.turnId ? { turnId: row.turnId } : {}),
-            ...(row.systemPromptHash ? { systemPromptHash: row.systemPromptHash } : {}),
-            ...(row.prefixHash ? { prefixHash: row.prefixHash } : {}),
-            ...(row.prefixChangeReason ? { prefixChangeReason: row.prefixChangeReason } : {}),
-            ...(row.requestShapeHash ? { requestShapeHash: row.requestShapeHash } : {}),
-            ...(row.requestShapeChangeReason
-              ? { requestShapeChangeReason: row.requestShapeChangeReason }
-              : {}),
-            ...(row.toolSchemaChangeReason
-              ? { toolSchemaChangeReason: row.toolSchemaChangeReason }
-              : {}),
-            ...(row.toolAvailability ? { toolAvailability: row.toolAvailability } : {}),
-            ...(row.promptSegments ? { promptSegments: row.promptSegments } : {}),
-            ...(row.contextBudget ? { contextBudget: row.contextBudget } : {}),
-          }) satisfies UsageLogRow,
-      );
-    return { rows: rows.slice(offset, offset + limit), total: rows.length };
+    const rows = this.filteredUsageRows(query, from, to).sort((left, right) => right.ts - left.ts);
+    const total = rows.length;
+    return detached({
+      rows: rows.slice(offset, offset + limit).map(toUsageLogRow),
+      total,
+    });
+  }
+
+  toolLogs(
+    query: ToolUsageQuery,
+    offset = 0,
+    limit = 100,
+  ): { rows: PersistedToolInvocationRecord[]; total: number } {
+    this.assertReady();
+    assertToolUsageQuery(query);
+    const { from, to } = resolveRange(query.range);
+    const rows = this.filteredToolRows(query, from, to).sort((left, right) => right.ts - left.ts);
+    return detached({ rows: rows.slice(offset, offset + limit), total: rows.length });
   }
 
   latestLlmRuntimeProbe(connectionSlug: string, modelId?: string): UsageLogRow | undefined {
-    return this.logs(
-      {
-        range: 'all',
-        connectionSlug,
-        ...(modelId ? { modelId } : {}),
-      },
-      0,
-      1,
-    ).rows[0];
+    return this.logs({ range: 'all', connectionSlug, ...(modelId ? { modelId } : {}) }, 0, 1)
+      .rows[0];
   }
 
   listPricingOverrides(): PricingConfig[] {
-    return [...this.file.pricingOverrides];
+    this.assertReady();
+    if (this.pricingStore)
+      return this.pricingStore.snapshot().overrides.map((item) => ({ ...item }));
+    return [];
   }
 
   async upsertPricing(pricing: PricingConfig): Promise<void> {
-    this.file.pricingOverrides = [
-      ...this.file.pricingOverrides.filter((item) => item.modelKey !== pricing.modelKey),
-      pricing,
-    ].sort((a, b) => a.modelKey.localeCompare(b.modelKey));
-    await this.enqueueWrite();
+    const store = this.requireManagedPricing();
+    const snapshot = store.snapshot();
+    await store.upsert(snapshot.revision, pricing);
   }
 
   async deletePricing(modelKey: string): Promise<void> {
-    this.file.pricingOverrides = this.file.pricingOverrides.filter(
-      (item) => item.modelKey !== modelKey,
-    );
-    await this.enqueueWrite();
+    const store = this.requireManagedPricing();
+    const snapshot = store.snapshot();
+    await store.delete(snapshot.revision, modelKey);
   }
 
-  private filteredUsageRows(query: UsageQuery, from: number, to: number): PersistedLlmCallRecord[] {
+  legacyPricingOverrides(): readonly unknown[] {
+    this.assertReady();
+    return structuredClone(this.legacyPricing);
+  }
+
+  publishCanonical(): Promise<void> {
+    this.assertReady();
+    if (!this.requiresCanonicalPublication) return this.flush();
+    return this.enqueueMutation((file) => file);
+  }
+
+  async flush(): Promise<void> {
+    this.assertLoaded();
+    await this.queue;
+    if (this.failure) throw this.failure;
+  }
+
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.state = 'draining';
+    this.closePromise = this.closeResources().finally(() => {
+      this.state = 'closed';
+    });
+    return this.closePromise;
+  }
+
+  private async closeResources(): Promise<void> {
+    const settled = await Promise.allSettled([
+      this.loadPromise ?? Promise.resolve(),
+      this.queue.then(() => {
+        if (this.failure) throw this.failure;
+      }),
+    ]);
+    const pricingResult = await Promise.allSettled([
+      this.pricingStore?.close() ?? Promise.resolve(),
+    ]);
+    throwDeduplicatedFailures('Unable to close telemetry repository', [
+      ...settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+      ...pricingResult.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+    ]);
+  }
+
+  private enqueueMutation(mutate: (file: TelemetryFile) => TelemetryFile): Promise<void> {
+    this.assertReady();
+    const operation = this.queue.then(async () => {
+      if (this.failure) throw this.failure;
+      const candidate = mutate(this.file);
+      try {
+        await this.publish(candidate);
+      } catch (error) {
+        const failure =
+          error instanceof TelemetryRepoPublicationError
+            ? error
+            : new TelemetryRepoPublicationError(false, { cause: error });
+        this.failure = failure;
+        throw failure;
+      }
+      this.file = candidate;
+      this.requiresCanonicalPublication = false;
+    });
+    this.queue = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async publish(file: TelemetryFile): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true });
+    const temporaryPath = `${this.path}.${randomUUID()}.tmp`;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    let published = false;
+    try {
+      handle = await open(temporaryPath, 'wx', 0o600);
+      await handle.writeFile(JSON.stringify(file, null, 2) + '\n', 'utf8');
+      await handle.sync();
+      await handle.close();
+      handle = undefined;
+      await rename(temporaryPath, this.path);
+      published = true;
+      await syncDirectory(dirname(this.path));
+    } catch (cause) {
+      throw new TelemetryRepoPublicationError(published, { cause });
+    } finally {
+      await handle?.close().catch(() => undefined);
+      if (!published) await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private filteredUsageRows(query: UsageQuery, from: number, to: number) {
     return this.file.usageRecords.filter((row) => {
       if (row.ts < from || row.ts > to) return false;
       if (query.connectionSlug && row.connectionSlug !== query.connectionSlug) return false;
@@ -221,11 +401,7 @@ class FileTelemetryRepo implements TelemetryRepo {
     });
   }
 
-  private filteredToolRows(
-    query: UsageQuery,
-    from: number,
-    to: number,
-  ): PersistedToolInvocationRecord[] {
+  private filteredToolRows(query: UsageQuery, from: number, to: number) {
     return this.file.toolInvocations.filter((row) => {
       if (row.ts < from || row.ts > to) return false;
       if (query.toolName && row.toolName !== query.toolName) return false;
@@ -234,90 +410,67 @@ class FileTelemetryRepo implements TelemetryRepo {
     });
   }
 
-  private enqueueWrite(): Promise<void> {
-    const next = this.queue.then(
-      () => this.write(),
-      () => this.write(),
-    );
-    this.queue = next.catch(() => {});
-    return next;
+  private requireManagedPricing(): PricingStore {
+    this.assertReady();
+    if (!this.pricingStore) {
+      throw new Error('Telemetry repository does not own the compatibility pricing facade');
+    }
+    return this.pricingStore;
   }
 
-  private async write(): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
-    const tempPath = `${this.path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, JSON.stringify(this.file, null, 2) + '\n', 'utf8');
-    await rename(tempPath, this.path);
+  private assertLoaded(): void {
+    if (!this.loaded) throw new TelemetryRepoNotLoadedError();
+  }
+
+  private assertOpen(): void {
+    if (this.state !== 'open') throw new TelemetryRepoClosedError();
+  }
+
+  private assertReady(): void {
+    this.assertOpen();
+    this.assertLoaded();
+    if (this.failure?.commitUnknown) throw this.failure;
   }
 }
 
-function emptyFile(): TelemetryFile {
-  return { usageRecords: [], toolInvocations: [], pricingOverrides: [] };
-}
-
-function normalizeFile(input: unknown): TelemetryFile {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('Invalid telemetry file: expected an object');
-  }
-  const value = input as Partial<TelemetryFile>;
-  const hasKnownSection =
-    'usageRecords' in value || 'toolInvocations' in value || 'pricingOverrides' in value;
-  if (!hasKnownSection) {
-    throw new Error('Invalid telemetry file: expected known telemetry sections');
-  }
-  assertOptionalArraySection(value, 'usageRecords');
-  assertOptionalArraySection(value, 'toolInvocations');
-  assertOptionalArraySection(value, 'pricingOverrides');
+function toUsageLogRow(row: PersistedLlmCallRecord): UsageLogRow {
   return {
-    usageRecords: value.usageRecords ? value.usageRecords.map(normalizeLlmCallRecord) : [],
-    toolInvocations: value.toolInvocations ?? [],
-    pricingOverrides: value.pricingOverrides ?? [],
+    id: row.id,
+    ts: row.ts,
+    ...(row.callKind ? { callKind: row.callKind } : {}),
+    ...(row.callId ? { callId: row.callId } : {}),
+    ...(row.connectionSlug ? { connectionSlug: row.connectionSlug } : {}),
+    providerId: row.providerId,
+    modelId: row.modelId,
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheMissTokens: row.cacheMissInputTokens,
+    cacheReadTokens: row.cacheHitInputTokens,
+    cacheWriteTokens: row.cacheWriteInputTokens,
+    ...(row.cacheMissInputSource ? { cacheMissInputSource: row.cacheMissInputSource } : {}),
+    reasoningTokens: row.reasoningTokens,
+    totalTokens: row.totalTokens,
+    costUsd: row.costUsd,
+    latencyMs: row.latencyMs,
+    status: row.status,
+    ...(row.errorClass ? { errorClass: row.errorClass } : {}),
+    ...(row.sessionId ? { sessionId: row.sessionId } : {}),
+    ...(row.turnId ? { turnId: row.turnId } : {}),
+    ...(row.systemPromptHash ? { systemPromptHash: row.systemPromptHash } : {}),
+    ...(row.prefixHash ? { prefixHash: row.prefixHash } : {}),
+    ...(row.prefixChangeReason ? { prefixChangeReason: row.prefixChangeReason } : {}),
+    ...(row.requestShapeHash ? { requestShapeHash: row.requestShapeHash } : {}),
+    ...(row.requestShapeChangeReason
+      ? { requestShapeChangeReason: row.requestShapeChangeReason }
+      : {}),
+    ...(row.toolSchemaChangeReason ? { toolSchemaChangeReason: row.toolSchemaChangeReason } : {}),
+    ...(row.toolAvailability ? { toolAvailability: row.toolAvailability } : {}),
+    ...(row.promptSegments ? { promptSegments: row.promptSegments } : {}),
+    ...(row.contextBudget ? { contextBudget: row.contextBudget } : {}),
   };
 }
 
-function assertOptionalArraySection<T extends object>(value: T, key: keyof T): void {
-  if (key in value && !Array.isArray(value[key])) {
-    throw new Error(`Invalid telemetry file: ${String(key)} must be an array`);
-  }
-}
-
-function normalizeLlmCallRecord(input: unknown): PersistedLlmCallRecord {
-  const row = input as Partial<PersistedLlmCallRecord>;
-  const inputTokens = finiteNumber(row.inputTokens) ?? 0;
-  const outputTokens = finiteNumber(row.outputTokens) ?? 0;
-  const cacheHitInputTokens =
-    finiteNumber(row.cacheHitInputTokens) ?? finiteNumber(row.cachedInputTokens) ?? 0;
-  const cacheWriteInputTokens = finiteNumber(row.cacheWriteInputTokens) ?? 0;
-  const cacheMissInputTokens =
-    finiteNumber(row.cacheMissInputTokens) ??
-    Math.max(0, inputTokens - cacheHitInputTokens - cacheWriteInputTokens);
-  const reasoningTokens = finiteNumber(row.reasoningTokens) ?? 0;
-  return {
-    ...row,
-    id: typeof row.id === 'string' ? row.id : `usage_${row.turnId ?? row.ts ?? 'unknown'}`,
-    providerId: typeof row.providerId === 'string' ? row.providerId : 'unknown',
-    modelId: typeof row.modelId === 'string' ? row.modelId : 'unknown',
-    inputTokens,
-    outputTokens,
-    cacheHitInputTokens,
-    cacheMissInputTokens,
-    cachedInputTokens: cacheHitInputTokens,
-    cacheWriteInputTokens,
-    reasoningTokens,
-    totalTokens: finiteNumber(row.totalTokens) ?? inputTokens + outputTokens + reasoningTokens,
-    costUsd: finiteNumber(row.costUsd) ?? 0,
-    latencyMs: finiteNumber(row.latencyMs) ?? 0,
-    status: row.status === 'error' || row.status === 'aborted' ? row.status : 'success',
-    startedAt: finiteNumber(row.startedAt) ?? finiteNumber(row.ts) ?? 0,
-    date:
-      typeof row.date === 'string'
-        ? row.date
-        : new Date(finiteNumber(row.ts) ?? 0).toISOString().slice(0, 10),
-    ts: finiteNumber(row.ts) ?? 0,
-  };
-}
-
-function upsertById<T extends { id: string }>(rows: T[], row: T): T[] {
+function upsertById<T extends { id: string }>(rows: readonly T[], row: T): T[] {
   return [...rows.filter((current) => current.id !== row.id), row];
 }
 
@@ -351,8 +504,8 @@ function bucketKey(row: PersistedLlmCallRecord, groupBy: UsageGroupBy): string {
   }
 }
 
-function usageBucket(key: string, rows: PersistedLlmCallRecord[]): UsageBucket {
-  const errorCount = rows.filter((row) => row.status === 'error').length;
+function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): UsageBucket {
+  const errors = rows.filter((row) => row.status === 'error').length;
   return {
     key,
     label: key,
@@ -366,47 +519,63 @@ function usageBucket(key: string, rows: PersistedLlmCallRecord[]): UsageBucket {
     totalTokens: sum(rows.map((row) => row.totalTokens)),
     costUsd: sum(rows.map((row) => row.costUsd)),
     avgLatencyMs: rows.length ? Math.round(sum(rows.map((row) => row.latencyMs)) / rows.length) : 0,
-    errorRate: rows.length ? errorCount / rows.length : 0,
+    errorRate: rows.length ? errors / rows.length : 0,
   };
 }
 
-function toolBuckets(rows: PersistedToolInvocationRecord[]): UsageBucket[] {
+function toolBuckets(rows: readonly PersistedToolInvocationRecord[]): UsageBucket[] {
   const groups = new Map<string, PersistedToolInvocationRecord[]>();
   for (const row of rows) {
-    const list = groups.get(row.toolName) ?? [];
-    list.push(row);
-    groups.set(row.toolName, list);
+    let group = groups.get(row.toolName);
+    if (!group) {
+      group = [];
+      groups.set(row.toolName, group);
+    }
+    group.push(row);
   }
   return [...groups.entries()]
-    .map(([key, groupRows]) => {
-      const errorCount = groupRows.filter((row) => row.status === 'error').length;
-      const inputBytes = sum(groupRows.map((row) => row.bytesIn));
-      const outputBytes = sum(groupRows.map((row) => row.bytesOut));
+    .map(([key, group]) => {
+      const errors = group.filter((row) => row.status === 'error').length;
+      const bytesIn = sum(group.map((row) => row.bytesIn));
+      const bytesOut = sum(group.map((row) => row.bytesOut));
       return {
         key,
         label: key,
-        requests: groupRows.length,
-        inputTokens: inputBytes,
-        outputTokens: outputBytes,
+        requests: group.length,
+        inputTokens: bytesIn,
+        outputTokens: bytesOut,
         cacheMissTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         reasoningTokens: 0,
-        totalTokens: inputBytes + outputBytes,
+        totalTokens: bytesIn + bytesOut,
         costUsd: 0,
-        avgLatencyMs: groupRows.length
-          ? Math.round(sum(groupRows.map((row) => row.durationMs)) / groupRows.length)
+        avgLatencyMs: group.length
+          ? Math.round(sum(group.map((row) => row.durationMs)) / group.length)
           : 0,
-        errorRate: groupRows.length ? errorCount / groupRows.length : 0,
-      } satisfies UsageBucket;
+        errorRate: group.length ? errors / group.length : 0,
+      };
     })
-    .sort((a, b) => b.requests - a.requests);
+    .sort((left, right) => right.requests - left.requests);
 }
 
-function sum(values: number[]): number {
+function sum(values: readonly number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+function assertToolUsageQuery(query: ToolUsageQuery): void {
+  const keys = Object.keys(query);
+  if (keys.some((key) => !['range', 'toolName', 'status'].includes(key))) {
+    throw new TelemetryQueryValidationError('tool logs accept only range, toolName, and status');
+  }
+}
+
+function detached<T>(value: T): T {
+  return deepFreeze(structuredClone(value));
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
 }

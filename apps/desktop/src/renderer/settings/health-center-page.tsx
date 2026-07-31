@@ -67,9 +67,7 @@ export function HealthCenterPage() {
           <AlertTitle>{copy.readFailed}</AlertTitle>
           <AlertDescription>{error ?? copy.noData}</AlertDescription>
           <AlertAction>
-            <Button type="button" onClick={() => setRefreshTick((tick) => tick + 1)}>
-              {copy.readAgain}
-            </Button>
+            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
           </AlertAction>
         </Alert>
       </div>
@@ -97,18 +95,16 @@ export function HealthCenterPage() {
         }
         action={
           <>
-            <Badge variant="secondary">{copy.badge}</Badge>
+            <Badge variant="neutral" label={copy.badge} />
             <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
               {copy.lastRead}<RelativeTime ts={healthCheckedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
-            >
-              {copy.refresh}
-            </Button>
+              label={copy.refresh}
+            />
           </>
         }
       />
@@ -131,14 +127,10 @@ export function HealthCenterPage() {
       {(blocksSendCount > 0 || blocksCapabilityCount > 0) && (
         <div className="settingsHealthBlockers" role="status">
           {blocksSendCount > 0 && (
-            <Badge variant="destructive">
-              {copy.blockers.send(blocksSendCount)}
-            </Badge>
+            <Badge variant="error" label={copy.blockers.send(blocksSendCount)} />
           )}
           {blocksCapabilityCount > 0 && (
-            <Badge variant="warning">
-              {copy.blockers.capability(blocksCapabilityCount)}
-            </Badge>
+            <Badge variant="warning" label={copy.blockers.capability(blocksCapabilityCount)} />
           )}
         </div>
       )}

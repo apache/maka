@@ -70,7 +70,6 @@ export function buildTaskLedgerExperimentTools(input: {
         'Replace the current todo list for a long-running task. ' +
         'Use it when planning work, when switching the active item, and when marking work complete.',
       parameters: todoWriteSchema,
-      permissionRequired: false,
       impl: async (args, ctx) => {
         const parsed = todoWriteSchema.parse(args);
         const todos = await input.store.replace(ctx.sessionId, parsed.todos);

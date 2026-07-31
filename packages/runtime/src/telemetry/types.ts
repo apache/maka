@@ -1,8 +1,8 @@
 import type { LlmCallRecord, ToolInvocationRecord } from '@maka/core/usage-stats/types';
 
 export interface TelemetryRepoLite {
-  insertLlmCall(record: PersistedLlmCallRecord): void;
-  insertToolInvocation(record: PersistedToolInvocationRecord): void;
+  insertLlmCall(record: PersistedLlmCallRecord): Promise<void>;
+  insertToolInvocation(record: PersistedToolInvocationRecord): Promise<void>;
 }
 
 export type PersistedLlmCallRecord = LlmCallRecord & {

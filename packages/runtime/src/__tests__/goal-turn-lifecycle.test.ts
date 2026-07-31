@@ -65,31 +65,6 @@ describe('Goal turn lifecycle', () => {
     assert.equal(registry.whenIdle('session-1'), undefined);
   });
 
-  test('projects terminal permission handoff as suspended', async () => {
-    async function* events(): AsyncIterable<SessionEvent> {
-      yield complete('turn-1', 'permission_handoff');
-    }
-
-    const suspended = await drainGoalTurn({ events: events(), turnId: 'turn-1' });
-    assert.deepEqual(suspended, {
-      kind: 'suspended',
-      turnId: 'turn-1',
-      reason: 'Turn is waiting for user permission.',
-    });
-  });
-
-  test('settles a permission handoff from the later terminal event in the same stream', async () => {
-    async function* events(): AsyncIterable<SessionEvent> {
-      yield complete('turn-1', 'permission_handoff');
-      yield complete('turn-1', 'end_turn');
-    }
-
-    assert.deepEqual(await drainGoalTurn({ events: events(), turnId: 'turn-1' }), {
-      kind: 'completed',
-      turnId: 'turn-1',
-    });
-  });
-
   test('classifies continuation outcomes at the lifecycle boundary', async () => {
     const turnId = 'turn-1';
     const cases: Array<{

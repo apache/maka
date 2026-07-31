@@ -87,10 +87,11 @@ export function isToolReconcileResultFact(value: unknown): value is ToolReconcil
   return (
     value.protocol === 'tool_reconcile_v1' &&
     isNonEmptyString(value.operationId) &&
+    typeof value.observation === 'string' &&
     value.observationSchema === 'state_identity_v1' &&
     isSha256Digest(value.observationDigest) &&
     ['matches_expected_state', 'matches_prior_state', 'diverged', 'unreadable'].includes(
-      String(value.observation),
+      value.observation,
     )
   );
 }

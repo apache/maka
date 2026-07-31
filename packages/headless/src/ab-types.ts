@@ -1,4 +1,5 @@
-import type { FixedPromptTask, FixedPromptTaskWalEvent } from './fixed-prompt-controller.js';
+import type { FixedPromptTask } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import type { HarborCellContextBudgetPolicySnapshot } from './cell-output.js';
 
 export type AbExperimentKind = 'prompt' | 'tools' | 'provider' | 'runtime' | 'harness';

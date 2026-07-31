@@ -44,7 +44,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 - Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
 - Artifact lists and previews, workspace instructions, model settings, and permission settings;
-- Local memory, web search, an open HTTP/SSE gateway, bot entry points, and Office workflows;
+- Local memory, web search, an open HTTP/SSE gateway, and bot entry points;
 - Integrations are configured independently, and not every experimental entry is available by default.
 
 ### Durable tasks and evolution
@@ -119,8 +119,14 @@ Then start the TUI or run one Turn:
 ```sh
 npm --workspace maka-agent exec -- maka
 npm --workspace maka-agent exec -- maka run "Summarize this repository and identify its most important risk"
+npm --workspace maka-agent exec -- maka run --graph "Implement two independent slices, integrate them, then review the result"
 npm --workspace maka-agent exec -- maka --help
 ```
+
+The TUI also accepts `/graph on`, `/graph off`, and `/graph <task>`. Non-interactive
+`--graph` runs wait for the durable Graph to finish before printing the final
+supervisor output. Graph implementation operators use isolated Git worktrees, so
+the source project must be a clean Git worktree.
 
 The CLI reads the same model connections and workspace configuration written by Desktop. See [`packages/headless/README.md`](./packages/headless/README.md) for Headless commands and its trust posture.
 
@@ -178,16 +184,15 @@ Current boundaries that matter:
 
 Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
 
-## Experimental runtime recovery flags
+## Experimental runtime recovery flag
 
-Runtime recovery remains opt-in. Both flags below are disabled by default:
+RuntimeEvent persistence is always canonical in `runtime.sqlite`. On the first
+write, Maka batch-idempotently imports legacy RuntimeEvent JSONL without
+rewriting it. Legacy-only workspaces remain available to read-only inspection
+until that first write.
 
-- `MAKA_RUNTIME_SQLITE_CANONICAL=1` migrates the current workspace's canonical
-  RuntimeEvent store to `runtime.sqlite`. This is a **one-way, sticky migration
-  trigger**, not a reversible backend selector: after `runtime.sqlite` exists,
-  disabling the variable does not switch the workspace back to JSONL. Automatic
-  pre-migration backup and populated v2-to-v4 upgrade coverage are not complete,
-  so back up the workspace before enabling this flag.
+Runtime continuation remains opt-in:
+
 - `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn
   **Safe resume** action, CLI/TUI `/resume`, and Desktop startup auto-resume.
   These paths may call the configured model provider and consume tokens. Enable

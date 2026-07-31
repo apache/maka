@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
@@ -13,7 +14,6 @@ import {
   LOOP_GATE_IDENTICAL_THRESHOLD,
   type MakaTool,
 } from '../tool-runtime.js';
-import { PermissionEngine } from '../permission-engine.js';
 
 type ShellRunToolResult = Extract<ToolResultContent, { kind: 'shell_run' }>;
 type ObservedShellRunStatus = Extract<
@@ -69,9 +69,8 @@ function makeHarness(): Harness {
   const pushed: SessionEvent[] = [];
   const impl: string[] = [];
   const invocations: Array<Pick<ToolInvocationRecord, 'toolName' | 'status'>> = [];
-  const engine = new PermissionEngine({ newId: () => 'perm', now: () => 1 });
   let n = 0;
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,
@@ -79,7 +78,6 @@ function makeHarness(): Harness {
     appendMessage: async (m) => {
       appended.push(m);
     },
-    permissionEngine: engine,
     newId: () => `id-${++n}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,
@@ -96,7 +94,6 @@ function makeTool(name: string, impl: string[]): MakaTool {
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       return { ok: true };
@@ -110,7 +107,6 @@ function makeFailingTool(name: string, impl: string[], message = 'boom'): MakaTo
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       throw new Error(message);
@@ -130,7 +126,6 @@ function makeFlakyTool(
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       if (box.fail) throw new Error(message);
@@ -147,7 +142,6 @@ function makeTerminalTool(name: string, impl: string[], exitCode: number): MakaT
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       return {
@@ -174,7 +168,6 @@ function makeShellRunTool(name: string, impl: string[], status: ObservedShellRun
     name,
     description: name,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     impl: (args) => {
       impl.push(`${name}:${JSON.stringify(args)}`);
       return {
@@ -217,7 +210,6 @@ function makeComputerFailureTool(impl: string[], failureClass?: 'ambiguous_targe
     name: 'maka_computer',
     description: 'computer',
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     categoryHint: 'computer_use',
     permissionArgs: (args) => {
       const record = args as Record<string, unknown>;

@@ -44,7 +44,7 @@ export interface BuildCliSystemPromptInput {
    * Host capability surface for the skill-compatibility gate. When omitted,
    * the catalog is built without gating (legacy behavior). The CLI host
    * passes its registered tool names so skills whose `requiredTools` are not
-   * available (e.g. bundled Office skills without the Office tools) are hidden.
+   * available (for example, a skill requiring a desktop-only tool) are hidden.
    */
   host?: HostCapabilities;
   /** Selected model context window used to bound the always-on skill catalog. */

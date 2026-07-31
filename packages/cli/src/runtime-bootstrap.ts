@@ -3,17 +3,19 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   AiSdkBackend,
+  AgentGraphCoordinator,
+  AgentGraphSupervisorWakeCoordinator,
   AutomationManager,
   AutomationScheduler,
   BackendRegistry,
   GoalManager,
-  PermissionEngine,
   RuntimeReadModel,
   SessionManager,
   ShellRunProcessManager,
   applyRuntimeEventContextBudget,
   buildAutomationTool,
   buildAskUserQuestionTool,
+  buildRequestSandboxBoundaryTool,
   buildBuiltinTools,
   buildRuntimeEventModelReplayPlan,
   buildChildAgentTools,
@@ -23,18 +25,16 @@ import {
   createProviderRequestCaptureRecorder,
   createFilesystemWorkerLaunchSpecProvider,
   createLocalContinuationSafetyInspector,
+  drainGoalTurn,
   FilesystemWorkerClient,
   buildDefaultContextBudgetPolicy,
   buildSkillAgentTool,
   buildSkillSearchAgentTool,
   SkillShadowSelectionTracker,
-  SKILL_SEARCH_TOOL_NAME,
-  SKILL_TOOL_NAME,
   buildGoalTools,
   buildParentAgentTools,
   assertProductBindingCatalogClean,
-  buildDeferredToolGroupsFromCatalog,
-  buildHostCapabilitiesFromBinding,
+  AGENT_TOOL_GROUP_ID,
   buildLlmHistorySummarizer,
   cleanupLegacyHistoryCompactArtifacts,
   buildProviderOptions,
@@ -46,13 +46,15 @@ import {
   replayPlanItemsToModelMessages,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
+  projectEffectiveProductToolSurface,
   type AutomationDefinition,
+  type EffectiveProductToolSurface,
   type HostCapabilities,
+  type HostCapabilitiesResolver,
   type MakaTool,
   type InvocationResult,
   type ShellRunUpdate,
   type SkillSource,
-  type ToolAvailabilityConfig,
   type ModelMessage,
 } from '@maka/runtime';
 import {
@@ -64,6 +66,7 @@ import {
   createFileCredentialStore,
   openRuntimeEventPersistence,
   createForeignSessionStore,
+  createGitWorktreeChildExecutor,
   createReadImageSnapshotter,
   createSessionStore,
   createSettingsStore,
@@ -72,12 +75,12 @@ import {
   type ForeignSessionStore,
   persistProviderRequestCaptureArtifact,
 } from '@maka/storage';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { resolveStorageRoot } from '@maka/storage/root-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
-import type { ToolPermissionRule } from '@maka/core/permission';
 import { fetchProviderModels } from '@maka/runtime';
 import { createApiKeyOnboardingSurface, type MakaOnboardingSurface } from './onboarding.js';
-import { resolveModelVisionSupport } from '@maka/core';
+import { isActiveShellRunStatus, resolveModelVisionSupport } from '@maka/core';
 import type { ModelChoice, ReadySessionTarget } from './connection-target.js';
 import {
   listReadyModelChoices,
@@ -119,9 +122,29 @@ export interface MakaCliRuntimeContext {
   recap: SessionRecapGenerator;
   /** Read-only scanner for other agents' sessions (Claude Code, Codex), for the resume picker (#1057). */
   foreignSessions: ForeignSessionStore;
+  /** Host-owned Graph runtime used by the TUI and `maka run --graph`. */
+  agentGraph?: {
+    reserveActivity(sessionId: string): { release(): void };
+    waitForCompletion(sessionId: string): Promise<void>;
+  };
   close(): Promise<void>;
   /** API-key onboarding surface for the /setup wizard (#1098). */
   onboarding: MakaOnboardingSurface;
+}
+
+export function resolveCliStreamConnectTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env.MAKA_STREAM_CONNECT_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === '') return undefined;
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error('MAKA_STREAM_CONNECT_TIMEOUT_MS must be a positive integer');
+  }
+  const timeoutMs = Number(raw);
+  if (!Number.isSafeInteger(timeoutMs)) {
+    throw new Error('MAKA_STREAM_CONNECT_TIMEOUT_MS must be a positive safe integer');
+  }
+  return timeoutMs;
 }
 
 /**
@@ -149,7 +172,8 @@ export interface CreateMakaCliRuntimeContextInput {
   requestedConnectionSlug?: string;
   requestedModel?: string;
   maxSteps?: number;
-  permissionRules?: readonly ToolPermissionRule[];
+  /** Compose the durable Graph control plane and Git-worktree child executor. */
+  enableAgentGraph?: boolean;
   /** Canonical cwd used for one resumed session without rewriting its stored header. */
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
@@ -188,6 +212,7 @@ export async function createMakaCliRuntimeContext(
 ): Promise<MakaCliRuntimeContext> {
   const stateRoot = input.stateRoot ?? input.workspaceRoot;
   const configRoot = input.configRoot ?? input.workspaceRoot;
+  const agentGraphEnabled = input.surface === 'tui' || input.enableAgentGraph === true;
   if (input.stateRoot !== undefined || input.configRoot !== undefined) {
     await assertSessionBundleRootLayout({
       stateRoot,
@@ -200,11 +225,19 @@ export async function createMakaCliRuntimeContext(
   const runStore = createAgentRunStore(stateRoot);
   const runtimePersistence = await openRuntimeEventPersistence({
     workspaceRoot: stateRoot,
-    sqliteCanonical: process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
   });
   const runtimeEventStore = runtimePersistence.runtimeEventStore;
   const shellRunStore = createShellRunStore(stateRoot);
   const artifactStore = createArtifactStore(stateRoot);
+  const agentGraphControlStore = agentGraphEnabled
+    ? createAgentGraphControlStore(stateRoot)
+    : undefined;
+  const worktreeChildExecutor = agentGraphEnabled
+    ? createGitWorktreeChildExecutor({ storageRoot: stateRoot })
+    : undefined;
+  const agentGraphErrors = new Map<string, unknown>();
+  let agentGraphCoordinator: AgentGraphCoordinator | undefined;
+  let agentGraphSupervisorWakeCoordinator: AgentGraphSupervisorWakeCoordinator | undefined;
   const connectionStore = createConnectionStore(configRoot);
   const credentialStore = createFileCredentialStore(configRoot);
   const settingsStore = createSettingsStore(configRoot);
@@ -229,7 +262,6 @@ export async function createMakaCliRuntimeContext(
     ? await resolveSessionTargetForSlug(input.requestedConnectionSlug, targetInput)
     : await resolveDefaultSessionTarget(targetInput);
   const modelChoices = await listReadyModelChoices({ connectionStore, credentialStore });
-  const permissionEngine = new PermissionEngine({ newId: randomUUID, now: Date.now });
   const backends = new BackendRegistry();
   const shellRunListeners = new Set<(update: ShellRunUpdate) => void>();
   const shellRuns = new ShellRunProcessManager({
@@ -278,8 +310,6 @@ export async function createMakaCliRuntimeContext(
     ...(filesystemWorker
       ? {
           filesystemWorker,
-          enableBashAdditionalPermissions: true,
-          enableFileToolAdditionalPermissions: true,
         }
       : {}),
   });
@@ -288,22 +318,19 @@ export async function createMakaCliRuntimeContext(
   // selected profile after checking host capabilities (for example, a
   // worktree executor for implementation children). Agent tools are excluded
   // so children cannot recursively spawn from this surface.
-  const childAgentTools =
-    input.surface === 'tui'
-      ? buildChildAgentTools(
-          buildBuiltinTools({
-            snapshotImage: createReadImageSnapshotter(artifactStore),
-            ...(sandboxManager ? { sandboxManager } : {}),
-            ...(filesystemWorker
-              ? {
-                  filesystemWorker,
-                  enableBashAdditionalPermissions: true,
-                  enableFileToolAdditionalPermissions: true,
-                }
-              : {}),
-          }),
-        )
-      : [];
+  const childAgentTools = agentGraphEnabled
+    ? buildChildAgentTools(
+        buildBuiltinTools({
+          snapshotImage: createReadImageSnapshotter(artifactStore),
+          ...(sandboxManager ? { sandboxManager } : {}),
+          ...(filesystemWorker
+            ? {
+                filesystemWorker,
+              }
+            : {}),
+        }),
+      )
+    : [];
   const automationManager = new AutomationManager({
     generateId: () => randomUUID(),
     now: () => Date.now(),
@@ -548,48 +575,24 @@ export async function createMakaCliRuntimeContext(
           getTokenCount: (sessionId: string) => goalTokenCache.get(sessionId) ?? 0,
         })
       : [];
-  const subagentTools = input.surface === 'tui' ? buildParentAgentTools() : [];
-  // CLI host capability surface for the skill-compatibility gate: the tool
-  // names registered on this host. The CLI has no Office tools, so bundled
-  // Office skills (requiredTools includes OfficeDocument/OfficeDocumentEdit)
-  // are hard-hidden here without seeding them — desktop owns Office seeding.
-  // Catalog ∩ binding (#1099 S2): capability tags and deferred groups come from
-  // the shared catalog rather than a parallel hand list.
-  const surfaceTools = input.surface === 'tui' ? [buildAskUserQuestionTool()] : [];
-  const cliBoundToolNames = [
-    ...tools,
-    automationTool,
-    ...goalTools,
-    ...subagentTools,
-    ...surfaceTools,
-  ].map((tool) => tool.name);
-  // Skill is always registered on this host; include it before the instance exists.
-  const cliBoundToolNamesWithSkill = [
-    ...cliBoundToolNames,
-    SKILL_TOOL_NAME,
-    SKILL_SEARCH_TOOL_NAME,
-  ];
-  assertProductBindingCatalogClean('cli', cliBoundToolNamesWithSkill);
-  const host: HostCapabilities = buildHostCapabilitiesFromBinding(cliBoundToolNamesWithSkill);
-  const toolAvailability: ToolAvailabilityConfig | undefined =
-    input.surface === 'tui'
-      ? {
-          economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
-          groups: buildDeferredToolGroupsFromCatalog('cli', cliBoundToolNamesWithSkill),
-        }
-      : undefined;
+  const subagentTools = agentGraphEnabled ? buildParentAgentTools() : [];
+  const surfaceTools =
+    input.surface === 'tui' ? [buildAskUserQuestionTool(), buildRequestSandboxBoundaryTool()] : [];
+  let cliProductToolSurface: EffectiveProductToolSurface;
+  const resolveCliSkillHost: HostCapabilitiesResolver = () =>
+    cliProductToolSurface.hostCapabilities;
   const skillShadowTracker = new SkillShadowSelectionTracker();
   const skillTool = buildSkillAgentTool(
     ({ cwd }) => resolveSkillDiscoveryPaths(cwd, configRoot),
-    host,
+    resolveCliSkillHost,
     { shadowTracker: skillShadowTracker },
   );
   const skillSearchTool = buildSkillSearchAgentTool(
     ({ cwd }) => resolveSkillDiscoveryPaths(cwd, configRoot),
-    host,
+    resolveCliSkillHost,
     { shadowTracker: skillShadowTracker },
   );
-  const allTools = [
+  const boundTools = [
     ...tools,
     automationTool,
     ...goalTools,
@@ -598,6 +601,18 @@ export async function createMakaCliRuntimeContext(
     ...subagentTools,
     ...surfaceTools,
   ];
+  assertProductBindingCatalogClean(
+    'cli',
+    boundTools.map((tool) => tool.name),
+  );
+  cliProductToolSurface = projectEffectiveProductToolSurface({
+    host: 'cli',
+    tools: boundTools,
+    policy: {
+      economy: input.surface === 'tui' && !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+    },
+  });
+  const allTools = [...cliProductToolSurface.tools];
 
   backends.register('ai-sdk', async (ctx) => {
     const header =
@@ -630,21 +645,40 @@ export async function createMakaCliRuntimeContext(
       mode: header.permissionMode,
       cwd: header.cwd,
     });
-    const backendTools = ctx.tools ? [...ctx.tools] : allTools;
+    const streamConnectTimeoutMs = resolveCliStreamConnectTimeoutMs();
+    const agentGraphSupervisorTools =
+      !ctx.tools && agentGraphEnabled
+        ? await agentGraphCoordinator!.toolsForSession(ctx.sessionId)
+        : [];
+    const productToolSurface = projectEffectiveProductToolSurface({
+      host: 'cli',
+      tools: ctx.tools ? ctx.tools : [...allTools, ...agentGraphSupervisorTools],
+      policy: cliProductToolSurface.identity.policy,
+    });
+    const backendTools = [...productToolSurface.tools];
+    const admitsAgentChildren = productToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID);
     return new AiSdkBackend({
       sessionId: ctx.sessionId,
       header: { ...header, model: ready.model },
       appendMessage:
         ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary!(ctx.sessionId),
+      ...(input.surface === 'tui'
+        ? {
+            createSandboxBoundaryRequest: (request) =>
+              ctx.store.createSandboxBoundaryRequest!(request),
+            settleSandboxBoundaryRequest: (request) =>
+              ctx.store.settleSandboxBoundaryRequest!(request),
+          }
+        : {}),
       connection: ready.connection,
       apiKey: ready.apiKey,
       modelId: ready.model,
-      permissionEngine,
       modelFactory: (modelInput) => getAIModel({ ...modelInput, fetch: modelFetch }),
       tools: backendTools,
       sandboxDiagnosticsSnapshot,
-      toolAvailability: ctx.tools ? undefined : toolAvailability,
-      ...(input.surface === 'tui'
+      toolAvailability: productToolSurface.toolAvailability,
+      ...(admitsAgentChildren
         ? {
             spawnChildAgent: (childInput) => runtime.spawnChildAgent(ctx.sessionId, childInput),
             spawnChildSession: (childInput) =>
@@ -671,6 +705,7 @@ export async function createMakaCliRuntimeContext(
           }
         : {}),
       providerOptions: buildProviderOptions(ready.connection, ready.model, header.thinkingLevel),
+      ...(streamConnectTimeoutMs !== undefined ? { streamConnectTimeoutMs } : {}),
       contextBudget: buildDefaultContextBudgetPolicy(ready.connection, {
         name: 'cli-default-history-budget',
         modelId: ready.model,
@@ -706,7 +741,7 @@ export async function createMakaCliRuntimeContext(
             settings,
             cwd,
             workspaceRoot: configRoot,
-            host,
+            host: productToolSurface.hostCapabilities,
             modelContextWindow: resolveSelectedModelContextWindow(ready.connection, ready.model),
             onSkillSelection: (report) =>
               emitSkillCatalogTrace?.('Skill catalog selection completed', {
@@ -746,7 +781,6 @@ export async function createMakaCliRuntimeContext(
       newId: randomUUID,
       now: Date.now,
       ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
-      ...(input.permissionRules !== undefined ? { permissionRules: input.permissionRules } : {}),
       ...(runtimePersistence.runtimeCommitStore
         ? { runtimeCommitSink: runtimePersistence.runtimeCommitStore }
         : {}),
@@ -776,7 +810,7 @@ export async function createMakaCliRuntimeContext(
           runStore.listSessionRuns(sessionId),
         ]);
         return (
-          shellUpdates.some((update) => update.result.status === 'running') ||
+          shellUpdates.some((update) => isActiveShellRunStatus(update.result.status)) ||
           runs.some(
             (run) =>
               run.parentRunId !== undefined &&
@@ -785,7 +819,9 @@ export async function createMakaCliRuntimeContext(
         );
       },
     }),
-    ...(input.surface === 'tui' ? { childTools: childAgentTools } : {}),
+    ...(cliProductToolSurface.boundSurfaceIds.includes(AGENT_TOOL_GROUP_ID)
+      ? { childTools: childAgentTools, worktreeChildExecutor }
+      : {}),
     runtimeInvocationObserver: input.runtimeInvocationObserver,
     onSessionTitleChanged: input.onSessionTitleChanged,
     ...(input.surface === 'tui'
@@ -833,6 +869,98 @@ export async function createMakaCliRuntimeContext(
     newId: randomUUID,
     now: Date.now,
   });
+  if (agentGraphControlStore) {
+    agentGraphSupervisorWakeCoordinator = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: goalContinuation.activities,
+      wakeStore: agentGraphControlStore,
+      readSnapshot: (rootSessionId) => agentGraphCoordinator!.getSnapshot(rootSessionId),
+      startTurn: async (sessionId, message, activity, abortSignal) => {
+        let stopPromise: Promise<void> | undefined;
+        const stop = (): void => {
+          stopPromise ??= runtime.stopSession(sessionId, { source: 'graph_supervisor' });
+        };
+        abortSignal.addEventListener('abort', stop, { once: true });
+        if (abortSignal.aborted) stop();
+        try {
+          return await drainGoalTurn({
+            events: runtime.sendMessage(sessionId, message),
+            turnId: message.turnId,
+            activity,
+          });
+        } finally {
+          abortSignal.removeEventListener('abort', stop);
+          await stopPromise;
+        }
+      },
+      inspectAttempt: async (rootSessionId, attemptId, turnId) => {
+        const runs = (await runStore.listSessionRuns(rootSessionId)).filter(
+          (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+        );
+        if (runs.length > 1) {
+          throw new Error(
+            `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
+          );
+        }
+        return runs[0]?.status ?? 'missing';
+      },
+      recoverContextOverflow: async (rootSessionId, { abortSignal }) => {
+        abortSignal.throwIfAborted();
+        let recovery:
+          | {
+              estimatedTokensBefore?: number;
+              estimatedTokensAfter?: number;
+              droppedTurns?: number;
+              droppedEvents?: number;
+              historyCompactedEvents?: number;
+              historyCompactBlocksWritten?: number;
+            }
+          | undefined;
+        for await (const event of runtime.compactSession(rootSessionId, {
+          turnId: randomUUID(),
+          minRecentTurns: 0,
+        })) {
+          abortSignal.throwIfAborted();
+          if (event.type === 'token_usage' && event.contextBudget) {
+            const diagnostic = event.contextBudget;
+            recovery = {
+              estimatedTokensBefore: diagnostic.estimatedTokensBefore,
+              estimatedTokensAfter: diagnostic.estimatedTokensAfter,
+              droppedTurns: diagnostic.droppedTurns,
+              droppedEvents: diagnostic.droppedEvents,
+              ...(diagnostic.historyCompactedEvents !== undefined
+                ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
+                : {}),
+              ...(diagnostic.historyCompactBlocksWritten !== undefined
+                ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
+                : {}),
+            };
+          }
+        }
+        return recovery;
+      },
+      newId: randomUUID,
+      onDiagnostic: (diagnostic) => {
+        console.warn('[agent-graph-supervisor-wake]', JSON.stringify(diagnostic));
+      },
+      onError: (rootSessionId, error) => {
+        agentGraphErrors.set(rootSessionId, error);
+      },
+    });
+    agentGraphCoordinator = new AgentGraphCoordinator({
+      sessionStore: store,
+      runStore,
+      runtimeEventStore,
+      controlStore: agentGraphControlStore,
+      runtime,
+      newId: randomUUID,
+      onReconciliation: (rootSessionId, result) => {
+        agentGraphSupervisorWakeCoordinator!.notify(rootSessionId, result);
+      },
+      onError: (rootSessionId, error) => {
+        agentGraphErrors.set(rootSessionId, error);
+      },
+    });
+  }
   await runtime.recoverInterruptedSessions();
 
   const automationScheduler = new AutomationScheduler({
@@ -909,7 +1037,7 @@ export async function createMakaCliRuntimeContext(
     tools: allTools,
     skills: {
       source: (cwd) => resolveSkillDiscoveryPaths(cwd, configRoot),
-      host,
+      host: cliProductToolSurface.hostCapabilities,
     },
     automationManager,
     automationScheduler,
@@ -927,12 +1055,40 @@ export async function createMakaCliRuntimeContext(
     }),
     recap,
     foreignSessions,
+    ...(agentGraphCoordinator && agentGraphSupervisorWakeCoordinator
+      ? {
+          agentGraph: {
+            reserveActivity: (sessionId: string) => goalContinuation.activities.reserve(sessionId),
+            waitForCompletion: async (sessionId: string) => {
+              for (;;) {
+                await agentGraphCoordinator!.waitForIdle(sessionId);
+                await agentGraphSupervisorWakeCoordinator!.waitForIdle();
+                await agentGraphCoordinator!.waitForIdle(sessionId);
+                const error = agentGraphErrors.get(sessionId);
+                if (error !== undefined) throw error;
+                const snapshot = await agentGraphCoordinator!.getSnapshot(sessionId);
+                if (snapshot.closed || snapshot.scheduleRevision === 0) return;
+                await agentGraphSupervisorWakeCoordinator!.waitForIdle();
+                await agentGraphCoordinator!.waitForIdle(sessionId);
+                const settled = await agentGraphCoordinator!.getSnapshot(sessionId);
+                if (settled.closed) return;
+                throw new Error(
+                  `Agent graph became idle without finish (status=${settled.status}, revision=${settled.scheduleRevision}, snapshot=${settled.snapshotVersion})`,
+                );
+              }
+            },
+          },
+        }
+      : {}),
     close: async () => {
       // Stop the automation scheduler's timer (else it keeps the process alive
       // and ticks into a stopped session), then terminate background shell runs.
       automationScheduler.dispose();
       goalContinuation.dispose();
       goalManager.dispose();
+      await agentGraphSupervisorWakeCoordinator?.close();
+      await agentGraphCoordinator?.close();
+      agentGraphControlStore?.close();
       await shellRuns.terminateAll();
       shellRunListeners.clear();
       await store.close?.();

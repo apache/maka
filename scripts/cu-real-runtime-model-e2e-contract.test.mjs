@@ -8,7 +8,8 @@ test('real Runtime model E2E uses product model and ToolRuntime paths safely', (
   assert.match(source, /new AiSdkBackend/);
   assert.match(source, /getAIModel/);
   assert.match(source, /buildComputerUseTools/);
-  assert.match(source, /PermissionEngine/);
+  assert.doesNotMatch(source, /PermissionEngine/);
+  assert.match(source, /readExecutionBoundary/);
   assert.match(source, /recordToolInvocation/);
   assert.match(source, /providerType: 'openai'/);
   assert.match(source, /compatibility/);

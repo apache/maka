@@ -1,0 +1,420 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, test } from 'node:test';
+import {
+  PricingCommitUnknownError,
+  PricingRevisionConflictError,
+  PricingStoreClosedError,
+  PricingStoreNotLoadedError,
+  PricingStorePublicationError,
+  PricingValidationError,
+} from '../pricing-store.js';
+import {
+  resolveStorageRoot,
+  STORAGE_ROOT_MARKER_FILE,
+  StorageRootAuthorityError,
+  tryAcquireInteractiveRootOwner,
+  type StorageRootAuthorityErrorCode,
+} from '../root-authority.js';
+import {
+  TelemetryQueryValidationError,
+  TelemetryRepoClosedError,
+  TelemetryRepoNotLoadedError,
+  TelemetryRepoPublicationError,
+} from '../telemetry-repo.js';
+import {
+  classifyInteractiveUsageStoresFailure,
+  InteractiveUsageStoresClosedError,
+  openInteractiveUsageStoresForWrite,
+} from '../usage-stores.js';
+
+describe('InteractiveUsageStores', () => {
+  test('classifies facade failures without exposing concrete errors to callers', () => {
+    assert.deepEqual(
+      classifyInteractiveUsageStoresFailure(new PricingRevisionConflictError(3, 4)),
+      { kind: 'revision_conflict', expectedRevision: 3, actualRevision: 4 },
+    );
+    for (const error of [
+      new PricingValidationError('bad mutation'),
+      new TelemetryQueryValidationError('bad query'),
+    ]) {
+      assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+        kind: 'invalid_request',
+      });
+    }
+    for (const error of [
+      new InteractiveUsageStoresClosedError(),
+      new PricingStoreClosedError(),
+      new TelemetryRepoClosedError(),
+      new StorageRootAuthorityError('invalid_lease', 'revoked'),
+      new StorageRootAuthorityError('invalid_owner', 'inauthentic'),
+    ]) {
+      assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+        kind: 'lifecycle',
+      });
+    }
+    for (const error of [
+      new PricingCommitUnknownError({ cause: new Error('directory sync') }),
+      new TelemetryRepoPublicationError(true, { cause: new Error('directory sync') }),
+    ]) {
+      assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+        kind: 'commit_outcome_unknown',
+        needsDrain: true,
+      });
+    }
+    for (const error of [
+      new PricingStorePublicationError({ cause: new Error('rename') }),
+      new TelemetryRepoPublicationError(false, { cause: new Error('rename') }),
+    ]) {
+      assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+        kind: 'persistence_failed',
+        needsDrain: true,
+      });
+    }
+    for (const error of [new PricingStoreNotLoadedError(), new TelemetryRepoNotLoadedError()]) {
+      assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+        kind: 'persistence_failed',
+        needsDrain: false,
+      });
+    }
+    const rootAuthorityNeedsDrain = {
+      invalid_root: false,
+      invalid_root_kind: false,
+      root_not_found: false,
+      root_unmarked: true,
+      invalid_marker: true,
+      root_kind_mismatch: true,
+      root_identity_collision: true,
+      root_identity_changed: true,
+      invalid_repair: false,
+      invalid_capability: false,
+      invalid_lock_artifact: false,
+      insecure_control_directory: false,
+      root_io_failed: false,
+      control_io_failed: false,
+      lock_failed: false,
+    } as const satisfies Record<
+      Exclude<StorageRootAuthorityErrorCode, 'invalid_lease' | 'invalid_owner'>,
+      boolean
+    >;
+    for (const [code, needsDrain] of Object.entries(rootAuthorityNeedsDrain)) {
+      assert.deepEqual(
+        classifyInteractiveUsageStoresFailure(
+          new StorageRootAuthorityError(code as StorageRootAuthorityErrorCode, code),
+        ),
+        { kind: 'persistence_failed', needsDrain },
+      );
+    }
+
+    const unknown = new Error('unknown');
+    assert.deepEqual(classifyInteractiveUsageStoresFailure(unknown), {
+      kind: 'unknown',
+      error: unknown,
+    });
+  });
+
+  test('classifies a renamed or replaced live root as a draining persistence failure', async () => {
+    for (const replacement of [false, true]) {
+      await withInteractiveRoot(async ({ root, capability }) => {
+        const owner = await tryAcquireInteractiveRootOwner(capability);
+        assert(owner);
+        const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        await rename(root, `${root}-moved`);
+        if (replacement) await mkdir(root);
+        try {
+          await assert.rejects(
+            () => stores.pricing.snapshot(),
+            (error: unknown) => {
+              assert.ok(error instanceof StorageRootAuthorityError);
+              assert.equal(error.code, 'root_identity_changed');
+              assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+                kind: 'persistence_failed',
+                needsDrain: true,
+              });
+              return true;
+            },
+          );
+        } finally {
+          await owner.close();
+        }
+      });
+    }
+  });
+
+  test('classifies poisoned live root markers as draining persistence failures', async () => {
+    const scenarios: ReadonlyArray<{
+      code: 'root_unmarked' | 'invalid_marker' | 'root_kind_mismatch';
+      poison(markerPath: string): Promise<void>;
+    }> = [
+      {
+        code: 'root_unmarked',
+        poison: (markerPath) => rm(markerPath),
+      },
+      {
+        code: 'invalid_marker',
+        poison: (markerPath) => writeFile(markerPath, '{'),
+      },
+      {
+        code: 'root_kind_mismatch',
+        poison: async (markerPath) => {
+          const marker = JSON.parse(await readFile(markerPath, 'utf8')) as { kind: string };
+          marker.kind = 'headless';
+          await writeFile(markerPath, `${JSON.stringify(marker)}\n`);
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await withInteractiveRoot(async ({ root, capability }) => {
+        const owner = await tryAcquireInteractiveRootOwner(capability);
+        assert(owner);
+        const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+        await scenario.poison(join(root, STORAGE_ROOT_MARKER_FILE));
+        try {
+          await assert.rejects(
+            () => stores.pricing.snapshot(),
+            (error: unknown) => {
+              assert.ok(error instanceof StorageRootAuthorityError);
+              assert.equal(error.code, scenario.code);
+              assert.deepEqual(classifyInteractiveUsageStoresFailure(error), {
+                kind: 'persistence_failed',
+                needsDrain: true,
+              });
+              return true;
+            },
+          );
+        } finally {
+          await owner.close();
+        }
+      });
+    }
+  });
+
+  test('migrates legacy usage, tools, and pricing idempotently', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const legacy = {
+        usageRecords: [llmRecord({ cachedInputTokens: 3, cacheHitInputTokens: undefined })],
+        toolInvocations: [toolRecord()],
+        pricingOverrides: [pricing('openai:gpt-5')],
+      };
+      await writeFile(join(root, 'telemetry.json'), JSON.stringify(legacy, null, 2) + '\n');
+
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      assert.equal((await stores.telemetry.logs({ range: 'all' })).total, 1);
+      assert.deepEqual(await stores.pricing.snapshot(), {
+        revision: 0,
+        overrides: [pricing('openai:gpt-5')],
+      });
+      await stores.close();
+      await owner.close();
+
+      const firstTelemetry = await readFile(join(root, 'telemetry.json'), 'utf8');
+      const firstPricing = await readFile(join(root, 'pricing.json'), 'utf8');
+      assert.match(firstTelemetry, /"version": 1/);
+      assert.doesNotMatch(firstTelemetry, /pricingOverrides/);
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert(successor);
+      const reopened = await openInteractiveUsageStoresForWrite(successor.lease);
+      assert.equal((await reopened.telemetry.buckets({ range: 'all' }, 'tool'))[0]?.requests, 1);
+      assert.deepEqual(await reopened.pricing.snapshot(), {
+        revision: 0,
+        overrides: [pricing('openai:gpt-5')],
+      });
+      await reopened.close();
+      await successor.close();
+      assert.equal(await readFile(join(root, 'telemetry.json'), 'utf8'), firstTelemetry);
+      assert.equal(await readFile(join(root, 'pricing.json'), 'utf8'), firstPricing);
+    });
+  });
+
+  test('an existing pricing authority wins over stale embedded overrides', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      await writeFile(
+        join(root, 'telemetry.json'),
+        JSON.stringify({
+          usageRecords: [],
+          toolInvocations: [],
+          pricingOverrides: [{ modelKey: '', inputUsdPer1M: -1 }],
+        }),
+      );
+      await writeFile(
+        join(root, 'pricing.json'),
+        JSON.stringify({
+          version: 1,
+          revision: 7,
+          overrides: [pricing('current:model')],
+        }),
+      );
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      assert.deepEqual(await stores.pricing.snapshot(), {
+        revision: 7,
+        overrides: [pricing('current:model')],
+      });
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('migrates and reopens more than 128 legacy pricing overrides without loss', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const overrides = Array.from({ length: 140 }, (_, index) =>
+        pricing(`provider:model-${String(139 - index).padStart(3, '0')}`),
+      );
+      await writeFile(
+        join(root, 'telemetry.json'),
+        JSON.stringify({ usageRecords: [], toolInvocations: [], pricingOverrides: overrides }),
+      );
+
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const migrated = await stores.pricing.snapshot();
+      assert.equal(migrated.overrides.length, 140);
+      assert.deepEqual(
+        migrated.overrides.map((item) => item.modelKey),
+        overrides.map((item) => item.modelKey).sort(),
+      );
+      await stores.close();
+      await owner.close();
+
+      const successor = await tryAcquireInteractiveRootOwner(capability);
+      assert(successor);
+      const reopened = await openInteractiveUsageStoresForWrite(successor.lease);
+      assert.deepEqual(await reopened.pricing.snapshot(), migrated);
+      await reopened.close();
+      await successor.close();
+    });
+  });
+
+  test('drain waits accepted writes and rejects new admission', async () => {
+    await withInteractiveRoot(async ({ root, capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      const accepted = stores.telemetry.recordLlmCall(llmRecord());
+      const drained = stores.beginDrain();
+
+      assert.throws(
+        () => stores.telemetry.recordToolInvocation(toolRecord()),
+        InteractiveUsageStoresClosedError,
+      );
+      await Promise.all([accepted, drained]);
+      await stores.close();
+      assert.match(await readFile(join(root, 'telemetry.json'), 'utf8'), /"usage_1"/);
+      await owner.close();
+    });
+  });
+
+  test('lease-bound facade exposes separate LLM and filtered tool logs', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await stores.telemetry.recordLlmCall(llmRecord());
+      await stores.telemetry.recordToolInvocation(toolRecord());
+
+      assert.equal((await stores.telemetry.logs({ range: 'all' })).total, 1);
+      const tools = await stores.telemetry.toolLogs({
+        range: 'all',
+        toolName: 'Bash',
+        status: 'success',
+      });
+      assert.equal(tools.total, 1);
+      assert.equal(tools.rows[0]?.toolName, 'Bash');
+      await assert.rejects(
+        () => stores.telemetry.logs({ range: 'all', toolName: 'Bash' }),
+        /toolName is not applicable to LLM logs/,
+      );
+      await stores.close();
+      await owner.close();
+    });
+  });
+
+  test('every facade read observes lease revocation', async () => {
+    await withInteractiveRoot(async ({ capability }) => {
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert(owner);
+      const stores = await openInteractiveUsageStoresForWrite(owner.lease);
+      await owner.close();
+
+      await assert.rejects(
+        () => stores.telemetry.summary({ range: 'all' }),
+        (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+      );
+      await assert.rejects(
+        () => stores.pricing.snapshot(),
+        (error) => error instanceof StorageRootAuthorityError && error.code === 'invalid_lease',
+      );
+    });
+  });
+});
+
+async function withInteractiveRoot(
+  run: (input: {
+    root: string;
+    capability: Awaited<ReturnType<typeof resolveStorageRoot<'interactive'>>>;
+  }) => Promise<void>,
+): Promise<void> {
+  const base = await mkdtemp(join(tmpdir(), 'maka-usage-stores-'));
+  try {
+    const root = join(base, 'interactive');
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    await run({ root, capability });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+}
+
+function llmRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'usage_1',
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    inputTokens: 10,
+    outputTokens: 20,
+    cacheHitInputTokens: 0,
+    cacheMissInputTokens: 10,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 30,
+    costUsd: 0.001,
+    latencyMs: 100,
+    status: 'success',
+    date: '2026-01-01',
+    ts: Date.UTC(2026, 0, 1),
+    startedAt: Date.UTC(2026, 0, 1) - 100,
+    ...overrides,
+  } as Parameters<
+    Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>['telemetry']['recordLlmCall']
+  >[0];
+}
+
+function toolRecord() {
+  return {
+    id: 'tool_1',
+    toolName: 'Bash',
+    durationMs: 30,
+    status: 'success',
+    bytesIn: 1,
+    bytesOut: 2,
+    date: '2026-01-01',
+    ts: Date.UTC(2026, 0, 1),
+    startedAt: Date.UTC(2026, 0, 1),
+  } as Parameters<
+    Awaited<
+      ReturnType<typeof openInteractiveUsageStoresForWrite>
+    >['telemetry']['recordToolInvocation']
+  >[0];
+}
+
+function pricing(modelKey: string) {
+  return { modelKey, inputUsdPer1M: 1.25, outputUsdPer1M: 10 };
+}

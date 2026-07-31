@@ -25,7 +25,10 @@ describe('Desktop explicit Skill invocation contract', () => {
     assert.match(composer, /className="maka-composer-skill-chip"/);
     assert.match(composer, /props\.onSend\(text, skillIds\)/);
     assert.match(composer, /clearDraft\(draftKey\);\s*skillDraft\.clear\(draftKey\)/);
-    assert.match(composer, /<UiButton[\s\S]*?size="icon"[\s\S]*?shape="pill"[\s\S]*?className="maka-composer-skill-chip-remove"/);
+    assert.match(
+      composer,
+      /<IconButton[\s\S]*?className="maka-composer-skill-chip-remove"/,
+    );
     assert.match(
       composer,
       /skillDraft\.remove\(skill\.ref \?\? skill\.id\);[\s\S]*?requestAnimationFrame\(\(\) => textareaRef\.current\?\.focus\(\)\)/,
@@ -53,7 +56,7 @@ describe('Desktop explicit Skill invocation contract', () => {
 
     const preparationAt = sessions.indexOf('const sendPlan = await prepareSessionSendSkillPlan');
     const resolveAt = sessions.indexOf('resolveSessionSend({', preparationAt);
-    const sendAt = sessions.indexOf('const iterator = runtime.sendMessage(sessionId', resolveAt);
+    const sendAt = sessions.indexOf('const iterator = runtime.sendMessage(', resolveAt);
     assert.ok(preparationAt >= 0 && resolveAt > preparationAt && sendAt > resolveAt);
     assert.match(sessions, /prepareSkillInvocation\(sessionId, sendCommand\.text, sendCommand\.skillIds\)/);
     assert.match(sendPlan, /if \(preparation\.disposition === 'blocked'\)/);

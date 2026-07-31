@@ -94,11 +94,8 @@
     gap: var(--space-3);
   }
 
-/* #1361: `min-width: 0` + a break opportunity on the id. Without them the
-   heading column could not shrink below its widest unbreakable child — the
-   monospace capability id (`office_documents`) — so the readiness Chip on the
-   other end of the space-between row was pushed past the card edge (33px of
-   overflow at the 480px floor). */
+/* `min-width: 0` lets the heading column shrink without pushing the readiness
+   Chip past the card edge. */
 
 .settingsCapabilityHeading {
     display: flex;
@@ -270,44 +267,6 @@
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
     line-height: var(--leading-normal);
-  }
-
-.settingsCapabilityGuidanceActions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-2);
-    padding-top: var(--space-0-5);
-    min-width: 0;
-  }
-
-.settingsCapabilityGuidanceActions code {
-    display: block;
-    max-width: 100%;
-    overflow: auto;
-    padding: var(--space-1-5) var(--space-2);
-    border: var(--border-width-hairline) solid var(--foreground-10);
-    border-radius: var(--radius-surface);
-    background: var(--background);
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    white-space: nowrap;
-  }
-
-.settingsCapabilityGuidanceActions > div {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2);
-    align-items: center;
-  }
-
-.settingsCapabilityGuidanceActions a {
-    color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    text-decoration: none;
-  }
-
-.settingsCapabilityGuidanceActions a:hover {
-    text-decoration: underline;
   }
 
 .settingsCapabilityAuditSlot {
@@ -599,21 +558,6 @@
     padding-inline: var(--space-2-5);
   }
 
-  /* The OfficeCLI guidance actions are the widest thing on the page —
-     "复制 macOS/Linux 安装命令" is ~193px intrinsic against a ~96px content
-     column at the 480px floor. Button is a fixed-height (`h-8`) `shrink-0`
-     inline-flex, so on its own it neither shrinks nor wraps, and the overflow
-     propagated all the way up through the guidance block to the capability
-     list. Allow these two to shrink and grow taller rather than clipping the
-     label — the install command keeps its own horizontal scroll (`code` above
-     is deliberately `white-space: nowrap; overflow: auto`). */
-  .settingsCapabilityGuidanceActions > div > * {
-    min-width: 0;
-    flex-shrink: 1;
-    height: auto;
-    min-height: 2rem;
-    white-space: normal;
-  }
 }
 
 .settingsPermissionFootnote {

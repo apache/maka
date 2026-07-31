@@ -126,7 +126,7 @@ describe('shell copy catalog', () => {
       onStartPlanReminder: noop,
     });
 
-    assert.ok(commands.length >= 45, 'the fixture must exercise every optional command family');
+    assert.ok(commands.length >= 43, 'the fixture must exercise every optional command family');
     for (const command of commands) {
       for (const [field, value] of Object.entries({
         label: command.label,
@@ -149,6 +149,12 @@ describe('shell copy catalog', () => {
     assert.equal(
       commands.find((command) => command.id === 'connection:set-default:secondary-connection')?.label,
       'Set as default · Secondary Provider',
+    );
+    assert.deepEqual(
+      commands
+        .filter((command) => command.id.startsWith('perm:set-'))
+        .map((command) => command.id),
+      ['perm:set-ask', 'perm:set-bypass'],
     );
   });
 });

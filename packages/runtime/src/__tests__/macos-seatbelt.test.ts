@@ -151,13 +151,11 @@ describe('buildSeatbeltPolicy', () => {
     ]);
   });
 
-  it('protects metadata names with require-not regex under writable workspace roots', () => {
+  it('keeps workspace metadata writable in the standard workspace profile', () => {
     const policy = policyText(createWorkspaceWritePermissionProfile());
 
-    assert.match(policy, /\(require-all\n    \(subpath \(param "WRITABLE_ROOT_0"\)\)/);
-    assert.ok(policy.includes(String.raw`(require-not (regex #"^/repo/(.*/)?\.git(/.*)?$"))`));
-    assert.ok(policy.includes(String.raw`(require-not (regex #"^/repo/(.*/)?\.agents(/.*)?$"))`));
-    assert.ok(policy.includes(String.raw`(require-not (regex #"^/repo/(.*/)?\.codex(/.*)?$"))`));
+    assert.match(policy, /\(allow file-write\*\n  \(subpath \(param "WRITABLE_ROOT_0"\)\)/);
+    assert.doesNotMatch(policy, /require-not.*\\\.(?:git|agents|codex)/);
   });
 
   it('uses protected metadata names from the active profile', () => {
@@ -185,7 +183,7 @@ describe('buildSeatbeltPolicy', () => {
 
   it('escapes workspace root before building protected metadata regex requirements', () => {
     const result = buildSeatbeltPolicy({
-      profile: createWorkspaceWritePermissionProfile(),
+      profile: workspaceWriteProfileWithCustomProtectedMetadata(),
       pathContext: { workspaceRoots: ['/tmp/repo.(test)+[x]'] },
     });
 

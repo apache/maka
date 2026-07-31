@@ -6,6 +6,8 @@ import { isPathInside, readContainedRegularFile } from './path-containment.js';
 import { validateSkillMetadata } from './skills-metadata.js';
 import type { SkillValidationIssue } from './skills-metadata.js';
 import {
+  getSkillRuntimePreference,
+  migrateSkillRuntimePreferences,
   readSkillRuntimeState,
   type SkillRuntimeStatus,
   type SkillRuntimeStateReadResult,
@@ -126,6 +128,8 @@ export interface SkillScanResult {
   diagnostics: SkillScanDiagnostic[];
   /** Source-level failures that previously appeared as an empty catalog. */
   discoveryDiagnostics: SkillDiscoveryDiagnostic[];
+  /** State snapshot used to resolve enabled/pinned values during this scan. */
+  runtimeState: SkillRuntimeStateReadResult;
 }
 
 export interface RejectedSkillDefinition {
@@ -199,7 +203,7 @@ export function resolveSkillDiscoveryPaths(
  */
 export async function scanSkillsWithDiagnostics(source: SkillSource): Promise<SkillScanResult> {
   const { entries, stateRoot } = normalizeSkillSource(source);
-  const runtimeState = await readSkillRuntimeState(stateRoot);
+  let runtimeState = await readSkillRuntimeState(stateRoot);
   const seenIds = new Map<string, ScannedSkill>();
   const seenNames = new Map<string, ScannedSkill>();
   const out: ScannedSkill[] = [];
@@ -252,12 +256,30 @@ export async function scanSkillsWithDiagnostics(source: SkillSource): Promise<Sk
       out.push(skill);
     }
   }
+  if (runtimeState.ok) {
+    const migration = migrateSkillRuntimePreferences(runtimeState, inventory);
+    for (const skill of inventory) {
+      const preference = getSkillRuntimePreference(migration, skill);
+      skill.enabled = preference.enabled;
+      skill.pinned = preference.pinned;
+      skill.runtimeStatus = preference.enabled ? 'enabled' : 'disabled';
+    }
+    runtimeState = {
+      ...runtimeState,
+      states: new Map(
+        [...migration.preferences].map(([key, preference]) => [key, preference.enabled]),
+      ),
+      preferences: migration.preferences,
+      needsReview: migration.needsReview,
+    };
+  }
   return {
     skills: out,
     inventory,
     rejected,
     diagnostics: [...diagnostics.values()],
     discoveryDiagnostics,
+    runtimeState,
   };
 }
 
@@ -345,6 +367,7 @@ async function scanSkillDir(
     rejected: [],
     diagnostics: [],
     discoveryDiagnostics,
+    runtimeState,
   });
   const sourceDiagnostic = (
     reason: SkillDiscoveryDiagnostic['reason'],
@@ -444,7 +467,14 @@ async function scanSkillDir(
     }
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
-  return { skills: out, inventory: out, rejected, diagnostics, discoveryDiagnostics: [] };
+  return {
+    skills: out,
+    inventory: out,
+    rejected,
+    diagnostics,
+    discoveryDiagnostics: [],
+    runtimeState,
+  };
 }
 
 function appendSkillDiagnostic(

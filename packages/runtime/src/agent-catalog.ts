@@ -49,19 +49,8 @@ export type AgentDefinitionAvailability =
   | { status: 'available' }
   | {
       status: 'unavailable';
-      reason: 'parent_permission_mode';
-      parentPermissionMode: PermissionMode;
-      requiredPermissionMode: PermissionMode;
-    }
-  | {
-      status: 'unavailable';
       reason: 'missing_tools';
       missingTools: string[];
-    }
-  | {
-      status: 'unavailable';
-      reason: 'non_allow_tool_policy';
-      blockedTools: Array<{ name: string; category: ToolCategory; decision: PolicyDecision }>;
     }
   | {
       status: 'unavailable';
@@ -79,14 +68,10 @@ export interface AgentDefinition {
   contract: AgentProfileContract;
   permissionMode: PermissionMode;
   tools: readonly string[];
-  categoryPolicy: Readonly<Partial<Record<ToolCategory, PolicyDecision>>>;
   systemPrompt: string;
 }
 
-export type AgentRuntimeDefinition = Pick<
-  AgentDefinition,
-  'id' | 'permissionMode' | 'tools' | 'categoryPolicy'
->;
+export type AgentRuntimeDefinition = Pick<AgentDefinition, 'id' | 'permissionMode' | 'tools'>;
 
 export interface AgentDefinitionListItem {
   id: string;
@@ -100,7 +85,6 @@ export interface AgentDefinitionListItem {
 }
 
 export interface AgentDefinitionListOptions {
-  parentPermissionMode?: PermissionMode;
   tools?: readonly MakaTool[];
   worktreeChildExecutorAvailable?: boolean;
 }
@@ -121,9 +105,6 @@ export const LOCAL_READ_AGENT_DEFINITION: AgentDefinition = {
   },
   permissionMode: 'explore',
   tools: ['Read', 'Glob', 'Grep'],
-  categoryPolicy: {
-    read: 'allow',
-  },
   systemPrompt: [
     'You are a foreground local-read child agent.',
     'Use only the provided Read, Glob, and Grep tools.',
@@ -148,9 +129,6 @@ export const WEB_RESEARCH_AGENT_DEFINITION: AgentDefinition = {
   },
   permissionMode: 'execute',
   tools: ['WebSearch'],
-  categoryPolicy: {
-    web_read: 'allow',
-  },
   systemPrompt: [
     'You are a foreground web-research child agent.',
     'Use only the provided WebSearch tool.',
@@ -176,11 +154,6 @@ export const IMPLEMENTATION_AGENT_DEFINITION: AgentDefinition = {
   },
   permissionMode: 'execute',
   tools: ['Read', 'Glob', 'Grep', 'Write', 'Edit', 'Bash'],
-  categoryPolicy: {
-    read: 'allow',
-    file_write: 'allow',
-    shell_unsafe: 'allow',
-  },
   systemPrompt: [
     'You are a foreground implementation child agent.',
     'Run only inside a dedicated worktree child executor when the host provides one.',
@@ -196,13 +169,6 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = [
   IMPLEMENTATION_AGENT_DEFINITION,
 ];
 
-const modeRank: Record<PermissionMode, number> = {
-  explore: 0,
-  ask: 1,
-  execute: 2,
-  bypass: 3,
-};
-
 export function listBuiltinAgentDefinitions(
   options: AgentDefinitionListOptions = {},
 ): AgentDefinitionListItem[] {
@@ -212,15 +178,13 @@ export function listBuiltinAgentDefinitions(
     name: definition.name,
     description: definition.description,
     contract: definition.contract,
-    availability:
-      options.parentPermissionMode && options.tools
-        ? evaluateAgentDefinitionAvailability({
-            parentPermissionMode: options.parentPermissionMode,
-            definition,
-            tools: options.tools,
-            worktreeChildExecutorAvailable: options.worktreeChildExecutorAvailable,
-          })
-        : { status: 'unknown' },
+    availability: options.tools
+      ? evaluateAgentDefinitionAvailability({
+          definition,
+          tools: options.tools,
+          worktreeChildExecutorAvailable: options.worktreeChildExecutorAvailable,
+        })
+      : { status: 'unknown' },
     permissionMode: definition.permissionMode,
     tools: [...definition.tools],
   }));
@@ -257,20 +221,15 @@ export function evaluateAgentDefinitionToolAccess(
   tool: Pick<MakaTool, 'name' | 'categoryHint'>,
 ): { category: ToolCategory; decision: PolicyDecision } {
   const category = categoryForTool(tool);
-  if (!definition.tools.includes(tool.name)) return { category, decision: 'block' };
-  return {
-    category,
-    decision: definition.categoryPolicy[category] ?? 'block',
-  };
+  return { category, decision: definition.tools.includes(tool.name) ? 'allow' : 'block' };
 }
 
 export function evaluateAgentDefinitionAvailability(input: {
-  parentPermissionMode: PermissionMode;
   definition: AgentDefinition;
   tools: readonly MakaTool[];
   worktreeChildExecutorAvailable?: boolean;
 }): AgentDefinitionAvailability {
-  const { parentPermissionMode, definition, tools } = input;
+  const { definition, tools } = input;
   if (
     definition.contract.workspace === AGENT_WORKSPACE_WORKTREE &&
     !input.worktreeChildExecutorAvailable
@@ -283,32 +242,10 @@ export function evaluateAgentDefinitionAvailability(input: {
     };
   }
 
-  if (modeRank[definition.permissionMode] > modeRank[parentPermissionMode]) {
-    return {
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode,
-      requiredPermissionMode: definition.permissionMode,
-    };
-  }
-
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const missingTools = definition.tools.filter((name) => !byName.has(name));
   if (missingTools.length > 0) {
     return { status: 'unavailable', reason: 'missing_tools', missingTools };
-  }
-
-  const blockedTools = definition.tools
-    .map((name) => {
-      const tool = byName.get(name);
-      return tool ? { name, ...evaluateAgentDefinitionToolAccess(definition, tool) } : undefined;
-    })
-    .filter(
-      (item): item is { name: string; category: ToolCategory; decision: PolicyDecision } =>
-        item !== undefined && item.decision !== 'allow',
-    );
-  if (blockedTools.length > 0) {
-    return { status: 'unavailable', reason: 'non_allow_tool_policy', blockedTools };
   }
 
   return { status: 'available' };
@@ -323,43 +260,28 @@ export function buildToolsForAgentDefinition(
   for (const name of definition.tools) {
     const tool = byName.get(name);
     if (!tool) continue;
-    if (evaluateAgentDefinitionToolAccess(definition, tool).decision === 'allow') {
-      out.push(tool);
-    }
+    out.push(tool);
   }
   return out;
 }
 
 export function assertAgentDefinitionRunnable(input: {
-  parentPermissionMode: PermissionMode;
   definition: AgentDefinition;
   tools: readonly MakaTool[];
   worktreeChildExecutorAvailable?: boolean;
 }): void {
-  const { parentPermissionMode, definition, tools } = input;
+  const { definition, tools } = input;
   const availability = evaluateAgentDefinitionAvailability({
-    parentPermissionMode,
     definition,
     tools,
     worktreeChildExecutorAvailable: input.worktreeChildExecutorAvailable,
   });
   if (availability.status !== 'unavailable') return;
 
-  if (availability.reason === 'parent_permission_mode') {
-    throw new Error(
-      `Agent "${definition.id}" cannot run in parent permission mode "${availability.parentPermissionMode}" because it requires "${availability.requiredPermissionMode}".`,
-    );
-  }
   if (availability.reason === 'missing_tools') {
     throw new Error(
       `Agent "${definition.id}" is unavailable: missing tools: ${availability.missingTools.join(', ')}`,
     );
-  }
-  if (availability.reason === 'non_allow_tool_policy') {
-    const details = availability.blockedTools
-      .map((item) => `${item.name}:${item.decision}`)
-      .join(', ');
-    throw new Error(`Agent "${definition.id}" is unavailable: non-allow tool policy: ${details}`);
   }
   if (availability.reason === 'workspace_isolation_unavailable') {
     throw new Error(

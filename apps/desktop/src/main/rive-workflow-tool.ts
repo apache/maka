@@ -113,7 +113,6 @@ export function buildRiveWorkflowTool(deps: {
       'Rive remains the source of truth for workflow state; judge success only from Rive protocol projections, never stdout, final answers, or debug traces. ' +
       'Use this when a task benefits from a reusable workflow, parallel workers, retry/recovery, or ledger-backed artifact refs.',
     parameters: riveToolParameters,
-    permissionRequired: true,
     categoryHint: 'custom_tool',
     impl: async (args, { cwd, abortSignal, emitOutput }) => {
       let command: string[];

@@ -1,4 +1,5 @@
 import {
+  isActiveShellRunStatus,
   ShellRunUpdateBuffer,
   mergeShellRunUpdate,
   projectShellRunUpdateForSession,
@@ -41,7 +42,8 @@ export function createShellRunHydrationController(input: {
       'cli.pi-tui-runner',
     );
     const retainOwnerMapping =
-      merged.update.ownership.kind === 'source_owned' && merged.update.result.status === 'running';
+      merged.update.ownership.kind === 'source_owned' &&
+      isActiveShellRunStatus(merged.update.result.status);
     if (index >= 0 && retainOwnerMapping) ownerMappings[index] = merged.update;
     else if (index >= 0) ownerMappings.splice(index, 1);
     else if (retainOwnerMapping) ownerMappings.push(merged.update);

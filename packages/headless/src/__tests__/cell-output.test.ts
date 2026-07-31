@@ -4,11 +4,120 @@ import type { RuntimeEvent } from '@maka/core';
 import type { InvocationResult } from '@maka/runtime';
 import {
   buildHarborCellOutput,
+  validateHarborCellExecutionIdentity,
   validateHarborCellOutput,
   type HarborCellOutput,
 } from '../cell-output.js';
 
 describe('Harbor cell output contract', () => {
+  test('rejects non-catalog names in a new product-tool surface identity', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          systemPromptHash: 'sha256:prompt-a',
+          pricingProfile: 'public',
+          agentTools: false,
+          productToolSurface: {
+            policy: { economy: true, disabledSurfaceIds: ['agent'] },
+            productToolNames: ['Read', 'not_a_catalog_tool'],
+          },
+        }),
+      /productToolNames.*not_a_catalog_tool.*catalog/,
+    );
+  });
+
+  test('rejects a non-canonical disabled-surface policy in a new identity', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          systemPromptHash: 'sha256:prompt-a',
+          pricingProfile: 'public',
+          agentTools: false,
+          productToolSurface: {
+            policy: { economy: true, disabledSurfaceIds: ['office', 'agent'] },
+            productToolNames: ['Read'],
+          },
+        }),
+      /disabledSurfaceIds must be sorted and unique/,
+    );
+  });
+
+  test('rejects unknown disabled surfaces in a new identity', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          systemPromptHash: 'sha256:prompt-a',
+          pricingProfile: 'public',
+          agentTools: true,
+          productToolSurface: {
+            policy: { economy: true, disabledSurfaceIds: ['agnet'] },
+            productToolNames: ['Read'],
+          },
+        }),
+      /disabledSurfaceIds.*agnet.*catalog/,
+    );
+  });
+
+  test('rejects non-canonical effective product-tool names in a new identity', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          systemPromptHash: 'sha256:prompt-a',
+          pricingProfile: 'public',
+          agentTools: false,
+          productToolSurface: {
+            policy: { economy: true, disabledSurfaceIds: ['agent'] },
+            productToolNames: ['Read', 'Read'],
+          },
+        }),
+      /productToolNames must be sorted and unique/,
+    );
+  });
+
+  test('rejects product tools that belong to a disabled surface', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          systemPromptHash: 'sha256:prompt-a',
+          pricingProfile: 'public',
+          agentTools: false,
+          productToolSurface: {
+            policy: { economy: true, disabledSurfaceIds: ['agent'] },
+            productToolNames: ['Read', 'agent_spawn'],
+          },
+        }),
+      /agent_spawn.*disabled surface "agent"/,
+    );
+  });
+
+  test('requires legacy agentTools to match the effective product-tool names', () => {
+    assert.throws(
+      () =>
+        validateHarborCellExecutionIdentity({
+          llmConnectionSlug: 'deepseek',
+          model: 'deepseek-v4-flash',
+          systemPromptHash: 'sha256:prompt-a',
+          pricingProfile: 'public',
+          agentTools: true,
+          productToolSurface: {
+            policy: { economy: true, disabledSurfaceIds: [] },
+            productToolNames: ['Read'],
+          },
+        }),
+      /agentTools must match.*effective product-tool surface/,
+    );
+  });
+
   test('summarizes runtime outcome, prompt hash, token cost, and event path', () => {
     const events: RuntimeEvent[] = [
       runtimeEvent({ id: 'user-event' }),
@@ -131,6 +240,13 @@ describe('Harbor cell output contract', () => {
         systemPromptHash: 'sha256:prompt-a',
         pricingProfile: 'deepseek-v4-flash-tbench-v1',
         agentTools: true,
+        productToolSurface: {
+          policy: { economy: true, disabledSurfaceIds: [] },
+          productToolNames: ['Bash', 'agent_spawn'],
+        },
+        supplementalToolSets: [
+          { label: 'heavy_task_progress', toolNames: ['inventory_submit', 'todo_update'] },
+        ],
       },
     }) as HarborCellOutput & { executionIdentity?: unknown };
 
@@ -142,6 +258,13 @@ describe('Harbor cell output contract', () => {
       systemPromptHash: 'sha256:prompt-a',
       pricingProfile: 'deepseek-v4-flash-tbench-v1',
       agentTools: true,
+      productToolSurface: {
+        policy: { economy: true, disabledSurfaceIds: [] },
+        productToolNames: ['Bash', 'agent_spawn'],
+      },
+      supplementalToolSets: [
+        { label: 'heavy_task_progress', toolNames: ['inventory_submit', 'todo_update'] },
+      ],
     });
   });
 

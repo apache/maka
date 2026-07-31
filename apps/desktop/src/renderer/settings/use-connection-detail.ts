@@ -7,7 +7,11 @@ import {
   type ModelInfo,
   type ProviderType,
 } from '@maka/core';
-import { providerAuthRequiresSecret, providerAuthSupportsApiKey } from '@maka/core/llm-connections';
+import {
+  providerAuthRequiresSecret,
+  providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
+} from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { buildCatalogModelChoices } from '../model-catalog-choices';
@@ -84,8 +88,8 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [enabledModelIds, setEnabledModelIds] = useState(() => connectionEnabledModelIds(connection));
   // Backend persists the model-list source alongside the model cache, so a
   // Settings restart no longer has to infer "fetched" from a non-empty array.
-  // A successful provider response may legitimately contain 0 models; source
-  // and length remain separate facts.
+  // Discovery rejects empty catalogs before persistence, while source remains
+  // explicit for compatibility with already-persisted connection records.
   const [modelSource, setModelSource] = useState<'fetched' | 'fallback'>(
     connection.modelSource ?? 'fallback',
   );
@@ -107,6 +111,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const hasFixedOAuthBaseUrl = needsOAuth && Boolean(defaults.baseUrl);
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
   const credentialProbePending = requiresCredential && (hasSecret === 'loading' || hasSecret === 'error');
@@ -239,7 +244,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // dropdown only contains the static fallback list (e.g. Z.ai → just
       // glm-4.7 / 4.6 / 4.5), which looks like Maka doesn't support newer
       // models. Auto-fetch on save closes that gap.
-      if ((!requiresCredential || nextHasSecret) && (wroteNewKey || models.length === 0)) {
+      if (
+        supportsRemoteDiscovery &&
+        (!requiresCredential || nextHasSecret) &&
+        (wroteNewKey || hasBaseUrlChange || models.length === 0)
+      ) {
         void refreshModels({ silent: true });
       }
     } catch (error) {
@@ -331,11 +340,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     const lifecycle = connectionDetailLifecycleRef.current;
     setFetchingModels(true);
     try {
-      // Backend (xuan `81ed044`) returns a `ModelDiscoveryResult` envelope —
-      // `{ models, source: 'fetched' | 'fallback', fetchedAt }` — and throws
-      // a generalizedErrorMessage on failure. We trust `result.source`
-      // verbatim instead of inferring from list length, so a provider that
-      // legitimately returns 0 models still reads as 'fetched'.
+      // Backend returns a `ModelDiscoveryResult` envelope and rejects empty or
+      // malformed catalogs before persistence. Trust its explicit source
+      // instead of reconstructing cache provenance in the renderer.
       const result = await props.bridge.fetchModels(connection.slug);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setModels(result.models);
@@ -460,6 +467,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     usesGitHubCopilotLogin,
     oauthLoginService,
     hasFixedOAuthBaseUrl,
+    supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,
     apiKeyStatusHint,

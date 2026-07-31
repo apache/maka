@@ -337,7 +337,6 @@ export async function verifyPackagedMacApp(
   } = {},
 ) {
   const desktopManifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const bundledTools = JSON.parse(await readFile(join(desktopRoot, 'bundled-tools.json'), 'utf8'));
   const contents = join(appPath, 'Contents');
   const resources = join(contents, 'Resources');
   const infoPlist = join(contents, 'Info.plist');
@@ -352,7 +351,6 @@ export async function verifyPackagedMacApp(
   }
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
-  const officecli = join(resources, 'tools', 'officecli');
   const filesystemWorker = join(resources, 'workers', 'filesystem-worker.js');
   const appAsar = join(resources, 'app.asar');
 
@@ -360,38 +358,31 @@ export async function verifyPackagedMacApp(
   await requirePath(appAsar);
   await requirePath(join(resources, 'bundled-tools.json'));
   await requirePath(filesystemWorker);
-  await requirePath(join(resources, 'licenses', 'officecli', 'LICENSE'));
-  await requirePath(join(resources, 'licenses', 'officecli', 'ATTRIBUTION.md'));
   await requirePath(join(resources, 'licenses', 'maka', 'LICENSE'));
   await requirePath(join(resources, 'licenses', 'maka', 'NOTICE'));
+  await requirePath(join(resources, 'licenses', 'electron', 'LICENSE'));
+  await requirePath(join(resources, 'licenses', 'electron', 'LICENSES.chromium.html'));
+  await requirePath(join(resources, 'licenses', 'npm', 'THIRD_PARTY_NOTICES.txt'));
   await requirePath(join(resources, 'licenses', 'renderer', 'THIRD_PARTY_LICENSES.txt'));
   await requirePath(join(resources, 'licenses', 'renderer', 'GEIST_LICENSE.txt'));
   await requirePath(join(resources, 'licenses', 'renderer', 'GEIST_MONO_LICENSE.txt'));
   await requirePath(join(resources, 'licenses', 'renderer', 'ANT_DESIGN_ICONS_LICENSE.txt'));
   await requirePath(join(resources, 'licenses', 'renderer', 'SIMPLE_ICONS_LICENSE.md'));
-  await requirePath(officecli);
+  await requirePath(join(resources, 'licenses', 'renderer', 'TDESIGN_ICONS_LICENSE.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'ALLOGO_LICENSE.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'SEMI_ICONS_LICENSE.txt'));
+  await requirePath(join(resources, 'licenses', 'renderer', 'MINGCUTE_APACHE_LICENSE.txt'));
+  await forbidPath(join(resources, 'tools', 'officecli'));
+  await forbidPath(join(resources, 'licenses', 'officecli'));
   await forbidPath(join(resources, 'bin', 'cua-driver'));
   await forbidPath(join(resources, 'tools', 'cua-driver'));
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
   assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');
-  const officecliArchitectures = await run('lipo', ['-archs', officecli]);
-  assertSingleArchitecture(officecliArchitectures.stdout, 'OfficeCLI');
-
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
-  await run('codesign', ['--verify', '--strict', '--verbose=2', officecli]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
 
-  const officeVersion = await run(officecli, ['--version'], {
-    env: { OFFICECLI_SKIP_UPDATE: '1' },
-  });
-  const expectedOfficeVersion = bundledTools.officecli.version.replace(/^v/, '');
-  if (!officeVersion.stdout.includes(expectedOfficeVersion)) {
-    throw new Error(
-      `Expected OfficeCLI ${expectedOfficeVersion}, found ${officeVersion.stdout.trim()}.`,
-    );
-  }
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',

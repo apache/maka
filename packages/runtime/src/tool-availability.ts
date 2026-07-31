@@ -35,7 +35,7 @@ const SEED_CONNECTOR_NAMES: ReadonlySet<string> = new Set([
   'connect_tool_source',
 ]);
 
-/** A natural cluster of tools that load together (browser, office, …). */
+/** A natural cluster of tools that load together (browser, computer use, …). */
 export interface ToolGroup {
   id: string;
   toolNames: readonly string[];
@@ -245,7 +245,6 @@ export class ToolAvailabilityRuntime {
     return {
       name: LOAD_TOOLS_NAME,
       description: renderCatalog(this.groups),
-      permissionRequired: false,
       parameters: z.object({
         group: groupSchema.describe('The capability group to load.'),
       }),

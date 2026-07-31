@@ -30,12 +30,16 @@
     "test": "npm run clean:main && npm run build:main && node --test \"dist/main/**/*.test.js\"",
     "test:checks": "node ../../scripts/check-console.mjs && node ../../scripts/check-a11y.mjs && node ../../scripts/check-copy.mjs",
     "test:dist": "npm run test:checks && node --test \"dist/main/**/*.test.js\"",
-    "e2e": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build && playwright test --config e2e/playwright.config.ts",
-    "smoke:real-window": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build && node ../../scripts/desktop-real-window-smoke.mjs",
-    "smoke:programmatic-window": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
+    "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
+    "build:with-deps": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/ui run build && npm run build",
+    "smoke:real-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs",
+    "smoke:programmatic-window": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --programmatic-only",
+    "launch:fixture": "npm run build:with-deps && node ../../scripts/desktop-real-window-smoke.mjs --manual",
     "smoke:browser": "npm --workspace @maka/core run build && npm --workspace @maka/runtime run build && npm --workspace @maka/computer-use run build && npm run build:main && electron scripts/browser-observe-act-smoke.mjs"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.1.9",
+    "@astryxdesign/theme-neutral": "0.1.9",
     "@base-ui/react": "^1.5.0",
     "@jackwener/opencli": "1.8.4",
     "@maka/computer-use": "0.1.0",
@@ -70,7 +74,6 @@
     "postcss": "8.5.15",
     "simple-icons": "15.22.0",
     "storybook": "^10.4.6",
-    "streamdown": "^2.5.0",
     "tailwindcss": "^4.3.1",
     "vite": "^8.1.5"
   }

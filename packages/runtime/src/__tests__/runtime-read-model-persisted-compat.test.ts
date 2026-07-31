@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core';
 import { createAgentRunStore, createRuntimeEventStore } from '@maka/storage';
 import { RuntimeReadModel } from '../runtime-read-model.js';
+import { isHardRuntimeEventReadModelDiagnostic } from '../runtime-event-read-model.js';
 
 const sessionId = 'legacy-runtime-event-session';
 const runId = 'legacy-runtime-event-run';
@@ -79,15 +80,7 @@ test('reopens a persisted legacy subagent RuntimeEvent without rewriting it', as
       'waiting_for_user',
     );
 
-    const hardReadDiagnosticCodes = new Set([
-      'incomplete_event',
-      'unsupported_event',
-      'tool_use_id_mismatch',
-    ]);
-    assert.equal(
-      view.diagnostics.some((diagnostic) => hardReadDiagnosticCodes.has(diagnostic.code)),
-      false,
-    );
+    assert.equal(view.diagnostics.some(isHardRuntimeEventReadModelDiagnostic), false);
     const blockingReplayDiagnosticCodes = new Set([
       'unsupported_role',
       'unsupported_content',

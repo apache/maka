@@ -1,11 +1,16 @@
 import { useState, type FormEvent } from 'react';
 import {
   PROVIDER_DEFAULTS,
+  deriveConnectionSlug,
   isWiredOAuthProvider,
   validateSlug,
   type ProviderType,
 } from '@maka/core';
-import { providerAuthRequiresSecret, providerAuthSupportsApiKey } from '@maka/core/llm-connections';
+import {
+  providerAuthRequiresSecret,
+  providerAuthSupportsApiKey,
+  providerSupportsModelDiscovery,
+} from '@maka/core/llm-connections';
 import { Alert, AlertDescription, AlertTitle, Button, Chip, Input, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
@@ -13,7 +18,6 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   categoryLabel,
-  nextSlug,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
 } from './provider-panel-shared';
@@ -31,7 +35,9 @@ export function AddProviderForm(props: {
   const defaults = PROVIDER_DEFAULTS[props.providerType];
   const display = providerDisplay(props.providerType, locale);
   const recommendedDefaultModel = buildCatalogRecommendedDefaultModel(props.providerType);
-  const [slug, setSlug] = useState(() => nextSlug(props.providerType, props.existingSlugs));
+  const [slug, setSlug] = useState(() =>
+    deriveConnectionSlug(props.providerType, props.existingSlugs),
+  );
   const [name, setName] = useState(display.name);
   const [baseUrl, setBaseUrl] = useState(defaults.baseUrl);
   const [cloudflareAccountId, setCloudflareAccountId] = useState('');
@@ -48,6 +54,7 @@ export function AddProviderForm(props: {
   const isCustomRelay = defaults.category === 'custom';
   const isExperimental = defaults.status === 'phase3-experimental';
   const isWiredOAuth = isWiredOAuthProvider(props.providerType);
+  const supportsRemoteDiscovery = providerSupportsModelDiscovery(props.providerType);
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
@@ -90,17 +97,14 @@ export function AddProviderForm(props: {
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
       });
       if (!addProviderMountedRef.current) return;
-      // Local connections should reflect the daemon actually running on this
-      // machine instead of remaining on a static or empty fallback catalog.
       let modelDiscoveryError: unknown;
-      if (defaults.category === 'local') {
+      if (supportsRemoteDiscovery) {
         try {
           await props.bridge.fetchModels(connection.slug);
         } catch (error) {
-          modelDiscoveryError = error;
+          if (!isCustomRelay) modelDiscoveryError = error;
         }
       }
-      if (isCustomRelay) await props.bridge.fetchModels(connection.slug).catch(() => undefined);
       if (!addProviderMountedRef.current) return;
       await props.onCreated(connection.slug, modelDiscoveryError);
     } catch (err) {
@@ -136,10 +140,8 @@ export function AddProviderForm(props: {
         </label>
         {error && <p className="providerError" id={errorId} role="alert">{error}</p>}
         <div className="providerKeyDialogActions">
-          <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>{copy.cancel}</Button>
-          <Button type="submit" disabled={busy}>
-            {busy ? copy.connecting : copy.connect}
-          </Button>
+          <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
+          <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.connecting : copy.connect} />
         </div>
       </form>
     );
@@ -219,10 +221,8 @@ export function AddProviderForm(props: {
       )}
       {error && <p className="providerError" role="alert">{error}</p>}
       <div className="providerActions">
-        <Button variant="ghost" type="button" disabled={busy} onClick={props.onCancel}>{copy.cancel}</Button>
-        <Button type="button" disabled={busy || isExperimental} onClick={submit}>
-          {busy ? copy.saving : copy.save}
-        </Button>
+        <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
+        <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
       </div>
     </div>
   );

@@ -62,7 +62,6 @@ export async function packageMacosArm64({
   const updateMetadataPath = join(releaseDirectory, 'latest-mac.yml');
 
   await run('npm', ['run', 'clean']);
-  await run('npm', ['run', 'prepare:officecli', '--', '--platform', 'darwin', '--arch', 'arm64']);
   await run('npm', ['run', 'build']);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });

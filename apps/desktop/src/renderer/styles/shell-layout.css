@@ -34,25 +34,18 @@
 }
 
 .maka-shell-2col {
-  --maka-sidebar-topbar-button-size: var(--h-control-sm);
-  --maka-sidebar-topbar-gap: 8px;
   --maka-sidebar-exit-offset: calc(var(--space-2) * -1);
-  /* Alignment governance, PIXEL-MEASURED (screencapture + centroid): the
-     macOS traffic lights draw ~13.5pt tall with their optical center at
-     y=20.75 — NOT the theoretical 20 (position 14 + 12/2). Icon glyphs
-     centered at 19.8 read visibly high. top = safe-top - 16 puts the
-     rail's compact buttons at center 21 (0.25px inside the lights'
-     center — imperceptible, integer-safe). Keep in lockstep with
-     --maka-workspace-top-actions-top. */
-  --maka-sidebar-topbar-offset-y: calc(var(--maka-titlebar-control-safe-top) - 16px);
-  --maka-sidebar-topbar-offset-x: calc(var(--maka-titlebar-control-safe-left) - 10px);
-  --maka-sidebar-collapsed-topbar-inset: calc(
-    var(--maka-sidebar-topbar-offset-x) + var(--maka-sidebar-topbar-button-size) +
-      var(--maka-sidebar-topbar-button-size) + var(--maka-sidebar-topbar-button-size) +
-      var(--maka-sidebar-topbar-gap) + var(--maka-sidebar-topbar-gap) + 8px
-  );
   position: relative;
   display: grid;
+  /* The titlebar is a ROW, not an overlay. Everything else lives in row 2, so
+     no panel needs a ruler telling it where the titlebar ends: content cannot
+     reach into a row it is not in. This replaced four separate titlebar-
+     avoidance paddings and two hand-summed "how wide is my sibling" insets,
+     one of which had drifted 12px out of sync with the button size it claimed
+     to add up. `--h-titlebar` is the one height: main-window.ts hands the same
+     number to the native `titleBarOverlay`, and a contract test fails if the
+     two drift. */
+  grid-template-rows: var(--h-titlebar) minmax(0, 1fr);
   align-items: stretch;
   gap: 0;
   overflow: hidden;
@@ -143,15 +136,53 @@
   transform: translateX(var(--maka-sidebar-exit-offset));
 }
 
-.maka-shell-topbar-rail {
-  position: absolute;
-  z-index: var(--z-panel-action);
-  top: var(--maka-sidebar-topbar-offset-y);
-  left: var(--maka-sidebar-topbar-offset-x);
-  min-height: 34px;
+/* The window's only drag surface, and the only `-webkit-app-region: drag` in
+   the app. It is an ordinary grid row holding ordinary in-flow children, which
+   is what makes the arithmetic disappear: the draggable region is whatever the
+   row has left after its action clusters carve themselves out with `no-drag`.
+
+   This replaced an arrangement where every container that happened to overlap
+   the titlebar declared its own drag region and then reserved room for its
+   neighbours with a hand-summed `margin-left`/`margin-right` ruler. Those
+   rulers encoded "how many titlebar buttons exist right now" — state-dependent,
+   since the rail renders a third button (新任务) only while the sidebar is
+   collapsed. The sidebar's strip reserved room for two, the third button landed
+   in the space nobody reserved, and clicks on it reached the OS as window drags.
+
+   The margin keeps the drag rect off the window frame on the three sides it
+   touches, so the OS keeps its resize corridor there. It is DEFENSIVE, not
+   demonstrated: this area's other bug (`af681c1`, msg `5b85fdb1`) was a window
+   that could not be resized from its edges, and no automated check in this repo
+   can exercise the OS hit test to prove whether 0 would also be safe. 4px of a
+   36px titlebar is not a cost worth arguing about; a P0 nobody can reproduce in
+   CI is.
+
+   The gutters are applied as plain padding, NOT as `calc(gutter - margin)`. Both
+   are safe-AREA measurements, so the box's 4px inset just yields 4px more
+   clearance than the minimum. Subtracting it would restate the inset in two more
+   places to keep the clusters at an exact pixel — which is the habit this whole
+   change exists to remove. */
+.maka-window-titlebar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  margin: var(--maka-window-resize-edge) var(--maka-window-resize-edge) 0;
   display: flex;
   align-items: center;
-  gap: var(--maka-sidebar-topbar-gap);
+  gap: var(--space-2);
+  /* One gutter rule per side: our own `--space-6` of breathing room, or the
+     platform's native-control safe area when that is wider. Nothing here knows
+     which platform it is on or how wide any control is — `max()` picks whichever
+     the OS reports (macOS: traffic lights on the left; Windows: caption buttons
+     on the right; Linux: neither, so the design floor stands). */
+  padding-left: max(var(--space-6), var(--maka-titlebar-area-x));
+  padding-right: calc(var(--space-6) + var(--maka-titlebar-overlay-right-width));
+  -webkit-app-region: drag;
+}
+
+.maka-shell-topbar-rail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
@@ -172,6 +203,9 @@
   user-select: none;
   touch-action: none;
   background: transparent;
+  /* No `no-drag` needed: the handle spans row 2 only. It used to run the full
+     window height and overlap the drag band, escaping it only because the
+     sidebar's drag strip happened to end 2px to its left. */
 }
 
 .maka-shell-2col[data-sidebar-state="collapsed"] .maka-resize-handle {
@@ -258,31 +292,22 @@
   align-content: center;
 }
 
+/* Right-hand cluster of the titlebar row. `margin-left: auto` is the whole
+   positioning rule — it used to be absolutely positioned against the detail
+   panel, which is why the chat header had to reserve its width by hand. Which
+   views render it at all is decided in app-shell.tsx, not by a `display: none`
+   override reaching in from `[data-agents-view]`. */
 .maka-workspace-top-actions {
   -webkit-app-region: no-drag;
-  position: absolute;
-  /* PR-FE-BUG-HUNT-9 (kenji audit reminder 9, finding #4):
-     was bare `z-index: 4`. Tokenized to `--z-panel-action`.
-     Identical visual stacking, but referenceable + contract-locked. */
-  z-index: var(--z-panel-action);
-  /* Same baseline; 17px correction = 12px half-icon + 5px detail-panel
-     inset. Tokenized in maka-tokens.css so the chat status row can
-     share the toolbar's right edge without duplicating the value. */
-  top: var(--maka-workspace-top-actions-top);
-  right: var(--maka-workspace-top-actions-right);
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
   color: var(--foreground-secondary);
 }
 
-.maka-panel-detail[data-agents-view="skills"] .maka-workspace-top-actions,
-.maka-panel-detail[data-agents-view="cron"] .maka-workspace-top-actions,
-.maka-panel-detail[data-agents-view="daily-review"] .maka-workspace-top-actions {
-  display: none;
-}
-
-.maka-titlebar-action,
-.maka-titlebar-action * {
-  -webkit-app-region: no-drag;
-}
+/* `.maka-titlebar-action` needs no `no-drag` of its own: every one of these
+   buttons lives inside `.maka-shell-topbar-rail` or
+   `.maka-workspace-top-actions`, and each of those carves out a rect covering
+   its children. A per-button rule (plus a `*` descendant rule for the icons)
+   only duplicated that. */

@@ -40,6 +40,7 @@ export interface LocalMemoryProposalInput {
   title: string;
   content: string;
   scope?: LocalMemoryScope;
+  sessionId?: string;
   sourceTurnId?: string;
 }
 
@@ -47,6 +48,7 @@ export interface LocalMemoryRememberInput {
   title: string;
   content: string;
   scope?: LocalMemoryScope;
+  sessionId?: string;
 }
 
 export type LocalMemoryPromptUpdateAction =
@@ -62,6 +64,7 @@ export interface LocalMemoryPromptUpdate {
   action: LocalMemoryPromptUpdateAction;
   entryId?: string;
   title?: string;
+  sessionId?: string;
   ts: number;
 }
 
@@ -80,9 +83,14 @@ export class LocalMemoryService {
     this.now = deps.now ?? Date.now;
   }
 
-  consumePendingPromptUpdates(): ReadonlyArray<LocalMemoryPromptUpdate> {
-    const updates = this.pendingPromptUpdates;
-    this.pendingPromptUpdates = [];
+  consumePendingPromptUpdates(sessionId?: string): ReadonlyArray<LocalMemoryPromptUpdate> {
+    const updates: LocalMemoryPromptUpdate[] = [];
+    const retained: LocalMemoryPromptUpdate[] = [];
+    for (const update of this.pendingPromptUpdates) {
+      if (!update.sessionId || update.sessionId === sessionId) updates.push(update);
+      else retained.push(update);
+    }
+    this.pendingPromptUpdates = retained;
     return updates;
   }
 
@@ -240,6 +248,7 @@ export class LocalMemoryService {
         title: input.title,
         content: redactSecrets(content.value),
         scope: scope.value,
+        sessionId: input.sessionId,
         sourceTurnId: input.sourceTurnId,
         proposedAt: now,
       });
@@ -281,6 +290,7 @@ export class LocalMemoryService {
         content: redactSecrets(validation.value.content),
         source: 'user_authored',
         scope: input.scope ?? 'workspace',
+        sessionId: input.sessionId,
         confirmedAt: now,
         approvalSurface: 'manual_editor_save',
       });
@@ -705,6 +715,7 @@ export class LocalMemoryService {
       ts: this.now(),
       ...(entry?.id || fallbackEntryId ? { entryId: entry?.id ?? fallbackEntryId } : {}),
       ...(entry?.title ? { title: entry.title } : {}),
+      ...(entry?.scope === 'session' && entry.sessionId ? { sessionId: entry.sessionId } : {}),
     });
     if (this.pendingPromptUpdates.length > 50) {
       this.pendingPromptUpdates = this.pendingPromptUpdates.slice(-50);
@@ -767,6 +778,8 @@ function localMemoryMutationFailureMessage(reason: string): string {
   switch (reason) {
     case 'invalid_id':
       return '记忆 ID 无效。';
+    case 'invalid_session_id':
+      return '会话记忆缺少有效的会话标识。';
     case 'empty_title':
       return '标题不能为空。';
     case 'empty_content':

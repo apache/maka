@@ -39,7 +39,7 @@ describe('PTY model output projection', () => {
 });
 
 describe('shell run sandbox denial projection', () => {
-  test('offers escalation recovery only for a failed sandboxed process', () => {
+  test('reports a diagnostic signal only for a failed sandboxed process', () => {
     const base = failedShellRun();
 
     assert.equal(terminalContent(base).sandboxDenial, undefined);
@@ -51,7 +51,6 @@ describe('shell run sandbox denial projection', () => {
       {
         likely: true,
         backend: 'macos-seatbelt',
-        recovery: 'require_escalated',
       },
     );
     assert.equal(

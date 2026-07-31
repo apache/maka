@@ -57,11 +57,10 @@ async function runTool(
 }
 
 describe('WebSearch agent tool (PR-AGENT-WEB-SEARCH-TOOL-0)', () => {
-  it('registers under the canonical name expected by permission policy', () => {
+  it('registers under the canonical WebSearch name', () => {
     const tool = buildWebSearchAgentTool({ settingsStore: makeSettingsStore((s) => s) });
     assert.equal(tool.name, WEB_SEARCH_TOOL_NAME);
     assert.equal(tool.name, 'WebSearch');
-    assert.equal(tool.permissionRequired, true);
     assert.equal(tool.categoryHint, undefined);
   });
 

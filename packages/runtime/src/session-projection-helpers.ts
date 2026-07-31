@@ -99,18 +99,11 @@ export function statusFromEvent(
   options: { allowInteractionResume?: boolean } = {},
 ): { status: SessionStatus; blockedReason?: SessionBlockedReason } | undefined {
   switch (event.type) {
-    case 'permission_request':
+    case 'sandbox_boundary_request':
       return { status: 'waiting_for_user', blockedReason: 'permission_required' };
     case 'user_question_request':
       return { status: 'waiting_for_user' };
-    case 'permission_answer_ack':
-      if (options.allowInteractionResume === false) return undefined;
-      return { status: 'running' };
-    case 'permission_closure_ack':
-      if (options.allowInteractionResume === false) return undefined;
-      return { status: 'running' };
-    case 'permission_decision_ack':
-      if (event.decision === 'deny') return { status: 'aborted' };
+    case 'sandbox_boundary_decision_ack':
       if (options.allowInteractionResume === false) return undefined;
       return { status: 'running' };
     case 'user_question_answer_ack':
@@ -121,8 +114,6 @@ export function statusFromEvent(
     case 'abort':
       return { status: 'aborted' };
     case 'complete':
-      if (event.stopReason === 'permission_handoff')
-        return { status: 'waiting_for_user', blockedReason: 'permission_required' };
       if (event.stopReason === 'user_stop') return { status: 'aborted' };
       if (event.stopReason === 'error') return { status: 'blocked', blockedReason: 'unknown' };
       return { status: 'active' };
@@ -143,7 +134,6 @@ export function turnStatusFromEvent(
       if (event.stopReason === 'user_stop') return { status: 'aborted' };
       const errorClass = failureClassFromCompleteStopReason(event.stopReason);
       if (errorClass) return { status: 'failed', errorClass };
-      if (event.stopReason === 'permission_handoff') return { status: 'running' };
       return { status: 'completed' };
     }
     default:

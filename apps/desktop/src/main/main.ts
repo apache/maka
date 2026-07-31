@@ -5,6 +5,7 @@ import { wireAppLifecycle } from './app-lifecycle.js';
 import {
   collapseSessionRevisions,
   filterModelVisibleTaskLedgerTasks,
+  isActiveShellRunStatus,
   resolveSystemUiLocale,
   resolveUiLocale,
 } from '@maka/core';
@@ -34,7 +35,6 @@ import {
   AgentGraphSupervisorWakeCoordinator,
   BackendRegistry,
   FakeBackend,
-  PermissionEngine,
   SessionManager,
   createLocalContinuationSafetyInspector,
   buildDeepResearchTools,
@@ -84,6 +84,7 @@ import {
   errorMessage,
   requireReadyConnection,
 } from './chat-readiness.js';
+import { assertDesktopExecutionBoundary } from './desktop-execution-admission.js';
 import { createFileCredentialStore } from './credential-store.js';
 import { bindOnboardingDeps, createOnboardingService } from './onboarding-service.js';
 import { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
@@ -272,7 +273,6 @@ const planStore = createPlanStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimePersistence = await openRuntimeEventPersistence({
   workspaceRoot,
-  sqliteCanonical: process.env.MAKA_RUNTIME_SQLITE_CANONICAL === '1',
 });
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
 const shellRunStore = createShellRunStore(workspaceRoot);
@@ -576,7 +576,7 @@ const localMemory = new LocalMemoryService({
 // session header instead; see resolveDesktopSkillHostForSession below.
 const desktopSessionSkillHosts = new Map<string, HostCapabilities>();
 const resolveDesktopSkillHost: HostCapabilitiesResolver = ({ sessionId }) =>
-  desktopSessionSkillHosts.get(sessionId) ?? desktopHostCapabilities;
+  desktopSessionSkillHosts.get(sessionId) ?? desktopProductToolSurface.hostCapabilities;
 // Window is created hidden for E2E and e2e-fixture runs so it never steals
 // focus. Derived from the same isE2e gate as userData/fake-backend so the
 // hidden-window switch stays in lockstep with the rest of the E2E isolation.
@@ -585,6 +585,9 @@ const resolveDesktopSkillHost: HostCapabilitiesResolver = ({ sessionId }) =>
 // BeginFrames on Linux, which stalls content-visibility inflation and any
 // frame-paced E2E protocol (measured in the scroll-geometry climb: 38 frames
 // over 31s). The E2E harness sets it, not the workflow — see fixtures.ts.
+// This value is also what hides the macOS dock icon (see app-lifecycle.ts):
+// staying out of sight and staying out of the Dock are one decision, so a run
+// that opts into a visible window also opts back into Dock and Cmd+Tab.
 const startHidden = (Boolean(e2eFixture) || isIsolatedE2e)
   && process.env.MAKA_E2E_SHOW_WINDOW !== '1';
 let onMainWindowClose = (): void => {};
@@ -598,11 +601,13 @@ const mainWindowController = createMainWindowController({
 // Shared by 'second-instance' and 'activate': focus the existing window, or
 // create one if all windows were closed while the app (macOS: still in the
 // dock) stayed running -- a second launch attempt must not be a silent no-op.
-function focusOrCreateMainWindow(): void {
+function focusOrCreateMainWindow(signal: AbortSignal): void {
   if (mainWindowController.hasOpenWindows()) {
     mainWindowController.focus();
   } else {
-    void mainWindowController.createWindow();
+    void mainWindowController
+      .createWindow(signal)
+      .catch((error) => console.error('[window] failed to create:', error));
   }
 }
 const safeSendToRenderer = mainWindowController.send;
@@ -641,7 +646,6 @@ const openGateway = new OpenGatewayService({
   },
 });
 const backends = new BackendRegistry();
-const permissionEngine = new PermissionEngine({ newId: randomUUID, now: Date.now });
 const shellRuns = new ShellRunProcessManager({
   store: shellRunStore,
   newId: randomUUID,
@@ -660,15 +664,13 @@ const {
 
 const {
   riveTools,
-  officeTools,
   browserTools,
   computerUse,
   computerUseOverlay,
   computerUseTools,
   agentTeamLeadTools,
-  desktopHostCapabilities,
+  desktopProductToolSurface,
   builtinTools,
-  toolAvailability,
   childAgentTools,
   sandboxDiagnosticsProvider,
 } = assembleDesktopTools({
@@ -698,7 +700,7 @@ const desktopBackendToolSurfaceDeps = {
   computerUseTools,
   agentTeamLeadTools,
   builtinTools,
-  toolAvailability,
+  toolEconomy: desktopProductToolSurface.identity.policy.economy,
   planStore,
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),
@@ -711,9 +713,22 @@ const systemPromptService = createSystemPromptMainService({
   localMemory,
   taskLedger: taskLedgerStore,
   goalManager: goalWiring.manager,
-  hostCapabilities: desktopHostCapabilities,
+  hostCapabilities: desktopProductToolSurface.hostCapabilities,
 });
 let lookupPricing = buildPricingLookup();
+let usageReadiness: Promise<void> | undefined;
+function ensureUsageReady(): Promise<void> {
+  if (!usageReadiness) {
+    const readiness = telemetryRepo.load().then(() => {
+      lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());
+    });
+    usageReadiness = readiness;
+    void readiness.catch(() => {
+      if (usageReadiness === readiness) usageReadiness = undefined;
+    });
+  }
+  return usageReadiness;
+}
 // Track the last status fields that affect persisted diagnostics. The reason
 // is part of the key because a running bridge can remain degraded while a
 // newer, more useful failure replaces the previous one.
@@ -746,7 +761,6 @@ const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     readSessionCwd: async (id) => (await store.readHeader(id)).cwd,
   });
 const botRegistry = new BotRegistry({
-  botDataDir: join(app.getPath('userData'), 'bots'),
   onIncomingMessage: (message: BotIncomingMessage) => {
     // Only log incoming bot messages in dev — production stdout leaking
     // platform + chatId is operational noise at best and a small privacy
@@ -807,8 +821,8 @@ backends.register('ai-sdk', createAiSdkBackendFactory({
   ...desktopBackendToolSurfaceDeps,
   buildSubscriptionModelFetch,
   systemPromptService,
-  permissionEngine,
   telemetryRepo,
+  ensureUsageReady,
   artifactStore,
   desktopSessionSkillHosts,
   sandboxDiagnosticsProvider,
@@ -868,7 +882,7 @@ const runtime = new SessionManager({
         runStore.listSessionRuns(sessionId),
       ]);
       return (
-        shellUpdates.some((update) => update.result.status === 'running') ||
+        shellUpdates.some((update) => isActiveShellRunStatus(update.result.status)) ||
         runs.some(
           (run) =>
             run.parentRunId !== undefined &&
@@ -976,6 +990,7 @@ const dailyReview = createDailyReviewMainService({
   archiveStore: dailyReviewArchiveStore,
   connectionStore,
   telemetryRepo,
+  ensureUsageReady,
   listSessions: async () => collapseSessionRevisions(await runtime.listSessions()),
   resolveConnectionSecret,
   buildSubscriptionModelFetch,
@@ -1052,7 +1067,7 @@ function registerIpc(): void {
     mainWindowController,
     sendToRenderer: safeSendToRenderer,
     listInvocableSkills: listDesktopInvocableSkills,
-    skillHost: desktopHostCapabilities,
+    skillHost: desktopProductToolSurface.hostCapabilities,
     getCurrentProjectRoot: currentProjectRoot,
     getSkillSelectionReport: systemPromptService.getLastSkillSelectionReport,
     invalidateSkillSelectionReport: systemPromptService.invalidateSkillSelectionReport,
@@ -1065,6 +1080,7 @@ function registerIpc(): void {
     sendToRenderer: safeSendToRenderer,
   });
   registerSessionsIpc({
+    workspaceRoot,
     runtime,
     store,
     taskLedgerStore,
@@ -1123,6 +1139,22 @@ function registerIpc(): void {
     resolveConnectionSecret,
     hasConnectionSecret,
     emitConnectionListChanged,
+    // Same seam as the fake-backend override above, for the other IPC that can
+    // leave the machine: adding a catalog provider runs remote model discovery
+    // against the provider's real endpoint. In E2E the key is a placeholder, so
+    // discovery can only fail — but it fails at whatever speed the network
+    // answers, and the add dialog stays open for the whole round trip. The
+    // provider-side budget (10s) is exactly the suite's expect timeout (10s),
+    // so a slow answer flips `await expect(dialog).toBeHidden()` from pass to
+    // fail with no code change. Fail deterministically and offline instead,
+    // which is the outcome a placeholder key produces anyway.
+    ...(isE2e
+      ? {
+          fetchModels: async () => {
+            throw new Error('E2E: remote model discovery is disabled');
+          },
+        }
+      : {}),
   });
   registerOnboardingIpc({ onboardingService });
   registerSessionEntryIpc({
@@ -1138,6 +1170,7 @@ function registerIpc(): void {
     settingsStore,
     connectionStore,
     telemetryRepo,
+    ensureUsageReady,
     botRegistry,
     getComputerUseCapabilityInput: computerUseCapabilityInput,
   });
@@ -1160,7 +1193,6 @@ function registerIpc(): void {
   settingsIpc = registerSettingsIpc({
     settingsStore,
     botRegistry,
-    botDataDir: join(app.getPath('userData'), 'bots'),
     normalizeSettingsPatch,
     applySettingsRuntimeEffects,
     ...(e2eFixture?.scenario === 'settings-bots'
@@ -1178,8 +1210,10 @@ function registerIpc(): void {
   registerGatewayIpc({ openGateway });
   registerDailyReviewIpc({ dailyReview, dailyReviewArchiveStore, mainWindowController });
   registerUsageIpc({
+    ipcMain,
     settingsStore,
     telemetryRepo,
+    ensureUsageReady,
     refreshPricingLookup: () => {
       lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());
     },
@@ -1201,9 +1235,7 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     botRegistry,
     openGateway,
     keepSystemAwake,
-    runtime,
     safeSendToRenderer,
-    emitSessionsChanged,
   });
 
 const streamEvents = createSessionStreamer({
@@ -1219,6 +1251,8 @@ const streamEvents = createSessionStreamer({
 });
 
 async function ensureSessionCanSend(sessionId: string): Promise<void> {
+  const boundary = await runtime.readExecutionBoundary(sessionId);
+  assertDesktopExecutionBoundary(sessionId, boundary);
   const header = await readAvailableSessionHeader(sessionId);
   let result: Awaited<ReturnType<typeof ensureSessionCanSendOrRebind>>;
   try {
@@ -1374,7 +1408,7 @@ function emitSessionsChanged(
 registerIpc();
 
 wireAppLifecycle({
-  isIsolatedE2e,
+  startHidden,
   e2eFixture,
   workspaceRoot,
   sessionStore: store,
@@ -1383,6 +1417,7 @@ wireAppLifecycle({
   connectionStore,
   settingsStore,
   telemetryRepo,
+  ensureUsageReady,
   keepSystemAwake,
   botRegistry,
   openGateway,
@@ -1406,9 +1441,6 @@ wireAppLifecycle({
   emitSessionsChanged,
   handleExternalSettingsChange,
   getSettingsIpc: () => settingsIpc,
-  setLookupPricing: (value) => {
-    lookupPricing = value;
-  },
 });
 
 function computerUseCapabilityInput() {

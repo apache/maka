@@ -1,13 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 
-import type {
-  AnyPermissionRequestEvent,
-  PermissionAnswerAckEvent,
-  PermissionClosureAckEvent,
-  PermissionDecisionAckEvent,
-  UserQuestionAnswerAckEvent,
-  UserQuestionRequestEvent,
-} from '@maka/core/events';
+import type { UserQuestionAnswerAckEvent, UserQuestionRequestEvent } from '@maka/core/events';
 import type {
   InteractionCanonicalPermissionOutcome,
   InteractionClosureReason,
@@ -15,10 +8,6 @@ import type {
 } from '@maka/core';
 import type {
   HostedInteractionBridge,
-  HostedPermissionAdmission,
-  HostedPermissionAnswer,
-  HostedPermissionCommitOutcome,
-  HostedPermissionSettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
 } from '@maka/core/backend-types';
@@ -44,13 +33,7 @@ export interface RuntimeInteractionRunIdentity {
   readonly runId: string;
 }
 
-export type RuntimePermissionAnswer = HostedPermissionAnswer;
-
 export type RuntimeUserQuestionAnswer = HostedUserQuestionAnswer;
-
-export type RuntimePermissionOutcome =
-  | { kind: 'permission_answer'; answer: RuntimePermissionAnswer }
-  | { kind: 'closure'; reason: RuntimeInteractionClosureReason };
 
 export type RuntimeUserQuestionOutcome =
   | { kind: 'question_answer'; answer: RuntimeUserQuestionAnswer }
@@ -60,30 +43,11 @@ export type RuntimeInteractionFatalError =
   | RuntimeInteractionFailStopError
   | RuntimeInteractionInvariantError;
 
-export interface RuntimePermissionContinuation
-  extends RuntimeInteractionContinuationIdentity,
-    HostedPermissionSettlement {}
-
 export interface RuntimeUserQuestionContinuation
   extends RuntimeInteractionContinuationIdentity,
     HostedUserQuestionSettlement {}
 
 export interface RuntimeInteractionContinuationAuthority {
-  acceptPermissionRequest(input: {
-    request: AnyPermissionRequestEvent;
-    rememberScopeId?: string;
-    continuation: RuntimePermissionContinuation;
-  }): Promise<HostedPermissionAdmission>;
-
-  commitPermissionAnswer(input: {
-    continuation: RuntimePermissionContinuation;
-    answer: RuntimePermissionAnswer;
-  }): Promise<RuntimePermissionOutcome>;
-
-  commitPermissionTimeout(input: {
-    continuation: RuntimePermissionContinuation;
-  }): Promise<RuntimePermissionOutcome>;
-
   acceptUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
     continuation: RuntimeUserQuestionContinuation;
@@ -177,26 +141,22 @@ type LocalClosureFinalizer = () => void;
 
 interface TrackedContinuationBase {
   readonly requestId: string;
-  readonly request: AnyPermissionRequestEvent | UserQuestionRequestEvent;
+  readonly request: UserQuestionRequestEvent;
+  readonly publicationBarrier: Promise<void>;
+  completePublicationBarrier(): void;
   admissionState: 'pending' | 'settled' | undefined;
   published: boolean;
   settlementStarted: boolean;
   settled: boolean;
-  outcome?: RuntimePermissionOutcome | RuntimeUserQuestionOutcome;
+  outcome?: RuntimeUserQuestionOutcome;
   settlementPromise?: Promise<void>;
 }
 
-interface TrackedPermissionContinuation extends TrackedContinuationBase {
-  readonly kind: 'permission';
-  readonly continuation: RuntimePermissionContinuation;
-}
-
 interface TrackedQuestionContinuation extends TrackedContinuationBase {
-  readonly kind: 'question';
   readonly continuation: RuntimeUserQuestionContinuation;
 }
 
-type TrackedContinuation = TrackedPermissionContinuation | TrackedQuestionContinuation;
+type TrackedContinuation = TrackedQuestionContinuation;
 
 /** Exact-Run bridge between RuntimeKernel and backend Interaction producers. */
 export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
@@ -204,6 +164,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   private closePromise: Promise<void> | undefined;
   private localSettlementPromise: Promise<void> | undefined;
   private localClosuresSettled = false;
+  private publicationsSealed = false;
   private released = false;
   private readonly localClosureFinalizers: LocalClosureFinalizer[] = [];
   private readonly continuations = new Map<string, TrackedContinuation>();
@@ -222,23 +183,10 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return this.owner.runId;
   }
 
-  async canResumeAfterSettlementAck(
-    event:
-      | PermissionAnswerAckEvent
-      | PermissionClosureAckEvent
-      | PermissionDecisionAckEvent
-      | UserQuestionAnswerAckEvent,
-  ): Promise<boolean> {
-    if (event.type === 'permission_decision_ack') {
-      throw new RuntimeInteractionInvariantError(
-        `Hosted permission answer ${event.requestId} used a legacy decision acknowledgement`,
-      );
-    }
+  async canResumeAfterSettlementAck(event: UserQuestionAnswerAckEvent): Promise<boolean> {
     const settled = this.continuations.get(event.requestId);
-    const expectedKind = event.type === 'user_question_answer_ack' ? 'question' : 'permission';
     if (
       !settled ||
-      settled.kind !== expectedKind ||
       settled.request.turnId !== event.turnId ||
       settled.request.toolUseId !== event.toolUseId ||
       !settled.settlementPromise
@@ -260,68 +208,6 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return true;
   }
 
-  async admitPermissionRequest(input: {
-    request: AnyPermissionRequestEvent;
-    rememberScopeId?: string;
-    settlement: HostedPermissionSettlement;
-  }): Promise<HostedPermissionAdmission> {
-    const tracked = this.trackPermission(input.request, input.settlement);
-    let admission: HostedPermissionAdmission;
-    try {
-      admission = await this.owner.acceptPermissionRequest({
-        request: input.request,
-        ...(input.rememberScopeId ? { rememberScopeId: input.rememberScopeId } : {}),
-        continuation: tracked.continuation,
-      });
-    } catch (error) {
-      if (!tracked.settlementStarted) this.continuations.delete(tracked.requestId);
-      throw error;
-    }
-    if (admission?.state !== 'pending' && admission?.state !== 'settled') {
-      throw new RuntimeInteractionInvariantError(
-        `Interaction authority returned an invalid admission for permission ${tracked.requestId}`,
-      );
-    }
-    if (admission.state === 'settled') {
-      await this.requireSettlement(tracked, 'settled permission admission');
-      tracked.admissionState = 'settled';
-      return admission;
-    }
-    if (tracked.settlementStarted) {
-      await tracked.settlementPromise;
-      throw new RuntimeInteractionInvariantError(
-        `Interaction authority admitted settled permission ${tracked.requestId} as pending`,
-      );
-    }
-    tracked.admissionState = 'pending';
-    return admission;
-  }
-
-  async commitPermissionAnswer(input: {
-    requestId: string;
-    answer: RuntimePermissionAnswer;
-  }): Promise<void> {
-    const tracked = this.pendingPermission(input.requestId);
-    const outcome = await this.owner.commitPermissionAnswer({
-      continuation: tracked.continuation,
-      answer: input.answer,
-    });
-    await this.requireSettlement(tracked, 'permission answer commit');
-    this.assertPermissionOutcome(tracked, outcome);
-  }
-
-  async commitPermissionTimeout(input: {
-    requestId: string;
-  }): Promise<HostedPermissionCommitOutcome> {
-    const tracked = this.pendingPermission(input.requestId);
-    const outcome = await this.owner.commitPermissionTimeout({
-      continuation: tracked.continuation,
-    });
-    await this.requireSettlement(tracked, 'permission timeout commit');
-    this.assertPermissionOutcome(tracked, outcome);
-    return outcome;
-  }
-
   async admitUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
@@ -333,38 +219,64 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
         continuation: tracked.continuation,
       });
     } catch (error) {
+      tracked.completePublicationBarrier();
       if (!tracked.settlementStarted) this.continuations.delete(tracked.requestId);
       throw error;
     }
     if (tracked.settlementStarted) {
-      await tracked.settlementPromise;
-      throw new RuntimeInteractionInvariantError(
-        `Question ${tracked.requestId} settled during pending-only admission`,
-      );
+      try {
+        await tracked.settlementPromise;
+        throw new RuntimeInteractionInvariantError(
+          `Question ${tracked.requestId} settled during pending-only admission`,
+        );
+      } finally {
+        tracked.completePublicationBarrier();
+      }
     }
     tracked.admissionState = 'pending';
+    if (this.publicationsSealed) {
+      tracked.completePublicationBarrier();
+      throw new RuntimeInteractionInvariantError(
+        `Question ${tracked.requestId} completed admission after Interaction publication sealed`,
+      );
+    }
   }
 
-  assertPendingAdmission(request: AnyPermissionRequestEvent | UserQuestionRequestEvent): void {
+  assertPendingAdmission(request: UserQuestionRequestEvent): void {
     const tracked = this.continuations.get(request.requestId);
-    const kind = request.type === 'permission_request' ? 'permission' : 'question';
-    // This synchronous guard is the publication linearization point. Close and
-    // settlement synchronously mark their state before starting durable work.
+    // This synchronous guard is the publication linearization point. Close
+    // blocks new tracking but lets its pre-existing exact admissions reach
+    // this point; settlement still invalidates publication synchronously.
     if (
+      this.publicationsSealed ||
       !tracked ||
-      tracked.kind !== kind ||
       tracked.admissionState !== 'pending' ||
-      this.closeReason !== undefined ||
       tracked.settlementStarted ||
       tracked.settled ||
       tracked.published ||
       !isDeepStrictEqual(tracked.request, request)
     ) {
+      this.sealPublications();
       throw new RuntimeInteractionInvariantError(
         `Interaction request ${request.requestId} has no exact pending admission for Run ${this.runId}`,
       );
     }
     tracked.published = true;
+    tracked.completePublicationBarrier();
+  }
+
+  sealPublications(): void {
+    if (this.publicationsSealed) return;
+    this.publicationsSealed = true;
+    for (const tracked of this.continuations.values()) {
+      if (
+        tracked.admissionState === 'pending' &&
+        !tracked.published &&
+        !tracked.settlementStarted
+      ) {
+        tracked.completePublicationBarrier();
+      }
+    }
   }
 
   close(reason: RuntimeInteractionRunClosureReason): Promise<void> {
@@ -375,7 +287,10 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     }
     if (this.closePromise) return this.closePromise;
     this.closeReason = reason;
-    this.closePromise = Promise.resolve()
+    const publicationBarriers = [...this.continuations.values()].map(
+      (tracked) => tracked.publicationBarrier,
+    );
+    this.closePromise = Promise.all(publicationBarriers)
       .then(() => this.owner.close(reason))
       .catch((error: unknown) => {
         if (
@@ -447,45 +362,6 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     this.continuations.clear();
   }
 
-  private trackPermission(
-    request: AnyPermissionRequestEvent,
-    local: HostedPermissionSettlement,
-  ): TrackedPermissionContinuation {
-    this.assertNewContinuation(request);
-    let tracked!: TrackedPermissionContinuation;
-    const continuation: RuntimePermissionContinuation = Object.freeze({
-      requestId: request.requestId,
-      turnId: this.turnId,
-      runId: this.runId,
-      applyAnswer: (answer: RuntimePermissionAnswer) =>
-        this.settleTracked(
-          tracked,
-          () => local.applyAnswer(answer),
-          { kind: 'permission_answer', answer },
-          'permission answer',
-        ),
-      applyClosure: (reason: RuntimeInteractionClosureReason) =>
-        this.settleTracked(
-          tracked,
-          () => local.applyClosure(reason),
-          { kind: 'closure', reason },
-          'permission closure',
-        ),
-    });
-    tracked = {
-      kind: 'permission',
-      requestId: request.requestId,
-      request,
-      continuation,
-      admissionState: undefined,
-      published: false,
-      settlementStarted: false,
-      settled: false,
-    };
-    this.continuations.set(request.requestId, tracked);
-    return tracked;
-  }
-
   private trackQuestion(
     request: UserQuestionRequestEvent,
     local: HostedUserQuestionSettlement,
@@ -512,10 +388,10 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
         ),
     });
     tracked = {
-      kind: 'question',
       requestId: request.requestId,
       request,
       continuation,
+      ...createInteractionPublicationBarrier(),
       admissionState: undefined,
       published: false,
       settlementStarted: false,
@@ -525,12 +401,17 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return tracked;
   }
 
-  private assertNewContinuation(
-    request: AnyPermissionRequestEvent | UserQuestionRequestEvent,
-  ): void {
-    if (this.closePromise || this.released) {
+  private assertNewContinuation(request: UserQuestionRequestEvent): void {
+    if (this.closeReason !== undefined) {
+      throw new RuntimeInteractionAdmissionRejectedError(
+        request.requestId,
+        'run_closed',
+        this.closeReason,
+      );
+    }
+    if (this.publicationsSealed || this.released) {
       throw new RuntimeInteractionInvariantError(
-        `Interaction request ${request.requestId} registered after Run ${this.runId} started closing`,
+        `Interaction request ${request.requestId} registered after Run ${this.runId} sealed Interaction publication`,
       );
     }
     if (request.turnId !== this.turnId) {
@@ -548,7 +429,7 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
   private settleTracked(
     tracked: TrackedContinuation,
     apply: () => Promise<void>,
-    outcome: RuntimePermissionOutcome | RuntimeUserQuestionOutcome,
+    outcome: RuntimeUserQuestionOutcome,
     operation: string,
   ): Promise<void> {
     if (tracked.settlementStarted) {
@@ -564,71 +445,34 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       .then(() => {
         tracked.outcome = outcome;
         tracked.settled = true;
-      });
+      })
+      .finally(() => tracked.completePublicationBarrier());
     tracked.settlementPromise = settlement;
     return settlement;
   }
+}
 
-  private pendingPermission(requestId: string): TrackedPermissionContinuation {
-    const tracked = this.continuations.get(requestId);
-    if (
-      !tracked ||
-      tracked.kind !== 'permission' ||
-      tracked.admissionState !== 'pending' ||
-      tracked.settlementStarted
-    ) {
-      throw new RuntimeInteractionInvariantError(
-        `Permission ${requestId} has no exact pending continuation for Run ${this.runId}`,
-      );
-    }
-    return tracked;
-  }
-
-  private async requireSettlement(tracked: TrackedContinuation, operation: string): Promise<void> {
-    if (!tracked.settlementPromise) {
-      throw new RuntimeInteractionInvariantError(
-        `Interaction ${operation} returned before exact local settlement of ${tracked.requestId}`,
-      );
-    }
-    await tracked.settlementPromise;
-    if (!tracked.settled) {
-      throw new RuntimeInteractionInvariantError(
-        `Interaction ${operation} did not settle ${tracked.requestId}`,
-      );
-    }
-  }
-
-  private assertPermissionOutcome(
-    tracked: TrackedPermissionContinuation,
-    outcome: RuntimePermissionOutcome,
-  ): void {
-    if (
-      !outcome ||
-      (outcome.kind !== 'permission_answer' && outcome.kind !== 'closure') ||
-      !tracked.outcome ||
-      !isDeepStrictEqual(outcome, tracked.outcome)
-    ) {
-      throw new RuntimeInteractionInvariantError(
-        `Interaction authority returned an inconsistent outcome for permission ${tracked.requestId}`,
-      );
-    }
-  }
+function createInteractionPublicationBarrier(): Pick<
+  TrackedContinuationBase,
+  'publicationBarrier' | 'completePublicationBarrier'
+> {
+  let complete!: () => void;
+  const publicationBarrier = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  return {
+    publicationBarrier,
+    completePublicationBarrier: complete,
+  };
 }
 
 function settlementMatchesAck(
   tracked: TrackedContinuation,
-  event: PermissionAnswerAckEvent | PermissionClosureAckEvent | UserQuestionAnswerAckEvent,
+  event: UserQuestionAnswerAckEvent,
 ): boolean {
   const outcome = tracked.outcome;
   if (!outcome) return false;
-  switch (event.type) {
-    case 'permission_answer_ack':
-      return outcome.kind === 'permission_answer';
-    case 'permission_closure_ack':
-      return outcome.kind === 'closure' && outcome.reason === event.reason;
-    case 'user_question_answer_ack':
-      return outcome.kind === 'question_answer';
-  }
+  return outcome.kind === 'question_answer';
 }
 
 export async function bindRuntimeInteractionRun(

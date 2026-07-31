@@ -3,7 +3,7 @@ import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
 import type { SessionEvent, SessionHeader } from '@maka/core';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import { PermissionEngine, PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
+import { PiAgentBackend, type PiAgentTransport } from '@maka/runtime';
 import {
   decodeHostFrame,
   encodeProtocolFrame,
@@ -216,10 +216,6 @@ test('tool output preserves one domain event and one wire frame', async () => {
     sessionId: SESSION_ID,
     header: piSessionHeader(),
     appendMessage: async () => undefined,
-    permissionEngine: new PermissionEngine({
-      newId: () => `permission-${++nextId}`,
-      now: () => now++,
-    }),
     transport,
     newId: () => `event-${++nextId}`,
     now: () => now++,

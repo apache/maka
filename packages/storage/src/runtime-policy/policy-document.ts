@@ -31,6 +31,12 @@ export interface RuntimePolicyDocument {
   readonly policy: RuntimePolicy;
 }
 
+export interface PreparedRuntimePolicyMutation {
+  readonly kind: 'ready';
+  readonly current: RuntimePolicyDocument;
+  readonly next: RuntimePolicyDocument;
+}
+
 export class RuntimePolicyDocumentOwner {
   async read(root: string): Promise<RuntimePolicyDocument> {
     const value = await readBoundedJsonDocument(root, FILE, POLICY_DOCUMENT_MAX_BYTES);
@@ -56,8 +62,19 @@ export class RuntimePolicyDocumentOwner {
     root: string,
     rawInput: MutateRuntimePolicyInput,
   ): Promise<MutateRuntimePolicyResult> {
-    const input = decodePolicyInput(() => normalizeRuntimePolicyMutation(rawInput));
     const current = await this.read(root);
+    const prepared = this.prepareMutation(current, rawInput);
+    if (prepared.kind !== 'ready') return prepared;
+    return this.commitMutation(root, prepared);
+  }
+
+  prepareMutation(
+    current: RuntimePolicyDocument,
+    rawInput: MutateRuntimePolicyInput,
+  ):
+    | PreparedRuntimePolicyMutation
+    | Exclude<MutateRuntimePolicyResult, { readonly kind: 'committed' }> {
+    const input = decodePolicyInput(() => normalizeRuntimePolicyMutation(rawInput));
     if (current.revision !== input.expectedRevision) {
       return deepFreeze({
         kind: 'revision_conflict',
@@ -65,7 +82,7 @@ export class RuntimePolicyDocumentOwner {
         actualRevision: current.revision,
       });
     }
-    const next: RuntimePolicyDocument = {
+    const next = {
       schemaVersion: SCHEMA_VERSION,
       revision: nextRevision(current.revision),
       policy: applyMutation(current.policy, input.operation),
@@ -76,8 +93,15 @@ export class RuntimePolicyDocumentOwner {
         `runtime policy exceeds its ${POLICY_DOCUMENT_MAX_BYTES} byte limit`,
       );
     }
-    await writeJsonDocument(root, FILE, next, POLICY_DOCUMENT_MAX_BYTES);
-    return deepFreeze({ kind: 'committed', snapshot: policySnapshot(next) });
+    return { kind: 'ready', current, next };
+  }
+
+  async commitMutation(
+    root: string,
+    prepared: PreparedRuntimePolicyMutation,
+  ): Promise<Extract<MutateRuntimePolicyResult, { readonly kind: 'committed' }>> {
+    await writeJsonDocument(root, FILE, prepared.next, POLICY_DOCUMENT_MAX_BYTES);
+    return deepFreeze({ kind: 'committed', snapshot: policySnapshot(prepared.next) });
   }
 }
 

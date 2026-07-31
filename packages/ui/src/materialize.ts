@@ -1,5 +1,6 @@
 import {
   deriveTurnRecords,
+  isActiveShellRunStatus,
   mergeShellRunStateWithDiagnostics,
   projectToolActivityArgs,
   STEP_LIMIT_NOTICE_TEXT,
@@ -395,7 +396,7 @@ export function overlayShellRunUpdates(
     );
     byToolUseId.set(update.sourceToolCallId, {
       result: merged.result,
-      source: merged.result.status !== 'running' || update.ownership.kind === 'local'
+      source: !isActiveShellRunStatus(merged.result.status) || update.ownership.kind === 'local'
         ? undefined
         : update.ownership.kind === 'source_owned' ? 'owned' : 'unavailable',
     });

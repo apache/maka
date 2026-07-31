@@ -56,10 +56,22 @@ const cursorSchema = z
 
 const addWorkSchema = z
   .object({
-    agent_id: identitySchema.optional().describe('Catalog agent to add as new graph work.'),
+    target_kind: z
+      .enum(['new_agent', 'existing_operator'])
+      .optional()
+      .describe(
+        'Explicit target discriminator. Use new_agent with agent_id, or existing_operator with operator_id. When present, unrelated optional identity fields are ignored.',
+      ),
+    agent_id: identitySchema
+      .optional()
+      .describe(
+        'Catalog profile for NEW graph work (for example "implementation"). Set agent_id OR operator_id, never both.',
+      ),
     operator_id: identitySchema
       .optional()
-      .describe('Existing graph operator to run again or follow up.'),
+      .describe(
+        'Runtime id of an EXISTING graph operator returned by view_agent_graph. Use only for follow-up work; set operator_id OR agent_id, never both.',
+      ),
     instruction: z.string().trim().min(1).max(AGENT_GRAPH_SCHEDULE_MAX_INSTRUCTION_CHARS),
     input_ids: z
       .array(identitySchema)
@@ -69,13 +81,31 @@ const addWorkSchema = z
     replaces: identitySchema
       .optional()
       .describe('Existing work or activation superseded by this request.'),
+    replacement_mode: z
+      .enum(['none', 'replace'])
+      .optional()
+      .describe(
+        'Use none for normal work. Use replace only with a real replaces id. When none, any provider-filled replaces placeholder is ignored.',
+      ),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if ((value.agent_id ? 1 : 0) + (value.operator_id ? 1 : 0) !== 1) {
+    const validTarget = value.target_kind
+      ? value.target_kind === 'new_agent'
+        ? Boolean(value.agent_id)
+        : Boolean(value.operator_id)
+      : (value.agent_id ? 1 : 0) + (value.operator_id ? 1 : 0) === 1;
+    if (!validTarget) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Exactly one of agent_id or operator_id is required',
+        message:
+          'Set target_kind=new_agent with agent_id, target_kind=existing_operator with operator_id, or omit target_kind and provide exactly one identity',
+      });
+    }
+    if (value.replacement_mode === 'replace' && !value.replaces) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'replacement_mode=replace requires replaces',
       });
     }
     addDuplicateIssue(ctx, value.input_ids, ['input_ids']);
@@ -102,14 +132,48 @@ const finishSchema = z
 
 const updateSchema = z
   .object({
-    add_work: z.array(addWorkSchema).max(AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK).optional(),
+    operation: z
+      .enum(['add_work', 'stop', 'finish'])
+      .optional()
+      .describe(
+        'Explicit operation discriminator. Only the matching payload is applied; unrelated provider-filled optional payloads are ignored.',
+      ),
+    add_work: z
+      .array(addWorkSchema)
+      .max(AGENT_GRAPH_SCHEDULE_MAX_ADD_WORK)
+      .optional()
+      .describe(
+        'Schedule work. For a new operator, provide agent_id only. Omit finish whenever add_work is present.',
+      ),
     stop: z.array(stopSchema).max(AGENT_GRAPH_SCHEDULE_MAX_STOP).optional(),
-    finish: finishSchema.optional(),
+    finish: finishSchema
+      .optional()
+      .describe(
+        'Terminal operation selecting committed result ids. Use only after all work is done; never combine with add_work.',
+      ),
   })
   .strict()
   .superRefine((value, ctx) => {
     const addWork = value.add_work ?? [];
     const stop = value.stop ?? [];
+    if (value.operation) {
+      const hasSelectedPayload =
+        (value.operation === 'add_work' && addWork.length > 0) ||
+        (value.operation === 'stop' && stop.length > 0) ||
+        (value.operation === 'finish' && value.finish !== undefined);
+      if (!hasSelectedPayload) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `operation=${value.operation} requires its matching payload`,
+        });
+      }
+      addDuplicateIssue(
+        ctx,
+        stop.map((entry) => entry.target_id),
+        ['stop'],
+      );
+      return;
+    }
     if (addWork.length + stop.length + (value.finish ? 1 : 0) === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -131,23 +195,43 @@ const updateSchema = z
 
 const viewSchema = z
   .object({
+    mode: z
+      .enum(['latest', 'page'])
+      .optional()
+      .describe(
+        'Use latest for the current graph view. Use page only with an opaque cursor returned by a previous view.',
+      ),
     cursor: cursorSchema
       .optional()
-      .describe('Opaque cursor returned by an earlier view_agent_graph call.'),
+      .describe(
+        'Opaque cursor returned by an earlier view_agent_graph call. Ignored when mode=latest.',
+      ),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.mode === 'page' && !value.cursor) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'mode=page requires cursor',
+      });
+    }
+  });
 
 export interface ViewAgentGraphToolInput {
+  mode?: 'latest' | 'page';
   cursor?: string;
 }
 
 export interface UpdateAgentGraphToolInput {
+  operation?: 'add_work' | 'stop' | 'finish';
   add_work?: Array<{
+    target_kind?: 'new_agent' | 'existing_operator';
     agent_id?: string;
     operator_id?: string;
     instruction: string;
     input_ids?: string[];
     replaces?: string;
+    replacement_mode?: 'none' | 'replace';
   }>;
   stop?: Array<{
     target_id: string;
@@ -284,9 +368,8 @@ export function buildAgentGraphSupervisorTools(
     name: VIEW_AGENT_GRAPH_TOOL_NAME,
     displayName: 'View agent graph',
     description:
-      'Inspect the current durable schedule, runtime status, readiness, and recent activity for the agent graph you supervise.',
+      'Inspect the durable graph. Use mode=latest without a cursor for the current view; use mode=page only with a nextCursor returned by an earlier view.',
     parameters: viewSchema,
-    permissionRequired: false,
     categoryHint: 'read',
     recoveryMode: 'replay_safe',
     impl: async (toolInput) => {
@@ -294,7 +377,7 @@ export function buildAgentGraphSupervisorTools(
         input.scheduleStore,
         graphId,
         input.observeGraph,
-        toolInput.cursor,
+        resolveViewCursor(toolInput),
       );
       return {
         kind: 'agent_graph_view',
@@ -306,9 +389,8 @@ export function buildAgentGraphSupervisorTools(
     name: UPDATE_AGENT_GRAPH_TOOL_NAME,
     displayName: 'Update agent graph',
     description:
-      'Adjust the agent graph you supervise. Add or replace work, stop work that is no longer useful, or finish with selected results. The update is durable and idempotent.',
+      'Adjust the graph durably. Always set operation. For new work set operation=add_work, target_kind=new_agent, agent_id, and replacement_mode=none; unrelated provider-filled optional fields are ignored.',
     parameters: updateSchema,
-    permissionRequired: false,
     categoryHint: 'subagent',
     recoveryMode: 'idempotent',
     impl: async (toolInput, context) => {
@@ -338,6 +420,11 @@ export function buildAgentGraphSupervisorTools(
   return [viewTool, updateTool];
 }
 
+function resolveViewCursor(input: ViewAgentGraphToolInput): string | undefined {
+  if (input.mode === 'latest' || input.cursor === 'latest') return undefined;
+  return input.cursor;
+}
+
 export function compileAgentGraphScheduleUpdate(input: {
   graphId: string;
   input: UpdateAgentGraphToolInput;
@@ -352,8 +439,12 @@ export function compileAgentGraphScheduleUpdate(input: {
     turnId: requireIdentity(input.context.turnId, 'source turn id'),
     toolCallId: requireIdentity(input.context.toolCallId, 'source tool call id'),
   };
-  const addWorkInput = parsed.add_work ?? [];
-  const stopInput = parsed.stop ?? [];
+  const addWorkInput =
+    parsed.operation === undefined || parsed.operation === 'add_work'
+      ? (parsed.add_work ?? [])
+      : [];
+  const stopInput =
+    parsed.operation === undefined || parsed.operation === 'stop' ? (parsed.stop ?? []) : [];
   const updateHash = stableHash({
     schemaVersion: AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
     graphId,
@@ -377,7 +468,7 @@ export function compileAgentGraphScheduleUpdate(input: {
         'instruction',
       ),
       inputIds,
-      ...(work.replaces
+      ...(work.replaces && work.replacement_mode !== 'none'
         ? { replaces: requireIdentity(work.replaces, 'replacement target id') }
         : {}),
     };
@@ -394,16 +485,17 @@ export function compileAgentGraphScheduleUpdate(input: {
     stop.map((entry) => entry.targetId),
     'stop target id',
   );
-  const finish = parsed.finish
-    ? {
-        resultIds: normalizeUniqueIdentities(parsed.finish.result_ids, 'finish result id'),
-        reason: requireText(
-          parsed.finish.reason,
-          AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS,
-          'finish reason',
-        ),
-      }
-    : undefined;
+  const finish =
+    parsed.finish && (parsed.operation === undefined || parsed.operation === 'finish')
+      ? {
+          resultIds: normalizeUniqueIdentities(parsed.finish.result_ids, 'finish result id'),
+          reason: requireText(
+            parsed.finish.reason,
+            AGENT_GRAPH_SCHEDULE_MAX_REASON_CHARS,
+            'finish reason',
+          ),
+        }
+      : undefined;
   const semantic = {
     schemaVersion: AGENT_GRAPH_SCHEDULE_UPDATE_SCHEMA_VERSION,
     updateId,
@@ -736,9 +828,19 @@ function assertGraphObservation(
 }
 
 function normalizeWorkTarget(input: {
+  target_kind?: 'new_agent' | 'existing_operator';
   agent_id?: string;
   operator_id?: string;
 }): AgentGraphWorkTarget {
+  if (input.target_kind === 'new_agent') {
+    return { kind: 'agent', agentId: requireIdentity(input.agent_id, 'agent id') };
+  }
+  if (input.target_kind === 'existing_operator') {
+    return {
+      kind: 'operator',
+      operatorId: requireIdentity(input.operator_id, 'operator id'),
+    };
+  }
   const count = (input.agent_id ? 1 : 0) + (input.operator_id ? 1 : 0);
   if (count !== 1) throw new Error('Exactly one of agent_id or operator_id is required');
   return input.agent_id

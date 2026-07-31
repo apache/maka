@@ -71,7 +71,6 @@ export function buildArchiveReadTool(reader: ToolResultArchiveResourceReader): M
           : { success: false, error: result.error };
       },
     }),
-    permissionRequired: false,
     impl: async (input, ctx) =>
       readToolResultArchiveResource(reader, ctx.sessionId, input, ctx.abortSignal),
   };

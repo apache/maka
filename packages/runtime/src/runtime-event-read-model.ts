@@ -9,24 +9,87 @@ import type {
   TurnStatus,
 } from '@maka/core';
 import {
+  SANDBOX_BOUNDARY_REQUEST_STATUSES,
   TOOL_ACTIVITY_KINDS,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   isTerminalRuntimeEventStatus,
   normalizeToolResultContentForRead,
+  validateSandboxBoundaryExpansion,
 } from '@maka/core';
+
+/** The statuses a settled boundary decision can carry — every status but `pending`. */
+type SettledSandboxBoundaryStatus = Exclude<
+  (typeof SANDBOX_BOUNDARY_REQUEST_STATUSES)[number],
+  'pending'
+>;
+const SETTLED_SANDBOX_BOUNDARY_STATUSES: readonly SettledSandboxBoundaryStatus[] =
+  SANDBOX_BOUNDARY_REQUEST_STATUSES.filter(
+    (status): status is SettledSandboxBoundaryStatus => status !== 'pending',
+  );
 import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
 
 export type RuntimeEventReadModelDiagnosticCode =
   | 'partial_skipped'
   | 'unsupported_event'
+  | 'unclaimed_control_fact'
   | 'incomplete_event'
   | 'archived_tool_result_placeholder'
   | 'generated_id'
   | 'tool_use_id_mismatch'
   | 'missing_legacy_message'
   | 'unexpected_projected_message';
+
+/**
+ * Whether a diagnostic means the projection may have lost user-visible content.
+ *
+ * `hard` — a row a reader would have seen may be missing, so the projection is
+ * not a faithful view of the session and must not be served in place of one.
+ * `soft` — the fact is reported without withholding the view; it does not by
+ * itself mean a row is missing.
+ *
+ * The table is keyed by code so a new diagnostic cannot exist without deciding
+ * which side of that line it falls on.
+ */
+const RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY: Record<
+  RuntimeEventReadModelDiagnosticCode,
+  'hard' | 'soft'
+> = {
+  partial_skipped: 'soft',
+  unsupported_event: 'hard',
+  unclaimed_control_fact: 'soft',
+  incomplete_event: 'hard',
+  archived_tool_result_placeholder: 'soft',
+  generated_id: 'soft',
+  tool_use_id_mismatch: 'hard',
+  missing_legacy_message: 'soft',
+  unexpected_projected_message: 'soft',
+};
+
+export function isHardRuntimeEventReadModelDiagnostic(diagnostic: {
+  code: RuntimeEventReadModelDiagnosticCode;
+}): boolean {
+  return RUNTIME_EVENT_READ_MODEL_DIAGNOSTIC_SEVERITY[diagnostic.code] === 'hard';
+}
+
+/**
+ * Codes that mean the projection did not claim an event, at either severity.
+ *
+ * Severity decides whether a session still opens; this decides whether the
+ * projection has a coverage gap. The projection-coverage contract asserts on
+ * this set, so softening an event's severity never softens the contract.
+ */
+const UNCLAIMED_RUNTIME_EVENT_DIAGNOSTIC_CODES: readonly RuntimeEventReadModelDiagnosticCode[] = [
+  'unsupported_event',
+  'unclaimed_control_fact',
+];
+
+export function isUnclaimedRuntimeEventDiagnostic(diagnostic: {
+  code: RuntimeEventReadModelDiagnosticCode;
+}): boolean {
+  return UNCLAIMED_RUNTIME_EVENT_DIAGNOSTIC_CODES.includes(diagnostic.code);
+}
 
 export interface RuntimeEventReadModelDiagnostic {
   code: RuntimeEventReadModelDiagnosticCode;
@@ -95,7 +158,7 @@ interface ProjectionState {
    * step's assistant row gets). Per-step turns have several entries per turn, so
    * keying by message id (not turn) attaches each step's reasoning to its own row.
    */
-  thinkingByMessageId: Map<string, PendingThinking>;
+  thinkingByMessageId: Map<string, PendingThinking[]>;
   contentOrderByMessageId: Map<string, AssistantStepContentKind[]>;
 }
 
@@ -212,12 +275,37 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.artifactDelta) {
+      // Artifact counters are storage bookkeeping. The tool result that owns the
+      // artifact owns its row; this delta has none of its own.
+      projected = true;
+    }
+
+    if (event.actions?.transferToAgent !== undefined) {
+      // A hand-off is control routing. The receiving agent's own events own
+      // every provider-visible row the transfer leads to.
+      projected = true;
+    }
+
+    if (event.actions?.runtimeProtocol) {
+      // The protocol marker records which runtime contracts were live from a
+      // run's first event. RecoveryResolver reads it; it has no chat row.
+      projected = true;
+    }
+
     if (
       event.actions?.stateDelta?.continuationStart === true ||
       event.actions?.continuationStart !== undefined
     ) {
       // Continuation start is a canonical lineage/recovery fact with no
       // legacy chat row. Its following model events own the visible output.
+      projected = true;
+    }
+
+    if (isSandboxBoundaryStateDelta(event)) {
+      // The session sandbox boundary owns enforcement and its own durable
+      // revisions. These are canonical control/audit facts, and the tool call
+      // and response around them own every provider-visible row.
       projected = true;
     }
 
@@ -240,22 +328,39 @@ export function projectRuntimeEventsToStoredMessages(
     }
 
     if (!projected) {
-      diagnostic(
-        state,
-        event,
-        'unsupported_event',
-        'RuntimeEvent shape is not supported by the legacy read-model projection',
-      );
+      // Content is the only payload an unclaimed shape could still have owed a
+      // row, so its absence is what makes degrading safe here — not a promise
+      // that actions never produce rows (permissionDecision, tokenUsage and the
+      // terminal fact all do). What holds that up is claim coverage: every
+      // action field a reader can meet is claimed above, proven by the
+      // projection-coverage contract, so nothing with a row reaches this branch.
+      if (event.content === undefined) {
+        diagnostic(
+          state,
+          event,
+          'unclaimed_control_fact',
+          'control-only RuntimeEvent is not claimed by the legacy read-model projection',
+        );
+      } else {
+        diagnostic(
+          state,
+          event,
+          'unsupported_event',
+          'RuntimeEvent shape is not supported by the legacy read-model projection',
+        );
+      }
     }
   }
 
-  for (const pending of state.thinkingByMessageId.values()) {
-    diagnostic(
-      state,
-      pending.event,
-      'unsupported_event',
-      'thinking content has no assistant text row with a matching message id',
-    );
+  for (const pendingItems of state.thinkingByMessageId.values()) {
+    for (const pending of pendingItems) {
+      diagnostic(
+        state,
+        pending.event,
+        'unsupported_event',
+        'thinking content has no assistant text row with a matching message id',
+      );
+    }
   }
 
   return { messages, diagnostics: state.diagnostics };
@@ -591,7 +696,9 @@ function projectThinking(
   // attach eagerly if it already exists (older ordering), else park by message id
   // for projectText's attachPendingThinking to claim.
   if (attachThinkingToAssistant(event, pending, messages)) return true;
-  state.thinkingByMessageId.set(messageId, pending);
+  const pendingItems = state.thinkingByMessageId.get(messageId) ?? [];
+  pendingItems.push(pending);
+  state.thinkingByMessageId.set(messageId, pendingItems);
   return true;
 }
 
@@ -1007,9 +1114,9 @@ function attachPendingThinking(
   messages: StoredMessage[],
   assistantMessageId: string,
 ): void {
-  const pending = state.thinkingByMessageId.get(assistantMessageId);
-  if (!pending) return;
-  if (attachThinkingToAssistant(event, pending, messages)) {
+  const pendingItems = state.thinkingByMessageId.get(assistantMessageId);
+  if (!pendingItems) return;
+  if (pendingItems.every((pending) => attachThinkingToAssistant(event, pending, messages))) {
     state.thinkingByMessageId.delete(assistantMessageId);
   }
 }
@@ -1025,12 +1132,31 @@ function attachThinkingToAssistant(
     const message = messages[index]!;
     if (message.type !== 'assistant' || message.turnId !== event.turnId) continue;
     if (message.id !== pending.messageId) continue;
-    message.thinking = {
+    const incoming = {
       text: pending.text,
       ...(pending.signature !== undefined ? { signature: pending.signature } : {}),
       ...(pending.providerOptions !== undefined
         ? { providerOptions: structuredClone(pending.providerOptions) }
         : {}),
+    };
+    if (!message.thinking) {
+      message.thinking = incoming;
+      return true;
+    }
+    const parts = message.thinking.parts ?? [
+      {
+        text: message.thinking.text,
+        ...(message.thinking.signature !== undefined
+          ? { signature: message.thinking.signature }
+          : {}),
+        ...(message.thinking.providerOptions !== undefined
+          ? { providerOptions: structuredClone(message.thinking.providerOptions) }
+          : {}),
+      },
+    ];
+    message.thinking = {
+      text: message.thinking.text + pending.text,
+      parts: [...parts, incoming],
     };
     return true;
   }
@@ -1155,6 +1281,44 @@ function isPlanProposalStateDelta(event: RuntimeEvent): boolean {
     typeof stateDelta?.planId === 'string' &&
     typeof stateDelta.title === 'string'
   );
+}
+
+/**
+ * A boundary fact is canonical only in the exact shape AiSdkFlow emits: every
+ * field of the source SessionEvent, the identity it maps to, and the tool call
+ * it settles. A partial match is worse than none — it would claim a corrupt
+ * ledger as sound while still paying the cost of rejecting a malformed one.
+ */
+function isSandboxBoundaryStateDelta(event: RuntimeEvent): boolean {
+  const stateDelta = event.actions?.stateDelta;
+  if (!stateDelta) return false;
+  const request = stateDelta.sandboxBoundaryRequest;
+  const decision = stateDelta.sandboxBoundaryDecision;
+  if (request === undefined && decision === undefined) return false;
+  if (event.role !== 'system' || typeof event.refs?.toolCallId !== 'string') return false;
+  if (request !== undefined) {
+    return (
+      event.author === 'system' &&
+      isRecord(request) &&
+      typeof request.requestId === 'string' &&
+      typeof request.toolUseId === 'string' &&
+      typeof request.justification === 'string' &&
+      validateSandboxBoundaryExpansion(request.expansion).ok
+    );
+  }
+  return (
+    event.author === 'user' &&
+    isRecord(decision) &&
+    typeof decision.requestId === 'string' &&
+    (decision.decision === 'allow' || decision.decision === 'deny') &&
+    SETTLED_SANDBOX_BOUNDARY_STATUSES.includes(decision.status as SettledSandboxBoundaryStatus) &&
+    typeof decision.revision === 'number' &&
+    Number.isFinite(decision.revision)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function diagnostic(

@@ -4,29 +4,15 @@
   min-height: 0;
   height: 100%;
   display: grid;
-  /* 5 rows: header / hub nav / session-list heading / list / footer. */
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  /* 4 rows: hub nav / session-list heading / list / footer. The panel used to
+     carry a fifth leading row holding an empty `<header>` whose only job was to
+     host a blank drag strip, and after that a `padding-top` clearing the drag
+     band. Both are gone: the titlebar is its own grid row in the shell, so this
+     panel starts below it and has nothing to clear. */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
   background: transparent;
   contain: layout paint style;
-}
-
-.maka-session-panel-header {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-1-5) var(--space-1-5) var(--space-1-5);
-  border-bottom: 0;
-}
-
-.maka-sidebar-drag-strip {
-  min-height: 34px;
-  margin-left: calc(
-    var(--maka-sidebar-topbar-offset-x) + var(--maka-sidebar-topbar-button-size) +
-      var(--maka-sidebar-topbar-button-size) + var(--maka-sidebar-topbar-gap) +
-      var(--maka-sidebar-topbar-gap)
-  );
-  box-sizing: border-box;
-  -webkit-app-region: drag;
 }
 
 .maka-session-list {

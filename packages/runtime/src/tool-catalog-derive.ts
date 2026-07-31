@@ -6,12 +6,133 @@
 
 import {
   MAKA_CATALOG_SURFACES,
+  catalogSurfaceById,
   catalogToolByName,
   unknownBoundToolNames,
   type ToolHostId,
 } from '@maka/core/tool-catalog';
 import type { HostCapabilities } from './skills-context.js';
 import type { ToolGroup } from './tool-availability.js';
+import type { MakaTool } from './tool-runtime.js';
+
+export interface ProductToolSurfacePolicy {
+  readonly economy: boolean;
+  readonly disabledSurfaceIds?: Iterable<string>;
+}
+
+export interface NormalizedProductToolSurfacePolicy {
+  readonly economy: boolean;
+  readonly disabledSurfaceIds: readonly string[];
+}
+
+export interface ProductToolSurfaceIdentity {
+  readonly policy: NormalizedProductToolSurfacePolicy;
+  readonly productToolNames: readonly string[];
+}
+
+export interface EffectiveProductToolSurface {
+  readonly tools: readonly MakaTool[];
+  readonly toolNames: ReadonlySet<string>;
+  readonly productToolNames: readonly string[];
+  readonly hostCapabilities: HostCapabilities;
+  readonly toolAvailability: {
+    readonly economy: boolean;
+    readonly groups: readonly ToolGroup[];
+  };
+  readonly boundSurfaceIds: readonly string[];
+  readonly identity: ProductToolSurfaceIdentity;
+}
+
+interface ReadonlySetOperand<T> {
+  readonly size: number;
+  has(value: T): boolean;
+  keys(): Iterator<T>;
+}
+
+interface ReadonlySetAlgebra<T> {
+  union<U>(other: ReadonlySetOperand<U>): Set<T | U>;
+  intersection<U>(other: ReadonlySetOperand<U>): Set<T & U>;
+  difference<U>(other: ReadonlySetOperand<U>): Set<T>;
+  symmetricDifference<U>(other: ReadonlySetOperand<U>): Set<T | U>;
+  isSubsetOf(other: ReadonlySetOperand<unknown>): boolean;
+  isSupersetOf(other: ReadonlySetOperand<unknown>): boolean;
+  isDisjointFrom(other: ReadonlySetOperand<unknown>): boolean;
+}
+
+function readonlySetSnapshot<T>(values: Iterable<T>): ReadonlySet<T> {
+  const snapshot = new Set(values);
+  const algebra = snapshot as Set<T> & ReadonlySetAlgebra<T>;
+  const view: ReadonlySet<T> = Object.freeze({
+    get size() {
+      return snapshot.size;
+    },
+    has: (value: T) => snapshot.has(value),
+    entries: () => snapshot.entries(),
+    keys: () => snapshot.keys(),
+    values: () => snapshot.values(),
+    forEach: (callback: (value: T, value2: T, set: ReadonlySet<T>) => void, thisArg?: unknown) => {
+      snapshot.forEach((value, value2) => callback.call(thisArg, value, value2, view));
+    },
+    union: <U>(other: ReadonlySetOperand<U>) => algebra.union(other),
+    intersection: <U>(other: ReadonlySetOperand<U>) => algebra.intersection(other),
+    difference: <U>(other: ReadonlySetOperand<U>) => algebra.difference(other),
+    symmetricDifference: <U>(other: ReadonlySetOperand<U>) => algebra.symmetricDifference(other),
+    isSubsetOf: (other: ReadonlySetOperand<unknown>) => algebra.isSubsetOf(other),
+    isSupersetOf: (other: ReadonlySetOperand<unknown>) => algebra.isSupersetOf(other),
+    isDisjointFrom: (other: ReadonlySetOperand<unknown>) => algebra.isDisjointFrom(other),
+    [Symbol.iterator]: () => snapshot[Symbol.iterator](),
+    [Symbol.toStringTag]: 'Set',
+  });
+  return view;
+}
+
+export function projectEffectiveProductToolSurface(input: {
+  host: ToolHostId;
+  tools: readonly MakaTool[];
+  policy: ProductToolSurfacePolicy;
+}): EffectiveProductToolSurface {
+  const disabledSurfaceIds = [...new Set(input.policy.disabledSurfaceIds ?? [])].sort();
+  const excludedToolNames = new Set<string>();
+  for (const surfaceId of disabledSurfaceIds) {
+    const surface = catalogSurfaceById(surfaceId);
+    if (!surface) throw new Error(`Unknown product-tool surface "${surfaceId}"`);
+    for (const name of surface.toolNames) excludedToolNames.add(name);
+  }
+  for (const surface of MAKA_CATALOG_SURFACES) {
+    if (surface.hosts[input.host] === 'supported') continue;
+    for (const name of surface.toolNames) excludedToolNames.add(name);
+  }
+  const tools = input.tools.filter((tool) => !excludedToolNames.has(tool.name));
+  const boundToolNames = new Set(tools.map((tool) => tool.name));
+  const toolNames = readonlySetSnapshot(boundToolNames);
+  const productToolNames = [...boundToolNames].filter((name) => catalogToolByName(name)).sort();
+  const groups = buildDeferredToolGroupsFromCatalog(input.host, boundToolNames).map((group) =>
+    Object.freeze({
+      ...group,
+      toolNames: Object.freeze([...group.toolNames]),
+    }),
+  );
+  const hostCapabilities = buildHostCapabilitiesFromBinding(boundToolNames);
+  const policy = Object.freeze({
+    economy: input.policy.economy,
+    disabledSurfaceIds: Object.freeze(disabledSurfaceIds),
+  });
+  return Object.freeze({
+    tools: Object.freeze(tools),
+    toolNames,
+    productToolNames: Object.freeze(productToolNames),
+    hostCapabilities,
+    toolAvailability: Object.freeze({
+      economy: input.policy.economy,
+      groups: Object.freeze(groups),
+    }),
+    boundSurfaceIds: Object.freeze(groups.map((group) => group.id)),
+    identity: Object.freeze({
+      policy,
+      productToolNames: Object.freeze([...productToolNames]),
+    }),
+  });
+}
 
 /** Build skill-host capability surface from the tools this process actually bound. */
 export function buildHostCapabilitiesFromBinding(
@@ -25,8 +146,12 @@ export function buildHostCapabilitiesFromBinding(
     if (!tags) continue;
     for (const tag of tags) capabilities.add(tag);
   }
-  if (capabilities.size === 0) return { toolNames };
-  return { toolNames, capabilities };
+  const readonlyToolNames = readonlySetSnapshot(toolNames);
+  if (capabilities.size === 0) return Object.freeze({ toolNames: readonlyToolNames });
+  return Object.freeze({
+    toolNames: readonlyToolNames,
+    capabilities: readonlySetSnapshot(capabilities),
+  });
 }
 
 /**

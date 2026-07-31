@@ -27,7 +27,8 @@ describe('subagent UI contract', () => {
 
     assert.match(markup, /data-kind="subagent"/);
     assert.match(markup, /aria-label="关闭预览"/);
-    assert.match(markup, /<span>关闭<\/span>/);
+    // #1565 PR 3: Astryx Button renders the visible label inside a styled span.
+    assert.match(markup, />关闭<\/span>/);
     assert.match(markup, /Research Agent/);
     assert.match(markup, /已完成/);
     assert.match(markup, /只读/);
@@ -57,7 +58,8 @@ describe('subagent UI contract', () => {
     // Icon stroke governance round: per-call-site strokeWidth props were
     // deleted so lucide glyphs ride one governed weight (svg.lucide CSS rule).
     assert.match(block, /<X size=\{14\} aria-hidden="true" \/>/);
-    assert.match(block, /<span>\{copy\.close\}<\/span>/);
+    // #1565 PR 3: Astryx Button takes the visible text as a `label` prop.
+    assert.match(block, /label=\{copy\.close\}/);
     assert.doesNotMatch(block, />Close</);
   });
 });

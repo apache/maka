@@ -1,5 +1,6 @@
 import type { AbArmSpec, AbComparisonSummary, RunAbComparisonInput } from './ab-types.js';
-import type { FixedPromptTask, FixedPromptTaskWalEvent } from './fixed-prompt-controller.js';
+import type { FixedPromptTask } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import { assertFinitePositive, assertPositiveInt } from './numeric-guards.js';
 import { summarizeAbComparison } from './ab-summary.js';
 

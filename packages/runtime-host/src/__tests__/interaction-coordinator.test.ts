@@ -3,16 +3,11 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type {
-  AnyPermissionRequestEvent,
-  PermissionRequestEvent,
-  UserQuestionRequestEvent,
-} from '@maka/core/events';
+import type { UserQuestionRequestEvent } from '@maka/core/events';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   type RuntimeInteractionRunIdentity,
-  type RuntimePermissionContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime';
 import {
@@ -27,7 +22,6 @@ import {
 } from '@maka/storage/root-authority';
 import type { SessionInteractionProjection } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
-import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import {
   HostInteractionCoordinator,
   type HostInteractionCoordinatorOptions,
@@ -88,298 +82,6 @@ describe('HostInteractionCoordinator', () => {
       );
       assert.equal(conflicting.ok, false);
       if (!conflicting.ok) assert.equal(conflicting.error.code, 'already_resolved');
-
-      await owner.close('turn_terminal');
-      owner.release();
-      await coordinator.close();
-    });
-  });
-
-  test('durably resolves all remembered permission siblings before one refresh and ordered apply', async () => {
-    await withStore(async ({ store }) => {
-      const order: string[] = [];
-      const winnerRefreshStarted = deferred();
-      const releaseWinnerRefresh = deferred();
-      const coordinator = createCoordinator(store, {
-        refreshCanonicalContinuity: async () => {
-          const pending = await store.listPending({ sessionId: RUN.sessionId });
-          order.push(`refresh:${pending.length}`);
-          if (pending.length === 0) {
-            winnerRefreshStarted.resolve();
-            await releaseWinnerRefresh.promise;
-          }
-        },
-      });
-      const owner = coordinator.bindRun(RUN);
-      const later = permissionContinuation('permission_later', order);
-      const earlier = permissionContinuation('permission_earlier', order);
-
-      await owner.acceptPermissionRequest({
-        request: permissionEvent('permission_later', 'tool_later', 20),
-        rememberScopeId: 'a'.repeat(64),
-        continuation: later,
-      });
-      await owner.acceptPermissionRequest({
-        request: permissionEvent('permission_earlier', 'tool_earlier', 10),
-        rememberScopeId: 'a'.repeat(64),
-        continuation: earlier,
-      });
-      order.length = 0;
-
-      const wireWinner = coordinator.handlers['interaction.answer'](
-        {
-          interactionId: 'permission_later',
-          answer: { kind: 'permission', decision: 'allow', rememberForTurn: true },
-        },
-        connection(),
-      );
-      await winnerRefreshStarted.promise;
-      const lateTimeout = owner.commitPermissionTimeout({ continuation: later });
-      releaseWinnerRefresh.resolve();
-      const [result, timeoutOutcome] = await Promise.all([wireWinner, lateTimeout]);
-      assert.equal(result.ok, true);
-      assert.deepEqual(timeoutOutcome, {
-        kind: 'permission_answer',
-        answer: {
-          decision: 'allow',
-          rememberForTurn: true,
-          reviewer: 'user',
-        },
-      });
-      assert.equal(coordinator.isPoisoned(), false);
-      assert.deepEqual(order, [
-        'refresh:0',
-        'apply:permission_earlier:allow:true',
-        'apply:permission_later:allow:true',
-      ]);
-      const [first, second] = await Promise.all([
-        store.readInteraction('permission_earlier'),
-        store.readInteraction('permission_later'),
-      ]);
-      assert.equal(first?.outcome?.outcome.kind, 'permission_answer');
-      assert.equal(second?.outcome?.outcome.kind, 'permission_answer');
-      const canonical = await new HostCanonicalPermissionOutcomeReader({
-        store,
-      }).readPermissionOutcome('permission_later');
-      assert.equal(canonical?.requestId, 'permission_later');
-      assert.equal(canonical?.request.toolUseId, 'tool_later');
-      assert.equal(canonical?.request.prompt.toolName, 'Bash');
-      assert.equal(canonical?.outcome.kind, 'permission_answer');
-
-      await owner.close('turn_terminal');
-      owner.release();
-      await coordinator.close();
-    });
-  });
-
-  test('settles a late remembered permission sibling durably without publishing it', async () => {
-    await withStore(async ({ store }) => {
-      const order: string[] = [];
-      const projections: SessionInteractionProjection[] = [];
-      const coordinator = createCoordinator(store, {
-        preflightSessionSnapshot: (_sessionId, projection) => {
-          projections.push(projection);
-          return true;
-        },
-        refreshCanonicalContinuity: async () => {
-          const pending = await store.listPending({ sessionId: RUN.sessionId });
-          order.push(`refresh:${pending.map((request) => request.requestId).join(',')}`);
-        },
-      });
-      const owner = coordinator.bindRun(RUN);
-      const scope = 'b'.repeat(64);
-
-      const winnerAdmission = await owner.acceptPermissionRequest({
-        request: permissionEvent('permission_winner', 'tool_winner', 10),
-        rememberScopeId: scope,
-        continuation: permissionContinuation('permission_winner', order),
-      });
-      assert.deepEqual(winnerAdmission, { state: 'pending' });
-      const winner = await coordinator.handlers['interaction.answer'](
-        {
-          interactionId: 'permission_winner',
-          answer: { kind: 'permission', decision: 'allow', rememberForTurn: true },
-        },
-        connection(),
-      );
-      assert.equal(winner.ok, true);
-
-      const lateAdmission = await owner.acceptPermissionRequest({
-        request: permissionEvent('permission_late', 'tool_late', 20),
-        rememberScopeId: scope,
-        continuation: permissionContinuation('permission_late', order),
-      });
-      assert.deepEqual(lateAdmission, { state: 'settled' });
-
-      const [winnerRecord, lateRecord, pending] = await Promise.all([
-        store.readInteraction('permission_winner'),
-        store.readInteraction('permission_late'),
-        store.listPending({ sessionId: RUN.sessionId }),
-      ]);
-      assert.equal(winnerRecord?.request.requestId, 'permission_winner');
-      assert.equal(lateRecord?.request.requestId, 'permission_late');
-      assert.deepEqual(lateRecord?.outcome?.outcome, winnerRecord?.outcome?.outcome);
-      assert.deepEqual(pending, []);
-      assert.deepEqual(
-        projections.map((projection) => projection.pending.length),
-        [1],
-      );
-      assert.deepEqual(order, [
-        'refresh:permission_winner',
-        'refresh:',
-        'apply:permission_winner:allow:true',
-        'refresh:',
-        'apply:permission_late:allow:true',
-      ]);
-
-      await owner.close('turn_terminal');
-      owner.release();
-      await coordinator.close();
-    });
-  });
-
-  test('rejects a one-shot permission remember scope before durable admission', async () => {
-    await withStore(async ({ store }) => {
-      const coordinator = createCoordinator(store);
-      const owner = coordinator.bindRun(RUN);
-      const request: AnyPermissionRequestEvent = {
-        id: 'event_permission_one_shot',
-        type: 'permission_request',
-        turnId: RUN.turnId,
-        ts: 30,
-        kind: 'additional_permissions',
-        requestId: 'permission_one_shot',
-        toolUseId: 'tool_one_shot',
-        toolName: 'Write',
-        category: 'file_write',
-        reason: 'additional_permissions',
-        additionalPermissions: {
-          fileSystem: {
-            entries: [{ path: '/outside/file', access: 'write', scope: 'exact' }],
-          },
-        },
-        cwd: '/repo',
-        justification: 'Write the requested file',
-        intentHash: 'intent_hash',
-        permissionsHash: 'permissions_hash',
-        risk: {
-          outsideWorkspace: true,
-          protectedMetadata: false,
-          networkEnabled: false,
-        },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
-        args: undefined,
-      };
-
-      await assert.rejects(
-        owner.acceptPermissionRequest({
-          request,
-          rememberScopeId: 'c'.repeat(64),
-          continuation: permissionContinuation(request.requestId, []),
-        }),
-        (error: unknown) =>
-          error instanceof RuntimeInteractionAdmissionRejectedError &&
-          error.reason === 'invalid_request',
-      );
-      assert.equal(await store.readInteraction(request.requestId), undefined);
-      assert.deepEqual(await store.listPending({ sessionId: RUN.sessionId }), []);
-      assert.equal(coordinator.isPoisoned(), false);
-
-      await owner.close('turn_terminal');
-      owner.release();
-      await coordinator.close();
-    });
-  });
-
-  test('admits a bounded generic review for a registered MCP permission request', async () => {
-    await withStore(async ({ store }) => {
-      const coordinator = createCoordinator(store);
-      const owner = coordinator.bindRun(RUN);
-      const request: AnyPermissionRequestEvent = {
-        id: 'event_permission_mcp',
-        type: 'permission_request',
-        turnId: RUN.turnId,
-        ts: 35,
-        kind: 'tool_permission',
-        requestId: 'permission_mcp',
-        toolUseId: 'tool_mcp',
-        toolName: 'mcp__github__create_issue',
-        category: 'network_send',
-        reason: 'network',
-        args: {
-          serverId: 'github',
-          toolName: 'create_issue',
-          arguments: {
-            body: 'x'.repeat(20_000),
-            client_secret: 'mcp-client-secret',
-            owner: 'maka-agent',
-            private_key: 'mcp-private-key',
-            recipient: 'maintainer@example.com',
-            refresh_token: 'mcp-refresh-token',
-            service_account_key: 'mcp-service-account-key',
-            session_token: 'mcp-session-token',
-            ssh_private_key: 'mcp-ssh-private-key',
-          },
-        },
-        rememberForTurnAllowed: true,
-      };
-
-      assert.deepEqual(
-        await owner.acceptPermissionRequest({
-          request,
-          continuation: permissionContinuation(request.requestId, []),
-        }),
-        { state: 'pending' },
-      );
-      const record = await store.readInteraction(request.requestId);
-      assert.equal(record?.request.request.kind, 'permission');
-      if (record?.request.request.kind !== 'permission') return;
-      assert.equal(record.request.request.prompt.review.kind, 'tool');
-      if (record.request.request.prompt.review.kind !== 'tool') return;
-      const durableReview = record.request.request.prompt.review.arguments.text;
-      assert.match(durableReview, /\[redacted\]/);
-      assert.match(durableReview, /"recipient":"maintainer@example\.com"/);
-      assert.match(durableReview, /"serverId":"github"/);
-      assert.match(durableReview, /"toolName":"create_issue"/);
-      assert.doesNotMatch(
-        durableReview,
-        /mcp-client-secret|mcp-private-key|mcp-refresh-token|mcp-service-account-key|mcp-session-token|mcp-ssh-private-key/,
-      );
-
-      await owner.close('turn_terminal');
-      owner.release();
-      await coordinator.close();
-    });
-  });
-
-  test('removes assignment secrets before durable Interaction admission', async () => {
-    await withStore(async ({ store }) => {
-      const coordinator = createCoordinator(store);
-      const owner = coordinator.bindRun(RUN);
-      const secret = 'host-durable-secret';
-      const request: PermissionRequestEvent = {
-        ...permissionEvent('permission_assignment_secret', 'tool_assignment_secret', 36),
-        args: {
-          command: `API_TOKEN=${secret} deploy`,
-          cwd: '/repo',
-        },
-      };
-
-      assert.deepEqual(
-        await owner.acceptPermissionRequest({
-          request,
-          continuation: permissionContinuation(request.requestId, []),
-        }),
-        { state: 'pending' },
-      );
-      const record = await store.readInteraction(request.requestId);
-      assert.equal(record?.request.request.kind, 'permission');
-      if (record?.request.request.kind !== 'permission') return;
-      assert.equal(record.request.request.prompt.review.kind, 'command');
-      if (record.request.request.prompt.review.kind !== 'command') return;
-      assert.match(record.request.request.prompt.review.command, /\[redacted\]/);
-      assert.doesNotMatch(record.request.request.prompt.review.command, new RegExp(secret));
 
       await owner.close('turn_terminal');
       owner.release();
@@ -464,6 +166,49 @@ describe('HostInteractionCoordinator', () => {
 
       await coordinator.recoverPendingAfterHostRestart();
       assert.deepEqual(order, ['refresh:host_restarted']);
+      assert.deepEqual(await store.listPending(), []);
+      await coordinator.close();
+    });
+  });
+
+  test('closes pending legacy permission requests after upgrade without rewriting settled history', async () => {
+    await withStore(async ({ store }) => {
+      const pendingAdditional = storedLegacyAdditionalPermission(
+        'legacy_additional_pending',
+        RUN,
+        10,
+      );
+      const pendingEscalation = storedLegacySandboxEscalation('legacy_escalation_pending', RUN, 20);
+      const settled = storedLegacyAdditionalPermission('legacy_additional_settled', RUN, 30);
+      for (const request of [pendingAdditional, pendingEscalation, settled]) {
+        assert.equal((await store.establishRequest(request)).status, 'stable');
+      }
+      const settledOutcome = {
+        kind: 'permission_answer',
+        decision: 'deny',
+        rememberForTurn: false,
+        reviewer: 'user',
+        committedAt: 90,
+      } as const;
+      assert.equal((await store.commitOutcome(settled.requestId, settledOutcome)).status, 'stable');
+
+      const coordinator = createCoordinator(store);
+      await coordinator.recoverPendingAfterHostRestart();
+
+      for (const [requestId, committedAt] of [
+        [pendingAdditional.requestId, 101],
+        [pendingEscalation.requestId, 102],
+      ] as const) {
+        assert.deepEqual((await store.readInteraction(requestId))?.outcome?.outcome, {
+          kind: 'closure',
+          reason: 'host_restarted',
+          committedAt,
+        });
+      }
+      assert.deepEqual(
+        (await store.readInteraction(settled.requestId))?.outcome?.outcome,
+        settledOutcome,
+      );
       assert.deepEqual(await store.listPending(), []);
       await coordinator.close();
     });
@@ -629,23 +374,6 @@ function questionEvent(requestId: string, ts: number): UserQuestionRequestEvent 
   };
 }
 
-function permissionEvent(requestId: string, toolUseId: string, ts: number): PermissionRequestEvent {
-  return {
-    id: `event_${requestId}`,
-    type: 'permission_request',
-    turnId: RUN.turnId,
-    ts,
-    kind: 'tool_permission',
-    requestId,
-    toolUseId,
-    toolName: 'Bash',
-    category: 'shell_unsafe',
-    reason: 'shell_dangerous',
-    args: { command: 'echo okay', cwd: '/repo' },
-    rememberForTurnAllowed: true,
-  };
-}
-
 function questionContinuation(
   requestId: string,
   callbacks: {
@@ -661,21 +389,6 @@ function questionContinuation(
     },
     applyClosure: async (reason) => {
       await callbacks.closure?.(reason);
-    },
-  };
-}
-
-function permissionContinuation(requestId: string, order: string[]): RuntimePermissionContinuation {
-  return {
-    ...RUN,
-    requestId,
-    applyAnswer: async (answer) => {
-      order.push(
-        `apply:${requestId}:${answer.decision}:${String(answer.rememberForTurn ?? false)}`,
-      );
-    },
-    applyClosure: async (reason) => {
-      order.push(`apply:${requestId}:${reason}`);
     },
   };
 }
@@ -698,6 +411,77 @@ function storedQuestion(
           options: [{ label: 'Yes' }, { label: 'No' }],
         },
       ],
+    },
+  };
+}
+
+function storedLegacyAdditionalPermission(
+  requestId: string,
+  identity: RuntimeInteractionRunIdentity,
+  createdAt: number,
+): StoredInteractionRequest {
+  return {
+    ...identity,
+    requestId,
+    createdAt,
+    request: {
+      kind: 'permission',
+      toolUseId: `tool_${requestId}`,
+      prompt: {
+        kind: 'additional_permissions',
+        toolName: 'Write',
+        category: 'file_write',
+        reason: 'additional_permissions',
+        review: {
+          kind: 'additional_permissions',
+          cwd: '/repo',
+          paths: [{ path: '/outside/file', access: 'write', scope: 'exact' }],
+          networkEnabled: true,
+        },
+        risk: {
+          outsideWorkspace: true,
+          protectedMetadata: false,
+          networkEnabled: true,
+        },
+        alsoApprovesToolExecution: true,
+        availableDecisions: ['allow_once', 'deny'],
+      },
+    },
+  };
+}
+
+function storedLegacySandboxEscalation(
+  requestId: string,
+  identity: RuntimeInteractionRunIdentity,
+  createdAt: number,
+): StoredInteractionRequest {
+  return {
+    ...identity,
+    requestId,
+    createdAt,
+    request: {
+      kind: 'permission',
+      toolUseId: `tool_${requestId}`,
+      prompt: {
+        kind: 'sandbox_escalation',
+        toolName: 'Bash',
+        category: 'privileged',
+        reason: 'sandbox_escalation',
+        review: {
+          kind: 'command',
+          command: 'sudo true',
+          cwd: '/repo',
+        },
+        trigger: 'proactive',
+        risk: {
+          unsandboxedExecution: true,
+          unrestrictedFileSystem: true,
+          unrestrictedNetwork: true,
+          protectedMetadataExposed: true,
+        },
+        alsoApprovesToolExecution: true,
+        availableDecisions: ['allow_once', 'deny'],
+      },
     },
   };
 }

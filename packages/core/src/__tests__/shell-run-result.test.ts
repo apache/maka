@@ -250,6 +250,7 @@ describe('normalizeShellToolResultContent', () => {
   it('rejects non-canonical nested output and contradictory current state', () => {
     const valid = shellRun();
     assert.equal(normalizeShellToolResultContent(valid).state, 'valid');
+    assert.equal(normalizeShellToolResultContent({ ...valid, status: 'starting' }).state, 'valid');
 
     const invalid = [
       {

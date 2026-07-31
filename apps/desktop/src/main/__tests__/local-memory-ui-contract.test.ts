@@ -86,7 +86,7 @@ describe('local MEMORY.md Settings UI contract', () => {
     assert.match(listBlock, /onCopyReference/);
     assert.match(listBlock, /pendingCopyIds\?: ReadonlySet<string>/);
     assert.match(listBlock, /const copyPending = props\.pendingCopyIds\?\.has\(`entry:\$\{entry\.id\}:copy`\) \?\? false/);
-    assert.match(listBlock, /disabled=\{copyPending\}/);
+    assert.match(listBlock, /isDisabled=\{copyPending\}/); // #1565 PR 3: Astryx Button uses isDisabled
     assert.match(listBlock, /copyPending \? props\.copy\.text\.copying : props\.copy\.text\.copyReference/);
     assert.match(src, /function memoryEntryStatusLabel/);
   });
@@ -130,7 +130,7 @@ describe('local MEMORY.md Settings UI contract', () => {
     assert.match(pageBlock, /navigator\.clipboard\.writeText\(localMemoryPromptPreview\)/);
     assert.match(pageBlock, /copy\.text\.promptCopied/);
     assert.match(pageBlock, /props\.copyPending \? props\.copy\.text\.copying : props\.copy\.text\.copyContext/);
-    assert.match(pageBlock, /disabled=\{!props\.preview \|\| props\.copyPending\}/);
+    assert.match(pageBlock, /isDisabled=\{!props\.preview \|\| props\.copyPending\}/); // #1565 PR 3
     assert.match(page, /preview=\{localMemoryPromptPreview\}/);
     assert.match(page, /onCopy=\{copyLocalMemoryPromptPreview\}/);
     assert.match(css, /\.settingsMemoryPromptPreview/);
@@ -244,7 +244,7 @@ describe('local MEMORY.md Settings UI contract', () => {
     assert.match(memoryPage, /<div className="settingsActionRow" role="group" aria-label=\{copy\.text\.fileActionsAria\}>/);
     assert.doesNotMatch(memoryPage, /<div className="settingsActionRow">\s*<button type="button" className="maka-button" disabled=\{memoryControlsDisabled \|\| !effective\.enabled \|\| !memoryDraftDirty\}/);
 
-    assert.match(memoryPage, /disabled=\{props\.disabled \|\| props\.isActionPending\(`instruction:\$\{file\.file\}:open`\)\}/);
+    assert.match(memoryPage, /isDisabled=\{props\.disabled \|\| props\.isActionPending\(`instruction:\$\{file\.file\}:open`\)\}/); // #1565 PR 3
     assert.match(memoryPage, /props\.isActionPending\(`instruction:\$\{file\.file\}:open`\) \? props\.copy\.text\.opening : props\.copy\.text\.instructionOpen/);
     assert.match(memoryPage, /props\.isActionPending\(`instruction:\$\{file\.file\}:create`\) \? props\.copy\.text\.creating : props\.copy\.text\.instructionCreate/);
     assert.match(memoryPage, /isMemoryActionPending\(`backup:\$\{backup\.kind\}:open`\) \? copy\.text\.opening : copy\.text\.open/);
@@ -469,7 +469,7 @@ describe('local MEMORY.md Settings UI contract', () => {
     assert.match(pageBlock, /const memoryDraftDirty = input\.draft !== effective\.content/);
     assert.match(pageBlock, /settingsMemoryDirtyState/);
     assert.match(pageBlock, /memoryDraftDirty \? copy\.text\.dirty : copy\.text\.savedDraft/);
-    assert.match(pageBlock, /disabled=\{memoryControlsDisabled \|\| !effective\.enabled \|\| !memoryDraftDirty\}/);
+    assert.match(pageBlock, /isDisabled=\{memoryControlsDisabled \|\| !effective\.enabled \|\| !memoryDraftDirty\}/); // #1565 PR 3
     assert.match(pageBlock, /pendingMemoryWriteAction === 'save' \? copy\.text\.saving : memoryDraftDirty \? copy\.text\.save : copy\.text\.saved/);
     assert.match(css, /\.settingsMemoryDirtyState\[data-dirty="true"\]/);
   });
@@ -522,8 +522,8 @@ describe('local MEMORY.md Settings UI contract', () => {
     assert.match(pageBlock, /const \[loadingMemory, setLoadingMemory\] = useState\(true\)/);
     assert.match(reloadBlock, /finally \{[\s\S]*setLoadingMemory\(false\)/);
     assert.match(pageBlock, /const memoryControlsDisabled = loadingMemory \|\| busy/);
-    assert.match(pageBlock, /disabled=\{memoryControlsDisabled \|\| effective\.status === 'incognito_blocked' \|\| !effective\.enabled\}/);
-    assert.match(pageBlock, /disabled=\{memoryControlsDisabled \|\| !effective\.enabled \|\| !memoryDraftDirty\}/);
+    assert.match(pageBlock, /isDisabled=\{memoryControlsDisabled \|\| effective\.status === 'incognito_blocked' \|\| !effective\.enabled\}/); // #1565 PR 3
+    assert.match(pageBlock, /isDisabled=\{memoryControlsDisabled \|\| !effective\.enabled \|\| !memoryDraftDirty\}/); // #1565 PR 3
   });
 
   it('surfaces thrown local memory and workspace instruction action failures', async () => {

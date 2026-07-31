@@ -80,7 +80,6 @@ export function buildSubmitPlanTool(
       steps: z.array(stepDefinitionSchema).min(1).max(50),
       risks: z.array(z.string().min(1)).max(20).optional(),
     }),
-    permissionRequired: false,
     impl: async (input, context) => {
       const result = await planStore.submitProposal({
         sessionId: context.sessionId,
@@ -117,7 +116,6 @@ export function buildUpdatePlanTool(
       steps: z.array(executionStepSchema).min(1).max(50),
       explanation: z.string().min(1).optional(),
     }),
-    permissionRequired: false,
     impl: async (input, context) => {
       const result = await planStore.updateExecution({
         sessionId: context.sessionId,
@@ -138,7 +136,6 @@ export function buildCancelPlanTool(
     description:
       'Cancel the active plan execution when the user explicitly asks to abandon it. Explain the user request in reason.',
     parameters: z.object({ reason: z.string().min(1) }),
-    permissionRequired: false,
     impl: async ({ reason }, context) => {
       const result = await planStore.cancelExecution({
         sessionId: context.sessionId,

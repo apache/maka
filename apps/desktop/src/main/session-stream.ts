@@ -22,7 +22,6 @@ import type {
   BackendFactory,
   GoalTurnOutcome,
   HostCapabilities,
-  PermissionEngine,
   SessionActivityLease,
   SessionActivityRegistry,
   SessionManager,
@@ -65,8 +64,8 @@ const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
 export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
-  permissionEngine: PermissionEngine;
   telemetryRepo: TelemetryRepo;
+  ensureUsageReady: () => Promise<void>;
   artifactStore: ArtifactStore;
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
   sandboxDiagnosticsProvider: AssembledTools['sandboxDiagnosticsProvider'];
@@ -94,8 +93,8 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
   const {
     buildSubscriptionModelFetch,
     systemPromptService,
-    permissionEngine,
     telemetryRepo,
+    ensureUsageReady,
     artifactStore,
     desktopSessionSkillHosts,
     sandboxDiagnosticsProvider,
@@ -111,6 +110,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
   } = deps;
 
   return async (ctx) => {
+    await ensureUsageReady();
     const toolSurface = await resolveDesktopBackendToolSurface(deps, ctx);
     const {
       connection,
@@ -125,9 +125,10 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       selectedTools,
       toolAvailability: backendToolAvailability,
       skillHost: backendSkillHost,
+      admitsAgentChildren,
     } = toolSurface;
     const modelFetch = buildSubscriptionModelFetch(connection, ctx.sessionId, model);
-    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment();
+    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment(ctx.sessionId);
     // Legacy child-run backends share the parent sessionId; linked child
     // sessions have their own id. Both receive a narrower tool surface without
     // the Desktop Skill tool, so only a session's full backend owns this entry.
@@ -142,10 +143,14 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       sessionId: ctx.sessionId,
       header: { ...ctx.header, model, permissionMode: effectivePermissionMode },
       appendMessage: ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary!(ctx.sessionId),
+      createSandboxBoundaryRequest: (request) =>
+        ctx.store.createSandboxBoundaryRequest!(request),
+      settleSandboxBoundaryRequest: (request) =>
+        ctx.store.settleSandboxBoundaryRequest!(request),
       connection,
       apiKey: apiKey ?? '',
       modelId: model,
-      permissionEngine,
       modelFactory: (input) => getAIModel({ ...input, fetch: modelFetch }),
       tools: selectedTools,
       sandboxDiagnosticsSnapshot,
@@ -162,64 +167,69 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       },
       agentTeam,
       toolAvailability: backendToolAvailability,
-      spawnChildAgent: (input) => getRuntime().spawnChildAgent(ctx.sessionId, input),
-      spawnChildSession: (input) => {
-        const observation = createLinkedChildEventProjection({
-          lifecycle: 'created',
-          safeSendToRenderer,
-          openGateway,
-          emitSessionsChanged,
-          onReady: input.onReady,
-          onEvent: input.onEvent,
-        });
-        return getRuntime().spawnChildSession(ctx.sessionId, {
-          spawnedBy: {
-            parentRunId: input.parentRunId,
-            parentTurnId: input.parentTurnId,
-            toolCallId: input.toolCallId,
-          },
-          agentProfile: input.agentProfile,
-          prompt: input.prompt,
-          ...(input.swarm ? { swarm: input.swarm } : {}),
-          abortSignal: input.abortSignal,
-          onReady: observation.onReady,
-          onEvent: observation.onEvent,
-        });
-      },
-      prepareChildAgentResume: (sourceRunId) =>
-        getRuntime().prepareChildAgentResume(ctx.sessionId, sourceRunId),
-      resumeChildAgent: (input) => {
-        const observation = createLinkedChildEventProjection({
-          lifecycle: 'continued',
-          safeSendToRenderer,
-          openGateway,
-          emitSessionsChanged,
-          onReady: input.onReady,
-          onEvent: input.onEvent,
-        });
-        return getRuntime().resumeChildAgent(ctx.sessionId, {
-          ...input,
-          onReady: observation.onReady,
-          onEvent: observation.onEvent,
-        });
-      },
-      retryChildAgent: (input) => {
-        const observation = createLinkedChildEventProjection({
-          lifecycle: 'continued',
-          safeSendToRenderer,
-          openGateway,
-          emitSessionsChanged,
-          onReady: input.onReady,
-          onEvent: input.onEvent,
-        });
-        return getRuntime().retryChildAgent(ctx.sessionId, {
-          ...input,
-          onReady: observation.onReady,
-          onEvent: observation.onEvent,
-        });
-      },
-      listChildAgents: () => getRuntime().listChildAgents(ctx.sessionId),
-      readChildAgentOutput: (input) => getRuntime().readChildAgentOutput(ctx.sessionId, input),
+      ...(admitsAgentChildren
+        ? {
+            spawnChildAgent: (input) => getRuntime().spawnChildAgent(ctx.sessionId, input),
+            spawnChildSession: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'created',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().spawnChildSession(ctx.sessionId, {
+                spawnedBy: {
+                  parentRunId: input.parentRunId,
+                  parentTurnId: input.parentTurnId,
+                  toolCallId: input.toolCallId,
+                },
+                agentProfile: input.agentProfile,
+                prompt: input.prompt,
+                ...(input.swarm ? { swarm: input.swarm } : {}),
+                abortSignal: input.abortSignal,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            prepareChildAgentResume: (sourceRunId) =>
+              getRuntime().prepareChildAgentResume(ctx.sessionId, sourceRunId),
+            resumeChildAgent: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'continued',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().resumeChildAgent(ctx.sessionId, {
+                ...input,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            retryChildAgent: (input) => {
+              const observation = createLinkedChildEventProjection({
+                lifecycle: 'continued',
+                safeSendToRenderer,
+                openGateway,
+                emitSessionsChanged,
+                onReady: input.onReady,
+                onEvent: input.onEvent,
+              });
+              return getRuntime().retryChildAgent(ctx.sessionId, {
+                ...input,
+                onReady: observation.onReady,
+                onEvent: observation.onEvent,
+              });
+            },
+            listChildAgents: () => getRuntime().listChildAgents(ctx.sessionId),
+            readChildAgentOutput: (input) =>
+              getRuntime().readChildAgentOutput(ctx.sessionId, input),
+          }
+        : {}),
       providerOptions: buildProviderOptions(connection, model, ctx.header.thinkingLevel),
       contextBudget: buildDefaultContextBudgetPolicy(connection, {
         name: 'desktop-default-history-budget',
@@ -442,8 +452,8 @@ export interface SessionStreamerDeps {
 }
 
 function isStatusChangingSessionEvent(event: SessionEvent): boolean {
-  return event.type === 'permission_request' ||
-    event.type === 'permission_decision_ack' ||
+  return event.type === 'sandbox_boundary_request' ||
+    event.type === 'sandbox_boundary_decision_ack' ||
     event.type === 'complete' ||
     event.type === 'abort' ||
     event.type === 'error';

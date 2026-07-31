@@ -172,6 +172,92 @@ describe('tool activity presentation', () => {
     assert.match(markup, /1 个失败/);
   });
 
+  it('presents a command sandbox denial as blocked instead of failed', () => {
+    const item: ToolActivityItem = {
+      toolUseId: 'tool-sandbox-blocked',
+      toolName: 'Bash',
+      activityKind: 'command',
+      intent: '写入工作区外文件',
+      status: 'errored',
+      args: { command: 'printf blocked > ../outside.txt' },
+      result: {
+        kind: 'terminal',
+        cwd: '/tmp/maka',
+        cmd: 'printf blocked > ../outside.txt',
+        status: 'failed',
+        exitCode: 1,
+        output: pipeOutput('', 'Operation not permitted\n'),
+        sandboxDenial: {
+          likely: true,
+          backend: 'macos-seatbelt',
+          recovery: 'require_escalated',
+        },
+      },
+    };
+
+    const collapsed = renderTool(item);
+    assert.match(collapsed, /1 个可能被沙箱阻止/);
+    assert.doesNotMatch(collapsed, /1 个失败/);
+
+    const expanded = renderToStaticMarkup(createElement(ToolActivity, {
+      items: [item],
+      open: true,
+    }));
+    assert.match(expanded, /可能被沙箱阻止/);
+    assert.match(expanded, /操作可能被沙箱阻止/);
+    assert.match(expanded, /失败前可能已经产生部分结果/);
+    assert.doesNotMatch(expanded, /因此未执行/);
+    assert.doesNotMatch(expanded, /工具调用失败/);
+  });
+
+  it('presents a filesystem worker sandbox denial as blocked instead of failed', () => {
+    const markup = renderToStaticMarkup(createElement(ToolActivity, {
+      items: [{
+        toolUseId: 'tool-filesystem-sandbox-blocked',
+        toolName: 'Grep',
+        activityKind: 'search',
+        intent: '搜索文件',
+        status: 'errored',
+        args: { pattern: 'needle', path: '/workspace' },
+        result: {
+          kind: 'text',
+          text: 'Filesystem access was denied.',
+          sandboxDenial: {
+            likely: true,
+            backend: 'macos-seatbelt',
+          },
+        },
+      } satisfies ToolActivityItem],
+      open: true,
+    }));
+
+    assert.match(markup, /可能被沙箱阻止/);
+    assert.match(markup, /操作可能被沙箱阻止/);
+    assert.match(markup, /Filesystem access was denied/);
+    assert.doesNotMatch(markup, /工具调用失败/);
+  });
+
+  it('keeps an ordinary filesystem permission error in the generic failure state', () => {
+    const markup = renderToStaticMarkup(createElement(ToolActivity, {
+      items: [{
+        toolUseId: 'tool-filesystem-denied',
+        toolName: 'Read',
+        activityKind: 'read',
+        intent: '读取受限文件',
+        status: 'errored',
+        args: { path: '/workspace/private.txt' },
+        result: {
+          kind: 'text',
+          text: 'Filesystem access was denied.',
+        },
+      } satisfies ToolActivityItem],
+      open: true,
+    }));
+
+    assert.match(markup, /工具调用失败/);
+    assert.doesNotMatch(markup, /可能被沙箱阻止/);
+  });
+
   it('shows diagnostic flags without exposing transport chunk counts', () => {
     const markup = renderToStaticMarkup(createElement(ToolActivity, {
       items: [{

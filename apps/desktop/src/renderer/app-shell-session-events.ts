@@ -40,6 +40,9 @@ export function createAppShellSessionEventHandlers(options: {
   refreshSessions: () => Promise<unknown>;
   setLiveTurnBySession: StateUpdater<Record<string, LiveTurnProjection>>;
   setInteractionBySession: StateUpdater<InteractionQueues>;
+  onSandboxBoundaryInteractionChanged?: (sessionId: string) => void;
+  /** A boundary decision settled: the session's execution boundary may have moved. */
+  onExecutionBoundaryChanged?: (sessionId: string) => void;
   showModelSetupToast: (description: string, reason?: string) => void;
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
@@ -52,6 +55,8 @@ export function createAppShellSessionEventHandlers(options: {
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged,
+    onExecutionBoundaryChanged,
     showModelSetupToast,
     toastApi,
     notifyRunEnded,
@@ -117,20 +122,30 @@ export function createAppShellSessionEventHandlers(options: {
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
         break;
-      case 'permission_request':
+      case 'sandbox_boundary_request':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
       case 'user_question_request':
         setInteractionBySession((current) => enqueueInteraction(current, sessionId, event));
         break;
-      case 'permission_decision_ack':
-        setInteractionBySession((current) => dequeueInteractionByRequestId(current, sessionId, event.requestId));
+      case 'sandbox_boundary_decision_ack':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
+        // #1611: an approved expansion changes only the boundary's revision —
+        // no session field moves — so the boundary read model has to be told,
+        // or the permission label keeps describing the permissions the session
+        // had before the user granted more.
+        onExecutionBoundaryChanged?.(sessionId);
+        setInteractionBySession((current) =>
+          dequeueInteractionByRequestId(current, sessionId, event.requestId),
+        );
         break;
       case 'tool_result':
         setInteractionBySession((current) => dequeueInteractionByToolUseId(current, sessionId, event.toolUseId));
         void refreshMessages(sessionId);
         break;
       case 'error':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         if (activeIdRef.current === sessionId) {
           if (isNoRealConnectionEvent(event)) {
@@ -146,17 +161,17 @@ export function createAppShellSessionEventHandlers(options: {
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'abort':
+        onSandboxBoundaryInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));
         break;
       case 'complete': {
-        if (event.stopReason !== 'permission_handoff') {
-          setInteractionBySession((current) => clearInteractions(current, sessionId));
-          if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
-            const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
-            notifyRunEnded?.({ kind: 'completed', sessionId, body });
-          }
+        onSandboxBoundaryInteractionChanged?.(sessionId);
+        setInteractionBySession((current) => clearInteractions(current, sessionId));
+        if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
+          const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
+          notifyRunEnded?.({ kind: 'completed', sessionId, body });
         }
         void refreshSessions();
         void refreshMessages(sessionId, terminalRefreshOptions(before));

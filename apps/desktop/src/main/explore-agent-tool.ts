@@ -204,7 +204,6 @@ export function buildExploreAgentTool(): MakaTool<
       maxFiles: z.number().int().min(1).max(80).optional(),
       maxMatches: z.number().int().min(1).max(120).optional(),
     }),
-    permissionRequired: true,
     categoryHint: 'subagent',
     impl: async ({ objective, roots, queries, ignorePaths, stoppingCondition, maxFiles, maxMatches }, { cwd, abortSignal, emitOutput }) => {
       return runReadOnlyExplore({

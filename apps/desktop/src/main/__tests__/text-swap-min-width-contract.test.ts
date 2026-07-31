@@ -6,8 +6,8 @@
  *
  * Two layers, complementary:
  *
- * 1. Heuristic scan (DISCOVERY, scoped): every `<Button>`/`<UiButton>`
- *    whose children contain a string-ternary (`? 'A' : 'B'` with
+ * 1. AST scan (DISCOVERY, scoped): every `<Button>`/`<UiButton>` whose
+ *    `label` prop or children contain a string-ternary (`? 'A' : 'B'` with
  *    string/template branches — the state-swap signal) must keep
  *    `min-w-[Nrem]` in its className. The scan runs over the PR3 text-swap
  *    audit scope (the files #520 PR3 touched: memory/open-gateway settings
@@ -16,7 +16,7 @@
  *    lock: the test fails closed. A whitelist-only contract kept missing
  *    buttons nobody had audited by hand (reload, backup-candidate actions,
  *    instruction-file actions all slipped through). The scan closes that
- *    gap for INLINE string ternaries (`? 'A' : 'B'` in children). It does
+ *    gap for INLINE string ternaries (`? 'A' : 'B'` in labels or children). It does
  *    NOT cover COMPUTED-LABEL state-swap buttons (children is a variable
  *    holding a ternary result, e.g. `{copyLabel}` / `{statusActionLabel}`)
  *    — those have no inline ternary for the scan to find, so they MUST be
@@ -49,12 +49,18 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { REPO_ROOT } from './css-test-helpers.js';
+import {
+  isAstNode,
+  sourceFileFor,
+  visitAst,
+  type AstNode,
+} from './localized-source-contract-helpers.js';
 
 // State-swap buttons: file + a unique onClick substring that identifies the
 // exact button + the min-w-[Nrem] the button's className must keep.
-// COMPUTED-LABEL state-swap buttons (children is a variable holding a ternary
+// COMPUTED-LABEL state-swap buttons (label/children is a variable holding a ternary
 // result, NOT an inline `? 'A' : 'B'`): the scan CANNOT discover these (no
-// inline ternary in children), so they MUST be hand-pinned in TEXT_SWAP_BUTTONS.
+// inline ternary in JSX), so they MUST be hand-pinned in TEXT_SWAP_BUTTONS.
 // Known cases — keep this list in sync with the whitelist entries that pin
 // them:
 // - error-boundary copyLabel (onClick={this.handleCopyReport}): children is
@@ -63,10 +69,7 @@ import { REPO_ROOT } from './css-test-helpers.js';
 // - memory onStatusChange (onClick={() => void props.onStatusChange?.(...)}):
 //   children is {statusActionLabel}; statusActionLabel = draftDirty
 //   ? (archived ? '恢复到草稿' : '归档到草稿') : (archived ? '恢复' : '归档').
-//   NB: the scan happens to flag this one too because its onClick contains a
-//   `props.archived ? 'active' : 'archived'` ternary that BUTTON_BLOCK_RE
-//   leaks into children via the `=>` boundary — a regex artifact, not a real
-//   discovery; keep the whitelist pin regardless.
+//   The label is computed before JSX, so keep the whitelist pin.
 const TEXT_SWAP_BUTTONS: Array<{ file: string; onClick: string; minW: string; note: string }> = [
   // memory-settings-page.tsx — settingsActionRow
   { file: 'apps/desktop/src/renderer/settings/memory-settings-page.tsx', onClick: 'onClick={() => void save()}', minW: '3.5rem', note: '保存 ↔ 保存中… ↔ 已保存' },
@@ -121,16 +124,106 @@ const SCAN_FILES = [
   'apps/desktop/src/renderer/error-boundary.tsx',
   'packages/ui/src/daily-review-panel.tsx',
 ];
-// Match a full <Button>/<UiButton> element (opening attrs + children +
-// closing tag). `[^>]*` is fine here because these tags never put a `>`
-// inside an attribute; nested <Button> is handled by the non-greedy
-// children matching the nearest close.
-const BUTTON_BLOCK_RE = /<(Ui)?Button\b([^>]*)>([\s\S]*?)<\/\1Button>/g;
-// A string-ternary child: `? 'A' : 'B'` / `? "A" : "B"` / `? `A` : `B``
-// (template literals allowed). This is the state-swap signal: the button's
-// text depends on runtime state, so its width can change between states.
-const STRING_TERNARY_RE = /\?\s*['"`][^'"`]+['"`]\s*:\s*['"`][^'"`]+['"`]/;
 const MIN_W_REM_RE = /min-w-\[\d+(?:\.\d+)?rem\]/;
+
+interface DiscoveredTextSwapButton {
+  block: string;
+  opening: string;
+  line: number;
+  snippet: string;
+}
+
+function isStringExpression(value: unknown): boolean {
+  return (
+    isAstNode(value) &&
+    (value.type === 'StringLiteral' || value.type === 'TemplateLiteral')
+  );
+}
+
+function containsStringSwapConditional(value: unknown): boolean {
+  const roots = Array.isArray(value)
+    ? value.filter(isAstNode)
+    : isAstNode(value)
+      ? [value]
+      : [];
+  for (const root of roots) {
+    let found = false;
+    visitAst(root, (node) => {
+      if (
+        node.type === 'ConditionalExpression' &&
+        isStringExpression(node.consequent) &&
+        isStringExpression(node.alternate)
+      ) {
+        found = true;
+      }
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
+function nodeSource(source: string, value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((child) => nodeSource(source, child)).join('');
+  }
+  return isAstNode(value) &&
+    typeof value.start === 'number' &&
+    typeof value.end === 'number'
+    ? source.slice(value.start, value.end)
+    : '';
+}
+
+function discoverTextSwapButtons(source: string): DiscoveredTextSwapButton[] {
+  const discovered: DiscoveredTextSwapButton[] = [];
+
+  visitAst(sourceFileFor(source), (node: AstNode) => {
+    if (node.type === 'JSXElement') {
+      const opening = isAstNode(node.openingElement)
+        ? node.openingElement
+        : null;
+      const name = isAstNode(opening?.name) ? opening.name : null;
+      const buttonName =
+        name?.type === 'JSXIdentifier' && typeof name.name === 'string'
+          ? name.name
+          : null;
+      if (buttonName === 'Button' || buttonName === 'UiButton') {
+        const attributes = Array.isArray(opening?.attributes)
+          ? opening.attributes
+          : [];
+        const label = attributes.find((attribute) => {
+          const attributeName =
+            isAstNode(attribute) && isAstNode(attribute.name)
+              ? attribute.name
+              : null;
+          return (
+            isAstNode(attribute) &&
+            attribute.type === 'JSXAttribute' &&
+            attributeName?.type === 'JSXIdentifier' &&
+            attributeName.name === 'label'
+          );
+        });
+        const children = Array.isArray(node.children) ? node.children : [];
+        const trigger = containsStringSwapConditional(label)
+          ? label
+          : containsStringSwapConditional(children)
+            ? children
+            : null;
+        if (trigger) {
+          discovered.push({
+            block: nodeSource(source, node),
+            opening: nodeSource(source, opening),
+            line: node.loc?.start.line ?? 1,
+            snippet: nodeSource(source, trigger)
+              .trim()
+              .replace(/\s+/g, ' ')
+              .slice(0, 80),
+          });
+        }
+      }
+    }
+  });
+  return discovered;
+}
 
 describe('PR-ANTI-LAYOUT-SHIFT-TEXT-SWAP-0 contract', () => {
   it('every whitelisted state-swap button keeps its exact min-w-[Nrem]', async () => {
@@ -164,7 +257,7 @@ describe('PR-ANTI-LAYOUT-SHIFT-TEXT-SWAP-0 contract', () => {
     }
   });
 
-  it('no state-swap Button with a string-ternary child slips through without min-w-[Nrem] + whitelist value pin', () => {
+  it('no state-swap Button with an inline string ternary slips through without min-w-[Nrem] + whitelist value pin', () => {
     // Two failure modes, both must fail closed:
     //  (a) no min-w-[Nrem] at all — the width lock is missing;
     //  (b) has some min-w-[Nrem] but the button isn't in TEXT_SWAP_BUTTONS
@@ -181,28 +274,28 @@ describe('PR-ANTI-LAYOUT-SHIFT-TEXT-SWAP-0 contract', () => {
     const notPinned: Array<{ file: string; line: number; snippet: string }> = [];
     for (const file of SCAN_FILES) {
       const src = readFileSync(resolve(REPO_ROOT, file), 'utf8');
-      BUTTON_BLOCK_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = BUTTON_BLOCK_RE.exec(src)) !== null) {
-        const block = m[0];
-        const attrs = m[2];
-        const children = m[3];
-        if (!STRING_TERNARY_RE.test(children)) continue;
-        const clsMatch = attrs.match(/className="([^"]*)"/);
+      for (const button of discoverTextSwapButtons(src)) {
+        const clsMatch = button.opening.match(/className="([^"]*)"/);
         const hasMinW = clsMatch != null && MIN_W_REM_RE.test(clsMatch[1]);
-        const line = src.slice(0, m.index).split('\n').length;
-        const snippet = children.trim().replace(/\s+/g, ' ').slice(0, 80);
         if (!hasMinW) {
-          missingMinW.push({ file, line, snippet });
+          missingMinW.push({
+            file,
+            line: button.line,
+            snippet: button.snippet,
+          });
         }
         // Even with a min-w, the button must be value-pinned by the
         // whitelist (or an explicit exception) so a too-small min-w can't
         // bypass the value lock.
         const pinned =
-          WHITELIST_ANCHORS.some((oc) => block.includes(oc)) ||
-          EXCEPTION_ANCHORS.some((oc) => block.includes(oc));
+          WHITELIST_ANCHORS.some((oc) => button.block.includes(oc)) ||
+          EXCEPTION_ANCHORS.some((oc) => button.block.includes(oc));
         if (!pinned) {
-          notPinned.push({ file, line, snippet });
+          notPinned.push({
+            file,
+            line: button.line,
+            snippet: button.snippet,
+          });
         }
       }
     }
@@ -211,7 +304,7 @@ describe('PR-ANTI-LAYOUT-SHIFT-TEXT-SWAP-0 contract', () => {
     assert.equal(
       missingMinW.length,
       0,
-      `Found ${missingMinW.length} state-swap button(s) without min-w-[Nrem] in the PR3 scope files. Each <Button>/<UiButton> whose children contain a string ternary (? 'A' : 'B', the state-swap signal) must keep min-w-[Nrem] in its className:\n` +
+      `Found ${missingMinW.length} state-swap button(s) without min-w-[Nrem] in the PR3 scope files. Each <Button>/<UiButton> whose label or children contain a string ternary (? 'A' : 'B', the state-swap signal) must keep min-w-[Nrem] in its className:\n` +
         fmt(missingMinW),
     );
     assert.equal(
@@ -222,24 +315,28 @@ describe('PR-ANTI-LAYOUT-SHIFT-TEXT-SWAP-0 contract', () => {
     );
   });
 
-  it('scan does NOT discover computed-label state-swap (children is a variable, not inline ternary)', () => {
-    // Computed-label buttons (children is {someVariable} holding a ternary
-    // result) are NOT auto-discovered: STRING_TERNARY_RE looks for
-    // ? 'A' : 'B' IN children, and {label} has none. These buttons MUST be
-    // hand-pinned in TEXT_SWAP_BUTTONS — see the COMPUTED-LABEL note above.
-    const computedLabelButton = [
-      '<Button type="button" className="min-w-[1rem]" onClick={() => void fn()}">',
-      '  {label}',
-      '</Button>',
+  it('discovers a self-closing Astryx Button with an inline label ternary', () => {
+    const selfClosingButton = [
+      '<Button',
+      '  label={busy ? "Saving" : "Save"}',
+      '  className="min-w-[4rem]"',
+      '  onClick={() => void save()}',
+      '/>',
     ].join('\n');
-    BUTTON_BLOCK_RE.lastIndex = 0;
-    const blockMatch = BUTTON_BLOCK_RE.exec(computedLabelButton);
-    assert.ok(blockMatch, 'BUTTON_BLOCK_RE should match the button block');
-    const children = blockMatch[3];
-    assert.equal(
-      STRING_TERNARY_RE.test(children),
-      false,
-      'STRING_TERNARY_RE must NOT match a computed-label child ({label}); if it did, the scan would wrongly claim to cover computed-label buttons. They must stay hand-pinned in TEXT_SWAP_BUTTONS.',
+
+    const discovered = discoverTextSwapButtons(selfClosingButton);
+    assert.equal(discovered.length, 1);
+    assert.match(discovered[0].opening, /label=\{busy/);
+  });
+
+  it('scan does NOT discover a computed label without an inline ternary', () => {
+    const computedLabelButton =
+      '<Button label={label} className="min-w-[1rem]" onClick={() => void fn()} />';
+
+    assert.deepEqual(
+      discoverTextSwapButtons(computedLabelButton),
+      [],
+      'a computed label has no inline state transition to discover; it must stay hand-pinned in TEXT_SWAP_BUTTONS',
     );
   });
 });

@@ -131,13 +131,11 @@ export function UnsupportedArtifactPreview(props: {
           that have no path-open IPC. */}
       {props.onShowInFolder && (
         <Button
-          type="button"
           variant="secondary"
           className="maka-artifact-preview-unsupported-cta"
           onClick={props.onShowInFolder}
-        >
-          {catalog.registry.openInFinder}
-        </Button>
+          label={catalog.registry.openInFinder}
+        />
       )}
     </div>
   );

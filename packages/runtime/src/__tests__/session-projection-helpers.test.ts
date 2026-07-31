@@ -116,31 +116,21 @@ describe('session projection helpers', () => {
     expect(isTerminalRunStatus('cancelled')).toBe(true);
     expect(isTerminalRunStatus('running')).toBe(false);
 
-    expect(statusFromEvent({ type: 'permission_request', ts: 1 } as never)).toEqual({
+    expect(statusFromEvent({ type: 'sandbox_boundary_request', ts: 1 } as never)).toEqual({
       status: 'waiting_for_user',
       blockedReason: 'permission_required',
     });
     expect(statusFromEvent({ type: 'user_question_request', ts: 1 } as never)).toEqual({
       status: 'waiting_for_user',
     });
-    expect(
-      statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'allow' } as never),
-    ).toEqual({
-      status: 'running',
-    });
-    expect(statusFromEvent({ type: 'permission_answer_ack', ts: 1 } as never)).toEqual({
+    expect(statusFromEvent({ type: 'sandbox_boundary_decision_ack', ts: 1 } as never)).toEqual({
       status: 'running',
     });
     expect(
-      statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'allow' } as never, {
+      statusFromEvent({ type: 'sandbox_boundary_decision_ack', ts: 1 } as never, {
         allowInteractionResume: false,
       }),
     ).toBeUndefined();
-    expect(
-      statusFromEvent({ type: 'permission_decision_ack', ts: 1, decision: 'deny' } as never, {
-        allowInteractionResume: false,
-      }),
-    ).toEqual({ status: 'aborted' });
     expect(statusFromEvent({ type: 'user_question_answer_ack', ts: 1 } as never)).toEqual({
       status: 'running',
     });
@@ -153,24 +143,18 @@ describe('session projection helpers', () => {
       status: 'blocked',
       blockedReason: 'NO_REAL_CONNECTION',
     });
-    expect(
-      statusFromEvent({ type: 'complete', ts: 1, stopReason: 'permission_handoff' } as never),
-    ).toEqual({
-      status: 'waiting_for_user',
-      blockedReason: 'permission_required',
-    });
     expect(statusFromEvent({ type: 'complete', ts: 1, stopReason: 'user_stop' } as never)).toEqual({
       status: 'aborted',
     });
   });
 
-  test('only resumes a permission closure projection when authority permits it', () => {
-    const closure = { type: 'permission_closure_ack', ts: 1 } as never;
+  test('only resumes a sandbox boundary projection when authority permits it', () => {
+    const decision = { type: 'sandbox_boundary_decision_ack', ts: 1 } as never;
 
-    expect(statusFromEvent(closure, { allowInteractionResume: true })).toEqual({
+    expect(statusFromEvent(decision, { allowInteractionResume: true })).toEqual({
       status: 'running',
     });
-    expect(statusFromEvent(closure, { allowInteractionResume: false })).toBeUndefined();
+    expect(statusFromEvent(decision, { allowInteractionResume: false })).toBeUndefined();
   });
 
   test('projects turn terminal events without changing failure classes', () => {
@@ -187,7 +171,7 @@ describe('session projection helpers', () => {
     expect(
       turnStatusFromEvent({ type: 'complete', ts: 1, stopReason: 'permission_handoff' } as never),
     ).toEqual({
-      status: 'running',
+      status: 'completed',
     });
   });
 });

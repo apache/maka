@@ -1,5 +1,5 @@
 import type { BotOnboardingProvider } from './bot-onboarding.js';
-import type { PermissionRequestEvent, ToolResultContent } from './events.js';
+import type { SandboxBoundaryRequestEvent, ToolResultContent } from './events.js';
 import type { SettingsSection } from './settings.js';
 import type { UiLocale } from './ui-locale.js';
 
@@ -32,7 +32,7 @@ export type E2eFixtureScenario =
   // nothing streaming yet — the "正在处理…" model-wait indicator rides the tail
   // turn and the composer shows Stop. Locks the connect-to-first-token state.
   | 'model-processing'
-  | 'permission-destructive'
+  | 'sandbox-boundary'
   | 'stale-sessions'
   | 'settings-data'
   // PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0: memory and
@@ -207,7 +207,7 @@ export interface E2eFixtureState {
    */
   openConnectionDetailSlug?: string;
   liveTurnBySession?: Record<string, E2eFixtureLiveTurnProjection>;
-  permissionBySession?: Record<string, PermissionRequestEvent>;
+  sandboxBoundaryBySession?: Record<string, SandboxBoundaryRequestEvent>;
   /**
    * PR-IR-04: force `prefers-reduced-motion: reduce` behavior regardless
    * of the host OS setting. Triggered by `MAKA_E2E_FIXTURE_REDUCED_MOTION=1`

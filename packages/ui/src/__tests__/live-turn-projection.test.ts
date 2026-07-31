@@ -358,7 +358,7 @@ describe('applyLiveTurnEvent', () => {
     }]);
   });
 
-  it('keeps permission status on the same live tool', () => {
+  it('ignores legacy generic permission events in the live projection', () => {
     const started = applyLiveTurnEvent(undefined, {
       type: 'tool_start',
       id: 'event-1',
@@ -393,8 +393,9 @@ describe('applyLiveTurnEvent', () => {
       ts: 102,
     });
 
-    assert.equal(waiting?.steps[0]?.tools[0]?.status, 'waiting_permission');
-    assert.equal(allowed?.steps[0]?.tools[0]?.status, 'running');
+    assert.equal(waiting, started);
+    assert.equal(allowed, started);
+    assert.equal(allowed?.steps[0]?.tools[0]?.status, 'pending');
     assert.equal(allowed?.steps[0]?.stepId, 'step-1');
   });
 

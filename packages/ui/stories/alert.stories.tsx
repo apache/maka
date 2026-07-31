@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { AlertCircle, AlertTriangle, CheckCircle2, Info } from '@maka/ui/icons';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '../src/primitives/alert.js';
-import { Button } from '../src/ui.js';
+import { Button } from '../src/index.js';
 
 const meta = {
   title: 'Primitives/Alert',
@@ -60,7 +60,7 @@ export const WithAction: Story = {
           <AlertTitle>{variant} 标题</AlertTitle>
           <AlertDescription>带操作按钮的 alert，操作区在右侧。</AlertDescription>
           <AlertAction>
-            <Button variant="ghost" size="sm">查看</Button>
+            <Button variant="ghost" size="sm" label="查看" />
           </AlertAction>
         </Alert>
       ))}
@@ -79,7 +79,7 @@ export const WithoutIcon: Story = {
         <AlertTitle>无图标 warning</AlertTitle>
         <AlertDescription>带操作按钮但无图标。</AlertDescription>
         <AlertAction>
-          <Button variant="ghost" size="sm">忽略</Button>
+          <Button variant="ghost" size="sm" label="忽略" />
         </AlertAction>
       </Alert>
     </div>

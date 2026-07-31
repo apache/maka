@@ -11,6 +11,11 @@ export interface SharedUiCopy {
   markdown: {
     invalidInternalLink: string;
     unsafeLink: string;
+    taskList: string;
+    table: string;
+    checkbox: string;
+    code: string;
+    opensInNewTab: string;
     copyCode: string;
     copyingCode: string;
     copiedCode: string;
@@ -93,6 +98,11 @@ const SHARED_UI_COPY = {
     markdown: {
       invalidInternalLink: '内部链接无效',
       unsafeLink: '链接不安全',
+      taskList: '任务列表',
+      table: '表格',
+      checkbox: '复选框',
+      code: '代码',
+      opensInNewTab: '（在新标签页中打开）',
       copyCode: '复制代码',
       copyingCode: '复制代码中',
       copiedCode: '已复制代码',
@@ -159,6 +169,11 @@ const SHARED_UI_COPY = {
     markdown: {
       invalidInternalLink: 'Invalid internal link',
       unsafeLink: 'Unsafe link',
+      taskList: 'Task list',
+      table: 'Table',
+      checkbox: 'Checkbox',
+      code: 'Code',
+      opensInNewTab: '(opens in new tab)',
       copyCode: 'Copy code',
       copyingCode: 'Copying code',
       copiedCode: 'Code copied',

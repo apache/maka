@@ -125,7 +125,6 @@ function buildStartTool(deps: BuildDeepResearchToolsDeps): MakaTool<
         .default('standard')
         .describe('Research budget: quick, standard, or deep.'),
     }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const objective = normalizeDeepResearchObjective(input.objective);
       if (!objective) throw new Error('Deep Research objective is invalid');
@@ -173,7 +172,6 @@ function buildReadArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           `Maximum characters to return (default ${DEEP_RESEARCH_ARTIFACT_READ_DEFAULT_CHARS}).`,
         ),
     }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const run = await deps.store.read(ctx.sessionId);
       if (!run) {
@@ -327,7 +325,6 @@ function buildSaveArtifactTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const artifactId = stableArtifactId(ctx);
       const sourceArtifactIds = dedupe(input.source_artifact_ids ?? []);
@@ -460,7 +457,6 @@ function buildUpdateChecklistTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       await requireRun(deps.store, ctx.sessionId);
       const run = await deps.store.updateChecklist(
@@ -574,7 +570,6 @@ function buildRecordStepTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       await requireRun(deps.store, ctx.sessionId);
       const run = await deps.store.recordStep(
@@ -648,7 +643,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
       task_ids: refArray.optional().describe('Related ids from the session Task Ledger.'),
       artifact_ids: refArray.optional().describe('Known research artifact ids required to resume.'),
     }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       await requireRun(deps.store, ctx.sessionId);
       const run = await deps.store.recordCheckpoint(
@@ -680,7 +674,6 @@ function buildStatusTool(
       'Read the durable Deep Research workspace projection. Use after interruption, context compaction, ' +
       'or process restart to recover the objective, stage, latest checkpoint, and artifact inventory.',
     parameters: z.object({}),
-    permissionRequired: false,
     impl: async (_input, ctx) => {
       const run = await deps.store.read(ctx.sessionId);
       return run ? renderRunStatus(run) : '<deep-research-workspace state="uninitialized" />';
@@ -733,7 +726,6 @@ function buildCompleteTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     impl: async (input, ctx) => {
       const handoff = {
         artifactId: input.handoff_artifact_id,

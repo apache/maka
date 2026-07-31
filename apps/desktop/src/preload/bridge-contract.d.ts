@@ -7,10 +7,12 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
+  ExecutionBoundary,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  PermissionResponse,
+  SandboxBoundaryRequestEvent,
+  SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
   CollaborationMode,
@@ -164,7 +166,13 @@ export type PermissionActionResult =
   | { ok: true }
   | {
       ok: false;
-      reason: 'invalid_id' | 'unsupported_platform' | 'unsupported_permission' | 'failed';
+      reason:
+        | 'invalid_id'
+        | 'unsupported_platform'
+        | 'unsupported_permission'
+        | 'open_settings_failed'
+        | 'denied'
+        | 'failed';
       message?: string;
     };
 
@@ -264,6 +272,10 @@ export interface MakaBridge {
     >;
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
     readMessages(sessionId: string): Promise<StoredMessage[]>;
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
+    listActiveSandboxBoundaryRequests(
+      sessionId: string,
+    ): Promise<SandboxBoundaryRequestEvent[]>;
     listTurns(sessionId: string): Promise<TurnRecord[]>;
     compact(sessionId: string): Promise<void>;
     resumeLatest(sessionId: string): Promise<
@@ -273,7 +285,7 @@ export interface MakaBridge {
     regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
     branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary>;
     reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary>;
-    respondToPermission(sessionId: string, response: PermissionResponse): Promise<void>;
+    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void>;
     saveConversationToFile(input: {
       markdown: string;
@@ -310,6 +322,7 @@ export interface MakaBridge {
     setModel(sessionId: string, input: { llmConnectionSlug: string; model: string }): Promise<SessionSummary>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<SessionSummary>;
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void>;
+    cleanupQuoteCompanion(sessionId: string): Promise<void>;
   };
   projects: {
     list(): Promise<ProjectRecord[]>;
@@ -426,8 +439,8 @@ export interface MakaBridge {
   memory: {
     getState(): Promise<LocalMemoryState>;
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>>;
-    propose(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult>;
-    remember(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult>;
+    propose(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult>;
+    remember(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult>;
     approveProposal(proposalId: string): Promise<LocalMemoryMutationResult>;
     rejectProposal(proposalId: string): Promise<LocalMemoryMutationResult>;
     archiveEntry(entryId: string, reason?: string): Promise<LocalMemoryMutationResult>;

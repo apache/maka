@@ -87,7 +87,7 @@ workspaces are exit 0 today; R1 makes them also report ZERO hints. Storybook sto
   `chore/arch-round-4`, main.ts 1903 → 1656, −247).** Two pure-move modules under
   `apps/desktop/src/main/`:
   `tool-assembly.ts` (277 lines) exports `assembleDesktopTools(deps)` — the sandbox /
-  filesystem-worker init, the deferred capability groups (Rive, Office, browser,
+  filesystem-worker init, the deferred capability groups (Rive, browser,
   computer-use, agent-orchestration), the WebSearch tool, the builtin + skill host surface,
   the deferred-group `toolAvailability`, and `childAgentTools`; returns the 11 collections
   main.ts consumes downstream (riveTools/officeTools/browserTools/computerUse/

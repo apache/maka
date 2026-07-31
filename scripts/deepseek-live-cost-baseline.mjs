@@ -7,14 +7,12 @@ import { z } from 'zod';
 import {
   AiSdkBackend,
   BackendRegistry,
-  PermissionEngine,
   SessionManager,
   buildBuiltinTools,
   buildHistoryCompactBlockFromSummary,
   buildProviderOptions,
   buildSynthesisCacheBlocksFromHydratedArchives,
   computeCost,
-  createDefaultPermissionEngineDeps,
   estimateTokens,
   getAIModel,
   getBuiltinPricing,
@@ -114,7 +112,6 @@ const sessionStore = createSessionStore(workspaceRoot);
 const runStore = createAgentRunStore(workspaceRoot);
 const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
 const artifactStore = createArtifactStore(workspaceRoot);
-const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
 const backends = new BackendRegistry();
 const llmRecords = [];
 const runTraceEvents = [];
@@ -165,7 +162,7 @@ backends.register(
       connection,
       apiKey,
       modelId: model,
-      permissionEngine,
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
       modelFactory: getAIModel,
       tools,
       loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
@@ -514,7 +511,6 @@ async function runPhase7ToolScenario(input) {
   const runStore = createAgentRunStore(workspaceRoot);
   const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
   const artifactStore = createArtifactStore(workspaceRoot);
-  const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -552,7 +548,7 @@ async function runPhase7ToolScenario(input) {
         connection,
         apiKey: input.apiKey,
         modelId: input.model,
-        permissionEngine,
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         modelFactory: getAIModel,
         tools,
         loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
@@ -1203,7 +1199,6 @@ async function runPhase10HistoryCompactScenario(input) {
   const runStore = createAgentRunStore(workspaceRoot);
   const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
   const artifactStore = createArtifactStore(workspaceRoot);
-  const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -1240,7 +1235,7 @@ async function runPhase10HistoryCompactScenario(input) {
         connection,
         apiKey: input.apiKey,
         modelId: input.model,
-        permissionEngine,
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         modelFactory: getAIModel,
         tools: [],
         loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
@@ -1457,7 +1452,6 @@ async function runPhase8SynthesisScenario(input) {
   const runStore = createAgentRunStore(workspaceRoot);
   const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
   const artifactStore = createArtifactStore(workspaceRoot);
-  const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -1500,7 +1494,7 @@ async function runPhase8SynthesisScenario(input) {
         connection,
         apiKey: input.apiKey,
         modelId: input.model,
-        permissionEngine,
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         modelFactory: getAIModel,
         tools,
         loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,

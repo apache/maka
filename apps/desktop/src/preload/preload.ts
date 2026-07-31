@@ -20,10 +20,12 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
+  ExecutionBoundary,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  PermissionResponse,
+  SandboxBoundaryRequestEvent,
+  SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
   CollaborationMode,
@@ -234,6 +236,14 @@ const makaBridge = {
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
     },
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+      return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
+    },
+    listActiveSandboxBoundaryRequests(
+      sessionId: string,
+    ): Promise<SandboxBoundaryRequestEvent[]> {
+      return ipcRenderer.invoke('sessions:listActiveSandboxBoundaryRequests', sessionId);
+    },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);
     },
@@ -246,8 +256,8 @@ const makaBridge = {
     reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:reviseBeforeTurn', sessionId, input);
     },
-    respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
-      return ipcRenderer.invoke('sessions:respondToPermission', sessionId, response);
+    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
+      return ipcRenderer.invoke('sessions:respondToSandboxBoundary', sessionId, response);
     },
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
       return ipcRenderer.invoke('sessions:respondToUserQuestion', sessionId, response);
@@ -335,6 +345,9 @@ const makaBridge = {
     },
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return ipcRenderer.invoke('sessions:remove', sessionId, options);
+    },
+    cleanupQuoteCompanion(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('sessions:cleanupQuoteCompanion', sessionId);
     },
   },
   projects: {
@@ -513,10 +526,10 @@ const makaBridge = {
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>> {
       return ipcRenderer.invoke('memory:listProposals');
     },
-    propose(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    propose(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:propose', input);
     },
-    remember(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    remember(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:remember', input);
     },
     approveProposal(proposalId: string): Promise<LocalMemoryMutationResult> {

@@ -552,39 +552,36 @@
   --h-toolbar: 40px;
   --h-composer-min: 44px;
 
-  /* titlebar control baseline (macOS traffic-light center) */
-  --maka-titlebar-control-safe-left: 94px;
-  --maka-titlebar-control-safe-top: 20px;
+  /* OS window-resize corridor. A draggable app-region rect flush against a
+     window edge takes the native resize hit area with it — that is the P0 WAWQAQ
+     reported on `af681c1` (msg `5b85fdb1`): the window could not be resized from
+     its edges. Every drag surface therefore stays inset from the frame by this
+     much. The value matches the corridor the previous per-container drag strips
+     left implicitly (the chat header started at y=4). */
+  --maka-window-resize-edge: 4px;
 
-  /* Shared top chrome geometry for .maka-workspace-top-actions
-     (sidebar.css) and the in-flow chat status row (module-pages.css).
-     The status row only shares the toolbar's right edge; it no longer
-     anchors off the toolbar bottom. */
-  --maka-workspace-top-actions-top: calc(var(--maka-titlebar-control-safe-top) - 16px); /* pixel-measured lockstep with sidebar rail — lights' optical center is 20.75 */
-  --maka-workspace-top-actions-right: 24px;
-  /* Horizontal footprint the absolutely-positioned .maka-workspace-top-actions
-     toolbar occupies in the top-right corner: its right offset + two resident
-     28px compact icon buttons (the overflow trigger and the workbar toggle)
-     with a 6px gap (62px) + a 12px clearance gap. The four secondary actions
-     (feedback, command palette, help, health) live behind the overflow menu
-     and add no horizontal footprint here. Right-aligned chat-header content
-     (model switcher, .maka-chat-header-mode-pill, memory pill) and the
-     chat-header drag strip reserve this footprint so neither content nor
-     titlebar hit regions sit underneath the toolbar. */
-  --maka-workspace-top-actions-inset: calc(var(--maka-workspace-top-actions-right) + 74px);
+  /* PR-WINDOW-TITLEBAR-0: where the OS-drawn window controls are, straight from
+     the platform. Electron enables Chromium's Window Controls Overlay env vars
+     on every platform where we hide the native titlebar (see main-window.ts), so
+     the safe area — the usable titlebar rectangle next to the native controls —
+     is a fact the renderer can read instead of a number someone measured. macOS
+     reports the traffic lights on the left (x ≈ 83, width to the window edge);
+     Windows reports its caption buttons on the right (x = 0, width short of the
+     edge), so the right-side control strip is the viewport minus the x/width
+     pair. The `env()` fallbacks make both gutters collapse to the design floor
+     on a platform with a native frame (Linux), where nothing overlaps.
 
-  /* PR-WINDOW-TITLEBAR-0: Electron exposes the titlebar safe area through
-     `titlebar-area-*` CSS env vars. The safe area is the usable titlebar
-     rectangle next to the native controls, so the right-side control overlay is
-     the viewport width minus the safe-area x/width pair. `env()` fallbacks keep
-     the overlay inset at 0px on platforms/windows without titleBarOverlay. */
+     `--maka-titlebar-control-safe-left: 94px` used to stand in for the macOS
+     side, with a comment claiming the DOM could not know it. It could: enabling
+     the overlay on macOS reports 83, and the hand-measured value was 11px of
+     slop applied on every platform — including the two that draw no controls
+     there at all. */
   --maka-titlebar-area-x: env(titlebar-area-x, 0px);
   --maka-titlebar-area-width: env(titlebar-area-width, 100vw);
   --maka-titlebar-overlay-right-width: max(
     0px,
     calc(100vw - var(--maka-titlebar-area-x) - var(--maka-titlebar-area-width))
   );
-  --maka-workspace-top-actions-right: calc(24px + var(--maka-titlebar-overlay-right-width));
 
   /* session list geometry */
   --w-sessionlist: 240px;
@@ -1311,59 +1308,6 @@ html[data-os="darwin"].dark {
   }
   .maka-tabs-list[data-variant="underline"] .maka-tab[data-active] {
     color: var(--foreground);
-  }
-
-  /* ---- Modal / Dialog --------------------------------------------- */
-
-  .maka-modal-backdrop {
-    position: fixed; inset: 0;
-    /* PR-UI-LAYOUT-13: harmonize with .settingsModalBackdrop (LAYOUT-2)
-     * — backdrop scrim derived from `--foreground` at low alpha
-     * (not `--background` which made the scrim transparent on light
-     * mode) + slightly stronger blur so the dialog reads as paused
-     * context. */
-    background: oklch(from var(--foreground) l c h / 0.40);
-    backdrop-filter: blur(10px) saturate(0.9);
-    -webkit-backdrop-filter: blur(10px) saturate(0.9);
-    display: grid; place-items: center;
-    z-index: var(--z-modal);
-    overscroll-behavior: contain;
-    opacity: 1;
-  }
-  .maka-modal {
-    background: var(--background);
-    border-radius: var(--radius-modal);
-    box-shadow: var(--shadow-modal);
-    width: min(520px, calc(100vw - 48px));
-    max-height: calc(100dvh - 80px);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    opacity: 1;
-  }
-  .maka-modal-header {
-    padding: var(--space-4) var(--space-5) var(--space-2) var(--space-5);
-    border-bottom: var(--border-width-hairline) solid var(--border);
-  }
-  .maka-modal-title {
-    font-size: var(--font-size-heading);
-    font-weight: var(--font-weight-semibold);
-    color: var(--foreground);
-    letter-spacing: var(--tracking-normal);
-  }
-  .maka-modal-subtitle {
-    font-size: var(--font-size-ui);
-    color: var(--foreground-secondary);
-    margin-top: var(--space-0-5);
-  }
-  .maka-modal-body { padding: var(--space-4) var(--space-5); overflow-y: auto; flex: 1; }
-  .maka-modal-footer {
-    padding: var(--space-3) var(--space-5);
-    border-top: var(--border-width-hairline) solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-2);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */

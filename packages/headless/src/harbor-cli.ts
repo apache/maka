@@ -38,6 +38,7 @@ import { backendNeedsIsolation } from './runner.js';
 import { runTaskOnceWithStorage } from './task-agent-controller.js';
 import { taxonomyFromResultRecord } from './task-contracts.js';
 import { taskRunLocator } from './task-run-identity.js';
+import { headlessBackendBindsMakaProductTools } from './tools.js';
 import { requireProviderCredentialEnv } from './provider-env.js';
 import { createProviderEnvFetch, type ProviderEnvFetch } from './provider-env-fetch.js';
 import { resolveHeadlessSystemPrompt } from './system-prompts.js';
@@ -193,7 +194,7 @@ async function runHarborTaskRunMode(
     await mkdir(options.sourceWorkspaceDir, { recursive: true });
   }
   const task = buildHarborTask(options);
-  const executionIdentity = await writeTaskRunExecutionIdentity(options, task);
+  let executionIdentity = await writeTaskRunExecutionIdentity(options, task);
   const common = {
     storageRoot: options.storageRoot,
     taskRunId: options.taskRunId,
@@ -262,6 +263,19 @@ async function runHarborTaskRunMode(
         storage,
       )
     : await runTaskOnceWithStorage(options.config, task, common, storage);
+
+  const toolExecutor = run.projection.toolExecutors.at(-1);
+  if (toolExecutor?.productToolSurface) {
+    executionIdentity = validateHarborCellExecutionIdentity({
+      ...executionIdentity,
+      productToolSurface: toolExecutor.productToolSurface,
+      ...(toolExecutor.supplementalToolSets
+        ? { supplementalToolSets: toolExecutor.supplementalToolSets }
+        : {}),
+      agentTools: !toolExecutor.productToolSurface.policy.disabledSurfaceIds.includes('agent'),
+    });
+    await writeHarborCellExecutionIdentity(options.cellArtifactDir, executionIdentity);
+  }
 
   const exportDir = join(options.outDir, 'exports', taskRunLocator(run.taskRunId));
   const exported = await writeTaskRunExport(exportDir, run.projection, {
@@ -361,7 +375,9 @@ async function writeTaskRunExecutionIdentity(
     systemPromptMode: prompt.mode,
     systemPromptHash: prompt.systemPromptHash,
     pricingProfile: options.env.MAKA_TRIAL_PRICING_SOURCE ?? 'unconfigured',
-    agentTools: options.config.agentTools === true,
+    agentTools:
+      headlessBackendBindsMakaProductTools(options.config.backend) &&
+      options.config.agentTools === true,
   });
   await writeHarborCellExecutionIdentity(options.cellArtifactDir, executionIdentity);
   return executionIdentity;

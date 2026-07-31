@@ -474,22 +474,6 @@ const capabilitySnapshot: CapabilitySnapshotCollection = {
       memoryAcceptance: { state: 'accepted', source: 'memory_contract' },
       auditEvents: ['2026-07-24 10:12 接受了 3 条记忆草稿'],
     }),
-    makeCapability({
-      id: 'office_documents',
-      label: 'Office 文档处理',
-      readiness: 'not_configured',
-      configuration: {
-        state: 'missing',
-        source: 'runtime',
-        reason: '未检测到 OfficeCLI 可执行文件。',
-      },
-      runtimeProbe: {
-        state: 'not_available',
-        source: 'runtime_probe',
-        reason: 'OfficeCLI 未安装。',
-      },
-      guidance: ['安装 OfficeCLI 后重新探测，或从 Releases 页面下载对应平台的构建产物。'],
-    }),
   ],
 };
 
@@ -903,7 +887,6 @@ const botAttentionStatuses: StoryBotStatuses = {
   dingtalk: createInactiveStoryBotStatus('dingtalk'),
   qq: createInactiveStoryBotStatus('qq'),
   slack: createInactiveStoryBotStatus('slack'),
-  whatsapp: createInactiveStoryBotStatus('whatsapp'),
 };
 
 function makeBotAttentionBridge(settings: AppSettings) {
@@ -1249,13 +1232,11 @@ export const PermissionCenter: Story = {
   render: () => <SettingsStory section="permissions" />,
 };
 /**
- * #1361: the capability layers grid, the guidance block and the OfficeCLI
- * install command are all hidden until diagnostics are expanded, so the
+ * The capability layers grid and guidance block are hidden until diagnostics are expanded, so the
  * collapsed story gives those layouts no baseline at all — which is exactly
  * where the remaining overflow was hiding.
  */
-// Real path: same page after clicking 展开详情 — the capability grid, the guidance block and
-// the OfficeCLI install command only exist in this branch.
+// Real path: same page after clicking 展开详情.
 export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,

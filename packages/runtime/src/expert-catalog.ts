@@ -155,7 +155,6 @@ export function materializeExpertAgentDefinition(
     // are runtime-owned, session/team-scoped tools whose trusted identity is
     // injected by RuntimeKernel and whose durable stores enforce ownership.
     tools: [...capabilityTools, ...AGENT_TEAM_CHILD_TOOL_NAMES],
-    categoryPolicy: archetype.categoryPolicy,
     systemPrompt: composeExpertSystemPrompt(archetype, team, expert),
   };
 }

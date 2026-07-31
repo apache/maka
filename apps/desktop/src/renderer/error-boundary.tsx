@@ -110,7 +110,10 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
 
     return (
       <div className="maka-error-surface" role="alert" aria-live="assertive">
-        <Card className="maka-error-card">
+        {/* Astryx Card owns the card face: red tint for the destructive
+            surface, high elevation for the former shadow-modal. The class
+            keeps only the icon/copy grid geometry. */}
+        <Card variant="red" elevation="high" padding={0} className="maka-error-card">
           <span className="maka-error-icon" aria-hidden="true">
             <AlertTriangle size={28} />
           </span>
@@ -130,24 +133,22 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
             )}
             <div className="maka-error-actions">
               <UiButton
-                type="button"
                 variant="secondary"
                 className="maka-error-copy-action min-w-[5.5rem]"
                 data-copy-state={copyState}
-                disabled={copyPending}
+                isDisabled={copyPending}
                 aria-busy={copyPending ? 'true' : undefined}
                 onClick={this.handleCopyReport}
-              >
-                <CopyIcon size={14} aria-hidden="true" />
-                <span>{copyLabel}</span>
-              </UiButton>
-              <UiButton type="button" variant="secondary" onClick={this.handleReset}>
-                <RotateCw size={14} aria-hidden="true" />
-                <span>{copy.retry}</span>
-              </UiButton>
-              <UiButton type="button" variant="default" onClick={this.handleReload}>
-                {copy.reload}
-              </UiButton>
+                icon={<CopyIcon size={14} aria-hidden="true" />}
+                label={copyLabel}
+              />
+              <UiButton
+                variant="secondary"
+                onClick={this.handleReset}
+                icon={<RotateCw size={14} aria-hidden="true" />}
+                label={copy.retry}
+              />
+              <UiButton variant="primary" onClick={this.handleReload} label={copy.reload} />
             </div>
             {copyState === 'failed' && <p className="maka-error-copy-status">{copy.clipboardFailure}</p>}
           </div>

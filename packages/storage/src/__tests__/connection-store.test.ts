@@ -978,7 +978,7 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('invalidates model cache metadata when credentials or base URL change', async () => {
+  test('preserves the last successful model catalog when credentials or base URL change', async () => {
     await withConnectionStore(async (store) => {
       const created = await store.create({
         slug: 'zai-main',
@@ -994,9 +994,9 @@ describe('FileConnectionStore', () => {
 
       await store.update(created.slug, { apiKey: 'new-secret' });
       let next = await store.get(created.slug);
-      assert.equal(next?.models, undefined);
-      assert.equal(next?.modelSource, undefined);
-      assert.equal(next?.modelsFetchedAt, undefined);
+      assert.deepEqual(next?.models, [{ id: 'glm-5' }]);
+      assert.equal(next?.modelSource, 'fetched');
+      assert.equal(next?.modelsFetchedAt, 1_800_000_000_000);
 
       await store.update(created.slug, {
         models: [{ id: 'glm-5.1' }],
@@ -1005,9 +1005,9 @@ describe('FileConnectionStore', () => {
       });
       await store.update(created.slug, { baseUrl: 'https://api.z.ai/api/coding/paas/v4' });
       next = await store.get(created.slug);
-      assert.equal(next?.models, undefined);
-      assert.equal(next?.modelSource, undefined);
-      assert.equal(next?.modelsFetchedAt, undefined);
+      assert.deepEqual(next?.models, [{ id: 'glm-5.1' }]);
+      assert.equal(next?.modelSource, 'fetched');
+      assert.equal(next?.modelsFetchedAt, 1_800_000_000_001);
     });
   });
 

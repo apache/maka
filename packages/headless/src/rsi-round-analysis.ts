@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import type { FixedPromptTaskWalEvent } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 
 const DEFAULT_MAX_TOOL_FAILURE_CLUSTERS = 10;
 const DEFAULT_MAX_TOOL_FAILURE_JSONL_BYTES = 1_000_000;

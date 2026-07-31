@@ -1,4 +1,5 @@
 export const SHELL_RUN_STATUSES = [
+  'starting',
   'running',
   'completed',
   'failed',
@@ -8,6 +9,8 @@ export const SHELL_RUN_STATUSES = [
 ] as const;
 
 export type ShellRunStatus = (typeof SHELL_RUN_STATUSES)[number];
+
+export const SHELL_RUN_ACTIVE_STATUSES = ['starting', 'running'] as const;
 
 export const SHELL_RUN_TERMINAL_STATUSES = [
   'completed',
@@ -44,6 +47,7 @@ const PTY_SHELL_OUTPUT_KEYS = new Set([
 const PTY_CURSOR_KEYS = new Set(['x', 'y', 'visible']);
 
 export type ShellRunTerminalStatus = (typeof SHELL_RUN_TERMINAL_STATUSES)[number];
+export type ShellRunActiveStatus = (typeof SHELL_RUN_ACTIVE_STATUSES)[number];
 export type ShellMode = 'pipes' | 'pty';
 
 export interface PipeShellOutput {
@@ -153,6 +157,21 @@ export function isTerminalShellRunStatus(value: ShellRunStatus): value is ShellR
   return (SHELL_RUN_TERMINAL_STATUSES as readonly string[]).includes(value);
 }
 
+export function isActiveShellRunStatus(value: ShellRunStatus): value is ShellRunActiveStatus {
+  return (SHELL_RUN_ACTIVE_STATUSES as readonly string[]).includes(value);
+}
+
+export function isValidShellRunStatusTransition(
+  current: ShellRunStatus,
+  next: ShellRunStatus,
+): boolean {
+  if (current === next) return true;
+  if (current === 'starting') {
+    return next === 'running' || next === 'failed' || next === 'orphaned';
+  }
+  return current === 'running' && isTerminalShellRunStatus(next);
+}
+
 export function isShellOutput(value: unknown): value is ShellOutput {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const output = value as Partial<ShellOutput>;
@@ -200,6 +219,7 @@ export function isValidShellRunState(value: {
   observedAt?: unknown;
 }): boolean {
   switch (value.status) {
+    case 'starting':
     case 'running':
       return (
         value.completedAt === undefined &&

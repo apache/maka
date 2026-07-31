@@ -277,7 +277,6 @@ export function projectAgentGraphRecords(input: ProjectAgentGraphRecordsInput): 
 
   for (const stream of input.streams) {
     assertRunStream(stream);
-    let lastCommittedTs: number | undefined;
     let committedEventOrdinal = 0;
     for (const event of stream.events) {
       assertRuntimeEventIdentity(stream, event);
@@ -285,12 +284,6 @@ export function projectAgentGraphRecords(input: ProjectAgentGraphRecordsInput): 
         ignoredPartialEvents += 1;
         continue;
       }
-      if (lastCommittedTs !== undefined && event.ts < lastCommittedTs) {
-        throw new Error(
-          `Committed RuntimeEvents for ${stream.run.runId} are not timestamp-monotonic`,
-        );
-      }
-      lastCommittedTs = event.ts;
       if (sourceEventIds.has(event.id)) {
         throw new Error(
           `RuntimeEvent ${event.id} is bound more than once in graph ${input.graphId}`,

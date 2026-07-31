@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -12,6 +12,81 @@ import {
 } from '@maka/storage';
 import { AgentRun } from '../agent-run.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
+
+test('does not re-append atomically committed tool facts through the generic event lane', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-atomic-tool-boundary-'));
+  try {
+    const store = createLegacyFileSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runtimeEventStore = createRuntimeEventStore(root);
+    const runId = 'run-atomic-tool';
+    const turnId = 'turn-atomic-tool';
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'run a durable tool' },
+      runId,
+      store,
+      runtimeEventStore,
+      toolBoundaryProtocol: 't1_after_preflight_v1',
+      newId: () => 'unused-id',
+      now: () => 10,
+      recordSessionMessages: false,
+      hooks: {
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
+        },
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    const sessionEvent: SessionEvent = {
+      type: 'tool_start',
+      id: 'operation-1_call',
+      turnId,
+      ts: 2,
+      toolUseId: 'call-1',
+      toolName: 'Read',
+      args: { path: '/tmp/cwd/file.txt' },
+      operationId: 'operation-1',
+    };
+    const runtimeEvent: RuntimeEvent = {
+      id: sessionEvent.id,
+      invocationId: run.invocationId,
+      runId,
+      sessionId: session.id,
+      turnId,
+      ts: sessionEvent.ts,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'function_call',
+        id: sessionEvent.toolUseId,
+        name: sessionEvent.toolName,
+        args: sessionEvent.args,
+      },
+      refs: {
+        operationId: sessionEvent.operationId,
+        toolCallId: sessionEvent.toolUseId,
+      },
+    };
+
+    await run.acceptMappedEvent(sessionEvent, runtimeEvent);
+
+    await assert.rejects(access(join(root, 'sessions', session.id, 'runs', runId)), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('acks a steering event whose canonical append preceded proof publication failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-recovery-'));

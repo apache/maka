@@ -690,7 +690,6 @@ function localReadTools(): MakaTool[] {
     displayName: name,
     description: `${name} fixture`,
     parameters: z.object({}).passthrough(),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async () => ({ ok: true }),
   }));

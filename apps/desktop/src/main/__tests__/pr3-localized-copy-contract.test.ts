@@ -39,7 +39,6 @@ const PR3_PRESENTATION_FILES = [
   'packages/ui/src/composer-mention-popup.tsx',
   'packages/ui/src/composer-workspace-row.tsx',
   'packages/ui/src/composer.tsx',
-  'packages/ui/src/permission-dialog.tsx',
   'packages/ui/src/permission-mode-menu.tsx',
   'packages/ui/src/prompt-anchor-rail.tsx',
   'packages/ui/src/session-history-list.tsx',

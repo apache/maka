@@ -193,10 +193,6 @@
   gap: var(--space-1);
 }
 
-.maka-plan-dialog {
-  max-height: min(86dvh, 760px);
-}
-
 .maka-plan-form {
   border: 0;
   border-radius: 0;

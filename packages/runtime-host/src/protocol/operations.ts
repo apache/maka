@@ -1,9 +1,11 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
+import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
+import { MEMORY_OPERATION_SPECS } from './memory.js';
 import {
   composeOperationSpecMaps,
   type HostOperationError,
@@ -12,8 +14,10 @@ import {
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
+import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
+import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 
 export type { HostLifecycleState, HostStatusInput, HostStatusResult } from './host-status.js';
 export type { HostOperationError, HostOperationErrorCode } from './operation-spec.js';
@@ -68,15 +72,24 @@ export type {
   TurnStartInput,
   TurnStopInput,
 } from './turn.js';
+export * from './connection-effects.js';
+export * from './memory.js';
 export * from './runtime-policy.js';
+export * from './skill-catalog.js';
+export * from './usage-pricing.js';
 
 const HOST_AND_TURN_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_STATUS_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
 );
 
-const CORE_OPERATION_SPECS = composeOperationSpecMaps(
+const CORE_AND_CONNECTION_EFFECT_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_AND_TURN_OPERATION_SPECS,
+  CONNECTION_EFFECT_OPERATION_SPECS,
+);
+
+const CORE_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_AND_CONNECTION_EFFECT_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
 );
 
@@ -101,9 +114,25 @@ const CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS =
     SESSION_CONTINUITY_OPERATION_SPECS,
   );
 
+const CORE_MESSAGE_TASK_LEDGER_INTERACTION_CONTINUITY_AND_ARTIFACT_OPERATION_SPECS =
+  composeOperationSpecMaps(
+    CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS,
+    ARTIFACT_OPERATION_SPECS,
+  );
+
+const ALL_BUT_MEMORY_OPERATION_SPECS = composeOperationSpecMaps(
+  CORE_MESSAGE_TASK_LEDGER_INTERACTION_CONTINUITY_AND_ARTIFACT_OPERATION_SPECS,
+  SKILL_CATALOG_OPERATION_SPECS,
+);
+
+const ALL_WITH_USAGE_PRICING_OPERATION_SPECS = composeOperationSpecMaps(
+  ALL_BUT_MEMORY_OPERATION_SPECS,
+  USAGE_PRICING_OPERATION_SPECS,
+);
+
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
-  CORE_MESSAGE_TASK_LEDGER_INTERACTION_AND_CONTINUITY_OPERATION_SPECS,
-  ARTIFACT_OPERATION_SPECS,
+  ALL_WITH_USAGE_PRICING_OPERATION_SPECS,
+  MEMORY_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;

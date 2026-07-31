@@ -25,6 +25,7 @@ describe('bot session lifecycle bindings', () => {
         created.push(id);
         return { id };
       },
+      async setPermissionMode() {},
       sendMessage(sessionId: string, input: { turnId: string }) {
         sent.push(sessionId);
         return (async function* (): AsyncIterable<SessionEvent> {

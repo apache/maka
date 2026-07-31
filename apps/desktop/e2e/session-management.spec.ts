@@ -11,16 +11,16 @@ import { test, expect } from './fixtures';
  * worse than no assertion.
  */
 test('creating a second chat keeps both in the sidebar', async ({ window: page }) => {
-  const firstSend = page.locator('.maka-composer-textarea');
-  await firstSend.fill('alpha-marker');
-  await firstSend.press('Enter');
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill('alpha-marker');
+  await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
 
   const sessions = page.locator('aside[aria-label="对话列表"] [data-session-id]');
   await expect(sessions).toHaveCount(1);
 
   await page.getByRole('button', { name: '新任务' }).click();
-  const composer = page.locator('.maka-composer textarea');
+  await expect(page.getByRole('region', { name: '开始对话' })).toBeVisible();
   await composer.fill('beta-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: beta-marker/)).toBeVisible();

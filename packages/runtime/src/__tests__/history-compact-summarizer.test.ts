@@ -8,6 +8,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { expect } from '../test-helpers.js';
 import type { RuntimeEvent, RuntimeEventContent } from '@maka/core/runtime-event';
+import type { LlmCallRecord } from '@maka/core/usage-stats/types';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
 import {
   buildLlmHistorySummarizer,
@@ -93,6 +94,65 @@ describe('buildLlmHistorySummarizer', () => {
 
     expect(seen?.providerOptions).toBe(providerOptions);
     expect(seen?.maxOutputTokens).toBe(undefined);
+  });
+
+  test('attributes provider-reported usage to one history-compaction call', async () => {
+    const records: LlmCallRecord[] = [];
+    let now = 100;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => ({
+        text: '## Goal\nX',
+        finishReason: 'stop',
+        usage: {
+          inputTokens: 7,
+          outputTokens: 3,
+          totalTokens: 10,
+        },
+      }),
+      telemetry: {
+        connectionSlug: 'connection',
+        providerId: 'provider',
+        modelId: 'model',
+        newId: () => 'call-id',
+        now: () => {
+          now += 10;
+          return now;
+        },
+        recordLlmCall: (record) => {
+          records.push(record);
+        },
+      },
+    });
+
+    await summarize(
+      inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+    );
+
+    assert.deepEqual(records, [
+      {
+        sessionId: 'sess-1',
+        turnId: 'turn-1',
+        callKind: 'history_compact',
+        callId: 'history_compact_turn-1_call-id',
+        connectionSlug: 'connection',
+        providerId: 'provider',
+        modelId: 'model',
+        inputTokens: 7,
+        outputTokens: 3,
+        cacheHitInputTokens: 0,
+        cacheMissInputTokens: 7,
+        cacheMissInputSource: 'derived',
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 10,
+        rawFinishReason: 'stop',
+        latencyMs: 10,
+        status: 'success',
+        startedAt: 110,
+      },
+    ]);
   });
 
   test('produces schema-valid tool-result messages (toolName + wrapped output) and does not fall back', async () => {

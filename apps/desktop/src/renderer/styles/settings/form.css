@@ -1,5 +1,5 @@
-/* Settings surface/modal container layout. Was settings/form.css; the runtime
-   permission-dialog block moved to permission-dialog.css — issue #546 PR1. */
+/* Settings surface/modal container layout. Runtime interaction prompts live in
+   interaction-prompts.css. */
 .settingsSurface {
   min-height: 0;
   height: 100%;

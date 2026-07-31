@@ -54,6 +54,7 @@ import {
   type ModelAdapter,
   type NormalizedAiSdkUsage,
 } from './model-adapter.js';
+import { llmCallUsageFields } from './telemetry/llm-call-usage.js';
 import type {
   RequestProjection,
   RequestProjectionContext,
@@ -719,7 +720,7 @@ export class AiSdkCompaction {
     this.historyCompactAbortController = historyCompactAbortController;
     try {
       const runtimeContext = input.runtimeContext.filter((event) => event.turnId !== input.turnId);
-      const policy = this.buildManualHistoryCompactPolicy(runtimeContext);
+      const policy = this.buildManualHistoryCompactPolicy(runtimeContext, input.minRecentTurns);
       if (!policy) return {};
 
       const contextBudget = policy;
@@ -805,6 +806,7 @@ export class AiSdkCompaction {
 
   private buildManualHistoryCompactPolicy(
     runtimeContext: readonly RuntimeEvent[],
+    minRecentTurnsOverride?: number,
   ): ContextBudgetPolicy | undefined {
     if (runtimeContext.length === 0 || !this.input.contextBudget || !this.hasHistoryCompactWriter())
       return undefined;
@@ -821,7 +823,7 @@ export class AiSdkCompaction {
       name: base.name ?? 'manual-history-compact',
       ...(base.charsPerToken !== undefined ? { charsPerToken: base.charsPerToken } : {}),
       maxHistoryEstimatedTokens,
-      minRecentTurns: current?.minRecentTurns ?? base.minRecentTurns ?? 1,
+      minRecentTurns: minRecentTurnsOverride ?? current?.minRecentTurns ?? base.minRecentTurns ?? 1,
       historyCompact: {
         ...currentWithoutBlocks,
         enabled: true,
@@ -829,7 +831,8 @@ export class AiSdkCompaction {
         highWaterRatio: 0.000001,
         targetRatio: current?.targetRatio ?? 0.2,
         tailEstimatedTokens: 1,
-        minRecentTurns: current?.minRecentTurns ?? base.minRecentTurns ?? 1,
+        minRecentTurns:
+          minRecentTurnsOverride ?? current?.minRecentTurns ?? base.minRecentTurns ?? 1,
         maxBlocks: current?.maxBlocks ?? 1,
         maxEstimatedTokens: current?.maxEstimatedTokens ?? 2048,
         maxBlockEstimatedTokens:
@@ -1035,7 +1038,6 @@ export class AiSdkCompaction {
               startedAt,
               latencyMs: Math.max(0, this.now() - startedAt),
               usage: result.usage,
-              finishReason: result.finishReason,
               status: 'success',
             });
             return result;
@@ -1139,7 +1141,6 @@ export class AiSdkCompaction {
     startedAt: number;
     latencyMs: number;
     usage?: NormalizedAiSdkUsage;
-    finishReason?: string;
     status: LlmCallRecord['status'];
     errorClass?: string;
   }): void {
@@ -1153,19 +1154,7 @@ export class AiSdkCompaction {
       connectionSlug: this.input.connection.slug,
       providerId: this.input.connection.providerType,
       modelId: input.modelId,
-      inputTokens: input.usage.inputTokens,
-      outputTokens: input.usage.outputTokens,
-      cacheHitInputTokens: input.usage.cacheHitInputTokens,
-      cacheMissInputTokens: input.usage.cacheMissInputTokens,
-      ...(input.usage.cacheMissInputSource !== undefined
-        ? { cacheMissInputSource: input.usage.cacheMissInputSource }
-        : {}),
-      cachedInputTokens: input.usage.cachedInputTokens,
-      cacheWriteInputTokens: input.usage.cacheWriteInputTokens,
-      reasoningTokens: input.usage.reasoningTokens,
-      totalTokens: input.usage.totalTokens,
-      ...(input.finishReason !== undefined ? { rawFinishReason: input.finishReason } : {}),
-      ...(input.usage.raw !== undefined ? { rawUsage: input.usage.raw } : {}),
+      ...llmCallUsageFields(input.usage),
       latencyMs: input.latencyMs,
       status: input.status,
       ...(input.errorClass ? { errorClass: input.errorClass } : {}),

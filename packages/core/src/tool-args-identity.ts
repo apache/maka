@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import * as nodeCrypto from 'node:crypto';
 
 /**
  * Returns the identity of the exact provider-visible tool name and arguments.
@@ -20,7 +20,7 @@ export function canonicalToolArgsHash(toolName: string, args: unknown): `sha256:
   // protocol must retain mainline's historical stableHash byte semantics.
   stableJsonStringify(args);
   const body = stringifyMainlineV1ToolArgsIdentity(toolName, args);
-  return `sha256:${createHash('sha256').update(body).digest('hex')}`;
+  return `sha256:${nodeCrypto.createHash('sha256').update(body).digest('hex')}`;
 }
 
 export function stableJsonStringify(value: unknown): string {

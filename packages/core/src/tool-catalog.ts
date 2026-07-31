@@ -10,7 +10,7 @@
  * each surface owns an independent hosts record so affinity edits cannot bleed.
  */
 
-export const TOOL_HOST_IDS = ['desktop', 'cli', 'headless'] as const;
+export const TOOL_HOST_IDS = ['desktop', 'cli', 'headless', 'runtime-host'] as const;
 export type ToolHostId = (typeof TOOL_HOST_IDS)[number];
 
 /** Whether a host product surface may bind the pack. Not a runtime enable flag. */
@@ -26,7 +26,7 @@ export interface CatalogToolDef {
   readonly name: string;
   /** Optional future policy tags; unused by v1 product paths. */
   readonly effects?: readonly ToolEffect[];
-  /** Feeds HostCapabilities.capabilities when the tool is bound (e.g. office). */
+  /** Feeds HostCapabilities.capabilities when the tool is bound. */
   readonly capabilityTags?: readonly string[];
 }
 
@@ -45,6 +45,7 @@ function desktopOnlyHosts(): Readonly<Record<ToolHostId, ToolHostSupport>> {
     desktop: 'supported',
     cli: 'unsupported',
     headless: 'unsupported',
+    'runtime-host': 'unsupported',
   } satisfies Record<ToolHostId, ToolHostSupport>);
 }
 
@@ -53,6 +54,7 @@ function allHosts(): Readonly<Record<ToolHostId, ToolHostSupport>> {
     desktop: 'supported',
     cli: 'supported',
     headless: 'supported',
+    'runtime-host': 'supported',
   } satisfies Record<ToolHostId, ToolHostSupport>);
 }
 
@@ -91,6 +93,7 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'WriteStdin' },
     // Host product always-on
     { name: 'AskUserQuestion' },
+    { name: 'request_sandbox_boundary' },
     { name: 'Skill' },
     { name: 'SkillSearch' },
     { name: 'WebSearch' },
@@ -114,9 +117,6 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'team_task_list' },
     { name: 'team_task_claim' },
     { name: 'expert_dispatch' },
-    // office surface
-    { name: 'OfficeDocument', capabilityTags: ['office'] },
-    { name: 'OfficeDocumentEdit', capabilityTags: ['office'] },
     // browser surface
     { name: 'browser_navigate' },
     { name: 'browser_snapshot' },
@@ -153,14 +153,6 @@ export const MAKA_CATALOG_SURFACES: readonly CatalogSurfaceDef[] = Object.freeze
         'Durable multi-agent Rive workflows: validate/import/run/status, scheduler, retries.',
       economy: 'deferred' as const,
       toolNames: ['RiveWorkflow'],
-      hosts: desktopOnlyHosts(),
-    },
-    {
-      id: 'office',
-      label: 'Office',
-      description: 'Read and edit Office documents (Word, Excel, PowerPoint, PDF).',
-      economy: 'deferred' as const,
-      toolNames: ['OfficeDocument', 'OfficeDocumentEdit'],
       hosts: desktopOnlyHosts(),
     },
     {

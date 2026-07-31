@@ -170,28 +170,29 @@ export function storedMessageToRuntimeEvents(
 
   if (message.type === 'assistant' && message.thinking) {
     const d = resolveCtx(ctx, message);
-    out.push({
-      id: d.newId(),
-      invocationId: d.invocationId,
-      runId: d.runId,
-      sessionId: d.sessionId,
-      turnId: d.turnId,
-      ts: d.ts,
-      partial: false,
-      role: 'model',
-      author: 'agent',
-      content: {
-        kind: 'thinking',
-        text: message.thinking.text,
-        ...(message.thinking.signature !== undefined
-          ? { signature: message.thinking.signature }
-          : {}),
-        ...(message.thinking.providerOptions !== undefined
-          ? { providerOptions: structuredClone(message.thinking.providerOptions) }
-          : {}),
-      },
-      refs: { storedMessageId: message.id },
-    });
+    const parts = message.thinking.parts ?? [message.thinking];
+    for (const part of parts) {
+      out.push({
+        id: d.newId(),
+        invocationId: d.invocationId,
+        runId: d.runId,
+        sessionId: d.sessionId,
+        turnId: d.turnId,
+        ts: d.ts,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: part.text,
+          ...(part.signature !== undefined ? { signature: part.signature } : {}),
+          ...(part.providerOptions !== undefined
+            ? { providerOptions: structuredClone(part.providerOptions) }
+            : {}),
+        },
+        refs: { storedMessageId: message.id },
+      });
+    }
   }
 
   return out;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -259,6 +259,28 @@ describe('discoverCachedHarborTasks', () => {
       await makeCachedTask(dir, 'hashA', 'dup-task');
       await makeCachedTask(dir, 'hashB', 'dup-task');
       await assert.rejects(discoverCachedHarborTasks(dir), /duplicate cached task id "dup-task"/);
+    });
+  });
+
+  test('can select the newest requested task version from a normal multi-version cache', async () => {
+    await withDir(async (dir) => {
+      await makeCachedTask(dir, 'hash-old', 'dup-task', { difficulty: 'old' });
+      await makeCachedTask(dir, 'hash-new', 'dup-task', { difficulty: 'new' });
+      await utimes(join(dir, 'hash-old', 'dup-task', 'task.toml'), 1, 1);
+      await utimes(join(dir, 'hash-new', 'dup-task', 'task.toml'), 2, 2);
+      const discoverWithOptions = discoverCachedHarborTasks as unknown as (
+        root: string,
+        ids: ReadonlySet<string>,
+        options: { duplicatePolicy: 'newest' },
+      ) => Promise<FixedPromptTask[]>;
+
+      const tasks = await discoverWithOptions(dir, new Set(['dup-task']), {
+        duplicatePolicy: 'newest',
+      });
+
+      assert.equal(tasks.length, 1);
+      assert.equal(tasks[0]?.path, join(dir, 'hash-new', 'dup-task'));
+      assert.equal(tasks[0]?.metadata?.difficulty, 'new');
     });
   });
 

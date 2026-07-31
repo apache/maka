@@ -70,7 +70,6 @@ describe('expert_dispatch tool', () => {
   test('exposes a member enum and roster description bound to the team', () => {
     const tool = buildExpertDispatchTool(CODE_REVIEW);
     expect(tool.name).toBe(EXPERT_DISPATCH_TOOL_NAME);
-    expect(tool.permissionRequired).toBe(true);
     expect(tool.categoryHint).toBe('subagent');
     expect(tool.description).toContain('correctness-reviewer');
     expect(tool.description).toContain('Code Review Team');

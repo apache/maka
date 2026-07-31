@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -100,6 +100,35 @@ description: Updated source description.
       await rm(join(cacheRoot, 'registry.json'), { force: true });
       const listedWithoutRegistry = await listManagedSkillSources(cacheRoot);
       assert.deepEqual(listedWithoutRegistry.map((source) => source.id), ['research-brief']);
+    });
+  });
+
+  it('keeps readable managed sources when one source fails to read', async () => {
+    if (process.platform === 'win32') return;
+    await withTempRoot(async (root) => {
+      const cacheRoot = join(root, 'cache');
+      const readableDir = join(cacheRoot, 'readable');
+      const unreadableDir = join(cacheRoot, 'unreadable');
+      await mkdir(readableDir, { recursive: true });
+      await mkdir(unreadableDir);
+      await writeFile(
+        join(readableDir, 'SKILL.md'),
+        '---\nname: Readable\ndescription: Remains visible.\n---\n# Readable',
+        'utf8',
+      );
+      await writeFile(
+        join(unreadableDir, 'SKILL.md'),
+        '---\nname: Unreadable\ndescription: Cannot be read.\n---\n# Unreadable',
+        'utf8',
+      );
+
+      await chmod(unreadableDir, 0o000);
+      try {
+        const listed = await listManagedSkillSources(cacheRoot);
+        assert.deepEqual(listed.map((source) => source.id), ['readable']);
+      } finally {
+        await chmod(unreadableDir, 0o700);
+      }
     });
   });
 

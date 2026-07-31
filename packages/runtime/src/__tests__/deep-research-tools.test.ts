@@ -124,10 +124,6 @@ describe('Deep Research runtime tools', () => {
         DEEP_RESEARCH_COMPLETE_TOOL_NAME,
       ],
     );
-    assert.equal(
-      tools.every((tool) => tool.permissionRequired === false),
-      true,
-    );
   });
 
   it('runs the source-checkpoint-report lifecycle and makes artifact retries idempotent', async () => {

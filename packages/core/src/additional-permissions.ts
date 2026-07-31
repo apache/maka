@@ -1,12 +1,3 @@
-import {
-  canReadPath,
-  canWritePath,
-  type FileSystemPathMatch,
-  type PermissionProfile,
-  type PermissionProfileManaged,
-  type PermissionProfileMatchContext,
-} from './permission-profile.js';
-
 export const ADDITIONAL_PERMISSION_ACCESS_MODES = ['read', 'write'] as const;
 export type AdditionalPermissionAccess = (typeof ADDITIONAL_PERMISSION_ACCESS_MODES)[number];
 
@@ -101,66 +92,6 @@ export function compactAdditionalFileSystemPermissions(
     compacted.push(entry);
   }
   return compacted.sort(compareEntries);
-}
-
-export function additionalPermissionMatchesPath(
-  entry: AdditionalFileSystemPermission,
-  path: string,
-  access: AdditionalPermissionAccess,
-): boolean {
-  if (access === 'write' && entry.access !== 'write') return false;
-  if (entry.scope === 'exact') return samePath(path, entry.path);
-  return pathWithinRoot(path, entry.path);
-}
-
-export function additionalPermissionAllowsPath(
-  profile: AdditionalPermissionProfile,
-  path: string,
-  access: AdditionalPermissionAccess,
-): boolean {
-  return (
-    profile.fileSystem?.entries.some((entry) =>
-      additionalPermissionMatchesPath(entry, path, access),
-    ) ?? false
-  );
-}
-
-export function applyAdditionalPermissionProfile(
-  base: PermissionProfile,
-  additional: AdditionalPermissionProfile,
-): PermissionProfile {
-  if (base.type !== 'managed' || base.fileSystem.kind === 'unrestricted') return base;
-
-  const entries = additional.fileSystem?.entries ?? [];
-  const fileSystemEntries = [
-    ...base.fileSystem.entries,
-    ...entries.map((entry) => ({
-      kind: 'path' as const,
-      access: entry.access,
-      path: entry.path,
-      match: entry.scope satisfies FileSystemPathMatch,
-    })),
-  ];
-
-  return {
-    ...base,
-    fileSystem: {
-      ...base.fileSystem,
-      entries: fileSystemEntries,
-    },
-    network: additional.network?.enabled ? { kind: 'enabled' } : base.network,
-  } satisfies PermissionProfileManaged;
-}
-
-export function additionalPermissionRequiredForPath(input: {
-  profile: PermissionProfile;
-  path: string;
-  access: AdditionalPermissionAccess;
-  context?: PermissionProfileMatchContext;
-}): boolean {
-  return input.access === 'write'
-    ? !canWritePath(input.profile, input.path, input.context)
-    : !canReadPath(input.profile, input.path, input.context);
 }
 
 export function serializeAdditionalPermissionProfile(profile: AdditionalPermissionProfile): string {

@@ -3,12 +3,12 @@ import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
 import {
-  normalizeAdditionalPermissionProfile,
-  type AdditionalPermissionGrant,
-} from '../additional-permissions.js';
+  applySandboxBoundaryExpansion,
+  createWorkspaceWritePermissionProfile,
+  type ExecutionBoundary,
+} from '@maka/core';
+
 import {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
@@ -62,25 +62,33 @@ describe('macOS filesystem worker smoke', { skip: process.platform !== 'darwin' 
     );
   });
 
-  test('applies one exact grant without opening a sibling path', async () => {
+  test('applies one exact boundary expansion without opening a sibling path', async () => {
     const allowedPath = join(outside, 'allowed.txt');
     const siblingPath = join(outside, 'sibling.txt');
-    const grant = await grantFor(allowedPath, workspace);
+    const executionBoundary = boundaryFor(allowedPath);
     await assert.rejects(
       client.execute({
         operation: { kind: 'write', path: siblingPath, content: 'blocked' },
         cwd: workspace,
         mode: 'ask',
-        additionalGrant: grant,
+        executionBoundary,
       }),
-      (error: unknown) =>
-        error instanceof FilesystemWorkerClientError && error.reason === 'path_denied',
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'sandbox_boundary_required');
+        assert.deepEqual(error.requiredExpansion, {
+          filesystem: {
+            entries: [{ path: siblingPath, access: 'write', scope: 'exact' }],
+          },
+        });
+        return true;
+      },
     );
     await client.execute({
       operation: { kind: 'write', path: allowedPath, content: 'outside-ok' },
       cwd: workspace,
       mode: 'ask',
-      additionalGrant: grant,
+      executionBoundary,
     });
     assert.equal(await readFile(allowedPath, 'utf8'), 'outside-ok');
   });
@@ -133,23 +141,12 @@ function grepOperation(path: string, pattern: string) {
   };
 }
 
-async function grantFor(path: string, cwd: string): Promise<AdditionalPermissionGrant> {
-  const normalized = await normalizeAdditionalPermissionProfile({
-    profile: { fileSystem: { entries: [{ path, access: 'write', scope: 'exact' }] } },
-    cwd,
-  });
+function boundaryFor(path: string): ExecutionBoundary {
   return {
-    grantId: 'grant-smoke',
-    sessionId: 'session-smoke',
-    turnId: 'turn-smoke',
-    toolUseId: 'tool-smoke',
-    toolName: 'Write',
-    intentHash: `sha256:${'1'.repeat(64)}`,
-    permissionsHash: hashAdditionalPermissionProfile(normalized.profile),
-    profile: normalized.profile,
-    normalizedPaths: normalized.normalizedPaths,
-    risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-    issuedAt: Date.now(),
-    expiresAt: Date.now() + 60_000,
+    kind: 'managed',
+    revision: 1,
+    profile: applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+      filesystem: { entries: [{ path, access: 'write', scope: 'exact' }] },
+    }),
   };
 }

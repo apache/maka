@@ -7,8 +7,8 @@ import {
   hashSystemPrompt,
   readFixedPromptWal,
   selectFixedPromptRoundTaskEvents,
-  type FixedPromptTaskWalEvent,
 } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import {
   runtimePolicyArmResumeFingerprint,
   runRuntimePolicyAbComparisonUnlocked,

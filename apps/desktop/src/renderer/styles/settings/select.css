@@ -1,100 +1,51 @@
-/* Settings → unified SettingsSelect chrome. Relocated from settings-select.css — issue #546 PR1. */
-/* PR round-AB-shared-select (yuejing 2026-06-25): the Plan Reminder
-   delivery select and the 5 Settings selects used to ship two slightly
-   different wrappers — different option shapes, different selected
-   trigger renderers, different CSS recipes. They are now one
-   `SettingsSelect` primitive in `@maka/ui` (see kenji styles inventory
-   the original CSS inventory). These
-   `.settingsSelect*` rules pin the unified chrome. */
-.settingsSelectTrigger {
-  min-width: 0;
-  height: var(--h-control-lg);
+/* Product-specific shell for the searchable model catalog. Astryx owns the
+   combobox and native-popover behavior; Maka owns only grouping and the fixed
+   thinking-level footer that Selector cannot express. */
+.modelPickerTrigger {
   justify-content: space-between;
-  border-radius: var(--radius-control);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
-.settingsSelectPositioner {
-  z-index: var(--z-overlay);
-  outline: none;
+.settingsModelPickerTrigger {
+  width: 100%;
+  max-width: 320px;
 }
 
-.settingsSelectPopup {
-  min-width: var(--anchor-width);
-}
-
-/* The icon slot lines up with the text via inline-flex; the icon tile
-   is a fixed 16x16 to absorb Iconify's size: '100%' rendering of the
-   simple-icons svg without pushing option row height around. */
-.settingsSelectOption {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.settingsSelectOptionIcon {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Grouped menu form of the settings-select family (`SettingsSelectGroups`):
-   provider groups, each heading carrying a brand mark, over the shared
-   checkmark rows. The chat model pickers render this body inside their own
-   pill trigger; any future grouped select reuses it. Geometry traces to the
-   former bespoke model-switcher menu (max-content hug, 32px rows), now folded
-   into this one family instead of a parallel `.maka-model-switcher-*` recipe. */
-.settingsSelectMenuPopup {
+.modelPickerPopup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   width: max-content;
   min-width: 200px;
   max-width: min(320px, calc(100vw - 32px));
-  max-height: min(420px, var(--available-height));
-  /* The popup itself is the scroll container: the row list can exceed the cap
-     when a provider exposes many models, and the inner SelectList's
-     `--available-height` ceiling is too tall to engage here, so without this
-     the overflow rows spill out below the rounded box. */
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  max-height: min(420px, calc(100dvh - 2 * var(--space-4)));
+  overflow: hidden;
   padding: var(--space-2);
   border-radius: var(--radius-modal);
   background: var(--background);
   box-shadow: var(--shadow-maka-panel);
 }
 
-.settingsSelectMenuPopup [role="option"] {
+.modelPickerOption {
+  display: flex;
   min-height: var(--h-control-lg);
   align-items: center;
   border-radius: var(--radius-surface);
   padding: var(--space-1-5) var(--space-3);
 }
 
-.settingsSelectMenuOption {
+.modelPickerOptionLabel {
   display: block;
-  color: var(--foreground);
-  font-size: var(--font-size-ui); /* text-sm on the 15px root — same scale as headings */
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
-}
-
-/* #1362: inside the TRIGGER only (popup options keep their full label), a
-   selected label longer than the squeezed trigger ellipsizes instead of
-   bleeding past the button box. */
-.settingsSelectTrigger .settingsSelectMenuOption {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--foreground);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--leading-snug);
 }
 
-/* Heading: same 13px as the rows; hierarchy comes from weight 500 + muted ink
-   + the brand mark, not a different size or an uppercase eyebrow. The mark sits
-   in the 1rem leading column so it lines up under each row's selected check. */
-.settingsSelectMenuPopup .settingsSelectMenuGroupLabel {
+.modelPickerGroupLabel {
   display: grid;
   grid-template-columns: 1rem 1fr;
   align-items: center;
@@ -106,7 +57,7 @@
   color: var(--muted-foreground);
 }
 
-.settingsSelectMenuGroupLogo {
+.modelPickerGroupLogo {
   justify-self: center;
   display: inline-flex;
   align-items: center;
@@ -116,17 +67,12 @@
   color: var(--foreground); /* monochrome marks read full-ink, not muted */
 }
 
-.settingsSelectMenuGroupLogo svg {
+.modelPickerGroupLogo svg {
   width: 100%;
   height: 100%;
 }
 
-/* Callers share one renderProviderMark between the trigger (where the 32px
-   plated avatar is right) and this popup's 1rem label slot (where that plate
-   gets squeezed by the grid column into a tall pill that overlaps the
-   heading). The slot normalizes whatever mark it is handed: fill the slot,
-   no plate chrome. Fixes today's ProviderLogo callers and any future ones. */
-.settingsSelectMenuPopup .settingsSelectMenuGroupLogo .providerLogo {
+.modelPickerGroupLogo .providerLogo {
   width: 100%;
   height: 100%;
   background: none;
@@ -134,9 +80,9 @@
   border-radius: 0;
 }
 
-.settingsSelectMenuPopup .settingsSelectMenuGroupLogo .providerLogo svg,
-.settingsSelectMenuPopup .settingsSelectMenuGroupLogo .providerLogo img,
-.settingsSelectMenuPopup .settingsSelectMenuGroupLogo .providerLogo .providerAssetMask {
+.modelPickerGroupLogo .providerLogo svg,
+.modelPickerGroupLogo .providerLogo img,
+.modelPickerGroupLogo .providerLogo .providerAssetMask {
   width: 100%;
   height: 100%;
 }

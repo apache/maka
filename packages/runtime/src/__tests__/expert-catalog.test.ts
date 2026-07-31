@@ -60,13 +60,12 @@ describe('built-in expert teams', () => {
 });
 
 describe('materialization inherits + narrows the archetype', () => {
-  test('inherits tools, permission mode, and category policy from the archetype', () => {
+  test('inherits tools and permission mode from the archetype', () => {
     const archetype = getBuiltinAgentDefinition('local-read')!;
     const member = CODE_REVIEW!.members[0]!;
     const def = materializeExpertAgentDefinition(CODE_REVIEW!, member);
     assert.deepEqual(def.tools, [...archetype.tools, ...AGENT_TEAM_CHILD_TOOL_NAMES]);
     assert.equal(def.permissionMode, archetype.permissionMode);
-    assert.deepEqual(def.categoryPolicy, archetype.categoryPolicy);
     assert.equal(def.profile, archetype.profile);
   });
 

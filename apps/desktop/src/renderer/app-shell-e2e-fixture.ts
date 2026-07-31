@@ -62,9 +62,9 @@ export function createAppShellE2eFixtureActions(options: {
     if (state.liveTurnBySession) {
       setLiveTurnBySession((current) => ({ ...current, ...state.liveTurnBySession }));
     }
-    if (state.permissionBySession) {
+    if (state.sandboxBoundaryBySession) {
       const seeded: InteractionQueues = {};
-      for (const [seedSessionId, request] of Object.entries(state.permissionBySession)) {
+      for (const [seedSessionId, request] of Object.entries(state.sandboxBoundaryBySession)) {
         if (request) seeded[seedSessionId] = [request];
       }
       setInteractionBySession((current) => ({ ...current, ...seeded }));

@@ -8,10 +8,9 @@ import { buildExploreAgentTool, runReadOnlyExplore } from '../explore-agent-tool
 const repoRoot = join(process.cwd(), '..', '..');
 
 describe('ExploreAgent read-only worker', () => {
-  it('exposes a permission-gated subagent tool', () => {
+  it('exposes a categorized read-only subagent tool', () => {
     const tool = buildExploreAgentTool();
     assert.equal(tool.name, 'ExploreAgent');
-    assert.equal(tool.permissionRequired, true);
     assert.equal(tool.categoryHint, 'subagent');
     assert.match(tool.description, /read-only/);
     assert.match(tool.description, /never writes/);
@@ -549,7 +548,8 @@ describe('ExploreAgent read-only worker', () => {
     assert.match(previewBlock, /useClipboardCopyFeedback\(\)/);
     assert.match(previewBlock, /data-pending=\{summaryCopy\.phase === 'pending'/);
     assert.match(previewBlock, /data-copy-error=\{summaryCopy\.phase === 'failed'/);
-    assert.match(previewBlock, /disabled=\{summaryCopy\.disabled\}/);
+    // #1565 PR 3: Astryx Button spells the disabled prop `isDisabled`.
+    assert.match(previewBlock, /isDisabled=\{summaryCopy\.disabled\}/);
     assert.match(previewBlock, /<UiButton[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className=\{previewVariants\(\{ part: 'agent-copy' \}\)\}/);
     assert.equal(
       previewBlock.match(/previewVariants\(\{ part: 'agent-copy' \}\)/g)?.length,

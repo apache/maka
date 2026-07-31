@@ -81,17 +81,13 @@ function isContinueCandidate(session: SessionSummary): boolean {
     (session.status === 'active' || session.status === 'aborted') &&
     typeof session.lastMessageAt === 'number' &&
     Number.isFinite(session.lastMessageAt) &&
-    session.backend === 'ai-sdk' &&
-    session.permissionMode !== 'ask'
+    session.backend === 'ai-sdk'
   );
 }
 
 function assertSupportedSession(session: SessionSummary): void {
   if (session.backend !== 'ai-sdk') {
     throw new Error(`session ${session.id} uses unsupported backend: ${session.backend}`);
-  }
-  if (session.permissionMode === 'ask') {
-    throw new Error(`session ${session.id} uses interactive permission mode ask`);
   }
 }
 

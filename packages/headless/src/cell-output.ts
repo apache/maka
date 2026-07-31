@@ -1,6 +1,15 @@
-import type { RuntimeEvent } from '@maka/core';
-import type { ThinkingLevel } from '@maka/core';
-import type { ContextBudgetPolicy, InvocationResult } from '@maka/runtime';
+import {
+  catalogSurfaceById,
+  catalogToolByName,
+  type RuntimeEvent,
+  type ThinkingLevel,
+} from '@maka/core';
+import type {
+  ContextBudgetPolicy,
+  InvocationResult,
+  ProductToolSurfaceIdentity,
+} from '@maka/runtime';
+import type { SupplementalToolSetIdentity } from './task-contracts.js';
 import type { HeadlessSystemPromptMode } from './contracts.js';
 
 export const HARBOR_CELL_OUTPUT_SCHEMA_VERSION = 1;
@@ -138,6 +147,10 @@ export interface HarborCellExecutionIdentity {
   pricingProfile: string;
   /** Present on artifacts written after Headless Agent tool gating was introduced. */
   agentTools?: boolean;
+  /** Exact catalog-owned product surface after host binding and run policy. */
+  productToolSurface?: ProductToolSurfaceIdentity;
+  /** Non-catalog tools grouped by their owning harness or experiment. */
+  supplementalToolSets?: SupplementalToolSetIdentity[];
 }
 
 export interface HarborCellDeadlineSettlement {
@@ -360,7 +373,7 @@ function validateHarborCellDeadlineSettlement(value: unknown): HarborCellDeadlin
 
 export function validateHarborCellExecutionIdentity(value: unknown): HarborCellExecutionIdentity {
   if (!isRecord(value)) throw new Error('executionIdentity must be a JSON object');
-  return {
+  const identity: HarborCellExecutionIdentity = {
     llmConnectionSlug: requireString(
       value.llmConnectionSlug,
       'executionIdentity.llmConnectionSlug',
@@ -388,7 +401,89 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
     ...('agentTools' in value
       ? { agentTools: requireBoolean(value.agentTools, 'executionIdentity.agentTools') }
       : {}),
+    ...('productToolSurface' in value
+      ? { productToolSurface: validateProductToolSurfaceIdentity(value.productToolSurface) }
+      : {}),
+    ...('supplementalToolSets' in value
+      ? { supplementalToolSets: validateSupplementalToolSets(value.supplementalToolSets) }
+      : {}),
   };
+  if (
+    identity.productToolSurface &&
+    identity.agentTools !== undefined &&
+    identity.agentTools !==
+      (catalogSurfaceById('agent')?.toolNames.some((name) =>
+        identity.productToolSurface!.productToolNames.includes(name),
+      ) ?? false)
+  ) {
+    throw new Error('executionIdentity.agentTools must match the effective product-tool surface');
+  }
+  return identity;
+}
+
+function validateProductToolSurfaceIdentity(value: unknown): ProductToolSurfaceIdentity {
+  if (!isRecord(value))
+    throw new Error('executionIdentity.productToolSurface must be a JSON object');
+  if (!isRecord(value.policy))
+    throw new Error('executionIdentity.productToolSurface.policy must be a JSON object');
+  const disabledSurfaceIds = validateCanonicalStringArray(
+    value.policy.disabledSurfaceIds,
+    'executionIdentity.productToolSurface.policy.disabledSurfaceIds',
+  );
+  const disabledSurfaces = disabledSurfaceIds.map((surfaceId) => {
+    const surface = catalogSurfaceById(surfaceId);
+    if (!surface) {
+      throw new Error(
+        `executionIdentity.productToolSurface.policy.disabledSurfaceIds entry "${surfaceId}" is not in the product catalog`,
+      );
+    }
+    return surface;
+  });
+  const productToolNames = validateCanonicalStringArray(
+    value.productToolNames,
+    'executionIdentity.productToolSurface.productToolNames',
+  );
+  for (const name of productToolNames) {
+    if (!catalogToolByName(name)) {
+      throw new Error(
+        `executionIdentity.productToolSurface.productToolNames entry "${name}" is not in the product catalog`,
+      );
+    }
+  }
+  for (const surface of disabledSurfaces) {
+    const disabledName = surface.toolNames.find((name) => productToolNames.includes(name));
+    if (disabledName) {
+      throw new Error(
+        `executionIdentity.productToolSurface.productToolNames entry "${disabledName}" belongs to disabled surface "${surface.id}"`,
+      );
+    }
+  }
+  return {
+    policy: {
+      economy: requireBoolean(
+        value.policy.economy,
+        'executionIdentity.productToolSurface.policy.economy',
+      ),
+      disabledSurfaceIds,
+    },
+    productToolNames,
+  };
+}
+
+function validateSupplementalToolSets(value: unknown): SupplementalToolSetIdentity[] {
+  if (!Array.isArray(value))
+    throw new Error('executionIdentity.supplementalToolSets must be a JSON array');
+  return value.map((entry, index) => {
+    if (!isRecord(entry))
+      throw new Error(`executionIdentity.supplementalToolSets[${index}] must be a JSON object`);
+    return {
+      label: requireString(entry.label, `executionIdentity.supplementalToolSets[${index}].label`),
+      toolNames: validateStringArray(
+        entry.toolNames,
+        `executionIdentity.supplementalToolSets[${index}].toolNames`,
+      ),
+    };
+  });
 }
 
 function requireThinkingLevel(value: unknown, path: string): ThinkingLevel {
@@ -1303,6 +1398,18 @@ function validateStringArray(value: unknown, field: string): string[] {
     throw new Error(`${field} must be an array of strings`);
   }
   return [...value];
+}
+
+function validateCanonicalStringArray(value: unknown, field: string): string[] {
+  const parsed = validateStringArray(value, field);
+  const canonical = [...new Set(parsed)].sort();
+  if (
+    parsed.length !== canonical.length ||
+    parsed.some((entry, index) => entry !== canonical[index])
+  ) {
+    throw new Error(`${field} must be sorted and unique`);
+  }
+  return parsed;
 }
 
 function validateRuntimeRefs(value: unknown): HarborCellRuntimeRefs {

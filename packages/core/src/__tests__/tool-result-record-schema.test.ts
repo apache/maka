@@ -64,6 +64,81 @@ describe('legacy subagent tool result compatibility', () => {
   });
 });
 
+describe('sandbox denial tool result metadata', () => {
+  test('accepts a canonical text result carrying a sandbox denial signal', () => {
+    const result = {
+      kind: 'text',
+      text: 'Filesystem access was denied.',
+      sandboxDenial: {
+        likely: true,
+        backend: 'macos-seatbelt',
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
+    assert.deepEqual(
+      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      result,
+    );
+  });
+
+  test('rejects malformed or widened sandbox denial signals', () => {
+    for (const sandboxDenial of [
+      { likely: false },
+      { likely: true, backend: 'none' },
+      { likely: true, backend: 'macos-seatbelt', recovery: 'require_escalated' },
+      { likely: true, unexpected: true },
+    ]) {
+      assert.throws(
+        () =>
+          decodeCanonicalToolResultContent({
+            kind: 'text',
+            text: 'denied',
+            sandboxDenial,
+          }),
+        /Invalid tool result content/,
+      );
+    }
+  });
+});
+
+describe('sandbox boundary failure tool result metadata', () => {
+  test('preserves the machine-readable reason and exact required expansion', () => {
+    const result = {
+      kind: 'text',
+      text: 'Bash requires an approved session sandbox boundary expansion.',
+      sandboxFailure: {
+        reason: 'sandbox_boundary_required',
+        requiredExpansion: { network: { enabled: true } },
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
+    assert.deepEqual(
+      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      result,
+    );
+  });
+
+  test('rejects malformed or widened boundary failure signals', () => {
+    for (const sandboxFailure of [
+      { reason: 'sandbox_denial' },
+      { reason: 'requires_bypass', unexpected: true },
+      { reason: 'sandbox_boundary_required', requiredExpansion: {} },
+    ]) {
+      assert.throws(
+        () =>
+          decodeCanonicalToolResultContent({
+            kind: 'text',
+            text: 'denied',
+            sandboxFailure,
+          }),
+        /Invalid tool result content/,
+      );
+    }
+  });
+});
+
 function legacySubagentResult(): Record<string, unknown> {
   return {
     kind: 'subagent',

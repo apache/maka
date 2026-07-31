@@ -7,7 +7,8 @@ import { Search, X } from './icons.js';
 import { EmptyState } from './empty-state.js';
 import { DialogHeader } from './primitives/dialog-header.js';
 import { InputGroup, InputGroupAddon, InputGroupInput } from './primitives/input-group.js';
-import { DialogContent, DialogRoot, Button as UiButton } from './ui.js';
+import { IconButton } from '@astryxdesign/core';
+import { DialogContent, DialogRoot } from './ui.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 
@@ -229,16 +230,16 @@ export function SearchModal(props: {
       }}
     >
       <DialogContent
-        className="maka-modal maka-search-modal w-[min(92vw,640px)] p-0"
-        aria-labelledby="maka-search-modal-title"
-        showClose={false}
+        className="maka-search-modal"
+        width={560}
+        maxHeight="64vh"
+        data-maka-contract="search-modal"
         initialFocus={inputRef}
         finalFocus={() => (suppressFocusRestoreRef.current ? false : true)}
       >
         <DialogHeader
           icon={<Search aria-hidden="true" />}
           title={copy.title}
-          titleId="maka-search-modal-title"
           onClose={() => props.onClose()}
         />
         {/*
@@ -296,15 +297,13 @@ export function SearchModal(props: {
             />
             {query.length > 0 && (
               <InputGroupAddon align="inline-end">
-                <UiButton
-                  variant="quiet"
-                  size="icon-sm"
-                  type="button"
-                  aria-label={copy.clearLabel}
+                <IconButton
+                  variant="ghost"
+                  size="sm"
+                  label={copy.clearLabel}
+                  icon={<X size={14} aria-hidden="true" />}
                   onClick={clearSearchQuery}
-                >
-                  <X size={14} aria-hidden="true" />
-                </UiButton>
+                />
               </InputGroupAddon>
             )}
           </InputGroup>

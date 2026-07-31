@@ -3,7 +3,8 @@ import { Check, Copy } from '../icons.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { previewVariants } from '../primitives/chat.js';
 import { redactSecrets } from '../redact.js';
-import { Button as UiButton, cn } from '../ui.js';
+import { Button as UiButton } from '@astryxdesign/core';
+import { cn } from '../ui.js';
 import { formatBytes, formatDuration } from './preview-utils.js';
 import { useUiLocale } from '../locale-context.js';
 import { getToolActivityCopy } from './copy.js';
@@ -216,42 +217,38 @@ export function ExploreAgentPreview(props: {
           <div className={previewVariants({ part: 'agent-summary-line' })}>
             <small>{redactSecrets(resultSummary)}</small>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('summary', copyPayloads.summary)}
-              disabled={summaryCopy.disabled}
+              isDisabled={summaryCopy.disabled}
               aria-label={summaryCopy.ariaLabel}
               aria-busy={summaryCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={summaryCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={summaryCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={summaryCopy.phase === 'failed' ? 'true' : undefined}
-            >
-              {summaryCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{summaryCopy.label}</span>
-            </UiButton>
+              icon={summaryCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={summaryCopy.label}
+            />
           </div>
         )}
         {continuationText.length > 0 && (
           <div className={previewVariants({ part: 'agent-actions' })} aria-label={copy.followupActionsAriaLabel}>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('continuation', copyPayloads.continuation)}
-              disabled={continuationCopy.disabled}
+              isDisabled={continuationCopy.disabled}
               aria-label={continuationCopy.ariaLabel}
               aria-busy={continuationCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={continuationCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={continuationCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={continuationCopy.phase === 'failed' ? 'true' : undefined}
-              title={copy.continuationTitle}
-            >
-              {continuationCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{continuationCopy.label}</span>
-            </UiButton>
+              tooltip={copy.continuationTitle}
+              icon={continuationCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={continuationCopy.label}
+            />
           </div>
         )}
       </header>
@@ -307,21 +304,19 @@ export function ExploreAgentPreview(props: {
           <div className={previewVariants({ part: 'agent-section-head' })}>
             <strong>{copy.section.process.title}</strong>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('process', copyPayloads.process)}
-              disabled={processCopy.disabled}
+              isDisabled={processCopy.disabled}
               aria-label={processCopy.ariaLabel}
               aria-busy={processCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={processCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={processCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={processCopy.phase === 'failed' ? 'true' : undefined}
-            >
-              {processCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{processCopy.label}</span>
-            </UiButton>
+              icon={processCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={processCopy.label}
+            />
           </div>
           <ul>
             {progress.map((item, index) => (
@@ -337,21 +332,19 @@ export function ExploreAgentPreview(props: {
           <div className={previewVariants({ part: 'agent-section-head' })}>
             <strong>{copy.section.evidence.title}</strong>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('evidence', copyPayloads.evidence)}
-              disabled={evidenceCopy.disabled}
+              isDisabled={evidenceCopy.disabled}
               aria-label={evidenceCopy.ariaLabel}
               aria-busy={evidenceCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={evidenceCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={evidenceCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={evidenceCopy.phase === 'failed' ? 'true' : undefined}
-            >
-              {evidenceCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{evidenceCopy.label}</span>
-            </UiButton>
+              icon={evidenceCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={evidenceCopy.label}
+            />
           </div>
           <ul>
             {evidence.map((item, index) => (
@@ -374,21 +367,19 @@ export function ExploreAgentPreview(props: {
           <div className={previewVariants({ part: 'agent-section-head' })}>
             <strong>{copy.section.report.title}</strong>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('report', copyPayloads.report)}
-              disabled={reportCopy.disabled}
+              isDisabled={reportCopy.disabled}
               aria-label={reportCopy.ariaLabel}
               aria-busy={reportCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={reportCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={reportCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={reportCopy.phase === 'failed' ? 'true' : undefined}
-            >
-              {reportCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{reportCopy.label}</span>
-            </UiButton>
+              icon={reportCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={reportCopy.label}
+            />
           </div>
           <ul>
             {reportLines.map((line, index) => (
@@ -404,21 +395,19 @@ export function ExploreAgentPreview(props: {
           <div className={previewVariants({ part: 'agent-section-head' })}>
             <strong>{copy.section.candidates.title}</strong>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('candidate', copyPayloads.candidate)}
-              disabled={candidateCopy.disabled}
+              isDisabled={candidateCopy.disabled}
               aria-label={candidateCopy.ariaLabel}
               aria-busy={candidateCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={candidateCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={candidateCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={candidateCopy.phase === 'failed' ? 'true' : undefined}
-            >
-              {candidateCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{candidateCopy.label}</span>
-            </UiButton>
+              icon={candidateCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={candidateCopy.label}
+            />
           </div>
           <ul>
             {candidateFiles.map((file) => (
@@ -438,21 +427,19 @@ export function ExploreAgentPreview(props: {
           <div className={previewVariants({ part: 'agent-section-head' })}>
             <strong>{copy.section.matches.title}</strong>
             <UiButton
-              type="button"
               variant="ghost"
               size="sm"
               className={previewVariants({ part: 'agent-copy' })}
               onClick={() => void copyFeedback.copy('matches', copyPayloads.matches)}
-              disabled={matchesCopy.disabled}
+              isDisabled={matchesCopy.disabled}
               aria-label={matchesCopy.ariaLabel}
               aria-busy={matchesCopy.phase === 'pending' ? 'true' : undefined}
               data-pending={matchesCopy.phase === 'pending' ? 'true' : undefined}
               data-copied={matchesCopy.phase === 'copied' ? 'true' : 'false'}
               data-copy-error={matchesCopy.phase === 'failed' ? 'true' : undefined}
-            >
-              {matchesCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
-              <span>{matchesCopy.label}</span>
-            </UiButton>
+              icon={matchesCopy.phase === 'copied' ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+              label={matchesCopy.label}
+            />
           </div>
           <ul>
             {matches.map((match, index) => (

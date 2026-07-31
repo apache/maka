@@ -21,8 +21,14 @@ import {
 } from './artifact-storage-layout.js';
 import { decodeArtifactMetadata } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
-import { exportLegacySessionTree } from './session-metadata-maintenance.js';
+import { exportLegacySessionTreeSnapshot } from './session-metadata-maintenance.js';
+import {
+  encodeExecutionBoundaryTransfer,
+  EXECUTION_BOUNDARY_TRANSFER_FILE,
+} from './session-metadata-transfer.js';
 import { SQLITE_SESSION_METADATA_DATABASE_NAME } from './session-store.js';
+import { createSqliteSessionMetadataStore } from './sqlite-session-metadata-store.js';
+import type { SessionAuthoritySnapshot } from './sqlite-session-metadata-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
 
 /**
@@ -41,6 +47,7 @@ export const SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES = [
 ] as const;
 
 export const SESSION_BUNDLE_PORTABLE_SESSION_FILES = [
+  EXECUTION_BOUNDARY_TRANSFER_FILE,
   'agent-mailbox.jsonl',
   'plan-events.jsonl',
   'plans.json',
@@ -112,6 +119,7 @@ export interface SessionBundleExportPlanEntry {
   source:
     | 'copy'
     | 'selected_session_metadata'
+    | 'selected_session_boundary'
     | 'filtered_artifact_metadata'
     | 'filtered_runtime_sqlite';
 }
@@ -361,9 +369,17 @@ async function exportPreparedNonArtifactState(plan: SessionBundleExportPlan): Pr
     await mkdir(dirname(destinationPath), { recursive: true });
     await copyCheckedFile(sourcePath, destinationPath, plan.stateRoot, entry.relativePath);
   }
+  const authoritySnapshot = entries.some(
+    (entry) =>
+      entry.source === 'selected_session_metadata' || entry.source === 'selected_session_boundary',
+  )
+    ? await readSelectedSessionAuthoritySnapshot(plan)
+    : undefined;
   for (const entry of entries) {
     if (entry.source === 'selected_session_metadata') {
-      await exportSelectedSessionMetadata(plan);
+      await exportSelectedSessionMetadata(plan, authoritySnapshot!);
+    } else if (entry.source === 'selected_session_boundary') {
+      await exportSelectedSessionBoundary(plan, authoritySnapshot!);
     } else if (entry.source === 'filtered_runtime_sqlite') {
       await exportFilteredRuntimeSqlite(plan, entry);
     }
@@ -402,9 +418,18 @@ async function planSelectedSessionTree(
       const children = await readdir(childPath, { withFileTypes: true });
       for (const child of children) {
         const relativePath = `sessions/${sessionId}/${child.name}`;
+        const portablePath = resolve(childPath, child.name);
         assertNoSymlink(child.isSymbolicLink(), relativePath);
         if (child.name === 'session.jsonl') continue;
-        const portablePath = resolve(childPath, child.name);
+        if (child.name === EXECUTION_BOUNDARY_TRANSFER_FILE) {
+          await assertFile(
+            portablePath,
+            'portable execution boundary transfer',
+            stateRoot,
+            relativePath,
+          );
+          continue;
+        }
         if (portableSessionDirectories.has(child.name)) {
           await assertDirectory(
             portablePath,
@@ -440,6 +465,11 @@ async function planSelectedSessionTree(
         kind: 'file',
         source: 'selected_session_metadata',
       });
+      entries.push({
+        relativePath: `sessions/${sessionId}/${EXECUTION_BOUNDARY_TRANSFER_FILE}`,
+        kind: 'file',
+        source: 'selected_session_boundary',
+      });
       continue;
     }
     if (entry.isDirectory() && isSafeSessionId(entry.name)) {
@@ -463,12 +493,17 @@ async function planSelectedSessionTree(
   }
 }
 
-async function exportSelectedSessionMetadata(plan: SessionBundleExportPlan): Promise<void> {
+async function exportSelectedSessionMetadata(
+  plan: SessionBundleExportPlan,
+  snapshot: SessionAuthoritySnapshot,
+): Promise<void> {
   const stagingRoot = `${plan.destinationRoot}.selected-session-${randomUUID()}`;
   try {
-    await exportLegacySessionTree({
+    await exportLegacySessionTreeSnapshot({
       workspaceRoot: plan.stateRoot,
       destinationRoot: stagingRoot,
+      records: [snapshot.record],
+      boundaries: new Map([[plan.sessionId, snapshot.boundary]]),
       sessionIds: [plan.sessionId],
     });
     const relativePath = `sessions/${plan.sessionId}/session.jsonl`;
@@ -478,6 +513,33 @@ async function exportSelectedSessionMetadata(plan: SessionBundleExportPlan): Pro
     await copyCheckedFile(sourcePath, destinationPath, stagingRoot, relativePath);
   } finally {
     await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function exportSelectedSessionBoundary(
+  plan: SessionBundleExportPlan,
+  snapshot: SessionAuthoritySnapshot,
+): Promise<void> {
+  const destinationPath = resolve(
+    plan.destinationRoot,
+    'sessions',
+    plan.sessionId,
+    EXECUTION_BOUNDARY_TRANSFER_FILE,
+  );
+  await mkdir(dirname(destinationPath), { recursive: true });
+  await writeFile(destinationPath, encodeExecutionBoundaryTransfer(snapshot.boundary), 'utf8');
+}
+
+async function readSelectedSessionAuthoritySnapshot(
+  plan: SessionBundleExportPlan,
+): Promise<SessionAuthoritySnapshot> {
+  const metadata = createSqliteSessionMetadataStore(
+    resolve(plan.stateRoot, SQLITE_SESSION_METADATA_DATABASE_NAME),
+  );
+  try {
+    return await metadata.readSessionAuthoritySnapshot(plan.sessionId);
+  } finally {
+    metadata.close();
   }
 }
 

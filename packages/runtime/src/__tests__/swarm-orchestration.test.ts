@@ -1,15 +1,9 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { z } from 'zod';
-import type {
-  EffectiveOrchestration,
-  SessionEvent,
-  SessionHeader,
-  StoredMessage,
-  ToolPermissionRule,
-} from '@maka/core';
+import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
 
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 function header(): SessionHeader {
@@ -39,13 +33,12 @@ function header(): SessionHeader {
 function tool(
   name: string,
   calls: string[],
-  options: Pick<MakaTool, 'executionSemantics' | 'permissionRequired' | 'categoryHint'> = {},
+  options: Pick<MakaTool, 'executionSemantics' | 'categoryHint'> = {},
 ): MakaTool {
   return {
     name,
     description: name,
     parameters: z.object({}),
-    permissionRequired: options.permissionRequired ?? false,
     ...(options.executionSemantics ? { executionSemantics: options.executionSemantics } : {}),
     ...(options.categoryHint ? { categoryHint: options.categoryHint } : {}),
     impl: () => {
@@ -55,19 +48,13 @@ function tool(
   };
 }
 
-function harness(
-  input: {
-    orchestration?: EffectiveOrchestration;
-    permissionRules?: readonly ToolPermissionRule[];
-  } = {},
-) {
+function harness() {
   const appended: StoredMessage[] = [];
   const events: SessionEvent[] = [];
   const calls: string[] = [];
-  const engine = new PermissionEngine({ newId: () => 'permission-1', now: () => 1 });
   let stepId = 'step-1';
   let id = 0;
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: { providerType: 'openai', slug: 'c' } as never,
@@ -75,14 +62,10 @@ function harness(
     appendMessage: async (message) => {
       appended.push(message);
     },
-    permissionEngine: engine,
     newId: () => `id-${++id}`,
     now: () => 1,
     getPermissionPauseTarget: () => null,
-    getCurrentOrchestration: () => input.orchestration,
-    ...(input.permissionRules ? { permissionRules: input.permissionRules } : {}),
   });
-  engine.beginTurn('turn-1');
   runtime.beginTurn('turn-1');
   return {
     runtime,
@@ -145,60 +128,5 @@ describe('Swarm orchestration admission', () => {
     fixture.setStepId('step-2');
     await invoke(fixture, tool('Read', fixture.calls));
     assert.deepEqual(fixture.calls, ['agent_swarm', 'Read']);
-  });
-});
-
-describe('Swarm orchestration authorization', () => {
-  const swarm: EffectiveOrchestration = {
-    mode: 'swarm',
-    source: 'turn_override',
-    agentSwarmAuthorization: 'turn_override',
-  };
-
-  test('the trusted envelope allows exactly agent_swarm without prompting', async () => {
-    const fixture = harness({ orchestration: swarm });
-    const result = await invoke(
-      fixture,
-      tool('agent_swarm', fixture.calls, {
-        executionSemantics: 'exclusive_step',
-        permissionRequired: true,
-        categoryHint: 'subagent',
-      }),
-    );
-    assert.deepEqual(result, { ok: true });
-    assert.deepEqual(fixture.calls, ['agent_swarm']);
-    assert.equal(
-      fixture.events.some((event) => event.type === 'permission_request'),
-      false,
-    );
-  });
-
-  test('an explicit deny still wins over Swarm Mode authorization', async () => {
-    const fixture = harness({
-      orchestration: swarm,
-      permissionRules: [{ effect: 'deny', kind: 'tool', toolName: 'agent_swarm' }],
-    });
-    const result = await invoke(
-      fixture,
-      tool('agent_swarm', fixture.calls, {
-        executionSemantics: 'exclusive_step',
-        permissionRequired: true,
-        categoryHint: 'subagent',
-      }),
-    );
-    assert.deepEqual(fixture.calls, []);
-    assert.match(JSON.stringify(result), /denied|blocked|not allowed/i);
-  });
-
-  test('the Swarm envelope does not widen unrelated tool permissions', async () => {
-    const fixture = harness({
-      orchestration: swarm,
-      permissionRules: [{ effect: 'deny', kind: 'tool', toolName: 'Write' }],
-    });
-    await invoke(
-      fixture,
-      tool('Write', fixture.calls, { permissionRequired: true, categoryHint: 'file_write' }),
-    );
-    assert.deepEqual(fixture.calls, []);
   });
 });

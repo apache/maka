@@ -11,7 +11,6 @@ import {
   type SetStateAction,
 } from 'react';
 import type {
-  PermissionMode,
   PlanReminder,
   QuoteRef,
   SessionSummary,
@@ -34,6 +33,7 @@ import {
   type ComposerHandle,
   type MakaUriDest,
   MakaUriContext,
+  AstryxLocaleProvider,
   LocaleProvider,
   ModuleHubSelector,
   ToastProvider,
@@ -44,8 +44,10 @@ import {
   type TurnFooterActionMeta,
   useToast,
   activeInteractionFor,
+  enqueueInteraction,
   getConversationCopy,
   getSharedUiCopy,
+  reconcileSandboxBoundaryInteractions,
 } from '@maka/ui';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -53,6 +55,16 @@ import { ChatMessageSurface } from './chat-message-surface';
 import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion } from './chat-composer-region';
 import { ChatWorkbar } from './chat-workbar';
+import {
+  consumeCompanionQuoteSnapshot,
+  removeStagedCompanionQuote,
+  stageCompanionQuote,
+  type QuoteCompanionPanelState,
+} from './quote-companion-panel-state';
+import {
+  applyCompanionForkVisibilityEvent,
+  reconcileCompanionForkVisibility,
+} from './quote-companion-visibility';
 import {
   PlanExecutionPanel,
   PlanProposalCard,
@@ -77,6 +89,8 @@ import { deriveBranchBanner } from './branch-banner';
 import { readNavigationState, selectNavigation } from './nav-selection';
 import { sessionMatchesNavSelection } from './session-nav-filter';
 import { deriveSessionRevisionNavigation } from './session-revisions';
+import { deriveDesktopExecutionBoundarySurface } from './desktop-execution-boundary-surface';
+import { useActiveExecutionBoundary } from './use-active-execution-boundary';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
@@ -150,6 +164,14 @@ type ComposerImportOwner = {
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Module surfaces that own their whole column and render no workspace toolbar.
+ * This used to be a `display: none` rule keyed on the detail panel's
+ * `data-agents-view`; the toolbar now lives in the window titlebar, which is not
+ * a descendant of the detail panel, so the condition belongs here.
+ */
+const VIEWS_WITHOUT_WORKSPACE_ACTIONS = new Set(['skills', 'cron', 'daily-review']);
+
 type AppShellProps = {
   /** Pre-mount snapshot prefetched by main.tsx — see prefetchOnboardingSnapshot. */
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
@@ -163,17 +185,23 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
 
   return (
     <LocaleProvider locale={uiLocale} override={uiLocaleOverride}>
-      <ToastProvider>
-        <ErrorBoundary locale={uiLocale}>
-          <AppShellContent
-            initialOnboardingSnapshot={initialOnboardingSnapshot}
-            uiLocale={uiLocale}
-            uiLocaleOverride={uiLocaleOverride}
-            setUiLocaleOverride={setUiLocaleOverride}
-            setUiLocalePreference={setUiLocalePreference}
-          />
-        </ErrorBoundary>
-      </ToastProvider>
+      {/* #1565: Astryx's message catalog is keyed off OUR locale context, so it
+          must sit inside LocaleProvider — not at the `<Theme>` level, where
+          `useUiLocale()` throws before anything renders. Still above every
+          Astryx subtree. */}
+      <AstryxLocaleProvider>
+        <ToastProvider>
+          <ErrorBoundary locale={uiLocale}>
+            <AppShellContent
+              initialOnboardingSnapshot={initialOnboardingSnapshot}
+              uiLocale={uiLocale}
+              uiLocaleOverride={uiLocaleOverride}
+              setUiLocaleOverride={setUiLocaleOverride}
+              setUiLocalePreference={setUiLocalePreference}
+            />
+          </ErrorBoundary>
+        </ToastProvider>
+      </AstryxLocaleProvider>
     </LocaleProvider>
   );
 }
@@ -195,6 +223,7 @@ function AppShellContent({
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const {
     sessions,
+    authoritativeSessionIds,
     sessionsRef,
     setSessions,
     refreshSessions,
@@ -228,6 +257,11 @@ function AppShellContent({
     setPendingSessionModelBySession,
     clearTurnTransientState,
   } = useAppShellSessionWorkspace(toastApi);
+  const sandboxBoundaryInteractionEpochRef = useRef(new Map<string, number>());
+  const markSandboxBoundaryInteractionChanged = useCallback((sessionId: string) => {
+    const epochs = sandboxBoundaryInteractionEpochRef.current;
+    epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
+  }, []);
   const attachmentDraftKey = activeId ?? 'new-session';
   const {
     pendingAttachments,
@@ -438,12 +472,26 @@ function AppShellContent({
   // `quotes` accumulates excerpts staged for the next follow-up — selecting more
   // text adds to the SAME panel rather than opening a new one; `sourceSessionId`
   // pins it to the main session the companion forks from.
-  const [quotePanel, setQuotePanel] = useState<
-    { sourceSessionId: string; quotes: QuoteRef[] } | null
-  >(null);
-  // The quote companion's ephemeral fork id, while its panel is open — hidden
-  // from the main session list (the fork is removed on panel dismiss).
-  const [companionForkId, setCompanionForkId] = useState<string | undefined>(undefined);
+  const [quotePanel, setQuotePanel] = useState<QuoteCompanionPanelState | null>(null);
+  // Created companion forks stay hidden until authoritative cleanup succeeds or
+  // a later authoritative session list confirms they are gone. A set preserves
+  // earlier failed cleanups when another companion opens.
+  const [hiddenCompanionForkIds, setHiddenCompanionForkIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const onCompanionForkVisibilityChange = useCallback(
+    (event: Parameters<typeof applyCompanionForkVisibilityEvent>[1]) =>
+      setHiddenCompanionForkIds((current) =>
+        applyCompanionForkVisibilityEvent(current, event),
+      ),
+    [],
+  );
+  useEffect(() => {
+    if (!authoritativeSessionIds) return;
+    setHiddenCompanionForkIds((current) =>
+      reconcileCompanionForkVisibility(current, authoritativeSessionIds),
+    );
+  }, [authoritativeSessionIds]);
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
   const commitRevisionDraft = useCallback((draft: TurnRevisionDraft | null) => {
@@ -499,9 +547,11 @@ function AppShellContent({
       // Exclude the quote companion's ephemeral fork so it stays hidden from the
       // main session list while its panel is open.
       filterLinkedSessionTree(sidebarSessionTree, (session) =>
-        session.id !== companionForkId ? sessionMatchesNavSelection(session, navSelection) : false,
+        !hiddenCompanionForkIds.has(session.id)
+          ? sessionMatchesNavSelection(session, navSelection)
+          : false,
       ),
-    [sidebarSessionTree, navSelection, companionForkId],
+    [sidebarSessionTree, navSelection, hiddenCompanionForkIds],
   );
   const visibleSessions = visibleSessionTree.roots;
   // PR-DAILY-REVIEW-MVP-0: bridge for the main Daily Review module.
@@ -518,7 +568,8 @@ function AppShellContent({
     toastApi,
   });
   const activeInteraction = activeInteractionFor(interactionBySession, activeId);
-  const activePermission = activeInteraction?.type === 'permission_request' ? activeInteraction : undefined;
+  const activeSandboxBoundary =
+    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = sessions.find((session) => session.id === activeId);
   // Live-turn projection of the active session: streaming/thinking slices, the
@@ -982,6 +1033,40 @@ function AppShellContent({
     permissionMode: defaultPermissionMode,
         }
       : undefined);
+  const {
+    boundary: activeExecutionBoundary,
+    unreadable: activeExecutionBoundaryUnreadable,
+    reading: activeExecutionBoundaryReading,
+    reload: reloadActiveExecutionBoundary,
+  } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  useEffect(() => {
+    if (!activeId) return;
+    let cancelled = false;
+    const hydrationEpoch = sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0;
+    void window.maka.sessions
+      .listActiveSandboxBoundaryRequests(activeId)
+      .then((requests) => {
+        if (
+          cancelled ||
+          (sandboxBoundaryInteractionEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
+        ) {
+          return;
+        }
+        setInteractionBySession((current) =>
+          reconcileSandboxBoundaryInteractions(current, activeId, requests),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, setInteractionBySession]);
+  const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
+    activeId,
+    activeExecutionBoundary,
+    activeId ? (activeSessionForView?.permissionMode ?? 'ask') : defaultPermissionMode,
+  );
+  const activePermissionMode = activeBoundarySurface.permissionMode;
   const planMode = usePlanModeState(activeSessionForView);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
@@ -1074,6 +1159,21 @@ function AppShellContent({
     onboardingState.kind !== 'ready_with_history' &&
     onboardingState.kind !== 'ready_empty';
   const onboardingComposerHidden = isOnboardingLoading || (showOnboardingHero && onboardingState !== undefined);
+  // #1629: hiding the composer because the boundary is unknown is right, but
+  // hiding it silently and forever is not. Once the read has spent its retries
+  // the slot says so and hands the user another attempt; while it is still
+  // reading, or while onboarding owns the surface, there is nothing to say.
+  const boundaryUnreadableNotice =
+    activeId && activeExecutionBoundaryUnreadable && !onboardingComposerHidden
+      ? {
+          title: shellCopy.boundaryUnreadableTitle,
+          detail: shellCopy.boundaryUnreadableDetail,
+          retryLabel: shellCopy.boundaryUnreadableRetry,
+          retryPendingLabel: shellCopy.boundaryUnreadableRetrying,
+          retryPending: activeExecutionBoundaryReading,
+          onRetry: () => reloadActiveExecutionBoundary(activeId),
+        }
+      : undefined;
   const {
     sessionListWidth,
     setSessionListWidth,
@@ -1256,7 +1356,7 @@ function AppShellContent({
 
   const {
     send,
-    respondToPermission,
+    respondToSandboxBoundary,
     respondToUserQuestion,
     refreshMessages,
     retryMessages,
@@ -1279,6 +1379,8 @@ function AppShellContent({
     setNavSelection,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
+    onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
     upsertSessionSummary,
@@ -1488,6 +1590,8 @@ function AppShellContent({
     refreshSessions,
     setLiveTurnBySession,
     setInteractionBySession,
+    onSandboxBoundaryInteractionChanged: markSandboxBoundaryInteractionChanged,
+    onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
     toastApi,
     notifyRunEnded: ({ kind, sessionId, body }) => {
@@ -1771,7 +1875,8 @@ function AppShellContent({
   const commandOptions: AppShellCommandListOptions = {
     uiLocale,
     activeId,
-    activePermissionMode: activeSessionForView?.permissionMode,
+    activePermissionMode,
+    canSetPermissionMode: activeBoundarySurface.localInteractionAvailable,
     connections,
     defaultConnection,
     dailyReviewBridge,
@@ -1801,6 +1906,15 @@ function AppShellContent({
     toastApi,
   };
 
+  const agentsView =
+    navSelection.section === 'automations'
+      ? navSelection.module === 'daily-review'
+        ? 'daily-review'
+        : 'cron'
+      : navSelection.section === 'extensions'
+        ? navSelection.module
+        : 'im_hub';
+
   return (
       <div className="appFrame agents-layout-root" data-agents-page>
       <div
@@ -1816,16 +1930,45 @@ function AppShellContent({
           } as CSSProperties
         }
       >
-        <AppShellTopbarActions
-          sidebarCollapsed={sessionListCollapsed}
-          onOpenSearchModal={() => {
-            setSearchModalInitialQuery('');
-            setSearchModalOpen(true);
-          }}
-          onCollapseSidebar={() => setSessionListCollapsed(true)}
-          onExpandSidebar={() => setSessionListCollapsed(false)}
-          onCreateSession={createSession}
-        />
+        {/* The window's titlebar: the shell's first grid row, spanning every
+            column, and the only element that declares `-webkit-app-region:
+            drag`. Its action clusters are ordinary in-flow children that each
+            declare `no-drag`, so the OS draggable region is whatever the row
+            has left over — no container has to reserve space for a sibling.
+            Two properties make that work and must hold together:
+            it is the FIRST child (Chromium builds the draggable region by
+            walking annotated elements in DOCUMENT ORDER, adding `drag` rects
+            and subtracting `no-drag` ones, so only a `no-drag` element declared
+            after it can carve itself back out), and it OCCUPIES a row rather
+            than floating over one, so content below can never land inside it.
+            Locked by e2e/window-titlebar.spec.ts. */}
+        <header className="maka-window-titlebar">
+          <AppShellTopbarActions
+            sidebarCollapsed={sessionListCollapsed}
+            onOpenSearchModal={() => {
+              setSearchModalInitialQuery('');
+              setSearchModalOpen(true);
+            }}
+            onCollapseSidebar={() => setSessionListCollapsed(true)}
+            onExpandSidebar={() => setSessionListCollapsed(false)}
+            onCreateSession={createSession}
+          />
+          {/* The module surfaces that own their whole column show no workspace
+              toolbar. That used to be a `display: none` override reaching in
+              from the detail panel's `data-agents-view`; now that the toolbar
+              lives in the titlebar it is simply not rendered. */}
+          {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+            <AppShellWorkspaceTopActions
+              workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+              workbarCollapsed={workbarCollapsed}
+              onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
+              onOpenFeedback={() => openSettingsSection('about')}
+              onOpenPalette={openPalette}
+              onOpenHelp={openHelp}
+              onOpenHealth={() => openSettingsSection('health')}
+            />
+          )}
+        </header>
         <div
           className="maka-panel maka-panel-list maka-floating-panel"
           aria-hidden={sessionListCollapsed ? 'true' : undefined}
@@ -1869,23 +2012,8 @@ function AppShellContent({
         />
         <AppShellDetailPanel
           data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
-          agentsView={
-            navSelection.section === 'automations'
-              ? navSelection.module === 'daily-review' ? 'daily-review' : 'cron'
-              : navSelection.section === 'extensions'
-                ? navSelection.module
-                : 'im_hub'
-          }
+          agentsView={agentsView}
         >
-          <AppShellWorkspaceTopActions
-            workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-            workbarCollapsed={workbarCollapsed}
-            onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
-            onOpenFeedback={() => openSettingsSection('about')}
-            onOpenPalette={openPalette}
-            onOpenHelp={openHelp}
-            onOpenHealth={() => openSettingsSection('health')}
-          />
           {/* PR-UI-RENDER-2: install the internal-URI dispatcher
               for any Markdown rendered inside ChatView (assistant
               answers, thinking panels, streaming bubbles). Wrapping
@@ -2041,9 +2169,11 @@ function AppShellContent({
                         // Accumulate onto the open panel for this session rather
                         // than spawning a new one; otherwise start a fresh panel.
                         setQuotePanel((prev) =>
-                          prev && prev.sourceSessionId === activeId
-                            ? { ...prev, quotes: [...prev.quotes, quote] }
-                            : { sourceSessionId: activeId, quotes: [quote] },
+                          stageCompanionQuote(prev, {
+                            sourceSessionId: activeId,
+                            quote,
+                            newId: () => crypto.randomUUID(),
+                          }),
                         );
                         // Surface it inside the session workbar (as a tab) rather
                         // than a second right column — open the bar on the quote tab.
@@ -2104,12 +2234,15 @@ function AppShellContent({
               <ChatComposerRegion
                 composerRef={composerRef}
                 active={navSelection.section === 'sessions'}
-                onboardingComposerHidden={onboardingComposerHidden}
+                onboardingComposerHidden={
+                  onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
+                }
+                boundaryUnreadableNotice={boundaryUnreadableNotice}
                 activeInteraction={activeInteraction}
                 activeId={activeId}
                 stopPendingBySession={stopPendingBySession}
-                activePermission={activePermission}
-                respondToPermission={respondToPermission}
+                activeSandboxBoundary={activeSandboxBoundary}
+                respondToSandboxBoundary={respondToSandboxBoundary}
                 activeQuestion={activeQuestion}
                 respondToUserQuestion={respondToUserQuestion}
                 stop={stop}
@@ -2224,7 +2357,7 @@ function AppShellContent({
                       }
                     : undefined
                 }
-                permissionMode={defaultPermissionMode}
+                permissionMode={activePermissionMode}
                 permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
                 permissionModeDisabledReason={
                   activeId && pendingPermissionModeBySession[activeId] === true
@@ -2237,7 +2370,11 @@ function AppShellContent({
                             ? shellCopy.permissionModeWaiting
                           : undefined
                 }
-                onPermissionModeChange={(mode) => setPermissionMode(mode)}
+                onPermissionModeChange={
+                  activeBoundarySurface.localInteractionAvailable
+                    ? (mode) => setPermissionMode(mode)
+                    : undefined
+                }
                 planModeActive={activeId
                   ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
                   : newChatPlanModeActive}
@@ -2307,10 +2444,13 @@ function AppShellContent({
                   quotePanel && quotePanel.sourceSessionId === activeId ? quotePanel : null
                 }
                 onClearQuote={() => setQuotePanel(null)}
-                onQuotesConsumed={() =>
-                  setQuotePanel((prev) => (prev ? { ...prev, quotes: [] } : prev))
+                onQuotesConsumed={(snapshot) =>
+                  setQuotePanel((prev) => consumeCompanionQuoteSnapshot(prev, snapshot))
                 }
-                onForkChange={setCompanionForkId}
+                onRemoveQuote={(target) =>
+                  setQuotePanel((prev) => removeStagedCompanionQuote(prev, target))
+                }
+                onForkVisibilityChange={onCompanionForkVisibilityChange}
                 sourceSession={activeSessionForView}
                 modelChoices={chatModelChoices}
               />

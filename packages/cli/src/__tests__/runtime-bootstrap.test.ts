@@ -32,9 +32,26 @@ import {
   createMakaCliRuntimeContext,
   getOrCreateCliClaudeDeviceId,
   isMakaClaudeSubscriptionCloakEnabled,
+  resolveCliStreamConnectTimeoutMs,
 } from '../runtime-bootstrap.js';
 
 describe('Maka CLI runtime bootstrap', () => {
+  test('parses the CLI stream connect timeout override', () => {
+    assert.equal(resolveCliStreamConnectTimeoutMs({}), undefined);
+    assert.equal(
+      resolveCliStreamConnectTimeoutMs({ MAKA_STREAM_CONNECT_TIMEOUT_MS: '120000' }),
+      120_000,
+    );
+    assert.throws(
+      () => resolveCliStreamConnectTimeoutMs({ MAKA_STREAM_CONNECT_TIMEOUT_MS: '0' }),
+      /positive integer/,
+    );
+    assert.throws(
+      () => resolveCliStreamConnectTimeoutMs({ MAKA_STREAM_CONNECT_TIMEOUT_MS: 'later' }),
+      /positive integer/,
+    );
+  });
+
   test('forwards generated title notifications to the TUI host', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
@@ -139,7 +156,12 @@ describe('Maka CLI runtime bootstrap', () => {
           ['ReadOnlyProbe'],
         );
         assert.equal(backendInput.systemPrompt, 'Durable child prompt.');
-        assert.equal(backendInput.toolAvailability, undefined);
+        assert.deepEqual(backendInput.toolAvailability, {
+          economy: !process.env.MAKA_DISABLE_DEFERRED_TOOLS,
+          groups: [],
+        });
+        assert.equal(backendInput.spawnChildAgent, undefined);
+        assert.equal(backendInput.spawnChildSession, undefined);
       } finally {
         await context.close();
       }
@@ -168,8 +190,6 @@ describe('Maka CLI runtime bootstrap', () => {
       const observer = (result: unknown): void => {
         observed.push(result);
       };
-      const permissionRules = [{ effect: 'deny', kind: 'category', category: 'read' }] as const;
-
       const context = await createMakaCliRuntimeContext({
         surface: 'tui',
         workspaceRoot,
@@ -177,7 +197,6 @@ describe('Maka CLI runtime bootstrap', () => {
         requestedConnectionSlug: 'selected-local',
         requestedModel: 'requested-model',
         maxSteps: 3,
-        permissionRules,
         runtimeInvocationObserver: observer,
       });
       try {
@@ -202,7 +221,6 @@ describe('Maka CLI runtime bootstrap', () => {
         const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
 
         assert.equal(backendInput.maxSteps, 3);
-        assert.equal(backendInput.permissionRules, permissionRules);
         assert.equal(backendInput.supportsVision, true);
         assert.equal(typeof backendInput.readAttachmentBytes, 'function');
         assert.equal(runtimeDeps.runtimeInvocationObserver, observer);
@@ -257,7 +275,7 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
-  test('registers Edit in the TUI runtime toolset and still requires permission', async () => {
+  test('registers Edit in the TUI runtime toolset', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
       await connectionStore.create({
@@ -278,7 +296,6 @@ describe('Maka CLI runtime bootstrap', () => {
         edit,
         'Edit must be registered (regression: it was once filtered out of the TUI runtime)',
       );
-      assert.equal(edit?.permissionRequired, true);
     });
   });
 
@@ -305,7 +322,6 @@ describe('Maka CLI runtime bootstrap', () => {
       try {
         const tool = tui.tools.find((candidate) => candidate.name === 'AskUserQuestion');
         assert.ok(tool);
-        assert.equal(tool.permissionRequired, false);
         assert.equal(
           run.tools.some((candidate) => candidate.name === 'AskUserQuestion'),
           false,
@@ -341,6 +357,56 @@ describe('Maka CLI runtime bootstrap', () => {
       } finally {
         await tui.close();
         await run.close();
+      }
+    });
+  });
+
+  test('composes Graph controls and worktree execution for non-interactive Graph runs', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+
+      const context = await createMakaCliRuntimeContext({
+        workspaceRoot,
+        cwd: '/repo',
+        surface: 'run',
+        enableAgentGraph: true,
+      });
+      try {
+        assert.ok(context.agentGraph);
+        const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+        assert.ok(runtimeDeps.worktreeChildExecutor);
+        assert.ok(runtimeDeps.childTools?.length);
+
+        const session = await context.runtime.createSession({
+          cwd: context.cwd,
+          backend: 'ai-sdk',
+          llmConnectionSlug: context.target.connection.slug,
+          model: context.target.model,
+          permissionMode: 'execute',
+          name: 'cli-graph',
+        });
+        const header = await runtimeDeps.store.readHeader(session.id);
+        const backend = await runtimeDeps.backends.build('ai-sdk', {
+          sessionId: session.id,
+          workspaceRoot,
+          header,
+          store: runtimeDeps.store,
+        });
+        const backendInput = (backend as unknown as { input: AiSdkBackendInput }).input;
+        const names = backendInput.tools.map((tool) => tool.name);
+
+        assert.ok(names.includes('view_agent_graph'));
+        assert.ok(names.includes('update_agent_graph'));
+        assert.ok(names.includes(AGENT_OUTPUT_TOOL_NAME));
+        assert.ok(backendInput.runtimeCommitSink);
+      } finally {
+        await context.close();
       }
     });
   });
@@ -418,12 +484,7 @@ describe('Maka CLI runtime bootstrap', () => {
         assert.deepEqual(
           childAgents.definitions.find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)
             ?.availability,
-          {
-            status: 'unavailable',
-            reason: 'workspace_isolation_unavailable',
-            workspace: 'worktree',
-            requiredRuntime: 'worktree_child_executor',
-          },
+          { status: 'available' },
         );
         assert.equal(context.skills.host.toolNames.has(AGENT_SPAWN_TOOL_NAME), true);
         assert.equal(context.skills.host.toolNames.has(AGENT_SWARM_TOOL_NAME), true);
@@ -997,6 +1058,7 @@ describe('Maka CLI runtime bootstrap', () => {
           typeof systemPrompt === 'function'
             ? await systemPrompt({
                 sessionId: session.id,
+                turnId: 'bootstrap-test-turn',
                 cwd: context.cwd,
                 workspaceRoot: stateRoot,
               })
@@ -1039,6 +1101,7 @@ interface RuntimeWithPrivateDeps {
     runtimeInvocationObserver?: (result: unknown) => void | Promise<void>;
     onSessionTitleChanged?: (sessionId: string) => void;
     childTools?: readonly MakaTool[];
+    worktreeChildExecutor?: unknown;
   };
 }
 

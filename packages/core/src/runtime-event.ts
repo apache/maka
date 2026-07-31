@@ -544,10 +544,15 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     !isRecord(value) ||
     !hasExactShape(value, RUNTIME_EVENT_SHAPE) ||
     typeof value.id !== 'string' ||
+    value.id.length === 0 ||
     typeof value.invocationId !== 'string' ||
+    value.invocationId.length === 0 ||
     typeof value.runId !== 'string' ||
+    value.runId.length === 0 ||
     typeof value.sessionId !== 'string' ||
+    value.sessionId.length === 0 ||
     typeof value.turnId !== 'string' ||
+    value.turnId.length === 0 ||
     !isFiniteNumber(value.ts) ||
     !isOptionalString(value.branch) ||
     typeof value.partial !== 'boolean' ||
@@ -574,6 +579,35 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     } as unknown as RuntimeEvent;
   }
   return value as unknown as RuntimeEvent;
+}
+
+export function decodePersistedRuntimeEvent(value: unknown): RuntimeEvent {
+  return decodeRuntimeEvent(normalizeLegacyPermissionRequest(value));
+}
+
+function normalizeLegacyPermissionRequest(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.actions)) return value;
+  const request = value.actions.permissionRequest;
+  if (
+    !isRecord(request) ||
+    Object.hasOwn(request, 'kind') ||
+    Object.hasOwn(request, 'rememberForTurnAllowed')
+  ) {
+    return value;
+  }
+  const normalized = {
+    ...request,
+    kind: 'tool_permission',
+    rememberForTurnAllowed: false,
+  };
+  if (!isPermissionRequestPayload(normalized)) return value;
+  return {
+    ...value,
+    actions: {
+      ...value.actions,
+      permissionRequest: normalized,
+    },
+  };
 }
 
 function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {

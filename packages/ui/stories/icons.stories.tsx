@@ -37,7 +37,6 @@ const BOT_BRAND_PROVIDERS = [
   'dingtalk',
   'qq',
   'slack',
-  'whatsapp',
 ] as const satisfies ReadonlyArray<keyof typeof BOT_BRAND>;
 
 export const LucideIcons: Story = {

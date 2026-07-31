@@ -1,12 +1,12 @@
+import { appendFixedPromptWalEvent } from './fixed-prompt-controller.js';
 import {
-  appendFixedPromptWalEvent,
   FIXED_PROMPT_WAL_SCHEMA_VERSION,
   type FixedPromptTaskCompletedEvent,
   type FixedPromptWalEvent,
   type FixedPromptTaskWalEvent,
   type PromptCandidateDecisionEvent,
   type PromptCandidateRewardHackScan,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 
 export type PromptAcceptanceDecision = 'keep' | 'discard';
 

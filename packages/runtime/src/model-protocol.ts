@@ -339,11 +339,19 @@ export interface NormalizedUsage {
   cachedInputTokens: number;
 }
 
+export function rawFinishReasonString(reason: unknown): string | undefined {
+  if (typeof reason === 'string') return reason;
+  if (!reason || typeof reason !== 'object') return undefined;
+  const value = reason as { raw?: unknown; unified?: unknown };
+  if (typeof value.raw === 'string') return value.raw;
+  return typeof value.unified === 'string' ? value.unified : undefined;
+}
+
 /**
  * Normalized provider finish reason as a Maka-owned string. The raw AI SDK
- * finish-reason value (string or `{ raw, unified }` object) is reduced to this
- * string only inside `ModelAdapter`; downstream code compares against the
- * string literal (e.g. `'tool-calls'`) or maps it via `ModelAdapter.mapFinishReason`.
+ * finish-reason value (string or `{ raw, unified }` object) is reduced at the
+ * provider boundary; downstream code compares against the string literal
+ * (e.g. `'tool-calls'`) or maps it via `ModelAdapter.mapFinishReason`.
  */
 export type ModelFinishReason = string;
 

@@ -87,7 +87,12 @@ describe('Storybook baseline contract', () => {
 
     assert.match(preview, /context\.title\.startsWith\(['"]Product\/['"]\)/);
     assert.match(preview, /if\s*\([^)]*Product/);
-    assert.match(preview, /return\s+<LocaleProvider[^>]*><Story\s*\/><\/LocaleProvider>/);
+    // Stories render inside the same Astryx mount as app.tsx — <Theme>
+    // outermost, AstryxLocaleProvider inside LocaleProvider. Those are
+    // providers, not review geometry: Product stories keep <Story /> inside
+    // providers without adding a geometry-bearing wrapper.
+    assert.match(preview, /<Theme\s+theme=\{makaTheme\}\s+mode=\{colorScheme\}/);
+    assert.match(preview, /<AstryxLocaleProvider>\s*<Story\s*\/>\s*<\/AstryxLocaleProvider>/);
     assert.match(preview, /p-6/, 'non-Product stories must retain explicit review padding');
   });
 
@@ -197,8 +202,8 @@ describe('Storybook baseline contract', () => {
     const allStorySrc = storyFiles.map((f) => readFileSync(join(storiesDir, f), 'utf8')).join('\n');
 
     const curatedPrimitives = [
-      'Button', 'Badge', 'Input', 'Textarea', 'Separator', 'Checkbox',
-      'DialogRoot', 'TabsRoot', 'SelectRoot', 'Label', 'Switch', 'Toggle', 'ToggleGroup',
+      'Button', 'Badge', 'Input', 'Textarea', 'Divider',
+      'DialogRoot', 'TabsRoot', 'SettingsSelect', 'Label', 'Switch', 'Toggle', 'ToggleGroup',
       'RadioGroup', 'Radio', 'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
       'Menu', 'Accordion', 'Toolbar', 'ToastProvider',
     ];
@@ -258,7 +263,6 @@ describe('Storybook baseline contract', () => {
       'TerminalAndLiveOutput',
       'FileDiffAndWebSearch',
       'SubagentAndExplore',
-      'OfficeDocument',
       'ErrorsAndPermissionDenied',
       'CopyFeedback',
       'DenseMixedResults',
@@ -273,7 +277,6 @@ describe('Storybook baseline contract', () => {
       'web_search_error',
       'subagent',
       'explore_agent',
-      'office_document',
     ]) {
       assert.match(fixtures, new RegExp(`kind:\\s*'${requiredKind}'`), `${requiredKind} fixture must exist`);
     }
@@ -305,7 +308,7 @@ describe('Storybook baseline contract', () => {
     assert.match(story, /OMITTED_RUNTIME_EXPORTS/);
     assert.match(story, /BotBrandLogo/);
     assert.match(story, /BOT_BRAND/);
-    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack', 'whatsapp']) {
+    for (const provider of ['telegram', 'feishu', 'wecom', 'wechat', 'discord', 'dingtalk', 'qq', 'slack']) {
       assert.match(story, new RegExp(`['"]${provider}['"]`), `${provider} must appear in the bot brand icon story`);
     }
   });

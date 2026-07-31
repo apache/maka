@@ -7,7 +7,7 @@ import { buildCliSystemPrompt, buildCliTurnTailPrompt } from '../cli-system-prom
 import type { HostCapabilities } from '@maka/runtime';
 
 describe('CLI system prompt', () => {
-  test('injects the skill catalog from workspaceRoot, gated by host capabilities (Office skills auto-filter on the CLI host)', async () => {
+  test('injects the skill catalog from workspaceRoot, gated by host capabilities', async () => {
     await withCwdAndWorkspace(async ({ cwd, workspaceRoot, homeDir }) => {
       await writeSkill(
         workspaceRoot,
@@ -22,18 +22,18 @@ Plain work.`,
       );
       await writeSkill(
         workspaceRoot,
-        'office-helper',
+        'gated-helper',
         `---
-name: Office Helper
-description: Office document work.
+name: Gated Helper
+description: Host-specific work.
 allowed-tools: [Read]
-required-tools: [OfficeDocument]
+required-tools: [ImaginaryTool]
 ---
-# Office Helper
-Use Office tools.`,
+# Gated Helper
+Use host tools.`,
       );
 
-      // CLI host without OfficeDocument: office-helper is hard-hidden, plain-helper shown.
+      // CLI host without the required tool: gated-helper is hidden, plain-helper is shown.
       // workspaceRoot is separate from cwd so the project directory is never scanned.
       const cliHost: HostCapabilities = { toolNames: new Set(['Read']) };
       const out = await buildCliSystemPrompt({
@@ -45,10 +45,10 @@ Use Office tools.`,
       });
       assert.ok(out, 'prompt should include the plain skill catalog');
       assert.match(out, /<available-skill id="plain-helper"/);
-      assert.doesNotMatch(out, /<available-skill id="office-helper"/);
+      assert.doesNotMatch(out, /<available-skill id="gated-helper"/);
 
-      // Host with OfficeDocument: both skills shown.
-      const fullHost: HostCapabilities = { toolNames: new Set(['Read', 'OfficeDocument']) };
+      // Host with the required tool: both skills are shown.
+      const fullHost: HostCapabilities = { toolNames: new Set(['Read', 'ImaginaryTool']) };
       const full = await buildCliSystemPrompt({
         settings: { personalization: {}, workspaceInstructions: { enabled: false } },
         cwd,
@@ -58,7 +58,7 @@ Use Office tools.`,
       });
       assert.ok(full);
       assert.match(full, /<available-skill id="plain-helper"/);
-      assert.match(full, /<available-skill id="office-helper"/);
+      assert.match(full, /<available-skill id="gated-helper"/);
     });
   });
 

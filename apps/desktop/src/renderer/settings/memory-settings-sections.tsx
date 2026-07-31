@@ -23,29 +23,25 @@ export function WorkspaceInstructionsSection(props: {
             <span>{file.file} · {workspaceInstructionStatusLabel(file.status, file.chars, file.truncated, props.copy)}</span>
             {(file.status === 'available' || file.status === 'empty') && (
               <Button
-                type="button"
                 variant="secondary"
                 size="sm"
                 className="min-w-[4rem]"
                 aria-label={props.copy.openInstructionAria(file.file)}
-                disabled={props.disabled || props.isActionPending(`instruction:${file.file}:open`)}
+                isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:open`)}
                 onClick={() => void props.onOpen(file.file)}
-              >
-                {props.isActionPending(`instruction:${file.file}:open`) ? props.copy.text.opening : props.copy.text.instructionOpen}
-              </Button>
+                label={props.isActionPending(`instruction:${file.file}:open`) ? props.copy.text.opening : props.copy.text.instructionOpen}
+              />
             )}
             {file.status === 'missing' && (
               <Button
-                type="button"
                 variant="secondary"
                 size="sm"
                 className="min-w-[4rem]"
                 aria-label={props.copy.createInstructionAria(file.file)}
-                disabled={props.disabled || props.isActionPending(`instruction:${file.file}:create`)}
+                isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:create`)}
                 onClick={() => void props.onCreate(file.file)}
-              >
-                {props.isActionPending(`instruction:${file.file}:create`) ? props.copy.text.creating : props.copy.text.instructionCreate}
-              </Button>
+                label={props.isActionPending(`instruction:${file.file}:create`) ? props.copy.text.creating : props.copy.text.instructionCreate}
+              />
             )}
           </span>
         ))}
@@ -71,15 +67,13 @@ export function MemoryPromptPreviewSection(props: {
         <div>
           <span>{props.active ? props.copy.text.willInject : props.copy.text.willNotInject}</span>
           <Button
-            type="button"
             variant="secondary"
             size="sm"
             className="min-w-[5rem]"
-            disabled={!props.preview || props.copyPending}
+            isDisabled={!props.preview || props.copyPending}
             onClick={() => void props.onCopy()}
-          >
-            {props.copyPending ? props.copy.text.copying : props.copy.text.copyContext}
-          </Button>
+            label={props.copyPending ? props.copy.text.copying : props.copy.text.copyContext}
+          />
         </div>
       </div>
       <small>{props.copy.text.promptPreviewHelp}</small>

@@ -439,6 +439,1113 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('conditionally commits discovery and test facts from the latest admitted state with one-shot tickets', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-success', 'openai', 'Effects success'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'effect-secret',
+          })
+        ).kind,
+        'committed',
+      );
+
+      assert.deepEqual(
+        await stores.operations.beginModelFetch('00000000-0000-4000-8000-000000000001'),
+        { kind: 'connection_not_found' },
+      );
+
+      const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      const testTicket = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        'gpt-5',
+      );
+      assert.equal(fetch.kind, 'ready');
+      assert.equal(testTicket.kind, 'ready');
+      if (fetch.kind !== 'ready' || testTicket.kind !== 'ready') return;
+      assert.equal(testTicket.modelId, 'gpt-5');
+      assert.equal(fetch.secretMaterial.connection?.secret, 'effect-secret');
+
+      await assert.rejects(
+        () =>
+          stores.operations.completeModelFetch(testTicket.ticket as never, {
+            models: [{ id: 'wrong-ticket-must-not-write' }],
+            source: 'fetched',
+            fetchedAt: 10,
+          }),
+        isStoreError('invalid_connection_input'),
+      );
+
+      const tested = await stores.operations.completeConnectionTest(testTicket.ticket, {
+        status: 'needs_reauth',
+        checkedAt: '2026-07-29T12:00:00.000Z',
+        errorClass: 'auth',
+      });
+      assert.equal(tested.kind, 'committed');
+      if (tested.kind !== 'committed') return;
+      assert.deepEqual(tested.snapshot.connections[0]?.lastTest, {
+        status: 'needs_reauth',
+        checkedAt: '2026-07-29T12:00:00.000Z',
+        errorClass: 'auth',
+      });
+
+      const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
+        models: [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }],
+        source: 'fetched',
+        fetchedAt: 42,
+      });
+      assert.equal(discovered.kind, 'committed');
+      if (discovered.kind !== 'committed') return;
+      const afterDiscovery = discovered.snapshot.connections[0];
+      assert.ok(afterDiscovery);
+      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
+      assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5.1']);
+      assert.equal(afterDiscovery.modelSource, 'fetched');
+      assert.equal(afterDiscovery.modelsFetchedAt, 42);
+
+      assert.equal(JSON.stringify([tested, discovered]).includes('effect-secret'), false);
+
+      await assert.rejects(
+        () =>
+          stores.operations.completeModelFetch(fetch.ticket, {
+            models: [{ id: 'replay-must-not-write' }],
+            source: 'fetched',
+            fetchedAt: 43,
+          }),
+        isStoreError('invalid_connection_input'),
+      );
+      await assert.rejects(
+        () =>
+          stores.operations.completeConnectionTest(testTicket.ticket, {
+            status: 'verified',
+            checkedAt: '2026-07-29T12:01:00.000Z',
+          }),
+        isStoreError('invalid_connection_input'),
+      );
+    });
+  });
+
+  test('repairs the canonical default target when discovery removes its model', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-default', 'ollama', 'Effects default'),
+      );
+      const defaultTarget = await stores.connectionCatalog.setDefaultTarget({
+        expectedCatalogRevision: 1,
+        target: { connectionId: connection.connectionId, modelId: 'gpt-5' },
+      });
+      assert.equal(defaultTarget.kind, 'committed');
+
+      const prepared = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') return;
+      const completed = await stores.operations.completeModelFetch(prepared.ticket, {
+        models: [{ id: 'llama3.3' }, { id: 'qwen3' }],
+        source: 'fetched',
+        fetchedAt: 43,
+      });
+      assert.equal(completed.kind, 'committed');
+      if (completed.kind !== 'committed') return;
+      const expected = { connectionId: connection.connectionId, modelId: 'llama3.3' };
+      assert.deepEqual(completed.snapshot.defaultTarget, expected);
+      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, expected);
+    });
+  });
+
+  test('admits only canonical explicit connection test models', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-test-model', 'openai', 'Effects test model'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'test-model-secret',
+          })
+        ).kind,
+        'committed',
+      );
+
+      assert.equal(
+        (await stores.operations.beginConnectionTest(connection.connectionId, 'gpt-5')).kind,
+        'ready',
+      );
+      await assert.rejects(
+        () => stores.operations.beginConnectionTest(connection.connectionId, 'injected-model'),
+        isStoreError('invalid_connection_input'),
+      );
+
+      const discovery = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(discovery.kind, 'ready');
+      if (discovery.kind !== 'ready') return;
+      assert.equal(
+        (
+          await stores.operations.completeModelFetch(discovery.ticket, {
+            models: [{ id: 'canonical-fetched-model' }],
+            source: 'fetched',
+            fetchedAt: 1,
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (
+          await stores.operations.beginConnectionTest(
+            connection.connectionId,
+            'canonical-fetched-model',
+          )
+        ).kind,
+        'ready',
+      );
+      await assert.rejects(
+        () => stores.operations.beginConnectionTest(connection.connectionId, 'gpt-5'),
+        isStoreError('invalid_connection_input'),
+      );
+      assert.equal(
+        (await stores.operations.beginConnectionTest(connection.connectionId, null)).kind,
+        'ready',
+      );
+    });
+  });
+
+  test('preserves verified state for equivalent discovery and clears it on model protocol changes', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-model-protocol', 'openai', 'Effects model protocol'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'model-protocol-secret',
+          })
+        ).kind,
+        'committed',
+      );
+
+      const initialDiscovery = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(initialDiscovery.kind, 'ready');
+      if (initialDiscovery.kind !== 'ready') return;
+      assert.equal(
+        (
+          await stores.operations.completeModelFetch(initialDiscovery.ticket, {
+            models: [{ id: 'gpt-5', apiProtocol: 'openai-chat' }],
+            source: 'fetched',
+            fetchedAt: 1,
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T11:59:00.000Z');
+
+      const equivalentDiscovery = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(equivalentDiscovery.kind, 'ready');
+      if (equivalentDiscovery.kind !== 'ready') return;
+      const equivalent = await stores.operations.completeModelFetch(equivalentDiscovery.ticket, {
+        models: [{ id: 'gpt-5', apiProtocol: 'openai-chat' }],
+        source: 'fetched',
+        fetchedAt: 2,
+      });
+      assert.equal(equivalent.kind, 'committed');
+      if (equivalent.kind !== 'committed') return;
+      assert.deepEqual(equivalent.snapshot.connections[0]?.lastTest, {
+        status: 'verified',
+        checkedAt: '2026-07-29T11:59:00.000Z',
+      });
+
+      const testTicket = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        'gpt-5',
+      );
+      const rediscovery = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(testTicket.kind, 'ready');
+      assert.equal(rediscovery.kind, 'ready');
+      if (testTicket.kind !== 'ready' || rediscovery.kind !== 'ready') return;
+
+      assert.equal(
+        (
+          await stores.operations.completeModelFetch(rediscovery.ticket, {
+            models: [{ id: 'gpt-5', apiProtocol: 'openai-responses' }],
+            source: 'fetched',
+            fetchedAt: 3,
+          })
+        ).kind,
+        'committed',
+      );
+      assert.deepEqual(
+        await stores.operations.completeConnectionTest(testTicket.ticket, {
+          status: 'verified',
+          checkedAt: '2026-07-29T12:00:00.000Z',
+        }),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+
+      const current = (await stores.connectionCatalog.getSnapshot()).connections[0];
+      assert.deepEqual(current?.models, [{ id: 'gpt-5', apiProtocol: 'openai-responses' }]);
+      assert.equal(current?.lastTest, undefined);
+    });
+  });
+
+  test('clears verified state when enabled model selection changes', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-selection-invalidation', 'openai', 'Selection invalidation'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'selection-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:10:00.000Z');
+      const current = (await stores.connectionCatalog.getSnapshot()).connections[0]!;
+
+      const updated = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: current.name,
+          baseUrl: current.baseUrl,
+          enabled: true,
+          enabledModelIds: ['gpt-5-mini'],
+        },
+      });
+      assert.equal(updated.kind, 'committed');
+      if (updated.kind !== 'committed') return;
+      assert.equal(updated.snapshot.connections[0]?.lastTest, undefined);
+    });
+  });
+
+  test('clears verified state only for admitted connection credential mutations', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-credential-invalidation', 'openai', 'Credential invalidation'),
+      );
+      const locator = connectionCredential(connection, 'api_key');
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator,
+            expected: null,
+            secret: 'credential-v1',
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:20:00.000Z');
+      const initialStatus = await getCredentialStatus(stores.credentialVault, locator);
+
+      await assert.rejects(
+        () =>
+          stores.credentialVault.set({
+            locator: connectionCredential(connection, 'oauth_token'),
+            expected: null,
+            secret: 'invalid-oauth-credential',
+          }),
+        isStoreError('invalid_credential_input'),
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+
+      const staleSet = await stores.credentialVault.set({
+        locator,
+        expected: {
+          credentialId: credentialBasis(initialStatus).credentialId,
+          revision: credentialBasis(initialStatus).revision + 1,
+        },
+        secret: 'stale-credential',
+      });
+      assert.equal(staleSet.kind, 'credential_stale');
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator,
+            expected: credentialExpectation(initialStatus),
+            secret: 'credential-v2',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:21:00.000Z');
+      const rotatedStatus = await getCredentialStatus(stores.credentialVault, locator);
+      const staleDelete = await stores.credentialVault.delete({
+        expected: credentialBasis(initialStatus),
+      });
+      assert.equal(staleDelete.kind, 'credential_stale');
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+
+      assert.equal(
+        (
+          await stores.credentialVault.delete({
+            expected: credentialBasis(rotatedStatus),
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+    });
+  });
+
+  test('reports unknown outcome when credential persistence fails after clearing verified state', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-credential-failure', 'openai', 'Credential failure'),
+      );
+      const locator = connectionCredential(connection, 'api_key');
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator,
+            expected: null,
+            secret: 'credential-before-failure',
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:30:00.000Z');
+      const status = await getCredentialStatus(stores.credentialVault, locator);
+
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 3) throw new Error('injected credential persistence failure');
+          return originalSync.call(this);
+        },
+      );
+      try {
+        await assert.rejects(
+          () =>
+            stores.credentialVault.set({
+              locator,
+              expected: credentialExpectation(status),
+              secret: 'credential-after-failure',
+            }),
+          isStoreError('commit_outcome_unknown'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+      assert.equal(
+        (await getCredentialStatus(stores.credentialVault, locator)).revision,
+        status.revision,
+      );
+    });
+  });
+
+  test('invalidates verified state only when the effective network proxy basis changes', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-proxy-invalidation', 'openai', 'Proxy invalidation'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'proxy-invalidation-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:40:00.000Z');
+
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate(
+            networkProxyMutation(0, {
+              host: 'proxy-one.internal',
+              authEnabled: false,
+              username: '',
+            }),
+          )
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:41:00.000Z');
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate(
+            networkProxyMutation(1, {
+              host: 'proxy-two.internal',
+              authEnabled: false,
+              username: '',
+            }),
+          )
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:42:00.000Z');
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate(
+            networkProxyMutation(2, {
+              host: 'proxy-two.internal',
+              authEnabled: false,
+              username: '',
+              bypassList: ['127.0.0.1'],
+              autoBypassDomains: ['localhost'],
+            }),
+          )
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+    });
+  });
+
+  test('validates proxy policy mutations before clearing and reports failed follow-up commits as unknown', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-proxy-policy-failure', 'openai', 'Proxy policy failure'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'proxy-policy-failure-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T12:50:00.000Z');
+
+      await assert.rejects(
+        () => stores.runtimePolicy.mutate(networkProxyMutation(0, { host: '   ' })),
+        isStoreError('invalid_policy_input'),
+      );
+      assert.deepEqual(
+        await stores.runtimePolicy.mutate(
+          networkProxyMutation(1, {
+            host: 'stale.proxy.internal',
+            authEnabled: false,
+            username: '',
+          }),
+        ),
+        { kind: 'revision_conflict', expectedRevision: 1, actualRevision: 0 },
+      );
+      const oversizedBypassList = Array.from(
+        { length: 100 },
+        (_value, index) => `${index}-${'x'.repeat(500)}`,
+      );
+      await assert.rejects(
+        () =>
+          stores.runtimePolicy.mutate(
+            networkProxyMutation(0, {
+              authEnabled: false,
+              username: '',
+              bypassList: oversizedBypassList,
+              autoBypassDomains: [],
+            }),
+          ),
+        isStoreError('invalid_policy_input'),
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 3) throw new Error('injected proxy policy persistence failure');
+          return originalSync.call(this);
+        },
+      );
+      try {
+        await assert.rejects(
+          () =>
+            stores.runtimePolicy.mutate(
+              networkProxyMutation(0, {
+                host: 'failed.proxy.internal',
+                authEnabled: false,
+                username: '',
+              }),
+            ),
+          isStoreError('commit_outcome_unknown'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert.equal(syncCalls, 3);
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+      assert.equal((await stores.runtimePolicy.getSnapshot()).revision, 0);
+    });
+  });
+
+  test('invalidates verified state for active proxy password rotation and deletion', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-proxy-credential', 'openai', 'Proxy credential'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'proxy-credential-connection-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T13:00:00.000Z');
+
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: null,
+            secret: 'proxy-password-v1',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+        'an inactive proxy credential is not part of the verification basis',
+      );
+      assert.equal((await stores.runtimePolicy.mutate(networkProxyMutation(0))).kind, 'committed');
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T13:01:00.000Z');
+      const initialStatus = await getCredentialStatus(stores.credentialVault, proxyCredential());
+      await assert.rejects(
+        () =>
+          stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: credentialExpectation(initialStatus),
+            secret: 'x'.repeat(64 * 1024 + 1),
+          }),
+        isStoreError('invalid_credential_input'),
+      );
+      const staleSet = await stores.credentialVault.set({
+        locator: proxyCredential(),
+        expected: {
+          credentialId: credentialBasis(initialStatus).credentialId,
+          revision: credentialBasis(initialStatus).revision + 1,
+        },
+        secret: 'stale-proxy-password',
+      });
+      assert.equal(staleSet.kind, 'credential_stale');
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: credentialExpectation(initialStatus),
+            secret: 'proxy-password-v2',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T13:02:00.000Z');
+      const rotatedStatus = await getCredentialStatus(stores.credentialVault, proxyCredential());
+      const staleDelete = await stores.credentialVault.delete({
+        expected: credentialBasis(initialStatus),
+      });
+      assert.equal(staleDelete.kind, 'credential_stale');
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+
+      assert.equal(
+        (
+          await stores.credentialVault.delete({
+            expected: credentialBasis(rotatedStatus),
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+    });
+  });
+
+  test('reports unknown outcome when active proxy password persistence fails after clearing', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-proxy-credential-failure', 'openai', 'Proxy credential failure'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'proxy-failure-connection-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: null,
+            secret: 'proxy-password-before-failure',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal((await stores.runtimePolicy.mutate(networkProxyMutation(0))).kind, 'committed');
+      await verifyConnection(stores, connection.connectionId, '2026-07-29T13:10:00.000Z');
+      const status = await getCredentialStatus(stores.credentialVault, proxyCredential());
+
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 3) throw new Error('injected proxy credential persistence failure');
+          return originalSync.call(this);
+        },
+      );
+      try {
+        await assert.rejects(
+          () =>
+            stores.credentialVault.set({
+              locator: proxyCredential(),
+              expected: credentialExpectation(status),
+              secret: 'proxy-password-after-failure',
+            }),
+          isStoreError('commit_outcome_unknown'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert.equal(syncCalls, 3);
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest,
+        undefined,
+      );
+      assert.equal(
+        (await getCredentialStatus(stores.credentialVault, proxyCredential())).revision,
+        status.revision,
+      );
+    });
+  });
+
+  test('commits a connection test when a proxy bypass pattern moves between equivalent lists', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-proxy-bypass', 'openai', 'Effects proxy bypass'),
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: connectionCredential(connection, 'api_key'),
+            expected: null,
+            secret: 'proxy-bypass-connection-secret',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate(
+            networkProxyMutation(0, {
+              bypassList: ['localhost', 'gateway.example'],
+              autoBypassDomains: ['127.0.0.1'],
+            }),
+          )
+        ).kind,
+        'committed',
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: null,
+            secret: 'proxy-bypass-secret',
+          })
+        ).kind,
+        'committed',
+      );
+
+      const testTicket = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        'gpt-5',
+      );
+      assert.equal(testTicket.kind, 'ready');
+      if (testTicket.kind !== 'ready') return;
+      assert.equal(
+        (
+          await stores.runtimePolicy.mutate(
+            networkProxyMutation(1, {
+              bypassList: ['localhost'],
+              autoBypassDomains: ['127.0.0.1', 'gateway.example'],
+            }),
+          )
+        ).kind,
+        'committed',
+      );
+
+      const completed = await stores.operations.completeConnectionTest(testTicket.ticket, {
+        status: 'verified',
+        checkedAt: '2026-07-29T12:01:00.000Z',
+      });
+      assert.equal(completed.kind, 'committed');
+      if (completed.kind !== 'committed') return;
+      assert.deepEqual(completed.snapshot.connections[0]?.lastTest, {
+        status: 'verified',
+        checkedAt: '2026-07-29T12:01:00.000Z',
+      });
+    });
+  });
+
+  test('supersedes effects on connection, credential, proxy, proxy credential, and slug ABA changes', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      let connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-fence', 'openai', 'Effects fence'),
+      );
+      const locator = connectionCredential(connection, 'api_key');
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator,
+            expected: null,
+            secret: 'connection-v1',
+          })
+        ).kind,
+        'committed',
+      );
+
+      const endpointTicket = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(endpointTicket.kind, 'ready');
+      if (endpointTicket.kind !== 'ready') return;
+      const endpointUpdate = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          baseUrl: 'https://gateway.example/v1',
+          enabled: true,
+          enabledModelIds: connection.enabledModelIds,
+        },
+      });
+      assert.equal(endpointUpdate.kind, 'committed');
+      if (endpointUpdate.kind !== 'committed') return;
+      connection = endpointUpdate.snapshot.connections[0]!;
+      assert.deepEqual(
+        await stores.operations.completeModelFetch(endpointTicket.ticket, {
+          models: [{ id: 'endpoint-stale' }],
+          source: 'fetched',
+          fetchedAt: 1,
+        }),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+
+      const modelSelectionTicket = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        null,
+      );
+      assert.equal(modelSelectionTicket.kind, 'ready');
+      if (modelSelectionTicket.kind !== 'ready') return;
+      const modelSelectionUpdate = await stores.connectionCatalog.update({
+        expected: connectionBasis(connection),
+        changes: {
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          enabled: true,
+          enabledModelIds: ['gpt-5-mini'],
+        },
+      });
+      assert.equal(modelSelectionUpdate.kind, 'committed');
+      if (modelSelectionUpdate.kind !== 'committed') return;
+      connection = modelSelectionUpdate.snapshot.connections[0]!;
+      assert.deepEqual(
+        await stores.operations.completeConnectionTest(modelSelectionTicket.ticket, {
+          status: 'verified',
+          checkedAt: '2026-07-29T12:01:00.000Z',
+        }),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+
+      const credentialTicket = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        null,
+      );
+      assert.equal(credentialTicket.kind, 'ready');
+      if (credentialTicket.kind !== 'ready') return;
+      const status = await getCredentialStatus(stores.credentialVault, locator);
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator,
+            expected: credentialExpectation(status),
+            secret: 'connection-v2',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.deepEqual(
+        await stores.operations.completeConnectionTest(credentialTicket.ticket, {
+          status: 'verified',
+          checkedAt: '2026-07-29T12:02:00.000Z',
+        }),
+        { kind: 'superseded', changed: ['credential'] },
+      );
+
+      assert.equal(
+        (await stores.runtimePolicy.mutate(networkProxyMutation(0, { host: 'proxy-one.internal' })))
+          .kind,
+        'committed',
+      );
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: null,
+            secret: 'proxy-v1',
+          })
+        ).kind,
+        'committed',
+      );
+      const proxyTicket = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(proxyTicket.kind, 'ready');
+      if (proxyTicket.kind !== 'ready') return;
+      assert.equal(
+        (await stores.runtimePolicy.mutate(networkProxyMutation(1, { host: 'proxy-two.internal' })))
+          .kind,
+        'committed',
+      );
+      assert.deepEqual(
+        await stores.operations.completeModelFetch(proxyTicket.ticket, {
+          models: [{ id: 'proxy-stale' }],
+          source: 'fetched',
+          fetchedAt: 2,
+        }),
+        { kind: 'superseded', changed: ['network_proxy'] },
+      );
+
+      const proxyCredentialTicket = await stores.operations.beginConnectionTest(
+        connection.connectionId,
+        null,
+      );
+      assert.equal(proxyCredentialTicket.kind, 'ready');
+      if (proxyCredentialTicket.kind !== 'ready') return;
+      const proxyStatus = await getCredentialStatus(stores.credentialVault, proxyCredential());
+      assert.equal(
+        (
+          await stores.credentialVault.set({
+            locator: proxyCredential(),
+            expected: credentialExpectation(proxyStatus),
+            secret: 'proxy-v2',
+          })
+        ).kind,
+        'committed',
+      );
+      assert.deepEqual(
+        await stores.operations.completeConnectionTest(proxyCredentialTicket.ticket, {
+          status: 'verified',
+          checkedAt: '2026-07-29T12:03:00.000Z',
+        }),
+        { kind: 'superseded', changed: ['credential'] },
+      );
+
+      const abaTicket = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(abaTicket.kind, 'ready');
+      if (abaTicket.kind !== 'ready') return;
+      const removed = await stores.connectionCatalog.remove({
+        expected: connectionBasis(connection),
+      });
+      assert.equal(removed.kind, 'committed');
+      if (removed.kind !== 'committed') return;
+      const replacement = await createConnection(
+        stores,
+        removed.snapshot.revision,
+        connectionDraft(connection.slug, 'openai', 'Replacement'),
+      );
+      assert.notEqual(replacement.connectionId, connection.connectionId);
+      assert.deepEqual(
+        await stores.operations.completeModelFetch(abaTicket.ticket, {
+          models: [{ id: 'aba-stale' }],
+          source: 'fetched',
+          fetchedAt: 3,
+        }),
+        { kind: 'superseded', changed: ['connection', 'credential'] },
+      );
+      assert.deepEqual(replacement.models, []);
+    });
+  });
+
+  test('preserves unknown commit semantics and consumes the completion ticket', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withInteractiveOwner(async ({ root, stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('effects-unknown', 'ollama', 'Effects unknown'),
+      );
+      const prepared = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') return;
+      const result = {
+        models: [{ id: 'llama3.3' }],
+        source: 'fetched' as const,
+        fetchedAt: 99,
+      };
+
+      const probe = await open(root, 'r');
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as {
+        sync: typeof probe.sync;
+      };
+      const originalSync = fileHandlePrototype.sync;
+      await probe.close();
+      let syncCalls = 0;
+      const syncMock = mock.method(
+        fileHandlePrototype,
+        'sync',
+        async function (this: typeof probe) {
+          syncCalls += 1;
+          if (syncCalls === 2) throw new Error('injected post-publication sync failure');
+          return originalSync.call(this);
+        },
+      );
+      try {
+        await assert.rejects(
+          () => stores.operations.completeModelFetch(prepared.ticket, result),
+          isStoreError('commit_outcome_unknown'),
+        );
+      } finally {
+        syncMock.mock.restore();
+      }
+
+      assert.equal(syncCalls, 2);
+      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections[0]?.models, [
+        { id: 'llama3.3' },
+      ]);
+      await assert.rejects(
+        () => stores.operations.completeModelFetch(prepared.ticket, result),
+        isStoreError('invalid_connection_input'),
+      );
+    });
+  });
+
   test('allows only Copilot OAuth tokens through the public credential setter', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const claude = await createConnection(
@@ -929,6 +2036,21 @@ async function createConnection(
   const created = result.snapshot.connections.find((item) => item.slug === connection.slug);
   assert.ok(created);
   return created;
+}
+
+async function verifyConnection(
+  stores: Writer,
+  connectionId: string,
+  checkedAt: string,
+): Promise<void> {
+  const prepared = await stores.operations.beginConnectionTest(connectionId, null);
+  assert.equal(prepared.kind, 'ready');
+  if (prepared.kind !== 'ready') throw new Error('connection test preparation did not succeed');
+  const completed = await stores.operations.completeConnectionTest(prepared.ticket, {
+    status: 'verified',
+    checkedAt,
+  });
+  assert.equal(completed.kind, 'committed');
 }
 
 function connectionDraft(

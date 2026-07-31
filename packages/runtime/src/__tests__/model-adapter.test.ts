@@ -12,12 +12,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'localai',
-        name: 'LocalAI',
         providerType: 'localai',
         defaultModel: 'qwen3-8b',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: '',
       modelId: 'qwen3-8b',
@@ -37,13 +33,9 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'github-copilot',
-        name: 'GitHub Copilot',
         providerType: 'github-copilot',
         defaultModel: 'claude-sonnet',
         models: [{ id: 'claude-sonnet', apiProtocol: 'anthropic-messages' }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'github-token',
       modelId: 'claude-sonnet',
@@ -59,13 +51,9 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
         models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'kimi-token',
       modelId: 'k3',
@@ -79,6 +67,30 @@ describe('ModelAdapter stream and error normalization', () => {
       toolResults: true,
       signedThinking: false,
       unsignedThinking: true,
+      openAiResponsesThinking: false,
+    });
+  });
+
+  test('supports Responses reasoning replay for Volcengine Agent Plan', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'volcengine-agent-plan',
+        providerType: 'volcengine-agent-plan',
+        defaultModel: 'ark-code-latest',
+      },
+      apiKey: 'ark-plan-token',
+      modelId: 'ark-code-latest',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      signedThinking: false,
+      unsignedThinking: false,
+      openAiResponsesThinking: true,
     });
   });
 
@@ -251,6 +263,48 @@ describe('ModelAdapter stream and error normalization', () => {
       | Extract<ModelStreamEvent, { kind: 'thinking-signature' }>
       | undefined;
     assert.equal(signatureEvent?.signature, 'sig-xyz');
+  });
+
+  test('preserves OpenAI Responses reasoning metadata through stream normalization', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const chunks: Chunk[] = [
+      {
+        type: 'reasoning-delta',
+        delta: 'inspect',
+        providerMetadata: { openai: { itemId: 'rs_ark' } },
+      },
+      {
+        type: 'reasoning-end',
+        providerMetadata: {
+          openai: {
+            itemId: 'rs_ark',
+            reasoningEncryptedContent: 'encrypted-ark-reasoning',
+          },
+        },
+      },
+    ];
+
+    assert.deepEqual(
+      chunks.flatMap((chunk) => adapter.translateChunk(chunk)),
+      [
+        {
+          kind: 'thinking',
+          text: 'inspect',
+          providerOptions: { openai: { itemId: 'rs_ark' } },
+        },
+        {
+          kind: 'thinking',
+          text: '',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_ark',
+              reasoningEncryptedContent: 'encrypted-ark-reasoning',
+            },
+          },
+        },
+      ],
+    );
   });
 
   test('classifies provider errors and maps finish reasons through adapter-owned helpers', () => {
@@ -632,12 +686,8 @@ function newAdapter(): ModelAdapter {
   return new ModelAdapter({
     connection: {
       slug: 'anthropic-main',
-      name: 'Anthropic',
       providerType: 'anthropic',
       defaultModel: 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
     },
     apiKey: 'sk-test',
     modelId: 'claude-sonnet-4-5-20250929',

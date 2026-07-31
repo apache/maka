@@ -8,8 +8,8 @@ import { REPO_ROOT, readAllRendererCss, stripCssComments } from './css-test-help
  * Zero-visual governance contract for issue #332 PR1 — the chat
  * conversation-flow row/bubble *shell* moved onto the `@maka/ui` `Message` /
  * `Bubble` primitives. These assertions lock the two halves of "zero visual
- * change": the bespoke shell CSS is retired, while the Markdown prose and the
- * still-hand-written turn machinery (PR2) keep their exact layout.
+ * change": the bespoke shell CSS is retired while turn machinery keeps its
+ * layout. Astryx owns Markdown prose separately.
  */
 describe('chat primitive shell migration contract (#332 PR1)', () => {
   it('retires the bespoke bubble/row shell selectors', async () => {
@@ -31,20 +31,14 @@ describe('chat primitive shell migration contract (#332 PR1)', () => {
     }
   });
 
-  it('preserves the assistant Markdown prose (OUT of scope)', async () => {
+  it('leaves Markdown prose to Astryx instead of retaining the legacy prose class', async () => {
     const css = await readAllRendererCss();
-    // #546 PR4 split the prose off the shell: .maka-bubble-assistant keeps
-    // only container geometry, the Markdown element typography moved to the
-    // reusable .maka-prose layer (same rules, new scope).
-    for (const selector of [
-      '.maka-bubble-assistant {',
-      '.maka-prose p',
-      '.maka-prose pre',
-      '.maka-prose table',
-      '.maka-prose li.task-list-item',
-    ]) {
-      assert.ok(css.includes(selector), `prose rule "${selector}" must be preserved`);
-    }
+    const chat = await readFile(
+      resolve(REPO_ROOT, 'packages', 'ui', 'src', 'primitives', 'chat.tsx'),
+      'utf8',
+    );
+    assert.ok(css.includes('.maka-bubble-assistant {'));
+    assert.doesNotMatch(`${css}\n${chat}`, /\.maka-prose\b|maka-prose/);
   });
 
   it('keeps the row + re-anchors turn layout onto the Message primitive', async () => {
@@ -55,10 +49,7 @@ describe('chat primitive shell migration contract (#332 PR1)', () => {
     // primitive's data hook migrated onto the `@maka/ui` Marker variants in PR2
     // (chat-marker-cascade-contract.test.ts), so the re-anchor is gone now.
     // The system-note `pre` re-anchor stays — that prose is still hand-written.
-    assert.ok(
-      css.includes('[data-slot="message"][data-role="system"] pre'),
-      'system note pre styling must be re-anchored to the Message primitive',
-    );
+    assert.ok(css.includes('[data-slot="message"][data-role="system"] pre:not(.astryx-codeblock)'));
   });
 
   it('pins the user bubble shell to the retired .maka-bubble-user pixels', async () => {

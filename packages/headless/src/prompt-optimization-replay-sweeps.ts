@@ -1,8 +1,5 @@
-import type {
-  FixedPromptControllerResult,
-  FixedPromptTaskWalEvent,
-  FixedPromptWalEvent,
-} from './fixed-prompt-controller.js';
+import type { FixedPromptControllerResult } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent, FixedPromptWalEvent } from './fixed-prompt-wal-types.js';
 import { isTaskEvent, taskEventMatchesPromptIdentity } from './prompt-optimization-replay-state.js';
 
 export function replayControllerSweep(input: {

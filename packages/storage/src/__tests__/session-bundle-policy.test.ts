@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
-import type { RuntimeEvent } from '@maka/core';
+import { MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES, type RuntimeEvent } from '@maka/core';
 import {
   assertSessionBundleRootLayout,
   exportSessionBundleState,
@@ -29,7 +29,10 @@ import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 test('exports one session only and excludes credential/config canaries', async () => {
   await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
     const sessions = createSessionStore(stateRoot);
-    const selected = await sessions.create(sessionInput('Selected'));
+    const selected = await sessions.create(sessionInput('Selected'), {
+      kind: 'external',
+      revision: 0,
+    });
     const other = await sessions.create(sessionInput('Other'));
     await sessions.appendMessage(selected.id, {
       type: 'user',
@@ -167,6 +170,15 @@ test('exports one session only and excludes credential/config canaries', async (
       await readFile(join(configRoot, 'credentials.json'), 'utf8'),
       'config-secret-canary',
     );
+    const restoredSessions = createSessionStore(destinationRoot);
+    try {
+      assert.equal((await restoredSessions.readExecutionBoundary(selected.id)).kind, 'external');
+    } finally {
+      await restoredSessions.close?.();
+    }
+    await assert.rejects(
+      readFile(join(destinationRoot, 'sessions', selected.id, 'execution-boundary.json'), 'utf8'),
+    );
   });
 });
 
@@ -215,6 +227,101 @@ test('exports while the session metadata WAL remains open and protects its sidec
       );
     } finally {
       await sessions.close?.();
+    }
+  });
+});
+
+test('restores the accumulated managed boundary from a session bundle', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessions = createSessionStore(stateRoot);
+    const selected = await sessions.create(sessionInput('Selected'));
+    await sessions.createSandboxBoundaryRequest({
+      sessionId: selected.id,
+      requestId: 'request-1',
+      turnId: 'turn-1',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/outside/selected.txt', access: 'write', scope: 'exact' }],
+        },
+      },
+      justification: 'Write the selected output.',
+    });
+    await sessions.settleSandboxBoundaryRequest({
+      sessionId: selected.id,
+      requestId: 'request-1',
+      decision: 'allow',
+    });
+    const sourceBoundary = await sessions.readExecutionBoundary(selected.id);
+    await sessions.close?.();
+
+    await exportSessionBundleState({
+      stateRoot,
+      configRoot,
+      destinationRoot,
+      sessionId: selected.id,
+    });
+    const restoredSessions = createSessionStore(destinationRoot);
+    try {
+      const restoredBoundary = await restoredSessions.readExecutionBoundary(selected.id);
+      assert.equal(sourceBoundary.kind, 'managed');
+      assert.equal(restoredBoundary.kind, 'managed');
+      if (sourceBoundary.kind !== 'managed' || restoredBoundary.kind !== 'managed') return;
+      assert.deepEqual(restoredBoundary.profile, sourceBoundary.profile);
+      assert.equal(restoredBoundary.revision, 0);
+    } finally {
+      await restoredSessions.close?.();
+    }
+  });
+});
+
+test('round-trips a cumulative boundary larger than one expansion payload', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessions = createSessionStore(stateRoot);
+    const selected = await sessions.create(sessionInput('Selected'));
+    for (let request = 0; request < 3; request += 1) {
+      const requestId = `request-${request}`;
+      await sessions.createSandboxBoundaryRequest({
+        sessionId: selected.id,
+        requestId,
+        turnId: 'turn-1',
+        expansion: {
+          filesystem: {
+            entries: Array.from({ length: 32 }, (_, entry) => ({
+              path: `/outside/${request}/${entry}-${'x'.repeat(700)}`,
+              access: 'read' as const,
+              scope: 'exact' as const,
+            })),
+          },
+        },
+        justification: 'Read generated inputs.',
+      });
+      await sessions.settleSandboxBoundaryRequest({
+        sessionId: selected.id,
+        requestId,
+        decision: 'allow',
+      });
+    }
+    const sourceBoundary = await sessions.readExecutionBoundary(selected.id);
+    await sessions.close?.();
+
+    await exportSessionBundleState({
+      stateRoot,
+      configRoot,
+      destinationRoot,
+      sessionId: selected.id,
+    });
+    const transferPath = join(destinationRoot, 'sessions', selected.id, 'execution-boundary.json');
+    assert.ok((await lstat(transferPath)).size > MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES);
+
+    const restoredSessions = createSessionStore(destinationRoot);
+    try {
+      const restoredBoundary = await restoredSessions.readExecutionBoundary(selected.id);
+      assert.equal(sourceBoundary.kind, 'managed');
+      assert.equal(restoredBoundary.kind, 'managed');
+      if (sourceBoundary.kind !== 'managed' || restoredBoundary.kind !== 'managed') return;
+      assert.deepEqual(restoredBoundary.profile, sourceBoundary.profile);
+    } finally {
+      await restoredSessions.close?.();
     }
   });
 });

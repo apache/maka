@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { expect } from '../test-helpers.js';
 import {
   decodeMessageContent,
@@ -15,6 +16,7 @@ import {
   RUNTIME_EVENT_STATUSES,
   TERMINAL_RUNTIME_EVENT_STATUSES,
   createRuntimeEventId,
+  decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isRuntimeEventAuthor,
   isRuntimeEventRole,
@@ -44,6 +46,63 @@ function baseEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent {
     ...overrides,
   };
 }
+
+interface RuntimeEventValidationCorpus {
+  baseEvent: Record<string, unknown>;
+  cases: Array<{
+    name: string;
+    accepted: boolean;
+    overrides: Record<string, unknown>;
+  }>;
+}
+
+const runtimeEventValidationCorpus = JSON.parse(
+  readFileSync(
+    new URL('../../src/__tests__/fixtures/runtime-event-validation-corpus.json', import.meta.url),
+    'utf8',
+  ),
+) as RuntimeEventValidationCorpus;
+
+test('Core decoder matches the shared RuntimeEvent validation corpus', () => {
+  for (const entry of runtimeEventValidationCorpus.cases) {
+    const event = { ...runtimeEventValidationCorpus.baseEvent, ...entry.overrides };
+    if (entry.accepted) {
+      assert.doesNotThrow(() => decodeRuntimeEvent(event), entry.name);
+    } else {
+      assert.throws(() => decodeRuntimeEvent(event), /Invalid RuntimeEvent schema/, entry.name);
+    }
+  }
+});
+
+test('Stored assistant reasoning parts survive recovery decoding', () => {
+  const parts = [
+    {
+      text: 'first summary',
+      providerOptions: {
+        openai: { itemId: 'rs_first', reasoningEncryptedContent: 'encrypted-first' },
+      },
+    },
+    {
+      text: 'second summary',
+      providerOptions: {
+        openai: { itemId: 'rs_second', reasoningEncryptedContent: 'encrypted-second' },
+      },
+    },
+  ];
+  const stored = decodeStoredMessageForRecovery({
+    type: 'assistant',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'answer',
+    thinking: { text: 'first summarysecond summary', parts },
+    modelId: 'ark-code-latest',
+  });
+
+  assert.equal(stored.type, 'assistant');
+  if (stored.type !== 'assistant') throw new Error('unreachable');
+  assert.deepEqual(stored.thinking?.parts, parts);
+});
 
 describe('RuntimeEvent role / author / status enums', () => {
   test('locks the role enum and guard', () => {
@@ -360,6 +419,35 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('normalizes legacy permission requests only for persisted reads', () => {
+    const permissionRequest = {
+      requestId: 'pr-1',
+      toolUseId: 'tc-1',
+      toolName: 'Bash',
+      category: 'shell_unsafe',
+      reason: 'shell_dangerous',
+      args: { command: 'rm foo' },
+    };
+    const legacyEvent = baseEvent({ actions: { permissionRequest } as never });
+    assert.throws(() => decodeRuntimeEvent(legacyEvent), /Invalid RuntimeEvent schema/);
+    assert.deepEqual(decodePersistedRuntimeEvent(legacyEvent).actions?.permissionRequest, {
+      ...permissionRequest,
+      kind: 'tool_permission',
+      rememberForTurnAllowed: false,
+    });
+    assert.throws(
+      () =>
+        decodePersistedRuntimeEvent(
+          baseEvent({
+            actions: {
+              permissionRequest: { ...permissionRequest, kind: 'tool_permission' },
+            } as never,
+          }),
+        ),
+      /Invalid RuntimeEvent schema/,
+    );
+  });
+
   test('a terminal action can carry endInvocation + tokenUsage', () => {
     const actions: RuntimeEventActions = {
       endInvocation: true,

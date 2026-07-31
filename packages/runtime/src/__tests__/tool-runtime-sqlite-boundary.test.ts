@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,6 @@ import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
@@ -15,16 +15,13 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
-      const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-      permissionEngine.beginTurn('turn-1');
       let implementationCalls = 0;
-      const runtime = new ToolRuntime({
+      const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),
         modelId: 'model-1',
         appendMessage: async () => {},
-        permissionEngine,
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -36,7 +33,6 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        permissionRequired: false,
         recoveryMode: 'replay_safe',
         impl: async () => {
           implementationCalls += 1;
@@ -108,15 +104,12 @@ describe('ToolRuntime with real SQLite boundary', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-error-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
     try {
-      const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-      permissionEngine.beginTurn('turn-1');
-      const runtime = new ToolRuntime({
+      const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),
         modelId: 'model-1',
         appendMessage: async () => {},
-        permissionEngine,
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -129,7 +122,6 @@ describe('ToolRuntime with real SQLite boundary', () => {
         name: 'Read',
         description: 'read',
         parameters: {},
-        permissionRequired: false,
         recoveryMode: 'replay_safe',
         impl: async () => {
           throw new Error('disk read failed');

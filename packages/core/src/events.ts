@@ -14,6 +14,7 @@ import type {
   PermissionResponse,
   SandboxEscalationRequest,
 } from './permission.js';
+import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
   PipeShellOutput,
@@ -324,6 +325,8 @@ export type SessionEvent =
   | ToolProgressEvent
   | ToolResultEvent
   | AnyPermissionRequestEvent
+  | SandboxBoundaryRequestEvent
+  | SandboxBoundaryDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
@@ -441,13 +444,21 @@ type ShellRunResultMetadata = {
   failureMessage?: string;
   revision: number;
   timeoutMs?: number;
-  sandboxDenial?: SandboxDenialRecovery;
+  sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
 };
 
-export interface SandboxDenialRecovery {
+export interface SandboxDenialSignal {
   likely: true;
   backend?: 'macos-seatbelt' | 'linux';
+}
+
+export interface SandboxDenialRecovery extends SandboxDenialSignal {
   recovery: 'require_escalated';
+}
+
+export interface SandboxBoundaryFailureSignal {
+  reason: 'sandbox_boundary_required' | 'requires_bypass';
+  requiredExpansion?: SandboxBoundaryExpansion;
 }
 
 export type ShellRunCompactResult = ShellRunResultMetadata &
@@ -470,7 +481,12 @@ type ShellRunToolResultContent =
       ));
 
 export type ToolResultContent =
-  | { kind: 'text'; text: string }
+  | {
+      kind: 'text';
+      text: string;
+      sandboxDenial?: SandboxDenialSignal;
+      sandboxFailure?: SandboxBoundaryFailureSignal;
+    }
   | { kind: 'json'; value: unknown }
   | { kind: 'file_diff'; paths: string[]; diff: string }
   | { kind: 'file_write'; path: string; bytes: number }
@@ -495,7 +511,7 @@ export type ToolResultContent =
       exitCode?: number;
       failureMessage?: string;
       output: ShellOutput;
-      sandboxDenial?: SandboxDenialRecovery;
+      sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
     }
   | ShellRunToolResultContent
   | { kind: 'image'; mimeType: string; ref: StorageRef }
@@ -529,18 +545,6 @@ export type ToolResultContent =
       reason: string;
       message: string;
       credentialSource?: string;
-    }
-  | {
-      kind: 'office_document';
-      ok: boolean;
-      operation?: string;
-      path?: string;
-      args?: string[];
-      stdout?: string;
-      stderr?: string;
-      truncated?: boolean;
-      reason?: string;
-      message?: string;
     }
   | {
       kind: 'explore_agent';
@@ -707,6 +711,23 @@ export type AnyPermissionRequestEvent =
 
 export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest {
   type: 'user_question_request';
+}
+
+export interface SandboxBoundaryRequestEvent extends BaseEvent {
+  type: 'sandbox_boundary_request';
+  requestId: string;
+  toolUseId: string;
+  justification: string;
+  expansion: SandboxBoundaryExpansion;
+}
+
+export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
+  type: 'sandbox_boundary_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
+  status: Exclude<SandboxBoundaryRequestStatus, 'pending'>;
+  revision: number;
 }
 
 /**

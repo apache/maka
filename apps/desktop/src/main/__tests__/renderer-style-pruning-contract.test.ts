@@ -14,37 +14,7 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // `os-theme-maka` theme at runtime.
   'os-scrollbar-horizontal',
   'os-scrollbar-vertical',
-  // Token/runtime utility hooks defined in maka-tokens.css. These are
-  // intentionally available to markdown renderers, prose plugins, and
-  // shell surfaces without requiring a literal JSX className consumer.
-  'class_',
-  'contains-task-list',
-  'function_',
-  'hljs-addition',
-  'hljs-attr',
-  'hljs-attribute',
-  'hljs-built_in',
-  'hljs-bullet',
-  'hljs-class',
-  'hljs-comment',
-  'hljs-deletion',
-  'hljs-doctag',
-  'hljs-emphasis',
-  'hljs-keyword',
-  'hljs-literal',
-  'hljs-meta',
-  'hljs-name',
-  'hljs-number',
-  'hljs-quote',
-  'hljs-regexp',
-  'hljs-selector-tag',
-  'hljs-string',
-  'hljs-strong',
-  'hljs-symbol',
-  'hljs-tag',
-  'hljs-title',
-  'hljs-type',
-  'hljs-variable',
+  // Token/runtime utility hooks defined in maka-tokens.css.
   'maka-shell-rail-right',
   'maka-shimmer',
   'maka-sidebar-button',
@@ -59,7 +29,6 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'shadow-minimal-flat',
   'shadow-modal',
   'smooth-corners',
-  'task-list-item',
   // PR-PALETTE-SWATCH-VISIBLE-0 (WAWQAQ msg `d3ea9a33` 2026-06-26):
   // ThemeSettingsPage composes the palette swatch class with a template
   // string — `settingsPaletteSwatch settingsPaletteSwatch-${palette}` —
@@ -68,6 +37,16 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // rules in `styles/settings/theme-preview.css` are real and consumed
   // at runtime; allowlist them so the orphan-selector guard doesn't
   // delete the colored backgrounds again.
+  // #1565: `.astryx-button` is the stable component class the Astryx
+  // Button renders at runtime (themeProps buildClassName) — it never appears
+  // as a className literal in our source, but interaction-prompts.css and
+  // settings/rows.css target it for layout overrides on migrated buttons.
+  'astryx-button',
+  // #1565: `.astryx-badge` is the stable component class the Astryx
+  // Badge renders at runtime (themeProps buildClassName) — it never appears
+  // as a className literal in our source, but health.css targets it for the
+  // blockers-row wrapping override.
+  'astryx-badge',
   'settingsPaletteSwatch-default',
   'settingsPaletteSwatch-onedark',
   'settingsPaletteSwatch-catppuccin-mocha',

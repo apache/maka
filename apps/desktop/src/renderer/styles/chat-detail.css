@@ -27,7 +27,6 @@
   min-width: 320px;
   max-width: 600px;
   min-height: 0;
-  padding-top: var(--h-titlebar);
   overflow: hidden;
   border-left: var(--border-width-hairline) solid var(--border);
   background: var(--background);
