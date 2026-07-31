@@ -8,7 +8,11 @@ import {
   type SessionActivityLease,
   type SessionActivityRegistry,
 } from '@maka/runtime';
-import type { MakaSessionDriver } from './session-driver.js';
+import type {
+  MakaSessionDriver,
+  MakaSessionDriverAuxiliaryEvent,
+  MakaSessionDriverEvent,
+} from './session-driver.js';
 
 export interface MakaPiTuiTurnLifecycle {
   activities: SessionActivityRegistry;
@@ -39,7 +43,7 @@ export interface RunMakaPiTuiTurnInput {
   request: MakaPiTuiTurnRequest;
   shouldAbort: () => boolean;
   onStart?: () => void;
-  onEvent?: (event: SessionEvent) => void | Promise<void>;
+  onEvent?: (event: MakaSessionDriverEvent) => void | Promise<void>;
   onFailure?: (error: unknown) => void | Promise<void>;
 }
 
@@ -106,7 +110,7 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
     let sawTerminalEvent = false;
     let failureProjected = false;
     const outcome = await drainGoalTurn({
-      events: turn.events,
+      events: projectDriverEvents(turn.events, input.onEvent),
       turnId: turn.turnId,
       activity,
       onEvent: async (event) => {
@@ -144,6 +148,28 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
       reason: errorMessage(reportedError),
     });
   }
+}
+
+async function* projectDriverEvents(
+  events: AsyncIterable<MakaSessionDriverEvent>,
+  onEvent: RunMakaPiTuiTurnInput['onEvent'],
+): AsyncIterable<SessionEvent> {
+  for await (const event of events) {
+    if (isDriverAuxiliaryEvent(event)) {
+      await onEvent?.(event);
+      continue;
+    }
+    yield event;
+  }
+}
+
+function isDriverAuxiliaryEvent(
+  event: MakaSessionDriverEvent,
+): event is MakaSessionDriverAuxiliaryEvent {
+  return (
+    event.type === 'host_interaction_permission_request' ||
+    event.type === 'host_interaction_resolved'
+  );
 }
 
 function abortedOutcome(turnId: string | undefined): GoalTurnOutcome {

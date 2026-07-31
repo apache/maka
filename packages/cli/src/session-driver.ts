@@ -10,6 +10,10 @@ import type { ExecutionBoundary, SandboxBoundaryResponse } from '@maka/core/sand
 import { executionBoundaryDisplayMode } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type {
+  InteractionPermissionAnswer,
+  InteractionPermissionPrompt,
+} from '@maka/core/interaction';
+import type {
   BranchFromTurnInput,
   CreateSessionInput,
   TurnOrchestration,
@@ -110,8 +114,48 @@ export interface MakaSessionSwitchResult {
 export interface MakaPreparedSessionTurn {
   sessionId: string;
   turnId: string;
-  events: AsyncIterable<SessionEvent>;
+  events: AsyncIterable<MakaSessionDriverEvent>;
 }
+
+/**
+ * A bounded permission projection owned by a remote Runtime Host. It stays
+ * local to the CLI adapter because embedded runtimes never emit this event.
+ */
+export interface HostInteractionPermissionRequestEvent {
+  readonly type: 'host_interaction_permission_request';
+  readonly id: string;
+  readonly turnId: string;
+  readonly ts: number;
+  readonly requestId: string;
+  readonly toolUseId: string;
+  readonly prompt: InteractionPermissionPrompt;
+}
+
+/** A previously projected Host Interaction left the canonical pending set. */
+export interface HostInteractionResolvedEvent {
+  readonly type: 'host_interaction_resolved';
+  readonly id: string;
+  readonly turnId: string;
+  readonly ts: number;
+  readonly requestId: string;
+}
+
+export type MakaSessionDriverAuxiliaryEvent =
+  | HostInteractionPermissionRequestEvent
+  | HostInteractionResolvedEvent;
+
+export type MakaSessionDriverEvent = SessionEvent | MakaSessionDriverAuxiliaryEvent;
+
+export interface MakaSessionObservation {
+  readonly sessionId: string;
+  readonly events: readonly MakaSessionDriverEvent[];
+  readonly reloadTranscript: boolean;
+  readonly activeTurn: boolean;
+}
+
+export type MakaSessionObservationListener = (
+  observation: MakaSessionObservation,
+) => void | Promise<void>;
 
 export interface MakaPreparePromptOptions {
   /** Caller-owned identity used when Goal admission reserves a turn synchronously. */
@@ -141,14 +185,22 @@ export interface MakaSessionDriver {
    * should open a fresh turn with the text instead so it is never dropped.
    * Optional so existing driver stubs need not implement the steering surface.
    */
-  steer?(text: string): QueueEnqueueOutcome;
+  steer?(text: string): QueueEnqueueOutcome | Promise<QueueEnqueueOutcome>;
   /** Queue the text to open the turn after the current one finishes. */
-  queueMessage?(text: string): QueueEnqueueOutcome;
+  queueMessage?(text: string): QueueEnqueueOutcome | Promise<QueueEnqueueOutcome>;
   /** Drain the followup queue into one `\n\n`-joined prompt, or null if empty. */
   takePendingFollowup?(): string | null;
   /** Take back every queued message as one `\n\n`-joined string (clears both queues). */
-  retractQueued?(): string;
+  retractQueued?(): string | Promise<string>;
+  /**
+   * Atomically retract queued messages and stop the active turn. Host-backed
+   * drivers use this to avoid a retract/stop race across the wire.
+   */
+  interrupt?(): Promise<string>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
+  respondToPermission?(
+    response: InteractionPermissionAnswer & { readonly requestId: string },
+  ): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   /**
    * Switch the active session's model, optionally rebinding it to another
@@ -163,6 +215,17 @@ export interface MakaSessionDriver {
   renameSession(name: string): Promise<string | void>;
   moveSession?(cwd: string): Promise<MakaSessionMoveResult>;
   switchSession(sessionId: string): Promise<MakaSessionSwitchResult>;
+  /**
+   * Reload the active Session from its durable authority after a live turn.
+   * Host-backed drivers use this to replace bounded live projections with the
+   * complete transcript at the turn boundary.
+   */
+  reloadTranscript?(): Promise<StoredMessage[]>;
+  /**
+   * Observe turns owned by another client while this driver is idle. Host-backed
+   * drivers use this to keep multiple TUI clients on one Session converged.
+   */
+  subscribeSessionObservations?(listener: MakaSessionObservationListener): () => void;
   /** Every prompted turn the user can rewind to, newest first. */
   listRewindTargets(): Promise<RewindTarget[]>;
   /**

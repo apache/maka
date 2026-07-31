@@ -59,6 +59,7 @@ import type { CliGoalTurnHost } from './cli-goal-continuation.js';
 import {
   inspectSessionResumeAvailability,
   type MakaSessionDriver,
+  type MakaSessionDriverEvent,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
 import {
@@ -66,6 +67,7 @@ import {
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
   createMakaPiTranscriptState,
+  activeInteractionPermissionRequest,
   activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
@@ -248,6 +250,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
     | undefined;
   let turnRunning = false;
+  let remoteTurnRunning = false;
+  let permissionAlerted = false;
   let turnStartedAt: number | undefined;
   let interruptRequested = false;
   let lastTurnEscapeAt = 0;
@@ -470,6 +474,29 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     requestRender();
   };
 
+  const applyDriverEventToUi = (event: MakaSessionDriverEvent): void => {
+    applyMakaSessionEventToTranscript(state, event);
+    if (event.type === 'error') attention.attentionNeeded();
+    if (
+      permissionResponseInFlightRequestId !== null &&
+      activeSandboxBoundaryRequest(state)?.requestId !== permissionResponseInFlightRequestId &&
+      activeInteractionPermissionRequest(state)?.requestId !== permissionResponseInFlightRequestId
+    ) {
+      permissionResponseInFlightRequestId = null;
+    }
+    if (state.pendingInteraction) {
+      if (!permissionAlerted) {
+        permissionAlerted = true;
+        attention.attentionNeeded();
+      }
+    } else {
+      permissionAlerted = false;
+    }
+    shellRunElapsedTicker.sync();
+    syncUserQuestionOverlay();
+    requestRender();
+  };
+
   // Control commands (model/session/permission switches) mutate session state.
   // Run them through a single serial lock so a prompt submitted mid-switch can
   // not race the switch and land on the old session/model/permission mode.
@@ -502,6 +529,43 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
+  let observationTail = Promise.resolve();
+  const unsubscribeSessionObservations =
+    input.driver.subscribeSessionObservations?.((observation) => {
+      observationTail = observationTail
+        .then(async () => {
+          if (closed || input.driver.getSessionId() !== observation.sessionId) return;
+          if (observation.reloadTranscript && input.driver.reloadTranscript) {
+            const messages = await input.driver.reloadTranscript();
+            if (closed || input.driver.getSessionId() !== observation.sessionId) return;
+            replaceTranscriptWithStoredMessages(state, messages);
+          }
+          for (const event of observation.events) applyDriverEventToUi(event);
+          if (observation.activeTurn && !turnRunning) {
+            remoteTurnRunning = true;
+            turnRunning = true;
+            busy = true;
+            turnStartedAt = Date.now();
+            startTurnElapsedTicker();
+            terminal.setProgress(true);
+            attention.promptTurnStarted();
+            requestRender();
+          } else if (!observation.activeTurn && remoteTurnRunning) {
+            remoteTurnRunning = false;
+            turnRunning = false;
+            busy = false;
+            turnStartedAt = undefined;
+            stopTurnElapsedTicker();
+            terminal.setProgress(false);
+            attention.promptTurnEnded();
+            lastActivityAt = Date.now();
+            requestRender();
+          }
+        })
+        .catch(reportError);
+      return observationTail;
+    }) ?? (() => {});
+
   const removeProcessHandlers = () => {
     process.off('SIGINT', handleSigint);
     process.off('SIGTERM', handleSigterm);
@@ -515,6 +579,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unbindGoalHost?.();
     unbindGoalHost = undefined;
     unsubscribeSessionTitleChanges();
+    unsubscribeSessionObservations();
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();
@@ -594,6 +659,32 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     return true;
   };
 
+  const respondToPendingInteractionPermission = (decision: 'allow' | 'deny'): boolean => {
+    const request = activeInteractionPermissionRequest(state);
+    const respond = input.driver.respondToPermission;
+    if (!request || !respond || permissionResponseInFlightRequestId !== null) return false;
+    permissionResponseInFlightRequestId = request.requestId;
+    void respond
+      .call(input.driver, {
+        requestId: request.requestId,
+        kind: 'permission',
+        decision,
+        rememberForTurn: false,
+      })
+      .then(() => {
+        if (activeInteractionPermissionRequest(state)?.requestId === request.requestId) {
+          completePendingInteraction(state, request.requestId);
+        }
+        permissionResponseInFlightRequestId = null;
+        requestRender();
+      })
+      .catch((error) => {
+        permissionResponseInFlightRequestId = null;
+        reportError(error);
+      });
+    return true;
+  };
+
   // Refill the editor from a retract result, prepended to any current draft.
   // Shared by the interrupt path and the alt+↑ path. The text always comes
   // from `driver.retractQueued()` — a synchronous in-process read of the
@@ -616,15 +707,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // just cancelled. The normal turn finally restores submit; a rejected
     // stop restores it here.
     editor.disableSubmit = true;
-    // Retract synchronously from the authoritative queue before stop() clears
-    // it: only messages still queued come back for re-editing; anything the
-    // turn already consumed stays consumed (it is in the transcript/ledger).
-    // CLI-held fallback texts (never reached the runtime) come back too.
-    refillEditorFromQueues(
-      [takePendingFallback(), input.driver.retractQueued?.() ?? ''].filter(Boolean).join('\n\n'),
-    );
-    requestRender();
-    void input.driver.stop().catch((error) => {
+    // Host-backed drivers combine retraction and stop in one command. Embedded
+    // drivers keep the legacy in-process sequence, but both paths refill only
+    // from the authoritative result rather than the potentially stale mirror.
+    void (async () => {
+      const fallback = takePendingFallback();
+      let retracted: string;
+      if (input.driver.interrupt) {
+        retracted = await input.driver.interrupt();
+      } else {
+        const retractResult = input.driver.retractQueued?.() ?? '';
+        retracted =
+          typeof retractResult === 'string' ? retractResult : await Promise.resolve(retractResult);
+        await input.driver.stop();
+      }
+      refillEditorFromQueues([fallback, retracted].filter(Boolean).join('\n\n'));
+      requestRender();
+    })().catch((error) => {
       interruptRequested = false;
       editor.disableSubmit = false;
       reportError(error);
@@ -738,6 +837,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // a normal turn outlives any fixed budget and the text must not vanish.
   const FALLBACK_RETRY_MS = 100;
   let fallbackRetryTimer: ReturnType<typeof setInterval> | null = null;
+  let fallbackRetryInFlight = false;
 
   const stopFallbackRetry = () => {
     if (fallbackRetryTimer === null) return;
@@ -745,30 +845,40 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     fallbackRetryTimer = null;
   };
 
-  const retryPendingFallback = () => {
+  const retryPendingFallback = async () => {
+    if (fallbackRetryInFlight) return;
     if (closed || !turnRunning || state.pendingFallback.length === 0) {
       stopFallbackRetry();
       return;
     }
-    const remaining: typeof state.pendingFallback = [];
-    for (const entry of state.pendingFallback) {
-      const outcome =
-        entry.enqueue === 'steer'
-          ? input.driver.steer?.(entry.text)
-          : input.driver.queueMessage?.(entry.text);
-      if (outcome?.kind !== 'queued') remaining.push(entry);
+    fallbackRetryInFlight = true;
+    try {
+      const remaining: typeof state.pendingFallback = [];
+      for (const entry of state.pendingFallback) {
+        const outcome = await Promise.resolve(
+          entry.enqueue === 'steer'
+            ? input.driver.steer?.(entry.text)
+            : input.driver.queueMessage?.(entry.text),
+        );
+        if (outcome?.kind !== 'queued') remaining.push(entry);
+      }
+      if (remaining.length === state.pendingFallback.length) return;
+      state.pendingFallback = remaining;
+      if (remaining.length === 0) stopFallbackRetry();
+      // The queue mirror updates only from `queue_update` events (single path);
+      // this render just drops the delivered entries from the fallback list.
+      requestRender();
+    } catch (error) {
+      stopFallbackRetry();
+      reportError(error);
+    } finally {
+      fallbackRetryInFlight = false;
     }
-    if (remaining.length === state.pendingFallback.length) return;
-    state.pendingFallback = remaining;
-    if (remaining.length === 0) stopFallbackRetry();
-    // The queue mirror updates only from `queue_update` events (single path);
-    // this render just drops the delivered entries from the fallback list.
-    requestRender();
   };
 
   const deferFallback = (text: string, enqueue: 'steer' | 'queue') => {
     state.pendingFallback.push({ text, enqueue });
-    fallbackRetryTimer ??= setInterval(retryPendingFallback, FALLBACK_RETRY_MS);
+    fallbackRetryTimer ??= setInterval(() => void retryPendingFallback(), FALLBACK_RETRY_MS);
     requestRender();
   };
 
@@ -783,20 +893,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   // Enter during a turn steers it (inject at the next step boundary); the
   // runtime falls back to a fresh turn if the run already ended.
+  const enqueueDuringTurn = async (text: string, enqueue: 'steer' | 'queue') => {
+    try {
+      const outcome = await Promise.resolve(
+        enqueue === 'steer' ? input.driver.steer?.(text) : input.driver.queueMessage?.(text),
+      );
+      if (outcome?.kind === 'queued') {
+        requestRender();
+        return;
+      }
+      if (turnRunning || busy) deferFallback(text, enqueue);
+      else submitPrompt(text);
+    } catch (error) {
+      const draft = editor.getText();
+      editor.setText(draft ? `${text}\n\n${draft}` : text);
+      reportError(error);
+    }
+  };
+
   const steerRunningTurn = (text: string) => {
     if (!text.trim()) {
       requestRender();
       return;
     }
     editor.addToHistory(text);
-    const outcome = input.driver.steer?.(text);
-    if (!outcome || outcome.kind === 'fallback') {
-      if (turnRunning) deferFallback(text, 'steer');
-      else submitPrompt(text);
-      return;
-    }
-    // Queued: the runtime's `queue_update` event refreshes the mirror.
-    requestRender();
+    void enqueueDuringTurn(text, 'steer');
   };
 
   // Alt+Enter: during a turn, queue the text to open the next turn; when idle,
@@ -817,23 +938,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return;
     }
     editor.addToHistory(text);
-    const outcome = input.driver.queueMessage?.(text);
-    if (!outcome || outcome.kind === 'fallback') {
-      if (turnRunning) deferFallback(text, 'queue');
-      else submitPrompt(text);
-      return;
-    }
-    // Queued: the runtime's `queue_update` event refreshes the mirror.
-    requestRender();
+    void enqueueDuringTurn(text, 'queue');
   };
 
   // Alt+↑: take back every queued message (both queues plus CLI-held fallback
   // texts), joined and prepended to the current draft for re-editing.
   const retractQueuedMessages = () => {
-    refillEditorFromQueues(
-      [takePendingFallback(), input.driver.retractQueued?.() ?? ''].filter(Boolean).join('\n\n'),
-    );
-    requestRender();
+    const fallback = takePendingFallback();
+    void Promise.resolve(input.driver.retractQueued?.() ?? '')
+      .then((retracted) => {
+        refillEditorFromQueues([fallback, retracted].filter(Boolean).join('\n\n'));
+        requestRender();
+      })
+      .catch(reportError);
   };
 
   // Onboarding wizard (#1098 UX redesign): one overlay spans provider search
@@ -919,7 +1036,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     attention.promptTurnStarted();
     requestRender();
 
-    let permissionAlerted = false;
     const finishTurnUi = () => {
       turnRunning = false;
       turnStartedAt = undefined;
@@ -942,30 +1058,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         appendUserPrompt(state, request.prompt);
         requestRender();
       },
-      onEvent: (event) => {
-        applyMakaSessionEventToTranscript(state, event);
-        if (event.type === 'error') attention.attentionNeeded();
-        if (
-          permissionResponseInFlightRequestId !== null &&
-          activeSandboxBoundaryRequest(state)?.requestId !== permissionResponseInFlightRequestId
-        ) {
-          permissionResponseInFlightRequestId = null;
-        }
-        // A pending decision blocks the turn; ring an unfocused terminal once when
-        // the prompt first appears (not on every render) so the user is not left
-        // waiting on a prompt they cannot see.
-        if (state.pendingInteraction) {
-          if (!permissionAlerted) {
-            permissionAlerted = true;
-            attention.attentionNeeded();
-          }
-        } else {
-          permissionAlerted = false;
-        }
-        shellRunElapsedTicker.sync();
-        syncUserQuestionOverlay();
-        requestRender();
-      },
+      onEvent: applyDriverEventToUi,
       // A turn failing is worth pulling the user back, regardless of how long it
       // ran — a quick failure in a background tab would otherwise stay silent.
       onFailure: (error) => {
@@ -976,7 +1069,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
       },
     }).then(
-      (outcome) => {
+      async (outcome) => {
+        if (input.driver.reloadTranscript) {
+          try {
+            replaceTranscriptWithStoredMessages(state, await input.driver.reloadTranscript());
+          } catch (error) {
+            reportError(error);
+          }
+        }
         finishTurnUi();
         if (closed) {
           busy = false;
@@ -2509,6 +2609,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
+    const pendingInteractionPermission = activeInteractionPermissionRequest(state);
+    if (pendingInteractionPermission && !matchesKey(data, Key.ctrl('c'))) {
+      if (
+        !isKeyRepeat(data) &&
+        (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return))
+      ) {
+        respondToPendingInteractionPermission('allow');
+      } else if (!isKeyRepeat(data) && (matchesKey(data, 'n') || matchesKey(data, Key.escape))) {
+        respondToPendingInteractionPermission('deny');
+      }
+      return { consume: true };
+    }
     const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
     if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
       if (

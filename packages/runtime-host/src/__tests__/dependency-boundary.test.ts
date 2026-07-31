@@ -42,6 +42,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/runtime-inputs',
+  '@maka/core/sandbox-boundary',
   '@maka/core/session',
   '@maka/core/session-name',
   '@maka/core/shell-run',
@@ -126,6 +127,7 @@ test('protocol and client stay within their subpaths and the root-authority boun
       const topLevelArea = localPath.split(sep)[0];
       if (
         localPath === 'candidate-main.ts' ||
+        localPath === 'execution-candidate-main.ts' ||
         topLevelArea === 'server' ||
         (area === 'protocol' && topLevelArea !== 'protocol')
       ) {
@@ -176,6 +178,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
   const publicEntrypoints = new Map<string, string>();
   const reached = reachableModules(join(sourceRoot, 'candidate-main.ts'), publicEntrypoints);
   const forbiddenLocalModules = new Set([
+    'execution-candidate-main.ts',
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
     'server/root-turn-coordinator.ts',

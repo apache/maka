@@ -9,6 +9,7 @@ import { before, describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import {
   SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES,
+  type InteractionPermissionAnswer,
   type PermissionMode,
   type OrchestrationMode,
   type QueueEnqueueOutcome,
@@ -29,6 +30,9 @@ import {
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
+  MakaSessionDriverEvent,
+  MakaSessionObservation,
+  MakaSessionObservationListener,
   MakaSessionMoveResult,
   MakaSessionDriver,
   MakaSessionRewindResult,
@@ -84,7 +88,7 @@ function runMakaPiTui(input: TestMakaPiTuiInput): Promise<void> {
 
 interface TestPromptDriver {
   getSessionId(): string | null;
-  promptEvents(prompt: string): AsyncIterable<SessionEvent>;
+  promptEvents(prompt: string): AsyncIterable<MakaSessionDriverEvent>;
 }
 
 function prepareTestPrompt(
@@ -1078,6 +1082,197 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('answers a Host-projected permission request from the terminal', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HostPermissionPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Allow Bash?'));
+    terminal.input('y');
+    await waitFor(() => driver.responses.length === 1);
+
+    assert.deepEqual(driver.responses, [
+      {
+        requestId: 'interaction-1',
+        kind: 'permission',
+        decision: 'allow',
+        rememberForTurn: false,
+      },
+    ]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('renders and settles a turn observed from another Client', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RemoteObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    driver.transcript = [
+      {
+        type: 'user',
+        id: 'remote-user',
+        turnId: 'remote-turn',
+        ts: 1,
+        text: 'remote prompt',
+      },
+    ];
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: true,
+      activeTurn: true,
+    });
+    await waitFor(
+      () =>
+        plainTerminalOutput(terminal.screenOutput()).includes('remote prompt') &&
+        terminal.progressStates.at(-1) === true,
+    );
+
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [
+        {
+          type: 'text_delta',
+          id: 'remote-delta',
+          turnId: 'remote-turn',
+          ts: 2,
+          messageId: 'remote-assistant',
+          text: 'remote reply',
+        },
+      ],
+      reloadTranscript: false,
+      activeTurn: true,
+    });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('remote reply'));
+
+    driver.transcript = [
+      ...driver.transcript,
+      {
+        type: 'assistant',
+        id: 'remote-assistant',
+        turnId: 'remote-turn',
+        ts: 2,
+        modelId: 'model-1',
+        text: 'remote reply',
+      },
+    ];
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [
+        {
+          type: 'complete',
+          id: 'remote-complete',
+          turnId: 'remote-turn',
+          ts: 3,
+          stopReason: 'end_turn',
+        },
+      ],
+      reloadTranscript: true,
+      activeTurn: false,
+    });
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await run;
+    assert.equal(driver.observerClosed, true);
+  });
+
+  test('discards a remote observation when its Session changes during transcript reload', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RemoteObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+    const reloadStarted = deferred<void>();
+    const releaseReload = deferred<StoredMessage[]>();
+    driver.deferNextReload(reloadStarted.resolve, releaseReload.promise);
+
+    const emission = driver.emit({
+      sessionId: 'session-1',
+      events: [
+        {
+          type: 'text_delta',
+          id: 'stale-delta',
+          turnId: 'stale-turn',
+          ts: 1,
+          messageId: 'stale-message',
+          text: 'STALE-REMOTE-OBSERVATION',
+        },
+      ],
+      reloadTranscript: true,
+      activeTurn: true,
+    });
+    await reloadStarted.promise;
+    driver.adoptSessionForTest('session-2');
+    releaseReload.resolve([]);
+    await emission;
+    await delay(10);
+
+    assert.ok(!plainTerminalOutput(terminal.screenOutput()).includes('STALE-REMOTE-OBSERVATION'));
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('allows a pending sandbox boundary request with Enter', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SandboxBoundaryPromptDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('r');
+    terminal.input('u');
+    terminal.input('n');
+    terminal.input('\r');
+    await waitFor(() => driver.boundaryRequests === 1);
+    await delay(20);
+    terminal.input('\r');
+    await waitFor(() => driver.boundaryResponses.length === 1);
+
+    assert.deepEqual(driver.boundaryResponses, [
+      {
+        requestId: 'boundary-1',
+        decision: 'allow',
+      },
+    ]);
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('freezes and preserves the editor draft while a boundary request owns input', async () => {
@@ -6461,6 +6656,80 @@ class SandboxBoundaryPromptDriver implements MakaSessionDriver {
   }
 }
 
+class HostPermissionPromptDriver implements MakaSessionDriver {
+  readonly responses: Array<InteractionPermissionAnswer & { readonly requestId: string }> = [];
+  private release: (() => void) | undefined;
+
+  async listSessions(): Promise<SessionSummary[]> {
+    return [];
+  }
+
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    return prepareTestPrompt(this, prompt);
+  }
+
+  async *compactSession(): AsyncIterable<never> {}
+
+  async *promptEvents(_prompt: string): AsyncIterable<MakaSessionDriverEvent> {
+    yield {
+      type: 'host_interaction_permission_request',
+      id: 'event-permission',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'interaction-1',
+      toolUseId: 'tool-1',
+      prompt: {
+        kind: 'tool_permission',
+        toolName: 'Bash',
+        category: 'shell_unsafe',
+        reason: 'shell_dangerous',
+        review: { kind: 'command', command: 'npm test', cwd: '/repo' },
+        rememberForTurnAllowed: true,
+      },
+    };
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 2,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async respondToPermission(
+    response: InteractionPermissionAnswer & { readonly requestId: string },
+  ): Promise<void> {
+    this.responses.push(response);
+    this.release?.();
+  }
+
+  async stop(): Promise<void> {
+    this.release?.();
+  }
+
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported');
+  }
+  startNewSession(): void {}
+  getSessionId(): string {
+    return 'session-1';
+  }
+}
+
 class UserQuestionPromptDriver implements MakaSessionDriver {
   readonly responses: UserQuestionResponse[] = [];
   stopCalls = 0;
@@ -7618,6 +7887,48 @@ class SlashCommandDriver implements MakaSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class RemoteObservationDriver extends SlashCommandDriver {
+  transcript: StoredMessage[] = [];
+  observerClosed = false;
+  private listener: MakaSessionObservationListener | undefined;
+  private nextReload:
+    | {
+        readonly started: () => void;
+        readonly messages: Promise<StoredMessage[]>;
+      }
+    | undefined;
+
+  subscribeSessionObservations(listener: MakaSessionObservationListener): () => void {
+    this.listener = listener;
+    return () => {
+      if (this.listener === listener) this.listener = undefined;
+      this.observerClosed = true;
+    };
+  }
+
+  async reloadTranscript(): Promise<StoredMessage[]> {
+    const deferredReload = this.nextReload;
+    if (deferredReload) {
+      this.nextReload = undefined;
+      deferredReload.started();
+      return deferredReload.messages;
+    }
+    return [...this.transcript];
+  }
+
+  async emit(observation: MakaSessionObservation): Promise<void> {
+    await this.listener?.(observation);
+  }
+
+  deferNextReload(started: () => void, messages: Promise<StoredMessage[]>): void {
+    this.nextReload = { started, messages };
+  }
+
+  adoptSessionForTest(sessionId: string): void {
+    this.sessionId = sessionId;
   }
 }
 

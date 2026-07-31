@@ -22,7 +22,11 @@ import {
 } from '@maka/core';
 import { homedir } from 'node:os';
 import { materializeSession, type ChatItem, type ToolActivityItem } from '@maka/runtime';
-import type { MakaSessionDriver } from './session-driver.js';
+import type {
+  HostInteractionPermissionRequestEvent,
+  MakaSessionDriver,
+  MakaSessionDriverEvent,
+} from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
 import {
@@ -99,7 +103,10 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryEvent;
 }
 
-export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type MakaPiPendingInteraction =
+  | SandboxBoundaryRequestEvent
+  | HostInteractionPermissionRequestEvent
+  | UserQuestionRequestEvent;
 
 export interface MakaPiRenderGeometry {
   /**
@@ -460,7 +467,7 @@ export async function submitCompactToTranscript(input: {
 
 export function applyMakaSessionEventToTranscript(
   state: MakaPiTranscriptState,
-  event: SessionEvent,
+  event: MakaSessionDriverEvent,
 ): void {
   if (
     event.type === 'text_delta' ||
@@ -652,6 +659,12 @@ export function applyMakaSessionEventToTranscript(
 
     case 'sandbox_boundary_request':
       enqueuePendingInteraction(state, event);
+      break;
+    case 'host_interaction_permission_request':
+      enqueuePendingInteraction(state, event);
+      break;
+    case 'host_interaction_resolved':
+      completePendingInteraction(state, event.requestId);
       break;
     case 'user_question_request':
       enqueuePendingInteraction(state, event);
@@ -1071,6 +1084,9 @@ export function renderMakaPiTranscript(
   if (state.pendingInteraction?.type === 'sandbox_boundary_request') {
     lines.push('');
     lines.push(...renderSandboxBoundaryPrompt(state.pendingInteraction, safeWidth));
+  } else if (state.pendingInteraction?.type === 'host_interaction_permission_request') {
+    lines.push('');
+    lines.push(...renderInteractionPermissionPrompt(state.pendingInteraction, safeWidth));
   }
 
   return lines;
@@ -1094,6 +1110,14 @@ export function activeSandboxBoundaryRequest(
   state: MakaPiTranscriptState,
 ): SandboxBoundaryRequestEvent | undefined {
   return state.pendingInteraction?.type === 'sandbox_boundary_request'
+    ? state.pendingInteraction
+    : undefined;
+}
+
+export function activeInteractionPermissionRequest(
+  state: MakaPiTranscriptState,
+): HostInteractionPermissionRequestEvent | undefined {
+  return state.pendingInteraction?.type === 'host_interaction_permission_request'
     ? state.pendingInteraction
     : undefined;
 }
@@ -1640,6 +1664,28 @@ function renderSandboxBoundaryPrompt(
   lines.push(
     fitLine(
       `${ansi.bold('y')}${ansi.dim('/Enter allow for session')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
+      width,
+    ),
+  );
+  return lines;
+}
+
+function renderInteractionPermissionPrompt(
+  request: HostInteractionPermissionRequestEvent,
+  width: number,
+): string[] {
+  const lines = [
+    fitLine(ansi.yellow(`Allow ${request.prompt.toolName}?`), width),
+    ...renderIndented(formatUnknown(request.prompt.review), width, 2),
+  ];
+  if (request.prompt.kind === 'sandbox_escalation') {
+    lines.push(...renderIndented('This command will run outside the sandbox.', width, 2));
+  } else if (request.prompt.kind === 'additional_permissions') {
+    lines.push(...renderIndented('This tool needs additional workspace access.', width, 2));
+  }
+  lines.push(
+    fitLine(
+      `${ansi.bold('y')}${ansi.dim('/Enter allow once')}  ${ansi.bold('n')}${ansi.dim('/Esc deny')}`,
       width,
     ),
   );

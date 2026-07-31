@@ -62,9 +62,10 @@ export type SessionRetirementOperationKey = Extract<
   OperationKey,
   'session.lifecycle.set' | 'session.remove'
 >;
+export type SessionTranscriptOperationKey = Extract<OperationKey, 'session.transcript.query'>;
 export type SessionCatalogOperationKey = Exclude<
   Extract<OperationKey, `session.${string}`>,
-  SessionRevisionOperationKey | SessionRetirementOperationKey
+  SessionRevisionOperationKey | SessionRetirementOperationKey | SessionTranscriptOperationKey
 >;
 export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
@@ -104,6 +105,10 @@ export type SessionRevisionOperationHandlerMap = Pick<
 export type SessionRetirementOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionRetirementOperationKey
+>;
+export type SessionTranscriptOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionTranscriptOperationKey
 >;
 export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;

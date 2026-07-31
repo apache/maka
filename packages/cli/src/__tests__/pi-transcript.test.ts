@@ -1186,6 +1186,45 @@ describe('Maka Pi TUI transcript', () => {
     assert.deepEqual(state.queuedInteractions, []);
   });
 
+  test('renders a Host-projected permission review without raw tool arguments', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(state, {
+      type: 'host_interaction_permission_request',
+      id: 'host-interaction-id',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'interaction-1',
+      toolUseId: 'tool-1',
+      prompt: {
+        kind: 'tool_permission',
+        toolName: 'Bash',
+        category: 'shell_unsafe',
+        reason: 'shell_dangerous',
+        review: {
+          kind: 'command',
+          command: 'npm test',
+          cwd: '/workspace',
+        },
+        rememberForTurnAllowed: true,
+      },
+    });
+
+    const visible = renderMakaPiTranscript(
+      state,
+      {
+        title: 'Maka',
+        cwd: '/workspace',
+        model: 'model-1',
+        connectionSlug: 'connection-1',
+        permissionMode: 'ask',
+      },
+      120,
+    ).map(stripAnsi);
+    assert.ok(visible.some((line) => line.includes('Allow Bash?')));
+    assert.ok(visible.some((line) => line.includes('npm test')));
+    assert.ok(visible.some((line) => line.includes('allow once')));
+  });
+
   test('renders an unboxed session sandbox boundary request with exact scopes', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

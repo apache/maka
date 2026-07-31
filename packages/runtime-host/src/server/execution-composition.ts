@@ -66,6 +66,7 @@ import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
+import { HostSessionTranscriptCoordinator } from './session-transcript-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
@@ -564,6 +565,10 @@ export async function createExecutionRuntimeHostComposition(
       worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
     });
+    const sessionTranscript = new HostSessionTranscriptCoordinator({
+      store: stores.sessionStore,
+      admission: sessionAdmission,
+    });
     const artifacts = new HostArtifactCoordinator(
       openedArtifactStore,
       context.requestDrain,
@@ -577,6 +582,7 @@ export async function createExecutionRuntimeHostComposition(
       ...executionInspect.handlers,
       ...sessionRevisions.handlers,
       ...sessionRetirement.handlers,
+      ...sessionTranscript.handlers,
       ...messages.handlers,
       ...interactions.handlers,
       ...runtimePolicy.handlers,

@@ -6,6 +6,10 @@ export {
   type SessionResumeAvailability,
 } from './session-driver.js';
 export {
+  createHostMakaSessionDriver,
+  type HostMakaSessionDriverInput,
+} from './host-session-driver.js';
+export {
   parseMakaCliArgs,
   type MakaCliCommand,
 } from './cli.js';

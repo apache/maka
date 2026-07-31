@@ -17,7 +17,7 @@ import type {
 import { createGenesisExecutionBoundary, createReadOnlyPermissionProfile } from '@maka/core';
 import { permissionModeLabel } from '../pi-transcript.js';
 import { permissionModePickerItems } from '../pi-tui-pickers.js';
-import { createMakaSessionDriver } from '../session-driver.js';
+import { createMakaSessionDriver, type MakaSessionDriverEvent } from '../session-driver.js';
 import type {
   ContextDiagnostics,
   RuntimeContinuation,
@@ -1517,6 +1517,6 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 async function collectPrompt(
   driver: ReturnType<typeof createMakaSessionDriver>,
   prompt: string,
-): Promise<SessionEvent[]> {
+): Promise<MakaSessionDriverEvent[]> {
   return collect((await driver.preparePrompt(prompt)).events);
 }

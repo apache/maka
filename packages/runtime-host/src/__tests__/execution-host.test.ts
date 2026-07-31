@@ -793,6 +793,59 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
   });
 });
 
+test('a Client joining an active Turn receives prior live output before future deltas', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const origin = await connectClient(fixture.root, 'tui');
+    const originSubscription = await origin.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
+    const originProbe = new SubscriptionProbe(originSubscription);
+    const turnId = randomUUID();
+    const started = await origin.startTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      content: { text: `late join ${'x'.repeat(540)}` },
+    });
+    const first = await originProbe.waitFor(
+      (frame) => frame.kind === 'subscription.session_delta' && frame.delta.turnId === turnId,
+      'origin Client did not receive the first live delta',
+    );
+    assert.equal(first.kind, 'subscription.session_delta');
+    if (first.kind !== 'subscription.session_delta') return;
+
+    const late = await connectClient(fixture.root, 'tui');
+    const lateSubscription = await late.openSessionSubscription({
+      sessionId: fixture.sessionId,
+    });
+    assert.equal(lateSubscription.snapshot.rootTurn?.turnId, turnId);
+    assert.equal(lateSubscription.snapshot.rootTurn?.runId, started.runId);
+    const lateProbe = new SubscriptionProbe(lateSubscription);
+    const catchUp = await lateProbe.waitFor(
+      (frame) => frame.kind === 'subscription.session_delta' && frame.delta.turnId === turnId,
+      'late Client did not receive live Turn catch-up',
+    );
+    assert.equal(catchUp.kind, 'subscription.session_delta');
+    if (catchUp.kind !== 'subscription.session_delta') return;
+    assert.ok(catchUp.delta.text.startsWith(first.delta.text));
+
+    await lateProbe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn?.turnId === turnId &&
+        frame.snapshot.rootTurn.status === 'completed',
+      'late Client did not receive the terminal Turn projection',
+    );
+    await lateSubscription.close();
+    await lateProbe.done;
+    await late.close();
+    await originSubscription.close();
+    await originProbe.done;
+    await origin.close();
+    await fixture.stopHost(host);
+  });
+});
+
 test('concurrent root admission for one Session has a single winner', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();

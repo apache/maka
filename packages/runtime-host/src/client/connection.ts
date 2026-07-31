@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
 import { performance } from 'node:perf_hooks';
+import { TextDecoder } from 'node:util';
 import {
   discoverMarkedStorageRoot,
   prepareStorageRootControlDirectory,
@@ -29,6 +30,7 @@ import {
   type ResponseFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
+  type SessionExecutionBoundaryProjection,
   type TurnQueryInput,
   type TurnSnapshot,
   type TurnStartInput,
@@ -49,6 +51,7 @@ import type { ClientCapabilityProvider } from './client-capability.js';
 const DEFAULT_CONNECT_TIMEOUT_MS = 500;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 2_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
+const SESSION_TRANSCRIPT_REQUEST_TIMEOUT_MS = 30_000;
 
 export interface ConnectRuntimeHostInput {
   rootPath: string;
@@ -121,6 +124,10 @@ export interface RuntimeHostConnection {
   startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnSnapshot>;
   queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
+  readSessionTranscript(
+    sessionId: string,
+    timeoutMs?: number,
+  ): Promise<RuntimeHostSessionTranscript>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -131,6 +138,16 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
+}
+
+export interface RuntimeHostSessionTranscript {
+  readonly revision: number;
+  readonly boundary: SessionExecutionBoundaryProjection;
+  /**
+   * Parsed JSON records. Domain clients must validate them before use; the
+   * transport layer deliberately does not depend on Session storage schemas.
+   */
+  readonly messages: readonly unknown[];
 }
 
 export type DirectRequestOperationKey = Exclude<
@@ -292,6 +309,89 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
     return this.request('turn.stop', input, timeoutMs);
+  }
+
+  async readSessionTranscript(
+    sessionId: string,
+    timeoutMs?: number,
+  ): Promise<RuntimeHostSessionTranscript> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const transcript = await this.#readSessionTranscriptAttempt(sessionId, timeoutMs);
+      if (transcript !== undefined) return transcript;
+    }
+    throw new Error('Session transcript kept changing while it was read');
+  }
+
+  async #readSessionTranscriptAttempt(
+    sessionId: string,
+    timeoutMs: number | undefined,
+  ): Promise<RuntimeHostSessionTranscript | undefined> {
+    const initial = await this.request(
+      'session.transcript.query',
+      { kind: 'start', sessionId },
+      timeoutMs,
+    );
+    if (initial.kind === 'revision_changed') {
+      throw new Error('Runtime Host returned a revision change for a transcript start');
+    }
+    let chunk = initial;
+    const revision = chunk.revision;
+    const boundary = chunk.boundary;
+    const messageCount = chunk.messageCount;
+    const messages: unknown[] = [];
+    let encodedChunks: Buffer[] = [];
+    let encodedByteLength = 0;
+
+    while (true) {
+      if (
+        chunk.revision !== revision ||
+        chunk.messageCount !== messageCount ||
+        !sameBoundaryProjection(chunk.boundary, boundary)
+      ) {
+        throw new Error('Session transcript projection changed without a revision conflict');
+      }
+      if (messageCount === 0) return { revision, boundary, messages };
+      if (chunk.messageIndex !== messages.length || chunk.byteOffset !== encodedByteLength) {
+        throw new Error('Runtime Host returned a non-contiguous Session transcript chunk');
+      }
+      const data = Buffer.from(chunk.data, 'base64');
+      encodedChunks.push(data);
+      encodedByteLength += data.byteLength;
+      const next = chunk.next;
+      if (next === null || next.messageIndex !== chunk.messageIndex) {
+        messages.push(decodeTranscriptRecord(Buffer.concat(encodedChunks, encodedByteLength)));
+        encodedChunks = [];
+        encodedByteLength = 0;
+      }
+      if (next === null) {
+        if (messages.length !== messageCount) {
+          throw new Error('Runtime Host ended the Session transcript before every message');
+        }
+        return { revision, boundary, messages };
+      }
+      if (
+        (next.messageIndex === chunk.messageIndex &&
+          next.byteOffset !== chunk.byteOffset + data.byteLength) ||
+        (next.messageIndex === chunk.messageIndex + 1 && next.byteOffset !== 0) ||
+        (next.messageIndex !== chunk.messageIndex && next.messageIndex !== chunk.messageIndex + 1)
+      ) {
+        throw new Error('Runtime Host returned an invalid Session transcript cursor');
+      }
+      const continuation = await this.request(
+        'session.transcript.query',
+        {
+          kind: 'continue',
+          sessionId,
+          revision,
+          boundaryRevision: boundary.revision,
+          messageIndex: next.messageIndex,
+          byteOffset: next.byteOffset,
+        },
+        timeoutMs,
+      );
+      if (continuation.kind === 'revision_changed') return undefined;
+      chunk = continuation;
+    }
   }
 
   openSessionSubscription(
@@ -726,6 +826,11 @@ function defaultRequestTimeoutMs(operation: DirectRequestOperationKey): number |
     case 'connection.test.run':
       // Completion effects own provider deadlines and may wait behind same-connection FIFO work.
       return undefined;
+    case 'session.transcript.query':
+      // A durable transcript can span many records and each chunk requires a
+      // storage snapshot. Keep the ordinary control-plane timeout strict while
+      // allowing slow filesystems enough time to serve one chunk.
+      return SESSION_TRANSCRIPT_REQUEST_TIMEOUT_MS;
     default:
       return DEFAULT_REQUEST_TIMEOUT_MS;
   }
@@ -776,4 +881,24 @@ function readRegistrationBeforeDeadline(
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function decodeTranscriptRecord(encoded: Buffer): unknown {
+  try {
+    const json = new TextDecoder('utf-8', { fatal: true }).decode(encoded);
+    return JSON.parse(json) as unknown;
+  } catch {
+    throw new Error('Runtime Host returned an invalid encoded Session transcript message');
+  }
+}
+
+function sameBoundaryProjection(
+  left: SessionExecutionBoundaryProjection,
+  right: SessionExecutionBoundaryProjection,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.revision === right.revision &&
+    left.displayMode === right.displayMode
+  );
 }

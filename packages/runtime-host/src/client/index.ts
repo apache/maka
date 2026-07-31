@@ -5,6 +5,7 @@ export {
   type ConnectRuntimeHostInput,
   type ConnectRuntimeHostResult,
   type RuntimeHostConnection,
+  type RuntimeHostSessionTranscript,
   type RuntimeHostUnavailableReason,
   type DirectRequestOperationKey,
 } from './connection.js';
@@ -25,3 +26,4 @@ export {
   OAUTH_PRESENTATION_SERVICE_VERSION,
   type OAuthPresentationBackend,
 } from './oauth-presentation.js';
+export { connectOrSpawnExecutionRuntimeHostHarness } from './connect-or-spawn-execution-harness.js';

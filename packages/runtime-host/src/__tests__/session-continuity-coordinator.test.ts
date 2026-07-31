@@ -62,6 +62,109 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   coordinator.close();
 });
 
+test('a late subscriber replays the active Turn before newer live frames', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const originConnection = coordinator.attachConnection('connection-origin', new RecordingSink());
+  const origin = await open(coordinator, 'connection-origin');
+  originConnection.activate(origin.subscriptionId);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  originConnection.abort(origin.subscriptionId);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(2));
+
+  const lateSink = new RecordingSink();
+  const lateConnection = coordinator.attachConnection('connection-late', lateSink);
+  const late = await open(coordinator, 'connection-late');
+  assert.equal(late.nextSequence, 1);
+  assert.equal(lateSink.frames.length, 0);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(3));
+  lateConnection.activate(late.subscriptionId);
+  await waitFor(() => lateSink.frames.length === 2);
+
+  assert.deepEqual(
+    lateSink.frames.map((frame) => frame.sequence),
+    [1, 2],
+  );
+  assert.deepEqual(
+    lateSink.frames.map((frame) =>
+      frame.kind === 'subscription.session_delta' ? frame.delta.text : undefined,
+    ),
+    ['chunk-1chunk-2', 'chunk-3'],
+  );
+  coordinator.close();
+});
+
+test('live Turn replay stays bounded without evicting a late subscriber', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const originConnection = coordinator.attachConnection('connection-origin', new RecordingSink());
+  const origin = await open(coordinator, 'connection-origin');
+  originConnection.abort(origin.subscriptionId);
+  for (let index = 1; index <= 20; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      ...textEvent(index),
+      text: `${index}:${'x'.repeat(8 * 1024)}:END-${index}`,
+    });
+  }
+
+  const lateSink = new RecordingSink();
+  const lateConnection = coordinator.attachConnection('connection-late', lateSink);
+  const late = await open(coordinator, 'connection-late');
+  lateConnection.activate(late.subscriptionId);
+  await waitFor(() =>
+    lateSink.frames
+      .map((frame) => (frame.kind === 'subscription.session_delta' ? frame.delta.text : ''))
+      .join('')
+      .endsWith('END-20'),
+  );
+
+  assert.ok(lateSink.frames.every((frame) => frame.kind === 'subscription.session_delta'));
+  const replayed = lateSink.frames
+    .map((frame) => (frame.kind === 'subscription.session_delta' ? frame.delta.text : ''))
+    .join('');
+  assert.ok(Buffer.byteLength(replayed, 'utf8') <= 64 * 1024);
+  assert.ok(replayed.endsWith('END-20'));
+  coordinator.close();
+});
+
+test('live Turn replay accounts for JSON wire expansion', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const originConnection = coordinator.attachConnection('connection-origin', new RecordingSink());
+  const origin = await open(coordinator, 'connection-origin');
+  originConnection.abort(origin.subscriptionId);
+  for (let index = 1; index <= 20; index += 1) {
+    await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+      ...textEvent(index),
+      text: `${'\u0000'.repeat(8 * 1024)}:END-${index}`,
+    });
+  }
+
+  const lateSink = new RecordingSink();
+  const lateConnection = coordinator.attachConnection('connection-late', lateSink);
+  const late = await open(coordinator, 'connection-late');
+  lateConnection.activate(late.subscriptionId);
+  await waitFor(() =>
+    lateSink.frames
+      .map((frame) => (frame.kind === 'subscription.session_delta' ? frame.delta.text : ''))
+      .join('')
+      .endsWith('END-20'),
+  );
+
+  assert.ok(lateSink.frames.every((frame) => frame.kind === 'subscription.session_delta'));
+  coordinator.close();
+});
+
 test('open snapshot includes pending Interactions from the canonical projection', async () => {
   const pending = pendingInteraction();
   const coordinator = new SessionContinuityCoordinator(
@@ -91,6 +194,9 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   const connection = coordinator.attachConnection('connection-1', sink);
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await waitFor(() => sink.frames.length === 1);
+  sink.frames.length = 0;
 
   await coordinator.holdTerminalPublication(SESSION_ID, 'turn-1', 'run-1');
   projection = canonical({
@@ -111,10 +217,17 @@ test('terminal fence suppresses ordinary refresh until the exact terminal cut pu
   const frame = sink.frames[0];
   assert.equal(frame?.kind, 'subscription.session_projection');
   if (frame?.kind === 'subscription.session_projection') {
-    assert.equal(frame.sequence, 1);
+    assert.equal(frame.sequence, 2);
     assert.equal(frame.snapshot.projectionRevision, 2);
     assert.equal(frame.snapshot.rootTurn?.status, 'completed');
   }
+  const lateSink = new RecordingSink();
+  const lateConnection = coordinator.attachConnection('connection-late', lateSink);
+  const late = await open(coordinator, 'connection-late');
+  lateConnection.activate(late.subscriptionId);
+  await delayImmediate();
+  assert.equal(late.snapshot.rootTurn?.status, 'completed');
+  assert.equal(lateSink.frames.length, 0);
   coordinator.close();
 });
 

@@ -15,6 +15,7 @@
     "build": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build",
+    "harness:runtime-host-tui": "node dist/runtime-host-tui-harness.js",
     "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },

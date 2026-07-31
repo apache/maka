@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { decodeStoredMessageForRead } from '@maka/core/session';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readdir, mkdtemp, rm } from 'node:fs/promises';
@@ -344,6 +345,21 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       const readFromTui = await querySession(tui, unreadSessionId);
       assert.equal(readFromTui.hasUnread, false);
       assert.equal(readFromTui.lastReadMessageId, 'message-2');
+      const transcript = await tui.readSessionTranscript(unreadSessionId);
+      const transcriptMessages = transcript.messages.map((message) =>
+        decodeStoredMessageForRead(message),
+      );
+      assert.equal(transcript.revision, readFromTui.revision);
+      assert.deepEqual(transcript.boundary, {
+        kind: 'managed',
+        revision: 0,
+        displayMode: 'ask',
+      });
+      assert.equal(transcriptMessages.length, 3);
+      assert.equal(
+        transcriptMessages[0]?.type === 'user' ? transcriptMessages[0].text.length : 0,
+        72 * 1024,
+      );
 
       const bulk = (
         await Promise.all(
@@ -693,7 +709,13 @@ async function seedAuthority(
       permissionMode: 'ask',
     });
     await execution.sessionStore.appendMessages(unread.id, [
-      { type: 'user', id: 'message-1', turnId: 'turn-1', ts: 1, text: 'one' },
+      {
+        type: 'user',
+        id: 'message-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: 'x'.repeat(72 * 1024),
+      },
       {
         type: 'assistant',
         id: 'message-2',
