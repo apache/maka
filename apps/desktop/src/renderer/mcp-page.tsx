@@ -4,9 +4,6 @@ import { isMcpStdioConfig } from '@maka/core/mcp';
 import {
   Button,
   Chip,
-  DialogContent,
-  DialogHeader,
-  DialogRoot,
   EmptyState,
   IconButton,
   PageHeader,
@@ -25,6 +22,11 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import {
   FileCode,
   Globe,
@@ -597,6 +599,21 @@ function McpEditorDialog(props: {
   onImport(event: React.FormEvent): void;
 }) {
   const editing = props.state.mode === 'manual' && Boolean(props.state.editingId);
+  const [isOpen, setIsOpen] = useState(false);
+  const hasOpenedRef = useRef(false);
+
+  useEffect(() => setIsOpen(true), []);
+
+  useEffect(() => {
+    if (isOpen) {
+      hasOpenedRef.current = true;
+      return;
+    }
+    if (!hasOpenedRef.current) return;
+    const frame = window.requestAnimationFrame(props.onClose);
+    return () => window.cancelAnimationFrame(frame);
+  }, [isOpen, props.onClose]);
+
   const updateDraft = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     if (props.state.mode !== 'manual') return;
     props.onChange(
@@ -605,18 +622,26 @@ function McpEditorDialog(props: {
     );
   };
   return (
-    <DialogRoot open onOpenChange={(open) => { if (!open) props.onClose(); }}>
-      <DialogContent
-        className="maka-mcp-editor-dialog"
-        width="min(92vw, var(--maka-chat-measure))"
-        maxHeight="85dvh"
-      >
-        <DialogHeader
-          icon={props.state.mode === 'json' ? <FileCode /> : <Plug />}
-          title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
-          subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
-          onClose={props.onClose}
-        />
+    <Dialog
+      isOpen={isOpen}
+      onOpenChange={setIsOpen}
+      className="maka-mcp-editor-dialog"
+      width="min(92vw, var(--maka-chat-measure))"
+      maxHeight="85dvh"
+      padding={0}
+      purpose="form"
+    >
+      <Layout
+        header={
+          <DialogHeader
+            startContent={props.state.mode === 'json' ? <FileCode /> : <Plug />}
+            title={props.state.mode === 'json' ? props.copy.editor.importTitle : editing ? props.copy.editor.editTitle(props.state.draft.id) : props.copy.editor.addTitle}
+            subtitle={props.state.mode === 'json' ? props.copy.editor.importSubtitle : props.copy.editor.manualSubtitle}
+            onOpenChange={setIsOpen}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
         {!editing && (
           <RadioList
             className="maka-mcp-editor-choice"
@@ -653,7 +678,7 @@ function McpEditorDialog(props: {
               <TextArea label={props.copy.editor.jsonConfig} value={props.state.source} onChange={(value) => props.onChange({ mode: 'json', source: value })} hasSpellCheck={false} rows={14} />
             </div>
             <p>{props.copy.editor.jsonHelp} <code>{'{ "mcpServers": { ... } }'}</code></p>
-            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={props.onClose} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.importing : props.copy.editor.importConnect} /></div>
+            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={() => setIsOpen(false)} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.importing : props.copy.editor.importConnect} /></div>
           </form>
         ) : (
           <form className="maka-mcp-manual-form" onSubmit={props.onSave}>
@@ -706,11 +731,13 @@ function McpEditorDialog(props: {
                 </>
               )}
             </div>
-            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={props.onClose} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.saving : props.copy.editor.saveConnect} /></div>
+            <div className="maka-mcp-editor-footer"><Button variant="ghost" onClick={() => setIsOpen(false)} label={props.copy.editor.cancel} /><Button type="submit" variant="primary" isDisabled={props.saving} label={props.saving ? props.copy.editor.saving : props.copy.editor.saveConnect} /></div>
           </form>
         )}
-      </DialogContent>
-    </DialogRoot>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }
 

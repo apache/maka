@@ -33,8 +33,7 @@
  *      modal→rounded-xl, pill→rounded-full/rounded-[var(--radius-pill)].
  *      Every --radius-* reference inside a component block must belong to the
  *      expected tier's alias set. A component that legitimately serves more
- *      than one tier declares `alsoTiers` (e.g. buttonVariants is a control
- *      that also offers the governed pill shape via shape="pill"); every
+ *      than one tier declares `alsoTiers`; every
  *      declared tier must then be present, and other tiers stay forbidden.
  *   6. Token values are pinned: control=6px, surface=8px, modal=12px, pill=999px.
  *   7. `--radius-button` is deleted; no stale references may remain.

@@ -6,13 +6,15 @@ import type {
 } from '@maka/core';
 import {
   Button,
-  DialogContent,
-  DialogHeader,
-  DialogRoot,
   Spinner,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { AlertCircle, Check } from '@maka/ui/icons';
 import { BotBrandLogo } from './bot-chat-shared';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -30,6 +32,8 @@ export function BotOnboardingModal(props: {
   const [snapshot, setSnapshot] = useState<BotOnboardingSnapshot | null>(null);
   const [starting, setStarting] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const hasOpenedRef = useRef(false);
   const sessionIdRef = useRef<string | null>(null);
   const generationRef = useRef(0);
   const connectedNotifiedRef = useRef(false);
@@ -125,9 +129,21 @@ export function BotOnboardingModal(props: {
     }
   }
 
-  function close() {
+  useEffect(() => setIsOpen(true), []);
+
+  useEffect(() => {
+    if (isOpen) {
+      hasOpenedRef.current = true;
+      return;
+    }
+    if (!hasOpenedRef.current) return;
     cancelCurrent();
-    props.onClose();
+    const frame = window.requestAnimationFrame(props.onClose);
+    return () => window.cancelAnimationFrame(frame);
+  }, [cancelCurrent, isOpen, props.onClose]);
+
+  function close() {
+    setIsOpen(false);
   }
 
   const status = statusCopy(snapshot, starting, error, copy, locale);
@@ -138,18 +154,26 @@ export function BotOnboardingModal(props: {
     && snapshot?.state !== 'error';
 
   return (
-    <DialogRoot open onOpenChange={(open) => { if (!open) close(); }}>
-      <DialogContent
-        className="settingsBotOnboardingModal"
-        width={520}
-        aria-label={copy.ariaLabel}
-      >
-        <DialogHeader
-          icon={<BotBrandLogo provider={props.provider} size="large" />}
-          title={copy.title}
-          subtitle={copy.subtitle}
-          onClose={close}
-        />
+    <Dialog
+      isOpen={isOpen}
+      onOpenChange={setIsOpen}
+      className="settingsBotOnboardingModal"
+      width={520}
+      aria-label={copy.ariaLabel}
+      padding={0}
+      purpose="form"
+    >
+      <Layout
+        header={
+          <DialogHeader
+            startContent={<BotBrandLogo provider={props.provider} size="large" />}
+            title={copy.title}
+            subtitle={copy.subtitle}
+            onOpenChange={setIsOpen}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
         <div className="settingsBotOnboardingBody" aria-live="polite">
           <div className="settingsBotOnboardingQrFrame" data-state={snapshot?.state ?? (starting ? 'starting' : 'error')}>
             {showQr ? (
@@ -197,8 +221,10 @@ export function BotOnboardingModal(props: {
             </>
           )}
         </div>
-      </DialogContent>
-    </DialogRoot>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }
 

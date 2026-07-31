@@ -11,8 +11,10 @@ import {
   Button as UiButton,
   IconButton as UiIconButton,
 } from '@astryxdesign/core';
+import { Dialog } from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { cn, DialogContent, DialogRoot } from './ui.js';
+import { cn } from './ui.js';
 import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
@@ -96,15 +98,24 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
       >
         <img className="h-32 w-32 object-cover transition group-hover:opacity-90" src={src} alt={props.attachment.name} />
       </button>
-      <DialogRoot open={lightboxOpen} onOpenChange={setLightboxOpen}>
-        <DialogContent
-          width="auto"
-          maxHeight="90vh"
-          aria-label={copy.imageAriaLabel(props.attachment.name)}
-        >
-          <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
-        </DialogContent>
-      </DialogRoot>
+      <Dialog
+        isOpen={lightboxOpen}
+        onOpenChange={setLightboxOpen}
+        padding={0}
+        purpose="info"
+        width="auto"
+        maxHeight="90vh"
+        aria-label={copy.imageAriaLabel(props.attachment.name)}
+      >
+        <Layout
+          height="auto"
+          content={
+            <LayoutContent padding={0} isScrollable={false}>
+              <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
+            </LayoutContent>
+          }
+        />
+      </Dialog>
     </>
   );
 }

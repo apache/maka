@@ -1,13 +1,20 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Button, TextArea, TextInput } from '../src/index.js';
-import { DialogClose, DialogContent, DialogRoot } from '../src/ui.js';
-import { DialogHeader } from '../src/primitives/dialog-header.js';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import {
+  Layout,
+  LayoutContent,
+  LayoutFooter,
+} from '@astryxdesign/core/Layout';
 
 const meta = {
   title: 'Primitives/Dialog',
   parameters: {
-    layout: 'fullscreen',
+    layout: 'padded',
   },
 } satisfies Meta;
 
@@ -15,185 +22,160 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-function DialogShell({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'grid', gap: 16, padding: 24, placeItems: 'center', minHeight: '100%' }}>
-      <p style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>{title}</p>
-      {children}
-    </div>
-  );
-}
-
-function ControlledDialog({
-  triggerLabel,
-  title,
-  header = true,
-  children,
-}: {
-  triggerLabel: string;
+function DialogExample(props: {
   title: string;
-  header?: boolean;
-  children: React.ReactNode;
+  subtitle?: string;
+  withHeader?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button variant="primary" onClick={() => setOpen(true)} label={triggerLabel} />
-      <DialogRoot open={open} onOpenChange={setOpen}>
-        <DialogContent aria-label={header ? undefined : title}>
-          {header && <DialogHeader title={title} onClose={() => setOpen(false)} />}
-          {children}
-        </DialogContent>
-      </DialogRoot>
-    </>
-  );
-}
+  const [isOpen, setIsOpen] = useState(false);
+  const withHeader = props.withHeader ?? true;
 
-function Footer({ onClose }: { onClose: () => void }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-      <Button variant="ghost" onClick={onClose} label="取消" />
-      <Button variant="primary" onClick={onClose} label="确认" />
-    </div>
-  );
-}
-
-export const Basic: Story = {
-  render: () => (
-    <DialogShell title="点击按钮打开 dialog">
-      <ControlledDialog triggerLabel="打开 dialog" title="基础 Dialog">
-        <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
-          <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>
-            点击遮罩、按 Esc 或使用标题栏关闭按钮均可关闭。
-          </p>
-        </div>
-      </ControlledDialog>
-    </DialogShell>
-  ),
-};
-
-export const WithFooter: Story = {
-  render: () => (
-    <DialogShell title="带底部操作按钮">
-      <ControlledDialogTriggerFooter />
-    </DialogShell>
-  ),
-};
-
-function ControlledDialogTriggerFooter() {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button variant="primary" onClick={() => setOpen(true)} label="打开（带操作）" />
-      <DialogRoot open={open} onOpenChange={setOpen}>
-        <DialogContent>
-          <DialogHeader title="带操作按钮" onClose={() => setOpen(false)} />
-          <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
-            <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>
-              底部按钮通过 onOpenChange 关闭。
-            </p>
-            <Footer onClose={() => setOpen(false)} />
-          </div>
-        </DialogContent>
-      </DialogRoot>
-    </>
-  );
-}
-
-export const WithoutCloseButton: Story = {
-  render: () => (
-    <DialogShell title="无标题栏，只能用遮罩或 Esc 关闭">
-      <ControlledDialog triggerLabel="打开（无标题栏）" title="无标题栏 Dialog" header={false}>
-        <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600 }}>无关闭按钮</h2>
-          <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>
-            不渲染 DialogHeader 时不会出现标题栏关闭按钮。
-          </p>
-        </div>
-      </ControlledDialog>
-    </DialogShell>
-  ),
-};
-
-export const WithDialogClose: Story = {
-  render: () => (
-    <DialogShell title="用 DialogClose 作为自定义关闭按钮">
-      <ControlledDialogClose />
-    </DialogShell>
-  ),
-};
-
-function ControlledDialogClose() {
-  const [open, setOpen] = useState(false);
   return (
     <>
       <Button
         variant="primary"
-        onClick={() => setOpen(true)}
-        label="打开（DialogClose 关闭）"
+        label={`打开：${props.title}`}
+        onClick={() => setIsOpen(true)}
       />
-      <DialogRoot open={open} onOpenChange={setOpen}>
-        <DialogContent aria-label="DialogClose 示例">
-          <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
-            <h2 style={{ fontSize: 16, fontWeight: 600 }}>DialogClose 示例</h2>
-            <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>
-              DialogClose 包裹的按钮点击后会自动关闭 dialog。
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <DialogClose render={<Button variant="ghost" label="关闭" />}>关闭</DialogClose>
-            </div>
-          </div>
-        </DialogContent>
-      </DialogRoot>
+      <Dialog
+        isOpen={isOpen}
+        onOpenChange={setIsOpen}
+        aria-label={withHeader ? undefined : props.title}
+        width={480}
+        padding={0}
+        purpose="form"
+      >
+        <Layout
+          height="auto"
+          header={
+            withHeader ? (
+              <DialogHeader
+                title={props.title}
+                subtitle={props.subtitle}
+                onOpenChange={setIsOpen}
+              />
+            ) : undefined
+          }
+          content={
+            <LayoutContent>
+              <p>Dialog、焦点、Esc 和关闭恢复均由 Astryx 直接管理。</p>
+            </LayoutContent>
+          }
+          footer={
+            <LayoutFooter hasDivider>
+              <Button
+                variant="primary"
+                label="完成"
+                onClick={() => setIsOpen(false)}
+              />
+            </LayoutFooter>
+          }
+        />
+      </Dialog>
     </>
   );
 }
 
-export const FormDialog: Story = {
+export const Basic: Story = {
+  render: () => <DialogExample title="基础对话框" />,
+};
+
+export const WithSubtitle: Story = {
   render: () => (
-    <DialogShell title="表单 dialog，验证 Astryx TextInput/TextArea 在 portal 内排版">
-      <ControlledDialogTriggerForm />
-    </DialogShell>
+    <DialogExample
+      title="连接模型"
+      subtitle="配置连接后即可在会话中使用。"
+    />
   ),
 };
 
-function ControlledDialogTriggerForm() {
-  const [open, setOpen] = useState(false);
+export const WithoutHeader: Story = {
+  render: () => (
+    <DialogExample title="无标题栏对话框" withHeader={false} />
+  ),
+};
+
+function FormDialog() {
+  const [isOpen, setIsOpen] = useState(false);
   const [title, setTitle] = useState('项目周报');
   const [description, setDescription] = useState('本周完成了 Storybook P0 组件覆盖。');
+
   return (
     <>
-      <Button variant="primary" onClick={() => setOpen(true)} label="打开表单" />
-      <DialogRoot open={open} onOpenChange={setOpen}>
-        <DialogContent>
-          <DialogHeader title="编辑说明" onClose={() => setOpen(false)} />
-          <div style={{ display: 'grid', gap: 14, padding: 24, width: 'min(92vw, 480px)' }}>
-            <TextInput label="标题" value={title} onChange={setTitle} />
-            <TextArea label="描述" value={description} onChange={setDescription} />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <Button variant="ghost" onClick={() => setOpen(false)} label="取消" />
-              <Button variant="primary" onClick={() => setOpen(false)} label="保存" />
-            </div>
-          </div>
-        </DialogContent>
-      </DialogRoot>
+      <Button
+        variant="primary"
+        label="打开表单"
+        onClick={() => setIsOpen(true)}
+      />
+      <Dialog
+        isOpen={isOpen}
+        onOpenChange={setIsOpen}
+        width={520}
+        padding={0}
+        purpose="form"
+      >
+        <Layout
+          height="auto"
+          header={
+            <DialogHeader
+              title="编辑说明"
+              onOpenChange={setIsOpen}
+            />
+          }
+          content={
+            <LayoutContent>
+              <div style={{ display: 'grid', gap: 14 }}>
+                <TextInput data-autofocus label="标题" value={title} onChange={setTitle} />
+                <TextArea label="描述" value={description} onChange={setDescription} />
+              </div>
+            </LayoutContent>
+          }
+          footer={
+            <LayoutFooter hasDivider>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Button
+                  variant="ghost"
+                  label="取消"
+                  onClick={() => setIsOpen(false)}
+                />
+                <Button
+                  variant="primary"
+                  label="保存"
+                  onClick={() => setIsOpen(false)}
+                />
+              </div>
+            </LayoutFooter>
+          }
+        />
+      </Dialog>
     </>
   );
 }
 
-export const AlwaysOpen: Story = {
+export const Form: Story = {
+  render: () => <FormDialog />,
+};
+
+export const OpenMatrix: Story = {
   render: () => (
-    <DialogShell title="默认 open，验证 dialog 渲染（视觉回归快照）">
-      <DialogRoot open>
-        <DialogContent aria-label="常驻 open">
-          <div style={{ display: 'grid', gap: 12, padding: 24, width: 360 }}>
-            <h2 style={{ fontSize: 16, fontWeight: 600 }}>常驻 open</h2>
-            <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>
-              DialogRoot open 固定为 true，用于视觉回归快照。
-            </p>
-          </div>
-        </DialogContent>
-      </DialogRoot>
-    </DialogShell>
+    <div style={{ minHeight: 520 }}>
+      <Dialog
+        isOpen
+        onOpenChange={() => undefined}
+        width={480}
+        padding={0}
+        purpose="info"
+        aria-label="常驻打开的对话框"
+      >
+        <Layout
+          height="auto"
+          content={
+            <LayoutContent>
+              <p>常驻 open，用于检查 Astryx Dialog 的视觉与命中区域。</p>
+            </LayoutContent>
+          }
+        />
+      </Dialog>
+    </div>
   ),
 };

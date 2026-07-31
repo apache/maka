@@ -4,7 +4,7 @@
  * status icon which §1.9 keeps as call-site 12–14px (not tokenized):
  *   - streaming-dot/unread 8px → var(--space-2)
  *   - status icon keeps its 14px wrapper layout slot (bare, dense-meta) and
- *     scopes a local 12px SVG override (bare, dense-meta) so buttonVariants'
+ *     scopes a local 12px SVG override (bare, dense-meta) so the shared action's
  *     [&_svg]:size-[var(--icon-size,1rem)] (16px chrome tier, a cascade leak
  *     from borrowing UiButton) does not grow the <Icon size={12}> glyph
  *   - .maka-list-row-text min-height dropped (row 32px + grid center own it)

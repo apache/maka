@@ -303,7 +303,7 @@ describe('icon + typography governance contract', () => {
     assert.match(catalog, /<ProviderLogo type=\{props\.type\} \/>/, 'catalog cards must consume the shared provider logo seam');
     assert.match(
       providerDialog,
-      /<DialogHeader[\s\S]*icon=\{<ProviderLogo type=\{props\.providerType\} compact \/>\}/,
+      /<DialogHeader[\s\S]*startContent=\{<ProviderLogo type=\{props\.providerType\} compact \/>\}/,
       'saved connection detail must consume the shared provider logo seam',
     );
   });

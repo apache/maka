@@ -2,17 +2,10 @@ import React, { forwardRef } from 'react';
 import { Progress as BaseProgress } from '@base-ui/react/progress';
 import { Toggle as BaseToggle } from '@base-ui/react/toggle';
 import { ToggleGroup as BaseToggleGroup } from '@base-ui/react/toggle-group';
-import { AlertDialog as AstryxAlertDialog } from '@astryxdesign/core/AlertDialog';
-import {
-  Dialog as AstryxDialog,
-  type DialogProps as AstryxDialogProps,
-  type DialogPurpose,
-} from '@astryxdesign/core/Dialog';
 import { cva, type VariantProps } from 'class-variance-authority';
-import {
-  useModalFocusLifecycle,
-  type ModalFocusTarget,
-} from './modal-lifecycle.js';
+import { usePopover, type UsePopoverReturn } from '@astryxdesign/core/Popover';
+import { Selector } from '@astryxdesign/core/Selector';
+import { mergeRefs } from '@astryxdesign/core/utils';
 import { cn } from './utils.js';
 
 export { cn } from './utils.js';
@@ -139,133 +132,6 @@ export const buttonVariants = cva(
 
 // This legacy class recipe remains only for picker triggers.
 
-interface DialogContextValue {
-  isOpen: boolean;
-  onOpenChange(isOpen: boolean): void;
-  purpose: DialogPurpose;
-}
-
-const DialogContext = React.createContext<DialogContextValue | null>(null);
-
-interface DialogRootProps {
-  open?: boolean;
-  defaultOpen?: boolean;
-  onOpenChange?(isOpen: boolean): void;
-  children?: React.ReactNode;
-}
-
-function ModalRoot({
-  open: controlledOpen,
-  defaultOpen = false,
-  onOpenChange,
-  children,
-  purpose,
-}: DialogRootProps & { purpose: DialogPurpose }) {
-  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen);
-  const isOpen = controlledOpen ?? uncontrolledOpen;
-  const context = React.useMemo<DialogContextValue>(
-    () => ({
-      isOpen,
-      purpose,
-      onOpenChange(nextOpen) {
-        if (controlledOpen === undefined) setUncontrolledOpen(nextOpen);
-        onOpenChange?.(nextOpen);
-      },
-    }),
-    [controlledOpen, isOpen, onOpenChange, purpose],
-  );
-  return <DialogContext value={context}>{children}</DialogContext>;
-}
-
-export function DialogRoot(props: DialogRootProps) {
-  return <ModalRoot {...props} purpose="info" />;
-}
-
-export function AlertDialogRoot(props: DialogRootProps) {
-  return <ModalRoot {...props} purpose="form" />;
-}
-
-function useDialogRoot(): DialogContextValue {
-  const context = React.useContext(DialogContext);
-  if (!context) throw new Error('DialogContent must be rendered inside DialogRoot');
-  return context;
-}
-
-interface ModalContentProps
-  extends Omit<AstryxDialogProps, 'children' | 'isOpen' | 'onOpenChange' | 'ref'> {
-  children?: React.ReactNode;
-  initialFocus?: ModalFocusTarget;
-  finalFocus?: ModalFocusTarget;
-}
-
-type ModalRole = 'dialog' | 'alertdialog';
-
-function createModalContent(defaultRole: ModalRole, defaultPurpose?: DialogPurpose) {
-  return forwardRef<HTMLDialogElement, ModalContentProps>(function ModalContent(
-    {
-      children,
-      initialFocus,
-      finalFocus,
-      purpose,
-      role = defaultRole,
-      padding = 0,
-      ...props
-    },
-    ref,
-  ) {
-    const root = useDialogRoot();
-    useModalFocusLifecycle({ isOpen: root.isOpen, initialFocus, finalFocus });
-
-    return (
-      <AstryxDialog
-        {...props}
-        ref={ref}
-        isOpen={root.isOpen}
-        onOpenChange={root.onOpenChange}
-        purpose={purpose ?? defaultPurpose ?? root.purpose}
-        role={role}
-        padding={padding}
-      >
-        {children}
-      </AstryxDialog>
-    );
-  });
-}
-
-export const DialogContent = createModalContent('dialog');
-export const AlertDialogContent = createModalContent('alertdialog', 'form');
-
-interface DialogCloseProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  render?: React.ReactElement<Record<string, unknown>>;
-}
-
-export function DialogClose({ render, children, onClick, ...props }: DialogCloseProps) {
-  const root = useDialogRoot();
-  const handleClick: React.MouseEventHandler<HTMLButtonElement> = (event) => {
-    const renderedOnClick = render?.props.onClick as
-      | React.MouseEventHandler<HTMLButtonElement>
-      | undefined;
-    renderedOnClick?.(event);
-    onClick?.(event);
-    if (!event.defaultPrevented) root.onOpenChange(false);
-  };
-
-  if (render) {
-    return React.cloneElement(render, { ...props, onClick: handleClick, children });
-  }
-  return (
-    <button
-      {...props}
-      type={props.type ?? 'button'}
-      aria-label={props['aria-label']}
-      onClick={handleClick}
-    >
-      {children}
-    </button>
-  );
-}
-
-export { AstryxAlertDialog as AlertDialog };
 export { LayerProvider } from '@astryxdesign/core/Layer';
 
 // Tabs: re-export the shared tab spec primitive (#499 P0-3). The tab spec
@@ -337,8 +203,6 @@ export const Progress = forwardRef<
   );
 });
 
-// Toast — migrated to Base UI Toast in `packages/ui/src/toast.tsx`, exposed
-// via the project's `useToast()` / `toast.confirm()` API (PR6 #520). The toast
-// surface (Provider + manager + Viewport/Root/Title/Description/Action/Close)
-// is Base UI; the confirm dialog + its queue stay hand-written (Base UI Toast
-// has no confirm concept) and live in toast.tsx.
+// Toast and destructive confirmation are owned by Astryx in
+// `packages/ui/src/toast.tsx`, exposed through the project's `useToast()` /
+// `toast.confirm()` product API.

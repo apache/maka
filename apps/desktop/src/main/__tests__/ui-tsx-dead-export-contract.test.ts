@@ -48,12 +48,8 @@ const ALLOWED_PENDING: ReadonlyArray<{ name: string; reason: string }> = [
   // intentionally empty
 ];
 
-// AlertDialog is owned by the modal slice. Form-control compatibility exports
-// are deliberately not frozen: Slice 4 deletes them with their last consumer.
-const FROZEN_COMPATIBILITY = new Set([
-  'AlertDialogRoot',
-  'AlertDialogContent',
-]);
+// Compatibility exports are removed with their final consumers.
+const FROZEN_COMPATIBILITY = new Set<string>();
 
 async function readSourceFiles(dir: string): Promise<{ path: string; content: string }[]> {
   const entries = await readdir(dir, { withFileTypes: true });

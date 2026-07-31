@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
-import { Alert, AlertDescription, Button, DialogContent, DialogHeader, DialogRoot, FormLayout, TextInput, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, FormLayout, TextInput, useUiLocale } from '@maka/ui';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
@@ -84,6 +89,8 @@ export function WechatQrLoginModal(props: {
   const [result, setResult] = useState<WechatBridgeQrCodeResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [isOpen, setIsOpen] = useState(false);
+  const hasOpenedRef = useRef(false);
   const notifiedLoggedInRef = useRef(false);
   const loadingQrRef = useRef(false);
 
@@ -148,24 +155,38 @@ export function WechatQrLoginModal(props: {
   const loggedIn = result?.ok ? result.loggedIn : false;
   const error = result && !result.ok ? result : null;
 
-  return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
-    >
-      <DialogContent
-        className="settingsWechatQrModal"
-        width={360}
-      >
-        <DialogHeader
-          title={copy.title}
-          subtitle={copy.subtitle}
-          onClose={props.onClose}
-        />
+  useEffect(() => setIsOpen(true), []);
 
-        <div className="settingsWechatQrBody">
+  useEffect(() => {
+    if (isOpen) {
+      hasOpenedRef.current = true;
+      return;
+    }
+    if (!hasOpenedRef.current) return;
+    const frame = window.requestAnimationFrame(props.onClose);
+    return () => window.cancelAnimationFrame(frame);
+  }, [isOpen, props.onClose]);
+
+  return (
+    <Dialog
+      isOpen={isOpen}
+      onOpenChange={setIsOpen}
+      className="settingsWechatQrModal"
+      width={360}
+      padding={0}
+      purpose="info"
+    >
+      <Layout
+        header={
+          <DialogHeader
+            title={copy.title}
+            subtitle={copy.subtitle}
+            onOpenChange={setIsOpen}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
+            <div className="settingsWechatQrBody">
           {loading ? (
             <div className="settingsWechatQrState" data-tone="loading">
               {copy.generating}
@@ -198,8 +219,10 @@ export function WechatQrLoginModal(props: {
               <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.fetching : copy.fetchAgain} />
             </div>
           )}
-        </div>
-      </DialogContent>
-    </DialogRoot>
+            </div>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }

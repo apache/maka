@@ -142,19 +142,17 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(tokens, /^\s*kbd\s*\{/m, 'Global element CSS must not override component-owned keycaps');
   });
 
-  it('keeps keyboard help on the shared DialogHeader with a single title', async () => {
+  it('keeps keyboard help on Astryx DialogHeader with a single title', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/keyboard-help.tsx'), 'utf8');
 
-    // Modal-header unification: keyboard-help consumes the shared DialogHeader
-    // primitive (single title row + quiet icon-sm close), not an ad-hoc
-    // eyebrow + second-title + boxed close stack.
-    assert.match(source, /import \{[^}]*\bDialogContent\b[^}]*\bDialogHeader\b[^}]*\bDialogRoot\b[^}]*\bKbd\b[^}]*\} from '@maka\/ui';/);
+    assert.match(source, /import \{ Kbd, useUiLocale \} from '@maka\/ui';/);
+    assert.match(source, /Dialog,[\s\S]*DialogHeader,[\s\S]*from '@astryxdesign\/core\/Dialog'/);
     assert.doesNotMatch(source, /<button\b/, 'KeyboardHelpModal close action must use shared Button');
     assert.doesNotMatch(source, /<kbd\b/, 'KeyboardHelpModal shortcut glyphs must use shared primitive Kbd');
     assert.match(
       source,
-      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=\{props\.onClose\}/,
-      'KeyboardHelpModal must render the shared DialogHeader with 键盘快捷键 as THE title',
+      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onOpenChange=\{setIsOpen\}/,
+      'KeyboardHelpModal must render Astryx DialogHeader with 键盘快捷键 as THE title',
     );
     // The redundant second title and eyebrow are gone.
     assert.doesNotMatch(source, /所有可用快捷键/, 'The redundant second title must be dropped');
@@ -163,20 +161,14 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.match(source, /<Kbd>\{key\}<\/Kbd>/);
   });
 
-  it('unifies titled DialogContent modals onto the shared DialogHeader primitive', async () => {
-    // Modal-header unification contract: every titled DialogContent modal
-    // consumes the shared DialogHeader (single title row + one quiet icon-sm
-    // close button) instead of an ad-hoc header. The command palette is
-    // intentionally headerless (its input row IS the header) and is excluded.
-    const header = await readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8');
-    assert.match(header, /DialogHeader as AstryxDialogHeader/);
-    assert.match(header, /<AstryxDialogHeader/);
-    assert.doesNotMatch(header, /<Button|<button|<X\b/, 'Astryx must own the header close affordance');
-    assert.match(header, /export function DialogHeader/, 'DialogHeader must be exported');
+  it('uses Astryx DialogHeader directly for titled modals', async () => {
+    await assert.rejects(
+      readFile(join(repoRoot, 'packages/ui/src/primitives/dialog-header.tsx'), 'utf8'),
+    );
 
     // Titled hand-composed modals use the shared header.
     const keyboardHelp = await readFile(join(process.cwd(), 'src/renderer/keyboard-help.tsx'), 'utf8');
-    assert.match(keyboardHelp, /import \{[^}]*\bDialogHeader\b[^}]*\} from '@maka\/ui';/);
+    assert.match(keyboardHelp, /from '@astryxdesign\/core\/Dialog'/);
     assert.match(keyboardHelp, /<DialogHeader\b/);
 
     // Search is a complete Astryx CommandPalette, not a hand-composed Dialog.

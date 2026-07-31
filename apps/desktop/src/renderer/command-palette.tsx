@@ -59,7 +59,7 @@ export function useCommandPalette(): [boolean, () => void, () => void] {
 function fuzzy(query: string, text: string): boolean {
   // Cheap subsequence match: every char of query (lowercase) must appear in
   // order somewhere inside text (lowercase). Good enough for a palette with
-  // <100 commands; we can swap in a real fuzzy matcher later.
+// <100 commands; we can swap in a real fuzzy matcher later.
   if (!query) return true;
   let i = 0;
   const q = query.toLowerCase();

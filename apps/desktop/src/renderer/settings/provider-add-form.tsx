@@ -188,6 +188,7 @@ export function AddProviderForm(props: {
               : undefined
           }
           isDisabled={busy}
+          data-autofocus
         />
         {error?.field === 'form' && (
           <Alert variant="error">

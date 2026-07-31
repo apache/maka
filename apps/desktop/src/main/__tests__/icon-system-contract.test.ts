@@ -6,10 +6,9 @@ import { readRendererContractCss } from './contract-css-helpers.js';
 
 // Chrome icon-size contract (PR-ICON-SCALE).
 //
-// The hand-rolled desktop chrome (left-nav glyphs + the `buttonVariants` button
-// icon) shares ONE size, expressed as the `--icon-size` token, so nav and
-// buttons can't drift apart again (the original defect: nav at 18px while
-// buttons sat at size-4/1rem). Deliberately small dense-meta icons (12-14px)
+// The hand-rolled desktop chrome routes nav glyphs through one `--icon-size`
+// token. Shared actions use Astryx Button/IconButton geometry. Deliberately
+// small dense-meta icons (12-14px)
 // and large hero/emphasis icons (20px+) stay set at their call sites — they are
 // intentional, not drift, so this contract does NOT flatten them, and it
 // explicitly forbids reintroducing a blanket `svg.lucide { width }` rule that
@@ -100,15 +99,6 @@ describe('icon system contract (single chrome size token)', () => {
       settings!,
       /grid-template-columns:\s*var\(--icon-size\)/,
       'settings gear column tracks --icon-size so it shares the nav rows\' icon axis',
-    );
-  });
-
-  it('routes the shared button icon through the same token', async () => {
-    const ui = await readFile(join(repoRoot, 'packages', 'ui', 'src', 'ui.tsx'), 'utf8');
-    assert.match(
-      ui,
-      /\[&_svg\]:size-\[var\(--icon-size,1rem\)\]/,
-      'buttonVariants svg size must consume --icon-size (1rem fallback keeps @maka/ui standalone)',
     );
   });
 
