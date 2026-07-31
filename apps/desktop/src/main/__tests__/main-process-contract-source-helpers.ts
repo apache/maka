@@ -36,22 +36,6 @@ export const REPO_ROOT = findRepoRoot(import.meta.dirname);
  * question. `src/main` is 133 production modules, 33 of them below the top
  * level.
  */
-export async function mainProcessSourceFiles(): Promise<string[]> {
-  const root = resolve(REPO_ROOT, 'apps/desktop/src/main');
-  const walk = async (dir: string): Promise<string[]> => {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const found = await Promise.all(
-      entries.map(async (entry) => {
-        const full = join(dir, entry.name);
-        if (entry.isDirectory()) return entry.name === '__tests__' ? [] : walk(full);
-        return entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts') ? [full] : [];
-      }),
-    );
-    return found.flat();
-  };
-  return (await walk(root)).sort();
-}
-
 export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/main.ts',
   'apps/desktop/src/main/app-ipc-main.ts',
@@ -116,16 +100,6 @@ export function readMainProcessCombinedSourceSync(): string {
     .join('\n');
 }
 
-/** Read just apps/desktop/src/main/main.ts. Use this for assertions that
- *  target main.ts specifically and must not be matched by another main
- *  module that the combined source folds in (e.g. the extracted resolver
- *  module's own `export async function resolveDefaultPermissionMode`). */
-export async function readMainTsSource(): Promise<string> {
-  return readFile(resolve(REPO_ROOT, 'apps/desktop/src/main/main.ts'), 'utf8');
-}
-
-/** Read just apps/desktop/src/main/sessions-ipc-main.ts — the single
- *  session-creation IPC since #1433 merged `quickChat:start` into it. */
 export async function readSessionsIpcSource(): Promise<string> {
   return readFile(resolve(REPO_ROOT, 'apps/desktop/src/main/sessions-ipc-main.ts'), 'utf8');
 }

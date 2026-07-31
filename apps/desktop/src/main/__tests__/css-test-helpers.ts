@@ -1,12 +1,9 @@
 import { strict as assert } from 'node:assert';
 import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 export const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 export const RENDERER_STYLES_ENTRY = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles.css');
-export const RENDERER_STYLES_DIR = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles');
-export const TOKENS_FILE = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'maka-tokens.css');
-export const STYLES_FILE = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles.css');
 
 export async function readCssTree(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -56,54 +53,8 @@ export async function readAllRendererCss(): Promise<string> {
   return expandCssImports(RENDERER_STYLES_ENTRY, new Set([RENDERER_STYLES_ENTRY]));
 }
 
-// --- TSX source for converge contracts -------------------------------------
-// Closes the CSS-only blind spot (#546 PR0): arbitrary `text-[..]`/`leading-[..]`
-// Tailwind utilities live in className strings inside .tsx/.ts, which the CSS
-// scanners never read. `readRendererTsxFiles` exposes that source so each
-// contract can scan it with the same value discipline as CSS declarations.
-//
-// Coverage is literal className text only. Runtime-composed classes
-// (clsx/cva variant maps, template-string concatenation) and inline
-// `style={{ fontSize }}` are NOT caught — each contract states this scope
-// honestly in its own comment.
-const TS_SOURCE_DIRS = [
-  resolve(REPO_ROOT, 'packages', 'ui', 'src'),
-  resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer'),
-];
-
-async function listTsFiles(dir: string): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files = await Promise.all(entries.map(async (entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return listTsFiles(path);
-    return (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) ? [path] : [];
-  }));
-  return files.flat().sort();
-}
-
-export async function readRendererTsxFiles(): Promise<{ path: string; relPath: string; source: string }[]> {
-  const out: { path: string; relPath: string; source: string }[] = [];
-  for (const dir of TS_SOURCE_DIRS) {
-    for (const path of await listTsFiles(dir)) {
-      // Test fixtures assert on class strings, not styling intent — skip them.
-      if (path.includes('__tests__')) continue;
-      out.push({ path, relPath: relative(REPO_ROOT, path), source: await readFile(path, 'utf8') });
-    }
-  }
-  return out;
-}
-
 export function stripCssComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '');
-}
-
-/** Strip `@keyframes <name> { … }` blocks so converge contracts can scan
- * element-state declarations without false-positiving on animation frames
- * (keyframe opacity/transform are animation intent, not element state).
- * One level of `{}` nesting is enough for all current keyframes (0%/50%/100%
- * frames with no nested blocks). */
-export function stripKeyframes(css: string): string {
-  return css.replace(/@keyframes\s+[\w-]+\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
 }
 
 /** Ban non-literal `font:` shorthand in renderer CSS.
@@ -172,52 +123,4 @@ export function assertCustomPropPinnedOnce(
   const values = parseCssCustomProps(css).get(prop) ?? [];
   assert.equal(values.length, 1, `${label}: ${prop} must be declared exactly once with ${expected}; got ${values.length} declaration(s): ${JSON.stringify(values)}`);
   assert.equal(values[0], expected, `${label}: ${prop} must be ${expected}; got ${values[0]}`);
-}
-
-/** Assert every `var(--xxx)` reference reachable from `prop` resolves to a
- *  defined custom property — recursively, with cycle detection.
- *
- *  Catches the bug where a token points at an undefined custom prop — e.g.
- *  `--h-control-md: var(--space-7)` when maka's discrete spacing scale skips
- *  7. The declaration is invalid at computed-value time, so the sized
- *  element collapses to its initial/inherited value (width/height → auto,
- *  min-height → 0) instead of the intended 28px. A pin-only contract that
- *  just checks `--h-control-md` is declared with `var(--space-7)` passes
- *  while the token is broken — this helper walks the reference chain.
- *
- *  Recurses through the whole chain, not just the first hop: a chain like
- *  `--h-control-xs → --space-5 → --missing` (undefined two hops out) is
- *  caught, and a cycle like `--a → --b → --a` is caught via a `visiting`
- *  set. Each node must also be declared exactly once. */
-export function assertCustomPropRefsDefined(
-  css: string,
-  prop: string,
-  label = 'maka-tokens.css',
-): void {
-  const props = parseCssCustomProps(css);
-  const visiting = new Set<string>();
-  const visited = new Set<string>();
-  const errors: string[] = [];
-  const dfs = (name: string, path: string[]): void => {
-    if (visited.has(name)) return;
-    if (visiting.has(name)) {
-      errors.push(`${label}: circular custom-prop reference: ${[...path, name].join(' → ')}`);
-      return;
-    }
-    visiting.add(name);
-    const values = props.get(name);
-    if (values === undefined) {
-      const via = path.length ? ` (via ${path.join(' → ')})` : '';
-      errors.push(`${label}: ${prop} references undefined ${name}${via} — the declaration would collapse to its initial/inherited value at computed-value time`);
-    } else if (values.length !== 1) {
-      errors.push(`${label}: ${name} must be declared exactly once; got ${values.length} declaration(s): ${JSON.stringify(values)}`);
-    } else {
-      const refs = [...values[0].matchAll(/var\(\s*(--[\w-]+)\s*(?:,[^)]*)?\)/g)].map((m) => m[1]);
-      for (const ref of refs) dfs(ref, [...path, name]);
-    }
-    visiting.delete(name);
-    visited.add(name);
-  };
-  dfs(prop, []);
-  assert.ok(errors.length === 0, errors.join('\n'));
 }

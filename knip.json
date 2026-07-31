@@ -22,7 +22,8 @@
       "ignoreDependencies": [
         "@fontsource-variable/geist",
         "@fontsource-variable/geist-mono",
-        "electron-builder"
+        "electron-builder",
+        "tailwindcss"
       ],
       "ignoreBinaries": ["taskkill", "electron-builder"]
     },
