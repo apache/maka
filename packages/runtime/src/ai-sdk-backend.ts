@@ -63,6 +63,7 @@ import {
   type EffectiveOrchestration,
 } from '@maka/core/orchestration';
 import type { PlanToolResult } from './plan-tools.js';
+import type { YieldAgentGraphToolResult } from './stream-graph-supervisor-tools.js';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import {
   MAX_PROVIDER_IMAGE_REQUEST_BYTES,
@@ -507,7 +508,7 @@ export class AiSdkBackend implements AgentBackend {
   private abortController: AbortController | null = null;
   private currentTurnId: string | null = null;
   private loopStopRequested = false;
-  private handoffStopReason: CompleteEvent['stopReason'] | undefined;
+  private loopStopReason: CompleteEvent['stopReason'] | undefined;
   private currentInvocationId: string | null = null;
   /**
    * User messages steered into the running turn, drained from the caller's
@@ -1578,6 +1579,9 @@ export class AiSdkBackend implements AgentBackend {
               if (isPlanToolResult(settlement.result)) {
                 this.handlePlanToolResult(settlement.result, turnId, queue);
               }
+              if (isAgentGraphYieldToolResult(settlement.result)) {
+                this.handleAgentGraphYieldToolResult(settlement.result);
+              }
             }
             await queue.waitUntilConsumedThroughCurrent();
             for (let index = 0; index < returnedToolCalls.length; index += 1) {
@@ -1765,7 +1769,7 @@ export class AiSdkBackend implements AgentBackend {
         // win even when it arrives during post-stream usage persistence.
         if (this.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
         const stopReason =
-          this.handoffStopReason ??
+          this.loopStopReason ??
           (this.maxSteps !== undefined && finishReason === 'tool-calls'
             ? 'step_limit'
             : this.mapFinishReason(finishReason));
@@ -1927,7 +1931,7 @@ export class AiSdkBackend implements AgentBackend {
         revision: proposal.revision,
         storeVersion: result.storeVersion,
       });
-      this.handoffStopReason = 'plan_handoff';
+      this.loopStopReason = 'plan_handoff';
       this.loopStopRequested = true;
       return;
     }
@@ -1942,6 +1946,21 @@ export class AiSdkBackend implements AgentBackend {
     if (result.kind === 'plan_execution_completed' || result.kind === 'plan_execution_cancelled') {
       this.loopStopRequested = true;
     }
+  }
+
+  private handleAgentGraphYieldToolResult(result: YieldAgentGraphToolResult): void {
+    this.currentRunTrace?.emit(
+      'agent_graph',
+      'graph_supervisor_yielded',
+      'Graph supervisor yielded',
+      {
+        pendingWorkCount: result.pendingWorkCount,
+        liveOperatorCount: result.liveOperatorCount,
+        reason: result.reason,
+      },
+    );
+    this.loopStopReason = 'graph_yield';
+    this.loopStopRequested = true;
   }
 
   // --------------------------------------------------------------------------
@@ -2881,7 +2900,7 @@ export class AiSdkBackend implements AgentBackend {
     this.currentRunTrace = null;
     this.currentUserIntent = undefined;
     this.loopStopRequested = false;
-    this.handoffStopReason = undefined;
+    this.loopStopReason = undefined;
     this.injectedSteeringMessages = [];
     try {
       await this.toolRuntime.endTurn(turnId, this.aborted ? 'aborted' : 'completed');
@@ -3011,6 +3030,14 @@ function isPlanToolResult(output: unknown): output is PlanToolResult {
     'plan_execution_completed',
     'plan_execution_cancelled',
   ].includes(String((output as { kind?: unknown }).kind));
+}
+
+function isAgentGraphYieldToolResult(output: unknown): output is YieldAgentGraphToolResult {
+  return (
+    output !== null &&
+    typeof output === 'object' &&
+    (output as { kind?: unknown }).kind === 'agent_graph_yielded'
+  );
 }
 
 export function repairMakaToolCall(input: {

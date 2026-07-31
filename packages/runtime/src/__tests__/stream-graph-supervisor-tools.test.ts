@@ -6,14 +6,15 @@ import type { MakaToolContext } from '../tool-runtime.js';
 import {
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   VIEW_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
   buildAgentGraphSupervisorTools,
   projectAgentGraphSchedule,
 } from '../stream-graph-supervisor-tools.js';
 
 describe('stream graph supervisor tools', () => {
-  test('exposes one compact read tool and one durable schedule update tool', async () => {
+  test('exposes compact read, durable update, and cooperative yield tools', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(100) });
-    const [viewTool, updateTool] = buildAgentGraphSupervisorTools({
+    const [viewTool, updateTool, yieldTool] = buildAgentGraphSupervisorTools({
       graphId: 'graph-supervised',
       scheduleStore: store,
       observeGraph: async () => observationWithRecords('graph-supervised', ['verified-result']),
@@ -21,8 +22,19 @@ describe('stream graph supervisor tools', () => {
     try {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
       assert.equal(updateTool.name, UPDATE_AGENT_GRAPH_TOOL_NAME);
+      assert.equal(yieldTool.name, YIELD_AGENT_GRAPH_TOOL_NAME);
       assert.equal(viewTool.recoveryMode, 'replay_safe');
       assert.equal(updateTool.recoveryMode, 'idempotent');
+      assert.equal(yieldTool.recoveryMode, 'replay_safe');
+
+      await assert.rejects(
+        async () =>
+          await yieldTool.impl(
+            { reason: 'Nothing has been scheduled.' },
+            toolContext('yield-empty'),
+          ),
+        /no pending scheduled work/,
+      );
 
       const firstInput = {
         add_work: [
@@ -50,6 +62,18 @@ describe('stream graph supervisor tools', () => {
         { kind: 'input_route', upstreamOperatorIds: ['researcher'] },
       ]);
       assert.doesNotMatch(JSON.stringify(first), /graph-supervised|updateId|"revision"/);
+      assert.deepEqual(
+        await yieldTool.impl(
+          { reason: 'The scheduled operators are still executing.' },
+          toolContext('yield-running'),
+        ),
+        {
+          kind: 'agent_graph_yielded',
+          pendingWorkCount: 2,
+          liveOperatorCount: 1,
+          reason: 'The scheduled operators are still executing.',
+        },
+      );
 
       const [firstWork, secondWork] = first.schedule.work;
       assert.ok(firstWork);
@@ -113,6 +137,10 @@ describe('stream graph supervisor tools', () => {
       );
       assert.equal(finished.schedule.closed, true);
       assert.deepEqual(finished.schedule.finish?.resultIds, ['verified-result']);
+      await assert.rejects(
+        async () => await yieldTool.impl({ reason: 'Already done.' }, toolContext('yield-closed')),
+        /already finished/,
+      );
 
       const viewed = await viewTool.impl({}, toolContext('tool-view'));
       assert.deepEqual(viewed.schedule, finished.schedule);

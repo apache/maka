@@ -7120,6 +7120,76 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
+  test('ends the tool loop cooperatively when the graph supervisor yields', async () => {
+    const durable = durableTurnHarness('turn-graph-yield', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'yield-1',
+                toolName: 'yield_agent_graph',
+                input: JSON.stringify({ reason: 'Waiting for committed child results.' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          impl: async ({ reason }) => ({
+            kind: 'agent_graph_yielded' as const,
+            pendingWorkCount: 2,
+            liveOperatorCount: 2,
+            reason,
+          }),
+        },
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 1, 'yield must not request another provider step');
+    assert.equal(events.at(-1)?.type, 'complete');
+    assert.equal(
+      (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason,
+      'graph_yield',
+    );
+    assert.equal(
+      events.some((event) => event.type === 'abort'),
+      false,
+    );
+  });
+
   test('reports an explicit step limit without making an auxiliary model call', async () => {
     const appended: StoredMessage[] = [];
     const durable = durableTurnHarness('turn-1', 'finish the task');

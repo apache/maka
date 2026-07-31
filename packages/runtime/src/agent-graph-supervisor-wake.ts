@@ -602,6 +602,7 @@ function renderAgentGraphSupervisorWakePrompt(
     `Reconciliation status: ${result?.status ?? 'recovered'}. Snapshot: ${snapshot.snapshotVersion}.`,
     'Inspect the graph with view_agent_graph. Read child results with agent_output view=result; use raw event views only for narrow diagnostics.',
     'Then either schedule the next work with update_agent_graph or finish the graph with the selected result record IDs.',
+    'If you schedule more work and no immediate supervisor decision remains, call yield_agent_graph. Do not poll or sleep while operators execute.',
     'Report the useful outcome to the user when the graph is complete.',
     '</agent-graph-supervisor-checkpoint>',
   ].join('\n');

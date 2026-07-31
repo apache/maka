@@ -844,6 +844,7 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(mapCompleteStopReason('end_turn'), 'completed');
     assert.equal(mapCompleteStopReason('max_tokens'), 'completed');
     assert.equal(mapCompleteStopReason('plan_handoff'), 'completed');
+    assert.equal(mapCompleteStopReason('graph_yield'), 'completed');
     assert.equal(mapCompleteStopReason('permission_handoff'), 'completed');
     assert.equal(mapCompleteStopReason('user_stop'), 'aborted');
     assert.equal(mapCompleteStopReason('error'), 'failed');

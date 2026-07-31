@@ -18,6 +18,7 @@ export type RunTracePhase =
   | 'sandbox'
   | 'skill'
   | 'plan'
+  | 'agent_graph'
   | 'abort'
   | 'usage';
 
@@ -33,6 +34,7 @@ export type RunTraceEventType =
   | 'plan_execution_interrupted'
   | 'plan_execution_resumed'
   | 'plan_transition_failed'
+  | 'graph_supervisor_yielded'
   | 'model_resolved'
   | 'model_resolve_failed'
   | 'model_stream_started'

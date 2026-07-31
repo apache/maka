@@ -164,6 +164,7 @@ export {
   AGENT_GRAPH_SUPERVISOR_TOOL_NAMES,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   VIEW_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
   buildAgentGraphSupervisorTools,
   compileAgentGraphScheduleUpdate,
   projectAgentGraphSchedule,
@@ -181,6 +182,8 @@ export type {
   BuildAgentGraphSupervisorToolsInput,
   UpdateAgentGraphToolInput,
   UpdateAgentGraphToolResult,
+  YieldAgentGraphToolInput,
+  YieldAgentGraphToolResult,
   ViewAgentGraphToolInput,
   ViewAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';

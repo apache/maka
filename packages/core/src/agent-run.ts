@@ -163,6 +163,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'plan_execution_interrupted',
   'plan_execution_resumed',
   'plan_transition_failed',
+  'graph_supervisor_yielded',
   'run_status_changed',
   'model_resolved',
   'model_resolve_failed',
