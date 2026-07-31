@@ -376,14 +376,16 @@ function NetworkProxySection(props: {
             </FormLayout>
           )}
 
-          <TextInput
-            className="settingsProxyBypassField"
-            value={proxyDraft.bypassList.join(', ')}
-            onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
-            placeholder="metaso.cn, baidu.com"
-            label={copy.bypassList}
-            description={copy.bypassHelp}
-          />
+          <div className="settingsProxyBypassField">
+            <TextInput
+              value={proxyDraft.bypassList.join(', ')}
+              onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
+              placeholder="metaso.cn, baidu.com"
+              label={copy.bypassList}
+              description={copy.bypassHelp}
+              width="100%"
+            />
+          </div>
 
           <Alert variant="info">
             <AlertDescription>{copy.autoBypass(proxyDraft.autoBypassDomains.length)}</AlertDescription>

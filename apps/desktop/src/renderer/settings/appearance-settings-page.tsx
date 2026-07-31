@@ -220,12 +220,15 @@ export function PersonalizationSettingsPage(props: {
             }}
             onBlur={() => flushTone(assistantTone)}
             placeholder={copy.assistantTonePlaceholder}
-            rows={3}
-            maxLength={500}
+            rows={4}
             hasSpellCheck={false}
             label={copy.assistantTone}
             isLabelHidden
             width="100%"
+            style={{
+              boxSizing: 'border-box',
+              height: 'calc(var(--space-16) + var(--space-5))',
+            }}
           />
         </div>
       </SettingsRows>
