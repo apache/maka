@@ -121,10 +121,10 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await gemmaModel.check();
   await expect(gemmaModel).toBeChecked();
 
-  // Default-model management is a visible searchable picker in the connection
-  // detail, rather than a trip through General Settings. Selecting an already
-  // enabled model persists immediately and locks that row as the new default.
-  const defaultModelSelector = modelManagement.getByRole('button', {
+  // Default-model management stays in the connection detail. Selecting an
+  // already enabled model persists immediately and locks that row as the new
+  // default.
+  const defaultModelSelector = modelManagement.getByRole('combobox', {
     name: '此连接的默认模型',
     exact: true,
   });
