@@ -231,10 +231,17 @@ export interface SkinManifest {
     | 'canvas'
     | 'audio'
     | 'storage'
+    | 'data.sessions'
+    | 'data.conversation'
+    | 'data.tools'
+    | 'data.interactions'
+    | 'data.composer'
     | 'actions.navigation'
     | 'actions.task'
     | 'actions.submit'
     | 'actions.stop'
+    | 'actions.composer'
+    | 'actions.answer'
   >;
   minimumApiVersion: number;
   requiredCapabilities: string[];
@@ -244,7 +251,15 @@ export type SkinActionName =
   | 'navigation.switch-session'
   | 'task.new'
   | 'composer.submit'
-  | 'generation.stop';
+  | 'generation.stop'
+  | 'composer.set-draft'
+  | 'composer.focus'
+  | 'composer.pick-attachments'
+  | 'composer.remove-attachment'
+  | 'composer.set-model'
+  | 'composer.set-skills'
+  | 'composer.set-permission-mode'
+  | 'interaction.answer-question';
 
 export interface SkinRuntimeSnapshot {
   activeSkinId: string | null;
@@ -266,7 +281,7 @@ export interface MakaBridge {
     openFolder(): Promise<void>;
     authorizeAction(
       action: SkinActionName,
-      context?: Readonly<{ textPreview?: string }>,
+      context?: Readonly<{ textPreview?: string; permissionMode?: string }>,
     ): Promise<boolean>;
     subscribeChanges(handler: (snapshot: SkinRuntimeSnapshot) => void): () => void;
   };

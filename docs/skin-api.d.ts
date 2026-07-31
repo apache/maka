@@ -21,10 +21,17 @@ export type MakaSkinPermission =
   | 'canvas'
   | 'audio'
   | 'storage'
+  | 'data.sessions'
+  | 'data.conversation'
+  | 'data.tools'
+  | 'data.interactions'
+  | 'data.composer'
   | 'actions.navigation'
   | 'actions.task'
   | 'actions.submit'
-  | 'actions.stop';
+  | 'actions.stop'
+  | 'actions.composer'
+  | 'actions.answer';
 
 export type MakaSkinCapability =
   | 'appearance.v1'
@@ -34,7 +41,14 @@ export type MakaSkinCapability =
   | 'actions.navigation.v1'
   | 'actions.task.v1'
   | 'actions.submit.v1'
-  | 'actions.stop.v1';
+  | 'actions.stop.v1'
+  | 'sessions.v1'
+  | 'conversation.v1'
+  | 'tools.detail.v1'
+  | 'interactions.question.v1'
+  | 'composer.control.v1'
+  | 'navigation.lifecycle.v1'
+  | 'slots.items.v1';
 
 export interface MakaAppearanceSnapshot {
   preference: MakaThemePreference;
@@ -78,7 +92,12 @@ export type MakaSkinPart =
   | 'settings'
   | 'settings-sidebar'
   | 'settings-content'
-  | 'command-palette';
+  | 'command-palette'
+  | 'session-list'
+  | 'session-row'
+  | 'message'
+  | 'tool-card'
+  | 'interaction';
 
 export type MakaSkinSlot =
   | 'chat-header-before'
@@ -86,7 +105,19 @@ export type MakaSkinSlot =
   | 'transcript-before'
   | 'transcript-after'
   | 'composer-before'
-  | 'composer-after';
+  | 'composer-after'
+  | 'session-list-before'
+  | 'session-list-after'
+  | 'session-row-before'
+  | 'session-row-after'
+  | 'message-before'
+  | 'message-after'
+  | 'tool-before'
+  | 'tool-after'
+  | 'interaction-before'
+  | 'interaction-after'
+  | 'settings-content-before'
+  | 'settings-content-after';
 
 export interface MakaSkinEventMap {
   'session.changed': { sessionId: string | null };
@@ -108,6 +139,84 @@ export interface MakaSkinEventMap {
     kind: 'permission' | 'question' | null;
     waiting: boolean;
   };
+  'sessions.changed': {
+    currentSessionId: string | null;
+    sessions: ReadonlyArray<
+      Readonly<{
+        id: string;
+        name: string;
+        status: string;
+        flagged: boolean;
+        archived: boolean;
+        unread: boolean;
+        lastMessageAt?: number;
+        lastMessagePreview?: string;
+      }>
+    >;
+  };
+  'conversation.changed': {
+    sessionId: string | null;
+    messages: ReadonlyArray<
+      Readonly<{
+        id: string;
+        turnId: string;
+        role: 'user' | 'assistant';
+        text: string;
+        timestamp?: number;
+        streaming: boolean;
+        truncated?: boolean;
+      }>
+    >;
+  };
+  'tools.detail.changed': {
+    sessionId: string | null;
+    tools: ReadonlyArray<
+      Readonly<{
+        id: string;
+        turnId?: string;
+        name: string;
+        displayName?: string;
+        status: string;
+        argsText?: string;
+        outputText?: string;
+        durationMs?: number;
+      truncated?: boolean;
+      }>
+    >;
+  };
+  'interaction.detail.changed': {
+    sessionId: string | null;
+    interaction: null | Readonly<{
+      kind: 'permission' | 'question';
+      requestId?: string;
+      toolUseId?: string;
+      questions?: ReadonlyArray<
+        Readonly<{
+          question: string;
+          options: ReadonlyArray<Readonly<{ label: string; description?: string }>>;
+        }>
+      >;
+    }>;
+  };
+  'composer.changed': {
+    sessionId: string | null;
+    draft: string;
+    skills: ReadonlyArray<Readonly<{ id: string; ref?: string; name: string }>>;
+    attachments: ReadonlyArray<
+      Readonly<{ index: number; name: string; kind: string; size: number; mimeType?: string }>
+    >;
+    model?: string;
+    permissionMode?: string;
+    busy: boolean;
+  };
+  'navigation.will-change': {
+    from: Readonly<{ section: string; module?: string }>;
+    to: Readonly<{ section: string; module?: string }>;
+  };
+  'navigation.did-change': {
+    from: Readonly<{ section: string; module?: string }>;
+    to: Readonly<{ section: string; module?: string }>;
+  };
   state: MakaStateSnapshot;
   appearance: MakaAppearanceSnapshot;
 }
@@ -127,6 +236,23 @@ export interface MakaSkinActionMap {
   };
   'generation.stop': {
     input: Record<string, never>;
+    output: void;
+  };
+  'composer.set-draft': {
+    input: { text: string; mode?: 'replace' | 'append' };
+    output: void;
+  };
+  'composer.focus': { input: Record<string, never>; output: void };
+  'composer.pick-attachments': { input: Record<string, never>; output: void };
+  'composer.remove-attachment': { input: { index: number }; output: void };
+  'composer.set-model': { input: { llmConnectionSlug: string; model: string }; output: void };
+  'composer.set-skills': { input: { skillRefs: string[] }; output: void };
+  'composer.set-permission-mode': {
+    input: { mode: 'explore' | 'ask' | 'execute' | 'bypass' };
+    output: void;
+  };
+  'interaction.answer-question': {
+    input: { requestId: string; answers: Array<string | null> };
     output: void;
   };
 }
@@ -166,10 +292,11 @@ export interface MakaSkinApi {
   };
   readonly slots: {
     readonly names: readonly MakaSkinSlot[];
-    one(name: MakaSkinSlot | string): Element | null;
+    one(name: MakaSkinSlot | string, ownerId?: string): Element | null;
+    all(name: MakaSkinSlot | string, ownerId?: string): Element[];
     observe(name: MakaSkinSlot | string, handler: (slot: Element | null) => void): () => void;
     wait(name: MakaSkinSlot | string, timeoutMs?: number): Promise<Element>;
-    mount(name: MakaSkinSlot | string): HTMLDivElement;
+    mount(name: MakaSkinSlot | string, ownerId?: string): HTMLDivElement;
   };
   readonly appearance: {
     current(): MakaAppearanceSnapshot;
@@ -200,6 +327,8 @@ export interface MakaSkinApi {
       handler: (detail: MakaSkinEventMap[Type], event: Event) => void,
     ): () => void;
     on(type: string, handler: (detail: unknown, event: Event) => void): () => void;
+    snapshot<Type extends keyof MakaSkinEventMap>(type: Type): Promise<MakaSkinEventMap[Type]>;
+    snapshot(type: string): Promise<unknown>;
   };
   readonly actions: {
     can<Type extends keyof MakaSkinActionMap>(name: Type): boolean;

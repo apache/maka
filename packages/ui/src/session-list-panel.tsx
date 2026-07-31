@@ -48,6 +48,7 @@ export function SessionListPanel(props: {
     <aside
       className="maka-session-panel agents-sidebar"
       aria-label={copy.listAriaLabel}
+      data-maka-part="session-list"
     >
       <SessionSidebarNav
         selection={props.selection}
@@ -77,6 +78,7 @@ export function SessionListPanel(props: {
           </Menu>
         </div>
       )}
+      <div className="maka-skin-slot" data-maka-slot="session-list-before" />
       <SessionHistoryList
         sessions={props.sessions}
         activeId={props.activeId}
@@ -90,6 +92,7 @@ export function SessionListPanel(props: {
         onSelectSession={props.onSelectSession}
         rowActions={props.rowActions}
       />
+      <div className="maka-skin-slot" data-maka-slot="session-list-after" />
       <SessionSidebarFooter
         updateReminder={props.updateReminder}
         onOpenSettings={props.onOpenSettings}

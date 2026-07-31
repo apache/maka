@@ -38,6 +38,11 @@ export const SKIN_PART_NAMES = [
   'settings-sidebar',
   'settings-content',
   'command-palette',
+  'session-list',
+  'session-row',
+  'message',
+  'tool-card',
+  'interaction',
 ] as const;
 
 export const SKIN_SLOT_NAMES = [
@@ -47,6 +52,18 @@ export const SKIN_SLOT_NAMES = [
   'transcript-after',
   'composer-before',
   'composer-after',
+  'session-list-before',
+  'session-list-after',
+  'session-row-before',
+  'session-row-after',
+  'message-before',
+  'message-after',
+  'tool-before',
+  'tool-after',
+  'interaction-before',
+  'interaction-after',
+  'settings-content-before',
+  'settings-content-after',
 ] as const;
 
 export const SKIN_CAPABILITIES = [
@@ -58,6 +75,13 @@ export const SKIN_CAPABILITIES = [
   'actions.task.v1',
   'actions.submit.v1',
   'actions.stop.v1',
+  'sessions.v1',
+  'conversation.v1',
+  'tools.detail.v1',
+  'interactions.question.v1',
+  'composer.control.v1',
+  'navigation.lifecycle.v1',
+  'slots.items.v1',
 ] as const;
 
 const ALLOWED_PERMISSIONS = new Set([
@@ -65,10 +89,17 @@ const ALLOWED_PERMISSIONS = new Set([
   'canvas',
   'audio',
   'storage',
+  'data.sessions',
+  'data.conversation',
+  'data.tools',
+  'data.interactions',
+  'data.composer',
   'actions.navigation',
   'actions.task',
   'actions.submit',
   'actions.stop',
+  'actions.composer',
+  'actions.answer',
 ]);
 
 const CAPABILITY_SET = new Set<string>(SKIN_CAPABILITIES);
@@ -78,16 +109,31 @@ export type SkinPermission =
   | 'canvas'
   | 'audio'
   | 'storage'
+  | 'data.sessions'
+  | 'data.conversation'
+  | 'data.tools'
+  | 'data.interactions'
+  | 'data.composer'
   | 'actions.navigation'
   | 'actions.task'
   | 'actions.submit'
-  | 'actions.stop';
+  | 'actions.stop'
+  | 'actions.composer'
+  | 'actions.answer';
 
 export type SkinActionName =
   | 'navigation.switch-session'
   | 'task.new'
   | 'composer.submit'
-  | 'generation.stop';
+  | 'generation.stop'
+  | 'composer.set-draft'
+  | 'composer.focus'
+  | 'composer.pick-attachments'
+  | 'composer.remove-attachment'
+  | 'composer.set-model'
+  | 'composer.set-skills'
+  | 'composer.set-permission-mode'
+  | 'interaction.answer-question';
 
 export type SkinCapability = (typeof SKIN_CAPABILITIES)[number];
 
@@ -554,6 +600,15 @@ function actionPermission(action: SkinActionName): SkinPermission | null {
     case 'task.new': return 'actions.task';
     case 'composer.submit': return 'actions.submit';
     case 'generation.stop': return 'actions.stop';
+    case 'composer.set-draft':
+    case 'composer.focus':
+    case 'composer.pick-attachments':
+    case 'composer.remove-attachment':
+    case 'composer.set-model':
+    case 'composer.set-skills':
+    case 'composer.set-permission-mode':
+      return 'actions.composer';
+    case 'interaction.answer-question': return 'actions.answer';
     default: return null;
   }
 }
@@ -801,6 +856,21 @@ export function buildSkinActivationScript(
         'task.new': 'actions.task',
         'composer.submit': 'actions.submit',
         'generation.stop': 'actions.stop',
+        'composer.set-draft': 'actions.composer',
+        'composer.focus': 'actions.composer',
+        'composer.pick-attachments': 'actions.composer',
+        'composer.remove-attachment': 'actions.composer',
+        'composer.set-model': 'actions.composer',
+        'composer.set-skills': 'actions.composer',
+        'composer.set-permission-mode': 'actions.composer',
+        'interaction.answer-question': 'actions.answer',
+      });
+      const eventPermissions = Object.freeze({
+        'sessions.changed': 'data.sessions',
+        'conversation.changed': 'data.conversation',
+        'tools.detail.changed': 'data.tools',
+        'interaction.detail.changed': 'data.interactions',
+        'composer.changed': 'data.composer',
       });
       const accessibilityQueries = Object.freeze({
         forcedColors: matchMedia('(forced-colors: active)'),
@@ -845,6 +915,37 @@ export function buildSkinActivationScript(
         if (immediate) queueMicrotask(immediate);
         return off;
       };
+      const requestSnapshot = (type) => new Promise((resolve, reject) => {
+        const request = document.createElement('span');
+        request.hidden = true;
+        request.dataset.makaSkinSnapshotType = String(type);
+        request.dataset.makaSkinSnapshotId =
+          globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+        overlay.appendChild(request);
+        let settled = false;
+        let timer;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          request.removeEventListener('maka:skin-snapshot-response', onResponse);
+          const raw = request.dataset.makaSkinSnapshotResult;
+          const error = request.dataset.makaSkinSnapshotError;
+          request.remove();
+          if (error) reject(new Error(error));
+          else {
+            try { resolve(raw ? JSON.parse(raw) : null); }
+            catch { reject(new Error('Maka skin snapshot was invalid.')); }
+          }
+        };
+        const onResponse = () => finish();
+        request.addEventListener('maka:skin-snapshot-response', onResponse);
+        timer = setTimeout(() => {
+          request.dataset.makaSkinSnapshotError = 'Maka skin snapshot timed out.';
+          finish();
+        }, 10000);
+        request.dispatchEvent(new Event('maka:skin-snapshot-request', { bubbles: true }));
+      });
       const onMediaChanges = (handler) => {
         for (const query of Object.values(accessibilityQueries)) query.addEventListener('change', handler);
         const off = () => {
@@ -890,9 +991,10 @@ export function buildSkinActivationScript(
       const partSelector = (name) =>
         '[data-maka-part="' + CSS.escape(String(name)) + '"]';
       const findPart = (name) => document.querySelector(partSelector(name));
-      const slotSelector = (name) =>
-        '[data-maka-slot="' + CSS.escape(String(name)) + '"]';
-      const findSlot = (name) => document.querySelector(slotSelector(name));
+      const slotSelector = (name, ownerId) =>
+        '[data-maka-slot="' + CSS.escape(String(name)) + '"]'
+        + (ownerId === undefined ? '' : '[data-maka-owner-id="' + CSS.escape(String(ownerId)) + '"]');
+      const findSlot = (name, ownerId) => document.querySelector(slotSelector(name, ownerId));
       const signalAppearanceChange = () => {
         root.dataset.makaSkinAppearanceRevision =
           String((Number(root.dataset.makaSkinAppearanceRevision) || 0) + 1);
@@ -998,6 +1100,7 @@ export function buildSkinActivationScript(
         slots: Object.freeze({
           names: slotNames,
           one: findSlot,
+          all(name, ownerId) { return [...document.querySelectorAll(slotSelector(name, ownerId))]; },
           observe(name, handler) {
             if (typeof handler !== 'function') throw new TypeError('Slot observer must be a function.');
             const selector = slotSelector(name);
@@ -1038,12 +1141,13 @@ export function buildSkinActivationScript(
               });
             });
           },
-          mount(name) {
-            const slot = findSlot(name);
+          mount(name, ownerId) {
+            const slot = findSlot(name, ownerId);
             if (!slot) throw new Error('Maka slot is not currently available: ' + String(name));
             const mount = document.createElement('div');
             mount.dataset.makaSkinMount = manifest.id;
             mount.dataset.makaSkinSlot = String(name);
+            if (ownerId !== undefined) mount.dataset.makaSkinOwnerId = String(ownerId);
             slot.appendChild(mount);
             disposers.push(() => mount.remove());
             return mount;
@@ -1118,7 +1222,33 @@ export function buildSkinActivationScript(
         }),
         events: Object.freeze({
           on(type, handler) {
-            return onHostEvent(type, handler);
+            const eventType = String(type);
+            const permission = eventPermissions[eventType];
+            if (permission && !permissionNames.includes(permission)) {
+              throw new Error('Skin data permission was not granted: ' + permission);
+            }
+            const off = onHostEvent(eventType, handler);
+            queueMicrotask(() => {
+              const initial = eventType === 'state'
+                ? Promise.resolve(readState())
+                : eventType === 'appearance'
+                  ? Promise.resolve(readAppearance())
+                  : requestSnapshot(eventType);
+              initial
+                .then((detail) => handler(detail, new CustomEvent('maka:' + eventType, { detail })))
+                .catch((error) => console.warn('[maka-skin] initial event snapshot failed', error));
+            });
+            return off;
+          },
+          snapshot(type) {
+            const eventType = String(type);
+            const permission = eventPermissions[eventType];
+            if (permission && !permissionNames.includes(permission)) {
+              return Promise.reject(new Error('Skin data permission was not granted: ' + permission));
+            }
+            if (eventType === 'state') return Promise.resolve(readState());
+            if (eventType === 'appearance') return Promise.resolve(readAppearance());
+            return requestSnapshot(eventType);
           },
         }),
         actions: Object.freeze({

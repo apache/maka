@@ -150,7 +150,7 @@ const makaBridge = {
     },
     authorizeAction(
       action: import('./bridge-contract.js').SkinActionName,
-      context?: Readonly<{ textPreview?: string }>,
+      context?: Readonly<{ textPreview?: string; permissionMode?: string }>,
     ): Promise<boolean> {
       return ipcRenderer.invoke('skins:authorizeAction', action, context);
     },

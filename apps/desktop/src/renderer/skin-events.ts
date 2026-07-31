@@ -38,6 +38,74 @@ export interface MakaSkinSemanticEventMap {
     kind: 'permission' | 'question' | null;
     waiting: boolean;
   };
+  'sessions.changed': {
+    currentSessionId: string | null;
+    sessions: ReadonlyArray<Readonly<{
+      id: string;
+      name: string;
+      status: string;
+      flagged: boolean;
+      archived: boolean;
+      unread: boolean;
+      lastMessageAt?: number;
+      lastMessagePreview?: string;
+    }>>;
+  };
+  'conversation.changed': {
+    sessionId: string | null;
+    messages: ReadonlyArray<Readonly<{
+      id: string;
+      turnId: string;
+      role: 'user' | 'assistant';
+      text: string;
+      timestamp?: number;
+      streaming: boolean;
+      truncated?: boolean;
+    }>>;
+  };
+  'tools.detail.changed': {
+    sessionId: string | null;
+    tools: ReadonlyArray<Readonly<{
+      id: string;
+      turnId?: string;
+      name: string;
+      displayName?: string;
+      status: string;
+      argsText?: string;
+      outputText?: string;
+      durationMs?: number;
+      truncated?: boolean;
+    }>>;
+  };
+  'interaction.detail.changed': {
+    sessionId: string | null;
+    interaction: null | Readonly<{
+      kind: 'permission' | 'question';
+      requestId?: string;
+      toolUseId?: string;
+      questions?: ReadonlyArray<Readonly<{
+        question: string;
+        options: ReadonlyArray<Readonly<{ label: string; description?: string }>>;
+      }>>;
+    }>;
+  };
+  'composer.changed': {
+    sessionId: string | null;
+    draft: string;
+    skills: ReadonlyArray<Readonly<{ id: string; ref?: string; name: string }>>;
+    attachments: ReadonlyArray<Readonly<{ index: number; name: string; kind: string; size: number; mimeType?: string }>>;
+    model?: string;
+    permissionMode?: string;
+    busy: boolean;
+  };
+  'navigation.will-change': {
+    from: Readonly<{ section: string; module?: string }>;
+    to: Readonly<{ section: string; module?: string }>;
+  };
+  'navigation.did-change': {
+    from: Readonly<{ section: string; module?: string }>;
+    to: Readonly<{ section: string; module?: string }>;
+  };
 }
 
 export function publishMakaSkinEvent<Type extends keyof MakaSkinSemanticEventMap>(

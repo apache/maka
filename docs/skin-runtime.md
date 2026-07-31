@@ -66,6 +66,9 @@ are rejected in every supported schema version.
 - `api.styles.add(css, id)`: add, update, and dispose runtime-generated CSS.
 - `api.events.on(type, handler)`: subscribe to redacted semantic session,
   message-count, generation, tool-status, and interaction lifecycle events.
+- `api.events.snapshot(type)`: request the latest value of an event projection;
+  `on` also replays this snapshot once after subscribing, so activation never
+  waits for the next host change.
 - `api.actions.can(name)` / `invoke(name, input)`: request a controlled host
   action. Every action requires its matching manifest permission and one recent
   trusted click or key press in skin-owned UI; one gesture authorizes one
@@ -92,7 +95,8 @@ Schema version 1 exposes:
 
 `app`, `shell`, `titlebar`, `sidebar`, `main`, `detail-panel`, `chat`,
 `chat-header`, `transcript`, `composer`, `composer-interactions`, `settings`,
-`settings-sidebar`, `settings-content`, and `command-palette`.
+`settings-sidebar`, `settings-content`, `command-palette`, `session-list`,
+`session-row`, `message`, `tool-card`, and `interaction`.
 
 Use `observe` or `wait` for conditional surfaces such as Settings and the
 command palette. Do not depend on private class names when a stable part exists.
@@ -101,8 +105,31 @@ command palette. Do not depend on private class names when a stable part exists.
 
 API version 2 exposes `chat-header-before`, `chat-header-after`,
 `transcript-before`, `transcript-after`, `composer-before`, and
-`composer-after`. A slot is a host-owned location, while the element returned
-by `mount` belongs to the skin.
+`composer-after`, plus before/after item slots for the session list, session
+rows, messages, tool cards, interactions, and Settings content. Repeated item
+slots carry `data-maka-owner-id`; pass that id to `slots.one` or `slots.mount`,
+or use `slots.all` to enumerate them. A slot is a host-owned location, while
+the element returned by `mount` belongs to the skin.
+
+### Permissioned data projections
+
+Rich UI data is opt-in and only describes host-visible content:
+
+- `data.sessions` → `sessions.changed`: visible session metadata and ids.
+- `data.conversation` → `conversation.changed`: visible user/assistant text,
+  including the active streamed answer; system prompts and thinking are never
+  included.
+- `data.tools` → `tools.detail.changed`: display-redacted argument/output text,
+  status, duration, and truncation state.
+- `data.interactions` → `interaction.detail.changed`: user questions and
+  choices. Permission-review details and approve/deny controls remain native.
+- `data.composer` → `composer.changed`: draft, selected skills, attachments,
+  model, permission mode, and busy state.
+
+All detail text is display-redacted and bounded before it crosses the formal
+Skin API. DOM-enabled skins remain full-trust UI mods and can inspect visible
+page content outside this contract; these permissions are explicit review and
+compatibility boundaries, not a process sandbox.
 
 ### Controlled actions
 
@@ -112,11 +139,20 @@ The action permissions are deliberately granular:
 - `actions.task` → `task.new`
 - `actions.submit` → `composer.submit`
 - `actions.stop` → `generation.stop`
+- `actions.composer` → draft replace/append, focus, attachment picker/removal,
+  model, Skills, and permission-mode controls
+- `actions.answer` → answer the currently visible user question
 
 `composer.submit` is rejected while the composer is busy or owns staged user
 attachments, quotes, a revision, or a permission/question interaction. Skins
 never receive the Maka preload bridge, and Maka shows a native confirmation
 with a prompt preview before every `composer.submit` request.
+Changing the active permission mode also requires a native Maka confirmation.
+Permission approvals are intentionally not available as skin actions.
+
+`navigation.will-change` and `navigation.did-change` provide stable transition
+lifecycle signals without allowing a skin to replace Maka routing or security
+surfaces.
 
 ### Normal appearance path
 

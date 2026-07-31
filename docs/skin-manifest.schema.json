@@ -54,10 +54,17 @@
           "canvas",
           "audio",
           "storage",
+          "data.sessions",
+          "data.conversation",
+          "data.tools",
+          "data.interactions",
+          "data.composer",
           "actions.navigation",
           "actions.task",
           "actions.submit",
-          "actions.stop"
+          "actions.stop",
+          "actions.composer",
+          "actions.answer"
         ]
       }
     },
@@ -73,7 +80,14 @@
           "actions.navigation.v1",
           "actions.task.v1",
           "actions.submit.v1",
-          "actions.stop.v1"
+          "actions.stop.v1",
+          "sessions.v1",
+          "conversation.v1",
+          "tools.detail.v1",
+          "interactions.question.v1",
+          "composer.control.v1",
+          "navigation.lifecycle.v1",
+          "slots.items.v1"
         ]
       }
     }

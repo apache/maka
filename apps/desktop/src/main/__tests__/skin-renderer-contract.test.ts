@@ -17,6 +17,18 @@ test('stable skin parts and formal extension slots are mounted by real renderer 
     resolve(REPO_ROOT, 'apps/desktop/src/renderer/chat-composer-region.tsx'),
     'utf8',
   );
+  const sessionPanel = await readFile(
+    resolve(REPO_ROOT, 'packages/ui/src/session-list-panel.tsx'),
+    'utf8',
+  );
+  const sessionHistory = await readFile(
+    resolve(REPO_ROOT, 'packages/ui/src/session-history-list.tsx'),
+    'utf8',
+  );
+  const toolActivity = await readFile(
+    resolve(REPO_ROOT, 'packages/ui/src/tool-activity.tsx'),
+    'utf8',
+  );
 
   for (const part of ['chat', 'chat-header', 'transcript']) {
     assert.match(
@@ -38,6 +50,14 @@ test('stable skin parts and formal extension slots are mounted by real renderer 
   for (const slot of ['composer-before', 'composer-after']) {
     assert.match(composerRegion, new RegExp(`data-maka-slot="${slot}"`));
   }
+  assert.match(sessionPanel, /data-maka-part="session-list"/);
+  assert.match(sessionHistory, /data-maka-part="session-row"/);
+  assert.match(chatView, /data-maka-part="message"/);
+  assert.match(toolActivity, /data-maka-part="tool-card"/);
+  assert.match(composerRegion, /data-maka-part="interaction"/);
+  for (const source of [sessionPanel, sessionHistory, chatView, toolActivity, composerRegion]) {
+    assert.match(source, /data-maka-slot=/);
+  }
 });
 
 test('skin action requests are routed through the permission and trusted-gesture host', async () => {
@@ -49,4 +69,30 @@ test('skin action requests are routed through the permission and trusted-gesture
   assert.match(host, /authorizeAction\(\s*action,/);
   assert.match(host, /One trusted gesture authorizes at most one action request/);
   assert.match(host, /pending user content|owns staged user content/);
+  assert.match(host, /composer\.set-draft/);
+  assert.match(host, /interaction\.answer-question/);
+  const ipcHost = await readFile(
+    resolve(REPO_ROOT, 'apps/desktop/src/main/skin-ipc-main.ts'),
+    'utf8',
+  );
+  assert.match(ipcHost, /composer\.set-permission-mode/);
+  assert.match(ipcHost, /Allow skin to change the permission mode/);
+});
+
+test('permissioned rich projections support initial snapshot replay', async () => {
+  const semanticHost = await readFile(
+    resolve(REPO_ROOT, 'apps/desktop/src/renderer/use-skin-semantic-events.ts'),
+    'utf8',
+  );
+  for (const event of [
+    'sessions.changed',
+    'conversation.changed',
+    'tools.detail.changed',
+    'interaction.detail.changed',
+    'composer.changed',
+  ]) {
+    assert.match(semanticHost, new RegExp(event.replace('.', '\\.')));
+  }
+  assert.match(semanticHost, /maka:skin-snapshot-request/);
+  assert.match(semanticHost, /displayRedactSecrets/);
 });

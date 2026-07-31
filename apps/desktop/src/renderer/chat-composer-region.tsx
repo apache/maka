@@ -70,10 +70,16 @@ export function ChatComposerRegion({
   boundaryUnreadableNotice,
   ...composerRest
 }: ChatComposerRegionProps) {
+  const interactionOwnerId = activeInteraction && 'requestId' in activeInteraction
+    ? activeInteraction.requestId
+    : undefined;
   return (
     <>
       <div className="maka-skin-slot" data-maka-slot="composer-before" />
       <div className="maka-composer-interaction-slot" data-maka-part="composer-interactions">
+        {activeInteraction && (
+          <div className="maka-skin-slot" data-maka-slot="interaction-before" data-maka-owner-id={interactionOwnerId} />
+        )}
         {/* The notice stands in for the composer, so it appears exactly where
             the composer would have been — and never over a turn-scoped
             interaction, which already owns the slot and is the more urgent
@@ -103,18 +109,25 @@ export function ChatComposerRegion({
           </div>
         )}
         {activeSandboxBoundary && (
-          <SandboxBoundaryPrompt
-            request={activeSandboxBoundary}
-            onRespond={respondToSandboxBoundary}
-          />
+          <div data-maka-part="interaction" data-maka-owner-id={activeSandboxBoundary.requestId}>
+            <SandboxBoundaryPrompt
+              request={activeSandboxBoundary}
+              onRespond={respondToSandboxBoundary}
+            />
+          </div>
         )}
         {activeQuestion && (
-          <UserQuestionPrompt
-            request={activeQuestion}
-            onRespond={respondToUserQuestion}
-            onStop={stop}
-            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-          />
+          <div data-maka-part="interaction" data-maka-owner-id={activeQuestion.requestId}>
+            <UserQuestionPrompt
+              request={activeQuestion}
+              onRespond={respondToUserQuestion}
+              onStop={stop}
+              stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+            />
+          </div>
+        )}
+        {activeInteraction && (
+          <div className="maka-skin-slot" data-maka-slot="interaction-after" data-maka-owner-id={interactionOwnerId} />
         )}
       </div>
       <Composer

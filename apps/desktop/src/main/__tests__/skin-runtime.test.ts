@@ -130,7 +130,9 @@ test('activation API exposes versioned capabilities, slots, semantic events, and
     'observe(name, handler)',
     'wait(name, timeoutMs = 5000)',
     'slots:',
-    'mount(name)',
+    'mount(name, ownerId)',
+    'all(name, ownerId)',
+    'snapshot(type)',
     'actions:',
     'invoke(name, input = {})',
     'styles:',
@@ -163,7 +165,7 @@ test('runtime installs, activates, and disables a high-freedom skin', async () =
     await writeFile(archivePath, zipSync({
       'manifest.json': strToU8(JSON.stringify({
         ...validManifest,
-        permissions: [...validManifest.permissions, 'actions.stop'],
+        permissions: [...validManifest.permissions, 'actions.stop', 'actions.composer'],
       })),
       'theme.css': strToU8('.hero { background: url("./assets/bg.svg"); }'),
       'entry.mjs': strToU8('export function activate(api) { api.log("ready"); return () => {}; }'),
@@ -185,6 +187,7 @@ test('runtime installs, activates, and disables a high-freedom skin', async () =
     assert.match(webContents.isolatedScripts.at(-1) ?? '', /Test Neon/);
     assert.equal(await runtime.authorizeAction('composer.submit'), false);
     assert.equal(await runtime.authorizeAction('generation.stop'), true);
+    assert.equal(await runtime.authorizeAction('composer.focus'), true);
 
     const state = JSON.parse(
       await readFile(join(temporaryRoot, 'runtime', 'state.json'), 'utf8'),

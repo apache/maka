@@ -502,36 +502,40 @@ export function ChatView(props: {
           {turns.map((turn) => {
             return (
               <Fragment key={turn.turnId}>
-                <TurnView
-                  turn={turn}
-                  userLabel={props.userLabel}
-                  footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
-                  onFooterAction={stableTurnFooterAction}
-                  onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
-                  editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
-                  editUserMessageDisabled={
-                    streamingActive || props.activeSession?.status === 'running'
-                  }
-                  failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
-                  failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
-                  safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
-                    ? props.safeResumeAction
-                    : undefined}
-                  lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
-                  onLineageBadgeClick={stableLineageBadgeClick}
-                  onReadAttachmentBytes={props.onReadAttachmentBytes}
-                  searchHighlighted={highlightedTurnId === turn.turnId}
-                  liveStreaming={
-                    turn.turnId === tailTurnId
-                      ? {
-                          onStreamingSettled: props.onStreamingSettled,
-                          processingIndicator: props.processingIndicator,
-                          continuingIndicator: props.continuingIndicator,
-                          providerRetry: props.liveTurn?.providerRetry,
-                        }
-                      : undefined
-                  }
-                />
+                <div className="maka-skin-slot" data-maka-slot="message-before" data-maka-owner-id={turn.turnId} />
+                <div data-maka-part="message" data-maka-owner-id={turn.turnId}>
+                  <TurnView
+                    turn={turn}
+                    userLabel={props.userLabel}
+                    footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
+                    onFooterAction={stableTurnFooterAction}
+                    onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
+                    editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
+                    editUserMessageDisabled={
+                      streamingActive || props.activeSession?.status === 'running'
+                    }
+                    failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
+                    failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
+                    safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
+                      ? props.safeResumeAction
+                      : undefined}
+                    lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
+                    onLineageBadgeClick={stableLineageBadgeClick}
+                    onReadAttachmentBytes={props.onReadAttachmentBytes}
+                    searchHighlighted={highlightedTurnId === turn.turnId}
+                    liveStreaming={
+                      turn.turnId === tailTurnId
+                        ? {
+                            onStreamingSettled: props.onStreamingSettled,
+                            processingIndicator: props.processingIndicator,
+                            continuingIndicator: props.continuingIndicator,
+                            providerRetry: props.liveTurn?.providerRetry,
+                          }
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="maka-skin-slot" data-maka-slot="message-after" data-maka-owner-id={turn.turnId} />
                 {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
                   <Fragment key={item.id}>{item.content}</Fragment>
                 ))}

@@ -281,12 +281,17 @@ function AppShellContent({
   const [navigationState, setNavigationState] = useState(() => readNavigationState());
   const navSelection = navigationState.selection;
   const setNavSelection = useCallback<Dispatch<SetStateAction<NavSelection>>>((nextSelection) => {
-    setNavigationState((current) => selectNavigation(
-      current,
-      typeof nextSelection === 'function' ? nextSelection(current.selection) : nextSelection,
-    ));
+    const current = navSelectionRef.current;
+    const next = typeof nextSelection === 'function' ? nextSelection(current) : nextSelection;
+    publishMakaSkinEvent('navigation.will-change', {
+      from: { section: current.section, ...('module' in current ? { module: current.module } : {}) },
+      to: { section: next.section, ...('module' in next ? { module: next.module } : {}) },
+    });
+    navSelectionRef.current = next;
+    setNavigationState((state) => selectNavigation(state, next));
   }, []);
   const navSelectionRef = useRef<NavSelection>(navSelection);
+  const skinPreviousNavSelectionRef = useRef<NavSelection>(navSelection);
   const {
     messageLoadErrorBySession,
     messageRetryPendingBySession,
@@ -463,6 +468,7 @@ function AppShellContent({
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
   const composerRef = useRef<ComposerHandle>(null);
+  const [skinComposerRevision, setSkinComposerRevision] = useState(0);
   // Codex-style quote side panel: a companion (fork of the main session) opened
   // from text selections in the transcript, surfaced as a transient workbar tab.
   // `quotes` accumulates excerpts staged for the next follow-up — selecting more
@@ -596,12 +602,27 @@ function AppShellContent({
   });
   useSkinSemanticEvents({
     sessionId: activeId,
+    sessions,
     messages,
+    liveTurn: activeLiveTurn,
     streaming: activeStreamingLive,
     turnInFlight,
     hasInFlightTools: hasInFlightLiveTools,
     interaction: activeInteraction,
     tools: liveTools,
+    navigation: {
+      section: navSelection.section,
+      ...('module' in navSelection ? { module: navSelection.module } : {}),
+    },
+    composer: {
+      readDraft: () => composerRef.current?.getText() ?? '',
+      readSkills: () => composerRef.current?.getSkills() ?? [],
+      attachments: pendingAttachments,
+      model: activeSession?.model,
+      permissionMode: activeSession?.permissionMode,
+      busy: Boolean(activeInteraction || turnInFlight || activeStreamingLive),
+      revision: skinComposerRevision,
+    },
   });
   // Surface a credential-lifecycle alert directly in the chat header when
   // the active session's connection is in `needs_reauth` / `error` or has
@@ -1656,6 +1677,26 @@ function AppShellContent({
     hasModalOpen,
     navSelection,
   ]);
+  useEffect(() => {
+    const previous = skinPreviousNavSelectionRef.current;
+    if (
+      previous.section !== navSelection.section ||
+      ('module' in previous ? previous.module : undefined) !==
+        ('module' in navSelection ? navSelection.module : undefined)
+    ) {
+      publishMakaSkinEvent('navigation.did-change', {
+        from: {
+          section: previous.section,
+          ...('module' in previous ? { module: previous.module } : {}),
+        },
+        to: {
+          section: navSelection.section,
+          ...('module' in navSelection ? { module: navSelection.module } : {}),
+        },
+      });
+      skinPreviousNavSelectionRef.current = navSelection;
+    }
+  }, [navSelection]);
 
   useAppShellNavRefSync({
     navSelection,
@@ -1816,6 +1857,39 @@ function AppShellContent({
     createTask: createSession,
     submit: (text) => sendWithAttachments(text, []),
     stop,
+    composer: {
+      setDraft: (text, mode) => {
+        if (mode === 'append') composerRef.current?.appendText(text);
+        else composerRef.current?.setText(text);
+      },
+      focus: () => composerRef.current?.focus(),
+      pickAttachments: async () => {
+        if (revisionDraft && activeId === revisionDraft.draftSessionId) {
+          throw new Error('Attachments are unavailable while editing a previous turn.');
+        }
+        await pickAttachments();
+      },
+      removeAttachment,
+      setModel: setSessionModel,
+      setSkills: (skillRefs) => {
+        const selected = skillRefs.map((requested) => {
+          const skill = mentionSkills.find((candidate) =>
+            candidate.ref === requested || candidate.id === requested,
+          );
+          if (!skill) throw new Error(`Unknown or unavailable skill: ${requested}`);
+          return { id: skill.id, ...(skill.ref ? { ref: skill.ref } : {}), name: skill.name };
+        });
+        composerRef.current?.setSkills(selected);
+        setSkinComposerRevision((revision) => revision + 1);
+      },
+      setPermissionMode,
+    },
+    answerQuestion: async (response) => {
+      if (!activeQuestion || response.requestId !== activeQuestion.requestId) {
+        throw new Error('The requested user question is no longer active.');
+      }
+      await respondToUserQuestion(response);
+    },
   });
 
   function openPlanReminderForm() {
@@ -2307,6 +2381,7 @@ function AppShellContent({
                 processing={showProcessingIndicator && !activeStreamingLive}
                 continuing={showContinuingIndicator && !activeStreamingLive}
                 onSend={sendWithAttachments}
+                onDraftChange={() => setSkinComposerRevision((revision) => revision + 1)}
                 onStop={stop}
                 revisionNotice={
                   revisionDraft && activeId === revisionDraft.draftSessionId

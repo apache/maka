@@ -216,11 +216,14 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
   return (
     <Collapsible
       data-slot="tool"
+      data-maka-part="tool-card"
+      data-maka-owner-id={item.toolUseId}
       className={toolVariants({ part: 'item' })}
       data-status={visualStatus}
       open={open}
       onOpenChange={disclosure.setOpen}
     >
+      <div className="maka-skin-slot" data-maka-slot="tool-before" data-maka-owner-id={item.toolUseId} />
       <CollapsibleTrigger className={toolVariants({ part: 'header' })}>
         <span className={toolVariants({ part: 'dot' })} data-status={visualStatus} aria-hidden="true" />
         <span className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</span>
@@ -232,6 +235,7 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
       <CollapsiblePanel>
         <ToolCardBody item={item} />
       </CollapsiblePanel>
+      <div className="maka-skin-slot" data-maka-slot="tool-after" data-maka-owner-id={item.toolUseId} />
     </Collapsible>
   );
 }
@@ -483,7 +487,11 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
       </CollapsibleTrigger>
       <CollapsiblePanel>
         {items.length === 1 ? (
-          <ToolCardBody item={items[0]!} />
+          <div data-maka-part="tool-card" data-maka-owner-id={items[0]!.toolUseId}>
+            <div className="maka-skin-slot" data-maka-slot="tool-before" data-maka-owner-id={items[0]!.toolUseId} />
+            <ToolCardBody item={items[0]!} />
+            <div className="maka-skin-slot" data-maka-slot="tool-after" data-maka-owner-id={items[0]!.toolUseId} />
+          </div>
         ) : (
           <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
             {items.map((item) => (
@@ -529,42 +537,46 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   // spell out whether the operation failed or the sandbox blocked it.
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
-    <Collapsible className="flex flex-col" data-trow="row" data-status={sandboxBlocked ? 'blocked' : item.status} data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
-        <ToolKindIcon
-          kind={presentation.kind}
-          size={16}
-          aria-hidden="true"
-          className={cn('shrink-0', summaryTone)}
-        />
-        {running ? (
-          <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
-        ) : (
-          <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
-            {errored
-              ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
-              : sandboxBlocked
-                ? `${rowLabel} · ${getToolActivityCopy(locale).group.sandboxBlockedSuffix}`
-                : rowLabel}
-          </span>
-        )}
-        {/* Quiet meta sits right after the label (near the text, not pinned to
-            the far edge): duration + chevron ride in on hover / open, matching
-            the multi-tool summary row — status is carried by the shimmer /
-            destructive tint, so no always-on status word. */}
-        <span className="inline-flex shrink-0 items-center gap-2 text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)] opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover:opacity-100 group-data-[panel-open]:opacity-100">
-          {duration && <span className="[font-variant-numeric:tabular-nums]">{duration}</span>}
-          <ChevronRight
-            size={14}
+    <div className="flex flex-col" data-maka-part="tool-card" data-maka-owner-id={item.toolUseId}>
+      <div className="maka-skin-slot" data-maka-slot="tool-before" data-maka-owner-id={item.toolUseId} />
+      <Collapsible className="flex flex-col" data-trow="row" data-status={sandboxBlocked ? 'blocked' : item.status} data-settled={settled ? 'true' : undefined} open={disclosure.open} onOpenChange={disclosure.setOpen}>
+        <CollapsibleTrigger className="group flex w-full items-center gap-2 py-0.5 text-left">
+          <ToolKindIcon
+            kind={presentation.kind}
+            size={16}
             aria-hidden="true"
-            className="[transition:transform_var(--duration-quick)_var(--ease-out-strong)] group-data-[panel-open]:rotate-90"
+            className={cn('shrink-0', summaryTone)}
           />
-        </span>
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
-        <ToolCardBody item={item} />
-      </CollapsiblePanel>
-    </Collapsible>
+          {running ? (
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
+          ) : (
+            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
+              {errored
+                ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
+                : sandboxBlocked
+                  ? `${rowLabel} · ${getToolActivityCopy(locale).group.sandboxBlockedSuffix}`
+                  : rowLabel}
+            </span>
+          )}
+          {/* Quiet meta sits right after the label (near the text, not pinned to
+              the far edge): duration + chevron ride in on hover / open, matching
+              the multi-tool summary row — status is carried by the shimmer /
+              destructive tint, so no always-on status word. */}
+          <span className="inline-flex shrink-0 items-center gap-2 text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)] opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover:opacity-100 group-data-[panel-open]:opacity-100">
+            {duration && <span className="[font-variant-numeric:tabular-nums]">{duration}</span>}
+            <ChevronRight
+              size={14}
+              aria-hidden="true"
+              className="[transition:transform_var(--duration-quick)_var(--ease-out-strong)] group-data-[panel-open]:rotate-90"
+            />
+          </span>
+        </CollapsibleTrigger>
+        <CollapsiblePanel>
+          <ToolCardBody item={item} />
+        </CollapsiblePanel>
+      </Collapsible>
+      <div className="maka-skin-slot" data-maka-slot="tool-after" data-maka-owner-id={item.toolUseId} />
+    </div>
   );
 }
 

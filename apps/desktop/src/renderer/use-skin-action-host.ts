@@ -1,4 +1,5 @@
 import { useEffect, useEffectEvent, useRef } from 'react';
+import type { PermissionMode, UserQuestionResponse } from '@maka/core';
 import type { SkinActionName } from '../preload/bridge-contract';
 
 const TRUSTED_GESTURE_WINDOW_MS = 2_500;
@@ -32,6 +33,16 @@ export function useSkinActionHost(options: {
   createTask(): void | Promise<void>;
   submit(text: string): void | Promise<unknown>;
   stop(): void | Promise<void>;
+  composer: {
+    setDraft(text: string, mode: 'replace' | 'append'): void;
+    focus(): void;
+    pickAttachments(): void | Promise<void>;
+    removeAttachment(index: number): void;
+    setModel(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    setSkills(skillRefs: readonly string[]): void;
+    setPermissionMode(mode: PermissionMode): void | Promise<void>;
+  };
+  answerQuestion(response: UserQuestionResponse): void | Promise<void>;
 }): void {
   const lastTrustedGestureAtRef = useRef(0);
 
@@ -41,7 +52,15 @@ export function useSkinActionHost(options: {
       action !== 'navigation.switch-session' &&
       action !== 'task.new' &&
       action !== 'composer.submit' &&
-      action !== 'generation.stop'
+      action !== 'generation.stop' &&
+      action !== 'composer.set-draft' &&
+      action !== 'composer.focus' &&
+      action !== 'composer.pick-attachments' &&
+      action !== 'composer.remove-attachment' &&
+      action !== 'composer.set-model' &&
+      action !== 'composer.set-skills' &&
+      action !== 'composer.set-permission-mode' &&
+      action !== 'interaction.answer-question'
     ) {
       respond(request, { ok: false, error: 'Unknown skin action.' });
       return;
@@ -94,9 +113,57 @@ export function useSkinActionHost(options: {
       respond(request, { ok: false, error: 'There is no active generation to stop.' });
       return;
     }
+    if (
+      action === 'composer.set-draft' &&
+      (typeof input.text !== 'string' || input.text.length > MAX_SUBMIT_TEXT_LENGTH ||
+        (input.mode !== undefined && input.mode !== 'replace' && input.mode !== 'append'))
+    ) {
+      respond(request, { ok: false, error: 'Composer draft input is invalid.' });
+      return;
+    }
+    if (
+      action === 'composer.remove-attachment' &&
+      (!Number.isInteger(input.index) || (input.index as number) < 0)
+    ) {
+      respond(request, { ok: false, error: 'Attachment index is invalid.' });
+      return;
+    }
+    if (
+      action === 'composer.set-model' &&
+      (typeof input.llmConnectionSlug !== 'string' || typeof input.model !== 'string')
+    ) {
+      respond(request, { ok: false, error: 'Composer model input is invalid.' });
+      return;
+    }
+    if (
+      action === 'composer.set-skills' &&
+      (!Array.isArray(input.skillRefs) || input.skillRefs.some((ref) => typeof ref !== 'string'))
+    ) {
+      respond(request, { ok: false, error: 'Composer skills input is invalid.' });
+      return;
+    }
+    if (
+      action === 'composer.set-permission-mode' &&
+      !['explore', 'ask', 'execute', 'bypass'].includes(String(input.mode))
+    ) {
+      respond(request, { ok: false, error: 'Composer permission mode is invalid.' });
+      return;
+    }
+    if (
+      action === 'interaction.answer-question' &&
+      (typeof input.requestId !== 'string' || !Array.isArray(input.answers) ||
+        input.answers.some((answer) => answer !== null && typeof answer !== 'string'))
+    ) {
+      respond(request, { ok: false, error: 'Question response is invalid.' });
+      return;
+    }
     if (!(await window.maka.skins.authorizeAction(
       action,
-      action === 'composer.submit' ? { textPreview: submitText } : undefined,
+      action === 'composer.submit'
+        ? { textPreview: submitText }
+        : action === 'composer.set-permission-mode'
+          ? { permissionMode: input.mode as string }
+          : undefined,
     ))) {
       respond(request, { ok: false, error: 'This skin action was not permitted.' });
       return;
@@ -117,6 +184,39 @@ export function useSkinActionHost(options: {
         }
         case 'generation.stop':
           await options.stop();
+          break;
+        case 'composer.set-draft':
+          options.composer.setDraft(
+            input.text as string,
+            input.mode === 'append' ? 'append' : 'replace',
+          );
+          break;
+        case 'composer.focus':
+          options.composer.focus();
+          break;
+        case 'composer.pick-attachments':
+          await options.composer.pickAttachments();
+          break;
+        case 'composer.remove-attachment':
+          options.composer.removeAttachment(input.index as number);
+          break;
+        case 'composer.set-model':
+          await options.composer.setModel({
+            llmConnectionSlug: input.llmConnectionSlug as string,
+            model: input.model as string,
+          });
+          break;
+        case 'composer.set-skills':
+          options.composer.setSkills(input.skillRefs as string[]);
+          break;
+        case 'composer.set-permission-mode':
+          await options.composer.setPermissionMode(input.mode as PermissionMode);
+          break;
+        case 'interaction.answer-question':
+          await options.answerQuestion({
+            requestId: input.requestId as string,
+            answers: input.answers as Array<string | null>,
+          });
           break;
       }
       respond(request, { ok: true });

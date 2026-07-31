@@ -12,10 +12,17 @@ const SKIN_PERMISSION_DESCRIPTIONS: Record<SkinPermission, string> = {
   canvas: 'Render Canvas or WebGL graphics',
   audio: 'Play or process audio',
   storage: 'Persist skin-owned settings',
+  'data.sessions': 'Read the visible session list and session metadata',
+  'data.conversation': 'Read visible user and assistant conversation text',
+  'data.tools': 'Read redacted tool arguments, streamed output, status, and duration',
+  'data.interactions': 'Read user questions and answer choices (not permission details)',
+  'data.composer': 'Read the current composer draft, attachments, model, and skills',
   'actions.navigation': 'Switch the visible conversation after a skin UI click',
   'actions.task': 'Open a new-task surface after a skin UI click',
   'actions.submit': 'Submit a new prompt after a skin UI click',
   'actions.stop': 'Stop the active generation after a skin UI click',
+  'actions.composer': 'Modify composer state after a skin UI click',
+  'actions.answer': 'Answer a visible user question after a skin UI click',
 };
 
 export function registerSkinIpc(options: {
@@ -123,11 +130,40 @@ export function registerSkinIpc(options: {
       action !== 'navigation.switch-session' &&
       action !== 'task.new' &&
       action !== 'composer.submit' &&
-      action !== 'generation.stop'
+      action !== 'generation.stop' &&
+      action !== 'composer.set-draft' &&
+      action !== 'composer.focus' &&
+      action !== 'composer.pick-attachments' &&
+      action !== 'composer.remove-attachment' &&
+      action !== 'composer.set-model' &&
+      action !== 'composer.set-skills' &&
+      action !== 'composer.set-permission-mode' &&
+      action !== 'interaction.answer-question'
     ) {
       return false;
     }
     if (!(await runtime.authorizeAction(action satisfies SkinActionName))) return false;
+    if (action === 'composer.set-permission-mode') {
+      const permissionMode = (
+        context &&
+        typeof context === 'object' &&
+        'permissionMode' in context &&
+        typeof context.permissionMode === 'string' &&
+        ['explore', 'ask', 'execute', 'bypass'].includes(context.permissionMode)
+      ) ? context.permissionMode : '';
+      if (!permissionMode) return false;
+      const confirmation = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Allow skin to change the permission mode?',
+        message: 'A skin is asking Maka to change the active session security boundary.',
+        detail: `Requested permission mode: ${permissionMode}`,
+        buttons: ['Cancel', 'Change mode'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      return confirmation.response === 1;
+    }
     if (action !== 'composer.submit') return true;
     const textPreview = (
       context &&

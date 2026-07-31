@@ -112,6 +112,8 @@ export const Composer = forwardRef<
       text: string,
       skillIds: readonly string[],
     ): boolean | void | Promise<boolean | void>;
+    /** Reports user and host-driven draft mutations to stable extension hosts. */
+    onDraftChange?(text: string): void;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
@@ -325,6 +327,7 @@ export const Composer = forwardRef<
         resetPromptHistoryNavigation();
         el.value = text;
         saveCurrentDraft(text);
+        props.onDraftChange?.(text);
         autoResize();
         // Move caret to end so the user can keep typing.
         focusTextInputAtEnd(el);
@@ -335,6 +338,7 @@ export const Composer = forwardRef<
         resetPromptHistoryNavigation();
         el.value = appendPromptContextDraft(el.value, text);
         saveCurrentDraft(el.value);
+        props.onDraftChange?.(el.value);
         autoResize();
         focusTextInputAtEnd(el);
       },
@@ -351,6 +355,7 @@ export const Composer = forwardRef<
         const el = textareaRef.current;
         if (el) el.value = '';
         saveCurrentDraft('');
+        props.onDraftChange?.('');
         autoResize();
       },
       setDraft(draftKey: string, text: string) {
@@ -360,6 +365,7 @@ export const Composer = forwardRef<
         if (!el) return;
         resetPromptHistoryNavigation();
         el.value = text;
+        props.onDraftChange?.(text);
         autoResize();
         focusTextInputAtEnd(el);
       },
@@ -411,6 +417,7 @@ export const Composer = forwardRef<
     // revision branch, or user navigation). Never erase a foreign draft.
     if (activeDraftKey() !== submittedDraftKey) return;
     saveCurrentDraft('');
+    props.onDraftChange?.('');
     skillDraft.clear(skillDraft.activeDraftKey());
     form?.reset();
     // form.reset() empties the textarea but doesn't fire input — collapse
@@ -513,6 +520,7 @@ export const Composer = forwardRef<
     resetPromptHistoryNavigation();
     autoResize();
     saveCurrentDraft();
+    props.onDraftChange?.(textareaRef.current?.value ?? '');
     recomputeMention();
   }
 

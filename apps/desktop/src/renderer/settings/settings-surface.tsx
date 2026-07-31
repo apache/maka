@@ -275,7 +275,8 @@ export function SettingsSurface(props: {
         </div>
       </aside>
 
-      <section className="settingsMainPane agents-content-area" data-agents-view="settings" data-maka-part="settings-content">
+      <section className="settingsMainPane agents-content-area" data-agents-view="settings" data-maka-part="settings-content" data-maka-owner-id={section}>
+        <div className="maka-skin-slot" data-maka-slot="settings-content-before" data-maka-owner-id={section} />
         <header className="settingsPageHeader">
           <div className="settingsPageHeaderTitleStack">
             <h2>{headerCopy.label}</h2>
@@ -316,6 +317,7 @@ export function SettingsSurface(props: {
             />
           )}
         </OverlayScrollArea>
+        <div className="maka-skin-slot" data-maka-slot="settings-content-after" data-maka-owner-id={section} />
       </section>
     </main>
   );

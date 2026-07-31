@@ -809,6 +809,8 @@ const SessionRow = memo(function SessionRow(props: {
   return (
     <div
       className="maka-list-row"
+      data-maka-part="session-row"
+      data-maka-owner-id={session.id}
       data-active={active}
       data-editing={editing}
       data-menu-open={menuOpen ? 'true' : undefined}
@@ -823,6 +825,7 @@ const SessionRow = memo(function SessionRow(props: {
       onFocus={() => setActionsVisible(true)}
       onBlur={handleRowBlur}
     >
+      <div className="maka-skin-slot" data-maka-slot="session-row-before" data-maka-owner-id={session.id} />
       {editing ? (
         <form
           className="maka-list-row-main"
@@ -967,6 +970,7 @@ const SessionRow = memo(function SessionRow(props: {
           )}
         </BaseButton>
       )}
+      <div className="maka-skin-slot" data-maka-slot="session-row-after" data-maka-owner-id={session.id} />
       {actions && !editing && (
         <Menu open={menuOpen} onOpenChange={setMenuOpen}>
           <MenuTrigger
