@@ -79,10 +79,10 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
   await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
   await editor.getByLabel('服务器 ID').fill('e2e-fixture');
   await expect(editor.getByLabel('命令')).toHaveAttribute('aria-invalid', 'true');
-  await editor.getByRole('button', { name: '远程 URL' }).click();
+  await editor.getByRole('radio', { name: '远程 URL' }).click();
   await editor.getByText('高级设置', { exact: true }).click();
   await expect(editor.locator('label').filter({ hasText: '传输协议' })).toBeVisible();
-  await editor.getByRole('button', { name: '本地 stdio' }).click();
+  await editor.getByRole('radio', { name: '本地 stdio' }).click();
   await editor.getByLabel('命令').fill(process.execPath);
   await editor.getByLabel('参数').fill(fixtureServer);
   await editor.getByRole('button', { name: '保存并连接' }).click();

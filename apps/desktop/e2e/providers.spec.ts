@@ -52,9 +52,9 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(dialog.getByText('完成必要配置后，连接会出现在模型页上方。')).toBeVisible();
   await expect(dialog.locator('[data-slot="dialog-header"]')).toHaveCSS('border-bottom-width', '0px');
   await expect(keyInput).toHaveAttribute('placeholder', '输入或粘贴 API Key');
-  await expect(dialog.getByLabel('模型供应商连接标识')).toHaveCount(0);
-  await expect(dialog.getByLabel('模型供应商服务地址')).toHaveCount(0);
-  await expect(dialog.getByLabel('模型供应商默认模型')).toHaveCount(0);
+  await expect(dialog.getByLabel('连接标识', { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel('默认模型', { exact: true })).toHaveCount(0);
   await dialog.evaluate((element) =>
     Promise.all(element.getAnimations().map((animation) => animation.finished)),
   );
@@ -178,14 +178,18 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
 
   const accountId = 'account-123';
   const baseUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`;
-  await expect(page.getByLabel('模型供应商连接标识')).toHaveValue('cloudflare-workers-ai');
+  await expect(page.getByLabel('连接标识', { exact: true })).toHaveValue('cloudflare-workers-ai');
   // The plain base-URL input is replaced by the account-id field; the endpoint
   // is derived, not typed.
-  await expect(page.getByLabel('Cloudflare 账户 ID')).toHaveValue('');
-  const cloudflareKey = page.getByRole('textbox', { name: /Cloudflare Workers AI API Key/ });
+  const dialog = page.getByRole('dialog', { name: '连接 Cloudflare Workers AI' });
+  const accountIdInput = dialog.getByRole('textbox', {
+    name: /Cloudflare Account ID/,
+  });
+  await expect(accountIdInput).toHaveValue('');
+  const cloudflareKey = dialog.getByRole('textbox', { name: /API Key/ });
   await expect(cloudflareKey).toBeVisible();
-  await expect(page.getByLabel('模型供应商服务地址')).toHaveCount(0);
-  await page.getByLabel('Cloudflare 账户 ID').fill(accountId);
+  await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);
+  await accountIdInput.fill(accountId);
   await page.getByRole('button', { name: '保存供应商' }).click();
   await expect(page.getByRole('alert')).toHaveText('请填写 Cloudflare Workers AI API Key');
 
@@ -194,14 +198,15 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
 
   const connection = page.getByRole('button', { name: /模型连接：Cloudflare Workers AI/ });
   await connection.click();
-  const dialog = page.getByRole('dialog', { name: 'Cloudflare Workers AI' });
-  await dialog.getByText('高级设置', { exact: true }).click();
-  await expect(dialog.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
-  await expect(dialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
+  const detailDialog = page.getByRole('dialog', { name: 'Cloudflare Workers AI' });
+  await detailDialog.getByText('高级设置', { exact: true }).click();
+  await expect(detailDialog.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
+  await expect(detailDialog.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
 });
 
 // Distinct form behavior: a no-auth local runtime shows no API-key field at all
-// and ships no default model. Also the representative currentColor-mask render
+// and offers an empty bootstrap model because it ships no fallback catalog.
+// Also the representative currentColor-mask render
 // contract (monochrome brand asset), the counterpart to the color-<img> path.
 test('adds a no-auth local runtime with no key field and a currentColor mask mark', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
@@ -217,10 +222,11 @@ test('adds a no-auth local runtime with no key field and a currentColor mask mar
   expect(await catalogMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
   await page.getByRole('button', { name: /添加模型供应商：LM Studio/ }).click();
 
-  await expect(page.getByLabel('模型供应商连接标识')).toHaveValue('lm-studio');
-  await expect(page.getByLabel('模型供应商服务地址')).toHaveValue('http://127.0.0.1:1234/v1');
-  await expect(page.getByLabel('模型供应商默认模型')).toHaveCount(0);
-  await expect(page.getByLabel(/LM Studio 模型密钥/)).toHaveCount(0);
+  const addDialog = page.getByRole('dialog', { name: '连接 LM Studio' });
+  await expect(addDialog.getByLabel('连接标识', { exact: true })).toHaveValue('lm-studio');
+  await expect(addDialog.getByLabel('服务地址', { exact: true })).toHaveValue('http://127.0.0.1:1234/v1');
+  await expect(addDialog.getByLabel('默认模型', { exact: true })).toHaveValue('');
+  await expect(addDialog.getByRole('textbox', { name: /API Key/ })).toHaveCount(0);
   await page.getByRole('button', { name: '保存供应商' }).click();
 
   const connection = page.getByRole('button', { name: /模型连接：LM Studio/ });
