@@ -440,7 +440,7 @@ function freezeExecutionStoresFacade(stores: {
 }
 
 async function closeExecutionStorePersistence(
-  sessionStore: Pick<SessionStore, 'close'>,
+  sessionStore: { close?(): Promise<void> },
   runtimePersistence: { close(): void },
 ): Promise<void> {
   const errors: unknown[] = [];
