@@ -13,7 +13,7 @@ export { SessionListPanel } from './session-list-panel.js';
 export type { SessionViewMode } from './session-list-panel.js';
 export type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
-export { formatBytes, OverlayHost, ToolActivity, ToolErrorDetails } from './tool-activity.js';
+export { formatBytes, ToolActivity, ToolErrorDetails } from './tool-activity.js';
 export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
 export { ChatView } from './chat-view.js';
 export type { TurnFooterActionMeta, TurnLineageBadge } from './chat-turn.js';

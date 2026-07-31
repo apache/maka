@@ -536,7 +536,7 @@ describe('tool error copy feedback contract', () => {
   it('routes tool-error copy through the shared guarded feedback path', async () => {
     const componentsPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'tool-activity.tsx');
     const src = await readFile(componentsPath, 'utf8');
-    const block = src.match(/function ToolErrorBanner[\s\S]*?export function OverlayHost/)?.[0] ?? '';
+    const block = src.match(/function ToolErrorBanner[\s\S]*?export \{ formatBytes \}/)?.[0] ?? '';
 
     assert.match(block, /const copyFeedback = useClipboardCopyFeedback\(\)/, 'Tool-error copy should use the shared pending/failure copy feedback path.');
     assert.match(block, /copyFeedback\.phaseFor\('tool-error'\)/, 'Tool-error copy should expose a scoped copy phase.');
@@ -567,7 +567,7 @@ describe('tool error copy feedback contract', () => {
     // proof; the computed-style harness only re-diffs the non-trivial container box.
     const componentsPath = resolve(process.cwd(), '..', '..', 'packages', 'ui', 'src', 'tool-activity.tsx');
     const src = await readFile(componentsPath, 'utf8');
-    const block = src.match(/function ToolErrorBanner[\s\S]*?export function OverlayHost/)?.[0] ?? '';
+    const block = src.match(/function ToolErrorBanner[\s\S]*?export \{ formatBytes \}/)?.[0] ?? '';
 
     assert.match(
       block,

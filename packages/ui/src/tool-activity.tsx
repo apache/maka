@@ -14,7 +14,6 @@ import {
   ShieldAlert,
   SquarePen,
   Terminal,
-  X,
   type LucideProps,
 } from './icons.js';
 import { useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -52,8 +51,6 @@ import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js
 import { redactSecrets } from './redact.js';
 import { Button as UiButton } from '@astryxdesign/core';
 import { cn } from './ui.js';
-import { Dialog } from '@astryxdesign/core/Dialog';
-import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
   formatDuration,
@@ -739,54 +736,6 @@ export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
         {children}
       </CollapsiblePanel>
     </Collapsible>
-  );
-}
-
-export function OverlayHost(props: { content?: ToolResultContent; onClose(): void }) {
-  const copy = getToolActivityCopy(useUiLocale()).output;
-  const [isOpen, setIsOpen] = useState(false);
-  const hasOpenedRef = useRef(false);
-
-  useEffect(() => setIsOpen(true), []);
-
-  useEffect(() => {
-    if (isOpen) {
-      hasOpenedRef.current = true;
-      return;
-    }
-    if (!hasOpenedRef.current) return;
-    const frame = window.requestAnimationFrame(props.onClose);
-    return () => window.cancelAnimationFrame(frame);
-  }, [isOpen, props.onClose]);
-
-  if (!props.content) return null;
-  return (
-    <Dialog
-      isOpen={isOpen}
-      onOpenChange={setIsOpen}
-      padding={0}
-      purpose="info"
-      aria-label={copy.closeAriaLabel}
-      width="min(92vw, 720px)"
-      maxHeight="85dvh"
-    >
-      <Layout
-        content={
-          <LayoutContent padding={0}>
-            <UiButton
-              className={previewVariants({ part: 'close' })}
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsOpen(false)}
-              aria-label={copy.closeAriaLabel}
-              icon={<X size={14} aria-hidden="true" />}
-              label={copy.close}
-            />
-            <ToolResultPreview content={props.content} />
-          </LayoutContent>
-        }
-      />
-    </Dialog>
   );
 }
 
