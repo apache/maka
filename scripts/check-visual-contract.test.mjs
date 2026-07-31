@@ -294,6 +294,18 @@ describe('checkScopeCoverage', () => {
     assert.deepEqual(checkScopeCoverage(records), []);
   });
 
+  it('fails several individually small scopes whose union claims most of a capture', () => {
+    const records = [
+      ...claimed(2, 'field'),
+      ...claimed(2, 'switch'),
+      ...claimed(2, 'selector'),
+      ...claimed(4, undefined),
+    ];
+    assert.deepEqual(checkScopeCoverage(records), [
+      { scope: '<declared union>', claimed: 6, total: 10 },
+    ]);
+  });
+
   it('says nothing about an empty capture', () => {
     assert.deepEqual(checkScopeCoverage([]), []);
   });

@@ -8,40 +8,12 @@
     {
       "name": "astryx-form-controls",
       "selectors": [
-        ":is(.astryx-field, .astryx-switch, .astryx-checkbox-input, .astryx-radio-list, .astryx-radio-list-item, .astryx-selectable-card)"
+        ":is([data-slot=\"input\"], [data-slot=\"textarea\"], [data-slot=\"number-field\"], [data-slot=\"input-group\"], [data-slot=\"switch\"], [data-slot=\"radio-group\"], [data-slot=\"radio\"], .settingsField, .settingsFormGrid, .astryx-field, .astryx-text-input, .astryx-textarea, .astryx-number-input, .astryx-input-group, .astryx-switch, .astryx-checkbox-input, .astryx-radio-list, .astryx-radio-list-item, .astryx-selectable-card, .astryx-selector, .astryx-multi-selector, .astryx-time-input, .astryx-date-time-input, .astryx-form-layout)"
       ]
     },
     {
-      "name": "general-personalization-card",
-      "selectors": [".settingsStructuredPage > .settingsStructuredPage"]
-    },
-    {
-      "name": "general-privacy-card",
-      "selectors": [
-        ".settingsStructuredPage:has(> .settingsStructuredPage) > .settingsRows:nth-child(2)"
-      ]
-    },
-    {
-      "name": "general-defaults-card",
-      "selectors": [
-        ".settingsStructuredPage:has(> .settingsStructuredPage) > .settingsRows:nth-child(3)"
-      ]
-    },
-    {
-      "name": "general-proxy-card",
-      "selectors": [
-        ".settingsStructuredPage:has(> .settingsStructuredPage) > .settingsRows:nth-child(4)"
-      ]
-    },
-    {
-      "name": "general-page-layout",
-      "selectors": [".settingsStructuredPage:has(> .settingsStructuredPage)"]
-    },
-    {
-      "name": "general-scroll-layout",
-      "selectors": [
-        ".settingsPageContentInner:has(> .settingsStructuredPage > .settingsStructuredPage)"
-      ]
+      "name": "appearance-selection-cards",
+      "selectors": [".settingsThemeOption"]
     },
     {
       "name": "provider-catalog-search",
