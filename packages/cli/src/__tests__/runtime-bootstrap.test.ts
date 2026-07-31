@@ -184,7 +184,12 @@ describe('Maka CLI runtime bootstrap', () => {
         defaultModel: 'selected-model',
       });
       await connectionStore.update('selected-local', {
-        models: [{ id: 'requested-model', capabilities: { vision: true } }],
+        // Requested model must be user-enabled; discovered catalog alone is not enough.
+        enabledModelIds: ['selected-model', 'requested-model'],
+        models: [
+          { id: 'selected-model' },
+          { id: 'requested-model', capabilities: { vision: true } },
+        ],
       });
       const observed: unknown[] = [];
       const observer = (result: unknown): void => {
