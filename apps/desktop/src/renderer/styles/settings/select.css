@@ -17,7 +17,7 @@
   width: max-content;
   min-width: 200px;
   max-width: min(320px, calc(100vw - 32px));
-  max-height: min(420px, var(--available-height));
+  max-height: min(420px, calc(100dvh - 2 * var(--space-4)));
   overflow: hidden;
   padding: var(--space-2);
   border-radius: var(--radius-modal);

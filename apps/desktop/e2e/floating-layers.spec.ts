@@ -167,3 +167,45 @@ test('model picker only exposes a rendered active descendant', async ({
   expect(activeDescendant).not.toBeNull();
   await expect(page.locator(`#${activeDescendant}`)).toHaveRole('option');
 });
+
+test('model picker keeps keyboard highlight inside the scroll viewport', async ({
+  modelPickerLongWindow: page,
+}) => {
+  await page.getByRole('button', { name: /选择新对话模型/ }).click();
+
+  const search = page.getByRole('combobox', { name: '搜索模型' });
+  const popup = page.locator('.modelPickerPopup');
+  const listbox = page.getByRole('listbox', { name: /选择新对话模型/ });
+  const options = listbox.getByRole('option');
+  const optionCount = await options.count();
+  expect(optionCount).toBeGreaterThan(8);
+  await expect
+    .poll(() => popup.evaluate((element) => element.getBoundingClientRect().height))
+    .toBeLessThanOrEqual(420);
+  await expect
+    .poll(() =>
+      listbox.evaluate((element) => element.scrollHeight > element.clientHeight),
+    )
+    .toBe(true);
+
+  for (let index = 0; index < optionCount; index += 1) {
+    await search.press('ArrowDown');
+  }
+
+  const activeDescendant = await search.getAttribute('aria-activedescendant');
+  expect(activeDescendant).not.toBeNull();
+  const activeOption = page.locator(`[id="${activeDescendant}"]`);
+  await expect(activeOption).toHaveAttribute('data-highlighted', '');
+  await expect.poll(() => listbox.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      activeOption.evaluate((element) => {
+        const list = element.closest('[role="listbox"]');
+        if (!list) return false;
+        const optionRect = element.getBoundingClientRect();
+        const listRect = list.getBoundingClientRect();
+        return optionRect.top >= listRect.top - 0.5 && optionRect.bottom <= listRect.bottom + 0.5;
+      }),
+    )
+    .toBe(true);
+});

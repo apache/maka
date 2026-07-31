@@ -137,6 +137,14 @@ export function ModelPicker(props: ModelPickerProps) {
   const activeIndex = filteredOptions[highlightedIndex]
     ? highlightedIndex
     : -1;
+
+  useEffect(() => {
+    if (!isOpen || activeIndex < 0) return;
+    document
+      .getElementById(getItemId(activeIndex))
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeIndex, getItemId, isOpen]);
+
   let optionIndex = 0;
 
   return (
