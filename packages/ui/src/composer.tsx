@@ -1061,7 +1061,6 @@ export const Composer = forwardRef<
                 {props.onToggleVoiceCapture ? (
                   <IconButton
                     variant="ghost"
-                    size="sm"
                     type="button"
                     className="maka-composer-voice-button"
                     data-state={props.voiceCaptureState ?? 'idle'}
@@ -1082,7 +1081,6 @@ export const Composer = forwardRef<
                 {props.onToggleRealtimeVoice ? (
                   <IconButton
                     variant="ghost"
-                    size="sm"
                     type="button"
                     className="maka-composer-realtime-voice-button"
                     data-state={props.realtimeVoiceState ?? 'idle'}
@@ -1147,7 +1145,6 @@ export const Composer = forwardRef<
             ) : (
               <IconButton
                 variant="primary"
-                size="sm"
                 type="submit"
                 isDisabled={sendDisabled}
                 label={copy.sendLabel}
