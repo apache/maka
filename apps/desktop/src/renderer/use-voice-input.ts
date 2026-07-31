@@ -66,7 +66,7 @@ export function useVoiceInput(input: {
     route: Exclude<VoiceRoutePlan, { kind: 'blocked' }>;
   } | undefined>(undefined);
   const realtimeRef = useRef<{
-    sessionId: string;
+    sessionId?: string;
     peer: RTCPeerConnection;
     stream: MediaStream;
     audio: HTMLAudioElement;
@@ -77,9 +77,11 @@ export function useVoiceInput(input: {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || !operationRef.current) return;
+      if (event.key !== 'Escape') return;
+      if (!operationRef.current && !realtimeRef.current) return;
       event.preventDefault();
-      cancelCapture();
+      if (operationRef.current) cancelCapture();
+      else closeRealtime();
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => {
@@ -129,7 +131,19 @@ export function useVoiceInput(input: {
             void finishCapture();
           });
         },
+        onError: (error) => {
+          const operation = operationRef.current;
+          operationRef.current = undefined;
+          activeCaptureRef.current = undefined;
+          if (operation) void window.maka.voice.cancel(operation.id).catch(() => {});
+          setCaptureState('idle');
+          inputRef.current.onError(error);
+        },
       });
+      if (operationRef.current?.id !== begin.operationId) {
+        capture.cancel();
+        return;
+      }
       activeCaptureRef.current = capture;
       setCaptureState('recording');
     } catch (error) {
@@ -215,6 +229,10 @@ export function useVoiceInput(input: {
           autoGainControl: true,
         },
       });
+      if (revision !== realtimeRevisionRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       peer = new RTCPeerConnection();
       for (const track of stream.getTracks()) peer.addTrack(track, stream);
       audio = document.createElement('audio');
@@ -226,6 +244,12 @@ export function useVoiceInput(input: {
         if (audio) audio.srcObject = event.streams[0] ?? new MediaStream([event.track]);
       });
       const channel = peer.createDataChannel('oai-events');
+      realtimeRef.current = {
+        peer,
+        stream,
+        audio,
+        channel,
+      };
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       if (revision !== realtimeRevisionRef.current) {
@@ -250,13 +274,12 @@ export function useVoiceInput(input: {
         await window.maka.voice.closeRealtimeSession(session.sessionId);
         return;
       }
-      realtimeRef.current = {
-        sessionId: session.sessionId,
-        peer,
-        stream,
-        audio,
-        channel,
-      };
+      const active = realtimeRef.current;
+      if (!active) {
+        await window.maka.voice.closeRealtimeSession(session.sessionId);
+        return;
+      }
+      active.sessionId = session.sessionId;
       peer.addEventListener('connectionstatechange', () => {
         if (peer?.connectionState === 'failed' || peer?.connectionState === 'closed') {
           closeRealtime();
@@ -270,8 +293,11 @@ export function useVoiceInput(input: {
       stream?.getTracks().forEach((track) => track.stop());
       audio?.remove();
       if (sessionId) await window.maka.voice.closeRealtimeSession(sessionId).catch(() => {});
-      if (revision === realtimeRevisionRef.current) setRealtimeState('idle');
-      inputRef.current.onError(error);
+      if (revision === realtimeRevisionRef.current) {
+        realtimeRef.current = undefined;
+        setRealtimeState('idle');
+        inputRef.current.onError(error);
+      }
     }
   }
 
@@ -283,7 +309,9 @@ export function useVoiceInput(input: {
     active?.peer.close();
     active?.stream.getTracks().forEach((track) => track.stop());
     active?.audio.remove();
-    if (active) void window.maka.voice.closeRealtimeSession(active.sessionId).catch(() => {});
+    if (active?.sessionId) {
+      void window.maka.voice.closeRealtimeSession(active.sessionId).catch(() => {});
+    }
     setRealtimeState('idle');
   }
 

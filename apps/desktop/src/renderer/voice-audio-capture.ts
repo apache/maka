@@ -15,6 +15,7 @@ export interface ActiveVoiceCapture {
 export async function startVoiceCapture(input: {
   maxDurationMs?: number;
   onAutoStop?(): void;
+  onError?(error: Error): void;
 } = {}): Promise<ActiveVoiceCapture> {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('voice_media_unsupported');
   if (typeof MediaRecorder === 'undefined') throw new Error('voice_recorder_unsupported');
@@ -30,28 +31,46 @@ export async function startVoiceCapture(input: {
       autoGainControl: true,
     },
   });
-  const recorder = createRecorder(stream);
+  let recorder: MediaRecorder;
+  try {
+    recorder = createRecorder(stream);
+  } catch (error) {
+    stream.getTracks().forEach((track) => track.stop());
+    throw error;
+  }
   const chunks: Blob[] = [];
   let chunkBytes = 0;
   let settled = false;
   let cancelled = false;
   let rejectStopped: ((error: Error) => void) | undefined;
+  let timer: number | undefined;
   const startedAt = performance.now();
+  const release = () => {
+    if (timer !== undefined) window.clearTimeout(timer);
+    stream.getTracks().forEach((track) => track.stop());
+  };
+  const fail = (error: Error) => {
+    rejectStopped?.(error);
+    if (settled) return;
+    settled = true;
+    if (recorder.state !== 'inactive') recorder.stop();
+    release();
+    input.onError?.(error);
+  };
   const stopped = new Promise<Blob>((resolve, reject) => {
     rejectStopped = reject;
     recorder.addEventListener('dataavailable', (event) => {
       if (event.data.size <= 0) return;
       chunkBytes += event.data.size;
       if (chunkBytes > VOICE_MAX_AUDIO_BYTES) {
-        reject(new Error('voice_audio_too_large'));
-        if (recorder.state !== 'inactive') recorder.stop();
+        fail(new Error('voice_audio_too_large'));
         return;
       }
       chunks.push(event.data);
     });
     recorder.addEventListener(
       'error',
-      () => reject(new Error('voice_recording_failed')),
+      () => fail(new Error('voice_recording_failed')),
       { once: true },
     );
     recorder.addEventListener(
@@ -66,17 +85,22 @@ export async function startVoiceCapture(input: {
       { once: true },
     );
   });
-  recorder.start(250);
-  const timer = window.setTimeout(() => {
+  // Fatal recorder events own their cleanup and UI notification. Attach a
+  // handler immediately so the promise cannot reject unobserved while the
+  // caller is still in the recording state.
+  void stopped.catch(() => {});
+  try {
+    recorder.start(250);
+  } catch (error) {
+    settled = true;
+    release();
+    throw error;
+  }
+  timer = window.setTimeout(() => {
     if (settled || recorder.state === 'inactive') return;
     input.onAutoStop?.();
     recorder.stop();
   }, maxDurationMs);
-
-  const release = () => {
-    window.clearTimeout(timer);
-    stream.getTracks().forEach((track) => track.stop());
-  };
 
   return {
     async stop() {

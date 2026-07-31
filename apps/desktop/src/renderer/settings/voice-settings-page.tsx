@@ -27,7 +27,7 @@ import { ProviderConnectionDialog } from './provider-connection-dialog';
 import { providerPanelActionErrorMessage } from './provider-panel-shared';
 import { useActionGuard } from './use-action-guard';
 import { VoiceRecognitionConnectionForm } from './voice-recognition-connection-form';
-import { startVoiceCapture } from '../voice-audio-capture';
+import { startVoiceCapture, type ActiveVoiceCapture } from '../voice-audio-capture';
 
 type VoiceSmokeState =
   | { status: 'idle' }
@@ -50,12 +50,18 @@ export function VoiceModelsSettingsPage(props: {
   const [smoke, setSmoke] = useState<VoiceSmokeState>({ status: 'idle' });
   const [isBusy, setIsBusy] = useState(false);
   const [recognitionTest, setRecognitionTest] = useState<string>();
+  const [recognitionTesting, setRecognitionTesting] = useState(false);
   const [creatingRecognitionConnection, setCreatingRecognitionConnection] = useState(false);
   const [editingRecognitionConnection, setEditingRecognitionConnection] = useState(false);
   const [saving, setSaving] = useState(false);
   const captureSmokeGuard = useActionGuard<'smoke'>();
+  const recognitionTestGuard = useActionGuard<'recognition'>();
   const voicePageMountedRef = useMountedRef();
   const activeVoiceCaptureStreamRef = useRef<MediaStream | null>(null);
+  const activeRecognitionTestRef = useRef<{
+    operationId: string;
+    capture?: ActiveVoiceCapture;
+  } | undefined>(undefined);
   const createRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
   const editRecognitionConnectionButtonRef = useRef<HTMLElement | null>(null);
   const toast = useToast();
@@ -81,16 +87,7 @@ export function VoiceModelsSettingsPage(props: {
     setSaving(true);
     try {
       await props.onUpdate({
-        voice: {
-          recognition: {
-            ...props.settings.voice.recognition,
-            ...patch.recognition,
-          },
-          realtime: {
-            ...props.settings.voice.realtime,
-            ...patch.realtime,
-          },
-        },
+        voice: patch,
       });
       return true;
     } catch (error) {
@@ -154,30 +151,66 @@ export function VoiceModelsSettingsPage(props: {
   }
 
   async function runRecognitionTest(): Promise<void> {
+    if (!recognitionTestGuard.begin('recognition')) return;
+    setRecognitionTesting(true);
     setRecognitionTest(copy.recognitionTesting);
     let operationId: string | undefined;
     try {
       const begin = await window.maka.voice.begin({ intent: 'dictate' });
       if (!begin.ok) throw new Error(begin.reason);
       operationId = begin.operationId;
+      activeRecognitionTestRef.current = { operationId };
+      if (!voicePageMountedRef.current) {
+        await window.maka.voice.cancel(operationId).catch(() => {});
+        operationId = undefined;
+        return;
+      }
       const capture = await startVoiceCapture({ maxDurationMs: 4_000 });
+      if (
+        !voicePageMountedRef.current ||
+        activeRecognitionTestRef.current?.operationId !== operationId
+      ) {
+        capture.cancel();
+        await window.maka.voice.cancel(operationId).catch(() => {});
+        operationId = undefined;
+        return;
+      }
+      activeRecognitionTestRef.current.capture = capture;
       await waitMs(4_000);
       const audio = await capture.stop();
+      if (activeRecognitionTestRef.current?.operationId === operationId) {
+        activeRecognitionTestRef.current.capture = undefined;
+      }
       const result = await window.maka.voice.finishCapture(begin.operationId, audio);
       if (result.kind !== 'transcript') throw new Error('recognition_test_no_transcript');
       operationId = undefined;
+      activeRecognitionTestRef.current = undefined;
+      if (!voicePageMountedRef.current) return;
       setRecognitionTest(result.text);
       toast.success(copy.recognitionSuccess, result.text);
     } catch (error) {
       if (operationId) await window.maka.voice.cancel(operationId).catch(() => {});
+      if (activeRecognitionTestRef.current?.operationId === operationId) {
+        activeRecognitionTestRef.current = undefined;
+      }
+      if (!voicePageMountedRef.current) return;
       const message = error instanceof Error ? error.message : copy.failed;
       setRecognitionTest(message);
       toast.error(copy.recognitionFailed, message);
+    } finally {
+      recognitionTestGuard.finish();
+      if (voicePageMountedRef.current) setRecognitionTesting(false);
     }
   }
 
   useEffect(() => {
     return () => {
+      const recognitionTest = activeRecognitionTestRef.current;
+      activeRecognitionTestRef.current = undefined;
+      recognitionTest?.capture?.cancel();
+      if (recognitionTest) {
+        void window.maka.voice.cancel(recognitionTest.operationId).catch(() => {});
+      }
       activeVoiceCaptureStreamRef.current?.getTracks().forEach((track) => track.stop());
       activeVoiceCaptureStreamRef.current = null;
     };
@@ -416,7 +449,7 @@ export function VoiceModelsSettingsPage(props: {
         </Button>
         <Button
           type="button"
-          disabled={saving || isBusy}
+          disabled={saving || isBusy || recognitionTesting}
           onClick={() => void runRecognitionTest()}
         >
           {copy.testRecognition}

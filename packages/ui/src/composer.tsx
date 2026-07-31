@@ -1087,13 +1087,17 @@ export const Composer = forwardRef<
                     type="button"
                     className="maka-composer-realtime-voice-button"
                     data-state={props.realtimeVoiceState ?? 'idle'}
-                    disabled={props.disabled || props.realtimeVoiceState === 'connecting'}
+                    disabled={props.disabled}
                     aria-label={
-                      props.realtimeVoiceState === 'connected'
+                      props.realtimeVoiceState !== 'idle'
                         ? copy.voiceRealtimeStop
                         : copy.voiceRealtimeStart
                     }
-                    title={copy.voiceRealtimeStart}
+                    title={
+                      props.realtimeVoiceState !== 'idle'
+                        ? copy.voiceRealtimeStop
+                        : copy.voiceRealtimeStart
+                    }
                     onClick={() => {
                       void props.onToggleRealtimeVoice?.();
                     }}
