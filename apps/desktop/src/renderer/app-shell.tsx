@@ -138,6 +138,7 @@ import { useShellExpertTeams } from './use-shell-expert-teams';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
 import { useShellChatModel } from './use-shell-chat-model';
+import { publishMakaSkinEvent } from './skin-events';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellLayout } from './use-shell-layout';
 import { useShellResume } from './use-shell-resume';
@@ -1630,6 +1631,20 @@ function AppShellContent({
   }, [activeId, activeStreamingComplete, activeStreamingMessageId, messages, settleAssistantStreaming]);
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
+  useEffect(() => {
+    publishMakaSkinEvent('state', {
+      section: navSelection.section,
+      module: 'module' in navSelection ? navSelection.module : undefined,
+      hasActiveSession: Boolean(activeId),
+      streaming: activeStreamingLive,
+      modalOpen: hasModalOpen,
+    });
+  }, [
+    activeId,
+    activeStreamingLive,
+    hasModalOpen,
+    navSelection,
+  ]);
 
   useAppShellNavRefSync({
     navSelection,
@@ -1909,9 +1924,10 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-      <div className="appFrame agents-layout-root" data-agents-page>
+      <div className="appFrame agents-layout-root" data-agents-page data-maka-part="app">
       <div
         className="app maka-shell-2col agents-layout-body"
+        data-maka-part="shell"
         aria-hidden={hasModalOpen ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
         data-modal-background-hidden={hasModalOpen ? 'true' : undefined}
@@ -1935,7 +1951,7 @@ function AppShellContent({
             after it can carve itself back out), and it OCCUPIES a row rather
             than floating over one, so content below can never land inside it.
             Locked by e2e/window-titlebar.spec.ts. */}
-        <header className="maka-window-titlebar">
+        <header className="maka-window-titlebar" data-maka-part="titlebar">
           <AppShellTopbarActions
             sidebarCollapsed={sessionListCollapsed}
             onOpenSearchModal={() => {
@@ -1964,6 +1980,7 @@ function AppShellContent({
         </header>
         <div
           className="maka-panel maka-panel-list maka-floating-panel"
+          data-maka-part="sidebar"
           aria-hidden={sessionListCollapsed ? 'true' : undefined}
           inert={sessionListCollapsed ? true : undefined}
         >
@@ -2017,7 +2034,7 @@ function AppShellContent({
               navigation entry point. */}
           <MakaUriContext.Provider value={dispatchMakaUri}>
           <div className="maka-detail-with-artifacts">
-            <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
+            <div className="mainColumn" data-maka-part="main" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
               {navSelection.section === 'extensions' && navSelection.module === 'skills' ? (
                 <SkillsPage
                   hubHeader={extensionsHubHeader}

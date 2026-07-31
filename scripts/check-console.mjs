@@ -52,6 +52,10 @@ const ALLOW = new Map([
     'real-window smoke diagnostics are dev/test gated and stdout-parsed by capture tooling.',
   ],
   [
+    'apps/desktop/src/main/skin-runtime.ts',
+    'skin lifecycle diagnostics and the explicit skin development log API; isolated renderer output contains no Node or preload-bridge data.',
+  ],
+  [
     'apps/desktop/src/main/permission-overlay/permission-overlay-main.ts',
     '#1515 drag-grant diagnostics (locale fallback, missing .app bundle, controller log sink); main-process only, paths not secrets.',
   ],

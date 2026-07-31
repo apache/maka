@@ -17,6 +17,7 @@ export function AppShellDetailPanel({
       {...props}
       className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
       data-agents-view={agentsView}
+      data-maka-part="detail-panel"
     >
       {children}
     </div>

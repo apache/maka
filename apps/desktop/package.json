@@ -48,6 +48,7 @@
     "@maka/ui": "0.1.0",
     "ai": "^7.0.31",
     "electron-updater": "^6.8.9",
+    "fflate": "^0.8.2",
     "qrcode": "^1.5.4",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",

@@ -8,7 +8,7 @@ import type {
   UiLocalePreference,
   UpdateAppSettingsResult,
 } from '@maka/core';
-import { ChoiceCard, ChoiceCardGroup, Input, Segmented, Textarea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, ChoiceCard, ChoiceCardGroup, Input, Segmented, Textarea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -281,6 +281,111 @@ const PALETTE_GROUPS: ReadonlyArray<{ id: 'editor' | 'product'; palettes: Readon
   { id: 'product', palettes: ['coral', 'azure', 'forest', 'dusk', 'sand', 'mono'] },
 ];
 
+type SkinSnapshot = Awaited<ReturnType<typeof window.maka.skins.list>>;
+
+function SkinSettingsSection() {
+  const locale = useUiLocale();
+  const copy = getSettingsPreferencesCopy(locale).appearance.skins;
+  const toast = useToast();
+  const mountedRef = useMountedRef();
+  const [snapshot, setSnapshot] = useState<SkinSnapshot | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void window.maka.skins.list()
+      .then((next) => {
+        if (mountedRef.current) setSnapshot(next);
+      })
+      .catch((error) => {
+        if (mountedRef.current) toast.error(copy.actionFailed, settingsActionErrorMessage(error, locale));
+      });
+    return window.maka.skins.subscribeChanges((next) => {
+      if (mountedRef.current) setSnapshot(next);
+    });
+  }, [copy.actionFailed, locale, mountedRef, toast]);
+
+  async function run(action: () => Promise<SkinSnapshot | { snapshot: SkinSnapshot }>) {
+    setBusy(true);
+    try {
+      const result = await action();
+      if (!mountedRef.current) return;
+      setSnapshot('snapshot' in result ? result.snapshot : result);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.actionFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <h3 className="settingsSubheading">{copy.title}</h3>
+      <SettingsRows>
+        <div className="settingsFormRow" data-orient="vertical">
+          <div>
+            <strong>{copy.title}</strong>
+            <small>{copy.help}</small>
+          </div>
+          <div className="settingsActionRow" role="group" aria-label={copy.title}>
+            <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.install())}>
+              {copy.import}
+            </Button>
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void window.maka.skins.openFolder()}>
+              {copy.openFolder}
+            </Button>
+            {snapshot?.activeSkinId ? (
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.disable())}>
+                {copy.disable}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        {snapshot?.safeMode ? (
+          <div className="settingsFormRow">
+            <div><strong>{copy.safeMode}</strong></div>
+          </div>
+        ) : null}
+        {snapshot?.lastError ? (
+          <div className="settingsFormRow">
+            <div>
+              <strong>{copy.actionFailed}</strong>
+              <small>{snapshot.lastError}</small>
+            </div>
+          </div>
+        ) : null}
+        {snapshot && snapshot.installed.length === 0 ? (
+          <div className="settingsFormRow">
+            <div><small>{copy.empty}</small></div>
+          </div>
+        ) : null}
+        {snapshot?.installed.map(({ manifest, active }) => (
+          <div className="settingsFormRow" key={manifest.id}>
+            <div>
+              <strong>{manifest.name}</strong>
+              <small>
+                {manifest.author ? `${manifest.author} · ` : ''}
+                v{manifest.version}
+                {active ? ` · ${copy.active}` : ''}
+              </small>
+            </div>
+            {active ? (
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void run(() => window.maka.skins.disable())}>
+                {copy.disable}
+              </Button>
+            ) : (
+              <Button type="button" variant="secondary" size="sm" disabled={busy || snapshot.safeMode} onClick={() => void run(() => window.maka.skins.activate(manifest.id))}>
+                {copy.activate}
+              </Button>
+            )}
+          </div>
+        ))}
+      </SettingsRows>
+    </>
+  );
+}
+
 function ThemeSettingsPage(props: {
   themePref: ThemePreference;
   themePalette: ThemePalette;
@@ -399,6 +504,7 @@ function ThemeSettingsPage(props: {
       <p className="settingsHelpText">
         {copy.persistenceHelp}
       </p>
+      <SkinSettingsSection />
     </div>
   );
 }

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "maka.neon-orbit",
+  "name": "Neon Orbit",
+  "version": "0.1.0",
+  "description": "Animated glass panels, a canvas star field, and state-aware ambient effects.",
+  "author": "Maka",
+  "styles": "theme.css",
+  "entry": "entry.mjs",
+  "permissions": ["dom", "canvas", "storage"]
+}

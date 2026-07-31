@@ -30,6 +30,18 @@ export type SettingsPreferencesCopy = {
     paletteHelp: Record<ThemePalette, string>;
     paletteGroups: { editor: string; product: string };
     persistenceHelp: string;
+    skins: {
+      title: string;
+      help: string;
+      import: string;
+      openFolder: string;
+      activate: string;
+      disable: string;
+      active: string;
+      empty: string;
+      safeMode: string;
+      actionFailed: string;
+    };
   };
   general: {
     incognito: string;
@@ -123,6 +135,11 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       paletteLabels: { default: '默认', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '珊瑚', azure: '湖蓝', forest: '森林', dusk: '暮光', sand: '沙金', mono: '极简灰' },
       paletteHelp: { default: 'Maka 品牌蓝强调色', onedark: '编辑器经典深色', 'catppuccin-mocha': '紫调柔和深色', 'tokyo-night': '深蓝主题', nord: '北欧冷色', coral: '暖粉 / 珊瑚强调色', azure: '湖蓝强调色，干净冷静', forest: '深苔绿与暖蜂蜜强调色', dusk: '深紫罗兰与冷调画布', sand: '琥珀沙金与暖奶白', mono: '纯灰阶，无彩色干扰' },
       paletteGroups: { editor: '编辑器主题', product: '产品色调' }, persistenceHelp: '切换会立即生效，并保存在本地外观设置里供下次启动使用。',
+      skins: {
+        title: '界面皮肤', help: '导入 .maka-skin，可使用完整 CSS 和隔离世界 JavaScript 改造整个界面。皮肤能读取并修改可见页面，只安装你信任的包。',
+        import: '导入皮肤', openFolder: '打开目录', activate: '启用', disable: '停用', active: '使用中', empty: '还没有安装皮肤。',
+        safeMode: '安全模式已开启；所有皮肤暂时停用。移除 --disable-skins 后重启可恢复。', actionFailed: '皮肤操作失败',
+      },
     },
     general: {
       incognito: '隐身模式', incognitoHelp: '开启后暂停本地记忆读写、联网搜索和计划提醒触发。', enableIncognito: '启用隐身模式', incognitoFailed: '隐身模式切换失败', notifications: '完成时发送系统通知', notificationsHelp: '窗口不在前台时，在回答完成或出错后发送桌面通知。', notificationsFailed: '通知设置切换失败', updateFailed: '设置未生效，请稍后重试。',
@@ -140,6 +157,11 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     appearance: {
       saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, persistenceHelp: 'Changes apply immediately and are saved locally for the next launch.',
+      skins: {
+        title: 'Interface skins', help: 'Import a .maka-skin package with full CSS and isolated-world JavaScript. Skins can read and modify visible page content, so install only packages you trust.',
+        import: 'Import skin', openFolder: 'Open folder', activate: 'Activate', disable: 'Disable', active: 'Active', empty: 'No skins are installed yet.',
+        safeMode: 'Safe mode is active and all skins are disabled. Restart without --disable-skins to restore them.', actionFailed: 'Skin action failed',
+      },
     },
     general: {
       incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled reminder triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new conversations.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new conversations; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', proxyServerAddress: 'Proxy server address', port: 'Port', proxyPort: 'Proxy port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', proxyUsername: 'Proxy username', password: 'Password', proxyPassword: 'Proxy password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',

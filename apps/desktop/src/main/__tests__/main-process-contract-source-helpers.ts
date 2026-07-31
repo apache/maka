@@ -88,6 +88,7 @@ export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/session-revision.ts',
   'apps/desktop/src/main/session-stream.ts',
   'apps/desktop/src/main/settings-runtime-effects.ts',
+  'apps/desktop/src/main/skin-ipc-main.ts',
   'apps/desktop/src/main/sessions-ipc-main.ts',
   'apps/desktop/src/main/settings-ipc-main.ts',
   'apps/desktop/src/main/subscription-model-fetch.ts',

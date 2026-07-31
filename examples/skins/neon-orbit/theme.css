@@ -1,0 +1,65 @@
+html[data-maka-skin="maka.neon-orbit"] {
+  --background: oklch(0.16 0.035 274);
+  --foreground: oklch(0.95 0.02 255);
+  --card: oklch(0.24 0.045 274 / 0.72);
+  --card-foreground: oklch(0.96 0.02 255);
+  --border: oklch(0.72 0.14 286 / 0.28);
+  --primary: oklch(0.76 0.18 202);
+  --primary-foreground: oklch(0.14 0.03 270);
+  --accent: oklch(0.68 0.24 306);
+  --accent-foreground: white;
+}
+
+html[data-maka-skin="maka.neon-orbit"] body {
+  background:
+    radial-gradient(circle at 15% 20%, oklch(0.54 0.23 300 / 0.24), transparent 34%),
+    radial-gradient(circle at 82% 76%, oklch(0.65 0.18 203 / 0.2), transparent 38%),
+    linear-gradient(145deg, oklch(0.13 0.035 276), oklch(0.2 0.055 260));
+}
+
+html[data-maka-skin="maka.neon-orbit"] [data-maka-part="sidebar"],
+html[data-maka-skin="maka.neon-orbit"] [data-maka-part="detail-panel"] {
+  background: oklch(0.22 0.045 270 / 0.62) !important;
+  border-color: oklch(0.72 0.14 286 / 0.28) !important;
+  box-shadow:
+    0 24px 70px rgb(0 0 0 / 0.28),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
+  backdrop-filter: blur(22px) saturate(1.25);
+}
+
+html[data-maka-skin="maka.neon-orbit"][data-maka-skin-streaming="true"]
+  [data-maka-part="detail-panel"] {
+  animation: maka-neon-orbit-pulse 2.2s ease-in-out infinite;
+}
+
+[data-maka-skin-overlay="maka.neon-orbit"] {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+[data-maka-skin-overlay="maka.neon-orbit"] canvas {
+  width: 100%;
+  height: 100%;
+  opacity: 0.72;
+}
+
+html[data-maka-skin="maka.neon-orbit"] [data-maka-part="shell"] {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+@keyframes maka-neon-orbit-pulse {
+  0%, 100% { box-shadow: 0 24px 70px rgb(0 0 0 / 0.28), inset 0 1px 0 rgb(255 255 255 / 0.08); }
+  50% { box-shadow: 0 24px 82px oklch(0.7 0.2 292 / 0.2), inset 0 1px 0 rgb(255 255 255 / 0.13); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-maka-skin="maka.neon-orbit"] * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

@@ -12,6 +12,7 @@ import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
+import type { SkinRuntime } from './skin-runtime.js';
 
 type SettingsReader = {
   get(): Promise<AppSettings>;
@@ -45,6 +46,7 @@ interface MainWindowControllerDeps {
   // main.ts computes this from the same isE2e gate that also guards userData
   // and the fake backend, so main-window.ts owns no env policy of its own.
   startHidden: boolean;
+  skinRuntime?: Pick<SkinRuntime, 'attach'>;
   onClose?: () => void;
 }
 
@@ -291,6 +293,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
+    deps.skinRuntime?.attach(mainWindow.webContents);
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`

@@ -72,7 +72,7 @@ export function ChatComposerRegion({
 }: ChatComposerRegionProps) {
   return (
     <>
-      <div className="maka-composer-interaction-slot">
+      <div className="maka-composer-interaction-slot" data-maka-part="composer-interactions">
         {/* The notice stands in for the composer, so it appears exactly where
             the composer would have been — and never over a turn-scoped
             interaction, which already owns the slot and is the more urgent

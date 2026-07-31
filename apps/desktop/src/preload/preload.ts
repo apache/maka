@@ -9,6 +9,7 @@ import type {
   PermissionOverlayStartResult,
   RendererIngestInput,
   AppUpdateStatus,
+  SkinRuntimeSnapshot,
   WorkspaceInstructionsState,
 } from './bridge-contract.js';
 import type {
@@ -125,6 +126,29 @@ type LocalMemoryMutationResult =
   | { ok: false; state: LocalMemoryState; reason: string; message: string };
 
 const makaBridge = {
+  skins: {
+    list(): Promise<SkinRuntimeSnapshot> {
+      return ipcRenderer.invoke('skins:list');
+    },
+    install(): Promise<{ canceled: boolean; snapshot: SkinRuntimeSnapshot }> {
+      return ipcRenderer.invoke('skins:install');
+    },
+    activate(id: string): Promise<SkinRuntimeSnapshot> {
+      return ipcRenderer.invoke('skins:activate', id);
+    },
+    disable(): Promise<SkinRuntimeSnapshot> {
+      return ipcRenderer.invoke('skins:disable');
+    },
+    openFolder(): Promise<void> {
+      return ipcRenderer.invoke('skins:openFolder');
+    },
+    subscribeChanges(handler: (snapshot: SkinRuntimeSnapshot) => void): () => void {
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: SkinRuntimeSnapshot) =>
+        handler(snapshot);
+      ipcRenderer.on('skins:changed', listener);
+      return () => ipcRenderer.off('skins:changed', listener);
+    },
+  },
   tasks: {
     list(sessionId: string): Promise<Task[]> {
       return ipcRenderer.invoke('tasks:list', sessionId);

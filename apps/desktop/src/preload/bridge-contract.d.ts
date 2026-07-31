@@ -216,8 +216,37 @@ export type AppUpdateStatus =
     }
   | { state: 'error'; currentVersion: string; message: string; latestVersion?: string };
 
+export interface SkinManifest {
+  schemaVersion: 1;
+  id: string;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  styles?: string;
+  entry?: string;
+  preview?: string;
+  permissions: Array<'dom' | 'canvas' | 'audio' | 'storage'>;
+}
+
+export interface SkinRuntimeSnapshot {
+  activeSkinId: string | null;
+  installed: Array<{ manifest: SkinManifest; active: boolean }>;
+  safeMode: boolean;
+  recoveredFromFailedActivation: boolean;
+  lastError: string | null;
+}
+
 export interface MakaBridge {
 
+  skins: {
+    list(): Promise<SkinRuntimeSnapshot>;
+    install(): Promise<{ canceled: boolean; snapshot: SkinRuntimeSnapshot }>;
+    activate(id: string): Promise<SkinRuntimeSnapshot>;
+    disable(): Promise<SkinRuntimeSnapshot>;
+    openFolder(): Promise<void>;
+    subscribeChanges(handler: (snapshot: SkinRuntimeSnapshot) => void): () => void;
+  };
   tasks: {
     list(sessionId: string): Promise<Task[]>;
     subscribeChanges(handler: (event: TaskLedgerChangedEvent) => void): () => void;
