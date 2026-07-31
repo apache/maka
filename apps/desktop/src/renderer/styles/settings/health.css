@@ -83,6 +83,30 @@
     border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
   }
 
+.settingsHealthSignalIdentity,
+.settingsHealthSignalMeta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+.settingsHealthSignalDescription {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+.settingsHealthSignalDescription small,
+.settingsHealthSignalMeta {
+    color: var(--muted-foreground);
+    font-size: var(--font-size-caption);
+  }
+
+.settingsHealthSignalMeta {
+    font-variant-numeric: tabular-nums;
+  }
+
 /* #1361: at the restored/sanitized 480px window floor (`SAFE_MIN_WIDTH`) the
    fixed Settings navigation leaves a ~190px content column. The page header's
    action cluster (read-only badge + last-read timestamp + refresh) never

@@ -67,13 +67,16 @@
   padding: var(--space-2) var(--space-2-5);
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-title"] {
+.settingsRemoteAccessItemTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
   min-width: 0;
   flex-wrap: wrap;
   overflow-wrap: anywhere;
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-description"] {
+.settingsRemoteAccessItemDescription {
   overflow-wrap: anywhere;
 }
 
@@ -81,8 +84,8 @@
   background: oklch(from var(--warning) l c h / 0.06);
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-actions"],
-.settingsRemoteAccessCatalogRow [data-slot="item-actions"] {
+.settingsRemoteAccessItemActions {
+  display: flex;
   color: var(--muted-foreground);
 }
 
@@ -280,8 +283,7 @@
   /* The whole row remains the named button. In the narrow layout, dropping
      the redundant chevron leaves enough room for the provider name, status
      chip, and a useful diagnostic summary. */
-  .settingsRemoteAccessChannelRow [data-slot="item-actions"],
-  .settingsRemoteAccessCatalogRow [data-slot="item-actions"] {
+  .settingsRemoteAccessItemActions {
     display: none;
   }
 }

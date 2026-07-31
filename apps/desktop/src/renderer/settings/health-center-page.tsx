@@ -5,7 +5,7 @@ import type {
   HealthSnapshot,
 } from '@maka/core';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core';
-import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, Item, ItemContent, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
+import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, Item, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
@@ -184,36 +184,31 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
   const { signal, copy } = props;
   const statusCopy = copy.statuses[signal.status];
   const detail = copy.signalDetail(signal);
-  // Polish wave Item 2: was a bordered block per signal. Converged onto the
-  // shared Item row primitive inside one hairline card — signals carry
-  // prose-length message + detail, so an Item with stacked secondary lines
-  // beats a table. Status reads as a squared Chip (exception-only color via
-  // its tone scale; expected `ok`/`unknown` stay neutral); the send/capability
-  // blockers are exception Chips. Meta sits on one tabular-nums line.
   return (
     <Item
-      render={<li />}
-      interactive={false}
-      className="settingsHealthSignalRow flex-col items-stretch gap-1 rounded-none border-transparent px-3 py-2.5"
-    >
-      <ItemContent className="gap-1">
-        <div className="flex items-start justify-between gap-3">
-          <span className="inline-flex flex-wrap items-baseline gap-2">
+      as="li"
+      align="start"
+      className="settingsHealthSignalRow"
+      label={(
+        <span className="settingsHealthSignalIdentity">
             <strong className="text-[length:var(--font-size-ui)] font-semibold text-foreground">{copy.signalLabel(signal)}</strong>
             <small className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-muted-foreground">{copy.scopes[signal.scope]}</small>
+        </span>
+      )}
+      description={(
+        <span className="settingsHealthSignalDescription">
+          <span>{copy.signalMessage(signal)}</span>
+          {detail && <small>{detail}</small>}
+          <span className="settingsHealthSignalMeta">
+            <span>{copy.source}{copy.sources[signal.source]}</span>
+            <span>{copy.checked}<RelativeTime ts={signal.checkedAt} className="settingsHelpInlineTime" /></span>
+            {signal.blocksSend && <Badge variant="error" label={copy.blocksSend} />}
+            {signal.blocksCapability && <Badge variant="warning" label={copy.blocksCapability} />}
           </span>
-          <Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />
-        </div>
-        <p className="m-0 text-[length:var(--font-size-ui)] leading-normal text-foreground-secondary">{copy.signalMessage(signal)}</p>
-        {detail && <small className="text-[length:var(--font-size-caption)] leading-normal text-foreground-secondary">{detail}</small>}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[length:var(--font-size-caption)] text-muted-foreground [font-variant-numeric:tabular-nums]">
-          <span>{copy.source}{copy.sources[signal.source]}</span>
-          <span>{copy.checked}<RelativeTime ts={signal.checkedAt} className="settingsHelpInlineTime" /></span>
-          {signal.blocksSend && <Badge variant="error" label={copy.blocksSend} />}
-          {signal.blocksCapability && <Badge variant="warning" label={copy.blocksCapability} />}
-        </div>
-      </ItemContent>
-    </Item>
+        </span>
+      )}
+      endContent={<Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />}
+    />
   );
 }
 

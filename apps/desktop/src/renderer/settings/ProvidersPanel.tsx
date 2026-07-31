@@ -16,11 +16,6 @@ import {
   Tab,
   TabList,
   Item,
-  ItemMedia,
-  ItemContent,
-  ItemTitle,
-  ItemDescription,
-  ItemActions,
   SectionHeader,
   useMountedRef,
   useUiLocale,
@@ -187,11 +182,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       ?? dialogState.connection
     : null;
 
-  function chipTitle(connection: LlmConnection): string {
-    const status = connectionChipStatus(connection, locale);
-    return status ? `${connection.name} · ${status.label}` : connection.name;
-  }
-
   function chipAriaLabel(connection: LlmConnection): string {
     const provider = providerDisplay(connection.providerType, locale).name;
     const status = connectionChipStatus(connection, locale);
@@ -260,26 +250,25 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   <li key={connection.slug}>
                     <Item
                       className="connectionRow"
-                      selected={connection.slug === defaultSlug}
+                      isSelected={connection.slug === defaultSlug}
                       data-connection-slug={connection.slug}
                       data-disabled={connection.enabled ? undefined : 'true'}
-                      aria-label={chipAriaLabel(connection)}
-                      title={chipTitle(connection)}
-                      render={<button type="button" onClick={() => openDialog({ kind: 'manage', connection })} />}
-                    >
-                      <ItemMedia><ProviderLogo type={connection.providerType} compact /></ItemMedia>
-                      <ItemContent>
-                        <ItemTitle>
+                      startContent={<ProviderLogo type={connection.providerType} compact />}
+                      label={(
+                        <span aria-label={chipAriaLabel(connection)}>
                           {connection.name}
                           {connection.slug === defaultSlug && <Badge variant="neutral" label={copy.default} />}
-                        </ItemTitle>
-                        <ItemDescription>{providerDisplay(connection.providerType, locale).name}</ItemDescription>
-                      </ItemContent>
-                      <ItemActions>
+                        </span>
+                      )}
+                      description={providerDisplay(connection.providerType, locale).name}
+                      endContent={(
+                        <span className="connectionRowActions">
                         {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
                         <ChevronRight size={16} aria-hidden="true" />
-                      </ItemActions>
-                    </Item>
+                        </span>
+                      )}
+                      onClick={() => openDialog({ kind: 'manage', connection })}
+                    />
                   </li>
                 );
               })}

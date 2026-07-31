@@ -30,11 +30,6 @@ import { RECOMMENDED_PROVIDER_TYPES, type LlmConnection, type OnboardingState, t
 import {
   Button,
   Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
@@ -224,24 +219,12 @@ function NeedsConnectionHero(props: {
               <li key={type}>
                 <Item
                   className="maka-firstrun-row px-3.5 py-2"
-                  render={
-                    <button
-                      type="button"
-                      onClick={() => props.onAddProvider(type)}
-                    />
-                  }
-                >
-                  <ItemMedia>
-                    <ProviderLogo type={type} compact />
-                  </ItemMedia>
-                  <ItemContent>
-                    <ItemTitle>{display.name}</ItemTitle>
-                    <ItemDescription>{display.description}</ItemDescription>
-                  </ItemContent>
-                  <ItemActions>
-                    <ChevronRight size={16} aria-hidden="true" />
-                  </ItemActions>
-                </Item>
+                  startContent={<ProviderLogo type={type} compact />}
+                  label={display.name}
+                  description={display.description}
+                  endContent={<ChevronRight size={16} aria-hidden="true" />}
+                  onClick={() => props.onAddProvider(type)}
+                />
               </li>
             );
           })}

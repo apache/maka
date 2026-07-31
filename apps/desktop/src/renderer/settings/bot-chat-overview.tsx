@@ -12,11 +12,6 @@ import {
   Badge,
   EmptyState,
   Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
   RelativeTime,
   useUiLocale,
 } from '@maka/ui';
@@ -101,27 +96,21 @@ export function BotChatOverview(props: {
               key={entry.provider}
               className="settingsRemoteAccessChannelRow"
               data-attention={entry.needsAttention ? 'true' : undefined}
-              render={(
-                <button
-                  type="button"
-                  aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}
-                  aria-describedby={`settings-remote-access-${entry.provider}-summary`}
-                  onClick={() => props.onOpenChannel(entry.provider)}
-                />
-              )}
-            >
-              <ItemMedia><BotBrandLogo provider={entry.provider} /></ItemMedia>
-              <ItemContent>
-                <ItemTitle>
+              startContent={<BotBrandLogo provider={entry.provider} />}
+              label={(
+                <span className="settingsRemoteAccessItemTitle" aria-label={copy.manageAria(botCopy.providers[entry.provider].label, entry.copy.label)}>
                   {botCopy.providers[entry.provider].label}
                   <Badge variant={statusBadgeVariant(entry.copy.tone)} label={entry.copy.label} />
-                </ItemTitle>
-                <ItemDescription id={`settings-remote-access-${entry.provider}-summary`}>
+                </span>
+              )}
+              description={(
+                <span className="settingsRemoteAccessItemDescription" id={`settings-remote-access-${entry.provider}-summary`}>
                   {botOverviewDetail(entry.status, entry.currentError, entry.copy.detail, entry.liveOperational, locale)}
-                </ItemDescription>
-              </ItemContent>
-              <ItemActions><ChevronRight size={16} aria-hidden="true" /></ItemActions>
-            </Item>
+                </span>
+              )}
+              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={16} aria-hidden="true" /></span>}
+              onClick={() => props.onOpenChannel(entry.provider)}
+            />
           ))}
         </div>
       </section>
@@ -137,21 +126,12 @@ export function BotChatOverview(props: {
               key={entry.provider}
               className="settingsRemoteAccessCatalogRow"
               data-support={entry.support}
-              render={(
-                <button
-                  type="button"
-                  aria-label={copy.connectAria(botCopy.providers[entry.provider].label)}
-                  onClick={() => props.onOpenChannel(entry.provider)}
-                />
-              )}
-            >
-              <ItemMedia><BotBrandLogo provider={entry.provider} /></ItemMedia>
-              <ItemContent>
-                <ItemTitle>{botCopy.providers[entry.provider].label}</ItemTitle>
-                <ItemDescription>{botCopy.providers[entry.provider].help}</ItemDescription>
-              </ItemContent>
-              <ItemActions><ChevronRight size={16} aria-hidden="true" /></ItemActions>
-            </Item>
+              startContent={<BotBrandLogo provider={entry.provider} />}
+              label={<span className="settingsRemoteAccessItemTitle" aria-label={copy.connectAria(botCopy.providers[entry.provider].label)}>{botCopy.providers[entry.provider].label}</span>}
+              description={botCopy.providers[entry.provider].help}
+              endContent={<span className="settingsRemoteAccessItemActions"><ChevronRight size={16} aria-hidden="true" /></span>}
+              onClick={() => props.onOpenChannel(entry.provider)}
+            />
           ))}
         </div>
       </section>
