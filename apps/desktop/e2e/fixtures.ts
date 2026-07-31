@@ -217,7 +217,6 @@ async function withE2eWindow(
 export const test = base.extend<{
   window: Page;
   modelPickerLongWindow: Page;
-  emptyWindow: Page;
   longTranscriptWindow: Page;
   chatChromeDarwinWindow: Page;
   chatChromeWin32Window: Page;
@@ -253,11 +252,6 @@ export const test = base.extend<{
       },
       use,
     );
-  },
-  // Empty: no connection staged — exercises the true first-run boot path.
-  // Used by first-run only.
-  emptyWindow: async ({}, use) => {
-    await withE2eWindow({ seed: false, readinessSelector: '#root', locale: 'zh' }, use);
   },
   // Long transcript: boots the e2e-fixture `long-transcript` fixture, which
   // seeds a 24-turn (~1300px each) session and opens it as the active
