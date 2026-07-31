@@ -408,6 +408,48 @@ describe('RuntimeRunner', () => {
     expect(result.failure?.message).toMatch(/tool-call step cap/);
   });
 
+  test('graph yield completes without final text or a false tool step cap', async () => {
+    const providers = makeProviders();
+    const flow = new ScriptFlow((ctx) => [
+      flowTokenUsageEvent(ctx, 'tool-calls'),
+      {
+        ...flowTerminalEvent(ctx, 'completed'),
+        actions: {
+          endInvocation: true,
+          stateDelta: { stopReason: 'graph_yield' },
+        },
+      },
+    ]);
+    const runner = new RuntimeRunner({ flow, providers });
+
+    const result = await runner.run(makeRequest());
+
+    expect(result.status).toBe('completed');
+    expect(result.finalOutput).toBeUndefined();
+    expect(result.failure).toBeUndefined();
+  });
+
+  test('graph yield does not hide a real preceding runtime error', async () => {
+    const providers = makeProviders();
+    const flow = new ScriptFlow((ctx) => [
+      flowErrorEvent(ctx, 'Operation failed'),
+      flowTokenUsageEvent(ctx, 'tool-calls'),
+      {
+        ...flowTerminalEvent(ctx, 'completed'),
+        actions: {
+          endInvocation: true,
+          stateDelta: { stopReason: 'graph_yield' },
+        },
+      },
+    ]);
+    const runner = new RuntimeRunner({ flow, providers });
+
+    const result = await runner.run(makeRequest());
+
+    expect(result.status).toBe('failed');
+    expect(result.failure?.class).toBe('tool_failed');
+  });
+
   test('a flow that throws maps to a failed result (user event retained)', async () => {
     const providers = makeProviders();
     const flow = new ThrowingFlow(new Error('boom'));
