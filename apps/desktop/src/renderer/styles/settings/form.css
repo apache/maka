@@ -71,14 +71,6 @@
   min-width: 0;
 }
 
-.settingsFieldHint {
-  font-style: normal;
-  font-weight: var(--font-weight-normal);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  margin-left: var(--space-1-5);
-}
-
 .settingsSubheading {
   margin: 0;
   color: var(--foreground-secondary);

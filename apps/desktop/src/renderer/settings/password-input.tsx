@@ -34,6 +34,7 @@ export function PasswordInput(props: {
   isLabelHidden?: boolean;
   description?: string;
   error?: string | null;
+  isRequired?: boolean;
   disabled?: boolean;
   inputRef?: Ref<HTMLInputElement>;
   onBlur?(): void;
@@ -87,6 +88,7 @@ export function PasswordInput(props: {
         label={props.label}
         description={props.description}
         isLabelHidden={props.isLabelHidden ?? true}
+        isRequired={props.isRequired}
         isDisabled={props.disabled}
         status={props.error ? { type: 'error', message: props.error } : undefined}
       >
@@ -99,7 +101,9 @@ export function PasswordInput(props: {
           placeholder={props.placeholder}
           label={copy.value}
           isLabelHidden
+          isRequired={props.isRequired}
           isDisabled={props.disabled}
+          status={props.error ? { type: 'error' } : undefined}
         />
         {props.value && !props.disabled && (
           <IconButton

@@ -212,7 +212,7 @@ describe('Settings network and gateway persistence contract', () => {
     );
     assert.match(
       gatewayBlock,
-      /<Selector[\s\S]*value=\{gatewayDraft\.host\}[\s\S]*label=\{copy\.form\.hostAria\}[\s\S]*onChange=\{\(host\) => void updateGateway\(\{ host: host as AppSettings\['openGateway'\]\['host'\] \}\)\}/,
+      /<Selector[\s\S]*value=\{gatewayDraft\.host\}[\s\S]*label=\{copy\.form\.host\}[\s\S]*onChange=\{\(host\) => void updateGateway\(\{ host: host as AppSettings\['openGateway'\]\['host'\] \}\)\}/,
       'Open Gateway host select must render from the local draft while persisting in the background',
     );
     assert.match(

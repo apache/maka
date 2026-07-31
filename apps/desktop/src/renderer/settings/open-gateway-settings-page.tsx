@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppSettings, OpenGatewayRuntimeStatus, UpdateAppSettingsResult } from '@maka/core';
-import { Alert, AlertDescription, Button, TextInput, NumberInput, Selector, Switch, TextArea, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, FormLayout, TextInput, NumberInput, Selector, Switch, TextArea, useToast, useUiLocale } from '@maka/ui';
 import { getOpenGatewaySettingsCopy, type OpenGatewaySettingsCopy } from '../locales/settings-open-gateway-copy';
 import { PasswordInput } from './password-input';
 import { MetricCard } from './settings-metric-card';
@@ -181,24 +181,21 @@ export function OpenGatewaySettingsPage(props: {
         />
       </div>
 
-      <div className="settingsFormGrid settingsFormGridProxy">
-        <div>
-          <span>{copy.form.host}</span>
+      <FormLayout className="settingsFormLayout">
+        <FormLayout direction="horizontal">
           <Selector
             value={gatewayDraft.host}
-            label={copy.form.hostAria}
-            isLabelHidden
+            label={copy.form.host}
             options={[
               { value: '127.0.0.1', label: '127.0.0.1' },
               { value: '0.0.0.0', label: '0.0.0.0' },
             ]}
-            width={320}
+            width="100%"
             onChange={(host) => void updateGateway({ host: host as AppSettings['openGateway']['host'] })}
           />
-        </div>
-        <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly hasClear onChange={(value) => void updateGateway({ port: value ?? 3939 })} />
-        <div>
-          <span>{copy.form.token}</span>
+          <NumberInput label={copy.form.port} value={gatewayDraft.port} isIntegerOnly hasClear onChange={(value) => void updateGateway({ port: value ?? 3939 })} />
+        </FormLayout>
+        <FormLayout direction="horizontal">
           <PasswordInput
             value={tokenDraft}
             onChange={setTokenDraft}
@@ -207,21 +204,18 @@ export function OpenGatewaySettingsPage(props: {
               if (tokenDraft !== gatewayDraft.token) void saveToken();
             }}
             placeholder={copy.form.tokenPlaceholder}
-            label={copy.form.tokenAria}
+            label={copy.form.token}
+            isLabelHidden={false}
           />
-        </div>
-        <div>
-          <span>{copy.form.sessionId}</span>
           <TextInput
             value={eventSessionId}
             isDisabled={saving}
             placeholder={copy.form.sessionPlaceholder}
             onChange={(value) => setEventSessionId(value)}
-            label={copy.form.sessionAria}
-            isLabelHidden
+            label={copy.form.sessionId}
           />
-        </div>
-      </div>
+        </FormLayout>
+      </FormLayout>
 
       {gatewayDraft.enabled && !gatewayDraft.token && (
         <Alert variant="passive">

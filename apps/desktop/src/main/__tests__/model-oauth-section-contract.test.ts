@@ -281,7 +281,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /isDisabled=\{isExperimental \|\| busy\}[\s\S]*label=\{copy\.slugAria\}[\s\S]*isLabelHidden/,
+      /isDisabled=\{isExperimental \|\| busy\}[\s\S]*label=\{copy\.slug\}/,
       'AddProviderForm fields must freeze while a create request is in flight so visible draft cannot drift from the submitted payload',
     );
     // #1565 PR 3: Astryx Button — `isDisabled` + `label` prop, self-closing.
@@ -478,9 +478,9 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     const enabledModels = src.match(/function EnabledModelManager[\s\S]*?function modelDisplayLabel/)?.[0] ?? '';
 
     assert.match(addForm, /\{copy\.slug\}/);
-    assert.match(addForm, /label=\{copy\.slugAria\}[\s\S]*isLabelHidden/);
-    assert.match(addForm, /\{copy\.endpointLabel\(requiresBaseUrl\)\}/);
-    assert.match(addForm, /label=\{copy\.endpointAria\}[\s\S]*isLabelHidden/);
+    assert.match(addForm, /label=\{copy\.slug\}/);
+    assert.match(addForm, /label=\{copy\.endpointLabel\(requiresBaseUrl\)\}/);
+    assert.match(addForm, /isRequired=\{requiresBaseUrl\}/);
     assert.match(addForm, /copy\.duplicateSlug/);
     assert.match(addForm, /copy\.endpointRequired/);
 
@@ -861,6 +861,17 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     assert.match(detail, /const supportsApiKey = providerAuthSupportsApiKey\(connection\.providerType\)/);
     assert.match(detail, /const requiresCredential = providerAuthRequiresSecret\(connection\.providerType\)/);
     assert.match(detail, /\{supportsApiKey && \([\s\S]*<PasswordInput/);
+  });
+
+  it('marks provider credentials required only when the provider requires them', async () => {
+    const src = await readProviderSettingsCombinedSource();
+    const addForm = src.match(/function AddProviderForm[\s\S]*?function ConnectionDetail/)?.[0] ?? '';
+
+    assert.equal(
+      addForm.match(/isRequired=\{requiresApiKey\}/g)?.length,
+      2,
+      'both the quick and full provider forms must expose the provider credential requirement',
+    );
   });
 
   it('provider detail async actions stop writing UI after the detail sheet is closed or switched', async () => {

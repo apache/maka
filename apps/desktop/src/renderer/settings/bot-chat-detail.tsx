@@ -17,6 +17,7 @@ import {
   BOT_BRAND,
   Button,
   Chip,
+  FormLayout,
   TextInput,
   RelativeTime,
   Segmented,
@@ -375,15 +376,14 @@ type BotCredentialField =
   | {
       kind: 'text' | 'password';
       key: 'token' | 'proxyUrl' | 'appId' | 'appSecret';
-      label: ReactNode;
+      label: string;
+      description?: string;
       placeholder: string;
-      ariaLabel: string;
     }
   | {
       kind: 'select';
       key: 'domain';
-      label: ReactNode;
-      ariaLabel: string;
+      label: string;
       defaultValue: string;
       options: ReadonlyArray<readonly [string, string]>;
     }
@@ -393,26 +393,25 @@ type BotCredentialField =
 function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<BotProvider, ReadonlyArray<BotCredentialField>>> {
   return {
   telegram: [
-    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: '123456:ABC-DEF...', ariaLabel: 'Telegram Bot Token' },
+    { kind: 'password', key: 'token', label: 'Telegram Bot Token', placeholder: '123456:ABC-DEF...' },
     { kind: 'notice', text: copy.telegramOfficialFlow },
     {
       kind: 'text',
       key: 'proxyUrl',
-      label: <>{copy.proxy} <em className="settingsFieldHint">{copy.chinaRequired}</em></>,
+      label: copy.telegramProxyAria,
+      description: copy.chinaRequired,
       placeholder: 'http://127.0.0.1:7890',
-      ariaLabel: copy.telegramProxyAria,
     },
     { kind: 'allowed-user-ids' },
     { kind: 'notice', text: copy.telegramNotice },
   ],
   feishu: [
-    { kind: 'text', key: 'appId', label: 'App ID', placeholder: 'cli_xxxx', ariaLabel: copy.feishuCredentialId },
-    { kind: 'password', key: 'appSecret', label: 'App Secret', placeholder: 'xxxx', ariaLabel: copy.feishuSecret },
+    { kind: 'text', key: 'appId', label: copy.feishuCredentialId, placeholder: 'cli_xxxx' },
+    { kind: 'password', key: 'appSecret', label: copy.feishuSecret, placeholder: 'xxxx' },
     {
       kind: 'select',
       key: 'domain',
-      label: copy.domain,
-      ariaLabel: copy.feishuDomain,
+      label: copy.feishuDomain,
       defaultValue: 'feishu.cn',
       options: [
         ['feishu.cn', copy.feishuOption],
@@ -421,31 +420,31 @@ function botCredentialFields(copy: BotSettingsCopy['detail']): Partial<Record<Bo
     },
   ],
   discord: [
-    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: 'MTAx...', ariaLabel: 'Discord Bot Token' },
+    { kind: 'password', key: 'token', label: 'Discord Bot Token', placeholder: 'MTAx...' },
     {
       kind: 'text',
       key: 'proxyUrl',
-      label: <>{copy.proxy} <em className="settingsFieldHint">{copy.authOnly}</em></>,
+      label: copy.discordProxyAria,
+      description: copy.authOnly,
       placeholder: 'http://127.0.0.1:7890',
-      ariaLabel: copy.discordProxyAria,
     },
     { kind: 'notice', text: copy.discordNotice },
   ],
   dingtalk: [
-    { kind: 'text', key: 'appId', label: 'Client ID (AppKey)', placeholder: 'dingxxxxxxxx', ariaLabel: copy.dingtalkId },
-    { kind: 'password', key: 'appSecret', label: 'Client Secret (AppSecret)', placeholder: 'xxxx', ariaLabel: copy.dingtalkSecret },
+    { kind: 'text', key: 'appId', label: copy.dingtalkId, placeholder: 'dingxxxxxxxx' },
+    { kind: 'password', key: 'appSecret', label: copy.dingtalkSecret, placeholder: 'xxxx' },
   ],
   wecom: [
-    { kind: 'text', key: 'appId', label: 'Bot ID', placeholder: copy.wecomBotPlaceholder, ariaLabel: copy.wecomBotAria },
-    { kind: 'password', key: 'appSecret', label: 'Secret', placeholder: copy.wecomSecretPlaceholder, ariaLabel: copy.wecomSecretAria },
+    { kind: 'text', key: 'appId', label: copy.wecomBotAria, placeholder: copy.wecomBotPlaceholder },
+    { kind: 'password', key: 'appSecret', label: copy.wecomSecretAria, placeholder: copy.wecomSecretPlaceholder },
   ],
   qq: [
-    { kind: 'text', key: 'appId', label: 'AppID', placeholder: '102xxxxxx', ariaLabel: copy.qqId },
-    { kind: 'password', key: 'appSecret', label: 'AppSecret', placeholder: 'xxxx', ariaLabel: 'QQ AppSecret' },
+    { kind: 'text', key: 'appId', label: copy.qqId, placeholder: '102xxxxxx' },
+    { kind: 'password', key: 'appSecret', label: 'QQ AppSecret', placeholder: 'xxxx' },
   ],
   slack: [
-    { kind: 'password', key: 'token', label: 'Bot Token', placeholder: 'xoxb-…', ariaLabel: 'Slack Bot Token' },
-    { kind: 'password', key: 'appSecret', label: 'App-Level Token', placeholder: 'xapp-…', ariaLabel: 'Slack App-Level Token' },
+    { kind: 'password', key: 'token', label: 'Slack Bot Token', placeholder: 'xoxb-…' },
+    { kind: 'password', key: 'appSecret', label: 'Slack App-Level Token', placeholder: 'xapp-…' },
   ],
   };
 }
@@ -459,47 +458,42 @@ function BotCredentialFields(props: {
   const fields = botCredentialFields(copy)[props.provider];
   if (!fields) return null;
   return (
-    <>
+    <FormLayout>
       {fields.map((field, index) => {
         switch (field.kind) {
           case 'text':
             return (
-              <div key={field.key} className="settingsField">
-                <span>{field.label}</span>
-                <TextInput
-                  value={props.channel[field.key] ?? ''}
-                  onChange={(value) => props.onUpdateChannel({ [field.key]: value })}
-                  placeholder={field.placeholder}
-                  label={field.ariaLabel}
-                  isLabelHidden
-                />
-              </div>
+              <TextInput
+                key={field.key}
+                value={props.channel[field.key] ?? ''}
+                onChange={(value) => props.onUpdateChannel({ [field.key]: value })}
+                placeholder={field.placeholder}
+                label={field.label}
+                description={field.description}
+              />
             );
           case 'password':
             return (
-              <div key={field.key} className="settingsField">
-                <span>{field.label}</span>
-                <PasswordInput
-                  value={props.channel[field.key] ?? ''}
-                  onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
-                  placeholder={field.placeholder}
-                  label={field.ariaLabel}
-                />
-              </div>
+              <PasswordInput
+                key={field.key}
+                value={props.channel[field.key] ?? ''}
+                onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
+                placeholder={field.placeholder}
+                label={field.label}
+                description={field.description}
+                isLabelHidden={false}
+              />
             );
           case 'select':
             return (
-              <label key={field.key} className="settingsField">
-                <span>{field.label}</span>
-                <Selector
-                  value={props.channel[field.key] ?? field.defaultValue}
-                  label={field.ariaLabel}
-                  isLabelHidden
-                  options={field.options.map(([value, label]) => ({ value, label }))}
-                  width={320}
-                  onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
-                />
-              </label>
+              <Selector
+                key={field.key}
+                value={props.channel[field.key] ?? field.defaultValue}
+                label={field.label}
+                options={field.options.map(([value, label]) => ({ value, label }))}
+                width="100%"
+                onChange={(next) => props.onUpdateChannel({ [field.key]: next })}
+              />
             );
           case 'allowed-user-ids':
             return (
@@ -517,7 +511,7 @@ function BotCredentialFields(props: {
             );
         }
       })}
-    </>
+    </FormLayout>
   );
 }
 
@@ -573,31 +567,22 @@ function BotAllowedUserIdsField(props: {
       (next ?? []).every((id, idx) => id === persisted[idx]);
     if (!same) props.onChange(next);
   };
+  const warning = invalidEntries.length > 0
+    ? `${copy.invalidUsers(invalidEntries.slice(0, 3).join(locale === 'zh' ? '、' : ', '))}${invalidEntries.length > 3 ? copy.moreInvalid(invalidEntries.length) : ''}`
+    : undefined;
 
   return (
-    <div className="settingsField">
-      <span>{copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}</span>
-      <TextArea
-        value={buffer}
-        onChange={(value) => setBuffer(value)}
-        onBlur={commit}
-        rows={3}
-        hasSpellCheck={false}
-        placeholder={copy.allowedUsersPlaceholder}
-        label={copy.allowedUsersAria}
-        isLabelHidden
-      />
-      <small>
-        {copy.allowedUsersHelp}
-        {atCap && <strong>{copy.limitReached}</strong>}
-        {invalidEntries.length > 0 && (
-          <span className="settingsFieldWarning" data-tone="warning">
-            {copy.invalidUsers(invalidEntries.slice(0, 3).join(locale === 'zh' ? '、' : ', '))}
-            {invalidEntries.length > 3 && copy.moreInvalid(invalidEntries.length)}
-          </span>
-        )}
-      </small>
-    </div>
+    <TextArea
+      value={buffer}
+      onChange={(value) => setBuffer(value)}
+      onBlur={commit}
+      rows={3}
+      hasSpellCheck={false}
+      placeholder={copy.allowedUsersPlaceholder}
+      label={copy.allowedUsersLabel(parsed.length, MAX_ALLOWED_USER_IDS)}
+      description={`${copy.allowedUsersHelp}${atCap ? ` ${copy.limitReached}` : ''}`}
+      status={warning ? { type: 'warning', message: warning } : undefined}
+    />
   );
 }
 

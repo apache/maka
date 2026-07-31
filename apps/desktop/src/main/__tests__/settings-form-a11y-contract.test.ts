@@ -207,6 +207,16 @@ describe('Settings form accessibility labels', () => {
     assert.match(passwordInput, /isDisabled=\{copying\}/);
     assert.match(passwordInput, /label=\{copying \? copy\.copying : justCopied \? copy\.copied : copy\.copy\}/);
     assert.match(passwordInput, /toast\.error\(copy\.copyFailed, copy\.clipboardUnavailable\)/);
+    assert.match(
+      passwordInput,
+      /<InputGroup[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.error \? \{ type: 'error', message: props\.error \} : undefined\}/,
+      'the visible credential field must own required and error presentation',
+    );
+    assert.match(
+      passwordInput,
+      /<TextInput[\s\S]*isRequired=\{props\.isRequired\}[\s\S]*status=\{props\.error \? \{ type: 'error' \} : undefined\}/,
+      'required and invalid semantics must reach the actual credential input',
+    );
     assert.doesNotMatch(
       passwordInput,
       /const copyingRef = useRef\(false\)/,
@@ -236,20 +246,40 @@ describe('Settings form accessibility labels', () => {
     }
   });
 
+  it('lets Astryx own simple field labels and multi-field layout', async () => {
+    const general = await readRepo('apps/desktop/src/renderer/settings/general-settings-page.tsx');
+    const gateway = await readRepo('apps/desktop/src/renderer/settings/open-gateway-settings-page.tsx');
+    const provider = await readRepo('apps/desktop/src/renderer/settings/provider-add-form.tsx');
+
+    assert.match(general, /<FormLayout className="settingsFormLayout" direction="horizontal">/);
+    assert.match(gateway, /<FormLayout className="settingsFormLayout">[\s\S]*<FormLayout direction="horizontal">/);
+    assert.match(provider, /<FormLayout>/);
+    assert.doesNotMatch(
+      `${general}\n${gateway}\n${provider}`,
+      /settingsFormGrid/,
+      'Maka must not preserve a parallel grid for fields Astryx FormLayout can arrange',
+    );
+    assert.doesNotMatch(
+      `${general}\n${gateway}\n${provider}`,
+      /<span>\{copy\.(?:proxyProtocol|serverAddress|username|password|form\.(?:host|token|sessionId)|slug|name|apiKeyLabel)[^<]*<\/span>/,
+      'visible labels must be owned by their fields instead of duplicated in product markup',
+    );
+  });
+
   it('names the high-risk Settings fields found by the real app AX sweep', async () => {
     const settings = await readSettingsCombinedSource();
     const providers = await readProviderSettingsCombinedSource();
 
     for (const [label, pattern] of [
-      ['Telegram proxy address', /ariaLabel: copy\.telegramProxyAria/],
-      ['Discord proxy address', /ariaLabel: copy\.discordProxyAria/],
-      ['allowed user IDs', /label=\{copy\.allowedUsersAria\}/],
+      ['Telegram proxy address', /label: copy\.telegramProxyAria/],
+      ['Discord proxy address', /label: copy\.discordProxyAria/],
+      ['allowed user IDs', /label=\{copy\.allowedUsersLabel\(parsed\.length, MAX_ALLOWED_USER_IDS\)\}/],
       ['web-search query', /label=\{copy\.queryAria\}/],
-      ['proxy server address', /label=\{copy\.proxyServerAddress\}/],
+      ['proxy server address', /label=\{copy\.serverAddress\}/],
       ['proxy port', /<NumberInput label=\{copy\.port\}/],
-      ['Open Gateway host', /label=\{copy\.form\.hostAria\}/],
+      ['Open Gateway host', /label=\{copy\.form\.host\}/],
       ['Open Gateway port', /<NumberInput label=\{copy\.form\.port\}/],
-      ['Open Gateway session ID', /label=\{copy\.form\.sessionAria\}/],
+      ['Open Gateway session ID', /label=\{copy\.form\.sessionId\}/],
       ['usage request filter', /label=\{props\.copy\.filterAria\}/],
       ['usage status filter', /label=\{props\.copy\.statusAria\}/],
       ['MEMORY.md content', /label=\{copy\.text\.contentEditorAria\}/],
@@ -258,9 +288,9 @@ describe('Settings form accessibility labels', () => {
     }
 
     for (const [label, pattern] of [
-      ['provider slug', /label=\{copy\.slugAria\}/],
-      ['provider display name', /label=\{copy\.nameAria\}/],
-      ['provider endpoint', /label=\{copy\.endpointAria\}/],
+      ['provider slug', /label=\{copy\.slug\}/],
+      ['provider display name', /label=\{copy\.name\}/],
+      ['provider endpoint', /label=\{copy\.endpointLabel\(requiresBaseUrl\)\}/],
       ['enabled model selector', /label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}/],
       ['model search', /searchPlaceholder=\{copy\.searchModels\}/],
     ] as const) {
@@ -310,8 +340,7 @@ describe('Settings form accessibility labels', () => {
     const settingsRow = styles.match(/\.settingsRow\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
     const settingsFormRow = styles.match(/\.settingsFormRow\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
     const rowTitle = styles.match(/\.settingsRow strong,\s*\.settingsFormRow strong\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    const fieldLabel = styles.match(/\.settingsField span,\s*\.settingsFormGrid label span\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
-    const hint = styles.match(/\.settingsRow small,\s*\.settingsFormRow small,\s*\.settingsField small\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
+    const hint = styles.match(/\.settingsRow small,\s*\.settingsFormRow small\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
 
     for (const [name, block] of [['.settingsRow', settingsRow], ['.settingsFormRow', settingsFormRow]] as const) {
       assert.ok(block, `${name} base rule must exist in the aggregated renderer CSS (rows.css import reachable)`);
@@ -320,9 +349,7 @@ describe('Settings form accessibility labels', () => {
     assert.ok(rowTitle, 'row titles must stay on ONE comma-grouped rule for both row kinds');
     assert.match(rowTitle, /font-size:\s*var\(--font-size-heading\);/, 'row titles sit on the heading tier for both row kinds');
     assert.match(rowTitle, /font-weight:\s*var\(--font-weight-medium\);/, 'row titles are medium weight');
-    assert.ok(fieldLabel, 'field labels must stay on ONE comma-grouped rule');
-    assert.match(fieldLabel, /font-size:\s*var\(--font-size-ui\);/, 'field labels sit one tier BELOW row titles (ui, not heading)');
-    assert.ok(hint, 'hints must stay on ONE comma-grouped rule across row kinds and fields');
+    assert.ok(hint, 'row hints must stay on ONE comma-grouped rule across row kinds');
     assert.match(hint, /font-size:\s*var\(--font-size-base\);/, 'hints sit on the body tier');
   });
 

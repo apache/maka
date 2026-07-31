@@ -176,12 +176,13 @@ describe('Bot settings UI contract', () => {
         `${provider} credential fields must not be a hand-written JSX branch`,
       );
     }
-    // The descriptor renderer must keep each field kind on its governed
-    // primitive with the descriptor's accessible name.
+    // Astryx owns the descriptor form's visible labels and layout.
     assert.match(settings, /function BotCredentialFields\(/);
-    assert.match(settings, /<PasswordInput[\s\S]*label=\{field\.ariaLabel\}/);
-    assert.match(settings, /<TextInput[\s\S]*label=\{field\.ariaLabel\}[\s\S]*isLabelHidden/);
-    assert.match(settings, /<Selector[\s\S]*label=\{field\.ariaLabel\}/);
+    assert.match(settings, /<FormLayout>[\s\S]*fields\.map/);
+    assert.match(settings, /<PasswordInput[\s\S]*label=\{field\.label\}[\s\S]*description=\{field\.description\}/);
+    assert.match(settings, /<TextInput[\s\S]*label=\{field\.label\}[\s\S]*description=\{field\.description\}/);
+    assert.match(settings, /<Selector[\s\S]*label=\{field\.label\}/);
+    assert.doesNotMatch(settings, /field\.ariaLabel|className="settingsField"/);
     // WeChat keeps its bespoke fields component (collapsed advanced section),
     // so it is intentionally not part of the descriptor table.
     assert.match(settings, /provider === 'wechat' && \(/);
@@ -189,23 +190,17 @@ describe('Bot settings UI contract', () => {
 
   it('keeps bot allowlist validation copy text-only and locale-aware', async () => {
     const settings = await readSettingsCombinedSource();
-    const styles = await readRendererContractCss();
     const allowlistBlock = settings.match(/function BotAllowedUserIdsField[\s\S]*?function botConnectionLabel/)?.[0] ?? '';
 
     assert.match(
       allowlistBlock,
-      /className="settingsFieldWarning"[\s\S]*data-tone="warning"[\s\S]*copy\.invalidUsers/,
-      'Invalid bot allowlist entries should render as styled localized warning text',
+      /const warning = invalidEntries\.length > 0[\s\S]*copy\.invalidUsers[\s\S]*status=\{warning \? \{ type: 'warning', message: warning \} : undefined\}/,
+      'Invalid bot allowlist entries should use the field primitive’s localized warning status',
     );
     assert.doesNotMatch(
       allowlistBlock,
       /⚠|⚠️|@username/,
       'Bot allowlist validation must not rely on emoji or English placeholder copy',
-    );
-    assert.match(
-      styles,
-      /\.settingsFieldWarning\s*\{[\s\S]*color:\s*var\(--warning-text, var\(--info-text\)\);/,
-      'Bot allowlist warning should use the design token instead of a decorative glyph',
     );
   });
 

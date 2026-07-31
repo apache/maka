@@ -11,7 +11,7 @@ import {
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Alert, AlertDescription, AlertTitle, Button, Chip, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, AlertTitle, Button, Chip, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
@@ -132,6 +132,7 @@ export function AddProviderForm(props: {
           placeholder={copy.apiKeyPlaceholder}
           label="API Key"
           isLabelHidden={false}
+          isRequired={requiresApiKey}
           error={error}
           disabled={busy}
         />
@@ -156,9 +157,8 @@ export function AddProviderForm(props: {
             : copy.unwiredDetail}</AlertDescription>
         </Alert>
       )}
-      {supportsApiKey && (
-        <div>
-          <span>{copy.apiKeyLabel(requiresApiKey)}</span>
+      <FormLayout>
+        {supportsApiKey && (
           <PasswordInput
             value={apiKey}
             onChange={(next) => {
@@ -166,13 +166,12 @@ export function AddProviderForm(props: {
               if (error) setError(null);
             }}
             placeholder={copy.apiKeyPlaceholder}
-            label={`${display.name} ${copy.apiKey}`}
+            label={copy.apiKeyLabel(requiresApiKey)}
+            isLabelHidden={false}
+            isRequired={requiresApiKey}
             disabled={isExperimental || busy}
           />
-        </div>
-      )}
-      <div>
-        <span>{copy.slug}</span>
+        )}
         <TextInput
           value={slug}
           onChange={(value) => {
@@ -181,12 +180,8 @@ export function AddProviderForm(props: {
           }}
           placeholder="my-provider"
           isDisabled={isExperimental || busy}
-          label={copy.slugAria}
-          isLabelHidden
+          label={copy.slug}
         />
-      </div>
-      <div>
-        <span>{copy.name}</span>
         <TextInput
           value={name}
           onChange={(value) => {
@@ -195,13 +190,9 @@ export function AddProviderForm(props: {
           }}
           placeholder={display.name}
           isDisabled={isExperimental || busy}
-          label={copy.nameAria}
-          isLabelHidden
+          label={copy.name}
         />
-      </div>
-      {isCloudflareWorkersAi ? (
-        <div>
-          <span>{copy.accountIdLabel}</span>
+        {isCloudflareWorkersAi ? (
           <TextInput
             value={cloudflareAccountId}
             onChange={(value) => {
@@ -210,13 +201,10 @@ export function AddProviderForm(props: {
             }}
             placeholder={copy.accountIdPlaceholder}
             isDisabled={busy}
-            label={copy.accountIdAria}
-            isLabelHidden
+            label={copy.accountIdLabel}
+            isRequired
           />
-        </div>
-      ) : (
-        <div>
-          <span>{copy.endpointLabel(requiresBaseUrl)}</span>
+        ) : (
           <TextInput
             value={baseUrl}
             onChange={(value) => {
@@ -225,14 +213,11 @@ export function AddProviderForm(props: {
             }}
             placeholder={defaults.baseUrl || 'https://…'}
             isDisabled={isExperimental || busy}
-            label={copy.endpointAria}
-            isLabelHidden
+            label={copy.endpointLabel(requiresBaseUrl)}
+            isRequired={requiresBaseUrl}
           />
-        </div>
-      )}
-      {showsDefaultModel && (
-        <div>
-          <span>{copy.defaultModel}</span>
+        )}
+        {showsDefaultModel && (
           <TextInput
             value={defaultModel}
             onChange={(value) => {
@@ -241,12 +226,12 @@ export function AddProviderForm(props: {
             }}
             placeholder={copy.defaultModelPlaceholder}
             isDisabled={isExperimental || busy}
-            label={copy.defaultModelAria}
-            isLabelHidden
+            label={copy.defaultModel}
+            description={copy.defaultModelHelp}
+            isRequired={isCustomRelay}
           />
-          <small>{copy.defaultModelHelp}</small>
-        </div>
-      )}
+        )}
+      </FormLayout>
       {error && <p className="providerError" role="alert">{error}</p>}
       <div className="providerActions">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />

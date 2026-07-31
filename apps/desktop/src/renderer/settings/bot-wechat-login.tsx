@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
-import { Alert, AlertDescription, Button, DialogContent, DialogHeader, DialogRoot, TextInput, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, DialogContent, DialogHeader, DialogRoot, FormLayout, TextInput, useUiLocale } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
@@ -28,16 +28,15 @@ export function BotWeChatFields(props: {
   const hasAdvanced = Boolean(channel.appId || channel.appSecret || channel.webhookUrl);
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(hasAdvanced);
   return (
-    <>
-      <div className="settingsField">
-        <span>Bot Token</span>
-        <PasswordInput
-          value={channel.token}
-          onChange={(next) => updateChannel({ token: next })}
-          placeholder={copy.tokenPlaceholder}
-          label={copy.tokenAria}
-        />
-      </div>
+    <FormLayout>
+      <PasswordInput
+        value={channel.token}
+        onChange={(next) => updateChannel({ token: next })}
+        placeholder={copy.tokenPlaceholder}
+        label={copy.token}
+        isLabelHidden={false}
+        isRequired
+      />
       <div className="settingsBotAdvanced">
         <BaseButton
           type="button"
@@ -48,43 +47,33 @@ export function BotWeChatFields(props: {
           {advancedOpen ? copy.collapseAdvanced : copy.expandAdvanced}
         </BaseButton>
         {advancedOpen && (
-          <div className="settingsBotAdvancedBody">
-            <div className="settingsField">
-              <span>{copy.bridgeAddress}</span>
-              <TextInput
-                value={channel.webhookUrl ?? ''}
-                onChange={(value) => updateChannel({ webhookUrl: value })}
-                placeholder="http://127.0.0.1:18400"
-                label={copy.bridgeAria}
-                isLabelHidden
-              />
-            </div>
-            <div className="settingsField">
-              <span>{copy.appId}</span>
-              <TextInput
-                value={channel.appId ?? ''}
-                onChange={(value) => updateChannel({ appId: value })}
-                placeholder={copy.appIdPlaceholder}
-                label={copy.appIdAria}
-                isLabelHidden
-              />
-            </div>
-            <div className="settingsField">
-              <span>{copy.appSecret}</span>
-              <PasswordInput
-                value={channel.appSecret ?? ''}
-                onChange={(next) => updateChannel({ appSecret: next })}
-                placeholder={copy.appSecretPlaceholder}
-                label={copy.appSecretAria}
-              />
-            </div>
+          <FormLayout className="settingsBotAdvancedBody">
+            <TextInput
+              value={channel.webhookUrl ?? ''}
+              onChange={(value) => updateChannel({ webhookUrl: value })}
+              placeholder="http://127.0.0.1:18400"
+              label={copy.bridgeAddress}
+            />
+            <TextInput
+              value={channel.appId ?? ''}
+              onChange={(value) => updateChannel({ appId: value })}
+              placeholder={copy.appIdPlaceholder}
+              label={copy.appId}
+            />
+            <PasswordInput
+              value={channel.appSecret ?? ''}
+              onChange={(next) => updateChannel({ appSecret: next })}
+              placeholder={copy.appSecretPlaceholder}
+              label={copy.appSecret}
+              isLabelHidden={false}
+            />
             <Alert variant="info">
               <AlertDescription>{copy.advancedNotice}</AlertDescription>
             </Alert>
-          </div>
+          </FormLayout>
         )}
       </div>
-    </>
+    </FormLayout>
   );
 }
 

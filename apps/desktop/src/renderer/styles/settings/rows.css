@@ -1,7 +1,8 @@
 /* Settings row primitives — the single style home for the primitives
    rendered by settings/settings-rows.tsx (.settingsRows / .settingsRow)
-   and the form-row family that shares the same grouped-card rhythm
-   (.settingsFormRow / .settingsField / .settingsFormGrid).
+   and the form-row family that shares the same grouped-card rhythm.
+   Astryx FormLayout owns fields and multi-field layout; product CSS only
+   supplies the card inset around it.
 
    PR-SETTINGS-ROWS-CONVERGENCE-0: these rules were previously scattered
    across bot.css (base layout), connection.css (hover + hint),
@@ -200,22 +201,9 @@
   overflow-wrap: anywhere;
 }
 
-/* Field labels — one tier BELOW row titles so the proxy grid's 代理协议 /
-   服务器地址 / 端口 labels don't compete with the 代理服务器 row title
-   (they used to share the 15px heading tier). */
-.settingsField span,
-.settingsFormGrid label span {
-  display: block;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
-}
-
 /* Hints — the most-read body text on the page; body tier (13). */
 .settingsRow small,
-.settingsFormRow small,
-.settingsField small {
+.settingsFormRow small {
   display: block;
   margin-top: var(--space-1-5);
   color: var(--muted-foreground);
@@ -249,12 +237,6 @@
   word-break: break-all;
 }
 
-.settingsFieldWarning {
-  display: block;
-  margin-top: var(--space-1);
-  color: var(--warning-text, var(--info-text));
-}
-
 /* === control-width variants ============================================ */
 
 /* PR daily-review-bundled (@kenji audit finding #5): semantic width
@@ -277,18 +259,12 @@
 
 /* === fields and grids =================================================== */
 
-.settingsFormGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
 /* #1362: non-row children of a rows card — the proxy sub-form's grids,
    bypass field, info alert, and action row — sat flush against the card
    edge while every sibling row is inset 24px. One horizontal inset for
    everything inside a card. */
-.settingsRows > .settingsFormGrid,
-.settingsRows > .settingsField,
+.settingsRows > .settingsFormLayout,
+.settingsRows > .settingsFormField,
 .settingsRows > .settingsActionRow,
 .settingsRows > [data-slot="alert"] {
   margin: var(--space-4) var(--space-6);
@@ -301,63 +277,8 @@
   width: auto;
 }
 
-.settingsRows > .settingsFormGrid + .settingsFormRow {
+.settingsRows > .settingsFormLayout + .settingsFormRow {
   border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
-}
-
-.settingsFormGridProxy {
-  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.8fr) minmax(84px, 0.5fr);
-}
-
-.settingsField,
-.settingsFormGrid label {
-  display: grid;
-  gap: var(--space-1);
-}
-
-/* PR-S2 (2026-06-23): reference-style horizontal Settings row — label
-   stack on the left (title + description), control aligned right. Use
-   `<div className="settingsField" data-orient="horizontal">` on rows
-   whose control is a single inline element (Input, Switch, Segmented,
-   Select). Leave the default vertical stack for full-width controls
-   (TextArea, multi-line forms). The 1px hairline divider between rows
-   pulls the look closer to reference's flat divider list and away from
-   the previous "each row in its own implicit card" feel. */
-.settingsField[data-orient="horizontal"] {
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "label control"
-    "hint  control";
-  column-gap: var(--space-4);
-  row-gap: var(--space-0-5);
-  align-items: center;
-  padding: var(--space-3) 0;
-  border-bottom: var(--border-width-hairline) solid var(--border);
-}
-.settingsField[data-orient="horizontal"] > span {
-  grid-area: label;
-  align-self: end;
-}
-.settingsField[data-orient="horizontal"] > small {
-  grid-area: hint;
-  margin-top: 0;
-  align-self: start;
-}
-.settingsField[data-orient="horizontal"] > :not(span):not(small) {
-  grid-area: control;
-  justify-self: end;
-  align-self: center;
-  min-width: 0;
-}
-/* Allow inputs to take a comfortable cap width on horizontal rows so
-   the description column has space to breathe.
-   PR-SETTINGS-INPUT-POLISH-0: cap from 280 → 320 since rows are now
-   roomier (24px L/R padding). */
-/* The horizontal row above the first one shouldn't carry a top border;
-   below the last one the section footer takes over. The default
-   border-bottom is fine for the inter-row hairlines. */
-.settingsField[data-orient="horizontal"] + .settingsField[data-orient="horizontal"] {
-  border-top: 0;
 }
 
 /* === focus and motion =================================================== */
@@ -448,11 +369,6 @@
     flex-direction: row;
     align-items: center;
     gap: var(--space-5);
-  }
-
-  .settingsFormGrid,
-  .settingsFormGridProxy {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   /* The Button primitive is `shrink-0` with a fixed height; on a squeezed

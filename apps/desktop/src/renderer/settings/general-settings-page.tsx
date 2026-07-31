@@ -12,6 +12,7 @@ import {
   Alert,
   AlertDescription,
   Button,
+  FormLayout,
   TextInput,
   NumberInput,
   ModelPicker,
@@ -326,34 +327,26 @@ function NetworkProxySection(props: {
 
       {proxyDraft.enabled && (
         <>
-          <div className="settingsFormGrid settingsFormGridProxy">
-            <div>
-              <span>{copy.proxyProtocol}</span>
-              <Selector
-                value={proxyDraft.protocol}
-                label={copy.proxyProtocol}
-                isLabelHidden
-                options={[
-                  { value: 'http', label: 'HTTP/HTTPS' },
-                  { value: 'https', label: 'HTTPS' },
-                  { value: 'socks5', label: 'SOCKS5' },
-                ]}
-                width={320}
-                onChange={(protocol) => void updateProxy({ protocol: protocol as NetworkProxySettings['protocol'] })}
-              />
-            </div>
-            <div>
-              <span>{copy.serverAddress}</span>
-              <TextInput
-                value={proxyDraft.host}
-                onChange={(value) => void updateProxy({ host: value })}
-                placeholder="127.0.0.1"
-                label={copy.proxyServerAddress}
-                isLabelHidden
-              />
-            </div>
+          <FormLayout className="settingsFormLayout" direction="horizontal">
+            <Selector
+              value={proxyDraft.protocol}
+              label={copy.proxyProtocol}
+              options={[
+                { value: 'http', label: 'HTTP/HTTPS' },
+                { value: 'https', label: 'HTTPS' },
+                { value: 'socks5', label: 'SOCKS5' },
+              ]}
+              width="100%"
+              onChange={(protocol) => void updateProxy({ protocol: protocol as NetworkProxySettings['protocol'] })}
+            />
+            <TextInput
+              value={proxyDraft.host}
+              onChange={(value) => void updateProxy({ host: value })}
+              placeholder="127.0.0.1"
+              label={copy.serverAddress}
+            />
             <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly hasClear onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
-          </div>
+          </FormLayout>
 
           <div className="settingsFormRow" data-control="switch">
             <div>
@@ -369,34 +362,29 @@ function NetworkProxySection(props: {
           </div>
 
           {proxyDraft.authEnabled && (
-            <div className="settingsFormGrid">
-              <div>
-                <span>{copy.username}</span>
-                <TextInput
-                  value={proxyDraft.username}
-                  onChange={(value) => void updateProxy({ username: value })}
-                  label={copy.proxyUsername}
-                  isLabelHidden
-                />
-              </div>
-              <div>
-                <span>{copy.password}</span>
-                <PasswordInput value={proxyDraft.password} onChange={(next) => void updateProxy({ password: next })} label={copy.proxyPassword} />
-              </div>
-            </div>
+            <FormLayout className="settingsFormLayout" direction="horizontal">
+              <TextInput
+                value={proxyDraft.username}
+                onChange={(value) => void updateProxy({ username: value })}
+                label={copy.username}
+              />
+              <PasswordInput
+                value={proxyDraft.password}
+                onChange={(next) => void updateProxy({ password: next })}
+                label={copy.password}
+                isLabelHidden={false}
+              />
+            </FormLayout>
           )}
 
-          <div className="settingsField">
-            <span>{copy.bypassList}</span>
-            <TextInput
-              value={proxyDraft.bypassList.join(', ')}
-              onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
-              placeholder="metaso.cn, baidu.com"
-              label={copy.bypassList}
-              isLabelHidden
-            />
-            <small>{copy.bypassHelp}</small>
-          </div>
+          <TextInput
+            className="settingsFormField"
+            value={proxyDraft.bypassList.join(', ')}
+            onChange={(value) => void updateProxy({ bypassList: csvList(value) })}
+            placeholder="metaso.cn, baidu.com"
+            label={copy.bypassList}
+            description={copy.bypassHelp}
+          />
 
           <Alert variant="info">
             <AlertDescription>{copy.autoBypass(proxyDraft.autoBypassDomains.length)}</AlertDescription>

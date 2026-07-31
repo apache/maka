@@ -557,8 +557,8 @@ test('remote access prioritizes a configured channel that needs attention', asyn
  * #1362 — THE row-wrapping decision for the settings form-row pages. The
  * `.settingsRows` card is an inline-size query container; below 460px of
  * CARD width (not viewport width — the content column is narrower than the
- * window by the nav sidebar) label/control rows stack vertically, and the
- * proxy form grids collapse to one column. Switch rows are the exception:
+ * window by the nav sidebar) label/control rows stack vertically, while the
+ * proxy fields stay contained in Astryx-owned layouts. Switch rows are the exception:
  * a ~40px switch always fits beside its label. Locks both directions so
  * neither the narrow stacking nor the wide two-column layout regresses.
  */
@@ -587,24 +587,15 @@ test('general form rows stack at the window floor and stay two-column when wide'
   await expect(incognitoRow).toHaveCSS('flex-direction', 'row');
   await expect.poll(rowTrackCount).toBe(1);
 
-  // The proxy sub-form only renders behind the switches: the 3-column
-  // protocol/host/port grid (150px + 84px floors) was the widest thing on
-  // the page, and the auth username/password grid is the plain 2-column
-  // `.settingsFormGrid` — both must fold to one column on a narrow card
-  // (they are separate CSS selectors; either could regress alone).
+  // The proxy sub-form only renders behind the switches. Astryx owns both
+  // horizontal layouts; Maka only provides their inset within the Settings
+  // card, so the product must remain scroll-free at the window floor.
   await settings.getByRole('switch', { name: '启用代理服务器' }).click();
   await settings.getByRole('switch', { name: '启用代理认证' }).click();
-  const gridTrackCounts = () =>
-    settings
-      .locator('.settingsFormGrid')
-      .evaluateAll((elements) =>
-        elements.map(
-          (element) => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length,
-        ),
-      );
-  await expect(settings.locator('.settingsFormGridProxy')).toBeVisible();
-  // Both grids rendered (proxy + auth), each folded to one column.
-  await expect.poll(gridTrackCounts).toEqual([1, 1]);
+  const formLayouts = settings.locator('.settingsFormLayout');
+  await expect(formLayouts).toHaveCount(2);
+  await expect(formLayouts.nth(0)).toHaveCSS('display', 'grid');
+  await expect(formLayouts.nth(1)).toHaveCSS('display', 'grid');
 
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
