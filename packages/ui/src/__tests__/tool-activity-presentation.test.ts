@@ -67,7 +67,7 @@ describe('tool activity presentation', () => {
     assert.equal(materializeTools(messages)[0]?.activityKind, 'edit');
   });
 
-  it('keeps a running command detail collapsed by default', () => {
+  it('renders a running command through the native Astryx tool-call row', () => {
     const markup = renderTool({
       toolUseId: 'tool-running',
       toolName: 'Bash',
@@ -79,14 +79,14 @@ describe('tool activity presentation', () => {
       ],
     });
 
-    const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1] ?? '';
-    assert.match(trigger, /检查当前项目结构/);
-    assert.doesNotMatch(trigger, /Get-ChildItem|实时输出/);
-    assert.match(markup, /class="[^"]*astryx-collapsible-content[^"]*"/);
+    assert.match(markup, /class="astryx-chat-tool-calls\b/);
+    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
+    assert.match(markup, /Bash/);
+    assert.match(markup, /检查当前项目结构/);
     assert.doesNotMatch(markup, /Get-ChildItem|packages|data-slot="tool-output"/);
   });
 
-  it('delegates the tool disclosure button, chevron, and content linkage to Astryx', () => {
+  it('delegates the tool disclosure, status, and content linkage to ChatToolCalls', () => {
     const markup = renderTool({
       toolUseId: 'tool-astryx',
       toolName: 'Read',
@@ -94,11 +94,10 @@ describe('tool activity presentation', () => {
       args: { path: '/tmp/example.ts' },
     });
 
-    assert.match(markup, /class="[^"]*astryx-collapsible[^"]*"/);
-    assert.match(markup, /<button[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/);
-    assert.match(markup, /class="[^"]*astryx-collapsible-content[^"]*"/);
-    const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1] ?? '';
-    assert.doesNotMatch(trigger, /lucide-chevron-right/);
+    assert.match(markup, /class="astryx-chat-tool-calls\b/);
+    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
+    assert.match(markup, /astryx-icon/);
+    assert.doesNotMatch(markup, /astryx-collapsible|lucide-chevron-right/);
   });
 
   it('preserves a manual expansion across ordinary status changes', () => {
@@ -176,7 +175,7 @@ describe('tool activity presentation', () => {
     );
   });
 
-  it('keeps a settled errored tool collapsed while the summary carries the failure signal', () => {
+  it('keeps a settled errored tool collapsed while Astryx exposes the error state', () => {
     const markup = renderTool({
       toolUseId: 'tool-errored-collapsed',
       toolName: 'Bash',
@@ -194,9 +193,11 @@ describe('tool activity presentation', () => {
       },
     });
 
-    const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1] ?? '';
-    assert.doesNotMatch(trigger, /Error: boom/);
-    assert.match(trigger, /1 个失败/);
+    assert.match(markup, /class="astryx-chat-tool-calls\b/);
+    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
+    assert.match(markup, /Bash/);
+    assert.match(markup, /Error: boom/);
+    assert.doesNotMatch(markup, /Error: Error:|data-slot="tool-output"/);
   });
 
   it('presents a command sandbox denial as blocked instead of failed', () => {

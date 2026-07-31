@@ -16,18 +16,23 @@
   background: transparent;
 }
 
-.composerActions {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  width: 100%;
-}
-
 .maka-composer-astryx {
   width: min(var(--maka-chat-measure), 100%);
   max-width: var(--maka-chat-measure);
+}
+
+.maka-composer-context-drawer,
+.maka-composer-context-items {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+}
+
+.maka-composer-context-drawer {
+  flex-direction: column;
+  padding: var(--space-1) var(--space-3) var(--space-2);
 }
 
 .maka-composer-input {
@@ -36,6 +41,21 @@
   flex-direction: column;
   gap: var(--space-1-5);
   min-width: 0;
+}
+
+.maka-composer-header-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-composer-header-context {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
 }
 
 .maka-composer-left-controls,
@@ -50,6 +70,7 @@
      individual controls separable while pulling them into one
      coherent toolbar group. */
   gap: var(--space-1-5);
+  flex-wrap: wrap;
 }
 
 .maka-composer-left-controls {
@@ -73,11 +94,12 @@
 }
 
 .maka-composer-status-slot {
+  display: inline-flex;
   min-width: 0;
-  flex: 1 1 auto;
+  align-items: center;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  text-align: center;
+  white-space: nowrap;
 }
 
 /* Product-owned quiet controls. Model and thinking selectors now keep Astryx
@@ -159,41 +181,6 @@
   padding-top: 0;
 }
 
-/* D6 spectrum #2 (Command Input processing): while the assistant is
-   streaming, a slow top-edge light sweep on the composer shell keeps
-   "working" visible at the exact place the user's attention returns
-   to. 1px line, foreground-derived, infinite = functional status.
-   Relocated from chat-header.css (#546 PR2) so the card's own rest /
-   focus / streaming states live together. */
-.maka-composer-astryx[data-streaming="true"] {
-  position: relative;
-  overflow: hidden;
-}
-
-.maka-composer-astryx[data-streaming="true"]::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  border-radius: var(--radius-pill);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    oklch(from var(--status-running) l c h / 0.55) 50%,
-    transparent
-  );
-  background-size: 200% 100%;
-  animation: maka-processing-sweep 2.2s var(--ease-in-out-strong) infinite;
-  pointer-events: none;
-}
-
-@keyframes maka-processing-sweep {
-  0%   { background-position: 180% 0; }
-  100% { background-position: -80% 0; }
-}
-
 /* The textarea owns no chrome (the card does). It auto-resizes from
    --h-composer-min up to 240px (capped in @maka/ui), then scrolls. Font is
    set explicitly on the element AND its placeholder so neither relies on the
@@ -209,8 +196,8 @@
   background: transparent;
   color: var(--foreground);
   font-family: var(--font-default);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
+  font-size: 14px;
+  line-height: 22px;
   min-height: var(--h-composer-min);
   max-height: 240px;
 }
@@ -218,8 +205,8 @@
 .composer .maka-composer-textarea::placeholder {
   color: var(--muted-foreground);
   font-family: var(--font-default);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
+  font-size: 14px;
+  line-height: 22px;
   transition: opacity var(--duration-emphasized) var(--ease-out-strong);
 }
 

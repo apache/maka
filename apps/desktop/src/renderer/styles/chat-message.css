@@ -43,6 +43,13 @@
   padding: var(--space-0-5) 0 0;
 }
 
+.maka-processing-sequence {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
 /* --- Assistant bubble shell ----------------------------------------------- */
 /* User message: a tinted, width-capped Astryx bubble anchored to the right. */
 /* Assistant: no bubble — just text on background, like an editor. The

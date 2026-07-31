@@ -34,7 +34,12 @@ import { ComposerMentionPopup, mentionOptionId } from './composer-mention-popup.
 import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
-import { Button as UiButton, ChatComposer as AstryxChatComposer, IconButton } from '@astryxdesign/core';
+import {
+  Button as UiButton,
+  ChatComposer as AstryxChatComposer,
+  ChatComposerDrawer,
+  IconButton,
+} from '@astryxdesign/core';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -720,128 +725,176 @@ export const Composer = forwardRef<
           data-streaming={props.streaming ? 'true' : undefined}
           onSubmit={() => void sendCurrent()}
           isDisabled={props.disabled}
-          elevation="none"
-          input={(
-            <div className="maka-composer-input">
-        {/* Astryx owns the card inset; chips align directly with the input. */}
-        {props.pendingQuotes && props.pendingQuotes.length > 0 ? (
-          <div className="flex flex-wrap items-start gap-1 pb-1">
-            {props.pendingQuotes.map((quote, index) => (
-              <QuoteRefChip
-                key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
-                quote={quote}
-                onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
-              />
-            ))}
-          </div>
-        ) : null}
-        {props.pendingAttachments && props.pendingAttachments.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5 px-3 pt-2">
-            {props.pendingAttachments.map((attachment, index) => (
-              <AttachmentFileCard
-                key={`${attachment.displayName}-${index}`}
-                name={attachment.displayName}
-                kind={attachment.kind}
-                size={attachment.size}
-                onRemove={props.onRemoveAttachment ? () => props.onRemoveAttachment?.(index) : undefined}
-              />
-            ))}
-          </div>
-        ) : null}
-        {skillDraft.skills.length > 0 ? (
-          <ul
-            className="maka-composer-skill-chips"
-            aria-label={copy.selectedSkillsAriaLabel}
-          >
-            {skillDraft.skills.map((skill) => (
-              <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
-                <span>{skill.name}</span>
+          drawer={(
+            (props.pendingQuotes?.length ?? 0) > 0
+            || (props.pendingAttachments?.length ?? 0) > 0
+            || skillDraft.skills.length > 0
+          ) ? (
+            <ChatComposerDrawer
+              count={
+                (props.pendingQuotes?.length ?? 0)
+                + (props.pendingAttachments?.length ?? 0)
+                + skillDraft.skills.length
+              }
+              label={copy.addContext}
+            >
+              <div className="maka-composer-context-drawer">
+                {props.pendingQuotes && props.pendingQuotes.length > 0 ? (
+                  <div className="maka-composer-context-items">
+                    {props.pendingQuotes.map((quote, index) => (
+                      <QuoteRefChip
+                        key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
+                        quote={quote}
+                        onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {props.pendingAttachments && props.pendingAttachments.length > 0 ? (
+                  <div className="maka-composer-context-items">
+                    {props.pendingAttachments.map((attachment, index) => (
+                      <AttachmentFileCard
+                        key={`${attachment.displayName}-${index}`}
+                        name={attachment.displayName}
+                        kind={attachment.kind}
+                        size={attachment.size}
+                        onRemove={props.onRemoveAttachment ? () => props.onRemoveAttachment?.(index) : undefined}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {skillDraft.skills.length > 0 ? (
+                  <ul
+                    className="maka-composer-skill-chips"
+                    aria-label={copy.selectedSkillsAriaLabel}
+                  >
+                    {skillDraft.skills.map((skill) => (
+                      <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
+                        <span>{skill.name}</span>
+                        <IconButton
+                          variant="ghost"
+                          className="maka-composer-skill-chip-remove"
+                          label={copy.removeSkillAriaLabel(skill.name)}
+                          icon={<X size={12} aria-hidden="true" />}
+                          onClick={() => {
+                            skillDraft.remove(skill.ref ?? skill.id);
+                            window.requestAnimationFrame(() => textareaRef.current?.focus());
+                          }}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            </ChatComposerDrawer>
+          ) : undefined}
+          headerActions={(
+            props.onPickAttachments
+            || (!props.streaming && (props.onToggleVoiceCapture || props.onToggleRealtimeVoice))
+          ) ? (
+            <div className="maka-composer-header-actions">
+              {props.onPickAttachments ? (
                 <IconButton
                   variant="ghost"
-                  className="maka-composer-skill-chip-remove"
-                  label={copy.removeSkillAriaLabel(skill.name)}
-                  icon={<X size={12} aria-hidden="true" />}
-                  onClick={() => {
-                    skillDraft.remove(skill.ref ?? skill.id);
-                    window.requestAnimationFrame(() => textareaRef.current?.focus());
-                  }}
+                  type="button"
+                  size="sm"
+                  className="maka-composer-upload-button"
+                  isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                  aria-busy={pendingImportAction === 'pick' ? 'true' : undefined}
+                  data-pending={pendingImportAction === 'pick' ? 'true' : undefined}
+                  label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory}
+                  tooltip={pendingImportAction === 'pick' ? copy.addingAttachment : copy.uploadTitle}
+                  onClick={() => void runImportAction('pick', props.onPickAttachments)}
+                  icon={<Upload size={15} aria-hidden="true" />}
                 />
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <textarea
-          ref={textareaRef}
-          data-maka-contract="composer-input"
-          name="text"
-          className="maka-composer-textarea resize-none"
-          placeholder={copy.placeholder}
-          aria-label={copy.textareaAriaLabel}
-          aria-controls={mentionPopupOpen ? mentionListboxId : undefined}
-          aria-expanded={mentionPopupOpen ? true : undefined}
-          aria-activedescendant={
-            mentionPopupOpen && mentionItems.length > 0
-              ? mentionOptionId(mentionListboxId, mentionActiveIndex)
-              : undefined
-          }
-          disabled={props.disabled}
-          onKeyDown={onTextareaKeyDown}
-          onKeyUp={recomputeMention}
-          onClick={recomputeMention}
-          onPaste={onTextareaPaste}
-          onCompositionStart={() => { compositionActiveRef.current = true; }}
-          onCompositionEnd={() => { compositionActiveRef.current = false; recomputeMention(); }}
-          onInput={onTextareaInput}
-          rows={1}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        {mention ? (
-          <ComposerMentionPopup
-            trigger={mention.trigger}
-            items={mentionItems}
-            activeIndex={mentionActiveIndex}
-            loading={mentionLoading}
-            listboxId={mentionListboxId}
-            onSelect={selectMention}
-            onHover={setMentionActiveIndex}
-          />
-        ) : null}
-        {dragActive && (
-          <span className="maka-visually-hidden" role="status" aria-live="polite">
-            {copy.dropToImport}
-          </span>
-        )}
+              ) : null}
+              {!props.streaming && props.onToggleVoiceCapture ? (
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  size="sm"
+                  className="maka-composer-voice-button"
+                  data-state={props.voiceCaptureState ?? 'idle'}
+                  isDisabled={
+                    props.disabled
+                    || props.voiceCaptureState === 'requesting'
+                    || props.voiceCaptureState === 'processing'
+                    || props.voiceCaptureState === 'sending'
+                  }
+                  label={voiceCaptureLabel}
+                  tooltip={`${voiceCaptureLabel}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
+                  onClick={(event) => {
+                    void props.onToggleVoiceCapture?.({ dictate: event.shiftKey });
+                  }}
+                  icon={<Mic size={15} aria-hidden="true" />}
+                />
+              ) : null}
+              {!props.streaming && props.onToggleRealtimeVoice ? (
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  size="sm"
+                  className="maka-composer-realtime-voice-button"
+                  data-state={props.realtimeVoiceState ?? 'idle'}
+                  isDisabled={props.disabled}
+                  label={realtimeVoiceLabel}
+                  tooltip={realtimeVoiceLabel}
+                  onClick={() => {
+                    void props.onToggleRealtimeVoice?.();
+                  }}
+                  icon={<Volume2 size={15} aria-hidden="true" />}
+                />
+              ) : null}
+            </div>
+          ) : undefined}
+          input={(
+            <div className="maka-composer-input">
+              <textarea
+                ref={textareaRef}
+                data-maka-contract="composer-input"
+                name="text"
+                className="maka-composer-textarea resize-none"
+                placeholder={copy.placeholder}
+                aria-label={copy.textareaAriaLabel}
+                aria-controls={mentionPopupOpen ? mentionListboxId : undefined}
+                aria-expanded={mentionPopupOpen ? true : undefined}
+                aria-activedescendant={
+                  mentionPopupOpen && mentionItems.length > 0
+                    ? mentionOptionId(mentionListboxId, mentionActiveIndex)
+                    : undefined
+                }
+                disabled={props.disabled}
+                onKeyDown={onTextareaKeyDown}
+                onKeyUp={recomputeMention}
+                onClick={recomputeMention}
+                onPaste={onTextareaPaste}
+                onCompositionStart={() => { compositionActiveRef.current = true; }}
+                onCompositionEnd={() => { compositionActiveRef.current = false; recomputeMention(); }}
+                onInput={onTextareaInput}
+                rows={1}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {mention ? (
+                <ComposerMentionPopup
+                  trigger={mention.trigger}
+                  items={mentionItems}
+                  activeIndex={mentionActiveIndex}
+                  loading={mentionLoading}
+                  listboxId={mentionListboxId}
+                  onSelect={selectMention}
+                  onHover={setMentionActiveIndex}
+                />
+              ) : null}
+              {dragActive && (
+                <span className="maka-visually-hidden" role="status" aria-live="polite">
+                  {copy.dropToImport}
+                </span>
+              )}
             </div>
           )}
           footerActions={(
-            <div className="maka-composer-toolbar composerActions" data-streaming={props.streaming ? 'true' : undefined}>
-          <div className="maka-composer-left-controls">
-            {/* PR-COMPOSER-TOOLBAR-SPLIT: the single ＋ menu is split into
-                three named controls — upload / modes / skills —
-                so each is one click away and readable at rest instead of
-                hidden behind a generic plus. Import still no-ops mid-turn
-                (`runImportAction` / drop target), so the upload button is
-                disabled while streaming rather than vanishing. */}
-            {props.onPickAttachments ? (
-              <IconButton
-                variant="ghost"
-                type="button"
-                size="sm"
-                className="maka-composer-upload-button"
-                isDisabled={props.disabled || props.streaming === true || importActionBusy}
-                aria-busy={pendingImportAction === 'pick' ? 'true' : undefined}
-                data-pending={pendingImportAction === 'pick' ? 'true' : undefined}
-                label={
-                  pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory
-                }
-                tooltip={
-                  pendingImportAction === 'pick' ? copy.addingAttachment : copy.uploadTitle
-                }
-                onClick={() => void runImportAction('pick', props.onPickAttachments)}
-                icon={<Upload size={15} aria-hidden="true" />}
-              />
-            ) : null}
+            <div className="maka-composer-left-controls" data-streaming={props.streaming ? 'true' : undefined}>
             {/* #1444 still holds for the modes menu: it stays reachable
                 mid-turn so Plan/Swarm/Graph never disappear while a turn is
                 in flight. */}
@@ -934,25 +987,6 @@ export const Composer = forwardRef<
                 onClearAll={() => skillDraft.clear(skillDraft.activeDraftKey())}
               />
             ) : null}
-            {/* PR-MOVE-PERMISSION-MODE: the static "通用" role chip
-                was replaced by the permission-mode dropdown — that
-                spot is where the reference Settings expects users to
-                pick a permission mode. Maka offers Auto (`ask`) and
-                full access (`bypass`); a session running under a
-                read-only boundary displays as such (#1611) without
-                becoming a third option. */}
-            {props.onPermissionModeChange ? (
-              <PermissionModeSelect
-                appearance="quiet"
-                activeMode={props.permissionMode ?? 'ask'}
-                onSelect={(mode) => {
-                  void props.onPermissionModeChange?.(mode);
-                }}
-                align="start"
-                disabled={props.disabled || props.permissionModePending === true || Boolean(props.permissionModeDisabledReason)}
-                disabledReason={props.permissionModeDisabledReason}
-              />
-            ) : null}
             {/* #1433: active-mode indicators. The Plan/Swarm toggles live in
                 the modes menu (subtraction), so an ON mode would otherwise be
                 easy to miss without opening the menu. The indicator uses the
@@ -1024,89 +1058,73 @@ export const Composer = forwardRef<
                 <X size={12} aria-hidden="true" />
               </button>
             ) : null}
-          </div>
-          <span className="maka-composer-status-slot">
-            {props.disabled ? (
-              // PR-COMPOSER-PERMISSION-PULSE-0 (WAWQAQ msg `ed67a267`,
-              // skills round task #116): wrap the "等待权限确认" text
-              // in a styled hint with a pulsing accent dot. Plain text
-              // was easy to miss — the dot signals "system is waiting
-              // on YOU" with the same visual weight as the streaming
-              // 3-dot bounce on the other side of the disabled/active
-              // boundary.
-              <span className="maka-composer-permission-hint">
-                <span className="maka-composer-permission-dot" aria-hidden="true" />
-                {copy.awaitingPermission}
-              </span>
-            ) : props.voiceCaptureState === 'recording' ? (
-              copy.voiceRecording
-            ) : props.voiceCaptureState === 'requesting' ? (
-              copy.voiceRequesting
-            ) : props.voiceCaptureState === 'processing' ? (
-              copy.voiceProcessing
-            ) : props.voiceCaptureState === 'native_ready' ? (
-              copy.voiceReady
-            ) : props.voiceCaptureState === 'sending' ? (
-              copy.voiceSending
-            ) : props.realtimeVoiceState === 'connecting' ? (
-              copy.voiceConnecting
-            ) : props.realtimeVoiceState === 'connected' ? (
-              copy.voiceConnected
-            ) : sendPending ? (
-              copy.sending
-            ) : importActionBusy ? (
-              copy.importing
-            ) : props.streaming ? (
-              <span className="maka-composer-streaming-hint">
-                <span className="maka-composer-streaming-dot" aria-hidden="true" />
-                {props.processing
-                  ? copy.processing
-                  : props.continuing
-                    ? copy.continuing
-                    : copy.streaming} <Kbd>Esc</Kbd> {copy.interruptHint}
-              </span>
-            ) : (
-              null
-            )}
-          </span>
-          <div className="maka-composer-right-controls">
-            {!props.streaming && (
-              <>
-                {props.onToggleVoiceCapture ? (
-                  <IconButton
-                    variant="ghost"
-                    type="button"
-                    className="maka-composer-voice-button"
-                    data-state={props.voiceCaptureState ?? 'idle'}
-                    isDisabled={
-                      props.disabled ||
-                      props.voiceCaptureState === 'requesting' ||
-                      props.voiceCaptureState === 'processing' ||
-                      props.voiceCaptureState === 'sending'
-                    }
-                    label={voiceCaptureLabel}
-                    tooltip={`${voiceCaptureLabel}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
-                    onClick={(event) => {
-                      void props.onToggleVoiceCapture?.({ dictate: event.shiftKey });
-                    }}
-                    icon={<Mic size={15} aria-hidden="true" />}
-                  />
+            </div>
+          )}
+          headerContext={(
+            <div className="maka-composer-header-context">
+              <span className="maka-composer-status-slot">
+                {props.disabled ? (
+                  // PR-COMPOSER-PERMISSION-PULSE-0 (WAWQAQ msg `ed67a267`,
+                  // skills round task #116): wrap the "等待权限确认" text
+                  // in a styled hint with a pulsing accent dot. Plain text
+                  // was easy to miss — the dot signals "system is waiting
+                  // on YOU" with the same visual weight as the streaming
+                  // 3-dot bounce on the other side of the disabled/active
+                  // boundary.
+                  <span className="maka-composer-permission-hint">
+                    <span className="maka-composer-permission-dot" aria-hidden="true" />
+                    {copy.awaitingPermission}
+                  </span>
+                ) : props.voiceCaptureState === 'recording' ? (
+                  copy.voiceRecording
+                ) : props.voiceCaptureState === 'requesting' ? (
+                  copy.voiceRequesting
+                ) : props.voiceCaptureState === 'processing' ? (
+                  copy.voiceProcessing
+                ) : props.voiceCaptureState === 'native_ready' ? (
+                  copy.voiceReady
+                ) : props.voiceCaptureState === 'sending' ? (
+                  copy.voiceSending
+                ) : props.realtimeVoiceState === 'connecting' ? (
+                  copy.voiceConnecting
+                ) : props.realtimeVoiceState === 'connected' ? (
+                  copy.voiceConnected
+                ) : sendPending ? (
+                  copy.sending
+                ) : importActionBusy ? (
+                  copy.importing
+                ) : props.streaming ? (
+                  <span className="maka-composer-streaming-hint">
+                    <span className="maka-composer-streaming-dot" aria-hidden="true" />
+                    {props.processing
+                      ? copy.processing
+                      : props.continuing
+                        ? copy.continuing
+                        : copy.streaming} <Kbd>Esc</Kbd> {copy.interruptHint}
+                  </span>
                 ) : null}
-                {props.onToggleRealtimeVoice ? (
-                  <IconButton
-                    variant="ghost"
-                    type="button"
-                    className="maka-composer-realtime-voice-button"
-                    data-state={props.realtimeVoiceState ?? 'idle'}
-                    isDisabled={props.disabled}
-                    label={realtimeVoiceLabel}
-                    tooltip={realtimeVoiceLabel}
-                    onClick={() => {
-                      void props.onToggleRealtimeVoice?.();
-                    }}
-                    icon={<Volume2 size={15} aria-hidden="true" />}
-                  />
-                ) : null}
+              </span>
+              {/* Permission describes the execution context for the next send,
+                  so it belongs in Astryx's right-aligned header context rather
+                  than competing with model/thinking controls in the footer. */}
+              {props.onPermissionModeChange ? (
+                <PermissionModeSelect
+                  appearance="quiet"
+                  activeMode={props.permissionMode ?? 'ask'}
+                  onSelect={(mode) => {
+                    void props.onPermissionModeChange?.(mode);
+                  }}
+                  align="end"
+                  disabled={props.disabled || props.permissionModePending === true || Boolean(props.permissionModeDisabledReason)}
+                  disabledReason={props.permissionModeDisabledReason}
+                />
+              ) : null}
+            </div>
+          )}
+          sendActions={(
+            <div className="maka-composer-right-controls">
+              {!props.streaming && (
+                <>
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
@@ -1142,36 +1160,34 @@ export const Composer = forwardRef<
                 ) : (
                   <ModelChipStatic label={modelChipLabel} onOpenSettings={props.onOpenModelSettings} />
                 )}
-              </>
-            )}
-            {props.streaming ? (
-              <UiButton
-                variant="primary"
-                isDisabled={props.stopPending}
-                onClick={() => {
-                  if (props.stopPending) return;
-                  void props.onStop();
-                }}
-                aria-busy={props.stopPending ? 'true' : undefined}
-                data-pending={props.stopPending ? 'true' : undefined}
-                label={props.stopPending ? copy.stopping : copy.stopLabel}
-              />
-            ) : (
-              <IconButton
-                variant="primary"
-                type="submit"
-                isDisabled={sendDisabled}
-                label={copy.sendLabel}
-                aria-busy={sendPending ? 'true' : undefined}
-                data-pending={sendPending ? 'true' : undefined}
-                tooltip={sendTitle}
-                icon={<ArrowUp size={16} aria-hidden="true" />}
-              />
-            )}
-          </div>
+                </>
+              )}
             </div>
           )}
-          sendButton={<span aria-hidden="true" />}
+          sendButton={props.streaming ? (
+            <UiButton
+              variant="primary"
+              isDisabled={props.stopPending}
+              onClick={() => {
+                if (props.stopPending) return;
+                void props.onStop();
+              }}
+              aria-busy={props.stopPending ? 'true' : undefined}
+              data-pending={props.stopPending ? 'true' : undefined}
+              label={props.stopPending ? copy.stopping : copy.stopLabel}
+            />
+          ) : (
+            <IconButton
+              variant="primary"
+              type="submit"
+              isDisabled={sendDisabled}
+              label={copy.sendLabel}
+              aria-busy={sendPending ? 'true' : undefined}
+              data-pending={sendPending ? 'true' : undefined}
+              tooltip={sendTitle}
+              icon={<ArrowUp size={16} aria-hidden="true" />}
+            />
+          )}
         />
         {props.workspacePicker ? (
           <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />

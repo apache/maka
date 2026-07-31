@@ -24,14 +24,7 @@ import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants, TextShimmer } from './primitives/chat.js';
-import { SETTLE_FADE, ToolKindIcon, ToolTrow, useToolDisclosure } from './tool-activity.js';
-import {
-  isProcessingRunning,
-  processingActivityKind,
-  processingNeedsAttention,
-  summarizeProcessing,
-} from './tool-activity/trow-summary.js';
-import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
+import { ToolTrow } from './tool-activity.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -955,86 +948,18 @@ function TurnTimelineEntry(props: {
 }
 
 /**
- * "Processing" — a folded run of the model's reasoning + tool activity between
- * two answer texts (#1307; the fold is derived at render time by
- * `foldTimeline`, which only folds runs containing tool activity — a
- * pure-thinking run renders as the bare 深度思考 disclosure). Collapsed by
- * default (controlled by the same product state machine as 深度思考 / the tool
- * trow): the summary line shows the current activity while running and
- * freezes to the settled tool roll-up (tool counts + 「N 个失败」 in
- * destructive; folded reasoning is not counted) once the turn ends. A
- * `waiting_permission` prompt inside forces the block open (trowNeedsAttention);
- * an errored tool stays collapsed with its failure count on the summary line.
- * The expanded panel preserves the full timeline with the SAME 深度思考
- * disclosures and direct tool rows. Processing already owns the group summary,
- * so nesting another tool-group disclosure would duplicate that layer.
+ * A folded reasoning/tool run keeps its original timeline order but adds no
+ * visual chrome of its own. DeepThinking and Astryx ChatToolCalls each own
+ * their native disclosures directly, avoiding a duplicate Processing layer.
  */
 function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
-  const locale = useUiLocale();
   const { entries } = props;
-  const running = isProcessingRunning(entries);
-  const attention = processingNeedsAttention(entries);
-  // Reuse the tool disclosure state machine: ordinary work summarized, a
-  // permission prompt opens, an explicit toggle sticks across status changes.
-  const disclosure = useToolDisclosure({ kind: 'tool', summary: '', needsAttention: attention });
-  // #646 settle seam: play the one-shot landing fade only if this block was
-  // seen running here (not a replayed transcript), matching the tool trow.
-  const everRunningRef = useRef(false);
-  if (running) everRunningRef.current = true;
-  const settled = !running;
-  const settling = settled && everRunningRef.current;
-  const hasSandboxBlocked = entries.some(
-    (entry) => entry.kind === 'tools' && entry.items.some(isSandboxDeniedTool),
-  );
-  const hasError = entries.some(
-    (entry) =>
-      entry.kind === 'tools' &&
-      entry.items.some(
-        (item) => item.status === 'errored' && !isSandboxDeniedTool(item),
-      ),
-  );
-  const settledTone = hasError
-    ? 'text-[color:var(--destructive)]'
-    : hasSandboxBlocked
-      ? 'text-[color:var(--warning-text,var(--info-text))]'
-      : 'text-[color:var(--muted-foreground)]';
-  const activityKind = processingActivityKind(entries);
-  const summary = summarizeProcessing(entries, { live: running, locale });
   return (
-    <AstryxCollapsible
-      className="flex flex-col"
-      data-processing="block"
-      data-settled={settled ? 'true' : undefined}
-      isOpen={disclosure.open}
-      onOpenChange={disclosure.setOpen}
-      trigger={(
-        <span className="flex min-w-0 items-center gap-2 py-0.5">
-          <ToolKindIcon
-            kind={activityKind}
-            size={16}
-            aria-hidden="true"
-            className={cn('shrink-0', settledTone)}
-          />
-          {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
-          ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
-          )}
-        </span>
-      )}
-    >
-      {disclosure.open ? (
-        <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-          {entries.map((entry, index) =>
-            entry.kind === 'tools' ? (
-              <ToolTrow key={timelineEntryKey(entry, index)} items={entry.items} variant="rows" />
-            ) : (
-              <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
-            ),
-          )}
-        </div>
-      ) : null}
-    </AstryxCollapsible>
+    <div className="maka-processing-sequence">
+      {entries.map((entry, index) => (
+        <TurnTimelineEntry key={timelineEntryKey(entry, index)} item={entry} />
+      ))}
+    </div>
   );
 }
 

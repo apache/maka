@@ -47,7 +47,12 @@ import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/alert.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
-import { Button as UiButton, Collapsible as AstryxCollapsible } from '@astryxdesign/core';
+import {
+  Button as UiButton,
+  ChatToolCalls,
+  Collapsible as AstryxCollapsible,
+  type ChatToolCallItem,
+} from '@astryxdesign/core';
 import { cn } from './ui.js';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
@@ -399,13 +404,11 @@ export function ToolKindIcon({ kind, ...props }: LucideProps & { kind: TrowActiv
 export const SETTLE_FADE = '[animation:maka-stream-fade-in_var(--duration-emphasized)_var(--ease-out-strong)_both]';
 
 /**
- * Codex-style tool trow (streaming UI rework): one contiguous run of tool
- * activity rendered as a single flat, borderless disclosure — replacing the
- * boxed "工具调用 N" card stack inside a turn. The summary disclosure is the
- * stable root for both one and many tools, so a second call appends inside the
- * same component instead of replacing an expanded row with a collapsed group.
- * A parent Processing disclosure can request direct rows because it already
- * owns the group summary; this avoids rendering the same summary twice.
+ * Ordinary tool activity is rendered by Astryx ChatToolCalls, including its
+ * native single-row/group geometry, status icons, keyboard disclosure, and
+ * detail placement. Maka keeps a product-owned disclosure only for states the
+ * Astryx status model cannot express: permission prompts, sandbox denials, and
+ * interrupted calls.
  */
 export function ToolTrow({
   items,
@@ -415,10 +418,54 @@ export function ToolTrow({
   variant?: 'group' | 'rows';
 }) {
   if (items.length === 0) return null;
+  if (items.every(supportsAstryxToolCall)) {
+    return <AstryxToolCalls items={items} />;
+  }
   if (variant === 'rows') {
     return items.map((item) => <ToolTrowRow key={item.toolUseId} item={item} />);
   }
   return <ToolTrowGroup items={items} />;
+}
+
+function supportsAstryxToolCall(item: ToolActivityItem): boolean {
+  return !isSandboxDeniedTool(item)
+    && item.status !== 'waiting_permission'
+    && item.status !== 'interrupted';
+}
+
+function astryxToolStatus(item: ToolActivityItem): ChatToolCallItem['status'] {
+  switch (item.status) {
+    case 'completed': return 'complete';
+    case 'errored': return 'error';
+    case 'running': return 'running';
+    default: return 'pending';
+  }
+}
+
+function AstryxToolCalls({ items }: { items: ToolActivityItem[] }) {
+  const locale = useUiLocale();
+  const calls: ChatToolCallItem[] = items.map((item) => ({
+    key: item.toolUseId,
+    name: resolveToolDisplayName(item, locale),
+    status: astryxToolStatus(item),
+    target: item.intent ? formatToolIntent(item.intent) : undefined,
+    duration: formatDuration(item.durationMs) ?? undefined,
+    errorMessage: item.status === 'errored'
+      ? summarizeErrorText(formatUserVisibleToolText(
+          redactSecrets(extractErrorText(item.result, locale)),
+          locale,
+        )).replace(/^Error:\s*/i, '')
+      : undefined,
+    resultDetail: <ToolCardBody item={item} />,
+  }));
+
+  return (
+    <ChatToolCalls
+      calls={calls}
+      label={summarizeTrowTools(items, { locale })}
+      defaultIsExpanded={items.some((item) => item.status === 'running')}
+    />
+  );
 }
 
 function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {

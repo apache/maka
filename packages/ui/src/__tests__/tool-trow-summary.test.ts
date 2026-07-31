@@ -28,14 +28,8 @@ function renderToStaticMarkup(node: ReactNode): string {
   }));
 }
 
-function firstDisclosureTrigger(markup: string): string {
-  const trigger = markup.match(/(<button[^>]*aria-expanded="[^"]+"[\s\S]*?<\/button>)/)?.[1];
-  assert.ok(trigger, 'tool trow must expose a disclosure trigger');
-  return trigger;
-}
-
 describe('tool trow summary aggregation', () => {
-  it('multi-tool running summary shows aggregated bucket with 正在 prefix, not the active tool description', () => {
+  it('uses the native Astryx multi-call summary and keeps tool intents in the rows', () => {
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
       items: [
         { toolUseId: 'r1', toolName: 'Read', activityKind: 'read', status: 'running', args: {}, intent: '读取 a.ts' },
@@ -44,15 +38,14 @@ describe('tool trow summary aggregation', () => {
       ] satisfies ToolActivityItem[],
     }));
 
-    // 整组 bucket 聚合 + "正在"前缀，不跟 active 工具走
-    const trigger = firstDisclosureTrigger(markup);
-    assert.match(trigger, /正在读取 2 个文件，搜索 1 次/);
-    // 不显示 active 工具的具体描述（避免并发时 1234567 跳）
-    assert.doesNotMatch(trigger, /搜索 foo/);
-    assert.doesNotMatch(trigger, /读取 b\.ts/);
+    assert.match(markup, /class="astryx-chat-tool-calls\b/);
+    assert.match(markup, />3 tool calls</);
+    assert.match(markup, /读取 a\.ts/);
+    assert.match(markup, /读取 b\.ts/);
+    assert.match(markup, /搜索 foo/);
   });
 
-  it('counts the whole group including settled tools, so the summary does not decrement as tools finish', () => {
+  it('keeps the native group count stable while individual tools settle', () => {
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
       items: [
         { toolUseId: 'r1', toolName: 'Read', activityKind: 'read', status: 'running', args: {} },
@@ -60,21 +53,19 @@ describe('tool trow summary aggregation', () => {
         { toolUseId: 'g1', toolName: 'Grep', activityKind: 'search', status: 'running', args: {} },
       ] satisfies ToolActivityItem[],
     }));
-    // 整组总数（含已完成），不随完成数递减 — 并行 result 一起返回时不 1234567
-    assert.match(markup, /正在读取 2 个文件，搜索 1 次/);
+    assert.match(markup, />3 tool calls</);
+    assert.match(markup, /astryx-spinner/);
   });
 
-  it('multi-tool group icon uses the first bucket kind, not the active tool', () => {
+  it('uses the native Astryx group icon instead of Maka activity-kind icons', () => {
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
       items: [
         { toolUseId: 'r1', toolName: 'Read', activityKind: 'read', status: 'running', args: {} },
         { toolUseId: 'g1', toolName: 'Grep', activityKind: 'search', status: 'running', args: {} },
       ] satisfies ToolActivityItem[],
     }));
-    // 首个 bucket = read = FileText，不跟 active (Grep = Search) 切
-    const trigger = firstDisclosureTrigger(markup);
-    assert.match(trigger, /lucide-file-text/);
-    assert.doesNotMatch(trigger, /lucide-search/);
+    assert.match(markup, />2 tool calls</);
+    assert.doesNotMatch(markup, /lucide-file-text|lucide-search/);
   });
 
   it('keeps the failed count visible in the live summary (the group no longer force-opens on error)', () => {

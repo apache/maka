@@ -15,12 +15,12 @@
    alone: the wrapper's mode comes from the same resolved `.dark` source as
    the product's, so the values always agree.
 
-   Scoped under #root: Theme also mirrors data-astryx-theme (and data-theme)
-   onto <html>, and a bare [data-astryx-theme] would quietly pin html-level
-   text properties too. Product CSS has retired html[data-theme] selectors
-   and astryx.css has no [data-theme] rules, so those html attributes stay
-   inert until reset.css lands — PR 12 should re-check that assumption. */
-#root [data-astryx-theme] {
+   Scoped under the Electron and Storybook renderer roots: Theme also mirrors
+   data-astryx-theme (and data-theme) onto <html>, and a bare
+   [data-astryx-theme] would quietly pin html-level text properties too.
+   Keeping both renderer mounts on the same selector is required for Storybook
+   pixels to remain evidence for the live app. */
+:is(#root, #storybook-root) [data-astryx-theme] {
   color: inherit;
   font-family: inherit;
   /* theme.css declares its tokens ON the wrapper (@scope root), so a name
