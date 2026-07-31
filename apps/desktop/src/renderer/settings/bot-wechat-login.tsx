@@ -55,8 +55,8 @@ export function BotWeChatFields(props: {
                 value={channel.webhookUrl ?? ''}
                 onChange={(value) => updateChannel({ webhookUrl: value })}
                 placeholder="http://127.0.0.1:18400"
-              label={copy.bridgeAria}
-              isLabelHidden
+                label={copy.bridgeAria}
+                isLabelHidden
               />
             </div>
             <div className="settingsField">
@@ -65,8 +65,8 @@ export function BotWeChatFields(props: {
                 value={channel.appId ?? ''}
                 onChange={(value) => updateChannel({ appId: value })}
                 placeholder={copy.appIdPlaceholder}
-              label={copy.appIdAria}
-              isLabelHidden
+                label={copy.appIdAria}
+                isLabelHidden
               />
             </div>
             <div className="settingsField">

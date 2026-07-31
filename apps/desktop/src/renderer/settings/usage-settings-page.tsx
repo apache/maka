@@ -265,7 +265,7 @@ function UsageRequestsPanel(props: {
           <span>{props.copy.details}</span>
           <Switch
             label={props.copy.detailsAria}
-              isLabelHidden
+            isLabelHidden
             value={props.showDetails}
             onChange={props.onToggleDetails}
           />

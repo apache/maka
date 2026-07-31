@@ -270,14 +270,14 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               ))}
             </PrimitiveTabsList>
             <TextInput
-                className="providerCatalogSearch"
-                value={catalogQuery}
-                onChange={setCatalogQuery}
-                placeholder={copy.searchPlaceholder}
-                label={copy.searchAria}
-                isLabelHidden
-                startIcon={<Search aria-hidden="true" />}
-                data-provider-catalog-search
+              className="providerCatalogSearch"
+              value={catalogQuery}
+              onChange={setCatalogQuery}
+              placeholder={copy.searchPlaceholder}
+              label={copy.searchAria}
+              isLabelHidden
+              startIcon={<Search aria-hidden="true" />}
+              data-provider-catalog-search
               />
             <PrimitiveTabsPanel value={catalogCategory}>
               {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (

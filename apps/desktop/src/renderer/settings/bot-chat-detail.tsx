@@ -165,7 +165,7 @@ export function BotChatChannelDetail(props: {
               placing the switch before the first focusable documentation link. */}
           <Switch
             label={detailCopy.enableAria(providerPresentation.label)}
-              isLabelHidden
+            isLabelHidden
             disabledMessage={enableSwitchHint}
             value={channel.enabled}
             onChange={(enabled) => props.onUpdateChannel({ enabled })}
@@ -469,8 +469,8 @@ function BotCredentialFields(props: {
                   value={props.channel[field.key] ?? ''}
                   onChange={(value) => props.onUpdateChannel({ [field.key]: value })}
                   placeholder={field.placeholder}
-              label={field.ariaLabel}
-              isLabelHidden
+                  label={field.ariaLabel}
+                  isLabelHidden
                 />
               </div>
             );
@@ -581,8 +581,8 @@ function BotAllowedUserIdsField(props: {
         rows={3}
         hasSpellCheck={false}
         placeholder={copy.allowedUsersPlaceholder}
-              label={copy.allowedUsersAria}
-              isLabelHidden
+        label={copy.allowedUsersAria}
+        isLabelHidden
       />
       <small>
         {copy.allowedUsersHelp}

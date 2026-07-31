@@ -90,7 +90,7 @@ export function PasswordInput(props: {
         placeholder={props.placeholder}
         label={props.ariaLabel ?? props.placeholder ?? 'Password'}
         description={props.description}
-              isLabelHidden
+        isLabelHidden
         aria-describedby={props.ariaDescribedBy}
         isDisabled={props.disabled}
       />

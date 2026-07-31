@@ -194,8 +194,8 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
         <TextInput
           className="maka-browser-address"
           type="text"
-              label={copy.addressAria}
-              isLabelHidden
+          label={copy.addressAria}
+          isLabelHidden
           placeholder={copy.addressPlaceholder}
           value={address}
           onChange={setAddress}

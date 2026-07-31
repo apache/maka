@@ -495,7 +495,7 @@ function McpServerRow(props: {
           onChange={props.onToggle}
           isDisabled={props.busy === `toggle:${props.serverId}`}
           label={props.copy.row.enabledAria(props.serverId)}
-              isLabelHidden
+          isLabelHidden
         />
         <div className="maka-mcp-server-actions">
           <Button

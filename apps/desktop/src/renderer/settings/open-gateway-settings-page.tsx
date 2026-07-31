@@ -175,7 +175,7 @@ export function OpenGatewaySettingsPage(props: {
         </div>
         <Switch
           label={copy.form.enabled}
-              isLabelHidden
+          isLabelHidden
           value={gatewayDraft.enabled}
           onChange={(enabled) => void updateGateway({ enabled })}
         />
@@ -215,8 +215,8 @@ export function OpenGatewaySettingsPage(props: {
             isDisabled={saving}
             placeholder={copy.form.sessionPlaceholder}
             onChange={(value) => setEventSessionId(value)}
-              label={copy.form.sessionAria}
-              isLabelHidden
+            label={copy.form.sessionAria}
+            isLabelHidden
           />
         </div>
       </div>

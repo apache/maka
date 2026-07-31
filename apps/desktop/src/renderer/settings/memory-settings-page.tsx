@@ -113,7 +113,7 @@ export function MemorySettingsPage(props: {
           </div>
           <Switch
             label={copy.text.enableAgentRead}
-              isLabelHidden
+            isLabelHidden
             value={effective.agentReadEnabled}
             isDisabled={memoryControlsDisabled || !effective.enabled}
             onChange={(enabled) => void setAgentReadEnabled(enabled)}
@@ -127,7 +127,7 @@ export function MemorySettingsPage(props: {
           </div>
           <Switch
             label={copy.text.enableInstructions}
-              isLabelHidden
+            isLabelHidden
             value={props.settings.workspaceInstructions.enabled}
             isDisabled={memoryControlsDisabled}
             onChange={(enabled) => void workspaceInstructions.setEnabled(enabled)}
@@ -329,8 +329,8 @@ export function MemorySettingsPage(props: {
             type="text"
             value={newMemoryTitle}
             onChange={(value) => setNewMemoryTitle(value)}
-              label={copy.text.titleAria}
-              isLabelHidden
+            label={copy.text.titleAria}
+            isLabelHidden
             placeholder={copy.text.titlePlaceholder}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
           />
@@ -338,16 +338,16 @@ export function MemorySettingsPage(props: {
             type="text"
             value={newMemoryTags}
             onChange={(value) => setNewMemoryTags(value)}
-              label={copy.text.tagsAria}
-              isLabelHidden
+            label={copy.text.tagsAria}
+            isLabelHidden
             placeholder={copy.text.tagsPlaceholder}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
           />
           <TextArea
             value={newMemoryContent}
             onChange={(value) => setNewMemoryContent(value)}
-              label={copy.text.contentAria}
-              isLabelHidden
+            label={copy.text.contentAria}
+            isLabelHidden
             placeholder={copy.text.contentPlaceholder}
             rows={3}
             isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
@@ -377,8 +377,8 @@ export function MemorySettingsPage(props: {
           isDisabled={memoryControlsDisabled || effective.status === 'incognito_blocked' || !effective.enabled}
           rows={12}
           hasSpellCheck={false}
-              label={copy.text.contentEditorAria}
-              isLabelHidden
+          label={copy.text.contentEditorAria}
+          isLabelHidden
         />
       </div>
 

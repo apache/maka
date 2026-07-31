@@ -121,8 +121,8 @@ export function EnabledModelManager(props: {
         onChange={(value) => setQuery(value)}
         placeholder={copy.searchModels}
         isDisabled={props.disabled}
-              label={copy.searchModels}
-              isLabelHidden
+        label={copy.searchModels}
+        isLabelHidden
       />
       <OverlayScrollArea className="providerModelChoiceScroll">
         <ul

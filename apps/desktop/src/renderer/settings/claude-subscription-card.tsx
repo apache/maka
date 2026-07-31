@@ -395,8 +395,8 @@ export function ClaudeSubscriptionCard() {
             value={pasteValue}
             onChange={(value) => setPasteValue(value)}
             placeholder={copy.codePlaceholder}
-              label={copy.codeAria}
-              isLabelHidden
+            label={copy.codeAria}
+            isLabelHidden
             rows={3}
             hasSpellCheck={false}
           />

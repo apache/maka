@@ -174,8 +174,8 @@ export function PersonalizationSettingsPage(props: {
             onChange={(value) => setDisplayName(value)}
             onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
-              label={copy.displayName}
-              isLabelHidden
+            label={copy.displayName}
+            isLabelHidden
           />
         </div>
 
@@ -214,8 +214,8 @@ export function PersonalizationSettingsPage(props: {
             rows={4}
             maxLength={500}
             hasSpellCheck={false}
-              label={copy.assistantTone}
-              isLabelHidden
+            label={copy.assistantTone}
+            isLabelHidden
             className="min-h-21 w-full"
           />
         </div>

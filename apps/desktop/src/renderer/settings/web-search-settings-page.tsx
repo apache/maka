@@ -324,8 +324,8 @@ export function WebSearchSettingsPage(props: {
             value={liveQuery}
             onChange={(value) => updateLiveQuery(value)}
             placeholder={copy.queryPlaceholder}
-              label={copy.queryAria}
-              isLabelHidden
+            label={copy.queryAria}
+            isLabelHidden
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !liveQueryRunning) {
                 event.preventDefault();

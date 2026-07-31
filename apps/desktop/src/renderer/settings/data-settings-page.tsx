@@ -245,7 +245,7 @@ export function DataSettingsPage() {
               <div key={id} className="settingsConfigCategoryItem">
                 <Switch
                   label={copy.exportCategory(option.label)}
-              isLabelHidden
+                  isLabelHidden
                   value={checked}
                   onChange={() => toggleCategory(id)}
                 />

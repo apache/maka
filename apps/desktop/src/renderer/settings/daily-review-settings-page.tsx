@@ -155,7 +155,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           </div>
           <Switch
             label={copy.enabled}
-              isLabelHidden
+            isLabelHidden
             value={effectiveConfig?.enabled ?? false}
             isDisabled={formDisabled || savingKey === 'enabled'}
             onChange={(enabled) => void patchConfig('enabled', { enabled })}
@@ -216,7 +216,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           </div>
           <Switch
             label={copy.deep}
-              isLabelHidden
+            isLabelHidden
             value={effectiveConfig?.deepEnabled ?? false}
             isDisabled={formDisabled || savingKey === 'deepEnabled'}
             onChange={(deepEnabled) => void patchConfig('deepEnabled', { deepEnabled })}
@@ -248,7 +248,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           </div>
           <Switch
             label={copy.includeCli}
-              isLabelHidden
+            isLabelHidden
             value={effectiveConfig?.includeClaudeCode ?? false}
             isDisabled={formDisabled || savingKey === 'includeClaudeCode'}
             onChange={(includeClaudeCode) => void patchConfig('includeClaudeCode', { includeClaudeCode })}
@@ -262,7 +262,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           </div>
           <Switch
             label={copy.notify}
-              isLabelHidden
+            isLabelHidden
             value={false}
             isDisabled={true}
             onChange={() => undefined}

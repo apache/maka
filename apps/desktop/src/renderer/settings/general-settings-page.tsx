@@ -59,7 +59,7 @@ export function GeneralSettingsPage(props: {
           </div>
           <Switch
             label={copy.enableIncognito}
-              isLabelHidden
+            isLabelHidden
             value={props.settings.privacy.incognitoActive}
             onChange={(incognitoActive) => {
               props.onUpdate({ privacy: { incognitoActive } }).catch((error: unknown) => {
@@ -75,7 +75,7 @@ export function GeneralSettingsPage(props: {
           </div>
           <Switch
             label={copy.notifications}
-              isLabelHidden
+            isLabelHidden
             value={props.settings.notifications.runComplete}
             onChange={(runComplete) => {
               props.onUpdate({ notifications: { runComplete } }).catch((error: unknown) => {
@@ -318,7 +318,7 @@ function NetworkProxySection(props: {
         </div>
         <Switch
           label={copy.enableProxy}
-              isLabelHidden
+          isLabelHidden
           value={proxyDraft.enabled}
           onChange={(enabled) => void updateProxy({ enabled })}
         />
