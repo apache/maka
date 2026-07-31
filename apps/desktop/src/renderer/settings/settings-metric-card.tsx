@@ -14,7 +14,7 @@ export function MetricCard(props: { title: string; value: string; detail?: strin
   );
 }
 
-// `Segmented` lives in `packages/ui/src/primitives/segmented.tsx`
+// Segmented controls are owned directly by Astryx.
 // (Base UI `ToggleGroup`-backed). PR yuejing/settings-segmented-primitive
 // (WAWQAQ msg `f1461d30` 用库的应该用库).
 

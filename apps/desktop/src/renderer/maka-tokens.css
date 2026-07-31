@@ -410,7 +410,7 @@
        1. Tier swap, when outer − inset lands on a tier — the segmented
           track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
           --radius-control for the buttons that hug its ends.
-          See styles/segmented.css.
+          Astryx SegmentedControl owns this geometry.
        2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
           overlay at inset-0 hugging the inner edge of a 1px border.
           See primitives/empty.tsx.

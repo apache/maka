@@ -79,7 +79,6 @@ export * from './primitives/stat-tile.js';
 export * from './primitives/data-table.js';
 export * from './primitives/section-header.js';
 export { EmptyState } from './empty-state.js';
-export * from './primitives/segmented.js';
 export * from './primitives/toolbar.js';
 export {
   Tabs as PrimitiveTabs,
@@ -190,6 +189,10 @@ export {
   type SelectorOptionData,
   FormLayout,
   type FormLayoutProps,
+  SegmentedControl,
+  type SegmentedControlProps,
+  SegmentedControlItem,
+  type SegmentedControlItemProps,
   CommandPalette,
   type CommandPaletteProps,
   CommandPaletteInput,

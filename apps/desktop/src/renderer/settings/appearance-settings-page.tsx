@@ -11,7 +11,8 @@ import type {
 import {
   RadioList,
   RadioListItem,
-  Segmented,
+  SegmentedControl,
+  SegmentedControlItem,
   TextArea,
   TextInput,
   useMountedRef,
@@ -198,12 +199,15 @@ export function PersonalizationSettingsPage(props: {
             <strong>{copy.interfaceLanguage}</strong>
             <small>{copy.interfaceLanguageHelp}</small>
           </div>
-          <Segmented
+          <SegmentedControl
             value={uiLocale}
-            options={copy.localeOptions}
             onChange={(next) => persistLocale(next as UiLocalePreference)}
-            ariaLabel={copy.interfaceLanguage}
-          />
+            label={copy.interfaceLanguage}
+          >
+            {copy.localeOptions.map(([value, label]) => (
+              <SegmentedControlItem key={value} value={value} label={label} />
+            ))}
+          </SegmentedControl>
         </div>
 
         <div className="settingsFormRow" data-orient="vertical">

@@ -24,10 +24,11 @@ import {
   type BadgeProps,
   Button as UiButton,
   IconButton,
+  SegmentedControl,
+  SegmentedControlItem,
   Selector,
   type SelectorOptionData,
 } from '@astryxdesign/core';
-import { Segmented } from './primitives/segmented.js';
 import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
 import { EmptyState } from './empty-state.js';
 import { StatTile } from './primitives/stat-tile.js';
@@ -393,16 +394,19 @@ export function DailyReviewPanel(props: {
           segmented + the day-stepper are BOTH time navigation, so they form a
           single visual cluster (was two floating rows at opposite corners). */}
       <div className="maka-daily-review-scope" aria-label={copy.page.timeRange}>
-        <Segmented
+        <SegmentedControl
           value={String(range)}
-          options={copy.page.rangeOptions}
           onChange={(v) => {
             setRange(Number(v) as DailyReviewRange);
             setOffsetDays(0);
           }}
-          ariaLabel={copy.page.rangeSwitch}
+          label={copy.page.rangeSwitch}
           className="maka-daily-review-range-tabs"
-        />
+        >
+          {copy.page.rangeOptions.map(([value, label]) => (
+            <SegmentedControlItem key={value} value={value} label={label} />
+          ))}
+        </SegmentedControl>
         <div className="maka-daily-review-scope-stepper">
           <IconButton
             variant="ghost"

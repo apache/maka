@@ -89,9 +89,9 @@ describe('Settings theme page contract', () => {
     assert.doesNotMatch(themePage, /role="group"|<SelectableCard/);
     assert.doesNotMatch(themePage, /界面密度|props\.density|setDensity|onDensityChange/);
 
-    // Segmented now comes from `@maka/ui`. The local
-    // `function Segmented` declaration must be gone.
-    assert.match(src, /import \{[^}]*\bSegmented\b[^}]*\} from '@maka\/ui'/);
+    // Astryx owns the segmented-control structure and keyboard behavior.
+    assert.match(src, /import \{[^}]*\bSegmentedControl\b[^}]*\} from '@maka\/ui'/);
+    assert.match(src, /<SegmentedControl[\s\S]*<SegmentedControlItem/);
     assert.doesNotMatch(src, /^function Segmented</m);
   });
 

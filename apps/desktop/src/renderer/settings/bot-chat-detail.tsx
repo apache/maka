@@ -20,7 +20,8 @@ import {
   FormLayout,
   TextInput,
   RelativeTime,
-  Segmented,
+  SegmentedControl,
+  SegmentedControlItem,
   Selector,
   Switch,
   TextArea,
@@ -275,16 +276,15 @@ export function BotChatChannelDetail(props: {
         </div>
 
         {quickOnboarding && !qrOnlyOnboarding && (
-          <Segmented<'quick' | 'manual'>
+          <SegmentedControl
             className="settingsBotSetupModes"
             value={setupMode}
-            ariaLabel={detailCopy.setupAria(providerPresentation.label)}
-            options={[
-              ['quick', detailCopy.quickRecommended],
-              ['manual', detailCopy.manual],
-            ]}
-            onChange={setSetupMode}
-          />
+            label={detailCopy.setupAria(providerPresentation.label)}
+            onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
+          >
+            <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
+            <SegmentedControlItem value="manual" label={detailCopy.manual} />
+          </SegmentedControl>
         )}
 
         {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
@@ -306,16 +306,15 @@ export function BotChatChannelDetail(props: {
               </p>
             </div>
             {provider === 'feishu' ? (
-              <Segmented<BotOnboardingBrand>
+              <SegmentedControl
                 className="settingsBotBrandChoice"
                 value={feishuBrand}
-                ariaLabel={detailCopy.feishuRegionAria}
-                options={[
-                  ['feishu', detailCopy.feishu],
-                  ['lark', 'Lark'],
-                ]}
-                onChange={setFeishuBrand}
-              />
+                label={detailCopy.feishuRegionAria}
+                onChange={(value) => setFeishuBrand(value as BotOnboardingBrand)}
+              >
+                <SegmentedControlItem value="feishu" label={detailCopy.feishu} />
+                <SegmentedControlItem value="lark" label="Lark" />
+              </SegmentedControl>
             ) : null}
             <Button variant="primary" onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
           </section>

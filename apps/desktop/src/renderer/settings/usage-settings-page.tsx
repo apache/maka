@@ -16,7 +16,8 @@ import {
   EmptyState,
   IconButton,
   TextInput,
-  Segmented,
+  SegmentedControl,
+  SegmentedControlItem,
   Selector,
   Switch,
   TabsList,
@@ -115,17 +116,15 @@ export function UsageSettingsPage(props: {
   return (
     <div className="settingsUsagePage">
       <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
-        <Segmented
+        <SegmentedControl
           value={usageDraft.range}
-          ariaLabel={copy.rangeAria}
-          options={[
-            ['24h', copy.ranges[0]],
-            ['7d', copy.ranges[1]],
-            ['30d', copy.ranges[2]],
-            ['all', copy.ranges[3]],
-          ]}
+          label={copy.rangeAria}
           onChange={(value) => void setRange(value as UsageRange)}
-        />
+        >
+          {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
+            <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
+          ))}
+        </SegmentedControl>
         {/* Detail audit: 刷新 was a primary --action chip glued to the
             segmented — two control styles fighting in one row for a
             low-frequency utility. Same quiet icon form as the automations
