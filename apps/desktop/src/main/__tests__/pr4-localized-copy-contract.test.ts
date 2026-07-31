@@ -145,10 +145,10 @@ describe('PR4 remaining shared UI copy contract', () => {
       [
         getPlanReminderCopy('zh').form.field.cron,
         getPlanReminderCopy('zh').form.field.chatId,
-        getPlanReminderCopy('zh').form.field.timeInput,
+        getPlanReminderCopy('zh').form.field.time,
         getPlanReminderCopy('en').form.field.cron,
         getPlanReminderCopy('en').form.field.chatId,
-        getPlanReminderCopy('en').form.field.timeInput,
+        getPlanReminderCopy('en').form.field.time,
       ],
       ['Cron', 'Chat ID', '提醒时间', 'Cron', 'Chat ID', 'Reminder time'],
     );

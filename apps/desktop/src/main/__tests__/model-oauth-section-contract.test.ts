@@ -251,7 +251,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /catch \(err\) \{[\s\S]*setError\(providerPanelActionErrorMessage\(err, locale\)\)/,
+      /catch \(err\) \{[\s\S]*field: 'form',[\s\S]*message: providerPanelActionErrorMessage\(err, locale\)/,
       'AddProviderForm create failures must use the shared localized action-error helper',
     );
     assert.match(
@@ -276,7 +276,7 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       addForm,
-      /catch \(err\) \{[\s\S]*if \(addProviderMountedRef\.current\) setError\(providerPanelActionErrorMessage\(err, locale\)\);[\s\S]*\} finally \{[\s\S]*submitGuard\.finish\(\);[\s\S]*if \(addProviderMountedRef\.current\) setBusy\(false\);[\s\S]*\}/,
+      /catch \(err\) \{[\s\S]*if \(addProviderMountedRef\.current\) \{[\s\S]*field: 'form',[\s\S]*providerPanelActionErrorMessage\(err, locale\),[\s\S]*\}[\s\S]*\} finally \{[\s\S]*submitGuard\.finish\(\);[\s\S]*if \(addProviderMountedRef\.current\) setBusy\(false\);[\s\S]*\}/,
       'AddProviderForm create guard must release without setting React state after sheet unmount',
     );
     assert.match(
@@ -496,7 +496,6 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
 
     assert.match(enabledModels, /copy\.enabledModelsTitle/);
     assert.match(enabledModels, /copy\.enabledModelsHelp/);
-    assert.match(enabledModels, /copy\.searchModels/);
     assert.match(src, /getProviderSettingsCopy\(locale\)/);
     // Provider descriptions are version-agnostic (provider + access path,
     // never a model generation that goes stale).
@@ -757,34 +756,29 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
   });
 
-  it('delegates enabled-model selection and search to Astryx MultiSelector', async () => {
+  it('delegates enabled-model selection to Astryx CheckboxList', async () => {
     const src = await readProviderSettingsCombinedSource();
     const enabledModels = src.match(/function EnabledModelManager[\s\S]*?function modelDisplayLabel/)?.[0] ?? '';
 
     assert.match(
       enabledModels,
-      /<MultiSelector[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*description=\{copy\.enabledModelsHelp\}/,
+      /<CheckboxList[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*description=\{copy\.enabledModelsHelp\}/,
       'Astryx must own the visible field label and description',
     );
     assert.match(
       enabledModels,
-      /options=\{options\}[\s\S]*value=\{props\.enabledModelIds\}[\s\S]*onChange=\{props\.onChange\}/,
-      'the canonical selector must read and write the existing enabledModelIds authority directly',
+      /value=\{props\.enabledModelIds\}[\s\S]*onChange=\{props\.onChange\}/,
+      'the canonical checklist must read and write the existing enabledModelIds authority directly',
     );
     assert.match(
       enabledModels,
-      /hasSearch[\s\S]*searchPlaceholder=\{copy\.searchModels\}/,
-      'Astryx must own catalog filtering',
-    );
-    assert.match(
-      enabledModels,
-      /disabled:\s*row\.id === props\.defaultModel/,
-      'the default model must remain selected and locked through option data',
+      /<CheckboxListItem[\s\S]*value=\{row\.id\}[\s\S]*isDisabled=\{row\.id === props\.defaultModel\}/,
+      'the default model must remain selected and locked through the Astryx item',
     );
     assert.doesNotMatch(
       enabledModels,
-      /CheckboxInput|OverlayScrollArea|modelListRef|activeRowId|onModelListKeyDown|visibleRows|query/,
-      'Maka must not duplicate MultiSelector search, focus, list, or checkbox behavior',
+      /MultiSelector|TextInput|OverlayScrollArea|modelListRef|activeRowId|onModelListKeyDown|visibleRows|query/,
+      'Maka must not retain search or duplicate Astryx focus and checkbox behavior',
     );
   });
 
@@ -799,7 +793,10 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     // The default model option is selected and locked (disabled), never toggled
     // off, and there is no second Save action inside the editor.
-    assert.match(enabledModels, /disabled:\s*row\.id === props\.defaultModel/);
+    assert.match(
+      enabledModels,
+      /isDisabled=\{row\.id === props\.defaultModel\}/,
+    );
     assert.match(enabledModels, /description=\{copy\.enabledModelsHelp\}/);
     assert.doesNotMatch(enabledModels, /copy\.saving|copy\.saveEndpoint/);
   });

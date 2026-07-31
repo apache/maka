@@ -1,12 +1,15 @@
-import { useMemo } from 'react';
 import type { ModelCatalogEntry } from '@maka/core';
-import { MultiSelector, useUiLocale } from '@maka/ui';
+import {
+  CheckboxList,
+  CheckboxListItem,
+  useUiLocale,
+} from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 /**
- * Adapts Maka's model catalog data to Astryx's canonical multi-select field.
- * `enabledModelIds` remains the only product state; Astryx owns search,
- * checkbox semantics, keyboard navigation, focus, and popup layout.
+ * Adapts Maka's model catalog data to Astryx's canonical checkbox field.
+ * `enabledModelIds` remains the only product state; Astryx owns labels,
+ * checkbox semantics, disabled state, and focus.
  */
 export function EnabledModelManager(props: {
   modelChoices: ModelCatalogEntry[];
@@ -16,7 +19,7 @@ export function EnabledModelManager(props: {
   onChange(ids: string[]): void;
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
-  const rows = useMemo(() => {
+  const rows = (() => {
     const byId = new Map(props.modelChoices.map((model) => [model.id, model] as const));
     const seen = new Set<string>();
     const list: Array<{ id: string; label: string }> = [];
@@ -35,30 +38,31 @@ export function EnabledModelManager(props: {
       list.push({ id, label: model ? modelDisplayLabel(model) : id });
     }
     return list;
-  }, [props.modelChoices, props.enabledModelIds]);
-  const options = useMemo(
-    () =>
-      rows.map((row) => ({
-        value: row.id,
-        label: row.id === props.defaultModel ? `${row.label} · ${copy.defaultModel}` : row.label,
-        disabled: row.id === props.defaultModel,
-      })),
-    [copy.defaultModel, props.defaultModel, rows],
-  );
+  })();
 
   return (
-    <MultiSelector
+    <CheckboxList
       label={copy.enabledModelsTitle(props.enabledModelIds.length)}
       description={copy.enabledModelsHelp}
-      options={options}
       value={props.enabledModelIds}
       onChange={props.onChange}
-      hasSearch
-      searchPlaceholder={copy.searchModels}
-      triggerDisplay="labels"
       isDisabled={props.disabled}
       width="100%"
-    />
+      density="compact"
+    >
+      {rows.map((row) => (
+        <CheckboxListItem
+          key={row.id}
+          value={row.id}
+          label={
+            row.id === props.defaultModel
+              ? `${row.label} · ${copy.defaultModel}`
+              : row.label
+          }
+          isDisabled={row.id === props.defaultModel}
+        />
+      ))}
+    </CheckboxList>
   );
 }
 

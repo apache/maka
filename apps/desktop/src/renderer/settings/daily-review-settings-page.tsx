@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
-import { Alert, AlertDescription, Button, Selector, Switch, TimeInput, type ISOTimeString, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Alert, AlertDescription, Button, Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -49,6 +49,8 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
   const [loadError, setLoadError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [runningMode, setRunningMode] = useState<DailyReviewMode | null>(null);
+  const [executeTimeDraft, setExecuteTimeDraft] = useState('08:00');
+  const [executeTimeInvalid, setExecuteTimeInvalid] = useState(false);
   const mountedRef = useMountedRef();
   const saveConfigGuard = useActionGuard<string>();
   const runModeGuard = useActionGuard<DailyReviewMode>();
@@ -80,6 +82,11 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       cancelled = true;
     };
   }, [hasConfigIpc, dailyReviewIpc, locale]);
+
+  useEffect(() => {
+    setExecuteTimeDraft(config?.executeTime ?? '08:00');
+    setExecuteTimeInvalid(false);
+  }, [config?.executeTime]);
 
   async function patchConfig(key: string, patch: Partial<DailyReviewConfig>) {
     if (!dailyReviewIpc.setConfig || !config || saveConfigGuard.current !== null) return;
@@ -169,16 +176,32 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
             <strong>{copy.executeTime}</strong>
             <small>{copy.executeTimeHelp}</small>
           </div>
-          <TimeInput
+          <TextInput
             label={copy.executeTimeAria}
             isLabelHidden
-            value={(effectiveConfig?.executeTime ?? '08:00') as ISOTimeString}
+            value={executeTimeDraft}
             isDisabled={formDisabled || savingKey === 'executeTime'}
-            hourFormat="24h"
-            increment={5}
+            placeholder={copy.executeTimePlaceholder}
             width={140}
+            status={
+              executeTimeInvalid
+                ? { type: 'error', message: copy.executeTimeInvalid }
+                : undefined
+            }
             onChange={(executeTime) => {
-              if (executeTime) void patchConfig('executeTime', { executeTime });
+              setExecuteTimeDraft(executeTime);
+              setExecuteTimeInvalid(false);
+            }}
+            onBlur={() => {
+              if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(executeTimeDraft)) {
+                setExecuteTimeInvalid(true);
+                return;
+              }
+              if (executeTimeDraft !== effectiveConfig?.executeTime) {
+                void patchConfig('executeTime', {
+                  executeTime: executeTimeDraft,
+                });
+              }
             }}
           />
         </div>

@@ -38,7 +38,7 @@ export type PlanReminderDisplayRow =
   | { kind: 'group'; key: string; label: string; count: number }
   | { kind: 'reminder'; reminder: PlanReminder };
 
-export function toPlanReminderDateTimeInputValue(ts: number): string {
+export function toPlanReminderLocalDateTimeValue(ts: number): string {
   const date = new Date(ts);
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
@@ -291,7 +291,7 @@ export function createPlanReminderFormSeed(now: number = Date.now()): PlanRemind
     editingId: null,
     title: '',
     note: '',
-    runAtLocal: toPlanReminderDateTimeInputValue(now + 60 * 60 * 1000),
+    runAtLocal: toPlanReminderLocalDateTimeValue(now + 60 * 60 * 1000),
     recurrence: 'none',
     cronExpression: '0 9 * * 1-5',
     deliveryChannel: 'local',
@@ -308,7 +308,7 @@ export function planReminderTemplateSeed(template: PlanReminderExampleTemplate, 
     note: template.note,
     recurrence: template.recurrence,
     cronExpression: template.cronExpression,
-    runAtLocal: toPlanReminderDateTimeInputValue(planReminderTemplateNextRunAt(template, now)),
+    runAtLocal: toPlanReminderLocalDateTimeValue(planReminderTemplateNextRunAt(template, now)),
   };
 }
 
@@ -317,7 +317,7 @@ function planReminderReminderSeed(reminder: PlanReminder): PlanReminderFormSeed 
     editingId: reminder.id,
     title: reminder.title,
     note: reminder.note,
-    runAtLocal: toPlanReminderDateTimeInputValue(planReminderEditableRunAt(reminder)),
+    runAtLocal: toPlanReminderLocalDateTimeValue(planReminderEditableRunAt(reminder)),
     recurrence: planReminderRecurrenceValue(reminder),
     cronExpression: reminder.schedule.kind === 'cron' ? reminder.schedule.expression : '0 9 * * 1-5',
     deliveryChannel: reminder.delivery.channel,

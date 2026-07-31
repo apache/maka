@@ -105,28 +105,20 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
   await expect(detailDialog.getByText('GPT OSS 120B', { exact: true })).toBeHidden();
   await detailDialog.getByText('高级设置', { exact: true }).click();
 
-  // Astryx MultiSelector owns search, checkbox semantics, focus, and popup
-  // layout. Maka only supplies catalog options and the enabledModelIds value.
-  const modelSelector = detailDialog.getByRole('button', { name: /启用模型/ });
-  await modelSelector.click();
-  const modelList = page.getByRole('listbox');
-  await expect(modelList).toBeVisible();
-  const defaultRow = modelList.getByRole('option', { name: /GPT OSS 120B · 默认/ });
-  await expect(defaultRow).toHaveAttribute('aria-selected', 'true');
-  await expect(defaultRow).toHaveAttribute('aria-disabled', 'true');
+  // Astryx CheckboxList owns the collection label, checkbox semantics,
+  // disabled state, and focus. Search/popup behavior is intentionally absent.
+  const defaultModel = detailDialog.getByRole('checkbox', {
+    name: /GPT OSS 120B · 默认/,
+  });
+  await expect(defaultModel).toBeChecked();
+  await expect(defaultModel).toBeDisabled();
 
-  await page.getByPlaceholder('搜索模型', { exact: true }).fill('gemma');
-  const gemmaRow = modelList.getByRole('option', { name: /Gemma/ }).first();
-  await expect(gemmaRow).toHaveAttribute('aria-selected', 'false');
-  await gemmaRow.click();
-  await expect(gemmaRow).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('Escape');
-  await expect(modelList).toBeHidden();
-  await expect(modelSelector).toBeEnabled();
-  await modelSelector.click();
-  await page.getByPlaceholder('搜索模型', { exact: true }).fill('gemma');
-  await expect(page.getByRole('listbox').getByRole('option', { name: /Gemma/ }).first()).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('Escape');
+  const gemmaModel = detailDialog
+    .getByRole('checkbox', { name: /Gemma/ })
+    .first();
+  await expect(gemmaModel).not.toBeChecked();
+  await gemmaModel.check();
+  await expect(gemmaModel).toBeChecked();
 
   // Default-model management is a visible searchable picker in the connection
   // detail, rather than a trip through General Settings. Selecting an already

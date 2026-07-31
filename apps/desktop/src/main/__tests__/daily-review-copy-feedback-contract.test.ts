@@ -299,6 +299,11 @@ describe('Daily Review copy feedback contract', () => {
       'Daily Review config save owners must be released by the matching request only',
     );
     assert.match(pageBlock, /const formDisabled = !hasConfigIpc \|\| loading \|\| Boolean\(loadError\) \|\| !effectiveConfig \|\| savingKey !== null;/);
+    assert.match(
+      pageBlock,
+      /<TextInput[\s\S]*label=\{copy\.executeTimeAria\}[\s\S]*placeholder=\{copy\.executeTimePlaceholder\}[\s\S]*onBlur=\{\(\) => \{[\s\S]*\/\^\(\?:\[01\]\\d\|2\[0-3\]\):\[0-5\]\\d\$\/u\.test\(executeTimeDraft\)[\s\S]*patchConfig\('executeTime'/,
+      'Daily Review keeps the necessary time value as a simple Astryx text field and persists only a complete 24-hour value',
+    );
 
     assert.match(
       runBlock,

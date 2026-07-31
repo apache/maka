@@ -32,14 +32,13 @@ import {
   planReminderFormValidation,
   planReminderPresetRunAt,
   planReminderTemplateSeed,
-  toPlanReminderDateTimeInputValue,
+  toPlanReminderLocalDateTimeValue,
 } from './plan-reminder-helpers.js';
 import {
   Button as UiButton,
-  DateTimeInput,
   FormLayout,
   Selector,
-  type ISODateTimeString,
+  TextInput,
 } from '@astryxdesign/core';
 import {
   buttonVariants,
@@ -48,7 +47,7 @@ import {
   DialogContent,
   DialogRoot,
 } from './ui.js';
-import { TextInput, TextArea as UiTextarea } from '@astryxdesign/core';
+import { TextArea as UiTextarea } from '@astryxdesign/core';
 import {
   Menu,
   MenuItem,
@@ -124,7 +123,7 @@ export function PlanReminderFormDialog(props: {
     setDeliveryChannel('local');
     setDeliveryPlatform('telegram');
     setDeliveryChatId('');
-    setRunAtLocal(toPlanReminderDateTimeInputValue(Date.now() + 60 * 60 * 1000));
+    setRunAtLocal(toPlanReminderLocalDateTimeValue(Date.now() + 60 * 60 * 1000));
     setEditingId(null);
   }
 
@@ -135,7 +134,7 @@ export function PlanReminderFormDialog(props: {
   }
 
   function applyRunAtPreset(preset: 'ten-minutes' | 'one-hour' | 'tomorrow-morning' | 'next-monday') {
-    setRunAtLocal(toPlanReminderDateTimeInputValue(planReminderPresetRunAt(preset)));
+    setRunAtLocal(toPlanReminderLocalDateTimeValue(planReminderPresetRunAt(preset)));
   }
 
   function applyTemplate(template: PlanReminderExampleTemplate) {
@@ -252,13 +251,11 @@ export function PlanReminderFormDialog(props: {
                 ? { type: 'error', message: validation.message }
                 : undefined}
             />
-            <DateTimeInput
+            <TextInput
               label={copy.field.time}
-              timeLabel={copy.field.timeInput}
-              value={runAtLocal as ISODateTimeString}
-              onChange={(value) => setRunAtLocal(value ?? '')}
-              hourFormat="24h"
-              timeIncrement={5}
+              value={runAtLocal}
+              onChange={setRunAtLocal}
+              placeholder={copy.timePlaceholder}
               isDisabled={formInteractionDisabled}
               isRequired
               status={validation?.field === 'time'

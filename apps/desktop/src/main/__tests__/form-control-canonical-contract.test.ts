@@ -5,9 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import * as MakaUi from "@maka/ui";
 import {
   CheckboxInput,
-  DateTimeInput,
+  CheckboxList,
+  CheckboxListItem,
   FormLayout,
-  MultiSelector,
   NumberInput,
   RadioList,
   RadioListItem,
@@ -15,7 +15,6 @@ import {
   Switch,
   TextArea,
   TextInput,
-  TimeInput,
 } from "@maka/ui";
 
 test("the public form controls are the Astryx field family", () => {
@@ -41,12 +40,11 @@ test("the public selection and number controls are callable", () => {
   assert.equal(typeof NumberInput, "function");
   assert.equal(typeof Switch, "function");
   assert.equal(typeof CheckboxInput, "function");
+  assert.equal(typeof CheckboxList, "function");
+  assert.equal(typeof CheckboxListItem, "function");
   assert.equal(typeof RadioList, "function");
   assert.equal(typeof RadioListItem, "function");
   assert.equal(typeof Selector, "function");
-  assert.equal(typeof MultiSelector, "function");
-  assert.equal(typeof TimeInput, "function");
-  assert.equal(typeof DateTimeInput, "function");
   assert.equal(typeof FormLayout, "function");
 });
 
@@ -66,6 +64,9 @@ test("the public form surface does not preserve Maka compatibility adapters", ()
     "SelectSeparator",
     "SelectItem",
     "inputClasses",
+    "MultiSelector",
+    "TimeInput",
+    "DateTimeInput",
   ]) {
     assert.equal(retired in MakaUi, false, `${retired} must not remain public`);
   }

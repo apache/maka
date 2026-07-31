@@ -170,7 +170,7 @@ describe('Settings form accessibility labels', () => {
     assert.doesNotMatch(providersPanel, /className="maka-button/, 'ProvidersPanel governed Buttons must not layer the legacy maka-button class (inert under the @maka/ui Button utilities, so it is dead weight)');
     assert.match(
       providersPanel,
-      /<MultiSelector[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*hasSearch[\s\S]*searchPlaceholder=\{copy\.searchModels\}/,
+      /<CheckboxList[\s\S]*label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}[\s\S]*description=\{copy\.enabledModelsHelp\}/,
     );
     // `Item` rows become real buttons through Base UI's polymorphic
     // `render={<button .../>}` prop, which is a primitive render target rather
@@ -295,7 +295,6 @@ describe('Settings form accessibility labels', () => {
       ['provider display name', /label=\{copy\.name\}/],
       ['provider endpoint', /label=\{copy\.endpointLabel\(requiresBaseUrl\)\}/],
       ['enabled model selector', /label=\{copy\.enabledModelsTitle\(props\.enabledModelIds\.length\)\}/],
-      ['model search', /searchPlaceholder=\{copy\.searchModels\}/],
     ] as const) {
       assert.match(providers, pattern, `ProvidersPanel must label ${label}`);
     }
