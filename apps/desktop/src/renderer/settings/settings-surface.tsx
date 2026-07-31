@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
+import { Badge, Button, SideNav, SideNavItem, SideNavSection } from '@astryxdesign/core';
 import { ArrowLeft } from '@maka/ui/icons';
-import { Button as BaseButton } from '@base-ui/react/button';
 import type {
   AppSettings,
   LlmConnection,
@@ -228,51 +228,45 @@ export function SettingsSurface(props: {
 
   return (
     <main className="settingsSurface agents-layout-body" data-modal="true" aria-label={copy.contentLabel}>
-      <aside className="settingsSidebar agents-sidebar" data-maka-contract="settings-sidebar" data-settings-nav-column aria-label={copy.sidebarLabel}>
-        <div className="settingsSidebarInner">
-          {/* PR-SETTINGS-NO-PANE-BORDER-0 (WAWQAQ msg `8effe691`):
-              reference sidebar has just `← 返回应用` then straight
-              into the nav — no big "设置" brand label. Match it. */}
-          <BaseButton
+      <SideNav
+        className="settingsSidebar agents-sidebar"
+        data-maka-contract="settings-sidebar"
+        data-settings-nav-column
+        aria-label={copy.navigationLabel}
+        topContent={(
+          <Button
             className="settingsBackButton"
-            type="button"
-            aria-label={copy.backToApp}
+            variant="ghost"
+            width="100%"
+            label={copy.backToApp}
+            icon={<ArrowLeft size={16} aria-hidden="true" />}
             onClick={props.onClose}
-          >
-            <ArrowLeft size={16} aria-hidden="true" />
-            <span>{copy.backToApp}</span>
-          </BaseButton>
-          <nav aria-label={copy.navigationLabel}>
-            {localizedNav.map(({ group, label, items }) => (
-              <div key={group} className="settingsNavGroup" role="group" aria-label={label}>
-                <div className="settingsNavGroupLabel">{label}</div>
-                {items.map((item) => (
-                  <BaseButton
-                    key={item.id}
-                    className="settingsNavItem"
-                    data-active={section === item.id}
-                    aria-current={section === item.id ? 'page' : undefined}
-                    type="button"
-                    ref={section === item.id ? props.initialFocusRef : undefined}
-                    disabled={!item.enabled}
-                    onClick={() => setSection(item.id)}
-                  >
-                    <span className="settingsNavGlyph" aria-hidden="true">
-                      <item.Icon size={16} />
-                    </span>
-                    <strong>{item.label}</strong>
-                    {item.badge && (
-                      <span className="settingsNavBadge" data-badge={item.badge}>
-                        {item.badge}
-                      </span>
-                    )}
-                  </BaseButton>
-                ))}
-              </div>
+          />
+        )}
+      >
+        {localizedNav.map(({ group, label, items }) => (
+          <SideNavSection key={group} title={label}>
+            {items.map((item) => (
+              <SideNavItem
+                key={item.id}
+                label={item.label}
+                icon={<item.Icon size={16} aria-hidden="true" />}
+                isSelected={section === item.id}
+                isDisabled={!item.enabled}
+                ref={section === item.id
+                  ? (element) => {
+                      props.initialFocusRef.current = element instanceof HTMLButtonElement
+                        ? element
+                        : null;
+                    }
+                  : undefined}
+                endContent={item.badge ? <Badge variant="neutral" label={item.badge} /> : undefined}
+                onClick={() => setSection(item.id)}
+              />
             ))}
-          </nav>
-        </div>
-      </aside>
+          </SideNavSection>
+        ))}
+      </SideNav>
 
       <section className="settingsMainPane agents-content-area" data-agents-view="settings">
         <header className="settingsPageHeader">
