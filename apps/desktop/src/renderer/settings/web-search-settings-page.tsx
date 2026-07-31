@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { Item } from '@astryxdesign/core';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
 import { Badge, Button, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
@@ -234,12 +235,12 @@ export function WebSearchSettingsPage(props: {
   return (
     <div className="settingsStructuredPage">
       <SettingsRows className="settingsWebSearchCredentialCard">
-        <div className="settingsRow settingsWebSearchEnableRow">
-          <div>
-            <strong>{copy.enabled}</strong>
-            <small>{copy.enabledHelp}</small>
-          </div>
-          <div className="settingsWebSearchControlCluster">
+        <Item
+          className="settingsWebSearchEnableRow"
+          label={copy.enabled}
+          description={copy.enabledHelp}
+          align="start"
+          endContent={<div className="settingsWebSearchControlCluster">
             <div className="settingsWebSearchStatusCluster" role="group" aria-label={copy.statusAria}>
               <Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />
               {hasCheckedAt && (
@@ -256,19 +257,20 @@ export function WebSearchSettingsPage(props: {
               isDisabled={!hasUsableKey || pendingWebSearchEnabled}
               onChange={(enabled) => void setEnabled(enabled)}
             />
-          </div>
-        </div>
+          </div>}
+        />
 
-        <div className="settingsRow settingsWebSearchKeyRow">
-          <div>
-            <strong>{copy.key}</strong>
-            <small>
+        <Item
+          className="settingsWebSearchKeyRow"
+          label={copy.key}
+          description={(
+            <>
               {usingEnvKey
                 ? copy.envKeyHelp
                 : <>{copy.savedKeyHelp} <a href="https://tavily.com" target="_blank" rel="noreferrer noopener">tavily.com</a></>}
-            </small>
-          </div>
-          <div className="settingsWebSearchKeyField">
+            </>
+          )}
+          endContent={<div className="settingsWebSearchKeyField">
             <PasswordInput
               value={draftKey}
               onChange={setDraftKey}
@@ -277,15 +279,15 @@ export function WebSearchSettingsPage(props: {
               label={copy.keyAria}
               isLabelHidden
             />
-          </div>
-        </div>
+          </div>}
+        />
 
-        <div className="settingsRow settingsWebSearchCredentialActionRow">
-          <div>
-            <strong>{copy.actions}</strong>
-            <small>{copy.actionsHelp}</small>
-          </div>
-          <div className="settingsActionRow settingsWebSearchActionButtons">
+        <Item
+          className="settingsWebSearchCredentialActionRow"
+          label={copy.actions}
+          description={copy.actionsHelp}
+          align="start"
+          endContent={<div className="settingsActionRow settingsWebSearchActionButtons">
             <Button
               variant="primary"
               isDisabled={credentialActionBusy || usingEnvKey || draftKey.length === 0}
@@ -306,23 +308,21 @@ export function WebSearchSettingsPage(props: {
                 label={pendingCredentialAction === 'clear' ? copy.clearing : copy.clearKey}
               />
             )}
-          </div>
-        </div>
+          </div>}
+        />
       </SettingsRows>
 
       <SettingsRows className="settingsWebSearchQueryCard">
-        <div className="settingsRow settingsWebSearchQueryIntroRow">
-          <div>
-            <strong>{copy.liveTitle}</strong>
-            <small>{copy.liveHelp}</small>
-          </div>
-        </div>
-        <div className="settingsRow settingsWebSearchQueryInputRow">
-          <div>
-            <strong>{copy.query}</strong>
-            <small>{copy.queryHelp}</small>
-          </div>
-          <div className="settingsWebSearchQueryField">
+        <Item
+          className="settingsWebSearchQueryIntroRow"
+          label={copy.liveTitle}
+          description={copy.liveHelp}
+        />
+        <Item
+          className="settingsWebSearchQueryInputRow"
+          label={copy.query}
+          description={copy.queryHelp}
+          endContent={<div className="settingsWebSearchQueryField">
             <TextInput
               value={liveQuery}
               onChange={(value) => updateLiveQuery(value)}
@@ -337,14 +337,14 @@ export function WebSearchSettingsPage(props: {
                 }
               }}
             />
-          </div>
-        </div>
-        <div className="settingsRow settingsWebSearchSearchRow">
-          <div>
-            <strong>{copy.execute}</strong>
-            <small>{copy.executeHelp}</small>
-          </div>
-          <div className="settingsWebSearchSearchControls">
+          </div>}
+        />
+        <Item
+          className="settingsWebSearchSearchRow"
+          label={copy.execute}
+          description={copy.executeHelp}
+          align="start"
+          endContent={<div className="settingsWebSearchSearchControls">
             <Button
               variant="primary"
               isDisabled={liveQueryRunning || queryDisabledReason !== null}
@@ -356,8 +356,8 @@ export function WebSearchSettingsPage(props: {
                 {queryDisabledReason}
               </small>
             )}
-          </div>
-        </div>
+          </div>}
+        />
       </SettingsRows>
 
       {liveQueryError && (

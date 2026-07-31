@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Item } from '@astryxdesign/core';
 import { SettingsRows } from './settings-rows';
 import type {
   AppSettings,
@@ -194,12 +195,10 @@ export function PersonalizationSettingsPage(props: {
           choice wins over the temporary auto -> zh fallback;
           e2e-fixture override wins over both (deterministic baselines).
         */}
-        <div className="settingsFormRow">
-          <div>
-            <strong>{copy.interfaceLanguage}</strong>
-            <small>{copy.interfaceLanguageHelp}</small>
-          </div>
-          <SegmentedControl
+        <Item
+          label={copy.interfaceLanguage}
+          description={copy.interfaceLanguageHelp}
+          endContent={<SegmentedControl
             value={uiLocale}
             onChange={(next) => persistLocale(next as UiLocalePreference)}
             label={copy.interfaceLanguage}
@@ -207,8 +206,8 @@ export function PersonalizationSettingsPage(props: {
             {copy.localeOptions.map(([value, label]) => (
               <SegmentedControlItem key={value} value={value} label={label} />
             ))}
-          </SegmentedControl>
-        </div>
+          </SegmentedControl>}
+        />
 
         <div className="settingsFormRow" data-orient="vertical">
           <div>

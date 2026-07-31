@@ -16,3 +16,17 @@ test('read-only settings rows use Astryx Item named props', () => {
   assert.match(source, /\bendContent=/);
   assert.doesNotMatch(source, /className="settingsRow"/);
 });
+
+test('horizontal setting controls use Astryx Item slots', () => {
+  for (const rel of [
+    'apps/desktop/src/renderer/settings/general-settings-page.tsx',
+    'apps/desktop/src/renderer/settings/memory-settings-page.tsx',
+    'apps/desktop/src/renderer/settings/daily-review-settings-page.tsx',
+    'apps/desktop/src/renderer/settings/web-search-settings-page.tsx',
+  ]) {
+    const source = read(rel);
+    assert.match(source, /import\s+\{[^}]*\bItem\b[^}]*\}\s+from '@astryxdesign\/core'/s);
+    assert.match(source, /<Item\b/);
+    assert.doesNotMatch(source, /className="settings(?:Form)?Row\b/);
+  }
+});

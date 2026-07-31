@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Item } from '@astryxdesign/core';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
 import { Alert, AlertDescription, Button, Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
@@ -157,26 +158,22 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       ) : null}
 
       <SettingsRows>
-        <div className="settingsRow" data-control="switch">
-          <div>
-            <strong>{copy.enabled}</strong>
-            <small>{copy.enabledHelp}</small>
-          </div>
-          <Switch
+        <Item
+          label={copy.enabled}
+          description={copy.enabledHelp}
+          endContent={<Switch
             label={copy.enabled}
             isLabelHidden
             value={effectiveConfig?.enabled ?? false}
             isDisabled={formDisabled || savingKey === 'enabled'}
             onChange={(enabled) => void patchConfig('enabled', { enabled })}
-          />
-        </div>
+          />}
+        />
 
-        <div className="settingsRow" data-control-width="compact">
-          <div>
-            <strong>{copy.executeTime}</strong>
-            <small>{copy.executeTimeHelp}</small>
-          </div>
-          <TextInput
+        <Item
+          label={copy.executeTime}
+          description={copy.executeTimeHelp}
+          endContent={<TextInput
             label={copy.executeTimeAria}
             isLabelHidden
             value={executeTimeDraft}
@@ -203,16 +200,15 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
                 });
               }
             }}
-          />
-        </div>
+          />}
+        />
 
         {DAILY_REVIEW_SECTION_KEYS.map((key) => (
-          <div key={key} className="settingsRow" data-control="switch">
-            <div>
-              <strong>{copy.sections[key].title}</strong>
-              <small>{copy.sections[key].detail}</small>
-            </div>
-            <Switch
+          <Item
+            key={key}
+            label={copy.sections[key].title}
+            description={copy.sections[key].detail}
+            endContent={<Switch
               label={copy.sections[key].title}
               isLabelHidden
               value={effectiveConfig?.sections[key] ?? false}
@@ -225,30 +221,26 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
                   },
                 })
               }
-            />
-          </div>
+            />}
+          />
         ))}
 
-        <div className="settingsRow" data-control="switch">
-          <div>
-            <strong>{copy.deep}</strong>
-            <small>{copy.deepHelp}</small>
-          </div>
-          <Switch
+        <Item
+          label={copy.deep}
+          description={copy.deepHelp}
+          endContent={<Switch
             label={copy.deep}
             isLabelHidden
             value={effectiveConfig?.deepEnabled ?? false}
             isDisabled={formDisabled || savingKey === 'deepEnabled'}
             onChange={(deepEnabled) => void patchConfig('deepEnabled', { deepEnabled })}
-          />
-        </div>
+          />}
+        />
 
-        <div className="settingsRow" data-control-width="select">
-          <div>
-            <strong>{copy.model}</strong>
-            <small>{copy.modelHelp}</small>
-          </div>
-          <Selector
+        <Item
+          label={copy.model}
+          description={copy.modelHelp}
+          endContent={<Selector
             value={selectedModelValue}
             label={copy.modelAria}
             isLabelHidden
@@ -260,36 +252,32 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
                 modelKey: value === DAILY_REVIEW_DEFAULT_MODEL_VALUE ? '' : value,
               });
             }}
-          />
-        </div>
+          />}
+        />
 
-        <div className="settingsRow" data-control="switch">
-          <div>
-            <strong>{copy.includeCli}</strong>
-            <small>{copy.includeCliHelp}</small>
-          </div>
-          <Switch
+        <Item
+          label={copy.includeCli}
+          description={copy.includeCliHelp}
+          endContent={<Switch
             label={copy.includeCli}
             isLabelHidden
             value={effectiveConfig?.includeClaudeCode ?? false}
             isDisabled={formDisabled || savingKey === 'includeClaudeCode'}
             onChange={(includeClaudeCode) => void patchConfig('includeClaudeCode', { includeClaudeCode })}
-          />
-        </div>
+          />}
+        />
 
-        <div className="settingsRow" data-control="switch">
-          <div>
-            <strong>{copy.notify}</strong>
-            <small>{copy.notifyHelp}</small>
-          </div>
-          <Switch
+        <Item
+          label={copy.notify}
+          description={copy.notifyHelp}
+          endContent={<Switch
             label={copy.notify}
             isLabelHidden
             value={false}
             isDisabled={true}
             onChange={() => undefined}
-          />
-        </div>
+          />}
+        />
       </SettingsRows>
 
       {(props.onOpenDailyReview || hasRunOnceIpc) && (
