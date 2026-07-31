@@ -4,7 +4,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { it } from 'node:test';
 import { MarkdownBody } from '../markdown-body.js';
 import { MakaUriContext, Markdown } from '../markdown.js';
-import { AstryxLocaleProvider } from '../astryx-i18n.js';
+import {
+  AstryxLocaleProvider,
+  astryxMessageOverrides,
+} from '../astryx-i18n.js';
 import { LocaleProvider } from '../locale-context.js';
 
 it('keeps raw HTML inert instead of expanding the Markdown trust surface', () => {
@@ -198,6 +201,17 @@ it('localizes Astryx Markdown accessibility copy in Chinese', () => {
   assert.match(markup, />复选框</);
   assert.doesNotMatch(markup, />Task list</);
   assert.doesNotMatch(markup, />Checkbox</);
+});
+
+it('ships overrides only for Astryx surfaces Maka renders', () => {
+  const messages = astryxMessageOverrides('zh')?.zh ?? {};
+  for (const key of Object.keys(messages)) {
+    assert.doesNotMatch(
+      key,
+      /^@astryx\.(?:lightbox|selector|chat)/,
+      `dead Astryx locale override: ${key}`,
+    );
+  }
 });
 
 it('uses the localized Astryx code block and syntax tokenizer', () => {
