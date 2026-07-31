@@ -15,6 +15,7 @@ import type {
   createProjectCatalog,
   createSessionStore,
   createSettingsStore,
+  createSqliteArtifactStore,
   createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
@@ -57,6 +58,7 @@ export interface AppLifecycleDeps {
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
   telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
+  artifactStore: ReturnType<typeof createSqliteArtifactStore>;
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
@@ -111,6 +113,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     connectionStore,
     settingsStore,
     telemetryRepo,
+    artifactStore,
     ensureUsageReady,
     keepSystemAwake,
     botRegistry,
@@ -391,6 +394,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       agentGraphCoordinator.close(),
       agentGraphSupervisorWakeCoordinator.close(),
       telemetryRepo.close(),
+      Promise.resolve().then(() => artifactStore.close?.()),
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);

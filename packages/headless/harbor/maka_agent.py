@@ -739,18 +739,42 @@ class MakaAgent(BaseInstalledAgent):
         runtime_events_path = self._resolve_runtime_events_path()
         if runtime_events_path is None:
             return
-        local_artifact_root = self._trajectory_artifact_store_root() / "artifacts"
+        local_store_root = self._trajectory_artifact_store_root()
+        local_artifact_root = local_store_root / "artifacts"
+        database_path = local_store_root / "runtime.sqlite"
         metadata_path = local_artifact_root / "metadata.jsonl"
-        if metadata_path.is_file():
+        if database_path.is_file() or metadata_path.is_file():
             return
-        remote_artifact_root = EnvironmentPaths.agent_dir / "maka-storage" / "artifacts"
+        remote_store_root = EnvironmentPaths.agent_dir / "maka-storage"
+        remote_artifact_root = remote_store_root / "artifacts"
         try:
             metadata_path.parent.mkdir(parents=True, exist_ok=True)
-            await environment.download_file(
-                (remote_artifact_root / "metadata.jsonl").as_posix(), metadata_path
-            )
+            try:
+                await environment.download_file(
+                    (remote_store_root / "runtime.sqlite").as_posix(), database_path
+                )
+                try:
+                    await environment.download_file(
+                        (remote_store_root / "runtime.sqlite-wal").as_posix(),
+                        Path(f"{database_path}-wal"),
+                    )
+                except Exception:  # noqa: BLE001 - WAL may not exist after checkpoint.
+                    pass
+                try:
+                    await environment.download_file(
+                        (remote_artifact_root / "metadata.jsonl").as_posix(),
+                        metadata_path,
+                    )
+                except Exception:  # noqa: BLE001 - absent after SQLite-native creation.
+                    pass
+            except Exception:  # noqa: BLE001 - support pre-SQLite artifact stores.
+                database_path.unlink(missing_ok=True)
+                Path(f"{database_path}-wal").unlink(missing_ok=True)
+                await environment.download_file(
+                    (remote_artifact_root / "metadata.jsonl").as_posix(), metadata_path
+                )
             for relative_path in referenced_image_artifact_paths(
-                runtime_events_path, metadata_path
+                runtime_events_path, local_store_root
             ):
                 local = local_artifact_root / relative_path
                 local.parent.mkdir(parents=True, exist_ok=True)

@@ -60,7 +60,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   createAgentRunStore,
   createSqliteAgentMailboxStore,
-  createArtifactStore,
+  createSqliteArtifactStore,
   createSqliteDeepResearchStore,
   createReadImageSnapshotter,
   createConnectionStore,
@@ -294,7 +294,7 @@ function ensureMcpReady(): Promise<void> {
 }
 const telemetryRepo = createSqliteTelemetryRepo(workspaceRoot);
 const dailyReviewArchiveStore = createDailyReviewArchiveStore(workspaceRoot);
-const artifactStore = createArtifactStore(workspaceRoot);
+const artifactStore = createSqliteArtifactStore(workspaceRoot);
 const deepResearchStore = createSqliteDeepResearchStore(workspaceRoot);
 const storeReadImage = createReadImageSnapshotter(artifactStore);
 const attachmentApprovals = createAttachmentApprovalRegistry();
@@ -1454,6 +1454,7 @@ wireAppLifecycle({
   connectionStore,
   settingsStore,
   telemetryRepo,
+  artifactStore,
   ensureUsageReady,
   keepSystemAwake,
   botRegistry,

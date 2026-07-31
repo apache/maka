@@ -47,6 +47,7 @@ export async function createExecutionRuntimeHostComposition(
     | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
     | undefined;
   let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
+  let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
@@ -54,6 +55,7 @@ export async function createExecutionRuntimeHostComposition(
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
     taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
+    artifactStore = openedArtifactStore;
     const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
     usageStores = openedUsageStores;
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
@@ -391,6 +393,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          openedArtifactStore.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           taskLedgerStore?.close();
         } catch (error) {
           errors.push(error);
@@ -428,6 +435,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       await usageStores?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      artifactStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }

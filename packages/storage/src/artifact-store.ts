@@ -51,6 +51,11 @@ import {
 } from './artifact-writer-lock.js';
 import type { ArtifactWriterLockAuthority } from './root-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
+import type { ArtifactMetadataRepository } from './artifact-metadata-repository.js';
+import {
+  createSqliteArtifactMetadataRepository,
+  type CreateSqliteArtifactMetadataOptions,
+} from './sqlite-artifact-metadata.js';
 
 export { isSafeRelativeArtifactPath } from './artifact-metadata-codec.js';
 
@@ -156,6 +161,7 @@ export interface ArtifactStore extends ArtifactStoreReader, DurableArtifactAttac
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
   delete(artifactId: string): Promise<void>;
   purge(artifactIds: readonly string[]): Promise<void>;
+  close?(): void;
 }
 
 export type ArtifactUserDeleteResult =
@@ -188,10 +194,24 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
 export interface ArtifactStoreWriteAuthority {
   readonly store: ArtifactAuthorityStore;
   recover(): Promise<void>;
+  close(): void;
 }
 
 export function createArtifactStore(workspaceRoot: string): ArtifactStore {
   return new FileArtifactStore(workspaceRoot, 'legacy');
+}
+
+export function createSqliteArtifactStore(
+  workspaceRoot: string,
+  options: CreateSqliteArtifactMetadataOptions = {},
+): ArtifactStore {
+  return new FileArtifactStore(
+    workspaceRoot,
+    'legacy',
+    undefined,
+    undefined,
+    createSqliteArtifactMetadataRepository(workspaceRoot, options),
+  );
 }
 
 export function createArtifactStoreWriteAuthority(
@@ -210,6 +230,29 @@ export function createArtifactStoreWriteAuthority(
   return Object.freeze({
     store,
     recover: () => store.recoverForWriteWithAuthority(),
+    close: () => store.close(),
+  });
+}
+
+export function createSqliteArtifactStoreWriteAuthority(
+  workspaceRoot: string,
+  options: {
+    assertAuthority?: () => Promise<void>;
+    leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority;
+    cutover?: CreateSqliteArtifactMetadataOptions;
+  } = {},
+): ArtifactStoreWriteAuthority {
+  const store = new FileArtifactStore(
+    workspaceRoot,
+    'authority',
+    options.assertAuthority,
+    options.leaseBoundWriterLockAuthority,
+    createSqliteArtifactMetadataRepository(workspaceRoot, options.cutover),
+  );
+  return Object.freeze({
+    store,
+    recover: () => store.recoverForWriteWithAuthority(),
+    close: () => store.close(),
   });
 }
 
@@ -220,6 +263,7 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   private records: ArtifactRecord[] = [];
   private sessionSnapshots = new Map<string, ArtifactSessionSnapshot>();
   private loaded = false;
+  private metadataReady = false;
   private recoveryRequired: boolean;
   private legacyRecoveryRequired: boolean;
   private recoverableOrphans = new Map<string, RecoverableOrphan>();
@@ -231,12 +275,17 @@ class FileArtifactStore implements ArtifactAuthorityStore {
     private readonly recoveryMode: 'legacy' | 'authority',
     private readonly assertAuthority?: () => Promise<void>,
     private readonly leaseBoundWriterLockAuthority?: ArtifactWriterLockAuthority,
+    private readonly metadataRepository?: ArtifactMetadataRepository,
   ) {
     this.artifactRoot = join(workspaceRoot, 'artifacts');
     this.metadataPath = join(this.artifactRoot, 'metadata.jsonl');
     this.purgeIntentPath = join(this.artifactRoot, ARTIFACT_PURGE_INTENT_FILE);
     this.recoveryRequired = recoveryMode === 'authority';
     this.legacyRecoveryRequired = recoveryMode === 'legacy';
+  }
+
+  close(): void {
+    this.metadataRepository?.close();
   }
 
   async create(input: CreateArtifactInput): Promise<ArtifactRecord> {
@@ -731,6 +780,13 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async load(): Promise<void> {
+    if (this.metadataRepository) {
+      await this.metadataRepository.ready();
+      this.metadataReady = true;
+      this.replaceRecords(this.metadataRepository.readAll());
+      this.loaded = true;
+      return;
+    }
     let handle;
     try {
       handle = await open(this.metadataPath, 'r');
@@ -758,6 +814,13 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async writeMetadataUnlocked(records: readonly ArtifactRecord[]): Promise<void> {
+    if (this.metadataRepository) {
+      await this.metadataRepository.ready();
+      this.metadataReady = true;
+      this.metadataRepository.replaceAll(records);
+      this.loaded = true;
+      return;
+    }
     const metadataDirectory = dirname(this.metadataPath);
     const createdDirectory = await mkdir(metadataDirectory, { recursive: true });
     if (createdDirectory !== undefined) {
@@ -839,6 +902,13 @@ class FileArtifactStore implements ArtifactAuthorityStore {
   }
 
   private async reloadForMutationUnlocked(): Promise<void> {
+    if (this.metadataRepository) {
+      await this.metadataRepository.ready();
+      this.metadataReady = true;
+      this.replaceRecords(this.metadataRepository.readAll());
+      this.loaded = true;
+      return;
+    }
     try {
       const handle = await open(this.metadataPath, 'r');
       try {
@@ -1334,25 +1404,36 @@ class FileArtifactStore implements ArtifactAuthorityStore {
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     return this.enqueueSerialized(async () => {
+      if (this.metadataRepository && !this.metadataReady) {
+        return this.runWithWriterLock(async () => {
+          await this.assertAuthority?.();
+          await this.metadataRepository?.ready();
+          this.metadataReady = true;
+          return operation();
+        });
+      }
       await this.assertAuthority?.();
       return operation();
     });
   }
 
   private enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
-    return this.enqueueSerialized(() => {
-      const leaseBoundWriterLockAuthority = this.leaseBoundWriterLockAuthority;
-      if (leaseBoundWriterLockAuthority) {
-        return withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, async () => {
-          await this.assertAuthority?.();
-          return operation();
-        });
-      }
-      return withArtifactWriterLock(this.workspaceRoot, async (canonicalRoot) => {
-        this.bindLegacyMutationRoot(canonicalRoot);
+    return this.enqueueSerialized(() =>
+      this.runWithWriterLock(async () => {
         await this.assertAuthority?.();
         return operation();
-      });
+      }),
+    );
+  }
+
+  private runWithWriterLock<T>(operation: () => Promise<T>): Promise<T> {
+    const leaseBoundWriterLockAuthority = this.leaseBoundWriterLockAuthority;
+    if (leaseBoundWriterLockAuthority) {
+      return withLeaseBoundArtifactWriterLock(leaseBoundWriterLockAuthority, operation);
+    }
+    return withArtifactWriterLock(this.workspaceRoot, async (canonicalRoot) => {
+      this.bindLegacyMutationRoot(canonicalRoot);
+      return operation();
     });
   }
 }

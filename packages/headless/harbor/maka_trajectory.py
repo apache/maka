@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -470,25 +471,8 @@ class _ImageArtifactResolver:
     def _artifact_records(self) -> dict[str, dict[str, Any]]:
         if self._records is not None:
             return self._records
-        metadata_path = self.artifact_root / "metadata.jsonl"
-        try:
-            raw = metadata_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            raise _IncompleteTrajectoryEvidence("image_artifact_metadata_missing") from None
-        records: dict[str, dict[str, Any]] = {}
-        try:
-            for line in raw.splitlines():
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                artifact_id = record.get("id") if isinstance(record, dict) else None
-                if not isinstance(artifact_id, str) or not artifact_id or artifact_id in records:
-                    raise ValueError
-                records[artifact_id] = record
-        except (json.JSONDecodeError, ValueError):
-            raise _IncompleteTrajectoryEvidence("image_artifact_metadata_invalid") from None
-        self._records = records
-        return records
+        self._records = _read_artifact_records(self.artifact_root.parent)
+        return self._records
 
 
 def load_runtime_trajectory(
@@ -1932,7 +1916,7 @@ def _observation_content(
 
 def referenced_image_artifact_paths(
     runtime_events_path: Path,
-    metadata_path: Path,
+    artifact_store_root: Path,
 ) -> list[str]:
     """Return validated artifact-root-relative paths needed by image RuntimeEvents."""
     references: dict[str, tuple[str, str]] = {}
@@ -1964,15 +1948,7 @@ def referenced_image_artifact_paths(
                 raise ValueError
             references[artifact_id] = reference
 
-        records: dict[str, dict[str, Any]] = {}
-        for line in metadata_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            artifact_id = record.get("id") if isinstance(record, dict) else None
-            if not isinstance(artifact_id, str) or not artifact_id or artifact_id in records:
-                raise ValueError
-            records[artifact_id] = record
+        records = _read_artifact_records(artifact_store_root)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, AttributeError):
         return []
 
@@ -1991,6 +1967,55 @@ def referenced_image_artifact_paths(
             return []
         paths.append(relative_path)
     return paths
+
+
+def _read_artifact_records(artifact_store_root: Path) -> dict[str, dict[str, Any]]:
+    database_path = artifact_store_root / "runtime.sqlite"
+    metadata_path = artifact_store_root / "artifacts" / "metadata.jsonl"
+    serialized_records: Optional[list[str]] = None
+    if database_path.is_file():
+        connection: Optional[sqlite3.Connection] = None
+        try:
+            connection = sqlite3.connect(
+                f"{database_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+            )
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifact_records'"
+            ).fetchone()
+            if table is not None:
+                serialized_records = [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT record_json FROM artifact_records ORDER BY created_at, storage_key"
+                    )
+                ]
+        except (OSError, sqlite3.Error, TypeError):
+            raise _IncompleteTrajectoryEvidence("image_artifact_metadata_invalid") from None
+        finally:
+            if connection is not None:
+                connection.close()
+    if serialized_records is None:
+        try:
+            serialized_records = [
+                line
+                for line in metadata_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (OSError, UnicodeError):
+            raise _IncompleteTrajectoryEvidence("image_artifact_metadata_missing") from None
+
+    records: dict[str, dict[str, Any]] = {}
+    try:
+        for serialized in serialized_records:
+            record = json.loads(serialized)
+            artifact_id = record.get("id") if isinstance(record, dict) else None
+            if not isinstance(artifact_id, str) or not artifact_id or artifact_id in records:
+                raise ValueError
+            records[artifact_id] = record
+    except (json.JSONDecodeError, TypeError, ValueError):
+        raise _IncompleteTrajectoryEvidence("image_artifact_metadata_invalid") from None
+    return records
 
 
 def _is_safe_artifact_path(value: str) -> bool:

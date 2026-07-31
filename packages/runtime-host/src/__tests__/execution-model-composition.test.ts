@@ -582,8 +582,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(summaryCaptureFound, true);
 
     const requestsBeforeArtifactFailure = provider.requests.length;
-    await rm(join(root, 'artifacts', 'metadata.jsonl'));
-    await mkdir(join(root, 'artifacts', 'metadata.jsonl'));
+    artifacts.close();
     const failedTurnId = randomUUID();
     const failedStart = await startTurn(
       composition,

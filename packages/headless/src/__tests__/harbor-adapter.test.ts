@@ -3171,6 +3171,7 @@ function pythonTrajectoryHarborContractScript(root: string): string {
   return String.raw`
 import asyncio
 import json
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -3382,9 +3383,24 @@ with tempfile.TemporaryDirectory() as tmp:
 
     class ArtifactDownloadEnvironment:
         async def download_file(self, remote, local):
-            if remote == "/logs/agent/maka-storage/artifacts/metadata.jsonl":
-                Path(local).write_text(downloaded_metadata, encoding="utf-8")
+            if remote == "/logs/agent/maka-storage/runtime.sqlite":
+                database = sqlite3.connect(local)
+                database.execute("""
+                    CREATE TABLE artifact_records (
+                        storage_key TEXT PRIMARY KEY,
+                        created_at INTEGER NOT NULL,
+                        record_json TEXT NOT NULL
+                    )
+                """)
+                database.execute(
+                    "INSERT INTO artifact_records(storage_key, created_at, record_json) VALUES (?, ?, ?)",
+                    ("downloaded-image", 1200, downloaded_metadata.strip()),
+                )
+                database.commit()
+                database.close()
                 return
+            if remote == "/logs/agent/maka-storage/runtime.sqlite-wal":
+                raise FileNotFoundError(remote)
             assert remote == f"/logs/agent/maka-storage/artifacts/{downloaded_relative_path}", remote
             Path(local).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
 

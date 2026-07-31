@@ -60,7 +60,7 @@ import {
 import {
   createSqliteAgentRunStore,
   createAttachmentByteReader,
-  createArtifactStore,
+  createSqliteArtifactStore,
   createAutomationStore,
   createConnectionStore,
   createFileCredentialStore,
@@ -235,7 +235,7 @@ export async function createMakaCliRuntimeContext(
     shellRunStore.close();
     throw error;
   });
-  const artifactStore = createArtifactStore(stateRoot);
+  const artifactStore = createSqliteArtifactStore(stateRoot);
   const agentGraphControlStore = agentGraphEnabled
     ? createAgentGraphControlStore(stateRoot)
     : undefined;
@@ -1102,6 +1102,7 @@ export async function createMakaCliRuntimeContext(
       runtimePersistence.close();
       runStore.close?.();
       shellRunStore.close();
+      artifactStore.close?.();
     },
   };
 }

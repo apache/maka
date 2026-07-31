@@ -28,6 +28,7 @@ export {
   ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
   ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES,
   createArtifactStore,
+  createSqliteArtifactStore,
   isSafeRelativeArtifactPath,
   resolveArtifactPath,
   sanitizeArtifactName,

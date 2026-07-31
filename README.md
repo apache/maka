@@ -223,11 +223,20 @@ fingerprinted before their rows and pricing revision are committed atomically.
 After cutover, Desktop and Runtime Host write only `runtime.sqlite`; the source
 files remain unchanged as migration evidence.
 
+Artifact metadata and lifecycle state now follow the same rule. Payload bytes
+remain files, but their records are canonical in `runtime.sqlite` after a
+fingerprinted `metadata.jsonl` cutover. Payload publication keeps its durable
+staging/link protocol: recovery removes bytes whose metadata transaction did not
+commit and preserves committed bytes while cleaning staging residue. Purge
+intent recovery likewise completes against the SQLite metadata authority.
+
 The remaining storage work is deliberately classified rather than implied
 complete:
 
-- artifact metadata and lifecycle state move with a recoverable
-  metadata/payload publication protocol, while payload bytes remain files;
+- session bundle, backup, restore, and trajectory export paths must consume the
+  SQLite artifact metadata authority while preserving payload files;
+- legacy operational writers and compatibility-only JSONL code can be removed
+  only after the migration/cutover matrix is complete;
 - StoredMessage transcript bodies remain append-only JSONL;
 - automation, connections, credentials, settings, MCP configuration, skills,
   and device identity are configuration state and stay outside this operational
