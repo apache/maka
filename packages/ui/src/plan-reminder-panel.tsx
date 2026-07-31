@@ -232,7 +232,11 @@ export function PlanReminderPanel(props: {
     if (open) return;
     const intent = pendingReminderMenuIntentRef.current;
     pendingReminderMenuIntentRef.current = null;
-    intent?.();
+    if (intent) {
+      window.requestAnimationFrame(() => {
+        if (planReminderMountedRef.current) intent();
+      });
+    }
   }
 
   async function runPlanReminderAction(

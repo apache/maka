@@ -805,7 +805,11 @@ const SessionRow = memo(function SessionRow(props: {
     if (open) return;
     const intent = pendingMenuIntentRef.current;
     pendingMenuIntentRef.current = null;
-    intent?.();
+    if (intent) {
+      window.requestAnimationFrame(() => {
+        if (rowMountedRef.current) intent();
+      });
+    }
   }
 
   function handleRowBlur(event: FocusEvent<HTMLDivElement>) {

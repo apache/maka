@@ -100,7 +100,7 @@ export function AppShellWorkspaceTopActions(props: {
           if (open) return;
           const intent = pendingMenuIntentRef.current;
           pendingMenuIntentRef.current = null;
-          intent?.();
+          if (intent) window.requestAnimationFrame(intent);
         }}
         button={{
           label: copy.moreActions,
