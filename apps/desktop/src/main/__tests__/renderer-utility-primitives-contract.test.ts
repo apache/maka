@@ -151,7 +151,7 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(source, /<kbd\b/, 'KeyboardHelpModal shortcut glyphs must use shared primitive Kbd');
     assert.match(
       source,
-      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onOpenChange=\{setIsOpen\}/,
+      /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onOpenChange=\{props\.onOpenChange\}/,
       'KeyboardHelpModal must render Astryx DialogHeader with 键盘快捷键 as THE title',
     );
     // The redundant second title and eyebrow are gone.

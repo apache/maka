@@ -358,7 +358,8 @@ describe('Bot settings UI contract', () => {
     assert.doesNotMatch(styles, /\.settingsWechatQrSecondary\b/, 'WeChat QR actions must not restore consumer-owned Button states');
     assert.match(settings, /window\.maka\.settings\.bots\.wechatQrCode\(\)/, 'QR modal must call the bridge QR IPC');
     assert.match(settings, /<img src=\{qrDataUrl\} alt=\{copy\.qrAlt\}/, 'QR modal must render a visible QR image with a localized accessible name');
-    assert.match(settings, /setWechatQrOpen\(true\)/, 'Scan-login button must open the QR modal');
+    assert.match(settings, /setWechatQrPhase\('mounting'\)/, 'Scan-login button must start the QR modal session in a closed mount phase');
+    assert.match(settings, /wechatQrPhase === 'closing'[\s\S]*requestAnimationFrame\(\(\) => setWechatQrPhase\('closed'\)\)/, 'QR modal must let Astryx observe the closed state before releasing its external session');
     assert.match(settings, /async function disconnectLinkedSession\(\)/, 'Saved QR session credentials must have a visible disconnect path');
     assert.match(settings, /detailCopy\.disconnectWechat/, 'WeChat action stack must expose the localized disconnect label after login');
     assert.match(settings, /token:\s*''[\s\S]*connected:\s*false[\s\S]*readiness:\s*'scaffolded'/, 'Disconnect must clear saved scan-login credentials and readiness');

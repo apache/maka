@@ -13,15 +13,10 @@ async function readRepo(path: string): Promise<string> {
 }
 
 describe('Command palette accessibility and visible copy', () => {
-  it('delegates the complete interaction model to Astryx CommandPalette', async () => {
-    const source = await readRepo(
-      'apps/desktop/src/renderer/command-palette.tsx',
-    );
+  it('delegates dialog, search, keyboard, focus, and selection to Astryx', async () => {
+    const source = await readRepo('apps/desktop/src/renderer/command-palette.tsx');
 
-    assert.match(
-      source,
-      /CommandPalette as AstryxCommandPalette/,
-    );
+    assert.match(source, /CommandPalette as AstryxCommandPalette/);
     assert.match(source, /<AstryxCommandPalette[\s\S]*searchSource=\{searchSource\}/);
     assert.match(source, /<CommandPaletteInput[\s\S]*label=\{copy\.searchLabel\}/);
     assert.match(source, /<CommandPaletteFooter>/);
@@ -29,15 +24,10 @@ describe('Command palette accessibility and visible copy', () => {
     assert.doesNotMatch(source, /<input\b|<button\b|onKeyDown=|querySelector\(/);
   });
 
-  it('maps the product command catalog directly into the Astryx search source', async () => {
-    const [source, types] = await Promise.all([
-      readRepo('apps/desktop/src/renderer/command-palette.tsx'),
-      readRepo('apps/desktop/src/renderer/command-palette-types.ts'),
-    ]);
+  it('maps the product command catalog into the Astryx search source', async () => {
+    const source = await readRepo('apps/desktop/src/renderer/command-palette.tsx');
 
     assert.match(source, /props\.commands\.map\(\(command\) => \(\{/);
-    assert.doesNotMatch(source, /command\.disabled/);
-    assert.doesNotMatch(types, /disabled\?: boolean/);
     assert.match(source, /bootstrap: \(\) => items/);
     assert.match(source, /if \(fuzzy\(normalized, command\.label\)\) return true/);
     assert.match(source, /command\.keywords\?\.some/);
@@ -45,13 +35,11 @@ describe('Command palette accessibility and visible copy', () => {
     assert.doesNotMatch(source, /contentSearch|useThreadSearch/);
   });
 
-  it('localizes input, empty state, and footer copy instead of using Astryx defaults', async () => {
-    const source = await readRepo(
-      'apps/desktop/src/renderer/command-palette.tsx',
-    );
-    const catalog = await readRepo(
-      'apps/desktop/src/renderer/locales/shell-copy.ts',
-    );
+  it('localizes public input, empty-state, and footer copy', async () => {
+    const [source, catalog] = await Promise.all([
+      readRepo('apps/desktop/src/renderer/command-palette.tsx'),
+      readRepo('apps/desktop/src/renderer/locales/shell-copy.ts'),
+    ]);
 
     for (const key of [
       'placeholder',
@@ -65,36 +53,38 @@ describe('Command palette accessibility and visible copy', () => {
       assert.match(source, new RegExp(`copy\\.${key}`));
     }
     assert.match(catalog, /label: '新建对话',[\s\S]*?hint: '开始新的会话'/);
-    assert.match(
-      catalog,
-      /label: 'New conversation',[\s\S]*?hint: 'Start a new conversation'/,
-    );
+    assert.match(catalog, /label: 'New conversation',[\s\S]*?hint: 'Start a new conversation'/);
   });
 
   it('has an e2e-fixture opener for the command palette', async () => {
-    const main = await readRendererShellCombinedSource();
-    const core = await readRepo('packages/core/src/e2e-fixture.ts');
-    const fixture = await readRepo(
-      'apps/desktop/src/main/e2e-fixture.ts',
-    );
+    const [main, core, fixture] = await Promise.all([
+      readRendererShellCombinedSource(),
+      readRepo('packages/core/src/e2e-fixture.ts'),
+      readRepo('apps/desktop/src/main/e2e-fixture.ts'),
+    ]);
 
     assert.match(core, /\| 'command-palette-open'/);
     assert.match(core, /paletteOpen\?: boolean;/);
-    assert.match(
-      fixture,
-      /case 'command-palette-open':[\s\S]*paletteOpen: true/,
-    );
+    assert.match(fixture, /case 'command-palette-open':[\s\S]*paletteOpen: true/);
     assert.match(main, /if \(state\.paletteOpen\) \{\s*openPalette\(\);\s*\}/);
   });
 
-  it('contains command action failures inside the palette boundary', async () => {
-    const source = await readRepo(
-      'apps/desktop/src/renderer/command-palette.tsx',
-    );
+  it('closes through controlled Astryx state before running a command once', async () => {
+    const source = await readRepo('apps/desktop/src/renderer/command-palette.tsx');
 
+    assert.match(source, /const pendingCommandRef = useRef<Command \| null>\(null\)/);
     assert.match(
       source,
-      /void Promise\.resolve\(\)\s*\.then\(\(\) => command\.run\(\)\)\s*\.catch\(\(\) => undefined\)/,
+      /function commit\(commandId: string\) \{[\s\S]*if \(!command \|\| command\.disabled \|\| pendingCommandRef\.current\) return;[\s\S]*pendingCommandRef\.current = command;[\s\S]*props\.onOpenChange\(false\);/,
     );
+    assert.match(
+      source,
+      /if \(props\.isOpen\) return;[\s\S]*const command = pendingCommandRef\.current;[\s\S]*pendingCommandRef\.current = null;[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*Promise\.resolve\(command\.run\(\)\)\.catch/,
+    );
+  });
+
+  it('contains command action failures inside the palette boundary', async () => {
+    const source = await readRepo('apps/desktop/src/renderer/command-palette.tsx');
+    assert.match(source, /Promise\.resolve\(command\.run\(\)\)\.catch\(\(\) => undefined\)/);
   });
 });

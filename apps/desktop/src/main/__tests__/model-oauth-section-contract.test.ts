@@ -110,8 +110,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /function closeDialog\(\) \{[\s\S]*providerDialogLifecycleRef\.current \+= 1;[\s\S]*setDialogState\(null\);[\s\S]*\}/,
-      'closing a dialog must invalidate pending dialog-scoped continuations',
+      /function releaseDialog\(lifecycle: number\) \{[\s\S]*providerDialogLifecycleRef\.current !== lifecycle[\s\S]*setDialogState\(null\);/,
+      'a closed dialog must release only the matching dialog session',
     );
     assert.match(
       src,
@@ -1061,8 +1061,8 @@ describe('Model OAuth catalog contract (PR-MODEL-OAUTH-ALL-0 + PR-CLAUDE-CARD-MO
     );
     assert.match(
       src,
-      /if \(isModalOpen\) return;[\s\S]*setOpenModal\(null\);[\s\S]*void refreshAfterOAuthChange\(\)/,
-      'closing Astryx must unmount the OAuth modal and call the fail-soft refresh helper',
+      /function handleModalOpenChange\(nextOpen: boolean\)[\s\S]*setIsModalOpen\(false\);[\s\S]*requestAnimationFrame\(\(\) => \{[\s\S]*setOpenModal\(null\);[\s\S]*void refreshAfterOAuthChange\(\)/,
+      'closing Astryx must commit false before releasing the OAuth session and calling the fail-soft refresh helper',
     );
     assert.match(
       src,
