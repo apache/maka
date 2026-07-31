@@ -117,6 +117,7 @@ describe('Storybook baseline contract', () => {
     for (const storyName of [
       'ExtensionsSkills',
       'ExtensionsMcp',
+      'ExtensionsMcpConfigured',
       'ScheduledPlanReminders',
       'ScheduledDailyReview',
       'ExtensionsSkillsInstalled',
