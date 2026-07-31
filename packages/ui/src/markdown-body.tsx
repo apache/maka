@@ -11,31 +11,18 @@
  * second text smoother. PR 8 transfers the wider streaming and scroll boundary.
  */
 
-import {
-  useContext,
-  useEffect,
-  useRef,
-  type MouseEvent as ReactMouseEvent,
-  type ReactNode,
-} from 'react';
+import { useContext, type ReactNode } from 'react';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
 } from '@astryxdesign/core/Markdown';
 import { trimStreamingArtifacts } from '@astryxdesign/core/Markdown/utils';
 import { Link as AstryxLink } from '@astryxdesign/core/Link';
-import { Text as AstryxText } from '@astryxdesign/core/Text';
-import { useAnnounce } from '@astryxdesign/core/hooks';
-import { useTranslator } from '@astryxdesign/core/i18n';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
   parseMakaUri,
 } from './maka-uri.js';
-import {
-  useClipboardCopyFeedback,
-  type ClipboardCopyPhase,
-} from './clipboard-feedback.js';
 import { MakaUriContext } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -50,90 +37,6 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
     ? trimStreamingArtifacts(props.text)
     : props.text;
   const safeText = neutralizeUnsafeMarkdownImages(parseableText);
-  const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
-  const copyPhase = copyFeedback.phaseFor('code');
-  const translate = useTranslator();
-  const activeCopyCleanupsRef = useRef(new Set<() => void>());
-  useEffect(() => {
-    const activeCopyCleanups = activeCopyCleanupsRef.current;
-    return () => {
-      for (const cleanup of activeCopyCleanups) cleanup();
-      activeCopyCleanups.clear();
-    };
-  }, []);
-
-  // Astryx 0.1.9 owns this button and the authoritative `code` value but
-  // discards clipboard rejections. Wrap its next write without stopping the
-  // event, so Astryx keeps its native success state while Maka observes errors.
-  function handleClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
-    if (!(event.target instanceof Element)) return;
-    const button = event.target.closest('button');
-    const codeBlock = button?.closest('pre.astryx-codeblock');
-    if (
-      !(button instanceof HTMLButtonElement)
-      || !codeBlock
-      || !event.currentTarget.contains(codeBlock)
-    ) return;
-
-    const clipboard = navigator.clipboard;
-    const originalDescriptor = Object.getOwnPropertyDescriptor(
-      clipboard,
-      'writeText',
-    );
-    const originalWrite = clipboard.writeText.bind(clipboard);
-    let restored = false;
-    let writeStarted = false;
-    let operationActive = true;
-    let cancelAnnouncementLocalization = () => {};
-
-    function restoreWriteText() {
-      if (restored) return;
-      restored = true;
-      if (originalDescriptor) {
-        Object.defineProperty(clipboard, 'writeText', originalDescriptor);
-      } else {
-        Reflect.deleteProperty(clipboard, 'writeText');
-      }
-    }
-
-    function cancelOperation() {
-      if (!operationActive) return;
-      operationActive = false;
-      cancelAnnouncementLocalization();
-      activeCopyCleanupsRef.current.delete(cancelOperation);
-    }
-
-    try {
-      Object.defineProperty(clipboard, 'writeText', {
-        configurable: true,
-        value: async (text: string) => {
-          writeStarted = true;
-          restoreWriteText();
-          const copied = await copyFeedback.attempt(
-            'code',
-            () => originalWrite(text),
-          );
-          if (!copied || !operationActive) {
-            cancelOperation();
-            throw new Error('Clipboard write failed');
-          }
-          window.requestAnimationFrame(() => {
-            window.requestAnimationFrame(cancelOperation);
-          });
-        },
-      });
-      cancelAnnouncementLocalization = localizeNextAstryxCopyAnnouncement(
-        translate('@astryx.codeBlock.copied'),
-      );
-      activeCopyCleanupsRef.current.add(cancelOperation);
-      window.setTimeout(() => {
-        restoreWriteText();
-        if (!writeStarted) cancelOperation();
-      }, 0);
-    } catch {
-      // If the browser forbids wrapping the method, keep Astryx's native path.
-    }
-  }
 
   return (
     <div
@@ -142,7 +45,6 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       // contract harness a stable declared subtree without adding a layout
       // box or interfering with Astryx's document root.
       style={{ display: 'contents' }}
-      onClickCapture={handleClickCapture}
     >
       <AstryxMarkdown
         autolink="gfm"
@@ -150,56 +52,7 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
       >
         {safeText}
       </AstryxMarkdown>
-      {copyPhase && <MarkdownCodeCopyStatus phase={copyPhase} />}
     </div>
-  );
-}
-
-function localizeNextAstryxCopyAnnouncement(copiedLabel: string) {
-  let active = true;
-  function cancel() {
-    if (!active) return;
-    active = false;
-    observer.disconnect();
-  }
-  const observer = new MutationObserver(() => {
-    const liveRegion = document.querySelector<HTMLElement>(
-      '[data-astryx-live-region="polite"]',
-    );
-    if (liveRegion?.textContent !== 'Copied') return;
-
-    cancel();
-    liveRegion.textContent = copiedLabel;
-  });
-  observer.observe(document.body, {
-    characterData: true,
-    childList: true,
-    subtree: true,
-  });
-  return cancel;
-}
-
-function MarkdownCodeCopyStatus(props: { phase: ClipboardCopyPhase }) {
-  const copy = getSharedUiCopy(useUiLocale()).markdown;
-  const announce = useAnnounce();
-  const label = props.phase === 'pending'
-    ? copy.copyingCode
-    : props.phase === 'copied'
-      ? copy.copiedCode
-      : copy.copyCodeFailed;
-  useEffect(() => {
-    if (props.phase === 'failed') announce(label);
-  }, [announce, label, props.phase]);
-
-  return (
-    <AstryxText
-      as="div"
-      type="supporting"
-      display="block"
-      data-copy-feedback={props.phase}
-    >
-      {label}
-    </AstryxText>
   );
 }
 

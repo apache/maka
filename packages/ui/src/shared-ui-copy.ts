@@ -17,9 +17,7 @@ export interface SharedUiCopy {
     code: string;
     opensInNewTab: string;
     copyCode: string;
-    copyingCode: string;
     copiedCode: string;
-    copyCodeFailed: string;
   };
   formControls: {
     selectPlaceholder: string;
@@ -108,9 +106,7 @@ const SHARED_UI_COPY = {
       code: '代码',
       opensInNewTab: '（在新标签页中打开）',
       copyCode: '复制代码',
-      copyingCode: '复制代码中',
       copiedCode: '已复制代码',
-      copyCodeFailed: '复制代码失败',
     },
     formControls: {
       selectPlaceholder: '选择…',
@@ -183,9 +179,7 @@ const SHARED_UI_COPY = {
       code: 'Code',
       opensInNewTab: '(opens in new tab)',
       copyCode: 'Copy code',
-      copyingCode: 'Copying code',
       copiedCode: 'Code copied',
-      copyCodeFailed: 'Failed to copy code',
     },
     formControls: {
       selectPlaceholder: 'Select…',

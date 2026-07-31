@@ -23,6 +23,11 @@ it('uses Astryx as the sole Markdown core without adding a second stream smoothe
   assert.match(wrapper, /MarkdownBody text=\{safeText\} streaming=\{props\.streaming\}/);
   assert.match(chat, /<Markdown text=\{displayed\} streaming \/>/);
   assert.match(chat, /useSmoothStreamContent/);
+  assert.doesNotMatch(
+    body,
+    /navigator\.clipboard|Object\.defineProperty|pre\.astryx-codeblock|MutationObserver|data-astryx-live-region|MarkdownCodeCopyStatus|useClipboardCopyFeedback/,
+    'Maka must not observe or replace Astryx CodeBlock copy ownership',
+  );
 });
 
 it('declares structural Markdown and reflow migration scopes without styling through them', async () => {
@@ -34,4 +39,18 @@ it('declares structural Markdown and reflow migration scopes without styling thr
   assert.match(chat, /data-maka-contract="markdown-flow"/);
   assert.doesNotMatch(body, /\[data-maka-contract(?:=|])/);
   assert.doesNotMatch(chat, /\[data-maka-contract(?:=|])/);
+});
+
+it('does not style Markdown through Astryx implementation classes', async () => {
+  const css = await readFile(
+    fileURLToPath(
+      new URL(
+        '../../../src/renderer/styles/chat-message.css',
+        import.meta.url,
+      ),
+    ),
+    'utf8',
+  );
+
+  assert.doesNotMatch(css, /\.astryx-codeblock/);
 });

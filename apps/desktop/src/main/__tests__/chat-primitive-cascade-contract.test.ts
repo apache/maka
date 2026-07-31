@@ -49,7 +49,10 @@ describe('chat primitive shell migration contract (#332 PR1)', () => {
     // primitive's data hook migrated onto the `@maka/ui` Marker variants in PR2
     // (chat-marker-cascade-contract.test.ts), so the re-anchor is gone now.
     // The system-note `pre` re-anchor stays — that prose is still hand-written.
-    assert.ok(css.includes('[data-slot="message"][data-role="system"] pre:not(.astryx-codeblock)'));
+    assert.match(
+      css,
+      /\[data-slot="message"\]\[data-role="system"\]\s+pre:not\(\[data-maka-contract="markdown"\] pre\)/,
+    );
   });
 
   it('pins the user bubble shell to the retired .maka-bubble-user pixels', async () => {
