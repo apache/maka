@@ -10,7 +10,6 @@ import type {
 } from '@maka/core';
 import { decodeCanonicalToolResultContent, isSessionInlineRun } from '@maka/core';
 import { TOOL_RECOVERY_DECISION_FACT_KIND } from '@maka/core/tool-recovery-fact';
-import type { RuntimeReadModelSessionView } from './runtime-read-model.js';
 import {
   buildHistoryCompactCheckpoint,
   matchHistoryCompactCheckpointPrefix,
@@ -66,9 +65,8 @@ export type ConversationCopyReferenceMap = ConversationCopyMessageReferenceMap &
 };
 
 export interface CloneConversationRuntimeLedgerInput {
-  readonly source: RuntimeReadModelSessionView;
+  readonly plan: ConversationRuntimeLedgerCopyPlan;
   readonly copiedMessages: readonly StoredMessage[];
-  readonly copyTurnIds?: readonly string[];
   readonly referenceMap: ConversationCopyArtifactReferenceMap;
   readonly runStore: AgentRunStore;
   readonly runtimeEventStore: RuntimeEventStore & {
@@ -83,19 +81,22 @@ export interface CloneConversationRuntimeLedgerInput {
   readonly newId: () => string;
 }
 
+export interface ConversationRuntimeLedgerCopyPlan {
+  readonly sourceSessionId: string;
+  readonly copyTurnIds: readonly string[];
+  readonly inlineRuntimeEvents: readonly RuntimeEvent[];
+  readonly runs: readonly {
+    readonly run: AgentRunHeader;
+    readonly runtimeEvents: readonly RuntimeEvent[];
+    readonly operationalEvents: readonly AgentRunEvent[];
+  }[];
+}
+
 export interface CloneConversationRuntimeLedgerResult {
   readonly copiedMessages: readonly StoredMessage[];
   readonly runIdMap: readonly {
     readonly sourceRunId: string;
     readonly targetRunId: string;
-  }[];
-  readonly runtimeEventIdMap: readonly {
-    readonly sourceRuntimeEventId: string;
-    readonly targetRuntimeEventId: string;
-  }[];
-  readonly providerTraceIdMap: readonly {
-    readonly sourceProviderTraceId: string;
-    readonly targetProviderTraceId: string;
   }[];
 }
 
@@ -171,57 +172,62 @@ export function rewriteConversationCopyMessage(
   return message;
 }
 
-export async function resolveConversationCopyTurnIds(
-  runStore: Pick<AgentRunStore, 'listSessionRuns'>,
-  sourceSessionId: string,
-  retainedTurnIds: readonly string[],
-): Promise<string[]> {
-  const runs = await runStore.listSessionRuns(sourceSessionId);
-  return conversationCopyTurnClosure(runs, retainedTurnIds);
-}
-
-export async function cloneConversationRuntimeLedger(
-  input: CloneConversationRuntimeLedgerInput,
-): Promise<CloneConversationRuntimeLedgerResult> {
+export async function prepareConversationRuntimeLedgerCopy(input: {
+  readonly sourceSessionId: string;
+  readonly sourceEvents: readonly RuntimeEvent[];
+  readonly copiedMessages: readonly StoredMessage[];
+  readonly runStore: Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
+  readonly runtimeEventStore: Pick<RuntimeEventStore, 'readRuntimeEvents'>;
+}): Promise<ConversationRuntimeLedgerCopyPlan> {
+  const sourceRuns = await input.runStore.listSessionRuns(input.sourceSessionId);
   const transcriptTurnIds = [
     ...new Set(
       input.copiedMessages.map(messageTurnId).filter((turnId): turnId is string => !!turnId),
     ),
   ];
-  const sourceRuns = await input.runStore.listSessionRuns(input.referenceMap.sourceSessionId);
-  const copyTurnIds =
-    input.copyTurnIds ?? conversationCopyTurnClosure(sourceRuns, transcriptTurnIds);
-  const copiedTurnIds = new Set(copyTurnIds);
-  const plans = await Promise.all(
-    sourceRuns
-      .flatMap((run) => {
-        if (!copiedTurnIds.has(run.turnId)) return [];
-        const projectedEvents = input.source.events.filter(
-          (event) => event.runId === run.runId && copiedTurnIds.has(event.turnId),
-        );
-        return [{ run, projectedEvents }];
-      })
-      .map(async ({ run, projectedEvents }) => {
-        const [events, operationalEvents] = await Promise.all([
-          projectedEvents.length > 0
-            ? projectedEvents
-            : input.runtimeEventStore.readRuntimeEvents(run.sessionId, run.runId),
-          input.runStore.readEvents(run.sessionId, run.runId),
-        ]);
-        if (events.length === 0) {
-          throw new Error(`Cannot copy AgentRun ${run.runId} without RuntimeEvent facts`);
-        }
-        const terminal = classifyTerminalRuntimeLedger(run, events);
-        if (isTerminalRunStatus(run.status) && terminal.kind !== 'fact') {
-          throw new Error(`Cannot copy terminal AgentRun ${run.runId} without one terminal fact`);
-        }
-        return [{ run, events, operationalEvents, terminal }];
-      }),
+  const copyTurnIds = conversationCopyTurnClosure(sourceRuns, transcriptTurnIds);
+  const selectedRunEvents = await loadConversationCopyRunEvents(
+    sourceRuns,
+    input.sourceEvents,
+    copyTurnIds,
+    input.runtimeEventStore,
   );
-  const flattenedPlans = plans.flat();
+  const runs = await Promise.all(
+    selectedRunEvents.map(async ({ run, events }) => {
+      const operationalEvents = await input.runStore.readEvents(run.sessionId, run.runId);
+      if (events.length === 0) {
+        throw new Error(`Cannot copy AgentRun ${run.runId} without RuntimeEvent facts`);
+      }
+      const terminal = classifyTerminalRuntimeLedger(run, events);
+      if (isTerminalRunStatus(run.status) && terminal.kind !== 'fact') {
+        throw new Error(`Cannot copy terminal AgentRun ${run.runId} without one terminal fact`);
+      }
+      return { run, runtimeEvents: events, operationalEvents };
+    }),
+  );
+  return {
+    sourceSessionId: input.sourceSessionId,
+    copyTurnIds,
+    inlineRuntimeEvents: [...input.sourceEvents],
+    runs,
+  };
+}
+
+export async function cloneConversationRuntimeLedger(
+  input: CloneConversationRuntimeLedgerInput,
+): Promise<CloneConversationRuntimeLedgerResult> {
+  if (input.plan.sourceSessionId !== input.referenceMap.sourceSessionId) {
+    throw new Error('Conversation copy plan does not belong to the source Session');
+  }
+  const flattenedPlans = input.plan.runs.map(({ run, runtimeEvents, operationalEvents }) => ({
+    run,
+    events: runtimeEvents,
+    operationalEvents,
+    terminal: classifyTerminalRuntimeLedger(run, runtimeEvents),
+  }));
   const sourceCompactableEvents = sourceCompactableEventsByRunId(
     flattenedPlans,
-    input.source.events,
+    input.plan.inlineRuntimeEvents,
   );
   const runIds = new Map(flattenedPlans.map(({ run }) => [run.runId, input.newId()]));
   const targetInvocationIds = new Map(flattenedPlans.map(({ run }) => [run.runId, input.newId()]));
@@ -387,17 +393,36 @@ export async function cloneConversationRuntimeLedger(
       sourceRunId,
       targetRunId,
     })),
-    runtimeEventIdMap: [...runtimeEventIds].map(([sourceRuntimeEventId, targetRuntimeEventId]) => ({
-      sourceRuntimeEventId,
-      targetRuntimeEventId,
-    })),
-    providerTraceIdMap: [...providerTraceIds].map(
-      ([sourceProviderTraceId, targetProviderTraceId]) => ({
-        sourceProviderTraceId,
-        targetProviderTraceId,
-      }),
-    ),
   };
+}
+
+interface ConversationCopyRunEvents {
+  readonly run: AgentRunHeader;
+  readonly events: readonly RuntimeEvent[];
+}
+
+async function loadConversationCopyRunEvents(
+  sourceRuns: readonly AgentRunHeader[],
+  sourceEvents: readonly RuntimeEvent[],
+  copyTurnIds: readonly string[],
+  runtimeEventStore: Pick<RuntimeEventStore, 'readRuntimeEvents'>,
+): Promise<ConversationCopyRunEvents[]> {
+  const copiedTurnIds = new Set(copyTurnIds);
+  return Promise.all(
+    sourceRuns.flatMap((run) => {
+      if (!copiedTurnIds.has(run.turnId)) return [];
+      const projectedEvents = sourceEvents.filter(
+        (event) => event.runId === run.runId && copiedTurnIds.has(event.turnId),
+      );
+      return [
+        Promise.resolve(
+          projectedEvents.length > 0
+            ? projectedEvents
+            : runtimeEventStore.readRuntimeEvents(run.sessionId, run.runId),
+        ).then((events) => ({ run, events })),
+      ];
+    }),
+  );
 }
 
 export function archivedToolResultContainsConversationOwnedReferences(

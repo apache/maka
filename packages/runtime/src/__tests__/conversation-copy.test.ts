@@ -3,8 +3,18 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { AgentRunHeader, RuntimeEvent, StoredMessage } from '@maka/core';
-import { canonicalToolArgsHash, decodeCanonicalToolResultContent } from '@maka/core';
+import type {
+  AgentRunHeader,
+  AgentRunStore,
+  RuntimeEvent,
+  RuntimeEventStore,
+  StoredMessage,
+} from '@maka/core';
+import {
+  canonicalToolArgsHash,
+  decodeCanonicalToolResultContent,
+  isSessionInlineRun,
+} from '@maka/core';
 import {
   createAgentRunStore,
   createRuntimeEventStore,
@@ -15,7 +25,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
-  resolveConversationCopyTurnIds,
+  prepareConversationRuntimeLedgerCopy,
   rewriteConversationCopyMessage,
 } from '../conversation-copy.js';
 import {
@@ -24,7 +34,7 @@ import {
   validateHistoryCompactCheckpointShape,
 } from '../history-compact-checkpoint.js';
 import { isHistoryCompactContentEvent } from '../history-compact.js';
-import { RuntimeReadModel } from '../runtime-read-model.js';
+import { RuntimeReadModel, type RuntimeReadModelSessionView } from '../runtime-read-model.js';
 import { buildToolOperationId } from '../runtime-commit-sink.js';
 import { buildToolResultArchiveResourceRef } from '../tool-result-archive-resource.js';
 
@@ -363,12 +373,40 @@ test('conversation copy turn closure includes legacy children but excludes later
     }),
   ];
 
-  assert.deepEqual(
-    await resolveConversationCopyTurnIds({ listSessionRuns: async () => runs }, 'session-source', [
-      'turn-parent',
-    ]),
-    ['turn-parent', 'turn-child', 'turn-grandchild'],
-  );
+  const plan = await prepareConversationRuntimeLedgerCopy({
+    sourceSessionId: 'session-source',
+    sourceEvents: [],
+    copiedMessages: [
+      {
+        type: 'user',
+        id: 'message-parent',
+        turnId: 'turn-parent',
+        ts: 1,
+        text: 'retain this turn',
+      },
+    ],
+    runStore: {
+      listSessionRuns: async () => runs,
+      readEvents: async () => [],
+    },
+    runtimeEventStore: {
+      readRuntimeEvents: async (_sessionId, runId) => {
+        const run = runs.find((candidate) => candidate.runId === runId);
+        assert.ok(run);
+        return [
+          runtimeEvent({
+            id: `terminal-${runId}`,
+            runId,
+            invocationId: run.invocationId,
+            turnId: run.turnId,
+            status: 'completed',
+          }),
+        ];
+      },
+    },
+  });
+
+  assert.deepEqual(plan.copyTurnIds, ['turn-parent', 'turn-child', 'turn-grandchild']);
 });
 
 test('conversation copy rejects a retained AgentRun without RuntimeEvent facts', async () => {
@@ -421,9 +459,9 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
     let sequence = 0;
 
     await assert.rejects(
-      () =>
+      async () =>
         cloneConversationRuntimeLedger({
-          source,
+          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
@@ -572,8 +610,8 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
       runStore,
       runtimeEventStore,
     }).getSessionView('session-source');
-    const copied = await cloneConversationRuntimeLedger({
-      source,
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
@@ -586,12 +624,6 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
       runtimeEventStore,
       newId: () => crypto.randomUUID(),
     });
-    const eventIds = new Map(
-      copied.runtimeEventIdMap.map(({ sourceRuntimeEventId, targetRuntimeEventId }) => [
-        sourceRuntimeEventId,
-        targetRuntimeEventId,
-      ]),
-    );
     const [targetRun] = await runStore.listSessionRuns('session-target');
     assert.ok(targetRun);
     assert.ok(targetRun.invocationId);
@@ -609,8 +641,20 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
     const reconcile = targetEvents.find(
       (event) => event.actions?.toolRecovery?.kind === 'maka.tool.reconcile_result',
     )?.actions?.toolRecovery;
-    const decision = targetEvents.find((event) => event.id === eventIds.get('event-decision'))
-      ?.actions?.toolRecovery;
+    const decisionEvent = targetEvents.find(
+      (event) => event.actions?.toolRecovery?.kind === 'maka.tool.recovery_decision',
+    );
+    const decision = decisionEvent?.actions?.toolRecovery;
+    const callEvent = targetEvents.find((event) => event.content?.kind === 'function_call');
+    const dispatchEvent = targetEvents.find((event) => event.actions?.toolDispatch);
+    const reconcileEvent = targetEvents.find(
+      (event) => event.actions?.toolRecovery?.kind === 'maka.tool.reconcile_result',
+    );
+    const outcomeEvent = targetEvents.find((event) => event.content?.kind === 'function_response');
+    assert.ok(callEvent);
+    assert.ok(dispatchEvent);
+    assert.ok(reconcileEvent);
+    assert.ok(outcomeEvent);
     assert.equal(dispatch?.operationId, targetOperationId);
     assert.equal(reconcile?.payload.operationId, targetOperationId);
     assert.equal(decision?.kind, 'maka.tool.recovery_decision');
@@ -621,13 +665,13 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
     if (decision.payload.disposition !== 'completed') {
       assert.fail('Copied recovery decision must be completed');
     }
-    assert.equal(decision.payload.outcomeEventId, eventIds.get('event-outcome'));
-    assert.deepEqual(
-      decision.payload.evidenceEventIds,
-      ['event-call', 'event-dispatch', 'event-reconcile', 'event-outcome'].map((eventId) =>
-        eventIds.get(eventId),
-      ),
-    );
+    assert.equal(decision.payload.outcomeEventId, outcomeEvent.id);
+    assert.deepEqual(decision.payload.evidenceEventIds, [
+      callEvent.id,
+      dispatchEvent.id,
+      reconcileEvent.id,
+      outcomeEvent.id,
+    ]);
     assert.equal(decision.payload.operationId, targetOperationId);
     assert.ok(
       targetEvents
@@ -693,9 +737,9 @@ test('conversation copy validates operational events before persisting target le
     }).getSessionView('session-source');
 
     await assert.rejects(
-      () =>
+      async () =>
         cloneConversationRuntimeLedger({
-          source,
+          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
@@ -932,9 +976,9 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       runtimeEventStore,
     }).getSessionView('session-source');
     await assert.rejects(
-      () =>
+      async () =>
         cloneConversationRuntimeLedger({
-          source,
+          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
           copiedMessages: source.messages,
           referenceMap: {
             mode: 'exact',
@@ -963,7 +1007,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     let nextId = 0;
 
     const copied = await cloneConversationRuntimeLedger({
-      source,
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
@@ -1083,7 +1127,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
   }
 });
 
-test('conversation copy rebuilds a later inline checkpoint over the retained cross-run prefix', async () => {
+test('conversation copy rebuilds an inline checkpoint without legacy child events in its prefix', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-checkpoint-copy-'));
   try {
     const runStore = createAgentRunStore(root);
@@ -1103,7 +1147,18 @@ test('conversation copy rebuilds a later inline checkpoint over the retained cro
       updatedAt: 5,
       completedAt: 5,
     });
+    const childRun = agentRunHeader({
+      runId: 'run-child',
+      invocationId: 'invocation-child',
+      turnId: 'turn-child',
+      parentRunId: 'run-1',
+      cwd: root,
+      createdAt: 2.1,
+      updatedAt: 2.9,
+      completedAt: 2.9,
+    });
     await runStore.createRun(firstRun);
+    await runStore.createRun(childRun);
     await runStore.createRun(secondRun);
     const firstEvents = [
       runtimeEvent({
@@ -1148,7 +1203,29 @@ test('conversation copy rebuilds a later inline checkpoint over the retained cro
         status: 'completed',
       }),
     ];
-    for (const event of [...firstEvents, ...secondEvents]) {
+    const childEvents = [
+      runtimeEvent({
+        id: 'event-child-output',
+        invocationId: 'invocation-child',
+        runId: 'run-child',
+        turnId: 'turn-child',
+        ts: 2.5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'legacy child output' },
+      }),
+      runtimeEvent({
+        id: 'event-child-terminal',
+        invocationId: 'invocation-child',
+        runId: 'run-child',
+        turnId: 'turn-child',
+        ts: 2.9,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      }),
+    ];
+    for (const event of [...firstEvents, ...childEvents, ...secondEvents]) {
       await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
     const sourceEvents = [...firstEvents, ...secondEvents];
@@ -1180,7 +1257,7 @@ test('conversation copy rebuilds a later inline checkpoint over the retained cro
     let sequence = 0;
 
     await cloneConversationRuntimeLedger({
-      source,
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
@@ -1200,6 +1277,10 @@ test('conversation copy rebuilds a later inline checkpoint over the retained cro
         targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
       )
     ).flat();
+    const targetInlineRunIds = new Set(
+      targetRuns.filter(isSessionInlineRun).map((run) => run.runId),
+    );
+    assert.ok(targetRuns.some((run) => !isSessionInlineRun(run)));
     const projectedCheckpoint = await runStore.readEventProjection?.(
       'session-target',
       'history_compact_checkpoint_recorded',
@@ -1211,7 +1292,9 @@ test('conversation copy rebuilds a later inline checkpoint over the retained cro
     assert.equal(
       matchHistoryCompactCheckpointPrefix(
         projectedCheckpoint.data.checkpoint,
-        targetEvents.filter(isHistoryCompactContentEvent),
+        targetEvents.filter(
+          (event) => targetInlineRunIds.has(event.runId) && isHistoryCompactContentEvent(event),
+        ),
       ).reason,
       undefined,
     );
@@ -1351,7 +1434,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
     let sequence = 0;
 
     const copied = await cloneConversationRuntimeLedger({
-      source,
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
       copiedMessages: source.messages,
       referenceMap: {
         mode: 'exact',
@@ -1396,6 +1479,21 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function prepareTestCopyPlan(
+  source: RuntimeReadModelSessionView,
+  copiedMessages: readonly StoredMessage[],
+  runStore: Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>,
+  runtimeEventStore: Pick<RuntimeEventStore, 'readRuntimeEvents'>,
+) {
+  return prepareConversationRuntimeLedgerCopy({
+    sourceSessionId: 'session-source',
+    sourceEvents: source.events,
+    copiedMessages,
+    runStore,
+    runtimeEventStore,
+  });
+}
 
 function runtimeEvent(overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {

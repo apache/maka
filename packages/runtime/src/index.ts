@@ -49,16 +49,14 @@ export {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
-  resolveConversationCopyTurnIds,
-  rewriteConversationCopyMessage,
+  prepareConversationRuntimeLedgerCopy,
 } from './conversation-copy.js';
 export type {
   CloneConversationRuntimeLedgerInput,
   CloneConversationRuntimeLedgerResult,
   ConversationCopyArtifactReferenceMap,
-  ConversationCopyMessageReferenceMap,
-  ConversationCopyReferenceMap,
   ConversationCopySlice,
+  ConversationRuntimeLedgerCopyPlan,
 } from './conversation-copy.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {

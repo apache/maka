@@ -632,8 +632,8 @@ async function seedSource(
     const archivedBody = JSON.stringify({
       kind: 'subagent',
       agentName: 'Worker',
-      turnId: 'archived-child-turn',
-      runId: 'archived-child-run',
+      turnId: 'archived-owned-child-turn',
+      runId: 'archived-owned-child-run',
       status: 'completed',
       permissionMode: 'ask',
       summary: 'done',
@@ -643,7 +643,7 @@ async function seedSource(
     await artifacts.create({
       id: 'archived-owned-result',
       sessionId: archivedOwnedSource.id,
-      turnId: 'archived-owned-turn',
+      turnId: 'archived-owned-child-turn',
       name: 'archived-owned-result.json',
       kind: 'file',
       content: archivedBody,
@@ -659,30 +659,114 @@ async function seedSource(
         ts: 1,
         text: 'reuse the archived result',
       },
+    ]);
+    const archivedOwnedRuns = [
+      agentRunHeader(
+        root,
+        archivedOwnedSource.id,
+        'archived-owned-parent-run',
+        'archived-owned-parent-invocation',
+        'archived-owned-turn',
+      ),
       {
-        type: 'tool_result',
-        id: 'archived-owned-tool-result',
-        turnId: 'archived-owned-turn',
-        ts: 2,
-        toolUseId: 'archived-owned-tool-call',
-        isError: false,
-        content: {
-          kind: 'json',
-          value: {
-            kind: 'maka.archived_tool_result',
-            rewriteVersion: 1,
-            artifactId: 'archived-owned-result',
-            runtimeEventId: 'archived-owned-runtime-event',
-            toolCallId: 'archived-owned-tool-call',
-            toolName: 'subagent',
-            bodySha256: archivedBodySha256,
-            originalEstimatedTokens: 20,
-            originalBytes: Buffer.byteLength(archivedBody, 'utf8'),
-            reason: 'stale_tool_result_pruned_before_compact',
+        ...agentRunHeader(
+          root,
+          archivedOwnedSource.id,
+          'archived-owned-child-run',
+          'archived-owned-child-invocation',
+          'archived-owned-child-turn',
+        ),
+        parentRunId: 'archived-owned-parent-run',
+      },
+    ];
+    for (const run of archivedOwnedRuns) await execution.agentRunStore.createRun(run);
+    const archivedOwnedRuntimeEvents = [
+      runtimeEvent(
+        archivedOwnedSource.id,
+        'archived-owned-parent-run',
+        'archived-owned-parent-invocation',
+        'archived-owned-turn',
+        {
+          id: 'archived-owned-parent-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'reuse the archived result' },
+        },
+      ),
+      runtimeEvent(
+        archivedOwnedSource.id,
+        'archived-owned-parent-run',
+        'archived-owned-parent-invocation',
+        'archived-owned-turn',
+        {
+          id: 'archived-owned-parent-terminal',
+          ts: 3,
+          status: 'completed',
+        },
+      ),
+      runtimeEvent(
+        archivedOwnedSource.id,
+        'archived-owned-child-run',
+        'archived-owned-child-invocation',
+        'archived-owned-child-turn',
+        {
+          id: 'archived-owned-child-call',
+          ts: 1.5,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'archived-owned-tool-call',
+            name: 'subagent',
+            args: { task: 'summarize' },
           },
         },
-      },
-    ]);
+      ),
+      runtimeEvent(
+        archivedOwnedSource.id,
+        'archived-owned-child-run',
+        'archived-owned-child-invocation',
+        'archived-owned-child-turn',
+        {
+          id: 'archived-owned-child-result',
+          ts: 2,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'archived-owned-tool-call',
+            name: 'subagent',
+            isError: false,
+            result: {
+              kind: 'maka.archived_tool_result',
+              rewriteVersion: 1,
+              artifactId: 'archived-owned-result',
+              runtimeEventId: 'archived-owned-child-result',
+              toolCallId: 'archived-owned-tool-call',
+              toolName: 'subagent',
+              bodySha256: archivedBodySha256,
+              originalEstimatedTokens: 20,
+              originalBytes: Buffer.byteLength(archivedBody, 'utf8'),
+              reason: 'stale_tool_result_pruned_before_compact',
+            },
+          },
+        },
+      ),
+      runtimeEvent(
+        archivedOwnedSource.id,
+        'archived-owned-child-run',
+        'archived-owned-child-invocation',
+        'archived-owned-child-turn',
+        {
+          id: 'archived-owned-child-terminal',
+          ts: 2.5,
+          status: 'completed',
+        },
+      ),
+    ];
+    for (const event of archivedOwnedRuntimeEvents) {
+      await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+    }
     await tasks.create(source.id, [{ subject: 'Retained task' }], {
       turnId: 'turn-1',
       source: 'tool',

@@ -110,6 +110,7 @@ import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run
 import {
   cloneConversationRuntimeLedger as cloneConversationLedger,
   createConversationCopySlice,
+  prepareConversationRuntimeLedgerCopy,
 } from './conversation-copy.js';
 import { firstRuntimeRepairRunId, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
@@ -4747,8 +4748,15 @@ export class SessionManager {
     copiedMessages: readonly StoredMessage[],
   ): Promise<readonly StoredMessage[]> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
+    const plan = await prepareConversationRuntimeLedgerCopy({
+      sourceSessionId,
+      sourceEvents: sourceView.events,
+      copiedMessages,
+      runStore: this.deps.runStore,
+      runtimeEventStore: this.deps.runtimeEventStore,
+    });
     const copied = await cloneConversationLedger({
-      source: sourceView,
+      plan,
       copiedMessages,
       referenceMap: {
         mode: 'preserve_external',

@@ -7,7 +7,8 @@ import {
   cloneConversationRuntimeLedger,
   createConversationCopySlice,
   isArchivedToolResultPlaceholder,
-  resolveConversationCopyTurnIds,
+  prepareConversationRuntimeLedgerCopy,
+  type ConversationRuntimeLedgerCopyPlan,
   type SessionManager,
 } from '@maka/runtime';
 import {
@@ -201,20 +202,23 @@ export class HostSessionRevisionCoordinator {
     if (!slice) {
       return copyFailure('invalid_request', 'Source turn does not exist');
     }
-    let copyTurnIds: string[];
+    let plan: ConversationRuntimeLedgerCopyPlan;
     let sessionHeaders: SessionHeader[];
     try {
-      [copyTurnIds, sessionHeaders] = await Promise.all([
-        resolveConversationCopyTurnIds(
-          this.#stores.agentRunStore,
-          input.sourceSessionId,
-          slice.turnIds,
-        ),
+      [plan, sessionHeaders] = await Promise.all([
+        prepareConversationRuntimeLedgerCopy({
+          sourceSessionId: input.sourceSessionId,
+          sourceEvents: source.events,
+          copiedMessages: slice.messages,
+          runStore: this.#stores.agentRunStore,
+          runtimeEventStore: this.#stores.runtimeEventStore,
+        }),
         this.#stores.sessionStore.listHeaders(),
       ]);
     } catch {
       return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
     }
+    const copyTurnIds = plan.copyTurnIds;
     if (
       hasLinkedChildSessionReference(slice.messages) ||
       hasLinkedChildSessionMetadata(sessionHeaders, input.sourceSessionId, copyTurnIds)
@@ -226,7 +230,7 @@ export class HostSessionRevisionCoordinator {
     }
     const archivePreflight = await this.#preflightArchivedToolResults(
       input.sourceSessionId,
-      source.events,
+      plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       slice.messages,
       copyTurnIds,
     );
@@ -290,9 +294,8 @@ export class HostSessionRevisionCoordinator {
         relativePaths: artifactCopy.relativePaths,
       };
       const runtimeCopy = await cloneConversationRuntimeLedger({
-        source,
+        plan,
         copiedMessages: slice.messages,
-        copyTurnIds,
         referenceMap: references,
         runStore: this.#stores.agentRunStore,
         runtimeEventStore: this.#stores.runtimeEventStore,
