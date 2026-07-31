@@ -11,6 +11,16 @@ const projectConfig = join(process.cwd(), 'tsconfig.json');
 const compilerSnapshot = compilerApi.updateSnapshot({ openProjects: [projectConfig] });
 const compilerProject = loadCompilerProject();
 const allowedAuthorityLocalModules = new Set(['marker-file.ts', 'root-authority.ts']);
+const sessionBundleCodecEntrypoints = [
+  join(sourceRoot, 'session-bundle-contract.ts'),
+  join(sourceRoot, 'session-bundle-manifest.ts'),
+  join(sourceRoot, 'session-bundle-canonical-tree.ts'),
+];
+const allowedSessionBundleCodecLocalModules = new Set([
+  'session-bundle-contract.ts',
+  'session-bundle-manifest.ts',
+  'session-bundle-canonical-tree.ts',
+]);
 const allowedAuthorityExternalImports = new Set([
   'fs-native-extensions',
   'node:crypto',
@@ -19,6 +29,7 @@ const allowedAuthorityExternalImports = new Set([
   'node:os',
   'node:path',
 ]);
+const allowedSessionBundleCodecExternalImports = new Set(['node:buffer', 'node:crypto']);
 
 async function dependencyScannerFixture(target: string): Promise<void> {
   await import(`node:url`);
@@ -61,6 +72,28 @@ test('root authority cannot transitively reach domain Stores or Runtime composit
       }
       if (allowedAuthorityExternalImports.has(specifier)) continue;
       violations.push(`${localPath}: ${specifier}`);
+    }
+  }
+  assert.deepEqual(violations, []);
+});
+
+test('Session Bundle codec primitives cannot transitively reach Maka state semantics', () => {
+  const violations: string[] = [];
+  for (const entrypoint of sessionBundleCodecEntrypoints) {
+    for (const path of reachableModules(entrypoint)) {
+      const localPath = relative(sourceRoot, path);
+      if (!allowedSessionBundleCodecLocalModules.has(localPath)) {
+        violations.push(`Session Bundle codec reaches ${localPath}`);
+      }
+      for (const specifier of moduleSpecifiers(path)) {
+        if (isRelativeSpecifier(specifier)) {
+          const target = sourcePathForSpecifier(path, specifier);
+          if (!isInside(sourceRoot, target)) violations.push(`${localPath}: ${specifier}`);
+          continue;
+        }
+        if (allowedSessionBundleCodecExternalImports.has(specifier)) continue;
+        violations.push(`${localPath}: ${specifier}`);
+      }
     }
   }
   assert.deepEqual(violations, []);

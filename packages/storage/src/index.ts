@@ -59,3 +59,6 @@ export * from './project-catalog.js';
 export * from './git-worktree-child-executor.js';
 export * from './project-session-migration.js';
 export * from './session-bundle-policy.js';
+export * from './session-bundle-contract.js';
+export * from './session-bundle-manifest.js';
+export * from './session-bundle-canonical-tree.js';
