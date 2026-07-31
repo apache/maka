@@ -109,6 +109,16 @@ export function PlanReminderPanel(props: {
   const refreshPendingRef = useRef(false);
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const pendingReminderMenuIntentRef = useRef<(() => void) | null>(null);
+  // A reminder row's menu trigger button, keyed by reminder id. When a
+  // deferred menu intent (edit/duplicate/clear-runs/delete) opens a dialog
+  // after the menu closes, Astryx Dialog restores focus on Esc to whatever
+  // was `document.activeElement` when it opened. The menu's own close-focus-
+  // return and the deferred dialog open sit two `requestAnimationFrame`s
+  // apart, so on a loaded runner the captured element can land on <body>
+  // instead of the trigger and Esc strands focus away from the row. The
+  // deferred intent re-focuses the trigger right before opening the dialog,
+  // making that capture deterministic. See plan-reminders E2E.
+  const reminderMenuTriggerRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   // Issue #1044: all create/edit form fields + submit moved into
   // PlanReminderFormDialog. The panel owns its open state and seed;
   // `formNonce` remounts a closed form session before Astryx opens it.
@@ -234,7 +244,13 @@ export function PlanReminderPanel(props: {
     pendingReminderMenuIntentRef.current = null;
     if (intent) {
       window.requestAnimationFrame(() => {
-        if (planReminderMountedRef.current) intent();
+        if (!planReminderMountedRef.current) return;
+        // Re-establish the trigger as the active element before the intent
+        // opens a dialog, so the dialog captures and later restores focus to
+        // the row's menu trigger instead of whatever drifted to <body> during
+        // the menu-close → deferred-open window.
+        reminderMenuTriggerRefs.current.get(reminderId)?.focus();
+        intent();
       });
     }
   }
@@ -494,6 +510,10 @@ export function PlanReminderPanel(props: {
                             isIconOnly: true,
                             variant: 'ghost',
                             size: 'sm',
+                            ref: (el) => {
+                              if (el) reminderMenuTriggerRefs.current.set(reminder.id, el);
+                              else reminderMenuTriggerRefs.current.delete(reminder.id);
+                            },
                           }}
                           className="maka-plan-card-menu"
                         >
