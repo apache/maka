@@ -489,12 +489,6 @@ describe('radius token governance (#406 gap 4)', () => {
       '.maka-skeleton-card': '--radius-surface',
       '.composer .maka-composer-inner': '--radius-modal',
       '.settingsModal': '--radius-modal',
-      '.maka-palette-input-wrap': '--radius-control',
-      // The search modal's input is the structural twin of the palette's:
-      // same native shell, same position inside the same 12px surface. It spent
-      // its life at 4px on a concentric derivation that never applied (see
-      // radius-nesting-contract). Pinned here so the two stay together.
-      '.maka-search-modal-input-row': '--radius-control',
       // .settingsPermissionIntro / .settingsHealthIntro retired (polish wave
       // Item 5): the second gray-banner PageHeader on each page was converged
       // onto the SectionHeader primitive, which carries no page-level radius.

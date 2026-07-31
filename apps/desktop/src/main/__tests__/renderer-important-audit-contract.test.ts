@@ -16,11 +16,6 @@ const ALLOWLIST: ImportantAllowance[] = [
     reason: 'a11y hidden content utility',
   },
   {
-    fileSuffix: 'apps/desktop/src/renderer/styles/palette.css',
-    anchor: '.maka-palette-input-wrap input:focus',
-    reason: 'a11y focus reset — palette input uses outline ring, suppress inherited box-shadow',
-  },
-  {
     fileSuffix: 'apps/desktop/src/renderer/styles/base.css',
     anchor: '[data-maka-reduced-motion="true"] *',
     reason: 'reduced-motion smoke/a11y override',

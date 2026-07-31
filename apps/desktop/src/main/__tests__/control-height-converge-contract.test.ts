@@ -97,9 +97,8 @@ const CONTROL_HEIGHT: ControlHeightCheck[] = [
   { selector: '.settingsNavItem', props: ['height', 'min-height'], token: '--h-control-lg' },
   { selector: '.modelPickerOption', props: ['min-height'], token: '--h-control-lg' },
   { selector: '.maka-model-switcher-trigger', props: ['height'], token: '--h-control-sm' },
-  // chat-header / palette controls
+  // chat controls
   { selector: '.maka-chat-jump-bottom', props: ['width', 'height'], token: '--h-control-md' },
-  { selector: '.maka-palette-input-wrap', props: ['min-height'], token: '--h-control-xl' },
 ];
 
 /** Values that are always allowed (not a control-height beat). `100%`

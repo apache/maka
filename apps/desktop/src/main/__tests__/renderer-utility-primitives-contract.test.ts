@@ -122,22 +122,14 @@ describe('renderer utility surfaces use shared UI primitives', () => {
   it('keeps command palette search and rows on shared primitives', async () => {
     const source = await readFile(join(process.cwd(), 'src/renderer/command-palette.tsx'), 'utf8');
 
-    assert.match(source, /import \{ Autocomplete \} from '@base-ui\/react\/autocomplete'/, 'CommandPalette must consume Base UI Autocomplete for the result list (#520 PR8)');
-    assert.doesNotMatch(source, /\bInputGroup(?:Input|Addon)?\b/, 'Command palette must not restore the retired grouped-input seam');
-    assert.doesNotMatch(source, /<button\b/, 'Command palette rows must use shared Button');
+    assert.match(source, /CommandPalette as AstryxCommandPalette/);
+    assert.match(source, /<AstryxCommandPalette[\s\S]*searchSource=\{searchSource\}/);
+    assert.match(source, /<CommandPaletteInput[\s\S]*label=\{copy\.searchLabel\}/);
+    assert.match(source, /<CommandPaletteFooter>/);
+    assert.doesNotMatch(source, /@base-ui\/react\/autocomplete/);
+    assert.doesNotMatch(source, /\bInputGroup(?:Input|Addon)?\b/);
+    assert.doesNotMatch(source, /<button\b|<input\b/);
     assert.doesNotMatch(source, /<kbd\b/, 'Command palette shortcut glyphs must use shared primitive Kbd');
-    assert.match(source, /<div[\s\S]*className="maka-palette-input-wrap"[\s\S]*aria-label=\{copy\.searchLabel\}[\s\S]*onMouseDown=\{\(event\) => \{/);
-    assert.match(source, /<Autocomplete\.Input[\s\S]*render=\{[\s\S]*<input[\s\S]*className="maka-palette-input"/);
-    // The search affordance may lead the field. Shortcut hints stay in the
-    // footer, and the close action stays outside the input shell so neither
-    // can cover the other's hit target.
-    assert.match(source, /<span className="maka-palette-search-icon"[\s\S]*?<Search \/>[\s\S]*?<\/span>/);
-    assert.match(
-      source,
-      /<div className="maka-palette-header">[\s\S]*?<div[\s\S]*?className="maka-palette-input-wrap"[\s\S]*?<\/div>[\s\S]*?<IconButton[\s\S]*?label=\{copy\.closeLabel\}/,
-      'Palette header must place the close action after the search input shell',
-    );
-    assert.match(source, /<Autocomplete.Item[\s\S]*className="maka-palette-item"/, 'Command palette rows must be Autocomplete.Item (#520 PR8)');
     assert.match(source, /<KbdGroup>[\s\S]*<Kbd>↑<\/Kbd>[\s\S]*<Kbd>↓<\/Kbd>/);
     assert.doesNotMatch(source, /PALETTE_DELIM/, 'Palette footer shortcut groups should be separated by spacing, not dots');
   });
@@ -195,15 +187,16 @@ describe('renderer utility surfaces use shared UI primitives', () => {
     assert.doesNotMatch(header, /<Button|<button|<X\b/, 'Astryx must own the header close affordance');
     assert.match(header, /export function DialogHeader/, 'DialogHeader must be exported');
 
-    // Both titled modals import + render the shared DialogHeader.
+    // Titled hand-composed modals use the shared header.
     const keyboardHelp = await readFile(join(process.cwd(), 'src/renderer/keyboard-help.tsx'), 'utf8');
     assert.match(keyboardHelp, /import \{[^}]*\bDialogHeader\b[^}]*\} from '@maka\/ui';/);
     assert.match(keyboardHelp, /<DialogHeader\b/);
 
+    // Search is a complete Astryx CommandPalette, not a hand-composed Dialog.
     const searchModal = await readFile(join(repoRoot, 'packages/ui/src/search-modal.tsx'), 'utf8');
-    assert.match(searchModal, /import \{ DialogHeader \} from '\.\/primitives\/dialog-header\.js';/);
-    assert.match(searchModal, /<DialogHeader[\s\S]*title=\{copy\.title\}[\s\S]*onClose=/);
-    // The old ad-hoc header language is gone.
+    assert.match(searchModal, /CommandPalette as AstryxCommandPalette/);
+    assert.match(searchModal, /<AstryxCommandPalette\b/);
+    assert.doesNotMatch(searchModal, /DialogHeader|DialogContent|DialogRoot/);
     assert.doesNotMatch(searchModal, /maka-search-modal-header/, 'Search modal must drop the ad-hoc header class');
     assert.doesNotMatch(searchModal, /maka-search-modal-close/, 'Search modal must drop the ad-hoc close class');
   });

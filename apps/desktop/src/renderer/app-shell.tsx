@@ -951,21 +951,12 @@ function AppShellContent({
   const {
     searchModalOpen,
     setSearchModalOpen,
-    searchModalInitialQuery,
-    setSearchModalInitialQuery,
     searchScrollTarget,
     setSearchScrollTarget,
     closeSearchModal,
     searchModalDeps,
     searchModalOnNavigate,
   } = useShellSearch({ openSessionInChatRef });
-  const paletteOnSelectSession = useCallback((sessionId: string, turnId?: string) => {
-    openSessionInChatRef.current(sessionId, turnId);
-  }, []);
-  const paletteOnOpenSearchModal = useCallback((query: string) => {
-    setSearchModalInitialQuery(query);
-    setSearchModalOpen(true);
-  }, []);
   /** 技能页 使用: jump to the chat view and seed the composer with a skill
    *  invocation. Same human-in-the-loop rule as maka://compose — we never
    *  auto-send; the user finishes the sentence and presses Enter.
@@ -2073,7 +2064,6 @@ function AppShellContent({
           <AppShellTopbarActions
             sidebarCollapsed={sessionListCollapsed}
             onOpenSearchModal={() => {
-              setSearchModalInitialQuery('');
               setSearchModalOpen(true);
             }}
             onCollapseSidebar={() => setSessionListCollapsed(true)}
@@ -2620,14 +2610,11 @@ function AppShellContent({
         helpOpen={helpOpen}
         closeHelp={closeHelp}
         searchModalOpen={searchModalOpen}
-        searchModalInitialQuery={searchModalInitialQuery}
         closeSearchModal={closeSearchModal}
         searchModalDeps={searchModalDeps}
         searchModalOnNavigate={searchModalOnNavigate}
         paletteOpen={paletteOpen}
         closePalette={closePalette}
-        paletteOnSelectSession={paletteOnSelectSession}
-        paletteOnOpenSearchModal={paletteOnOpenSearchModal}
         commandOptions={commandOptions}
       />
       </div>

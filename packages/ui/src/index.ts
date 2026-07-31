@@ -226,4 +226,12 @@ export {
   type ISODateTimeString,
   FormLayout,
   type FormLayoutProps,
+  CommandPalette,
+  type CommandPaletteProps,
+  CommandPaletteInput,
+  type CommandPaletteInputProps,
+  CommandPaletteFooter,
+  type CommandPaletteFooterProps,
+  type SearchSource,
+  type SearchableItem,
 } from '@astryxdesign/core';

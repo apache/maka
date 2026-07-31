@@ -11,20 +11,6 @@
  * concentric with; a child whose horizontal and vertical insets differ
  * cannot share a center with anything.
  *
- * This contract used to assert the opposite of its own rule. It pinned
- * `.maka-search-modal-input-row` to `calc(var(--radius-modal) - 8px)`
- * = 4px, described as "an input inside a 12px modal shell with an 8px
- * inset", and warned that dropping it to a tier "would read as too
- * round against the shell corners". Measured in the live renderer, that
- * row is the middle of a 3-row grid — 57px below the shell's top edge,
- * 12px in from its sides, adjacent to no shell corner at all. The 8px
- * was the vertical margin to the header band, an axis that has nothing
- * to do with the corner. Its structural twin in the command palette
- * (.maka-palette-input-wrap, same primitive, same position, same 12px
- * shell) used the control tier the whole time, so the two searches
- * differed by 50% in roundness. The assertion did not protect a
- * convention; it froze a defect and made the fix fail CI.
- *
  * The genuinely concentric site in this codebase is the segmented
  * control: a track on --radius-surface with a uniform 2px pad, whose
  * first and last buttons hug its corners — 8 − 2 = 6 = --radius-control.

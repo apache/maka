@@ -1,8 +1,7 @@
 /**
  * Shared types for the Command Palette. Pulled out of
- * `command-palette.tsx` so non-JSX modules
- * (`command-palette-content-search.ts`) can consume them under the
- * main-process tsconfig that does NOT compile JSX.
+ * `command-palette.tsx` so non-JSX consumers can import them under the
+ * main-process tsconfig that does not compile JSX.
  */
 
 import type { LucideIcon } from '@maka/ui/icons';

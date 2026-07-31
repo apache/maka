@@ -12,7 +12,6 @@ import {
 } from '@maka/ui/icons';
 import { CommandPalette } from '../src/renderer/command-palette';
 import type { Command } from '../src/renderer/command-palette-types';
-import type { UseThreadSearchDeps } from '../src/renderer/use-thread-search';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -121,20 +120,6 @@ const paletteCommands: Command[] = [
   },
 ];
 
-const idlePaletteSearchDeps = {
-  runSearch: async () => [],
-} satisfies UseThreadSearchDeps;
-
-const loadingPaletteSearchDeps = {
-  runSearch: () => new Promise<SearchResponse>(() => undefined),
-} satisfies UseThreadSearchDeps;
-
-function paletteSearchDeps(response: SearchResponse): UseThreadSearchDeps {
-  return {
-    runSearch: async () => response,
-  };
-}
-
 const loadingSearchModalDeps = {
   searchThread: () => new Promise<SearchResponse>(() => undefined),
 } satisfies SearchModalDeps;
@@ -145,10 +130,7 @@ function searchModalDeps(response: SearchResponse): SearchModalDeps {
   };
 }
 
-function CommandPaletteFrame(props: {
-  commands: Command[];
-  threadSearchDeps?: UseThreadSearchDeps;
-}) {
+function CommandPaletteFrame(props: { commands: Command[] }) {
   return (
     <div
       style={{
@@ -160,8 +142,6 @@ function CommandPaletteFrame(props: {
       <CommandPalette
         commands={props.commands}
         onClose={noop}
-        onSelectSession={noopNavigate}
-        threadSearchDeps={props.threadSearchDeps ?? idlePaletteSearchDeps}
       />
     </div>
   );
@@ -206,7 +186,9 @@ async function enterQuery(canvasElement: HTMLElement, selector: string, value: s
 }
 
 async function pressPaletteKey(canvasElement: HTMLElement, key: string) {
-  const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>('.maka-palette-input');
+  const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>(
+    '[role="dialog"] input',
+  );
   if (!input) return;
   input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   await wait(0);
@@ -233,17 +215,9 @@ export const CommandPaletteNoMatch: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-palette-input', 'zzzzz-no-such-command');
+    await enterQuery(canvasElement, '[role="dialog"] input', 'zzzzz-no-such-command');
   },
 };
-
-// A `CommandPaletteDisabledCommand` story used to sit here, hand-building a
-// `thread-search:blocked` row into the base command list and rendering it with
-// no query. `buildCommandList` never emits a disabled command; the only
-// disabled row in the product comes from `buildContentSearchCommands`, which
-// runs only after a query of at least two code points. The reachable version
-// of this state is `CommandPaletteContentSearchBlocked` below, driven through
-// the real builder.
 
 // Real path: ⌘K then ↓↓ — the keyboard-driven selection ring, which the mouse path never
 // shows.
@@ -256,68 +230,6 @@ export const CommandPaletteKeyboardFocusedSelection: Story = {
   play: async ({ canvasElement }) => {
     await pressPaletteKey(canvasElement, 'ArrowDown');
     await pressPaletteKey(canvasElement, 'ArrowDown');
-  },
-};
-
-// Real path: ⌘K → type a query → the palette also searches conversation content; this is
-// the in-flight state.
-export const CommandPaletteContentSearchLoading: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={[]}
-      threadSearchDeps={loadingPaletteSearchDeps}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-palette-input', 'benchmark');
-  },
-};
-
-// Real path: same, once content matches come back and merge below the command groups.
-export const CommandPaletteContentSearchResults: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={[]}
-      threadSearchDeps={paletteSearchDeps(threadResults)}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-palette-input', 'benchmark');
-  },
-};
-
-// Real path: same, when the content-search provider fails.
-export const CommandPaletteContentSearchError: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={[]}
-      threadSearchDeps={paletteSearchDeps({
-        ok: false,
-        reason: 'provider_error',
-        message: '搜索服务暂时不可用，请稍后重试。',
-      })}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-palette-input', 'benchmark');
-  },
-};
-
-// Real path: same, with incognito on — Maka refuses to read local history rather than
-// returning nothing.
-export const CommandPaletteContentSearchBlocked: Story = {
-  render: () => (
-    <CommandPaletteFrame
-      commands={[]}
-      threadSearchDeps={paletteSearchDeps({
-        ok: false,
-        reason: 'incognito_active',
-        message: '隐私模式打开时不会读取本地历史内容。',
-      })}
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-palette-input', 'benchmark');
   },
 };
 
@@ -339,7 +251,7 @@ export const SearchModalLoading: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-search-modal-input', 'benchmark');
+    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
   },
 };
 
@@ -351,7 +263,7 @@ export const SearchModalResults: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-search-modal-input', 'benchmark');
+    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
   },
 };
 
@@ -363,7 +275,7 @@ export const SearchModalNoResults: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-search-modal-input', 'unmatched');
+    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'unmatched');
   },
 };
 
@@ -379,7 +291,7 @@ export const SearchModalError: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-search-modal-input', 'benchmark');
+    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
   },
 };
 
@@ -396,6 +308,6 @@ export const SearchModalBlocked: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    await enterQuery(canvasElement, '.maka-search-modal-input', 'benchmark');
+    await enterQuery(canvasElement, '[data-maka-contract="search-modal"] input', 'benchmark');
   },
 };
