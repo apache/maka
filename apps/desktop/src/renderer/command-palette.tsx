@@ -20,6 +20,7 @@ import {
   EmptyTitle,
   Kbd,
   KbdGroup,
+  AstryxLocaleProvider,
   type SearchSource,
   type SearchableItem,
   useUiLocale,
@@ -75,6 +76,12 @@ export function CommandPalette(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellCopy(locale).commandPalette;
+  const astryxOverrides = useMemo(
+    () => ({
+      '@astryx.commandPalette.list.label': copy.resultsLabel,
+    }),
+    [copy.resultsLabel],
+  );
   type PaletteItem = SearchableItem<{
     command: Command;
     group: string;
@@ -121,72 +128,74 @@ export function CommandPalette(props: {
   }
 
   return (
-    <AstryxCommandPalette
-      isOpen
-      onOpenChange={(isOpen) => {
-        if (!isOpen) props.onClose();
-      }}
-      searchSource={searchSource}
-      label={copy.label}
-      width={584}
-      maxHeight="min(620px, 68vh)"
-      input={(
-        <CommandPaletteInput
-          placeholder={copy.placeholder}
-          label={copy.searchLabel}
-        />
-      )}
-      emptySearchText={(
-        <Empty className="maka-palette-empty py-8 md:py-10 gap-3">
-          <EmptyHeader>
-            <EmptyTitle>{copy.emptyTitle}</EmptyTitle>
-            <EmptyDescription>{copy.emptyDescription}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-      emptyBootstrapText={copy.emptyDescription}
-      onValueChange={commit}
-      renderItem={(item) => {
-        const command = item.auxiliaryData?.command;
-        if (!command) return item.label;
-        return (
-          <>
-            <span className="maka-palette-icon" aria-hidden="true">
-              <command.Icon size={15} />
+    <AstryxLocaleProvider overrides={astryxOverrides}>
+      <AstryxCommandPalette
+        isOpen
+        onOpenChange={(isOpen) => {
+          if (!isOpen) props.onClose();
+        }}
+        searchSource={searchSource}
+        label={copy.label}
+        width={584}
+        maxHeight="min(620px, 68vh)"
+        input={(
+          <CommandPaletteInput
+            placeholder={copy.placeholder}
+            label={copy.searchLabel}
+          />
+        )}
+        emptySearchText={(
+          <Empty className="maka-palette-empty py-8 md:py-10 gap-3">
+            <EmptyHeader>
+              <EmptyTitle>{copy.emptyTitle}</EmptyTitle>
+              <EmptyDescription>{copy.emptyDescription}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+        emptyBootstrapText={copy.emptyDescription}
+        onValueChange={commit}
+        renderItem={(item) => {
+          const command = item.auxiliaryData?.command;
+          if (!command) return item.label;
+          return (
+            <>
+              <span className="maka-palette-icon" aria-hidden="true">
+                <command.Icon size={15} />
+              </span>
+              <span className="maka-palette-label">{command.label}</span>
+              {command.hint ? (
+                <span className="maka-palette-hint">
+                  {command.hint}
+                  <ChevronRight size={12} aria-hidden="true" />
+                </span>
+              ) : (
+                <span className="maka-palette-hint maka-palette-cursor" aria-hidden="true">
+                  <CornerDownLeft size={12} />
+                </span>
+              )}
+            </>
+          );
+        }}
+        footer={(
+          <CommandPaletteFooter>
+            <span className="maka-palette-footer-hint">
+              <KbdGroup>
+                <Kbd>↑</Kbd>
+                <Kbd>↓</Kbd>
+              </KbdGroup>
+              <span>{copy.selectHint}</span>
             </span>
-            <span className="maka-palette-label">{command.label}</span>
-            {command.hint ? (
-              <span className="maka-palette-hint">
-                {command.hint}
-                <ChevronRight size={12} aria-hidden="true" />
-              </span>
-            ) : (
-              <span className="maka-palette-hint maka-palette-cursor" aria-hidden="true">
-                <CornerDownLeft size={12} />
-              </span>
-            )}
-          </>
-        );
-      }}
-      footer={(
-        <CommandPaletteFooter>
-          <span className="maka-palette-footer-hint">
-            <KbdGroup>
-              <Kbd>↑</Kbd>
-              <Kbd>↓</Kbd>
-            </KbdGroup>
-            <span>{copy.selectHint}</span>
-          </span>
-          <span className="maka-palette-footer-hint">
-            <Kbd>↵</Kbd>
-            <span>{copy.runHint}</span>
-          </span>
-          <span className="maka-palette-footer-hint">
-            <Kbd>Esc</Kbd>
-            <span>{copy.closeHint}</span>
-          </span>
-        </CommandPaletteFooter>
-      )}
-    />
+            <span className="maka-palette-footer-hint">
+              <Kbd>↵</Kbd>
+              <span>{copy.runHint}</span>
+            </span>
+            <span className="maka-palette-footer-hint">
+              <Kbd>Esc</Kbd>
+              <span>{copy.closeHint}</span>
+            </span>
+          </CommandPaletteFooter>
+        )}
+      />
+    </AstryxLocaleProvider>
   );
 }

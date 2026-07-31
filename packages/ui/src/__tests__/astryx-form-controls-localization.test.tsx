@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
-  NumberInput,
-} from '@astryxdesign/core';
+import { CommandPaletteList, NumberInput } from '@astryxdesign/core';
 import {
   AstryxLocaleProvider,
   astryxMessageOverrides,
@@ -55,5 +53,30 @@ describe('Astryx form-control localization', () => {
 
     assert.match(markup, /aria-label="清除端口"/);
     assert.doesNotMatch(markup, /Clear /);
+  });
+
+  it('merges a product-scoped label with the shared Astryx catalog', () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="zh">
+        <AstryxLocaleProvider
+          overrides={{
+            '@astryx.commandPalette.list.label': '搜索结果',
+          }}
+        >
+          <CommandPaletteList>
+            <NumberInput
+              label="端口"
+              value={3939}
+              onChange={() => {}}
+              hasClear
+            />
+          </CommandPaletteList>
+        </AstryxLocaleProvider>
+      </LocaleProvider>,
+    );
+
+    assert.match(markup, /role="listbox" aria-label="搜索结果"/);
+    assert.match(markup, /aria-label="清除端口"/);
+    assert.doesNotMatch(markup, /Commands|Clear /);
   });
 });

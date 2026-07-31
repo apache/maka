@@ -16,6 +16,7 @@ import {
   type SearchSource,
   type SearchableItem,
 } from '@astryxdesign/core';
+import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { useUiLocale } from './locale-context.js';
 
@@ -60,6 +61,12 @@ export function SearchModal(props: {
 }) {
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).search;
+  const astryxOverrides = useMemo(
+    () => ({
+      '@astryx.commandPalette.list.label': copy.resultsLabel,
+    }),
+    [copy.resultsLabel],
+  );
   const [error, setError] = useState<{
     reason: SearchErrorReason;
     message: string;
@@ -139,62 +146,64 @@ export function SearchModal(props: {
     : copy.empty;
 
   return (
-    <AstryxCommandPalette
-      isOpen
-      onOpenChange={(isOpen) => {
-        if (!isOpen) props.onClose();
-      }}
-      searchSource={searchSource}
-      label={copy.title}
-      width={560}
-      maxHeight="64vh"
-      data-maka-contract="search-modal"
-      input={(
-        <CommandPaletteInput
-          placeholder={copy.placeholder}
-          label={copy.conversationsLabel}
-        />
-      )}
-      footer={(
-        <CommandPaletteFooter>
-          {copy.resultsLabel}
-        </CommandPaletteFooter>
-      )}
-      emptyBootstrapText={
-        props.deps?.searchThread ? copy.introduction : copy.unavailable
-      }
-      emptySearchText={emptySearchText}
-      onValueChange={(itemId) => {
-        const result =
-          itemByIdRef.current.get(itemId)?.auxiliaryData?.result;
-        if (result?.target?.kind !== 'thread') return;
-        props.onNavigateToSession?.(
-          result.target.sessionId,
-          result.target.turnId,
-        );
-      }}
-      renderItem={(item) => {
-        const result = item.auxiliaryData?.result;
-        if (!result) return item.label;
-        return (
-          <div className="maka-search-modal-result">
-            <div className="maka-search-modal-result-title">
-              {result.title}
+    <AstryxLocaleProvider overrides={astryxOverrides}>
+      <AstryxCommandPalette
+        isOpen
+        onOpenChange={(isOpen) => {
+          if (!isOpen) props.onClose();
+        }}
+        searchSource={searchSource}
+        label={copy.title}
+        width={560}
+        maxHeight="64vh"
+        data-maka-contract="search-modal"
+        input={(
+          <CommandPaletteInput
+            placeholder={copy.placeholder}
+            label={copy.conversationsLabel}
+          />
+        )}
+        footer={(
+          <CommandPaletteFooter>
+            {copy.resultsLabel}
+          </CommandPaletteFooter>
+        )}
+        emptyBootstrapText={
+          props.deps?.searchThread ? copy.introduction : copy.unavailable
+        }
+        emptySearchText={emptySearchText}
+        onValueChange={(itemId) => {
+          const result =
+            itemByIdRef.current.get(itemId)?.auxiliaryData?.result;
+          if (result?.target?.kind !== 'thread') return;
+          props.onNavigateToSession?.(
+            result.target.sessionId,
+            result.target.turnId,
+          );
+        }}
+        renderItem={(item) => {
+          const result = item.auxiliaryData?.result;
+          if (!result) return item.label;
+          return (
+            <div className="maka-search-modal-result">
+              <div className="maka-search-modal-result-title">
+                {result.title}
+              </div>
+              {result.summary && (
+                <div className="maka-search-modal-result-meta">
+                  {result.summary}
+                </div>
+              )}
+              {result.snippet && (
+                <div className="maka-search-modal-result-snippet">
+                  {renderSearchSnippet(result.snippet, activeQuery)}
+                </div>
+              )}
             </div>
-            {result.summary && (
-              <div className="maka-search-modal-result-meta">
-                {result.summary}
-              </div>
-            )}
-            {result.snippet && (
-              <div className="maka-search-modal-result-snippet">
-                {renderSearchSnippet(result.snippet, activeQuery)}
-              </div>
-            )}
-          </div>
-        );
-      }}
-    />
+          );
+        }}
+      />
+    </AstryxLocaleProvider>
   );
 }
 

@@ -12,8 +12,11 @@ test('command palette follows the Astryx keyboard journey and dismisses', async 
   await openPalette();
   await expect(dialog).toBeVisible();
   const input = dialog.getByRole('combobox', {
-    name: '搜索命令、设置项或会话',
+    name: '命令面板搜索',
   });
+  await expect(
+    dialog.getByRole('listbox', { name: '命令面板结果' }),
+  ).toBeVisible();
   await expect(input).toBeFocused();
   await input.fill('设置');
   await expect(dialog.getByRole('option').first()).toBeVisible();
@@ -34,7 +37,7 @@ test('new plan reminder command opens the existing form and applies a template',
 
   const palette = page.getByRole('dialog', { name: '命令面板' });
   await palette
-    .getByRole('combobox', { name: '搜索命令、设置项或会话' })
+    .getByRole('combobox', { name: '命令面板搜索' })
     .fill('新建计划提醒');
   await palette.getByRole('option', { name: /新建计划提醒/ }).click();
 

@@ -1,5 +1,6 @@
 import { useMemo, type ReactNode } from 'react';
 import { InternationalizationProvider } from '@astryxdesign/core/i18n';
+import type { Overrides } from '@astryxdesign/core/i18n';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { useUiLocale } from './locale-context.js';
@@ -24,12 +25,22 @@ import type { UiLocale } from './locale-helpers.js';
  *
  * `en` needs no overrides — it resolves to Astryx's shipped defaults.
  */
-export function AstryxLocaleProvider({ children }: { children: ReactNode }) {
+export function AstryxLocaleProvider({
+  children,
+  overrides: scopedOverrides,
+}: {
+  children: ReactNode;
+  overrides?: Record<string, string>;
+}) {
   const locale = useUiLocale();
   // Referentially stable per locale: the provider memoises its context value
   // on the overrides object, so a fresh map every render would re-render
   // every Astryx i18n consumer on every AppShell render.
-  const overrides = useMemo(() => astryxMessageOverrides(locale), [locale]);
+  const overrides = useMemo(() => {
+    const base = astryxMessageOverrides(locale)?.[locale];
+    if (!scopedOverrides) return base ? { [locale]: base } : undefined;
+    return { [locale]: { ...base, ...scopedOverrides } };
+  }, [locale, scopedOverrides]);
   return (
     <InternationalizationProvider locale={locale} overrides={overrides}>
       {children}
@@ -37,7 +48,7 @@ export function AstryxLocaleProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function astryxMessageOverrides(locale: UiLocale) {
+export function astryxMessageOverrides(locale: UiLocale): Overrides | undefined {
   if (locale === 'en') return undefined;
   const shared = getSharedUiCopy(locale);
   const conversation = getConversationCopy(locale);
