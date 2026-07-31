@@ -768,7 +768,6 @@ export const Composer = forwardRef<
         ) : null}
         <textarea
           ref={textareaRef}
-          data-maka-field-chrome="none"
           data-maka-contract="composer-input"
           name="text"
           className="maka-composer-textarea resize-none"

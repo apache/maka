@@ -157,11 +157,9 @@ export function PersonalizationSettingsPage(props: {
 
   return (
     <div className="settingsStructuredPage">
-      {/* Detail audit round 3: these rows used the borderless
-          .settingsField language while every other 通用 row is a bordered
-          SettingsRows card — two row systems on one page. Unified onto
-          the card language; the full-width tone textarea uses the
-          vertical row variant. */}
+      {/* These editable values stay in the same grouped Settings card as the
+          neighboring preferences; the full-width tone field uses the vertical
+          row variant. */}
       <SettingsRows>
         <div className="settingsFormRow">
           <div>

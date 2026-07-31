@@ -201,10 +201,13 @@ describe('Storybook baseline contract', () => {
     const storyFiles = readdirSync(storiesDir).filter((f) => f.endsWith('.stories.tsx'));
     const allStorySrc = storyFiles.map((f) => readFileSync(join(storiesDir, f), 'utf8')).join('\n');
 
+    // Direct Astryx form-control exports use Astryx's own Storybook. Maka
+    // stories cover product compositions, not a second generic component
+    // catalogue with no Maka-owned behavior.
     const curatedPrimitives = [
-      'Button', 'Badge', 'TextInput', 'TextArea', 'NumberInput', 'CheckboxInput', 'Divider',
-      'DialogRoot', 'TabsRoot', 'Selector', 'Switch', 'Toggle', 'ToggleGroup',
-      'RadioList', 'RadioListItem', 'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
+      'Button', 'Badge', 'TextInput', 'TextArea', 'Divider',
+      'DialogRoot', 'TabsRoot', 'Toggle', 'ToggleGroup',
+      'Progress', 'Alert', 'Empty', 'Spinner', 'Kbd',
       'Menu', 'Accordion', 'Toolbar', 'ToastProvider',
     ];
     const missing = curatedPrimitives.filter(

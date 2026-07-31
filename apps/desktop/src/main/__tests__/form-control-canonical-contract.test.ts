@@ -51,7 +51,22 @@ test("the public selection and number controls are callable", () => {
 });
 
 test("the public form surface does not preserve Maka compatibility adapters", () => {
-  assert.equal("SettingsSelect" in MakaUi, false);
-  assert.equal("PlanReminderSelect" in MakaUi, false);
-  assert.equal("TimePicker" in MakaUi, false);
+  for (const retired of [
+    "SettingsSelect",
+    "PlanReminderSelect",
+    "TimePicker",
+    "SelectRoot",
+    "SelectTrigger",
+    "SelectValue",
+    "SelectPortal",
+    "SelectPositioner",
+    "SelectPopup",
+    "SelectGroup",
+    "SelectGroupLabel",
+    "SelectSeparator",
+    "SelectItem",
+    "inputClasses",
+  ]) {
+    assert.equal(retired in MakaUi, false, `${retired} must not remain public`);
+  }
 });
