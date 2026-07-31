@@ -17,32 +17,9 @@ function keyboardEvent(key: string, shiftKey = false) {
 }
 
 describe('app shell layout actions', () => {
-  it('keeps the existing left sidebar ArrowRight behavior', () => {
-    let width = 210;
-    const actions = createAppShellLayoutActions({
-      sessionListCollapsed: false,
-      sessionListWidth: width,
-      setSessionListWidth: (next) => {
-        width = next;
-      },
-      workbarCollapsed: true,
-      workbarWidth: 400,
-      setWorkbarWidth: () => {},
-    });
-    const input = keyboardEvent('ArrowRight');
-
-    actions.onResizeHandleKeyDown(input.event as never);
-
-    assert.equal(width, 220);
-    assert.equal(input.prevented(), true);
-  });
-
   it('ArrowLeft gives more width to the right workbar', () => {
     let width = 400;
     const actions = createAppShellLayoutActions({
-      sessionListCollapsed: false,
-      sessionListWidth: 210,
-      setSessionListWidth: () => {},
       workbarCollapsed: false,
       workbarWidth: width,
       setWorkbarWidth: (next: number) => {

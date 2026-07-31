@@ -8,7 +8,6 @@ import {
   ArchiveRestore,
   Ban,
   Bot,
-  ChevronRight,
   CircleCheckBig,
   Eye,
   FolderGit2,
@@ -25,20 +24,20 @@ import {
   Trash2,
 } from './icons.js';
 import { EmptyState } from './empty-state.js';
-import { OverlayScrollArea } from './overlay-scroll-area.js';
 import {
   DropdownMenu,
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
 import { Button as BaseButton } from '@base-ui/react/button';
+import { List, ListItem } from '@astryxdesign/core/List';
+import { TreeList, type TreeListItemData } from '@astryxdesign/core/TreeList';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
-const PROJECT_GROUP_PREVIEW_LIMIT = 4;
 
 export interface SessionRowActions {
   /** Flag (pin) state toggle. */
@@ -163,7 +162,7 @@ export function SessionHistoryList(props: {
   }
 
   return (
-    <section className="maka-session-list" aria-label={sessionListTitle}>
+    <section className="maka-session-list" aria-label={sessionListTitle} onKeyDown={handleListKeyDown}>
       {props.sessions.length === 0 &&
       !(props.groupVariant === 'project' && (props.groups?.length ?? 0) > 0) ? (
         // WAWQAQ msg `f56f38c1` (2026-06-20): the create-session CTA
@@ -178,12 +177,7 @@ export function SessionHistoryList(props: {
           extraClassName="maka-session-empty-state"
         />
       ) : (
-        <OverlayScrollArea
-          className="maka-list-stack"
-          viewportClassName="maka-list-stackViewport"
-          contentClassName="maka-list-stackContent"
-          onKeyDown={handleListKeyDown}
-        >
+        <div className="maka-list-stackContent">
           <SessionListGroups
             groups={
               props.groups
@@ -209,7 +203,7 @@ export function SessionHistoryList(props: {
             rowActions={props.rowActions}
             projectActions={props.projectActions}
           />
-        </OverlayScrollArea>
+        </div>
       )}
     </section>
   );
@@ -233,42 +227,52 @@ function SessionListGroups(props: {
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;
 }) {
+  const copy = getConversationCopy(useUiLocale()).sessions;
   if (props.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
+    function sessionItem(session: SessionSummary): TreeListItemData {
+      return {
+        id: session.id,
+        label: (
+          <SessionRow
+            session={session}
+            active={session.id === props.activeId}
+            streaming={props.streamingSessionIds?.has(session.id) ?? false}
+            stale={props.staleSessionIds?.has(session.id) ?? false}
+            worktree={props.worktreeSessionIds?.has(session.id) ?? false}
+            nested
+            onSelect={props.onSelectSession}
+            actions={props.rowActions}
+          />
+        ),
+        isSelected: session.id === props.activeId,
+        children: (props.childSessionsByParentId?.get(session.id) ?? []).map(sessionItem),
+      };
+    }
+    const projectItem = (group: (typeof props.groups)[number]): TreeListItemData => ({
+      id: group.key,
+      label: (
+        <ProjectSessionGroup
+          {...props}
+          label={group.label}
+          sessions={group.sessions}
+          project={group.project}
+        />
+      ),
+      isExpanded: group.sessions.length > 0,
+      children: group.sessions.map(sessionItem),
+    });
+    const items = activeGroups.map(projectItem);
+    if (archivedGroups.length > 0) {
+      items.push({
+        id: 'archived-projects',
+        label: copy.archivedProjects,
+        children: archivedGroups.map(projectItem),
+      });
+    }
     return (
-      <>
-        {activeGroups.map((group) => (
-          <ProjectSessionGroup
-            key={group.key}
-            groupKey={group.key}
-            label={group.label}
-            sessions={group.sessions}
-            project={group.project}
-            activeId={props.activeId}
-            streamingSessionIds={props.streamingSessionIds}
-            staleSessionIds={props.staleSessionIds}
-            childSessionsByParentId={props.childSessionsByParentId}
-            worktreeSessionIds={props.worktreeSessionIds}
-            onSelectSession={props.onSelectSession}
-            rowActions={props.rowActions}
-            projectActions={props.projectActions}
-          />
-        ))}
-        {archivedGroups.length > 0 && (
-          <ArchivedProjectGroups
-            groups={archivedGroups}
-            activeId={props.activeId}
-            streamingSessionIds={props.streamingSessionIds}
-            staleSessionIds={props.staleSessionIds}
-            childSessionsByParentId={props.childSessionsByParentId}
-            worktreeSessionIds={props.worktreeSessionIds}
-            onSelectSession={props.onSelectSession}
-            rowActions={props.rowActions}
-            projectActions={props.projectActions}
-          />
-        )}
-      </>
+      <TreeList items={items} density="compact" variant="lineGuides" />
     );
   }
 
@@ -276,28 +280,31 @@ function SessionListGroups(props: {
     <>
       {props.groups.map((group) => {
         return (
-          <div key={group.key} className="maka-list-group" data-variant="conversation">
-            {group.label ? (
-              <div className="maka-list-group-label">
-                <span>{group.label}</span>
-              </div>
-            ) : null}
-            <div>
+          <List
+            key={group.key}
+            className="maka-list-group"
+            density="compact"
+            header={group.label ? <div className="maka-list-group-label"><span>{group.label}</span></div> : undefined}
+          >
               {group.sessions.map((session) => (
-                <SessionTreeRow
+                <ListItem
                   key={session.id}
-                  session={session}
-                  activeId={props.activeId}
-                  streamingSessionIds={props.streamingSessionIds}
-                  staleSessionIds={props.staleSessionIds}
-                  childSessionsByParentId={props.childSessionsByParentId}
-                  worktreeSessionIds={props.worktreeSessionIds}
-                  onSelectSession={props.onSelectSession}
-                  rowActions={props.rowActions}
+                  isSelected={session.id === props.activeId}
+                  label={
+                    <SessionTreeRow
+                      session={session}
+                      activeId={props.activeId}
+                      streamingSessionIds={props.streamingSessionIds}
+                      staleSessionIds={props.staleSessionIds}
+                      childSessionsByParentId={props.childSessionsByParentId}
+                      worktreeSessionIds={props.worktreeSessionIds}
+                      onSelectSession={props.onSelectSession}
+                      rowActions={props.rowActions}
+                    />
+                  }
                 />
               ))}
-            </div>
-          </div>
+          </List>
         );
       })}
     </>
@@ -315,84 +322,19 @@ interface ProjectGroupSharedProps {
   projectActions?: ProjectRowActions;
 }
 
-function ArchivedProjectGroups(
-  props: ProjectGroupSharedProps & {
-    groups: ReadonlyArray<{
-      key: string;
-      label: string;
-      sessions: SessionSummary[];
-      project?: ProjectRecord;
-    }>;
-  },
-) {
-  const copy = getConversationCopy(useUiLocale()).sessions;
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="maka-list-archived-projects">
-      <BaseButton
-        type="button"
-        className="maka-list-archived-projects-heading"
-        onClick={() => setExpanded((current) => !current)}
-        aria-expanded={expanded}
-        aria-label={copy.archivedProjectsAriaLabel}
-      >
-        <ChevronRight size={13} aria-hidden="true" />
-        <span>{copy.archivedProjects}</span>
-        <span className="maka-list-project-count">{props.groups.length}</span>
-      </BaseButton>
-      {expanded &&
-        props.groups.map((group) => (
-          <ProjectSessionGroup
-            key={group.key}
-            {...props}
-            groupKey={group.key}
-            label={group.label}
-            sessions={group.sessions}
-            project={group.project}
-          />
-        ))}
-    </div>
-  );
-}
-
 function ProjectSessionGroup(props: ProjectGroupSharedProps & {
-  groupKey: string;
   label: string;
   sessions: SessionSummary[];
   project?: ProjectRecord;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const [revealed, setRevealed] = useState(false);
-  const activeSessionId = props.sessions.some((session) => session.id === props.activeId)
-    ? props.activeId
-    : undefined;
-  const [disclosure, setDisclosure] = useState({
-    expanded: props.sessions.length > 0,
-    observedActiveSessionId: activeSessionId,
-  });
-  if (activeSessionId !== disclosure.observedActiveSessionId) {
-    setDisclosure({
-      expanded: activeSessionId ? true : disclosure.expanded,
-      observedActiveSessionId: activeSessionId,
-    });
-  }
-  const expanded = disclosure.expanded;
   const [editing, setEditing] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const mountedRef = useMountedRef();
   const pendingActionRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const escapeCancelledRef = useRef(false);
-  const activeIsHidden = props.activeId
-    ? props.sessions.findIndex((session) => session.id === props.activeId) >= PROJECT_GROUP_PREVIEW_LIMIT
-    : false;
-  const showAll = revealed || activeIsHidden;
-  const visibleSessions = showAll
-    ? props.sessions
-    : props.sessions.slice(0, PROJECT_GROUP_PREVIEW_LIMIT);
-  const hiddenCount = props.sessions.length - visibleSessions.length;
   const project = props.project;
-  const canExpand = props.sessions.length > 0;
 
   useEffect(() => {
     if (!editing) return;
@@ -434,7 +376,6 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
       className="maka-list-group"
       data-variant="project"
       data-unavailable={project && !project.available ? 'true' : undefined}
-      data-expanded={expanded ? 'true' : 'false'}
     >
       <div className="maka-list-project-header">
         {editing ? (
@@ -459,6 +400,9 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
                 commitRename(event.currentTarget.value);
               }}
               onKeyDown={(event) => {
+                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+                  event.stopPropagation();
+                }
                 if (event.nativeEvent.isComposing || event.key === 'Process') return;
                 if (event.key === 'Escape') {
                   event.preventDefault();
@@ -469,31 +413,14 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
             />
           </form>
         ) : (
-          <BaseButton
-            type="button"
-            className="maka-list-project-heading"
-            onClick={() => {
-              if (canExpand) {
-                setDisclosure((current) => ({
-                  ...current,
-                  expanded: !current.expanded,
-                }));
-              }
-            }}
-            disabled={!canExpand}
-            aria-expanded={canExpand ? expanded : false}
-            aria-controls={canExpand ? `maka-list-group-body-${props.groupKey}` : undefined}
-          >
+          <div className="maka-list-project-heading">
             <FolderOpen size={14} aria-hidden="true" />
             <span className="maka-list-project-name">{props.label}</span>
             {project && !project.available && (
-              <AlertTriangle
-                size={12}
-                aria-label={copy.projectUnavailable}
-              />
+              <AlertTriangle size={12} aria-label={copy.projectUnavailable} />
             )}
             <span className="maka-list-project-count">{props.sessions.length}</span>
-          </BaseButton>
+          </div>
         )}
         {project && props.projectActions && !editing && (
           <DropdownMenu
@@ -560,35 +487,6 @@ function ProjectSessionGroup(props: ProjectGroupSharedProps & {
           </DropdownMenu>
         )}
       </div>
-      {expanded && (
-        <>
-          <div id={`maka-list-group-body-${props.groupKey}`}>
-            {visibleSessions.map((session) => (
-              <SessionTreeRow
-                key={session.id}
-                session={session}
-                activeId={props.activeId}
-                streamingSessionIds={props.streamingSessionIds}
-                staleSessionIds={props.staleSessionIds}
-                childSessionsByParentId={props.childSessionsByParentId}
-                worktreeSessionIds={props.worktreeSessionIds}
-                onSelectSession={props.onSelectSession}
-                rowActions={props.rowActions}
-              />
-            ))}
-          </div>
-          {hiddenCount > 0 && (
-            <BaseButton
-              type="button"
-              className="maka-list-project-more"
-              onClick={() => setRevealed(true)}
-              aria-label={copy.showMoreAriaLabel(hiddenCount)}
-            >
-              {copy.showMore}
-            </BaseButton>
-          )}
-        </>
-      )}
     </div>
   );
 }
@@ -861,6 +759,9 @@ const SessionRow = memo(function SessionRow(props: {
                 commitRename(event.currentTarget.value);
               }}
               onKeyDown={(event) => {
+                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+                  event.stopPropagation();
+                }
                 // IME guard so committing CJK characters with Enter doesn't
                 // submit the rename before the user is done.
                 if (event.nativeEvent.isComposing || event.key === 'Process') return;

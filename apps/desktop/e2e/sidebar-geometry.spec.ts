@@ -47,7 +47,7 @@ import type { Page } from '@playwright/test';
  * collapses) and the footer leaves the viewport; both are caught below.
  */
 
-const LIST_VIEWPORT = '.maka-list-stackViewport';
+const LIST_CONTENT = '.maka-session-list';
 const CHAT_VIEWPORT = '.maka-chatViewport';
 
 interface ScrollerMetrics {
@@ -74,7 +74,7 @@ interface Geometry {
 }
 
 async function readGeometry(page: Page): Promise<Geometry> {
-  return page.evaluate(() => {
+  return page.evaluate((listContentSelector) => {
     const rect = (el: Element | null): Rect | null => {
       if (!el) return null;
       const { top, right, bottom, left, width, height } = el.getBoundingClientRect();
@@ -89,10 +89,10 @@ async function readGeometry(page: Page): Promise<Geometry> {
       footer: rect(document.querySelector('.maka-session-panel-footer')),
       panel: rect(document.querySelector('.maka-session-panel')),
       viewport: { width: window.innerWidth, height: window.innerHeight },
-      list: scroller(document.querySelector('.maka-list-stackViewport')),
+      list: scroller(document.querySelector(listContentSelector)?.parentElement ?? null),
       chat: scroller(document.querySelector('.maka-chatViewport')),
     };
-  });
+  }, LIST_CONTENT);
 }
 
 // The footer must sit fully inside the sidebar panel AND inside the window
@@ -130,7 +130,7 @@ async function scrollListToBottom(page: Page): Promise<number> {
     .poll(
       async () => {
         const metrics = await page.evaluate((selector) => {
-          const el = document.querySelector(selector) as HTMLElement | null;
+          const el = document.querySelector(selector)?.parentElement as HTMLElement | null;
           if (!el) return null;
           el.scrollTop = el.scrollHeight;
           return {
@@ -138,7 +138,7 @@ async function scrollListToBottom(page: Page): Promise<number> {
             scrollHeight: el.scrollHeight,
             clientHeight: el.clientHeight,
           };
-        }, LIST_VIEWPORT);
+        }, LIST_CONTENT);
         if (!metrics) return false;
         const atBottom =
           metrics.scrollTop > 0 &&
@@ -164,7 +164,7 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   await expect(page.locator('.maka-list-row-main[title^="会话 "]')).toHaveCount(60);
 
   // The list scroller and the chat scroller are distinct elements.
-  await expect(page.locator(LIST_VIEWPORT)).toHaveCount(1);
+  await expect(page.locator(LIST_CONTENT)).toHaveCount(1);
   await expect(page.locator(CHAT_VIEWPORT)).toHaveCount(1);
 
   // (1a) The sidebar list scroller actually overflows its constrained grid
@@ -209,39 +209,20 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   expectFooterContained(after, 'after-scroll-to-bottom');
 });
 
-test('keyboard sidebar resize bypasses drawer motion without disabling collapse motion', async ({
+test('official SideNav resize handle updates the sidebar width from the keyboard', async ({
   sidebarLongSessionsWindow: page,
 }) => {
-  const shell = page.locator('.maka-shell-2col');
-  const handle = page.locator('.maka-resize-handle');
+  const shell = page.locator('.appFrame');
+  const panel = page.locator('.maka-session-panel');
+  const handle = page.getByTestId('astryx-sidenav-resize-handle');
 
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
-  await page.locator('html').evaluate((element) => {
-    element.removeAttribute('data-maka-e2e-fixture');
-  });
-
   await handle.focus();
   await expect(handle).toBeFocused();
-  expect(await shell.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe('0s');
 
   const beforeWidth = Number(await handle.getAttribute('aria-valuenow'));
   await handle.press('ArrowRight');
-  const after = await shell.evaluate((element) => {
-    const handle = element.querySelector('.maka-resize-handle');
-    const firstTrack = getComputedStyle(element).gridTemplateColumns.split(' ')[0];
-    return {
-      ariaWidth: Number(handle?.getAttribute('aria-valuenow')),
-      trackWidth: Number.parseFloat(firstTrack ?? ''),
-    };
-  });
-
-  expect(after.ariaWidth).toBe(beforeWidth + 10);
-  expect(after.trackWidth).toBe(after.ariaWidth);
-
-  await handle.blur();
-  await expect
-    .poll(() => shell.evaluate((element) => getComputedStyle(element).transitionDuration))
-    .toBe('0.28s');
-  expect(await shell.evaluate((element) => getComputedStyle(element).transitionProperty))
-    .toContain('grid-template-columns');
+  await expect.poll(async () => Number(await handle.getAttribute('aria-valuenow'))).toBe(beforeWidth + 10);
+  await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
+    .toBe(beforeWidth + 10);
 });

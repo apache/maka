@@ -18,7 +18,7 @@ import { test, expect } from './fixtures.js';
 async function expandedSidebar(page: Page) {
   const expand = page.getByRole('button', { name: '展开侧边栏' });
   if (await expand.count()) await expand.click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await expect(sidebar).toBeVisible();
   return sidebar;
 }
@@ -93,7 +93,7 @@ test('session heading stays singular and the default list has no redundant headi
 }) => {
   const sidebar = await expandedSidebar(page);
   const panelHeading = sidebar.locator('.maka-session-list-heading');
-  const navLabel = sidebar.locator('.maka-nav-row span:nth-child(2)').first();
+  const navLabel = sidebar.getByRole('button', { name: /新任务/ }).getByText('新任务', { exact: true });
 
   await expect(sidebar.getByText('会话', { exact: true })).toHaveCount(1);
   await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);

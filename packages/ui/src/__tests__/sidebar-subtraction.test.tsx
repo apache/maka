@@ -57,8 +57,7 @@ describe('sidebar subtraction', () => {
       </LocaleProvider>,
     );
 
-    assert.match(markup, /aria-label="Scheduled tasks, 1 unfinished reminder"/);
-    assert.match(markup, />Scheduled tasks</);
+    assert.match(markup, />Scheduled tasks<\/span>.*>1<\/small>/);
     assert.doesNotMatch(markup, /aria-label="Automations,/);
   });
 

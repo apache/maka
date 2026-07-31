@@ -33,6 +33,25 @@
   height: 100%;
 }
 
+/* Astryx AppShell is the shell authority. Maka only supplies the native
+   Electron titlebar and product surfaces through its public slots. */
+.maka-shell-astryx {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.maka-shell-astryx .maka-panel-detail {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--background);
+}
+
 .maka-shell-2col {
   --maka-sidebar-exit-offset: calc(var(--space-2) * -1);
   position: relative;
@@ -163,8 +182,10 @@
    places to keep the clusters at an exact pixel — which is the habit this whole
    change exists to remove. */
 .maka-window-titlebar {
-  grid-column: 1 / -1;
-  grid-row: 1;
+  width: auto;
+  height: calc(var(--h-titlebar) - var(--maka-window-resize-edge));
+  min-height: calc(var(--h-titlebar) - var(--maka-window-resize-edge));
+  box-sizing: border-box;
   margin: var(--maka-window-resize-edge) var(--maka-window-resize-edge) 0;
   display: flex;
   align-items: center;

@@ -148,6 +148,7 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors';
+import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -1176,10 +1177,7 @@ function AppShellContent({
     workbarTab,
     setWorkbarTab,
   } = useShellLayout();
-  const { startColumnResize, onResizeHandleKeyDown, startWorkbarResize, onWorkbarResizeHandleKeyDown } = useStableActions(createAppShellLayoutActions, {
-    sessionListCollapsed,
-    sessionListWidth,
-    setSessionListWidth,
+  const { startWorkbarResize, onWorkbarResizeHandleKeyDown } = useStableActions(createAppShellLayoutActions, {
     workbarCollapsed,
     workbarWidth,
     setWorkbarWidth,
@@ -2030,64 +2028,51 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-      <div className="appFrame agents-layout-root" data-agents-page>
-      <div
-        className="app maka-shell-2col agents-layout-body"
+    <div
+      className="appFrame agents-layout-root"
+      data-agents-page
+      data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
+    >
+      <AstryxAppShell
+        className="app maka-shell-astryx agents-layout-body"
+        variant="surface"
+        height="fill"
+        contentPadding={0}
+        mobileNav={{ breakpoint: 'none', hasToggle: false }}
         aria-hidden={hasModalOpen ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
         data-modal-background-hidden={hasModalOpen ? 'true' : undefined}
         data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
-        style={
-          {
-            '--maka-session-list-expanded-width': `${sessionListWidth}px`,
-            '--maka-resize-handle-width': '0px',
-          } as CSSProperties
-        }
-      >
-        {/* The window's titlebar: the shell's first grid row, spanning every
-            column, and the only element that declares `-webkit-app-region:
-            drag`. Its action clusters are ordinary in-flow children that each
-            declare `no-drag`, so the OS draggable region is whatever the row
-            has left over — no container has to reserve space for a sibling.
-            Two properties make that work and must hold together:
-            it is the FIRST child (Chromium builds the draggable region by
-            walking annotated elements in DOCUMENT ORDER, adding `drag` rects
-            and subtracting `no-drag` ones, so only a `no-drag` element declared
-            after it can carve itself back out), and it OCCUPIES a row rather
-            than floating over one, so content below can never land inside it.
-            Locked by e2e/window-titlebar.spec.ts. */}
-        <header className="maka-window-titlebar">
-          <AppShellTopbarActions
-            sidebarCollapsed={sessionListCollapsed}
-            onOpenSearchModal={() => {
-              setSearchModalOpen(true);
-            }}
-            onCollapseSidebar={() => setSessionListCollapsed(true)}
-            onExpandSidebar={() => setSessionListCollapsed(false)}
-            onCreateSession={createSession}
-          />
-          {/* The module surfaces that own their whole column show no workspace
-              toolbar. That used to be a `display: none` override reaching in
-              from the detail panel's `data-agents-view`; now that the toolbar
-              lives in the titlebar it is simply not rendered. */}
-          {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-            <AppShellWorkspaceTopActions
-              workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-              workbarCollapsed={workbarCollapsed}
-              onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
-              onOpenFeedback={() => openSettingsSection('about')}
-              onOpenPalette={openPalette}
-              onOpenHelp={openHelp}
-              onOpenHealth={() => openSettingsSection('health')}
+        topNav={
+          <header className="maka-window-titlebar">
+            <AppShellTopbarActions
+              sidebarCollapsed={sessionListCollapsed}
+              onOpenSearchModal={() => setSearchModalOpen(true)}
+              onCollapseSidebar={() => setSessionListCollapsed(true)}
+              onExpandSidebar={() => setSessionListCollapsed(false)}
+              onCreateSession={createSession}
             />
-          )}
-        </header>
-        <div
-          className="maka-panel maka-panel-list maka-floating-panel"
-          aria-hidden={sessionListCollapsed ? 'true' : undefined}
-          inert={sessionListCollapsed ? true : undefined}
-        >
+            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+              <AppShellWorkspaceTopActions
+                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+                workbarCollapsed={workbarCollapsed}
+                onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
+                onOpenFeedback={() => openSettingsSection('about')}
+                onOpenPalette={openPalette}
+                onOpenHelp={openHelp}
+                onOpenHealth={() => openSettingsSection('health')}
+              />
+            )}
+          </header>
+        }
+        sideNav={
           <SessionListPanel
+            collapsed={sessionListCollapsed}
+            onCollapsedChange={setSessionListCollapsed}
+            width={sessionListWidth}
+            onWidthChange={setSessionListWidth}
+            minWidth={SESSION_LIST_EXPANDED_MIN_WIDTH}
+            maxWidth={SESSION_LIST_EXPANDED_MAX_WIDTH}
             selection={navSelection}
             sessions={visibleSessions}
             activeId={activeId}
@@ -2109,20 +2094,8 @@ function AppShellContent({
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
           />
-        </div>
-        <div
-          className="maka-resize-handle"
-          role="separator"
-          aria-label={sessionListCollapsed ? shellCopy.sidebarCollapsed : shellCopy.resizeConversationList}
-          aria-orientation="vertical"
-          aria-valuemin={SESSION_LIST_EXPANDED_MIN_WIDTH}
-          aria-valuemax={SESSION_LIST_EXPANDED_MAX_WIDTH}
-          aria-valuenow={sessionListWidth}
-          aria-hidden={sessionListCollapsed ? 'true' : undefined}
-          tabIndex={sessionListCollapsed ? -1 : 0}
-          onPointerDown={startColumnResize}
-          onKeyDown={onResizeHandleKeyDown}
-        />
+        }
+      >
         <AppShellDetailPanel
           data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
           agentsView={agentsView}
@@ -2575,7 +2548,7 @@ function AppShellContent({
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
-      </div>
+      </AstryxAppShell>
       <AppShellOverlays
         settingsOpen={settingsOpen}
         connections={connections}
@@ -2611,6 +2584,6 @@ function AppShellContent({
         closePalette={closePalette}
         commandOptions={commandOptions}
       />
-      </div>
+    </div>
   );
 }

@@ -63,16 +63,19 @@
 .maka-session-workbar-tabs {
   height: 100%;
   min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0;
+}
+
+.maka-session-workbar-toolbar {
+  min-width: 0;
 }
 
 .maka-session-workbar-tab-list {
   width: 100%;
   flex: 0 0 auto;
-  border-bottom: var(--border-width-hairline) solid var(--border);
 }
-
-.maka-session-workbar-tab-list > [data-slot="tabs-tab"] { flex: 1 1 0; }
 
 .maka-session-workbar-count {
   min-width: var(--space-4);

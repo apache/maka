@@ -3,16 +3,6 @@
   min-width: 0;
   min-height: 0;
   height: 100%;
-  display: grid;
-  /* 4 rows: hub nav / session-list heading / list / footer. The panel used to
-     carry a fifth leading row holding an empty `<header>` whose only job was to
-     host a blank drag strip, and after that a `padding-top` clearing the drag
-     band. Both are gone: the titlebar is its own grid row in the shell, so this
-     panel starts below it and has nothing to clear. */
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  overflow: hidden;
-  background: transparent;
-  contain: layout paint style;
 }
 
 .maka-session-list {
@@ -30,12 +20,9 @@
    * footer stay visible. See the e2e-fixture `sidebar-long-sessions`
    * scenario.
    */
-  min-height: 0;
+  min-width: 0;
   position: relative;
-  overflow: hidden;
   border-top: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   padding-top: var(--space-1);
 }
 
@@ -133,22 +120,11 @@
    styles restored, then tightened after task #98 so active rows read
    as slim target-layout like nav rows instead of full-width pills. */
 .maka-sidebar-modules {
-  align-self: start;
-  align-content: start;
-  display: grid;
-  gap: 1px;
-  /* #546 PR7: left/right padding aligned with .maka-list-stackContent
-     (var(--space-2)) so nav rows and session rows share the same inset. */
-  padding: var(--space-1) var(--space-2);
+  -webkit-app-region: no-drag;
 }
 
 .maka-nav-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: var(--icon-size) minmax(0, 1fr) auto;
-  align-items: center;
   -webkit-app-region: no-drag;
-  text-align: left;
 }
 
 .maka-nav-row span:nth-child(2) {
