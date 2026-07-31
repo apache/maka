@@ -161,7 +161,7 @@
    pull the page header into the same centered max-w-3xl column as the
    content. Before this, the header sat in `.settingsMainPane` padding
    (~34px from pane edge), while the row cards lived in the centered
-   768px column (~152px from pane edge at 1280 viewport) — the title
+   640px column — the title
    and content were visibly misaligned. Drop the mainpane padding to
    thin top/bottom so the header + content can both share the centered
    column. */
@@ -192,11 +192,11 @@
 /* PR-SETTINGS-REVIEW-0 fix-2: max-width centering on a grid child
    didn't actually align the H2 with the centered column underneath.
    Use the same edge math the content column uses
-   (`calc((100% - 768px) / 2 + 24px)`) so the header content lines up
+   (`calc((100% - 640px) / 2 + 24px)`) so the header content lines up
    with row cards regardless of viewport width. */
 .settingsPageHeader {
   min-height: 36px;
-  padding: 0 max(var(--space-6), calc((100% - 768px) / 2 + var(--space-6)));
+  padding: 0 max(var(--space-6), calc((100% - 640px) / 2 + var(--space-6)));
   display: flex;
   align-items: center;
   /* X close button moved to the sidebar `返回应用` — header hosts the
@@ -262,7 +262,8 @@
    was wrong; this PR reinstates per-row borders with the reference
    recipe — 1px subtle border, 8px radius, white-ish bg, 8px gap. */
 .settingsPageContentInner {
-  max-width: 768px;
+  box-sizing: border-box;
+  max-width: 640px;
   margin: 0 auto;
   padding: var(--space-10) var(--space-6) var(--space-16);
 }

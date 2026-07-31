@@ -99,10 +99,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) fit-content(45%);
   align-items: center;
-  gap: var(--space-4);
-  /* Same padding as .settingsFormRow below so the two row kinds read
-     as one rhythm when stacked on a page (was 16/20 vs 20/24). */
-  padding: var(--space-5) var(--space-6);
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 0;
   border-bottom: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
   border-radius: 0;
@@ -153,12 +151,11 @@
    noticeable internal padding. Bumped: min-height 56→72, padding
    16/20 → 20/24, gap inside row 16→20, label 14→15px, hint 12→13. */
 .settingsFormRow {
-  min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-6);
+  gap: var(--space-2);
+  padding: var(--space-2);
   border: 0;
   border-bottom: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.06);
   border-radius: 0;
@@ -182,7 +179,7 @@
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-5);
+  gap: var(--space-2);
   /* No min-width:0 here — the cluster's floor is its widest nowrap chip;
      shrinking below that bleeds the chip out of the box. The LABEL side
      owns the squeeze (it has min-width:0 and wraps). */
