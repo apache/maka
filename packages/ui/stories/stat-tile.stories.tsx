@@ -25,7 +25,7 @@ export const LongUnbrokenValue: Story = {
       />
       <StatTile
         emphasis="outline"
-        label="Gateway token"
+        label="Access token"
         value="maka_live_token_4f61127a1e66b49c97a1d1c45b0df9f6b28df69c"
         detail="Long unbroken strings wrap inside the tile"
       />

@@ -30,7 +30,7 @@
     /* #1361: was `repeat(5, minmax(0, 1fr))`. Five hard tracks kept dividing
        whatever width they were given, so at the 480px window floor each tile
        collapsed to ~30px — 4px of content box after padding, which even a
-       single digit overflows. That is the sibling of the #1304 Open Gateway
+       single digit overflows. This is the same family as earlier metric-card
        overflow: #1335 taught StatTile to wrap its own text, but a tile squeezed
        below one character wide has nothing left to wrap into. `auto-fit` still
        yields five even tracks at full width (only five tiles exist, and 1fr

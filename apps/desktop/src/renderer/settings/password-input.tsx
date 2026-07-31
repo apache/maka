@@ -17,8 +17,8 @@ import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy
  * PR-SETTINGS-PASSWORD-INPUT-REACH-0 (WAWQAQ msg `51c7b4ff` screenshots):
  * masked text input with a trailing Eye / EyeOff toggle and an
  * optional Copy button. Shared across Settings credential surfaces
- * (bot tokens / app secrets, provider API keys, Open Gateway token,
- * network proxy password, web search API key) so the visibility +
+ * (bot tokens / app secrets, provider API keys, network proxy password,
+ * web search API key) so the visibility +
  * clipboard affordance is consistent.
  *
  * Initial state is masked. Toggle and copy are both real focusable

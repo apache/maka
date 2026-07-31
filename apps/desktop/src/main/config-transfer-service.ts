@@ -67,7 +67,7 @@ export async function gatherConfigExport(
   if (selected.has('settings')) {
     const settings = await deps.settingsStore.get();
     // When credentials are included, settings keeps its embedded secrets
-    // (proxy password, bot tokens, gateway token, Tavily key); otherwise strip.
+    // (proxy password, bot tokens, Tavily key); otherwise strip.
     data.settings = selected.has('credentials') ? settings : stripSettingsSecretsForExport(settings);
   }
 

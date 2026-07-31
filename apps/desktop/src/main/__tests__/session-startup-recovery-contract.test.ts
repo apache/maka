@@ -77,10 +77,9 @@ describe('session startup recovery contract', () => {
     assert.doesNotMatch(main, /^await migrateSessionProjects\(/m);
     // The test's own name is "keeps startup fail-soft", and a bare `await` in a
     // sequence is the opposite of that: the first rejection skips every step
-    // after it. That is not hypothetical — one unreadable telemetry record took
-    // session recovery, the Open Gateway sync, plan reminders, the daily review
-    // scheduler, the config watcher and the automation scheduler with it, and
-    // said nothing.
+    // after it. That is not hypothetical — one unreadable telemetry record
+    // stopped session recovery, schedulers, and the config watcher, and said
+    // nothing.
     //
     // So assert the property rather than the shape: the migration still runs in
     // background startup, and it runs through the wrapper that logs its own

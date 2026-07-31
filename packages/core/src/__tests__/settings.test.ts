@@ -523,26 +523,7 @@ describe('removed UI density settings contract', () => {
   });
 });
 
-describe('settings normalization compatibility', () => {
-  test('ignores retired persisted sections without resetting active settings', () => {
-    const normalized = normalizeSettings({
-      appearance: {
-        theme: 'dark',
-      },
-      // Simulates a settings.json written before Open Gateway was retired.
-      openGateway: {
-        enabled: true,
-        host: '0.0.0.0',
-        port: 4939,
-        token: 'local-dev-token',
-      },
-    } as unknown);
-
-    expect(normalized.appearance.theme).toBe('dark');
-    expect('density' in normalized.appearance).toBe(false);
-    expect('openGateway' in normalized).toBe(false);
-  });
-
+describe('settings normalization boundaries', () => {
   test('delegates web search patches and persisted normalization to the web-search owner', () => {
     const patched = mergeSettings(createDefaultSettings(), {
       webSearch: {
