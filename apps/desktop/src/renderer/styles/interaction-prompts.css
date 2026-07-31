@@ -99,16 +99,6 @@
   gap: var(--space-1-5);
 }
 
-.maka-question-choice-group {
-  display: grid;
-  gap: var(--space-1-5);
-}
-
-.maka-question-option {
-  width: 100%;
-  min-width: 0;
-}
-
 .maka-question-other-answer {
   width: 100%;
   min-width: 0;

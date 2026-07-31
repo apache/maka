@@ -17,14 +17,23 @@ test('answers three questions and continues the same fake-backend turn', async (
   await selectedOption.click();
   await expect(selectedOption).toBeChecked();
   await expect(unselectedOption).not.toBeChecked();
-  await prompt.getByRole('button', { name: '下一题' }).click();
+  const next = prompt.getByRole('button', { name: '下一题' });
+  await next.click();
 
   await expect(prompt.getByText('2 / 3', { exact: true })).toBeVisible();
-  await expect(prompt.getByRole('radio', { name: '本周' })).toBeFocused();
-  await prompt.getByRole('button', { name: '下一题' }).click();
+  await expect(next).toBeFocused();
+  const thisWeek = prompt.getByRole('radio', { name: '本周' });
+  const nextWeek = prompt.getByRole('radio', { name: '下周' });
+  await thisWeek.focus();
+  await thisWeek.press('ArrowDown');
+  await expect(nextWeek).toBeFocused();
+  await expect(nextWeek).toBeChecked();
+  await nextWeek.press('ArrowUp');
+  await expect(thisWeek).toBeFocused();
+  await expect(thisWeek).toBeChecked();
+  await next.click();
 
   await expect(prompt.getByText('3 / 3', { exact: true })).toBeVisible();
-  await expect(prompt.getByRole('radio', { name: '是' })).toBeFocused();
 
   const preset = prompt.getByRole('radio', { name: '是' });
   const customChoice = prompt.getByRole('radio', { name: /其他/ });
@@ -47,6 +56,6 @@ test('answers three questions and continues the same fake-backend turn', async (
   await prompt.getByRole('button', { name: '提交答案' }).click();
 
   await expect(prompt).toHaveCount(0);
-  await expect(page.getByText(/Fake question answers: 邀请制 \/ 未回答 \/ 自定义节奏/)).toBeVisible();
+  await expect(page.getByText(/Fake question answers: 邀请制 \/ 本周 \/ 自定义节奏/)).toBeVisible();
   await expect(page.locator('.maka-composer')).toBeVisible();
 });

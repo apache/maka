@@ -24,7 +24,6 @@ export function UserQuestionPrompt(props: {
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
   const activeRequestIdRef = useRef(props.request.requestId);
-  const firstOptionRef = useRef<HTMLDivElement>(null);
   const mountedRef = useMountedRef();
 
   useEffect(() => {
@@ -34,13 +33,6 @@ export function UserQuestionPrompt(props: {
     responsePendingRef.current = false;
     setResponsePending(false);
   }, [props.request.requestId, props.request.questions]);
-
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      firstOptionRef.current?.querySelector<HTMLInputElement>('input')?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [questionIndex, props.request.requestId, props.request.questions]);
 
   const question = props.request.questions[questionIndex];
   if (!question) return null;
@@ -96,14 +88,11 @@ export function UserQuestionPrompt(props: {
           <RadioList
             label={question.question}
             isLabelHidden
-            className="maka-question-choice-group"
             value={selectedValue}
             onChange={select}
           >
             {question.options.map((option, optionIndex) => (
               <RadioListItem
-                ref={optionIndex === 0 ? firstOptionRef : undefined}
-                className="maka-question-option"
                 value={`option:${optionIndex}`}
                 key={`${optionIndex}:${option.label}`}
                 isDisabled={interactionDisabled}
