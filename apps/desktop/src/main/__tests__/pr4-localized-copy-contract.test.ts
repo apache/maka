@@ -41,7 +41,6 @@ const PR4_SHARED_UI_PRESENTATION_FILES = [
   'packages/ui/src/plan-reminder-helpers.ts',
   'packages/ui/src/plan-reminder-panel.tsx',
   'packages/ui/src/skills-panel.tsx',
-  'packages/ui/src/primitives/spinner.tsx',
   'packages/ui/src/task-ledger-panel.tsx',
   'packages/ui/src/thinking-stream.ts',
   'packages/ui/src/tool-output-stream.ts',

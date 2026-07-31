@@ -72,7 +72,7 @@ export type {
   MessageProps,
 } from './primitives/chat.js';
 export { Item, type ItemProps } from '@astryxdesign/core';
-export * from './primitives/spinner.js';
+export { Spinner, type SpinnerProps, type SpinnerSize, type SpinnerShade } from '@astryxdesign/core';
 export * from './primitives/kbd.js';
 export * from './primitives/stat-tile.js';
 export {

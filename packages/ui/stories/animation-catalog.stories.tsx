@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { Spinner } from '../src/primitives/spinner.js';
+import { Spinner } from '@astryxdesign/core';
 
 const meta = {
   title: 'Design System/Animation Catalog',
@@ -14,7 +14,7 @@ export const RetainedFunctionalMotion: Story = {
   render: () => (
     <div style={{ alignItems: 'end', display: 'grid', gap: 24, gridTemplateColumns: 'repeat(2, minmax(96px, 1fr))' }}>
       <div style={{ alignItems: 'center', display: 'grid', gap: 8, justifyItems: 'center' }}>
-        <Spinner style={{ height: 20, width: 20 }} />
+        <Spinner size="lg" aria-label="加载中" />
         <span style={{ color: 'var(--foreground-secondary)', fontSize: 12, fontWeight: 600 }}>Spinner</span>
       </div>
       <div style={{ alignItems: 'center', display: 'grid', gap: 8, justifyItems: 'center' }}>

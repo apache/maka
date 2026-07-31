@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Plus, Search, Trash2 } from '@maka/ui/icons';
 import { Button } from '../src/index.js';
-import { Spinner } from '../src/primitives/spinner.js';
+import { Spinner } from '@astryxdesign/core';
 
 const meta = {
   title: 'Design System/Tokens',
@@ -275,8 +275,8 @@ export const PrimaryActions: Story = {
           loading
         </h3>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          <Button variant="primary" isDisabled icon={<Spinner style={{ height: 14, width: 14 }} />} label="Saving" />
-          <Button variant="secondary" isDisabled icon={<Spinner style={{ height: 14, width: 14 }} />} label="Syncing" />
+          <Button variant="primary" isDisabled icon={<Spinner size="sm" shade="inherit" aria-label="保存中" />} label="Saving" />
+          <Button variant="secondary" isDisabled icon={<Spinner size="sm" shade="inherit" aria-label="同步中" />} label="Syncing" />
           <Button variant="secondary" isDisabled isIconOnly icon={<Trash2 />} label="删除" />
         </div>
       </div>
