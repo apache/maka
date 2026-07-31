@@ -62,10 +62,10 @@ describe('General settings configurable contract', () => {
     // surfaces can't drift) and the model-level default IPC. The old
     // connection-only selector used `connection.name`, which can embed OAuth
     // account email; default-model choices are grouped from safe model
-    // catalog choices, with '未设置' as the pinned empty row.
+    // catalog choices, with '未设置' as an ordinary searchable leading option.
     assert.match(
       src,
-      /<ModelPicker[\s\S]*pinnedItem=\{\{ value: '', label: copy\.notSet \}\}[\s\S]*ariaLabel=\{copy\.defaultModel\}[\s\S]*onValueChange=/,
+      /<ModelPicker[\s\S]*leadingOption=\{\{ value: '', label: copy\.notSet \}\}[\s\S]*ariaLabel=\{copy\.defaultModel\}[\s\S]*onValueChange=\{persistDefault\}/,
       'GeneralDefaultsCard must use the shared <ModelPicker> (same popup as the composer model switcher) so the two surfaces cannot drift',
     );
     assert.match(

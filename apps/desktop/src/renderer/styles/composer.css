@@ -68,12 +68,9 @@
   text-align: center;
 }
 
-/* Unified composer picker trigger — permission Selector
-   + both model pickers (active .maka-model-switcher-trigger, empty-state
-   .maka-composer-model-chip) share ONE quiet-chip geometry so the two
-   controls read identical at rest and on hover. */
+/* Product-owned quiet controls. Model and thinking selectors now keep Astryx
+   control chrome instead of sharing this legacy trigger recipe. */
 .maka-composer-left-controls .permissionModeSelector,
-.maka-composer-right-controls .maka-model-switcher-trigger,
 .maka-composer-model-chip,
 .maka-composer-mode-indicator {
   height: 26px;
@@ -94,7 +91,6 @@
     color var(--duration-base) var(--ease-out-strong);
 }
 .maka-composer-left-controls .permissionModeSelector:hover,
-.maka-composer-right-controls .maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled]),
 .maka-composer-model-chip:hover,
 .maka-composer-mode-indicator:hover:not(:disabled) {
   background: var(--state-hover-bg);
@@ -121,20 +117,11 @@
 }
 .maka-composer-right-controls .maka-model-switcher {
   margin: 0;
-  max-width: min(180px, 28vw);
+  max-width: min(360px, 42vw);
 }
 .maka-composer-right-controls .maka-model-switcher-trigger {
   min-width: 100px;
-  max-width: min(180px, 28vw);
-}
-.maka-composer-right-controls .maka-model-switcher-label {
-  display: none;
-}
-.maka-composer-right-controls .maka-model-switcher-value {
-  max-width: 128px;
-  color: inherit;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
+  max-width: min(220px, 28vw);
 }
 
 .maka-composer-model-chip-text {
@@ -142,23 +129,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.maka-composer-provider-mark {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  display: grid;
-  place-items: center;
-  color: inherit;
-}
-
-.maka-composer-provider-mark > svg,
-.maka-composer-provider-mark > img,
-.maka-composer-provider-mark > .providerAssetMask {
-  width: 100%;
-  height: 100%;
-  display: block;
 }
 
 .maka-composer-model-status {

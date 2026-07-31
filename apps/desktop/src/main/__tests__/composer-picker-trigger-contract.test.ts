@@ -9,7 +9,7 @@ async function read(relativePath: string): Promise<string> {
   return readFile(resolve(REPO_ROOT, relativePath), 'utf8');
 }
 
-test('composer permission and model pickers opt into quiet trigger chrome', async () => {
+test('composer permission keeps quiet chrome while model controls use Astryx Selector chrome', async () => {
   const [composer, permissionMode, chatModelSwitcher, modelPicker] = await Promise.all([
     read('packages/ui/src/composer.tsx'),
     read('packages/ui/src/permission-mode-menu.tsx'),
@@ -31,11 +31,12 @@ test('composer permission and model pickers opt into quiet trigger chrome', asyn
   const composerModelPickers = chatModelSwitcher.match(/<ModelPicker[\s\S]*?>/g) ?? [];
   assert.equal(composerModelPickers.length, 2, 'both composer model picker variants must remain on the shared ModelPicker');
   for (const picker of composerModelPickers) {
-    assert.match(picker, /triggerAppearance="quiet"/, 'each composer model picker must opt out of field chrome');
+    assert.doesNotMatch(picker, /triggerAppearance=/, 'model pickers must not recreate a quiet-trigger variant outside Astryx');
   }
   assert.match(
     modelPicker,
-    /pickerTriggerClasses\(props\.triggerAppearance\)/,
-    'ModelPicker must forward its requested trigger appearance',
+    /<Selector[\s\S]*className=\{props\.triggerClassName\}/,
+    'ModelPicker must compose the Astryx Selector and leave its chrome intact',
   );
+  assert.doesNotMatch(modelPicker, /pickerTriggerClasses|\.\/ui\.js/);
 });

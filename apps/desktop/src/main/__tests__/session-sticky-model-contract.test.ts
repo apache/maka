@@ -86,7 +86,8 @@ describe('PR-SESSION-STICKY-MODEL-0 contract', () => {
     const globalTypes = await readFile(resolve(REPO_ROOT, 'apps/desktop/src/preload/bridge-contract.d.ts'), 'utf8');
     const renderer = await readRendererShellCombinedSource();
     const ui = await readModelSwitcherUiSource();
-    const uiPrimitives = await readFile(resolve(REPO_ROOT, 'packages/ui/src/ui.tsx'), 'utf8');
+    const chatModelSwitcher = await readFile(resolve(REPO_ROOT, 'packages/ui/src/chat-model-switcher.tsx'), 'utf8');
+    const modelPicker = await readFile(resolve(REPO_ROOT, 'packages/ui/src/model-picker.tsx'), 'utf8');
     const styles = await readRendererContractCss();
 
     assert.match(main, /ipcMain\.handle\('sessions:setModel'[\s\S]*normalizeSessionModelSelection\(input\)/);
@@ -146,57 +147,30 @@ describe('PR-SESSION-STICKY-MODEL-0 contract', () => {
     assert.match(ui, /const currentModel = props\.activeModel \?\? props\.activeSession\.model/);
     assert.match(ui, /ariaLabel=\{copy\.switchAriaLabel\}/);
     assert.match(ui, /pending\?: boolean/);
-    assert.match(ui, /const \[localPending,\s*setLocalPending\] = useState\(false\);/);
-    assert.match(ui, /const pendingRef = useRef\(false\);/);
-    assert.match(ui, /const pending = props\.pending \|\| localPending;/);
-    assert.match(ui, /const modelSwitcherMountedRef = useMountedRef\(\);/);
-    assert.match(ui, /const pendingModelChangeRef = useRef<\{ sessionId: string; token: number \} \| null>\(null\);/);
-    assert.match(ui, /const pendingModelChangeTokenRef = useRef\(0\);/);
+    assert.match(ui, /const pending = Boolean\(props\.pending\);/);
     assert.match(
       ui,
-      /useEffect\(\(\) => \{[\s\S]*return \(\) => \{[\s\S]*pendingModelChangeRef\.current = null;[\s\S]*pendingModelChangeTokenRef\.current \+= 1;[\s\S]*pendingRef\.current = false;[\s\S]*\};[\s\S]*\}, \[\]\);/,
-      'model switcher must release pending ownership when the chat header unmounts',
-    );
-    assert.match(
-      ui,
-      /useEffect\(\(\) => \{[\s\S]*pendingModelChangeRef\.current\?\.sessionId === props\.activeSession\.id[\s\S]*pendingModelChangeRef\.current = null;[\s\S]*pendingModelChangeTokenRef\.current \+= 1;[\s\S]*pendingRef\.current = false;[\s\S]*setLocalPending\(false\);[\s\S]*\}, \[props\.activeSession\.id\]\);/,
-      'model switcher must release row-local pending state when the active session changes',
-    );
-    assert.match(ui, /if \(pendingRef\.current \|\| props\.pending\) return;/);
-    assert.match(ui, /const sessionId = props\.activeSession\.id;[\s\S]*const token = pendingModelChangeTokenRef\.current \+ 1;[\s\S]*pendingModelChangeRef\.current = \{ sessionId, token \};/);
-    assert.match(
-      ui,
-      /void \(async \(\) => \{[\s\S]*try \{[\s\S]*await props\.onChange\?\.\(next\);[\s\S]*\} catch \{[\s\S]*\} finally \{[\s\S]*const owner = pendingModelChangeRef\.current;[\s\S]*modelSwitcherMountedRef\.current && owner\?\.sessionId === sessionId && owner\.token === token[\s\S]*pendingModelChangeRef\.current = null;[\s\S]*pendingRef\.current = false;[\s\S]*setLocalPending\(false\);/,
-      'model switcher must only clear pending state for the matching session/token owner',
+      /onValueChange=\{async \(value\) => \{[\s\S]*await props\.onChange\?\.\(next\);[\s\S]*\}\}/,
+      'the model selection action must stay pending until the app-shell persistence owner settles',
     );
     assert.match(ui, /aria-busy=\{pending \? 'true' : undefined\}/);
     assert.match(ui, /data-pending=\{pending \? 'true' : undefined\}/);
-    assert.match(ui, /<ModelPicker[\s\S]*groups=\{grouped\}[\s\S]*value=\{currentValue\}[\s\S]*onValueChange=\{\(value\) => \{/);
-    assert.match(ui, /useCombobox\(\{/);
-    assert.match(ui, /usePopover\(\{/);
-    assert.match(ui, /role="listbox"[\s\S]*className="modelPickerList"/);
-    assert.match(ui, /value=\{query\}/);
-    assert.match(ui, /filterModelPickerOption\(item, query\)/);
+    assert.match(ui, /<ModelPicker[\s\S]*groups=\{grouped\}[\s\S]*value=\{currentValue\}[\s\S]*loading=\{pending\}/);
+    assert.match(ui, /<Selector[\s\S]*options=\{options\}[\s\S]*hasSearch/);
+    assert.match(ui, /buildModelPickerOptions\(props\.groups, props\.leadingOption\)/);
+    assert.doesNotMatch(ui, /useCombobox|usePopover|filterModelPickerOption|modelPickerHasCatalogMatches/);
+    assert.doesNotMatch(modelPicker, /role="(?:listbox|option)"|aria-activedescendant|scrollIntoView/);
     assert.doesNotMatch(ui, /@base-ui\/react\/combobox|BaseCombobox/);
-    assert.match(ui, /footer=\{\(\{ open, close \}\) => \(/);
-    assert.match(ui, /props\.footer\?\.\(\{ open: isOpen, close \}\)/);
-    // Maka retains only product grouping and provider marks; Astryx owns the
-    // combobox selection, keyboard, and native-popover behavior.
-    assert.match(ui, /filteredGroups\.map\(\(group\) => \{/);
-    assert.match(ui, /renderProviderMark\?\.\(group\.providerType\)/);
-    assert.match(ui, /className="modelPickerGroupLogo"/);
-    assert.match(ui, /className="modelPickerOptionIndicator"[\s\S]*selected \? <Check/);
-    assert.match(ui, /role="option"[\s\S]*aria-selected=\{selected\}/);
-    assert.doesNotMatch(uiPrimitives, /useCombobox/, 'Combobox stays private to ModelPicker until a second real consumer appears');
+    assert.match(ui, /<SelectorOption[\s\S]*icon=\{providerMark\}/);
+    assert.match(ui, /className="modelPickerProviderMark"[\s\S]*data-provider=\{modelOption\.providerType\}/);
+    assert.match(ui, /leadingOption=\{!currentKnownChoice/);
+    assert.doesNotMatch(`${chatModelSwitcher}\n${modelPicker}`, /\bfooter=|pinnedItem|DropdownMenu/);
     assert.doesNotMatch(ui, /<select\b[\s\S]*aria-label="切换当前会话模型"/);
-    assert.match(ui, /<span className="maka-model-switcher-label">\{pending \? copy\.switching : copy\.model\}<\/span>/);
+    assert.match(ui, /className="maka-model-selection-controls"[\s\S]*<ThinkingLevelSelector/);
     assert.match(styles, /\.maka-model-switcher\s*\{/);
     assert.match(styles, /\.maka-model-switcher\[data-pending="true"\]\s*\{[\s\S]*cursor: progress;[\s\S]*\}/);
-    assert.match(styles, /\.maka-model-switcher-trigger\s*\{/);
-    // The product-specific shell owns only grouping and its fixed footer.
-    assert.match(styles, /\.modelPickerPopup\s*\{[\s\S]*display:\s*flex;[\s\S]*overflow:\s*hidden;[\s\S]*\}/);
-    assert.match(styles, /\.modelPickerList\s*\{[\s\S]*overflow-y:\s*auto;[\s\S]*\}/);
-    assert.match(styles, /\.maka-thinking-section\s*\{[\s\S]*flex:\s*0 0 auto;[\s\S]*\}/);
-    assert.match(styles, /\.modelPickerOption\s*\{[^}]*min-height:\s*var\(--h-control-lg\)[^}]*\}/);
+    assert.match(styles, /\.maka-model-selection-controls\s*\{[\s\S]*display:\s*inline-flex;[\s\S]*gap:/);
+    assert.match(styles, /\.modelPickerOptionLabel\s*\{[\s\S]*text-overflow:\s*ellipsis;/);
+    assert.doesNotMatch(styles, /\.modelPicker(?:Popup|List|SearchInput|Empty)|\.maka-thinking-(?:section|flyout)/);
   });
 });

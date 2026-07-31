@@ -284,7 +284,6 @@ const TIER_TOKENS: Record<Tier, Set<string>> = {
 const ALL_TIER_CLASSES = ['rounded-sm', 'rounded-md', 'rounded-lg', 'rounded-xl', 'rounded-full', 'rounded-[var(--radius-pill)]', 'rounded-[var(--radius-control)]', 'rounded-[var(--radius-surface)]', 'rounded-[var(--radius-modal)]'];
 
 const COMPONENT_RADIUS: ComponentRadiusCheck[] = [
-  { file: 'packages/ui/src/ui.tsx', name: 'inputClasses', tier: 'control' },
   // Dialog radius is owned by Astryx Dialog.
   // TabsTrigger/TabsList were dropped from this table when #499 P0-3 moved
   // them to primitives/tabs.tsx, on the stated grounds that they became

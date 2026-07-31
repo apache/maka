@@ -6,21 +6,28 @@ import { readRenderedSessionHistorySource } from './session-history-owner-source
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 const CHAT_MODEL_SWITCHER_PATH = resolve(REPO_ROOT, 'packages', 'ui', 'src', 'chat-model-switcher.tsx');
+const MODEL_PICKER_PATH = resolve(REPO_ROOT, 'packages', 'ui', 'src', 'model-picker.tsx');
 const SESSION_SETTINGS_ACTIONS_PATH = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'app-shell-session-settings-actions.ts');
 const SESSION_ROW_ACTIONS_PATH = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'app-shell-session-row-actions.ts');
 
 describe('renderer async action boundary contract', () => {
   it('keeps chat model switching on a rejection-safe local async boundary', async () => {
-    const [source, settingsActions] = await Promise.all([
+    const [source, modelPicker, settingsActions] = await Promise.all([
       readFile(CHAT_MODEL_SWITCHER_PATH, 'utf8'),
+      readFile(MODEL_PICKER_PATH, 'utf8'),
       readFile(SESSION_SETTINGS_ACTIONS_PATH, 'utf8'),
     ]);
 
     assert.doesNotMatch(source, /runAsyncActionBoundary|async-action-boundary/, 'ChatModelSwitcher must not depend on a shared swallow-errors helper');
     assert.match(
       source,
-      /void \(async \(\) => \{[\s\S]*try \{[\s\S]*await props\.onChange\?\.\(next\);[\s\S]*\} catch \{[\s\S]*\} finally \{[\s\S]*const owner = pendingModelChangeRef\.current;[\s\S]*setLocalPending\(false\);[\s\S]*\}[\s\S]*\}\)\(\);/,
-      'model switching must catch delegated action rejection locally and always release local pending chrome',
+      /onValueChange=\{async \(value\) => \{[\s\S]*try \{[\s\S]*await props\.onChange\?\.\(next\);[\s\S]*\} catch \{[\s\S]*\}[\s\S]*\}\}/,
+      'model switching must contain delegated action rejection at the product boundary',
+    );
+    assert.match(
+      modelPicker,
+      /selectionGuard\.run\(value, async \(acceptedValue\) => \{[\s\S]*setSelectionPending\(true\);[\s\S]*try \{[\s\S]*await props\.onValueChange\(acceptedValue\);[\s\S]*\} finally \{[\s\S]*setSelectionPending\(false\);/,
+      'the shared ModelPicker boundary must reject concurrent selections and always release pending chrome',
     );
     assert.match(
       settingsActions,

@@ -24,9 +24,7 @@ export interface SharedUiCopy {
     clear: string;
   };
   modelPicker: {
-    empty: string;
     searchPlaceholder: string;
-    searchAriaLabel: string;
   };
   moduleHubs: {
     extensions: {
@@ -113,9 +111,7 @@ const SHARED_UI_COPY = {
       clear: '清除{label}',
     },
     modelPicker: {
-      empty: '没有匹配的模型',
       searchPlaceholder: '搜索模型…',
-      searchAriaLabel: '搜索模型',
     },
     moduleHubs: {
       extensions: {
@@ -186,9 +182,7 @@ const SHARED_UI_COPY = {
       clear: 'Clear {label}',
     },
     modelPicker: {
-      empty: 'No matching models',
       searchPlaceholder: 'Search models…',
-      searchAriaLabel: 'Search models',
     },
     moduleHubs: {
       extensions: {

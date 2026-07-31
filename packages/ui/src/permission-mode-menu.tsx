@@ -8,8 +8,9 @@ import {
 } from '@astryxdesign/core/Selector';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import type { PickerTriggerAppearance } from './ui.js';
 import { cn } from './utils.js';
+
+type PermissionModeAppearance = 'field' | 'quiet';
 
 export interface PermissionModeMeta {
   label: string;
@@ -60,7 +61,7 @@ export function PermissionModeSelect(props: {
   disabledReason?: string;
   ariaLabel?: string;
   className?: string;
-  appearance?: PickerTriggerAppearance;
+  appearance?: PermissionModeAppearance;
 }) {
   const locale = useUiLocale();
   const permissionCopy = getConversationCopy(locale).permissions;

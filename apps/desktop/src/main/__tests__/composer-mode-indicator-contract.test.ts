@@ -47,11 +47,10 @@ function isModeIndicatorRestSelector(selector: string): boolean {
 }
 
 describe('composer active-mode indicator visual contract', () => {
-  it('shares the composer picker footprint and hover treatment without a private geometry path', async () => {
+  it('shares the quiet composer footprint without absorbing Astryx model selectors', async () => {
     const cssRules = rules(await readFile(COMPOSER_CSS, 'utf8'));
     const baseSelectors = [
       '.maka-composer-left-controls .permissionModeSelector',
-      '.maka-composer-right-controls .maka-model-switcher-trigger',
       '.maka-composer-model-chip',
       '.maka-composer-mode-indicator',
     ];
@@ -61,7 +60,7 @@ describe('composer active-mode indicator visual contract', () => {
 
     assert.ok(
       baseRule,
-      'permission, model, and active-mode controls must share one base rule',
+      'permission, static model, and active-mode controls must share one base rule',
     );
     assert.equal(declaration(baseRule.body, 'height'), '26px');
     assert.equal(declaration(baseRule.body, 'gap'), 'var(--space-1)');
@@ -76,7 +75,6 @@ describe('composer active-mode indicator visual contract', () => {
 
     const hoverSelectors = [
       '.maka-composer-left-controls .permissionModeSelector:hover',
-      '.maka-composer-right-controls .maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled])',
       '.maka-composer-model-chip:hover',
       '.maka-composer-mode-indicator:hover:not(:disabled)',
     ];
@@ -85,7 +83,7 @@ describe('composer active-mode indicator visual contract', () => {
     );
     assert.ok(
       hoverRule,
-      'permission, model, and active-mode controls must share one hover rule',
+      'permission, static model, and active-mode controls must share one hover rule',
     );
     assert.equal(
       declaration(hoverRule.body, 'background'),

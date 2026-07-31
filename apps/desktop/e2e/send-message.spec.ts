@@ -18,7 +18,7 @@ test('send a message and see the fake backend stream a reply', async ({ window: 
 
   await expect(page.getByText(/Fake backend received: hello e2e/)).toBeVisible();
   await expect(
-    page.locator('.maka-model-switcher-trigger .maka-composer-provider-mark[data-provider="anthropic"] svg'),
+    page.locator('.maka-model-switcher-trigger .modelPickerProviderMark[data-provider="anthropic"] svg'),
   ).toBeVisible();
 });
 

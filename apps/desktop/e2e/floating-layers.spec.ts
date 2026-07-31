@@ -74,14 +74,15 @@ test('model picker only exposes a rendered active descendant', async ({
 }) => {
   await page.getByRole('button', { name: /选择新对话模型/ }).click();
 
-  const search = page.getByRole('combobox', { name: '搜索模型' });
+  const search = page.getByPlaceholder('搜索模型');
   await expect(search).toBeFocused();
 
   await search.fill('no-such-model');
-  await expect(page.getByText('没有匹配的模型')).toBeVisible();
+  await expect(page.getByRole('listbox').getByText('No results found')).toBeVisible();
   await expect(search).not.toHaveAttribute('aria-activedescendant');
 
   await search.fill('sonnet');
+  await search.press('ArrowDown');
   const activeDescendant = await search.getAttribute('aria-activedescendant');
   expect(activeDescendant).not.toBeNull();
   await expect(page.locator(`#${activeDescendant}`)).toHaveRole('option');
@@ -92,9 +93,9 @@ test('model picker keeps keyboard highlight inside the scroll viewport', async (
 }) => {
   await page.getByRole('button', { name: /选择新对话模型/ }).click();
 
-  const search = page.getByRole('combobox', { name: '搜索模型' });
-  const popup = page.locator('.modelPickerPopup');
-  const listbox = page.getByRole('listbox', { name: /选择新对话模型/ });
+  const search = page.getByPlaceholder('搜索模型');
+  const listbox = page.getByRole('listbox');
+  const popup = listbox.locator('xpath=ancestor::*[@popover][1]');
   const options = listbox.getByRole('option');
   const optionCount = await options.count();
   expect(optionCount).toBeGreaterThan(8);
@@ -114,7 +115,6 @@ test('model picker keeps keyboard highlight inside the scroll viewport', async (
   const activeDescendant = await search.getAttribute('aria-activedescendant');
   expect(activeDescendant).not.toBeNull();
   const activeOption = page.locator(`[id="${activeDescendant}"]`);
-  await expect(activeOption).toHaveAttribute('data-highlighted', '');
   await expect.poll(() => listbox.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect
     .poll(() =>
@@ -127,6 +127,80 @@ test('model picker keeps keyboard highlight inside the scroll viewport', async (
       }),
     )
     .toBe(true);
+});
+
+test('model Selector owns hit testing, focus restoration, and aligned long rows', async ({
+  window: page,
+}) => {
+  const trigger = page.getByRole('button', { name: /选择新对话模型/ });
+  await trigger.click();
+
+  const search = page.getByPlaceholder('搜索模型');
+  const listbox = page.getByRole('listbox');
+  const popup = listbox.locator('xpath=ancestor::*[@popover][1]');
+  await expect(search).toBeFocused();
+  await expect
+    .poll(() => trigger.evaluate((element) => getComputedStyle(element).pointerEvents))
+    .toBe('auto');
+  await expect
+    .poll(() => popup.evaluate((element) => getComputedStyle(element).pointerEvents))
+    .toBe('auto');
+
+  const brandedRow = listbox.getByRole('option').filter({ has: page.locator('.modelPickerProviderMark') }).first();
+  await expect(brandedRow).toBeVisible();
+  await expect
+    .poll(() =>
+      brandedRow.evaluate((element) => {
+        const mark = element.querySelector('.modelPickerProviderMark');
+        const label = element.querySelector('.modelPickerOptionLabel');
+        if (!mark || !label) return false;
+        const markRect = mark.getBoundingClientRect();
+        const labelRect = label.getBoundingClientRect();
+        return Math.abs(markRect.top + markRect.height / 2 - (labelRect.top + labelRect.height / 2)) <= 1;
+      }),
+    )
+    .toBe(true);
+
+  await search.fill('sonnet');
+  const longLabel = listbox.locator('.modelPickerOptionLabel').first();
+  await expect(longLabel).toBeVisible();
+  await expect
+    .poll(() => longLabel.evaluate((element) => getComputedStyle(element).textOverflow))
+    .toBe('ellipsis');
+
+  await page.keyboard.press('Escape');
+  await expect(popup).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
+test('model and adjacent thinking Selectors persist one real Electron journey', async ({
+  modelPickerLongWindow: page,
+}) => {
+  const thinkingTrigger = page.getByRole('combobox', { name: '思考级别' });
+  await thinkingTrigger.click();
+  await page.getByRole('option', { name: '关', exact: true }).click();
+  await expect(thinkingTrigger).toContainText('关');
+
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill('model selector persistence journey');
+  await composer.press('Enter');
+  await expect(
+    page.getByText(/Fake backend received: model selector persistence journey/),
+  ).toBeVisible();
+
+  const activeThinkingTrigger = page.getByRole('combobox', { name: '思考级别' });
+  await expect(activeThinkingTrigger).toContainText('关');
+  await page.reload();
+  await expect(page.locator('.maka-composer-textarea')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '思考级别' })).toContainText('关');
+
+  const modelTrigger = page.getByRole('button', { name: '切换当前会话模型' });
+  await modelTrigger.click();
+  const search = page.getByPlaceholder('搜索模型');
+  await search.fill('claude-e2e-1');
+  await page.getByRole('option', { name: 'claude-e2e-1', exact: true }).click();
+  await expect(page.getByText('已切换当前会话模型')).toBeVisible();
+  await expect(modelTrigger).toContainText('claude-e2e-1');
 });
 
 test('keyboard help lets Astryx restore its opener on close', async ({

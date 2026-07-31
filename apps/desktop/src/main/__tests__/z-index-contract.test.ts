@@ -129,7 +129,7 @@ describe('PR-FE-BUG-HUNT-9 z-index contract', () => {
     const source = `${ui}\n${index}\n${permissionMode}\n${modelPicker}`;
     assert.doesNotMatch(source, /@base-ui\/react\/(?:select|combobox)/);
     assert.match(source, /@astryxdesign\/core\/Selector/);
-    assert.match(modelPicker, /@astryxdesign\/core\/Popover/);
+    assert.doesNotMatch(modelPicker, /@astryxdesign\/core\/Popover|usePopover/);
     assert.doesNotMatch(source, /z-\[var\(--z-overlay\)\]/);
   });
 

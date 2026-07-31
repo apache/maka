@@ -18,11 +18,12 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
     assert.doesNotMatch(source, /settings-select/);
   });
 
-  it('drives the searchable model picker through Astryx combobox and popover hooks', async () => {
+  it('composes the searchable model picker directly from Astryx Selector', async () => {
     const source = await readUiSource('model-picker.tsx');
 
-    assert.match(source, /useCombobox[\s\S]*from '@astryxdesign\/core\/Selector'/);
-    assert.match(source, /usePopover[\s\S]*from '@astryxdesign\/core\/Popover'/);
+    assert.match(source, /Selector,[\s\S]*SelectorOption[\s\S]*from '@astryxdesign\/core\/Selector'/);
+    assert.match(source, /<Selector[\s\S]*hasSearch[\s\S]*renderOption=/);
+    assert.doesNotMatch(source, /useCombobox|usePopover/);
     assert.doesNotMatch(source, /@base-ui\/react\/combobox|BaseCombobox/);
   });
 
@@ -51,7 +52,7 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
     assert.doesNotMatch(barrel, /primitives\/menu/);
   });
 
-  it('styles open Astryx menu and picker triggers through their public ARIA state', async () => {
+  it('styles open Astryx menus through public ARIA state without restyling Selector', async () => {
     const [sidebar, modelSwitcher] = await Promise.all([
       readFile(join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'sidebar.css'), 'utf8'),
       readFile(join(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles', 'model-switcher.css'), 'utf8'),
@@ -60,7 +61,7 @@ describe('#1565 PR 6 Astryx floating-component authority', () => {
 
     assert.doesNotMatch(styles, /(?:maka-list-row-menu|maka-model-switcher)[^{]*data-popup-open/);
     assert.match(sidebar, /\.maka-list-row-menu-trigger\[aria-expanded="true"\]/);
-    assert.match(modelSwitcher, /\.maka-model-switcher-trigger\[aria-expanded="true"\]/);
+    assert.doesNotMatch(modelSwitcher, /\.maka-model-switcher-trigger\[aria-expanded="true"\]/);
   });
 
   it('makes Astryx Dialog the only modal behavior authority', async () => {

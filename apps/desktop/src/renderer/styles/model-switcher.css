@@ -3,7 +3,7 @@
   align-items: center;
   margin: 0 var(--space-1) var(--space-0-5) 0;
   min-width: 0;
-  max-width: min(320px, 28vw);
+  max-width: min(440px, 42vw);
   -webkit-app-region: no-drag;
 }
 
@@ -16,155 +16,58 @@
   cursor: progress;
 }
 
-.maka-model-switcher-trigger {
-  width: 100%;
-  min-width: 120px;
-  max-width: min(320px, 28vw);
-  height: var(--h-control-sm);
+/* Product layout only. Astryx Selector owns both controls' chrome and states. */
+.maka-model-selection-controls {
   display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-1-5);
-  padding: 1px var(--space-1-5) 1px var(--space-2);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--foreground-5);
-  color: var(--foreground);
-  font-size: var(--font-size-caption);
-  box-shadow: none;
-  /* PR-MODEL-SWITCHER-TACTILE-0 (WAWQAQ msg `ed67a267`, skills round
-     task #116): tactile press feedback so the switch-model flow
-     feels physical. Same convention as the other interactive
-     surfaces in this round (artifact-row, session-row,
-     onboarding-card, prompt-chip). */
-  transition: background var(--duration-base) var(--ease-out-strong);
-}
-
-.maka-model-switcher-trigger:hover:not(:disabled):not([data-disabled]) {
-  background: var(--state-hover-bg);
-}
-
-.maka-model-switcher-trigger:active:not(:disabled):not([data-disabled]) {
-  background: var(--state-selected-bg);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-model-switcher-trigger {
-    transition: background 0ms;
-  }
-}
-
-.maka-model-switcher-trigger[aria-expanded="true"] {
-  background: var(--background);
-  box-shadow: var(--shadow-minimal-flat);
-}
-
-.maka-model-switcher-trigger:disabled,
-.maka-model-switcher-trigger[data-disabled] {
-  cursor: not-allowed;
-}
-
-.maka-model-switcher-label {
-  flex: 0 0 auto;
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  color: var(--muted-foreground);
-}
-
-.maka-model-switcher-value {
+  gap: var(--space-1);
   min-width: 0;
-  max-width: 180px;
+  max-width: 100%;
+}
+
+.maka-model-switcher-trigger,
+.maka-new-chat-model-selector {
+  min-width: 120px;
+  max-width: min(260px, 28vw);
+}
+
+.maka-thinking-level-selector {
+  width: 104px;
+}
+
+.modelPickerProviderMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 1rem;
+  color: var(--foreground);
+}
+
+.modelPickerProviderMark svg,
+.modelPickerProviderMark img,
+.modelPickerProviderMark .providerLogo,
+.modelPickerProviderMark .providerAssetMask {
+  width: 100%;
+  height: 100%;
+}
+
+.modelPickerOption {
+  min-width: 0;
+}
+
+.modelPickerOptionLabel {
+  display: block;
+  min-width: 0;
+  max-width: min(260px, 56vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
-/* The popup, group headings, and option rows now render through the shared
-   `.settingsSelectMenu*` recipe (see the settings-select family above); the
-   trigger chrome above stays bespoke to the composer pill. */
-
-/* Thinking-level variant row + flyout (二级菜单 at the bottom of a model
-   picker popup). The row mirrors an option row so it reads as part of the
-   menu; the flyout is a portaled popover listing the levels. */
-.maka-thinking-section {
-  flex: 0 0 auto;
-  padding: 0 var(--space-2) var(--space-2);
-  background: var(--background);
-}
-
-.maka-thinking-section-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  min-height: 32px;
-  border-radius: var(--radius-surface);
-  padding: var(--space-1-5) var(--space-3);
-  font-size: var(--font-size-ui);
-  color: var(--foreground);
-}
-.maka-thinking-section-row:hover:not([data-disabled]) {
-  background: var(--state-hover-bg);
-}
-.maka-thinking-section-row[data-disabled] {
-  cursor: not-allowed;
-  color: var(--muted-foreground);
-}
-.maka-thinking-section-label { font-weight: var(--font-weight-semibold); }
-.maka-thinking-section-value {
-  display: inline-flex; align-items: center; gap: var(--space-1-5);
-  color: var(--muted-foreground);
-}
-.maka-thinking-section-row:not([data-disabled]) .maka-thinking-section-value { color: var(--foreground); }
-.maka-thinking-section-chev { font-size: var(--font-size-caption); opacity: var(--opacity-muted); }
-
-.maka-thinking-flyout { width: max-content; min-width: 120px; padding: var(--space-1); }
-.maka-thinking-flyout-item {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  width: 100%; min-height: 32px; padding: var(--space-1-5) var(--space-3);
-  border: none; border-radius: var(--radius-surface); background: transparent;
-  color: var(--foreground); font-size: var(--font-size-ui); font-weight: var(--font-weight-medium); text-align: left;
-}
-.maka-thinking-flyout-item:hover { background: var(--state-hover-bg); }
-.maka-thinking-flyout-item[data-selected] { background: var(--state-selected-bg); }
-.maka-thinking-flyout-check { color: var(--foreground); font-size: var(--font-size-caption); opacity: var(--opacity-pending); }
-
-/* Inline level tag shown in the model chip when a non-default level is set. */
-.maka-thinking-level-tag {
-  margin-left: var(--space-1-5); padding: 0 var(--space-1-5); border-radius: var(--radius-pill);
-  background: var(--state-selected-bg); color: var(--foreground);
-  font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); line-height: var(--leading-snug); flex: 0 0 auto;
-}
-
-.modelPickerSearchInput {
-  flex: 0 0 auto;
-  height: var(--h-control-md);
-  padding: 0 var(--space-3);
-  margin-bottom: var(--space-1);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background);
-}
-
-.modelPickerList {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: var(--space-1) 0;
-}
-
-.modelPickerSearchInput:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.modelPickerEmpty {
-  padding: var(--space-4) var(--space-3);
-  text-align: center;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
+@media (max-width: 720px) {
+  .maka-thinking-level-selector {
+    width: 92px;
+  }
 }

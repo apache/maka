@@ -131,8 +131,8 @@ function repoSource(file: string): string {
 
 describe('PR4 remaining shared UI copy contract', () => {
   it('selects complete independent copy for both locales', () => {
-    assert.equal(getSharedUiCopy('zh').modelPicker.empty, '没有匹配的模型');
-    assert.equal(getSharedUiCopy('en').modelPicker.empty, 'No matching models');
+    assert.equal(getSharedUiCopy('zh').modelPicker.searchPlaceholder, '搜索模型…');
+    assert.equal(getSharedUiCopy('en').modelPicker.searchPlaceholder, 'Search models…');
     assert.equal(getSharedUiCopy('en').taskLedger.status.pending, 'Pending');
     assert.equal(getDailyReviewCopy('zh').page.title, '每日回顾');
     assert.equal(getDailyReviewCopy('en').page.title, 'Daily review');
