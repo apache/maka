@@ -406,13 +406,6 @@
   font-size: var(--font-size-caption);
 }
 
-.maka-mcp-server-details summary,
-.maka-mcp-advanced summary {
-  width: max-content;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-}
-
 .maka-mcp-tool-list {
   display: flex;
   flex-wrap: wrap;
@@ -482,10 +475,9 @@
   padding-top: var(--space-3);
 }
 
-.maka-mcp-advanced > div {
+.maka-mcp-advanced-fields {
   display: grid;
   gap: var(--space-4);
-  padding-top: var(--space-4);
 }
 
 .maka-mcp-json-field {

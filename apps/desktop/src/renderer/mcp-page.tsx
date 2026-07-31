@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
+import { Collapsible } from '@astryxdesign/core';
 import {
   Button,
   Badge,
@@ -619,13 +620,16 @@ function McpServerRow(props: {
       </div>
       {props.status?.error && <div className="maka-mcp-server-error" role="alert">{props.status.error}</div>}
       {(props.status?.tools.length || props.status?.stderrTail?.length) ? (
-        <details className="maka-mcp-server-details">
-          <summary>{props.status?.tools.length ? props.copy.row.tools(props.status.tools.length) : props.copy.row.diagnostics}</summary>
+        <Collapsible
+          className="maka-mcp-server-details"
+          defaultIsOpen={false}
+          trigger={props.status?.tools.length ? props.copy.row.tools(props.status.tools.length) : props.copy.row.diagnostics}
+        >
           {props.status?.tools.length ? (
             <div className="maka-mcp-tool-list">{props.status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
           ) : null}
           {props.status?.stderrTail?.length ? <pre>{props.status.stderrTail.join('\n')}</pre> : null}
-        </details>
+        </Collapsible>
       ) : null}
     </li>
   );
@@ -739,15 +743,15 @@ function McpEditorDialog(props: {
                 <>
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.command} value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
                   <TextArea label={props.copy.editor.arguments} description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
-                  <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
+                  <Collapsible className="maka-mcp-advanced" defaultIsOpen={false} trigger={props.copy.editor.advanced}><div className="maka-mcp-advanced-fields">
                     <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                     <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
-                  </div></details>
+                  </div></Collapsible>
                 </>
               ) : (
                 <>
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
-                  <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
+                  <Collapsible className="maka-mcp-advanced" defaultIsOpen={false} trigger={props.copy.editor.advanced}><div className="maka-mcp-advanced-fields">
                     <Selector
                       value={props.state.draft.transport}
                       options={[
@@ -760,7 +764,7 @@ function McpEditorDialog(props: {
                       width="100%"
                     />
                     <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
-                  </div></details>
+                  </div></Collapsible>
                 </>
               )}
             </div>

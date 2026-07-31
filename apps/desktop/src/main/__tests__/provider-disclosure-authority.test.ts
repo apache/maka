@@ -17,3 +17,13 @@ test('provider advanced settings delegate disclosure behavior to Astryx Collapsi
   const css = read('apps/desktop/src/renderer/styles/settings/provider-editor.css');
   assert.doesNotMatch(css, /\.providerAdvancedSettings\s+summary\b/);
 });
+
+test('MCP diagnostics and advanced fields delegate disclosure behavior to Astryx Collapsible', () => {
+  const source = read('apps/desktop/src/renderer/mcp-page.tsx');
+
+  assert.match(source, /\bCollapsible\b/);
+  assert.doesNotMatch(source, /<(?:details|summary)\b/);
+
+  const css = read('apps/desktop/src/renderer/styles/module-pages/mcp.css');
+  assert.doesNotMatch(css, /\.maka-mcp-(?:server-details|advanced)\s+summary\b/);
+});
