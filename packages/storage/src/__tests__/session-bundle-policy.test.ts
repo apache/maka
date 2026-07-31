@@ -61,7 +61,6 @@ test('exports one session only and excludes credential/config canaries', async (
       ['deep-research/events.jsonl', '{"research":"selected"}\n'],
       ['tasks.json', '{"tasks":[]}\n'],
       ['task-events.jsonl', '{"task":"selected"}\n'],
-      ['agent-mailbox.jsonl', '{"mail":"selected"}\n'],
       ['plan-events.jsonl', '{"planEvent":"selected"}\n'],
       ['plans.json', '{"plans":[]}\n'],
     ] as const;

@@ -155,9 +155,6 @@ type ShellCopy = {
     refreshFailedTitle: string;
     sessionStartFailedTitle: string;
     sessionStartFailedFallback: string;
-    expertTeamFailedTitle: string;
-    expertTeamFailedFallback: string;
-    expertTeamNotFound: string;
   };
   projectActions: {
     currentProject: string;
@@ -709,9 +706,6 @@ const SHELL_COPY_BY_LOCALE = {
       refreshFailedTitle: '刷新对话失败',
       sessionStartFailedTitle: '开始对话失败',
       sessionStartFailedFallback: '对话暂时无法开始，请稍后重试。',
-      expertTeamFailedTitle: '开始专家团失败',
-      expertTeamFailedFallback: '专家团暂时无法开始，请稍后重试。',
-      expertTeamNotFound: '找不到该专家团。',
     },
     projectActions: {
       currentProject: '当前项目',
@@ -1191,9 +1185,6 @@ const SHELL_COPY_BY_LOCALE = {
       refreshFailedTitle: 'Could not refresh conversation',
       sessionStartFailedTitle: 'Could not start conversation',
       sessionStartFailedFallback: 'The conversation could not be started. Try again later.',
-      expertTeamFailedTitle: 'Could not start expert team',
-      expertTeamFailedFallback: 'The expert team could not be started. Try again later.',
-      expertTeamNotFound: 'That expert team could not be found.',
     },
     projectActions: {
       currentProject: 'Current project',

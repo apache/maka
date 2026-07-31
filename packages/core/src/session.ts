@@ -44,7 +44,6 @@ import {
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
 export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
-export { EXPERT_TEAM_LABEL_PREFIX, isExpertTeamSession } from './expert-team.js';
 
 export const SESSION_STATUSES = [
   'active',

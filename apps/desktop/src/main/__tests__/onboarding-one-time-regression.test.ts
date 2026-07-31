@@ -29,15 +29,12 @@ function readRenderer(relativePath: string): string {
 
 // #1433: this used to key off `if (result.ok)` — the shape of the deleted
 // `quickChat:start` union. `startModeSession`, the action that replaced quick
-// chat, has no `result.ok` at all, so that single loose regex silently drifted
-// onto `handleExpertTeamStart` and stopped guarding the path it was written
-// for. Both surviving entry points hold the invariant; name each one.
+// chat, has no `result.ok`, so guard its success path directly.
 const MILESTONE_ENTRY_POINTS = [
   {
     fn: 'startModeSession',
     successPath: /const session = await window\.maka\.sessions\.create\([\s\S]*?return true;/,
   },
-  { fn: 'handleExpertTeamStart', successPath: /if \(result\.ok\) \{[\s\S]*?return true;/ },
 ] as const;
 
 describe('onboarding one-time regression — session-start milestone best-effort', () => {

@@ -194,8 +194,6 @@ const baseComposerProps: ComposerProps = {
   // ~1851-1960), so the daily composer renders the upload button, the
   // modes menu (Plan / Swarm), and the Skills picker. Omitting them here
   // understated the persistent element count in every shell story.
-  // expertTeams stays empty — most users have none configured; the modes
-  // menu then shows just the switches, as it does for them.
   onPickAttachments: noop,
   planModeActive: false,
   onPlanModeChange: noop,

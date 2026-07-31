@@ -581,7 +581,7 @@ describe('permission response IPC boundary', () => {
       'initial mount should call bootstrapSessions(), not raw refreshSessions(), for boot-only selection',
     );
     const modeSessionHandler = renderer.match(
-      /async function startModeSession\([\s\S]*?\): Promise<boolean> \{[\s\S]*?\n  async function handleExpertTeamStart/,
+      /async function startModeSession\([\s\S]*?\): Promise<boolean> \{[\s\S]*?\n  return \{ startModeSession \};/,
     );
     assert.ok(modeSessionHandler, 'startModeSession() must exist');
     assert.match(

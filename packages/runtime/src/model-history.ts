@@ -845,7 +845,7 @@ export function stripSteeringMessages(
   });
 }
 
-const LEGACY_SUBAGENT_RESULT_TOOL_NAMES = new Set(['Task', 'agent_spawn', 'expert_dispatch']);
+const LEGACY_SUBAGENT_RESULT_TOOL_NAMES = new Set(['Task', 'agent_spawn']);
 
 function isLegacySubagentToolResultCandidate(toolName: string, value: unknown): boolean {
   if (!LEGACY_SUBAGENT_RESULT_TOOL_NAMES.has(toolName)) return false;

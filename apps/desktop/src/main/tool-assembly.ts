@@ -1,7 +1,5 @@
 import { app, nativeImage, powerMonitor } from 'electron';
 import {
-  buildAgentTeamChildTools,
-  buildAgentTeamLeadTools,
   buildAskUserQuestionTool,
   buildRequestSandboxBoundaryTool,
   buildChildAgentTools,
@@ -18,7 +16,7 @@ import {
 } from '@maka/runtime';
 import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
-import { createAgentMailboxStore, createSettingsStore } from '@maka/storage';
+import { createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
@@ -44,7 +42,6 @@ import { buildDesktopBuiltinTools } from './desktop-builtin-tools.js';
 type TaskLedgerWiring = ReturnType<typeof createMainTaskLedgerWiring>;
 type AutomationWiring = ReturnType<typeof createMainAutomationWiring>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
-type AgentMailboxStore = ReturnType<typeof createAgentMailboxStore>;
 type SettingsStore = ReturnType<typeof createSettingsStore>;
 
 export interface DesktopToolAssemblyDeps {
@@ -56,7 +53,6 @@ export interface DesktopToolAssemblyDeps {
   taskLedgerWiring: TaskLedgerWiring;
   automationWiring: AutomationWiring;
   goalWiring: GoalWiring;
-  agentMailboxStore: AgentMailboxStore;
   settingsStore: SettingsStore;
   shellRuns: ShellRunProcessManager;
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
@@ -84,7 +80,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     taskLedgerWiring,
     automationWiring,
     goalWiring,
-    agentMailboxStore,
     settingsStore,
     shellRuns,
     snapshotReadImage,
@@ -173,14 +168,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       : undefined,
   );
   const agentTools: MakaTool[] = buildParentAgentTools({
-    taskLedger: taskLedgerStore,
-  });
-  const agentTeamLeadTools = buildAgentTeamLeadTools({
-    mailbox: agentMailboxStore,
-    taskLedger: taskLedgerStore,
-  });
-  const agentTeamChildTools = buildAgentTeamChildTools({
-    mailbox: agentMailboxStore,
     taskLedger: taskLedgerStore,
   });
   const deferredTools: MakaTool[] = [
@@ -276,7 +263,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
       } : {}),
     }),
     webSearchTool,
-    ...agentTeamChildTools,
   ]);
 
   return {
@@ -285,7 +271,6 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     computerUse,
     computerUseOverlay,
     computerUseTools,
-    agentTeamLeadTools,
     desktopProductToolSurface,
     builtinTools: [...desktopProductToolSurface.tools],
     childAgentTools,

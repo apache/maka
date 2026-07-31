@@ -80,7 +80,6 @@ export const MAIN_PROCESS_SOURCE_REPO_PATHS: readonly string[] = [
   'apps/desktop/src/main/plan-reminders-main.ts',
   'apps/desktop/src/main/project-context-root.ts',
   'apps/desktop/src/main/project-root-controller.ts',
-  'apps/desktop/src/main/session-entry-ipc-main.ts',
   'apps/desktop/src/main/session-execution-ipc-main.ts',
   'apps/desktop/src/main/create-session-input.ts',
   'apps/desktop/src/main/session-branch.ts',

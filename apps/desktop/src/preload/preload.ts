@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import type {
-  ExpertTeamStartResult,
-  ExpertTeamSummary,
   MakaBridge,
   OnboardingSnapshot,
   PermissionActionResult,
@@ -496,14 +494,6 @@ const makaBridge = {
     },
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot> {
       return ipcRenderer.invoke('onboarding:clearMilestone', id);
-    },
-  },
-  expertTeam: {
-    list(): Promise<{ teams: ExpertTeamSummary[] }> {
-      return ipcRenderer.invoke('expertTeam:list');
-    },
-    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult> {
-      return ipcRenderer.invoke('expertTeam:start', input);
     },
   },
   permissions: {

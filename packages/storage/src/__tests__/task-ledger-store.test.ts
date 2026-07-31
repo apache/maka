@@ -1047,7 +1047,7 @@ describe('TaskLedgerStore', () => {
     assert.ok(first && second);
     const owner = {
       actor: 'child_agent' as const,
-      agentId: 'expert:code-review:correctness-reviewer',
+      agentId: 'local-read',
       turnId: 'child-turn',
     };
     const scope = { parentRunId: 'lead-run' };

@@ -3,7 +3,6 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { createAgentMailboxStore, createSqliteAgentMailboxStore } from '../agent-mailbox-store.js';
 import { createDeepResearchStore, createSqliteDeepResearchStore } from '../deep-research-store.js';
 import { createPlanReminderStore, createSqlitePlanReminderStore } from '../plan-reminder-store.js';
 import { createPlanStore, createSqlitePlanStore } from '../plan-store.js';
@@ -17,7 +16,6 @@ describe('SQLite workflow cutover', () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-sqlite-workflow-'));
     let planId = 0;
     let researchId = 0;
-    let mailboxId = 0;
     try {
       const legacyTasks = createTaskLedgerStore(root);
       const {
@@ -42,24 +40,6 @@ describe('SQLite workflow cutover', () => {
       });
       await legacyResearch.start(SESSION_ID, 'Map the workflow stores', 'deep');
 
-      const legacyMailbox = createAgentMailboxStore(root, {
-        newId: () => `mail-${++mailboxId}`,
-        now: () => 300 + mailboxId,
-      });
-      await legacyMailbox.send(SESSION_ID, {
-        teamId: 'workflow-team',
-        parentRunId: 'parent-run',
-        kind: 'message',
-        from: {
-          role: 'member',
-          agentId: 'worker-a',
-          runId: 'run-a',
-          turnId: 'turn-a',
-        },
-        to: { role: 'member', agentId: 'worker-b' },
-        content: 'Legacy mailbox row',
-      });
-
       const legacyReminders = createPlanReminderStore(root);
       const legacyReminder = await legacyReminders.create({
         title: 'Review migration',
@@ -72,7 +52,6 @@ describe('SQLite workflow cutover', () => {
         join(root, 'sessions', SESSION_ID, 'plan-events.jsonl'),
         join(root, 'sessions', SESSION_ID, 'plans.json'),
         join(root, 'sessions', SESSION_ID, 'deep-research', 'events.jsonl'),
-        join(root, 'sessions', SESSION_ID, 'agent-mailbox.jsonl'),
         join(root, 'plan-reminders.json'),
       ];
       const before = await Promise.all(legacyPaths.map((path) => readFile(path, 'utf8')));
@@ -86,18 +65,8 @@ describe('SQLite workflow cutover', () => {
         newId: () => `sqlite-research-${++researchId}`,
         now: () => 500 + researchId,
       });
-      const mailbox = createSqliteAgentMailboxStore(root, {
-        newId: () => `sqlite-mail-${++mailboxId}`,
-        now: () => 600 + mailboxId,
-      });
       const reminders = createSqlitePlanReminderStore(root);
-      await Promise.all([
-        tasks.ready(),
-        plan.ready(),
-        research.ready(),
-        mailbox.ready(),
-        reminders.ready(),
-      ]);
+      await Promise.all([tasks.ready(), plan.ready(), research.ready(), reminders.ready()]);
 
       assert.equal((await tasks.get(SESSION_ID, legacyTask.id))?.subject, legacyTask.subject);
       assert.equal(
@@ -105,16 +74,6 @@ describe('SQLite workflow cutover', () => {
         submitted.state.latestProposalId,
       );
       assert.equal((await research.read(SESSION_ID))?.objective, 'Map the workflow stores');
-      assert.equal(
-        (
-          await mailbox.list(SESSION_ID, {
-            teamId: 'workflow-team',
-            parentRunId: 'parent-run',
-            recipientAgentId: 'worker-b',
-          })
-        ).messages.length,
-        1,
-      );
       assert.equal((await reminders.list())[0]?.id, legacyReminder.id);
 
       await tasks.update(SESSION_ID, legacyTask.id, { status: 'in_progress' });
@@ -131,18 +90,6 @@ describe('SQLite workflow cutover', () => {
         contentHash: `sha256:${'a'.repeat(64)}`,
         sourceArtifactIds: [],
       });
-      await mailbox.send(SESSION_ID, {
-        teamId: 'workflow-team',
-        parentRunId: 'parent-run',
-        kind: 'broadcast',
-        from: {
-          role: 'member',
-          agentId: 'worker-a',
-          runId: 'run-a',
-          turnId: 'turn-a',
-        },
-        content: 'SQLite mailbox row',
-      });
       await reminders.setEnabled(legacyReminder.id, false);
 
       assert.deepEqual(
@@ -158,7 +105,6 @@ describe('SQLite workflow cutover', () => {
               (SELECT COUNT(*) FROM workflow_task_ledger_events) AS tasks,
               (SELECT COUNT(*) FROM workflow_plan_events) AS plans,
               (SELECT COUNT(*) FROM workflow_deep_research_events) AS research,
-              (SELECT COUNT(*) FROM workflow_agent_mailbox_messages) AS mailbox,
               (SELECT COUNT(*) FROM workflow_plan_reminders) AS reminders
           `)
           .get() as Record<string, number>;
@@ -168,7 +114,6 @@ describe('SQLite workflow cutover', () => {
             tasks: 2,
             plans: 2,
             research: 2,
-            mailbox: 2,
             reminders: 1,
           },
         );
@@ -179,34 +124,21 @@ describe('SQLite workflow cutover', () => {
       tasks.close();
       plan.close();
       research.close();
-      mailbox.close();
       reminders.close();
 
       const reopenedTasks = createSqliteTaskLedgerStore(root);
       const reopenedPlan = createSqlitePlanStore(root);
       const reopenedResearch = createSqliteDeepResearchStore(root);
-      const reopenedMailbox = createSqliteAgentMailboxStore(root);
       const reopenedReminders = createSqlitePlanReminderStore(root);
       await Promise.all([
         reopenedTasks.ready(),
         reopenedPlan.ready(),
         reopenedResearch.ready(),
-        reopenedMailbox.ready(),
         reopenedReminders.ready(),
       ]);
       assert.equal((await reopenedTasks.get(SESSION_ID, legacyTask.id))?.status, 'in_progress');
       assert.equal((await reopenedPlan.readState(SESSION_ID)).proposals[0]?.status, 'stale');
       assert.equal((await reopenedResearch.readEvents(SESSION_ID)).length, 2);
-      assert.equal(
-        (
-          await reopenedMailbox.list(SESSION_ID, {
-            teamId: 'workflow-team',
-            parentRunId: 'parent-run',
-            recipientAgentId: 'worker-b',
-          })
-        ).messages.length,
-        2,
-      );
       assert.equal(
         (await reopenedReminders.list()).find((reminder) => reminder.id === legacyReminder.id)
           ?.enabled,
@@ -215,7 +147,6 @@ describe('SQLite workflow cutover', () => {
       reopenedTasks.close();
       reopenedPlan.close();
       reopenedResearch.close();
-      reopenedMailbox.close();
       reopenedReminders.close();
     } finally {
       await rm(root, { recursive: true, force: true });

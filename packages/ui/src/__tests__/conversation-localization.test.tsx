@@ -166,7 +166,7 @@ describe('localized conversation journey', () => {
     assert.match(markup, /maka-composer-upload-button/);
     assert.match(markup, /aria-label="添加文件或目录"/);
     assert.match(markup, /class="lucide lucide-upload"/);
-    // Modes + expert teams keep one menu of their own.
+    // Collaboration modes keep one menu of their own.
     assert.match(markup, /aria-label="模式"/);
     assert.match(markup, /class="lucide lucide-workflow"/);
     // Skills get a dedicated trigger; the panel itself opens on click.
@@ -281,15 +281,13 @@ describe('localized conversation journey', () => {
         onStop={() => {}}
         streaming
         onPickAttachments={() => {}}
-        expertTeams={[{ id: 'team-a', name: '专家团 A' }]}
-        onStartExpertTeam={() => {}}
         onPlanModeChange={() => {}}
         onSwarmModeChange={() => {}}
       />,
     );
-    // The modes trigger must stay mounted mid-turn so expert teams and
-    // Plan/Swarm remain reachable (import itself stays blocked mid-stream by
-    // runImportAction / the disabled upload button).
+    // The modes trigger must stay mounted mid-turn so Plan/Swarm remain
+    // reachable (import itself stays blocked mid-stream by runImportAction /
+    // the disabled upload button).
     assert.match(markup, /aria-label="模式"/);
   });
 

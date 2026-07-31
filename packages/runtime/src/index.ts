@@ -729,42 +729,6 @@ export {
   buildSubagentSpawnTool,
 } from './subagent-tools.js';
 export {
-  BUILTIN_EXPERT_TEAMS,
-  EXPERT_AGENT_ID_PREFIX,
-  buildExpertAgentId,
-  buildExpertTeamLeadSystemPromptFragment,
-  buildExpertTeamMemberRoster,
-  getExpertAgentDefinition,
-  getExpertTeam,
-  isExpertAgentId,
-  listExpertTeams,
-  materializeExpertAgentDefinition,
-  parseExpertAgentId,
-  requireResolvedAgentDefinition,
-  resolveAgentDefinition,
-} from './expert-catalog.js';
-export type { ExpertDefinition, ExpertTeamDefinition, ExpertTeamLead } from './expert-catalog.js';
-export {
-  EXPERT_DISPATCH_TOOL_NAME,
-  buildExpertDispatchTool,
-  buildExpertDispatchToolForTeamId,
-} from './expert-tools.js';
-export type { ExpertDispatchToolDeps } from './expert-tools.js';
-export {
-  AGENT_TEAM_CHILD_TOOL_NAMES,
-  AGENT_TEAM_LEAD_TOOL_NAMES,
-  TEAM_INBOX_TOOL_NAME,
-  TEAM_MESSAGE_TOOL_NAME,
-  TEAM_TASK_CLAIM_TOOL_NAME,
-  TEAM_TASK_LIST_TOOL_NAME,
-} from './agent-team-tool-names.js';
-export {
-  buildAgentTeamChildTools,
-  buildAgentTeamLeadTools,
-  buildAgentTeamTools,
-} from './agent-team-tools.js';
-export type { AgentTeamToolDeps } from './agent-team-tools.js';
-export {
   LEGACY_TASK_CREATE_TOOL_NAME,
   LEGACY_TASK_UPDATE_TOOL_NAME,
   TASK_CREATE_TOOL_NAME,

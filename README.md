@@ -211,8 +211,8 @@ legacy source after cutover fails closed. The legacy files are retained only as
 migration evidence; new execution writes do not modify them.
 
 Workflow state is migrating in reviewable slices. Task Ledger events and
-projections, Plan events and projections, Deep Research events, Agent Mailbox
-messages, and Plan Reminder records are now canonical in `runtime.sqlite`.
+projections, Plan events and projections, Deep Research events, and Plan
+Reminder records are now canonical in `runtime.sqlite`.
 Desktop and Runtime Host production wiring opens these SQLite repositories;
 their JSON/JSONL predecessors are read only during a fingerprinted, crash-safe
 cutover and are never updated by later mutations.

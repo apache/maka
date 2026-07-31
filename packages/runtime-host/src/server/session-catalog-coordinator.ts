@@ -5,11 +5,7 @@ import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { thinkingVariantsForModel } from '@maka/core/model-thinking';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/session-name';
-import {
-  DEEP_RESEARCH_SESSION_LABEL,
-  EXPERT_TEAM_LABEL_PREFIX,
-  type SessionHeader,
-} from '@maka/core/session';
+import { DEEP_RESEARCH_SESSION_LABEL, type SessionHeader } from '@maka/core/session';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -898,7 +894,7 @@ function normalizeSessionNamePatch(name: string): Pick<SessionHeader, 'name' | '
 }
 
 function isExecutionSemanticLabel(label: string): boolean {
-  return label === DEEP_RESEARCH_SESSION_LABEL || label.startsWith(EXPERT_TEAM_LABEL_PREFIX);
+  return label === DEEP_RESEARCH_SESSION_LABEL;
 }
 
 function replaceUserOwnedLabels(

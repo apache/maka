@@ -117,7 +117,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       planState,
       activeExecution,
       interruptedExecution,
-      agentTeam,
       selectedTools,
       toolAvailability: backendToolAvailability,
       skillHost: backendSkillHost,
@@ -161,7 +160,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
             }
           : {}),
       },
-      agentTeam,
       toolAvailability: backendToolAvailability,
       ...(admitsAgentChildren
         ? {

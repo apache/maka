@@ -136,7 +136,6 @@ import { useAppShellComposerAttachments } from './use-app-shell-composer-attachm
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import { useComposerMentions } from './use-composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
-import { useShellExpertTeams } from './use-shell-expert-teams';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
 import { useShellChatModel } from './use-shell-chat-model';
@@ -1079,9 +1078,6 @@ function AppShellContent({
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
   const sessionStartPendingRef = useRef(false);
-  // Built-in expert teams for the composer "+" menu - loaded once via
-  // `useShellExpertTeams` (static catalog; a failure just hides the 专家团 entry).
-  const expertTeams = useShellExpertTeams();
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
   // Seed sessions from the onboarding snapshot on first load — the snapshot
@@ -1294,7 +1290,7 @@ function AppShellContent({
     () => deriveWorktreeSessionIds(visibleSessions, projects),
     [visibleSessions, projects],
   );
-  const { startModeSession, handleExpertTeamStart } = useStableActions(createAppShellSessionStartActions, {
+  const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
     activeIdRef,
     captureComposerImportOwner,
@@ -2418,9 +2414,7 @@ function AppShellContent({
                     ? undefined
                     : attachFilePaths
                 }
-                expertTeams={expertTeams}
-                onStartExpertTeam={handleExpertTeamStart}
-                  modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
+                modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
                 activeSession={activeSessionForView}
                 activeConnectionLabel={activeConnectionLabel}
                 activeModel={activeModel}

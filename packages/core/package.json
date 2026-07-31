@@ -48,7 +48,6 @@
     "./bot-events": "./dist/bot-events.js",
     "./bot-platform-hints": "./dist/bot-platform-hints.js",
     "./plan-reminders": "./dist/plan-reminders.js",
-    "./agent-mailbox": "./dist/agent-mailbox.js",
     "./agent-graph-control": "./dist/agent-graph-control.js",
     "./agent-graph-schedule": "./dist/agent-graph-schedule.js",
     "./agent-graph-topology": "./dist/agent-graph-topology.js",

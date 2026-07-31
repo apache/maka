@@ -8,12 +8,7 @@ import {
   type MessageContent,
   type SessionEvent,
 } from '@maka/core/events';
-import {
-  isDeepResearchSession,
-  isExpertTeamSession,
-  type SessionHeader,
-  type StoredMessage,
-} from '@maka/core/session';
+import { isDeepResearchSession, type SessionHeader, type StoredMessage } from '@maka/core/session';
 import {
   classifyTerminalRuntimeLedger,
   RuntimeHostedRootConflictError,
@@ -1520,9 +1515,6 @@ function unsupportedSessionModeReason(
   }
   if (isDeepResearchSession(header.labels)) {
     return 'Deep Research sessions are not yet supported by Runtime Host.';
-  }
-  if (isExpertTeamSession(header.labels)) {
-    return 'Expert Team sessions are not yet supported by Runtime Host.';
   }
   return undefined;
 }

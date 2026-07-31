@@ -44,7 +44,7 @@ import {
 } from './agent-run.js';
 import { AiSdkFlow, mapSessionEventToRuntimeEvent } from './ai-sdk-flow.js';
 import type { AgentBackend, SteeringLease } from '@maka/core/backend-types';
-import type { AgentTeamExecutionContext, MakaTool } from './tool-runtime.js';
+import type { MakaTool } from './tool-runtime.js';
 import type {
   InvocationContext,
   InvocationResult,
@@ -69,8 +69,11 @@ import {
   normalizeStopSessionSource,
   turnHasRetainedOutput as messagesHaveRetainedOutput,
 } from './session-projection-helpers.js';
-import { assertAgentDefinitionRunnable, buildToolsForAgentDefinition } from './agent-catalog.js';
-import { parseExpertAgentId, requireResolvedAgentDefinition } from './expert-catalog.js';
+import {
+  assertAgentDefinitionRunnable,
+  buildToolsForAgentDefinition,
+  requireBuiltinAgentDefinition,
+} from './agent-catalog.js';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
 import {
   canReplaceHistoryCompactCheckpoint,
@@ -1062,22 +1065,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
   ): AsyncIterable<SessionEvent> {
     await this.enterExecutionClaim(execution);
     const parentHeader = await this.deps.store.readHeader(sessionId);
-    const definition = requireResolvedAgentDefinition(input.spec.id);
+    const definition = requireBuiltinAgentDefinition(input.spec.id);
     const availableChildTools = this.deps.childTools ?? [];
     assertAgentDefinitionRunnable({
       definition,
       tools: availableChildTools,
     });
     const childTools = buildToolsForAgentDefinition(availableChildTools, definition);
-    const expertIdentity = parseExpertAgentId(definition.id);
-    const agentTeam: AgentTeamExecutionContext | undefined = expertIdentity
-      ? {
-          role: 'member',
-          teamId: expertIdentity.teamId,
-          agentId: definition.id,
-          parentRunId: input.parentRunId,
-        }
-      : undefined;
     const childHeader: SessionHeader = {
       ...parentHeader,
       permissionMode: definition.permissionMode,
@@ -1115,7 +1109,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
             nextHeader,
             definition.systemPrompt,
             childTools,
-            agentTeam,
             activeRun,
             execution,
           );
@@ -1174,11 +1167,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
           permissionMode: parentHeader.permissionMode,
           tools: linkedSnapshot.toolNames,
         }
-      : requireResolvedAgentDefinition(input.spec.id);
+      : requireBuiltinAgentDefinition(input.spec.id);
     const availableChildTools = this.deps.childTools ?? [];
     if (!linkedSnapshot) {
       assertAgentDefinitionRunnable({
-        definition: requireResolvedAgentDefinition(input.spec.id),
+        definition: requireBuiltinAgentDefinition(input.spec.id),
         tools: availableChildTools,
       });
     }
@@ -1318,15 +1311,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       );
       assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
     }
-    const expertIdentity = linkedSnapshot ? undefined : parseExpertAgentId(definition.id);
-    const agentTeam: AgentTeamExecutionContext | undefined = expertIdentity
-      ? {
-          role: 'member',
-          teamId: expertIdentity.teamId,
-          agentId: definition.id,
-          parentRunId: input.parentRunId,
-        }
-      : undefined;
     const activeKey = childActiveKey(sessionId, continuation.turnId);
     const continuationToolBoundaryProtocol = runtimeToolBoundaryProtocol(this.deps, childHeader);
     const run = new AgentRun({
@@ -1358,7 +1342,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 nextHeader,
                 definition.systemPrompt,
                 childTools,
-                agentTeam,
                 activeRun,
                 execution,
               );
@@ -2893,7 +2876,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     systemPrompt: string,
     tools: readonly MakaTool[],
     execution: PendingExecutionClaim,
-    agentTeam?: AgentTeamExecutionContext,
   ): Promise<BackendGeneration> {
     await this.clearBackendQuarantineForActivation(sessionId, execution);
     let existing = this.childActive.get(activeKey);
@@ -2919,7 +2901,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
         appendMessage: async () => {},
         systemPrompt,
         tools,
-        ...(agentTeam ? { agentTeam } : {}),
         recordRunTrace: (event) => {
           const active = this.childActive.get(activeKey);
           const runId = active?.turnToRunId.get(event.turnId);
@@ -3017,7 +2998,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     header: SessionHeader,
     systemPrompt: string,
     tools: readonly MakaTool[],
-    agentTeam: AgentTeamExecutionContext | undefined,
     run: AgentRun,
     execution: PendingExecutionClaim,
   ): Promise<BackendGeneration> {
@@ -3028,7 +3008,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       systemPrompt,
       tools,
       execution,
-      agentTeam,
     );
     this.reserveGenerationRun(active, run);
     return active;

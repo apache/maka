@@ -83,7 +83,6 @@ describe('tool catalog contract', () => {
   it('reports bound names missing from the catalog', () => {
     assert.deepEqual(unknownBoundToolNames(['Read', 'NotARealTool', 'Bash']), ['NotARealTool']);
     assert.deepEqual(unknownBoundToolNames(['Read', 'Bash']), []);
-    assert.deepEqual(unknownBoundToolNames(['expert_dispatch']), []);
   });
 
   it('freezes catalog tables and isolates surface host affinity', () => {
@@ -150,11 +149,6 @@ describe('tool catalog contract', () => {
         'agent_swarm',
         'agent_list',
         'agent_output',
-        'team_message',
-        'team_inbox',
-        'team_task_list',
-        'team_task_claim',
-        'expert_dispatch',
       ],
       cli: [
         'Bash',

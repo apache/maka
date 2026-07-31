@@ -131,7 +131,7 @@ import {
 } from './terminal-run-commit.js';
 
 import type { AgentBackend, BackendStopMode } from '@maka/core/backend-types';
-import type { AgentTeamExecutionContext, MakaTool } from './tool-runtime.js';
+import type { MakaTool } from './tool-runtime.js';
 import type { RunTraceRecorder } from './run-trace.js';
 import type {
   ProviderRequestAttemptRecord,
@@ -184,6 +184,7 @@ import {
   buildToolsForAgentDefinition,
   getBuiltinAgentDefinition,
   listBuiltinAgentDefinitions,
+  requireBuiltinAgentDefinition,
   requireBuiltinAgentDefinitionByProfile,
   AGENT_WORKSPACE_WORKTREE,
   type AgentProfile,
@@ -191,7 +192,6 @@ import {
   type AgentDefinitionListItem,
 } from './agent-catalog.js';
 import { buildRuntimeEventModelReplayPlan } from './model-history.js';
-import { requireResolvedAgentDefinition } from './expert-catalog.js';
 import { stableHash } from './request-shape.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
@@ -656,8 +656,6 @@ export interface BackendFactoryContext {
    * substitute, or otherwise expose a tool outside this exact set.
    */
   tools?: readonly MakaTool[];
-  /** Trusted child expert-team identity. Main-session factories leave this undefined. */
-  agentTeam?: AgentTeamExecutionContext;
   recordRunTrace?: RunTraceRecorder;
   /** Durable AgentRun metadata row written after the private capture artifact. */
   recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
@@ -1993,7 +1991,7 @@ export class SessionManager {
   ): Promise<SpawnChildAgentResult> {
     const execution = this.runtimeKernel.claimExecution(sessionId);
     try {
-      const definition = requireResolvedAgentDefinition(input.spec.id);
+      const definition = requireBuiltinAgentDefinition(input.spec.id);
       return await this.runChildAgent(sessionId, definition, input, execution);
     } finally {
       execution.release();
@@ -2083,7 +2081,7 @@ export class SessionManager {
       throw new Error('Graph schedule source does not match its durable supervisor run');
     }
 
-    const definition = requireResolvedAgentDefinition(input.agentId);
+    const definition = requireBuiltinAgentDefinition(input.agentId);
     assertAgentDefinitionRunnable({
       definition,
       tools: this.deps.childTools ?? [],
@@ -3609,7 +3607,7 @@ export class SessionManager {
         throw new Error('Child agent retry source does not belong to the active parent run');
       }
       if (!sourceRun.agentId) throw new Error('Child agent retry source is missing its agent id');
-      const resolved = requireResolvedAgentDefinition(sourceRun.agentId);
+      const resolved = requireBuiltinAgentDefinition(sourceRun.agentId);
       definition = {
         ...resolved,
         toolNames: buildToolsForAgentDefinition(this.deps.childTools ?? [], resolved).map(

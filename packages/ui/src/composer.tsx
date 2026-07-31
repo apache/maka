@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ArrowUp, Blocks, Mic, Pencil, Upload, Volume2, Workflow, X } from './icons.js';
+import { ArrowUp, Mic, Pencil, Upload, Volume2, Workflow, X } from './icons.js';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -38,9 +38,7 @@ import { Button as UiButton, IconButton } from '@astryxdesign/core';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
-  DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
-import { Divider } from '@astryxdesign/core/Divider';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Kbd } from './primitives/kbd.js';
@@ -134,10 +132,6 @@ export const Composer = forwardRef<
      * case a large paste behaves like any other paste.
      */
     onPasteAsQuote?(input: { text: string; label?: string }): void;
-    /** Built-in expert teams offered under 专家团 in the modes menu. */
-    expertTeams?: readonly { id: string; name: string; description?: string }[];
-    /** Start a new expert-team session from the modes menu. */
-    onStartExpertTeam?(teamId: string): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
     activeConnectionLabel?: string;
@@ -819,7 +813,7 @@ export const Composer = forwardRef<
         <div className="maka-composer-toolbar composerActions" data-streaming={props.streaming ? 'true' : undefined}>
           <div className="maka-composer-left-controls">
             {/* PR-COMPOSER-TOOLBAR-SPLIT: the single ＋ menu is split into
-                three named controls — upload / modes+expert teams / skills —
+                three named controls — upload / modes / skills —
                 so each is one click away and readable at rest instead of
                 hidden behind a generic plus. Import still no-ops mid-turn
                 (`runImportAction` / drop target), so the upload button is
@@ -844,12 +838,11 @@ export const Composer = forwardRef<
               />
             ) : null}
             {/* #1444 still holds for the modes menu: it stays reachable
-                mid-turn so Plan/Swarm/Graph and the expert teams never
-                disappear while a turn is in flight. */}
+                mid-turn so Plan/Swarm/Graph never disappear while a turn is
+                in flight. */}
             {(props.onPlanModeChange
               || props.onSwarmModeChange
-              || props.onGraphModeChange
-              || (props.expertTeams?.length ?? 0) > 0) ? (
+              || props.onGraphModeChange) ? (
               <DropdownMenu
                 placement="above"
                 button={{
@@ -913,25 +906,6 @@ export const Composer = forwardRef<
                       aria-description={props.graphModeDisabledReason
                         ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)}
                     />
-                  ) : null}
-                  {(props.expertTeams?.length ?? 0) > 0 ? (
-                    <>
-                      {/* Heading only when a mode group precedes it — a
-                          teams-only menu must not lead with a divider. */}
-                      {props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange ? (
-                        <Divider orientation="horizontal" label={copy.expertTeam} />
-                      ) : null}
-                      {props.expertTeams?.map((team) => (
-                        <DropdownMenuItem
-                          key={team.id}
-                          isDisabled={props.disabled}
-                          onClick={() => props.onStartExpertTeam?.(team.id)}
-                          icon={<Blocks size={13} aria-hidden="true" />}
-                          label={team.name}
-                          description={team.description}
-                        />
-                      ))}
-                    </>
                   ) : null}
               </DropdownMenu>
             ) : null}

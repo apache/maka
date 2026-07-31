@@ -57,7 +57,6 @@ export const SESSION_BUNDLE_PORTABLE_SESSION_DIRECTORIES = [
 
 export const SESSION_BUNDLE_PORTABLE_SESSION_FILES = [
   EXECUTION_BOUNDARY_TRANSFER_FILE,
-  'agent-mailbox.jsonl',
   'plan-events.jsonl',
   'plans.json',
   'task-events.jsonl',

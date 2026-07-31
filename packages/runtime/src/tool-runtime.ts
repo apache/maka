@@ -153,8 +153,6 @@ export interface MakaToolContext {
     message: string,
     data?: Record<string, unknown>,
   ) => void;
-  /** Trusted expert-team identity supplied by RuntimeKernel/backend wiring. */
-  agentTeam?: AgentTeamExecutionContext;
   spawnChildAgent?: (input: {
     spec: AgentSpec;
     prompt: string;
@@ -237,14 +235,6 @@ export interface MakaToolContext {
   ) => Promise<SandboxBoundarySettlement>;
 }
 
-export interface AgentTeamExecutionContext {
-  role: 'lead' | 'member';
-  teamId: string;
-  agentId: string;
-  /** Lead AgentRun that owns this team execution. Required for members. */
-  parentRunId?: string;
-}
-
 export type AppendMessageFn = (m: ToolCallMessage | ToolResultMessage) => Promise<void>;
 export type ToolTelemetryRecorder = (record: ToolInvocationRecord) => void;
 
@@ -308,7 +298,6 @@ export interface ToolRuntimeInput {
   getPermissionPauseTarget: () => { pause(): void; resume(): void } | null;
   getCurrentInvocationId?: () => string | undefined;
   getCurrentRunId?: () => string | undefined;
-  agentTeam?: AgentTeamExecutionContext;
   materializeDefaultToolResultOutput?: (options: {
     toolCallId: string;
     output: unknown;
@@ -1089,7 +1078,6 @@ export class ToolRuntime {
                   }),
               }
             : {}),
-          ...(this.input.agentTeam ? { agentTeam: this.input.agentTeam } : {}),
           ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
           ...(this.input.readChildAgentOutput
             ? { readChildAgentOutput: this.input.readChildAgentOutput }

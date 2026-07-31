@@ -111,12 +111,6 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     // Legacy task-ledger aliases still registered on some hosts
     { name: 'TaskCreate' },
     { name: 'TaskUpdate' },
-    // Agent team / expert-team lead
-    { name: 'team_message' },
-    { name: 'team_inbox' },
-    { name: 'team_task_list' },
-    { name: 'team_task_claim' },
-    { name: 'expert_dispatch' },
     // browser surface
     { name: 'browser_navigate' },
     { name: 'browser_snapshot' },

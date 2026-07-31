@@ -2,7 +2,7 @@ import { expect, test } from './fixtures';
 
 /**
  * PR-COMPOSER-TOOLBAR-SPLIT: the composer's single ＋ menu became three named
- * controls — upload / modes+expert teams / skills. The mode menu itself is
+ * controls — upload / modes / skills. The mode menu itself is
  * covered by composer-mode-indicator.spec.ts; this spec pins the two surfaces
  * that menu never had: the standalone upload trigger, and the Skills picker
  * writing into the SAME structured draft the `/` popup owns

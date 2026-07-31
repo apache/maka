@@ -100,7 +100,6 @@ import {
   formatSyntheticToolErrorText,
   type MakaTool,
   type MakaToolContext,
-  type AgentTeamExecutionContext,
   type ToolRuntimeInput,
 } from './tool-runtime.js';
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
@@ -288,8 +287,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     proposalId?: string;
     executionId?: string;
   };
-  /** Trusted identity for expert-team lead/member collaboration tools. */
-  agentTeam?: AgentTeamExecutionContext;
   /**
    * Optional unified tool-availability config (issue #37). With `economy: true`,
    * only core + ungrouped tools are advertised each turn; each group's tools are
@@ -574,7 +571,6 @@ export class AiSdkBackend implements AgentBackend {
       getPermissionPauseTarget: () => this.currentWatchdog,
       getCurrentInvocationId: () => this.currentInvocationId ?? undefined,
       getCurrentRunId: () => this.currentRunId ?? undefined,
-      agentTeam: input.agentTeam,
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
         this.materializeToolResultOutput(output, false, toolCallId),
       getCurrentOrchestration: () => this.currentOrchestration,

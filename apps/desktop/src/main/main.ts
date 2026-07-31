@@ -59,7 +59,6 @@ import type {
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   createAgentRunStore,
-  createSqliteAgentMailboxStore,
   createSqliteArtifactStore,
   createSqliteDeepResearchStore,
   createReadImageSnapshotter,
@@ -122,7 +121,6 @@ import { registerGitIpc } from './git-ipc-main.js';
 import { registerWorkspaceSearchIpc } from './workspace-search-ipc-main.js';
 import { registerWorkspaceInstructionsIpc } from './workspace-instructions-ipc-main.js';
 import { registerOnboardingIpc } from './onboarding-ipc-main.js';
-import { registerSessionEntryIpc } from './session-entry-ipc-main.js';
 import { registerPermissionsIpc } from './permissions-ipc-main.js';
 import {
   createPermissionOverlayMain,
@@ -409,7 +407,6 @@ const antigravitySubscription = new AntigravitySubscriptionService({
 const planReminderStore = createSqlitePlanReminderStore(workspaceRoot);
 const taskLedgerWiring = createMainTaskLedgerWiring(workspaceRoot);
 const taskLedgerStore = taskLedgerWiring.store;
-const agentMailboxStore = createSqliteAgentMailboxStore(workspaceRoot);
 
 async function closeWorkflowStores(): Promise<void> {
   const stores = [
@@ -417,7 +414,6 @@ async function closeWorkflowStores(): Promise<void> {
     deepResearchStore,
     planReminderStore,
     taskLedgerStore,
-    agentMailboxStore,
   ];
   const errors: unknown[] = [];
   for (const result of await Promise.allSettled(stores.map((workflowStore) => workflowStore.ready()))) {
@@ -672,7 +668,6 @@ const {
   computerUse,
   computerUseOverlay,
   computerUseTools,
-  agentTeamLeadTools,
   desktopProductToolSurface,
   builtinTools,
   childAgentTools,
@@ -684,7 +679,6 @@ const {
   taskLedgerWiring,
   automationWiring,
   goalWiring,
-  agentMailboxStore,
   settingsStore,
   shellRuns,
   snapshotReadImage,
@@ -699,10 +693,8 @@ const desktopBackendToolSurfaceDeps = {
   ensureMcpReady,
   getReadyConnection,
   mcpManager,
-  taskLedgerStore,
   deepResearchTools,
   computerUseTools,
-  agentTeamLeadTools,
   builtinTools,
   toolEconomy: desktopProductToolSurface.identity.policy.economy,
   planStore,
@@ -875,10 +867,7 @@ const runtime = new SessionManager({
   inspectContinuationSafety: createLocalContinuationSafetyInspector({
     readSessionCwd: async (sessionId) => (await store.readHeader(sessionId)).cwd,
     resolveWorkspaceIdentity: async (cwd) => resolveWorkspaceIdentity({ path: cwd }),
-    listAvailableToolNames: async () => [
-      ...builtinTools.map((tool) => tool.name),
-      'expert_dispatch',
-    ],
+    listAvailableToolNames: async () => builtinTools.map((tool) => tool.name),
     hasPendingBackgroundOperations: async (sessionId) => {
       const [shellUpdates, runs] = await Promise.all([
         shellRuns.listSessionUpdates(sessionId),
@@ -1164,15 +1153,6 @@ function registerIpc(): void {
       : {}),
   });
   registerOnboardingIpc({ onboardingService });
-  registerSessionEntryIpc({
-    runtime,
-    getReadyConnection,
-    getOnboardingState: async () => (await onboardingService.getSnapshot()).state,
-    emitSessionsChanged,
-    ensureSessionCanSend,
-    createSession: createDesktopSession,
-    streamEvents,
-  });
   registerPermissionsIpc({
     settingsStore,
     connectionStore,

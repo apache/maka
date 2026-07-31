@@ -26,7 +26,6 @@ const extractedIpcRegistrars = [
   ['registerWorkspaceSearchIpc', './workspace-search-ipc-main'],
   ['registerWorkspaceInstructionsIpc', './workspace-instructions-ipc-main'],
   ['registerOnboardingIpc', './onboarding-ipc-main'],
-  ['registerSessionEntryIpc', './session-entry-ipc-main'],
   ['registerAgentGraphIpc', './agent-graph-ipc-main'],
   ['registerSessionsIpc', './sessions-ipc-main'],
   ['registerPermissionsIpc', './permissions-ipc-main'],

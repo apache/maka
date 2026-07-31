@@ -315,7 +315,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         modelFactory,
         tools: [...modelComposition.tools],
         toolAvailability: modelComposition.toolAvailability,
-        ...(input.context.agentTeam ? { agentTeam: input.context.agentTeam } : {}),
         providerOptions,
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
           name: 'runtime-host-default-history-budget',

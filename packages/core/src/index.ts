@@ -933,28 +933,6 @@ export {
   normalizePlanReminderTitle,
   normalizeUpdatePlanReminderInput,
 } from './plan-reminders.js';
-// agent-mailbox.ts (durable expert-team communication)
-export type {
-  AgentMailboxListOptions,
-  AgentMailboxMessage,
-  AgentMailboxMessageKind,
-  AgentMailboxNormalizeResult,
-  AgentMailboxParticipantRef,
-  AgentMailboxRole,
-  AgentMailboxSendInput,
-  AgentMailboxStore,
-} from './agent-mailbox.js';
-export {
-  AGENT_MAILBOX_CONTENT_MAX_CHARS,
-  AGENT_MAILBOX_LIST_MAX,
-  AGENT_MAILBOX_MAX_MESSAGES_PER_TEAM_RUN,
-  AGENT_MAILBOX_SCHEMA_VERSION,
-  isAgentMailboxMessage,
-  isAgentMailboxParticipantRef,
-  isAgentTeamId,
-  isSafeAgentMailboxToken,
-  normalizeAgentMailboxContent,
-} from './agent-mailbox.js';
 // foreign-session.ts (#1057) — untrusted Claude Code / Codex session
 // contracts + defensive parsing. Subpath @maka/core/foreign-session preferred.
 export type {
@@ -1722,14 +1700,6 @@ export {
   buildDeepResearchImplementationPrompt,
   isDeepResearchSession,
 } from './explore-agent.js';
-
-// expert-team.ts — expert-team session labels.
-export {
-  EXPERT_TEAM_LABEL_PREFIX,
-  expertTeamIdFromLabels,
-  expertTeamLabel,
-  isExpertTeamSession,
-} from './expert-team.js';
 
 // tool-catalog.ts — shared product tool vocabulary (#1099).
 export type {

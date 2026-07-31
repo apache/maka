@@ -121,10 +121,6 @@ const baseComposerProps: ComposerProps = {
   onStop: noop,
   onPickAttachments: noop,
   onAttachFilePaths: noop,
-  expertTeams: [
-    { id: 'code-review', name: 'Code Review Team', description: 'Correctness, simplification, and test-coverage reviewers.' },
-  ],
-  onStartExpertTeam: noop,
   modelLabel: 'Claude Sonnet 4.5',
   activeSession: session(),
   activeConnectionLabel: 'Anthropic',

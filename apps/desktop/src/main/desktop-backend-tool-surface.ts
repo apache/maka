@@ -1,16 +1,10 @@
 import {
   activePlanExecution,
   DEFAULT_SESSION_NAME,
-  expertTeamIdFromLabels,
   isDeepResearchSession,
   resolveModelVisionSupport,
 } from '@maka/core';
-import type {
-  CollaborationMode,
-  LlmConnection,
-  SessionHeader,
-  TaskLedgerStore,
-} from '@maka/core';
+import type { CollaborationMode, LlmConnection, SessionHeader } from '@maka/core';
 import {
   emptyPlanSessionState,
   type PlanExecution,
@@ -20,7 +14,6 @@ import {
 import {
   AGENT_TOOL_GROUP_ID,
   buildCancelPlanTool,
-  buildExpertDispatchToolForTeamId,
   buildMcpTools,
   buildSubmitPlanTool,
   buildToolsForAgentDefinition,
@@ -29,7 +22,6 @@ import {
   selectCollaborationTools,
 } from '@maka/runtime';
 import type {
-  BackendFactoryContext,
   HostCapabilities,
   MakaTool,
   ToolAvailabilityConfig,
@@ -46,10 +38,8 @@ export interface DesktopBackendToolSurfaceDeps {
     model?: string,
   ) => Promise<ReadyConnection>;
   mcpManager: McpClientManager;
-  taskLedgerStore: TaskLedgerStore;
   deepResearchTools: readonly MakaTool[];
   computerUseTools: readonly MakaTool[];
-  agentTeamLeadTools: readonly MakaTool[];
   builtinTools: readonly MakaTool[];
   toolEconomy: boolean;
   planStore: PlanStore;
@@ -64,7 +54,6 @@ export interface DesktopBackendToolSurfaceInput {
   header: SessionHeader;
   /** Scoped child tools. Main sessions leave this undefined. */
   tools?: readonly MakaTool[];
-  agentTeam?: BackendFactoryContext['agentTeam'];
   /** Reuse a connection already resolved for a not-yet-persisted session preview. */
   readyConnection?: ReadyConnection;
   /** Avoid reading a durable plan ledger for a not-yet-persisted session preview. */
@@ -82,7 +71,6 @@ export interface DesktopBackendToolSurface {
   planState: PlanSessionState;
   activeExecution?: PlanExecution;
   interruptedExecution?: PlanExecution;
-  agentTeam?: BackendFactoryContext['agentTeam'];
   selectedTools: MakaTool[];
   toolAvailability: ToolAvailabilityConfig;
   skillHost: HostCapabilities;
@@ -173,7 +161,7 @@ export async function resolveDesktopNewSessionSkillHost(
  *
  * Pre-send Skill resolution and slash discovery call this with the persisted
  * session header; backend construction calls it with the same header/context.
- * Keeping the model, collaboration, plan, expert-team, MCP and child-tool
+ * Keeping the model, collaboration, plan, MCP and child-tool
  * filters here prevents either path from advertising capabilities the other
  * path cannot execute.
  */
@@ -219,20 +207,6 @@ export async function resolveDesktopBackendToolSurface(
       : unscopedCandidateTools;
   const toolEconomy = deps.isComputerUseRealModelE2e ? false : deps.toolEconomy;
 
-  // Expert-team lead: a main session labeled `mode:expert-team:<teamId>`
-  // gets expert_dispatch. Child turns inherit the label but receive scoped
-  // tools and must not be able to spawn nested teams.
-  const expertTeamId = input.tools ? undefined : expertTeamIdFromLabels(input.header.labels);
-  const expertDispatchTool = expertTeamId
-    ? buildExpertDispatchToolForTeamId(expertTeamId, {
-        taskLedger: deps.taskLedgerStore,
-      })
-    : undefined;
-  const agentTeam =
-    input.agentTeam ??
-    (expertTeamId
-      ? { role: 'lead' as const, teamId: expertTeamId, agentId: 'lead' }
-      : undefined);
   const planControlTools = input.tools
     ? []
     : collaborationMode === 'plan'
@@ -250,9 +224,7 @@ export async function resolveDesktopBackendToolSurface(
   );
   const selectedTools = selectCollaborationTools({
     mode: collaborationMode,
-    tools: expertDispatchTool
-      ? [...backendTools, expertDispatchTool, ...deps.agentTeamLeadTools]
-      : backendTools,
+    tools: backendTools,
     hasActiveExecution: activeExecution !== undefined,
   });
   const productToolSurface = projectEffectiveProductToolSurface({
@@ -270,7 +242,6 @@ export async function resolveDesktopBackendToolSurface(
     planState,
     activeExecution,
     interruptedExecution,
-    agentTeam,
     selectedTools: [...productToolSurface.tools],
     toolAvailability: productToolSurface.toolAvailability,
     skillHost: productToolSurface.hostCapabilities,

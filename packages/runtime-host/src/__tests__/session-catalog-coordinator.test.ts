@@ -6,7 +6,6 @@ import test from 'node:test';
 import {
   createDefaultRuntimePolicy,
   DEEP_RESEARCH_SESSION_LABEL,
-  EXPERT_TEAM_LABEL_PREFIX,
   type SessionHeader,
 } from '@maka/core';
 import { SessionConfigurationTransitionError, headerToSummary } from '@maka/runtime';
@@ -40,7 +39,7 @@ const context: ConnectionContext = {
 
 test('metadata replacement preserves execution-semantic labels and ignores injected ones', async () => {
   const fixture = createFixture({
-    labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL, `${EXPERT_TEAM_LABEL_PREFIX}review`],
+    labels: ['old-user-label', DEEP_RESEARCH_SESSION_LABEL],
   });
 
   const outcome = await fixture.coordinator.handlers['session.metadata.update'](
@@ -48,11 +47,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
       sessionId: fixture.sessionId,
       expectedRevision: fixture.revision(),
       patch: {
-        labels: [
-          'new-user-label',
-          `${EXPERT_TEAM_LABEL_PREFIX}injected`,
-          DEEP_RESEARCH_SESSION_LABEL,
-        ],
+        labels: ['new-user-label', DEEP_RESEARCH_SESSION_LABEL],
       },
     },
     context,
@@ -65,11 +60,7 @@ test('metadata replacement preserves execution-semantic labels and ignores injec
   if ('kind' in outcome.result.session) {
     assert.fail('Metadata replacement returned an unsupported Session projection');
   }
-  assert.deepEqual(outcome.result.session.labels, [
-    'new-user-label',
-    DEEP_RESEARCH_SESSION_LABEL,
-    `${EXPERT_TEAM_LABEL_PREFIX}review`,
-  ]);
+  assert.deepEqual(outcome.result.session.labels, ['new-user-label', DEEP_RESEARCH_SESSION_LABEL]);
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -208,24 +199,22 @@ test('creation rejects reserved execution labels before claiming a Session ident
     },
   });
 
-  for (const label of [DEEP_RESEARCH_SESSION_LABEL, `${EXPERT_TEAM_LABEL_PREFIX}review`]) {
-    const outcome = await fixture.coordinator.handlers['session.create'](
-      {
-        sessionId: fixture.sessionId,
-        cwd: process.cwd(),
-        labels: [label],
-        modelTarget: { kind: 'default' },
-      },
-      context,
-    );
-    assert.deepEqual(outcome, {
-      ok: false,
-      error: {
-        code: 'invalid_request',
-        message: 'Session creation cannot set reserved execution labels',
-      },
-    });
-  }
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      cwd: process.cwd(),
+      labels: [DEEP_RESEARCH_SESSION_LABEL],
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'invalid_request',
+      message: 'Session creation cannot set reserved execution labels',
+    },
+  });
   assert.equal(createAttempts, 0);
   assert.equal(fixture.drainRequests(), 0);
 });

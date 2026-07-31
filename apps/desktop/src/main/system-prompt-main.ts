@@ -4,7 +4,6 @@ import {
   filterModelVisibleTaskLedgerTasks,
   buildLocalMemoryPromptBody,
   botPlatformFromSessionLabels,
-  expertTeamIdFromLabels,
   isDeepResearchSession,
   redactSecrets,
   renderTaskLedgerPromptText,
@@ -14,7 +13,6 @@ import {
   type TaskLedgerStore,
 } from '@maka/core';
 import {
-  buildExpertTeamLeadSystemPromptFragment,
   buildPersonalizationPromptFragment,
   resolveProjectGitInfo,
   buildSessionEnvironmentPromptFragment,
@@ -52,7 +50,7 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
   async function buildSystemPrompt(
     header: Pick<SessionHeader, 'labels'>,
     cwd?: string,
-    options?: { memoryFragment?: string | null; includePersonalization?: boolean; skillBudget?: SkillPromptBudgetContext; forChildTurn?: boolean; host?: HostCapabilities },
+    options?: { memoryFragment?: string | null; includePersonalization?: boolean; skillBudget?: SkillPromptBudgetContext; host?: HostCapabilities },
   ): Promise<string | undefined> {
     const settings = await deps.settingsStore.get();
     const includePersonalization = options?.includePersonalization !== false;
@@ -72,13 +70,6 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
       ? await buildWorkspaceInstructionsPromptFragment(cwd)
       : undefined;
     const deepResearch = isDeepResearchSession(header.labels) ? buildDeepResearchSystemPromptFragment() : undefined;
-    // The lead fragment casts the reader as the team lead with the expert_dispatch
-    // tool. A dispatched member inherits the session's expert-team label but is a
-    // child turn without that tool, so it must NOT get the lead persona — its own
-    // role arrives via childInstruction. (The tool itself is already withheld from
-    // children in main.ts.)
-    const expertTeamId = options?.forChildTurn ? undefined : expertTeamIdFromLabels(header.labels);
-    const expertLead = expertTeamId ? buildExpertTeamLeadSystemPromptFragment(expertTeamId) : undefined;
     const botPlatform = botPlatformFromSessionLabels(header.labels);
     const botPlatformHint = botPlatform ? buildBotPlatformPromptFragment(botPlatform) : undefined;
     const memoryFragment = options && 'memoryFragment' in options
@@ -87,7 +78,6 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
     const fragments = [
       personalization.text,
       deepResearch,
-      expertLead,
       botPlatformHint,
       skills,
       workspaceInstructions,
@@ -103,7 +93,7 @@ export function createSystemPromptMainService(deps: SystemPromptMainDeps) {
   ): Promise<string | undefined> {
     const childInstruction = options.childInstruction?.trim();
     const base = await buildSystemPrompt(header, cwd, childInstruction
-      ? { memoryFragment: null, includePersonalization: false, forChildTurn: true, skillBudget: options.skillBudget, host: options.host }
+      ? { memoryFragment: null, includePersonalization: false, skillBudget: options.skillBudget, host: options.host }
       : { memoryFragment: options.memoryFragment, skillBudget: options.skillBudget, host: options.host });
     if (!childInstruction) return base;
     return [

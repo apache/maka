@@ -159,7 +159,6 @@ describe('project context workspace picker', () => {
   it('defaults new sessions to the main-owned current project root', async () => {
     const main = await readRepo(MAIN);
     const sessionsIpc = await readRepo(SESSIONS_IPC);
-    const sessionEntryIpc = await readRepo('apps/desktop/src/main/session-entry-ipc-main.ts');
     const botIncoming = await readRepo('apps/desktop/src/main/bot-incoming-main.ts');
     const chatActions = await readRepo('apps/desktop/src/renderer/app-shell-chat-actions.ts');
 
@@ -168,12 +167,7 @@ describe('project context workspace picker', () => {
       /resolveDesktopSessionSelection\(input, projectManagement\)/,
       'all desktop session entry points must resolve the main-owned selection once',
     );
-    assert.match(
-      sessionEntryIpc,
-      /\.\.\.\(typeof projectId === 'string' \|\| projectId === null \? \{ projectId \} : \{\}\)/,
-    );
     assert.doesNotMatch(sessionsIpc, /getCurrentProjectRoot/);
-    assert.doesNotMatch(sessionEntryIpc, /getCurrentProjectRoot/);
     assert.doesNotMatch(botIncoming, /getCurrentProjectRoot/);
     assert.doesNotMatch(main, /quickChat/, '#1433 merged quickChat:start into sessions:create');
     assert.doesNotMatch(sessionsIpc, /const cwd = input\?\.cwd \?\? process\.cwd\(\)/);

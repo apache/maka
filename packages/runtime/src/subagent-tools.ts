@@ -16,7 +16,6 @@ import {
   buildToolsForAgentDefinition,
   requireBuiltinAgentDefinitionByProfile,
 } from './agent-catalog.js';
-import { AGENT_TEAM_CHILD_TOOL_NAMES } from './agent-team-tool-names.js';
 import { AGENT_SWARM_TOOL_NAME, buildAgentSwarmTool } from './agent-swarm-tools.js';
 import { ChildAgentProgressProjector } from './child-agent-progress.js';
 
@@ -57,12 +56,6 @@ export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
   // whenever the host provides them. Otherwise a child can receive an archive
   // placeholder that explicitly names ArchiveRead without having that tool.
   for (const name of CHILD_RECOVERY_TOOL_NAMES) {
-    const tool = tools.find((candidate) => candidate.name === name);
-    if (!tool || seen.has(name)) continue;
-    seen.add(name);
-    out.push(tool);
-  }
-  for (const name of AGENT_TEAM_CHILD_TOOL_NAMES) {
     const tool = tools.find((candidate) => candidate.name === name);
     if (!tool || seen.has(name)) continue;
     seen.add(name);

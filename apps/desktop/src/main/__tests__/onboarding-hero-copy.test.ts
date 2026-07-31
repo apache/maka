@@ -428,7 +428,7 @@ describe('OnboardingHero structure', () => {
     // the Composer and the command palette own it.
     assert.doesNotMatch(
       hero,
-      /sessions\.create|expertTeam\.start/,
+      /sessions\.create/,
       'the setup hero must not own a send path — creating a session belongs to the Composer and the command palette',
     );
     assert.doesNotMatch(hero, /onDrop=|onPaste=|onImportDroppedTextFiles/, 'file import belongs to the Composer');

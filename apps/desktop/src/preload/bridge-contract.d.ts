@@ -112,25 +112,6 @@ import type {
   OnboardingState,
 } from '@maka/core';
 
-export interface ExpertTeamMemberSummary {
-  id: string;
-  name: string;
-  description: string;
-  whenToUse?: string;
-}
-export interface ExpertTeamSummary {
-  id: string;
-  name: string;
-  description: string;
-  members: ExpertTeamMemberSummary[];
-}
-export type ExpertTeamStartResult =
-  | { ok: true; sessionId: string }
-  | { ok: false; reason: 'unknown_team'; teamId: string }
-  | { ok: false; reason: 'setup_required'; state: OnboardingState }
-  | { ok: false; reason: 'workspace_unavailable' }
-  | { ok: false; reason: 'send_failed'; message: string };
-
 export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
@@ -433,10 +414,6 @@ export interface MakaBridge {
       status: 'completed' | 'skipped',
     ): Promise<OnboardingSnapshot>;
     clearMilestone(id: OnboardingMilestoneId): Promise<OnboardingSnapshot>;
-  };
-  expertTeam: {
-    list(): Promise<{ teams: ExpertTeamSummary[] }>;
-    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult>;
   };
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot>;

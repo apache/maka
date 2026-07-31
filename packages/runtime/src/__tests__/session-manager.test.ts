@@ -88,12 +88,6 @@ import {
   WEB_RESEARCH_AGENT_ID,
 } from '../agent-catalog.js';
 import {
-  buildExpertAgentId,
-  getExpertTeam,
-  materializeExpertAgentDefinition,
-} from '../expert-catalog.js';
-import { AGENT_TEAM_CHILD_TOOL_NAMES } from '../agent-team-tool-names.js';
-import {
   RuntimeMessageAuthorityInvariantError,
   type RuntimeHostedRootAuthority,
   type RuntimeMessageRunIdentity,
@@ -11428,83 +11422,6 @@ describe('SessionManager permission mode updates', () => {
       (message) => 'turnId' in message && message.turnId === 'child-turn',
     );
     expect(childMessages).toEqual([]);
-  });
-
-  test('startChildTurn resolves an expert member id to a tool-scoped, persona-injected child', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    const contexts: BackendFactoryContext[] = [];
-    backends.register('fake', (ctx) => {
-      contexts.push(ctx);
-      return new TestBackend(ctx);
-    });
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      // The full same-workspace child tool surface; the expert must be scoped
-      // down to just its archetype's tools (Read/Glob/Grep for local_read).
-      childTools: [
-        testTool('Read'),
-        testTool('Bash'),
-        testTool('Glob'),
-        testTool('WebSearch'),
-        testTool('Grep'),
-        ...AGENT_TEAM_CHILD_TOOL_NAMES.map((name) => ({
-          ...testTool(name),
-          categoryHint: 'read' as const,
-        })),
-      ],
-      newId: nextId(),
-      now: nextNow(7_200),
-      runtimeSource: 'test',
-    });
-    const session = await manager.createSession(makeInput({ permissionMode: 'ask' }));
-
-    await drain(manager.sendMessage(session.id, { turnId: 'parent-turn', text: 'parent context' }));
-    const [parentRun] = await runStore.listSessionRuns(session.id);
-    if (!parentRun) throw new Error('parent run was not recorded');
-
-    const team = getExpertTeam('code-review');
-    if (!team) throw new Error('code-review team missing');
-    const member = team.members[0]!;
-    const expertId = buildExpertAgentId(team.id, member.id);
-    const expected = materializeExpertAgentDefinition(team, member);
-
-    await drain(
-      manager.startChildTurn(session.id, {
-        turnId: 'child-turn',
-        parentRunId: parentRun.runId,
-        spec: { id: expertId, name: 'ignored', systemPrompt: 'ignored' },
-        prompt: 'review src/foo.ts',
-      }),
-    );
-
-    // The resolver flowed the materialized expert definition through the child
-    // turn: read-only archetype scope + composed persona + explore permission.
-    expect(contexts.map((ctx) => ctx.header.permissionMode)).toEqual(['ask', 'explore']);
-    expect(contexts[1]?.tools?.map((tool) => tool.name)).toEqual([
-      'Read',
-      'Glob',
-      'Grep',
-      ...AGENT_TEAM_CHILD_TOOL_NAMES,
-    ]);
-    expect(contexts[1]?.systemPrompt).toBe(expected.systemPrompt);
-    expect(contexts[1]?.agentTeam).toEqual({
-      role: 'member',
-      teamId: team.id,
-      agentId: expertId,
-      parentRunId: parentRun.runId,
-    });
-
-    const childRun = (await runStore.listSessionRuns(session.id)).find(
-      (run) => run.turnId === 'child-turn',
-    );
-    expect(childRun?.agentId).toBe(expertId);
-    expect(childRun?.agentName).toBe(member.name);
-    expect(childRun?.permissionMode).toBe('explore');
   });
 
   test('startChildTurn uses only WebSearch for the web research child definition', async () => {
