@@ -4,7 +4,8 @@
     {
       "name": "shell-topbar-tooltip-consumers",
       "selectors": [
-        ":is(header:has([data-maka-contract=\"shell-topbar-rail\"]), header:has([data-maka-contract=\"shell-topbar-rail\"]) *)"
+        ":is([data-maka-contract=\"shell-topbar-rail\"], [data-maka-contract=\"shell-topbar-rail\"] *)",
+        ":is(.maka-workspace-top-actions, .maka-workspace-top-actions *)"
       ]
     }
   ]
