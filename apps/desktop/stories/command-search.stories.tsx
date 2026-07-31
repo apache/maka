@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { useEffect, useState } from 'react';
 import type { SearchErrorReason, SearchResult } from '@maka/core';
 import { SearchModal } from '@maka/ui';
 import {
@@ -131,6 +132,11 @@ function searchModalDeps(response: SearchResponse): SearchModalDeps {
 }
 
 function CommandPaletteFrame(props: { commands: Command[] }) {
+  const [isOpen, setIsOpen] = useState(false);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setIsOpen(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
   return (
     <div
       style={{
@@ -141,7 +147,8 @@ function CommandPaletteFrame(props: { commands: Command[] }) {
     >
       <CommandPalette
         commands={props.commands}
-        onClose={noop}
+        isOpen={isOpen}
+        onOpenChange={setIsOpen}
       />
     </div>
   );
@@ -150,6 +157,11 @@ function CommandPaletteFrame(props: { commands: Command[] }) {
 function SearchModalFrame(props: {
   deps?: SearchModalDeps;
 }) {
+  const [isOpen, setIsOpen] = useState(false);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setIsOpen(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
   return (
     <div
       style={{
@@ -158,7 +170,8 @@ function SearchModalFrame(props: {
       }}
     >
       <SearchModal
-        onClose={noop}
+        isOpen={isOpen}
+        onOpenChange={setIsOpen}
         onNavigateToSession={noopNavigate}
         deps={props.deps}
       />
