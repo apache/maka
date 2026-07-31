@@ -9,7 +9,10 @@ import {
   acquireOperationalStateDatabase,
   type OperationalStateCutoverFailpoint,
 } from '../operational-state-store.js';
-import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
+import {
+  createSqliteRuntimeStore,
+  SQLITE_RUNTIME_SCHEMA_VERSION,
+} from '../sqlite-runtime-store.js';
 import {
   createSqliteSessionMetadataStore,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
@@ -74,7 +77,7 @@ describe('operational state database cutover', () => {
           { scope: 'artifact', version: 1 },
           { scope: 'core_execution', version: 1 },
           { scope: 'operational', version: 1 },
-          { scope: 'runtime', version: 5 },
+          { scope: 'runtime', version: SQLITE_RUNTIME_SCHEMA_VERSION },
           { scope: 'session_metadata', version: SQLITE_SESSION_METADATA_SCHEMA_VERSION },
           { scope: 'usage', version: 1 },
           { scope: 'workflow', version: 1 },
