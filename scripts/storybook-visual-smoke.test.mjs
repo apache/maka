@@ -14,6 +14,14 @@ import {
 const STORY_INDEX = {
   entries: {
     'product-settings-pages--general': { id: 'product-settings-pages--general', type: 'story' },
+    'product-settings-pages--usage-requests-populated': {
+      id: 'product-settings-pages--usage-requests-populated',
+      type: 'story',
+    },
+    'product-settings-providers--configured-providers': {
+      id: 'product-settings-providers--configured-providers',
+      type: 'story',
+    },
     'product-settings-pages--permission-center-diagnostics-expanded': {
       id: 'product-settings-pages--permission-center-diagnostics-expanded',
       type: 'story',
@@ -28,6 +36,10 @@ const STORY_INDEX = {
     },
     'product-module-hubs--extensions-mcp': {
       id: 'product-module-hubs--extensions-mcp',
+      type: 'story',
+    },
+    'product-module-hubs--extensions-mcp-configured': {
+      id: 'product-module-hubs--extensions-mcp-configured',
       type: 'story',
     },
     'product-module-hubs--scheduled-plan-reminders': {
@@ -164,7 +176,7 @@ describe('Product Storybook coverage manifest', () => {
     );
 
     const jobs = validateCoverageManifest(manifest, STORY_INDEX);
-    assert.equal(jobs.length, 27);
+    assert.equal(jobs.length, 51);
     assert.deepEqual(
       jobs
         .filter((job) => job.surface === 'planReminders')
