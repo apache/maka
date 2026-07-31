@@ -16,6 +16,46 @@ test('settings switches keep the compact shared control geometry', async ({ wind
   ).toBe('none');
 });
 
+test('general default-model options keep provider marks inside the Selector slot', async ({
+  window: page,
+}) => {
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await page.getByRole('button', { name: '设置' }).click();
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await settings.getByRole('button', { name: '通用', exact: true }).click();
+
+  await settings.getByRole('button', { name: '默认模型' }).click();
+  const mark = page.getByRole('listbox').locator('.modelPickerProviderMark').first();
+  await expect(mark).toBeVisible();
+  await expect
+    .poll(() =>
+      mark.evaluate((element) => {
+        const markRect = element.getBoundingClientRect();
+        const asset = element.firstElementChild;
+        const option = element.closest('[role="option"]');
+        const label = option?.querySelector('.modelPickerOptionLabel');
+        if (!asset || !label) return null;
+        const assetRect = asset.getBoundingClientRect();
+        const labelRect = label.getBoundingClientRect();
+        return {
+          usesSettingsPlate: element.querySelector('.providerLogo') !== null,
+          square: markRect.width === markRect.height && assetRect.width === assetRect.height,
+          contained:
+            assetRect.width <= markRect.width &&
+            assetRect.height <= markRect.height &&
+            markRect.width <= 16 &&
+            markRect.height <= 16,
+          aligned:
+            Math.abs(
+              markRect.top + markRect.height / 2 -
+                (labelRect.top + labelRect.height / 2),
+            ) <= 1,
+        };
+      }),
+    )
+    .toEqual({ usesSettingsPlate: false, square: true, contained: true, aligned: true });
+});
+
 /**
  * Settings take effect: open settings, switch the theme to dark, and confirm
  * the <html> root picks up the `dark` class (theme.ts applies it via

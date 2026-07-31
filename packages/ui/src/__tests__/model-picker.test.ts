@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildModelPickerOptions,
-  createModelSelectionGuard,
+  buildModelPickerProviderTypes,
 } from '../model-picker-internals.js';
 import type { ModelMenuGroup } from '../chat-model-helpers.js';
 
@@ -46,7 +46,7 @@ describe('ModelPicker option shaping', () => {
     assert.deepEqual(buildModelPickerOptions([]), []);
   });
 
-  it('maps each provider group to an Astryx section without losing provider identity', () => {
+  it('maps each provider group to public Astryx sections', () => {
     assert.deepEqual(buildModelPickerOptions(groups), [
       {
         type: 'section',
@@ -55,7 +55,6 @@ describe('ModelPicker option shaping', () => {
           {
             value: 'anthropic-team:claude-sonnet-4',
             label: 'Claude Sonnet 4',
-            providerType: 'anthropic',
           },
         ],
       },
@@ -63,8 +62,8 @@ describe('ModelPicker option shaping', () => {
         type: 'section',
         title: 'OpenAI',
         options: [
-          { value: 'openai-main:gpt-5', label: 'GPT-5', providerType: 'openai' },
-          { value: 'openai-main:o3-mini', label: 'o3-mini', providerType: 'openai' },
+          { value: 'openai-main:gpt-5', label: 'GPT-5' },
+          { value: 'openai-main:o3-mini', label: 'o3-mini' },
         ],
       },
     ]);
@@ -81,7 +80,6 @@ describe('ModelPicker option shaping', () => {
         {
           value: 'legacy:model-that-is-no-longer-listed',
           label: 'model-that-is-no-longer-listed',
-          providerType: 'openai-compatible',
         },
         { type: 'divider' },
         ...buildModelPickerOptions(groups),
@@ -94,32 +92,20 @@ describe('ModelPicker option shaping', () => {
       { value: '', label: '未设置' },
     ]);
   });
-});
 
-describe('model selection action', () => {
-  it('accepts one async selection at a time and releases after it settles', async () => {
-    const guard = createModelSelectionGuard();
-    let release: (() => void) | undefined;
-    const calls: string[] = [];
-    const action = async (value: string) => {
-      calls.push(value);
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    };
-
-    const first = guard.run('first', action);
-    const duplicate = await guard.run('duplicate', action);
-    assert.equal(duplicate, false);
-    assert.deepEqual(calls, ['first']);
-
-    release?.();
-    assert.equal(await first, true);
-
-    const next = guard.run('next', async (value) => {
-      calls.push(value);
-    });
-    assert.equal(await next, true);
-    assert.deepEqual(calls, ['first', 'next']);
+  it('maps provider marks by public option value without adding private Selector fields', () => {
+    assert.deepEqual(
+      [...buildModelPickerProviderTypes(groups, {
+        value: 'legacy:model',
+        label: 'Legacy model',
+        providerType: 'openai-compatible',
+      })],
+      [
+        ['legacy:model', 'openai-compatible'],
+        ['anthropic-team:claude-sonnet-4', 'anthropic'],
+        ['openai-main:gpt-5', 'openai'],
+        ['openai-main:o3-mini', 'openai'],
+      ],
+    );
   });
 });

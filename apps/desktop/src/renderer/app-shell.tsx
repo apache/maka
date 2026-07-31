@@ -738,6 +738,7 @@ function AppShellContent({
     pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
     pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
     refreshSessions,
+    saveComposerDefaults,
     sessionsRef,
     setDefaultPermissionMode,
     setPendingPermissionModeBySession,

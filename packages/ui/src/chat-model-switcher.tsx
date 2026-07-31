@@ -8,7 +8,7 @@
  * not re-export them (they are internal to the `@maka/ui` Composer surface).
  */
 
-import { type ReactNode, useMemo, useState } from 'react';
+import { type ReactNode, useMemo } from 'react';
 import { Button as UiButton, Selector } from '@astryxdesign/core';
 import { ModelPicker } from './model-picker.js';
 import { Settings } from './icons.js';
@@ -21,8 +21,6 @@ import {
 import { type ProviderType, type SessionSummary, type ThinkingLevel } from '@maka/core';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { createModelSelectionGuard } from './model-picker-internals.js';
-import { useMountedRef } from './use-mounted-ref.js';
 
 const DEFAULT_THINKING_LEVEL = '__default__';
 
@@ -31,11 +29,10 @@ function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
   current?: ThinkingLevel;
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
+  disabled?: boolean;
+  loading?: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).model;
-  const mountedRef = useMountedRef();
-  const [selectionGuard] = useState(createModelSelectionGuard);
-  const [selectionPending, setSelectionPending] = useState(false);
   const hasVariants = props.levels.length > 0 && Boolean(props.onChange);
   const options = useMemo(
     () => [
@@ -56,22 +53,13 @@ function ThinkingLevelSelector(props: {
       size="sm"
       placement="above"
       className="maka-thinking-level-selector"
-      isDisabled={selectionPending}
-      isLoading={selectionPending}
-      changeAction={async (value) => {
-        await selectionGuard.run(value, async (acceptedValue) => {
-          setSelectionPending(true);
-          try {
-            await props.onChange?.(
-              acceptedValue === DEFAULT_THINKING_LEVEL
-                ? undefined
-                : acceptedValue as ThinkingLevel,
-            );
-          } finally {
-            if (mountedRef.current) setSelectionPending(false);
-          }
-        });
-      }}
+      isDisabled={props.disabled}
+      isLoading={props.loading}
+      changeAction={(value) =>
+        props.onChange?.(
+          value === DEFAULT_THINKING_LEVEL ? undefined : value as ThinkingLevel,
+        )
+      }
     />
   );
 }
@@ -147,6 +135,8 @@ export function ChatModelSwitcher(props: {
           levels={props.thinkingLevels ?? []}
           current={props.thinkingLevel}
           onChange={props.onThinkingLevelChange}
+          disabled={pending}
+          loading={pending}
         />
       </div>
     </div>

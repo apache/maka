@@ -6,7 +6,6 @@ import type {
   ThinkingLevel,
   UiLocale,
 } from '@maka/core';
-import { saveComposerDefaults } from './composer-defaults';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
 
 type RefBox<T> = { current: T };
@@ -37,6 +36,9 @@ export function createAppShellSessionSettingsActions(deps: {
   pendingPermissionModeChangesRef: RefBox<Set<string>>;
   pendingSessionModelChangesRef: RefBox<Set<string>>;
   refreshSessions: () => Promise<SessionSummary[]>;
+  saveComposerDefaults: (patch: {
+    model: { llmConnectionSlug: string; model: string };
+  }) => void;
   sessionsRef: RefBox<SessionSummary[]>;
   setDefaultPermissionMode: (mode: ChatDefaultPermissionMode) => void;
   setPendingPermissionModeBySession: BooleanRecordUpdater;
@@ -51,6 +53,7 @@ export function createAppShellSessionSettingsActions(deps: {
     pendingPermissionModeChangesRef,
     pendingSessionModelChangesRef,
     refreshSessions,
+    saveComposerDefaults,
     sessionsRef,
     setDefaultPermissionMode,
     setPendingPermissionModeBySession,
@@ -152,6 +155,12 @@ export function createAppShellSessionSettingsActions(deps: {
     if (!sessionId) return;
     const current = sessionsRef.current.find((session) => session.id === sessionId);
     if (current && current.thinkingLevel === level) return;
+    if (pendingSessionModelChangesRef.current.has(sessionId)) return;
+    pendingSessionModelChangesRef.current.add(sessionId);
+    setPendingSessionModelBySession((currentPending) => ({
+      ...currentPending,
+      [sessionId]: true,
+    }));
     try {
       const next = await window.maka.sessions.setThinkingLevel(sessionId, level);
       setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
@@ -163,6 +172,9 @@ export function createAppShellSessionSettingsActions(deps: {
       if (activeIdRef.current === sessionId) {
         toastApi.error(copy.thinkingFailedTitle, localizedShellErrorMessage(error, copy.thinkingFallback, uiLocale));
       }
+    } finally {
+      pendingSessionModelChangesRef.current.delete(sessionId);
+      setPendingSessionModelBySession((currentPending) => omitSessionKey(currentPending, sessionId));
     }
   }
 

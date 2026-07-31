@@ -162,7 +162,8 @@ describe('PR-SESSION-STICKY-MODEL-0 contract', () => {
     assert.doesNotMatch(modelPicker, /role="(?:listbox|option)"|aria-activedescendant|scrollIntoView/);
     assert.doesNotMatch(ui, /@base-ui\/react\/combobox|BaseCombobox/);
     assert.match(ui, /<SelectorOption[\s\S]*icon=\{providerMark\}/);
-    assert.match(ui, /className="modelPickerProviderMark"[\s\S]*data-provider=\{modelOption\.providerType\}/);
+    assert.match(ui, /const providerType = providerTypes\.get\(option\.value\)/);
+    assert.match(ui, /className="modelPickerProviderMark"[\s\S]*data-provider=\{providerType\}/);
     assert.match(ui, /leadingOption=\{!currentKnownChoice/);
     assert.doesNotMatch(`${chatModelSwitcher}\n${modelPicker}`, /\bfooter=|pinnedItem|DropdownMenu/);
     assert.doesNotMatch(ui, /<select\b[\s\S]*aria-label="切换当前会话模型"/);

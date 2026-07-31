@@ -24,15 +24,21 @@ describe('renderer async action boundary contract', () => {
       /onValueChange=\{async \(value\) => \{[\s\S]*try \{[\s\S]*await props\.onChange\?\.\(next\);[\s\S]*\} catch \{[\s\S]*\}[\s\S]*\}\}/,
       'model switching must contain delegated action rejection at the product boundary',
     );
-    assert.match(
+    assert.match(modelPicker, /changeAction=\{props\.onValueChange\}/);
+    assert.doesNotMatch(
       modelPicker,
-      /selectionGuard\.run\(value, async \(acceptedValue\) => \{[\s\S]*setSelectionPending\(true\);[\s\S]*try \{[\s\S]*await props\.onValueChange\(acceptedValue\);[\s\S]*\} finally \{[\s\S]*setSelectionPending\(false\);/,
-      'the shared ModelPicker boundary must reject concurrent selections and always release pending chrome',
+      /selectionGuard|selectionPending|createModelSelectionGuard/,
+      'the generic ModelPicker must not duplicate product action ownership',
     );
     assert.match(
       settingsActions,
       /async function setSessionModel[\s\S]*catch \(error\) \{[\s\S]*toastApi\.error\(copy\.modelFailedTitle, localizedShellErrorMessage\(error, copy\.modelFallback, uiLocale\)\)/,
       'model switch errors must have visible feedback in the AppShell action owner',
+    );
+    assert.match(
+      settingsActions,
+      /async function setSessionThinkingLevel[\s\S]*pendingSessionModelChangesRef\.current\.has\(sessionId\)[\s\S]*window\.maka\.sessions\.setThinkingLevel/,
+      'model and thinking mutations must share the session-keyed action owner',
     );
     assert.doesNotMatch(
       source,

@@ -29,17 +29,23 @@ describe('model thinking-level selector contract', () => {
     assert.match(source, /props\.levels\.map\(\(level\) => \(\{ value: level, label: copy\.level\[level\] \}\)\)/);
     assert.match(
       source,
-      /acceptedValue === DEFAULT_THINKING_LEVEL[\s\S]*\? undefined[\s\S]*: acceptedValue as ThinkingLevel/,
+      /value === DEFAULT_THINKING_LEVEL \? undefined : value as ThinkingLevel/,
     );
   });
 
-  it('awaits the product persistence action through Selector changeAction', async () => {
+  it('delegates persistence to Selector changeAction and shares session pending', async () => {
     const source = await readSwitcher();
 
     assert.match(
       source,
-      /changeAction=\{async \(value\) => \{[\s\S]*await props\.onChange\?\.\([\s\S]*\);[\s\S]*\}\}/,
-      'the selected level must remain pending until its product persistence action settles',
+      /changeAction=\{\(value\) =>[\s\S]*props\.onChange\?\.\(/,
+      'Astryx must own the optimistic action promise',
     );
+    assert.match(
+      source,
+      /<ThinkingLevelSelector[\s\S]*disabled=\{pending\}[\s\S]*loading=\{pending\}/,
+      'the adjacent session selectors must share the AppShell pending state',
+    );
+    assert.doesNotMatch(source, /selectionGuard|selectionPending|createModelSelectionGuard/);
   });
 });

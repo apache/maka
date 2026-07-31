@@ -2,9 +2,7 @@ import type { SelectorDivider, SelectorOptionData } from '@astryxdesign/core/Sel
 import type { ProviderType } from '@maka/core';
 import { type ModelMenuGroup, modelChoiceValue } from './chat-model-helpers.js';
 
-export interface ModelPickerOption extends SelectorOptionData {
-  providerType?: ProviderType;
-}
+export type ModelPickerOption = SelectorOptionData;
 
 export interface ModelPickerSection {
   type: 'section';
@@ -23,8 +21,8 @@ export interface ModelPickerLeadingOption {
 /**
  * Shapes Maka's provider catalog into Astryx Selector's public option model.
  * Search, flattening, keyboard navigation, selection, and empty results remain
- * entirely inside Selector; provider identity only survives here so the
- * product can render the corresponding brand mark.
+ * entirely inside Selector. Provider marks use the separate public-value map
+ * below rather than relying on Selector to preserve product-only fields.
  */
 export function buildModelPickerOptions(
   groups: readonly ModelMenuGroup[],
@@ -36,7 +34,6 @@ export function buildModelPickerOptions(
     options: group.choices.map((choice) => ({
       value: modelChoiceValue(choice.connectionSlug, choice.model),
       label: choice.label,
-      providerType: group.providerType,
     })),
   }));
 
@@ -45,27 +42,22 @@ export function buildModelPickerOptions(
   const option: ModelPickerOption = {
     value: leadingOption.value,
     label: leadingOption.label,
-    ...(leadingOption.providerType ? { providerType: leadingOption.providerType } : {}),
   };
   return sections.length > 0 ? [option, { type: 'divider' }, ...sections] : [option];
 }
 
-/** Product action guard; it owns no Selector interaction or collection state. */
-export function createModelSelectionGuard() {
-  let pending = false;
-  return {
-    async run<Value>(
-      value: Value,
-      action: (value: Value) => void | Promise<void>,
-    ): Promise<boolean> {
-      if (pending) return false;
-      pending = true;
-      try {
-        await action(value);
-        return true;
-      } finally {
-        pending = false;
-      }
-    },
-  };
+export function buildModelPickerProviderTypes(
+  groups: readonly ModelMenuGroup[],
+  leadingOption?: ModelPickerLeadingOption,
+): ReadonlyMap<string, ProviderType> {
+  const entries: [string, ProviderType][] = groups.flatMap((group) =>
+    group.choices.map((choice) => [
+      modelChoiceValue(choice.connectionSlug, choice.model),
+      group.providerType,
+    ]),
+  );
+  if (leadingOption?.providerType) {
+    entries.unshift([leadingOption.value, leadingOption.providerType]);
+  }
+  return new Map(entries);
 }

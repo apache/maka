@@ -26,7 +26,7 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { ProviderLogo } from './ProvidersPanel';
+import { ProviderBrandMark } from './provider-brand-marks';
 import { buildCatalogChatModelChoices } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { SettingsRows } from './settings-rows';
@@ -221,7 +221,7 @@ function GeneralDefaultsCard(props: {
           groups={modelGroups}
           value={selectedValue}
           leadingOption={{ value: '', label: copy.notSet }}
-          renderProviderMark={(type) => <ProviderLogo type={type} compact />}
+          renderProviderMark={(type) => <ProviderBrandMark type={type} />}
           ariaLabel={copy.defaultModel}
           disabled={saving}
           loading={saving}

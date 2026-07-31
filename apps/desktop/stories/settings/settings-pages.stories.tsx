@@ -966,7 +966,11 @@ function withVoiceCaptureOutcome(outcome: VoiceStoryOutcome): Decorator {
   };
 }
 
-function SettingsStory(props: { section: SettingsSection }) {
+function SettingsStory(props: {
+  section: SettingsSection;
+  connections?: LlmConnection[];
+  defaultSlug?: string | null;
+}) {
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
 
@@ -981,8 +985,8 @@ function SettingsStory(props: { section: SettingsSection }) {
         }}
       >
         <SettingsSurface
-          connections={connections}
-          defaultSlug="zai-live"
+          connections={props.connections ?? connections}
+          defaultSlug={props.defaultSlug === undefined ? 'zai-live' : props.defaultSlug}
           onRefresh={async () => undefined}
           onClose={noop}
           themePref={'auto' as ThemePreference}
@@ -1077,6 +1081,11 @@ export const Models: Story = {
 export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
+};
+// Real path: 设置 → 通用 on a fresh workspace with no model connections.
+export const GeneralEmptyModelCatalog: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" connections={[]} defaultSlug={null} />,
 };
 // Real path: 设置 → 外观.
 export const Appearance: Story = {
