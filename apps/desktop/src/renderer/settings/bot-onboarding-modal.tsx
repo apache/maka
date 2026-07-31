@@ -128,8 +128,13 @@ export function BotOnboardingModal(props: {
     }
   }
 
-  function close() {
+  function requestClose() {
+    cancelCurrent();
     props.onOpenChange(false);
+  }
+
+  function handleOpenChange(isOpen: boolean) {
+    if (!isOpen) requestClose();
   }
 
   const status = statusCopy(snapshot, starting, error, copy, locale);
@@ -142,7 +147,7 @@ export function BotOnboardingModal(props: {
   return (
     <Dialog
       isOpen={props.isOpen}
-      onOpenChange={props.onOpenChange}
+      onOpenChange={handleOpenChange}
       className="settingsBotOnboardingModal"
       width={520}
       aria-label={copy.ariaLabel}
@@ -155,7 +160,7 @@ export function BotOnboardingModal(props: {
             startContent={<BotBrandLogo provider={props.provider} size="large" />}
             title={copy.title}
             subtitle={copy.subtitle}
-            onOpenChange={props.onOpenChange}
+            onOpenChange={handleOpenChange}
           />
         }
         content={
@@ -197,13 +202,13 @@ export function BotOnboardingModal(props: {
         </div>
         <div className="settingsBotOnboardingActions">
           {snapshot?.state === 'connected' ? (
-            <Button variant="primary" onClick={close} label={onboardingCopy.done} />
+            <Button variant="primary" onClick={requestClose} label={onboardingCopy.done} />
           ) : snapshot?.state === 'expired' || snapshot?.state === 'denied' || error ? (
             <Button variant="primary" onClick={() => void start()} label={onboardingCopy.regenerate} />
           ) : (
             <>
               <Button variant="secondary" isDisabled={starting} onClick={() => void start()} label={onboardingCopy.refreshQr} />
-              <Button variant="ghost" onClick={close} label={onboardingCopy.cancel} />
+              <Button variant="ghost" onClick={requestClose} label={onboardingCopy.cancel} />
             </>
           )}
         </div>
