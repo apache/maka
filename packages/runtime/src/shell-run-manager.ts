@@ -44,6 +44,7 @@ import {
   MAX_FOREGROUND_BASH_TIMEOUT_MS,
   MAX_SHELL_RUN_TIMEOUT_MS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
+  ShellRunPtyControlClosedError,
   parseShellRunResourceRef,
   shellRunResourceRef,
   validateWriteStdinInput,
@@ -285,9 +286,7 @@ export class ShellRunProcessManager
       );
     }
     if (!isPtyControlOpen(live)) {
-      throw new Error(
-        'This PTY is stopping and no longer accepts input; use Read to observe its final state',
-      );
+      throw new ShellRunPtyControlClosedError();
     }
     if (input.abortSignal?.aborted)
       throw abortError('WriteStdin aborted before the control operation was committed');
@@ -305,7 +304,7 @@ export class ShellRunProcessManager
         exitBeforeControlCut = true;
         return;
       }
-      if (live.termination) return;
+      if (live.termination) throw new ShellRunPtyControlClosedError();
       if (input.size) {
         const currentSize = live.collector.currentSize();
         if (currentSize.cols === input.size.cols && currentSize.rows === input.size.rows) {
@@ -343,7 +342,7 @@ export class ShellRunProcessManager
     try {
       await controlCut;
     } catch (error) {
-      if (isAbortError(error)) throw error;
+      if (error instanceof ShellRunPtyControlClosedError || isAbortError(error)) throw error;
       operationFailed = true;
       this.handleIntegrityFailure(live, asError(error, 'PTY control failed'));
     }

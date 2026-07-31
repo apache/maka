@@ -64,6 +64,16 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       assert.equal(created.id, createInput.sessionId);
       assert.equal(created.permissionMode, 'ask');
       assert.equal(created.labelsTruncated, false);
+      assert.deepEqual(
+        await desktop.request('runtime.resource.query', {
+          kind: 'list_start',
+          sessionId: created.id,
+        }),
+        await tui.request('runtime.resource.query', {
+          kind: 'list_start',
+          sessionId: created.id,
+        }),
+      );
       const largeLabels = await querySession(desktop, largeLabelSessionId);
       assert.equal(largeLabels.labels.length, 32);
       assert.equal(largeLabels.labelsTruncated, true);
@@ -219,24 +229,27 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
         kind: 'committed',
         session: configuredSession,
       });
-      await assert.rejects(
-        desktop.request('session.configuration.update', {
-          sessionId: configuredSession.id,
-          expectedRevision: configuredSession.revision,
-          configuration: {
-            modelTarget: {
-              kind: 'explicit',
-              connectionSlug: configuredSession.llmConnectionSlug,
-              model: configuredSession.model,
-            },
-            thinkingLevel: configuredSession.thinkingLevel ?? null,
-            permissionMode: 'explore',
-            collaborationMode: configuredSession.collaborationMode,
-            orchestrationMode: configuredSession.orchestrationMode,
+      const narrowedConfiguration = await desktop.request('session.configuration.update', {
+        sessionId: configuredSession.id,
+        expectedRevision: configuredSession.revision,
+        configuration: {
+          modelTarget: {
+            kind: 'explicit',
+            connectionSlug: configuredSession.llmConnectionSlug,
+            model: configuredSession.model,
           },
-        }),
-        operationError('operation_unavailable'),
-      );
+          thinkingLevel: configuredSession.thinkingLevel ?? null,
+          permissionMode: 'explore',
+          collaborationMode: configuredSession.collaborationMode,
+          orchestrationMode: configuredSession.orchestrationMode,
+        },
+      });
+      assert.equal(narrowedConfiguration.kind, 'committed');
+      if (narrowedConfiguration.kind !== 'committed') {
+        assert.fail('Runtime Resource authority must permit a quiescent permission narrowing');
+      }
+      const narrowedSession = requireSessionProjection(narrowedConfiguration.session);
+      assert.equal(narrowedSession.permissionMode, 'explore');
 
       await setDefaultModel(desktop, connectionId, WIRE_OVERSIZED_MODEL_ID);
       const rejectedSessionId = 'wire-oversized-default-model';
@@ -257,19 +270,19 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       );
       await assert.rejects(
         desktop.request('session.configuration.update', {
-          sessionId: configuredSession.id,
-          expectedRevision: configuredSession.revision,
+          sessionId: narrowedSession.id,
+          expectedRevision: narrowedSession.revision,
           configuration: {
             modelTarget: { kind: 'default' },
             thinkingLevel: null,
-            permissionMode: configuredSession.permissionMode,
-            collaborationMode: configuredSession.collaborationMode,
-            orchestrationMode: configuredSession.orchestrationMode,
+            permissionMode: narrowedSession.permissionMode,
+            collaborationMode: narrowedSession.collaborationMode,
+            orchestrationMode: narrowedSession.orchestrationMode,
           },
         }),
         operationError('invalid_request'),
       );
-      assert.deepEqual(await querySession(desktop, configuredSession.id), configuredSession);
+      assert.deepEqual(await querySession(desktop, narrowedSession.id), narrowedSession);
       await setDefaultModel(tui, connectionId, 'gpt-5');
 
       const read = requireSessionProjection(

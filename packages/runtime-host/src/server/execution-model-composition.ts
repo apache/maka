@@ -11,6 +11,7 @@ import {
 import {
   AiSdkBackend,
   buildAskUserQuestionTool,
+  buildBuiltinTools,
   buildDefaultContextBudgetPolicy,
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
@@ -33,6 +34,7 @@ import {
   resolveSelectedModelContextWindow,
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
+  type BuildBuiltinToolsOptions,
   type MakaTool,
   type ProxiedFetchProxy,
   type RuntimeCommitSink,
@@ -92,6 +94,7 @@ export interface HostExecutionModelCompositionInput {
   readonly shell?: string;
   readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
+  readonly builtinTools?: BuildBuiltinToolsOptions;
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -101,7 +104,7 @@ export function createHostExecutionModelComposition(
   const inventoryFor = createTurnSkillInventoryResolver(input.skills);
   const defaultTools = input.boundTools
     ? input.boundTools
-    : buildDefaultHostTools(input.taskLedger, inventoryFor);
+    : buildDefaultHostTools(input.taskLedger, inventoryFor, input.builtinTools);
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
     tools: defaultTools,
@@ -189,6 +192,7 @@ export interface HostAiSdkBackendInput {
   readonly requestDrain: () => void;
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly runtimeCommitSink?: RuntimeCommitSink;
+  readonly builtinTools?: BuildBuiltinToolsOptions;
 }
 
 /** Builds one real provider backend from canonical Host state. */
@@ -223,6 +227,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
       ...(input.context.tools ? { boundTools: input.context.tools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
+      ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -529,13 +534,22 @@ async function resolveExecutionTarget(
 function buildDefaultHostTools(
   taskLedger: TaskLedgerStore,
   inventoryFor: SkillInventoryResolver,
+  builtinOptions?: BuildBuiltinToolsOptions,
 ): MakaTool[] {
+  const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
-  const toolNames = [question.name, 'Skill', 'SkillSearch', ...taskTools.map((tool) => tool.name)];
+  const toolNames = [
+    ...builtins.map((tool) => tool.name),
+    question.name,
+    'Skill',
+    'SkillSearch',
+    ...taskTools.map((tool) => tool.name),
+  ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
   return [
+    ...builtins,
     question,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, {
       shadowTracker,

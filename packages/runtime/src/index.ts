@@ -518,6 +518,7 @@ export {
   MIN_PTY_ROWS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
   SHELL_RUN_RESOURCE_PREFIX,
+  ShellRunPtyControlClosedError,
   isWellFormedTerminalInput,
   isShellRunResourceRef,
   shellRunResourceRef,

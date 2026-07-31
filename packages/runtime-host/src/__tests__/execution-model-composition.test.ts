@@ -5,11 +5,17 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createBypassExecutionBoundary, type RuntimeEvent } from '@maka/core';
+import {
+  createBypassExecutionBoundary,
+  createManagedExecutionBoundary,
+  createWorkspaceWritePermissionProfile,
+  type RuntimeEvent,
+} from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
 import type {
   BackendFactoryContext,
+  FilesystemWorkerExecuteInput,
   MakaTool,
   MakaToolContext,
   RunTraceEvent,
@@ -525,8 +531,17 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
+      'Bash',
+      'Edit',
+      'FormatJson',
+      'Glob',
+      'Grep',
+      'Read',
       'Skill',
       'SkillSearch',
+      'StopBackgroundTask',
+      'Write',
+      'WriteStdin',
       'task_create',
       'task_get',
       'task_list',
@@ -747,6 +762,56 @@ test('Client Capability tools join the existing load_tools catalog without a par
   );
 });
 
+test('Host model composition routes managed file tools through its filesystem worker', async () => {
+  let workerInput: FilesystemWorkerExecuteInput | undefined;
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({
+        revision: 0,
+        policy: createDefaultRuntimePolicy(),
+      }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: {
+      filesystemWorker: {
+        execute: async (input) => {
+          workerInput = input;
+          return { kind: 'read', content: 'read by Host worker' };
+        },
+      },
+      sandboxPlatform: 'darwin',
+    },
+  });
+  const read = composition.tools.find((tool) => tool.name === 'Read');
+  assert.ok(read);
+
+  const result = await read.impl(
+    { path: 'resource.txt' },
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      toolCallId: 'read-call',
+      cwd: process.cwd(),
+      permissionMode: 'ask',
+      executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    },
+  );
+
+  assert.deepEqual(result, { content: 'read by Host worker' });
+  assert.ok(workerInput);
+  assert.deepEqual(workerInput.operation, { kind: 'read', path: 'resource.txt' });
+  assert.equal(workerInput.cwd, process.cwd());
+  assert.equal(workerInput.executionBoundary?.kind, 'managed');
+  assert.equal(workerInput.mode, 'ask');
+  assert.ok(workerInput.abortSignal instanceof AbortSignal);
+});
+
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
   const boundTool: MakaTool = {
     name: 'bounded_tool',
@@ -774,6 +839,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     memory: {} as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     boundTools: [boundTool],
+    builtinTools: {},
     clientCapabilities: {
       tools: [capabilityTool],
       groups: [

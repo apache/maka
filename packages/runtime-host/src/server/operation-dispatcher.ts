@@ -65,6 +65,7 @@ export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
 export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
 export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
+export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
@@ -92,6 +93,10 @@ export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOper
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
 export type MemoryOperationHandlerMap = Pick<OperationHandlerMap, MemoryOperationKey>;
+export type RuntimeResourceOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  RuntimeResourceOperationKey
+>;
 export type ClientCapabilityOperationHandlerMap = Pick<
   OperationHandlerMap,
   ClientCapabilityOperationKey

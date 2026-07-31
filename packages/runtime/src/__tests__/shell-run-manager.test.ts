@@ -12,6 +12,7 @@ import type { ShellRunRecord, ShellRunStore, ShellRunUpdate, ToolResultContent }
 import { createLegacyShellRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
+import { ShellRunPtyControlClosedError } from '../shell-run-contract.js';
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
 
@@ -739,11 +740,42 @@ describe('ShellRunProcessManager', () => {
           input: 'late input',
           abortSignal: NO_ABORT,
         }),
-      /stopping and no longer accepts input/,
+      (error: unknown) =>
+        error instanceof ShellRunPtyControlClosedError &&
+        /stopping and no longer accepts input/.test(error.message),
     );
     const stopped = await stopping;
     assertShellRun(stopped);
     assert.deepEqual(stopped.operation, { kind: 'stop', applied: true });
+  });
+
+  test('closes PTY control at its mutation cut when shutdown starts after admission', async () => {
+    const manager = await createTestManager();
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: waitForeverCommand('READY\n'),
+        pty: true,
+        timeoutMs: 5_000,
+      }),
+    );
+    assert.equal(initial.kind, 'shell_run');
+    await waitForPtyText(manager, initial.ref, /READY/);
+
+    const control = manager.writeStdin({
+      sessionId: 'session-1',
+      ref: initial.ref,
+      input: 'late input',
+      abortSignal: NO_ABORT,
+    });
+    const shutdown = manager.terminateAll();
+    await assert.rejects(
+      control,
+      (error: unknown) => error instanceof ShellRunPtyControlClosedError,
+    );
+    await shutdown;
+    const terminal = await manager.inspectResource('session-1', initial.ref);
+    assert.equal(terminal.status, 'cancelled');
   });
 
   test('reopens PTY control only after every pre-commit Stop has aborted', async () => {
@@ -777,7 +809,9 @@ describe('ShellRunProcessManager', () => {
         input: 'blocked',
         abortSignal: NO_ABORT,
       }),
-      /stopping and no longer accepts input/,
+      (error: unknown) =>
+        error instanceof ShellRunPtyControlClosedError &&
+        /stopping and no longer accepts input/.test(error.message),
     );
     secondAbort.abort();
     await Promise.all([first, blocked, second]);
@@ -1974,7 +2008,7 @@ describe('ShellRunProcessManager', () => {
         });
         return false;
       } catch (error) {
-        if (/stopping and no longer accepts input/.test(String(error))) return true;
+        if (error instanceof ShellRunPtyControlClosedError) return true;
         throw error;
       }
     });
