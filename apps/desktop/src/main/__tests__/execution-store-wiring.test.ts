@@ -4,13 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, ShellRunRecord } from '@maka/core';
-import { createAgentRunStore, createShellRunStore } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyShellRunStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import { openDesktopExecutionStoreWiring } from '../execution-store-wiring.js';
 
 test('Desktop cuts legacy execution state over before use and keeps later writes SQLite-only', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-execution-stores-'));
   try {
-    const legacyRuns = createAgentRunStore(root);
+    const legacyRuns = createLegacyAgentRunStoreForTest(root);
     const firstRun = runHeader('run-1', 'turn-1');
     await legacyRuns.createRun(firstRun);
     await legacyRuns.appendEvent('session-1', 'run-1', runEvent('event-1', 'run-1', 'turn-1', 1));
@@ -24,7 +27,7 @@ test('Desktop cuts legacy execution state over before use and keeps later writes
     );
     const legacyRunBytes = await readFile(legacyRunEventsPath);
 
-    const legacyShellRuns = createShellRunStore(root);
+    const legacyShellRuns = createLegacyShellRunStoreForTest(root);
     await legacyShellRuns.createShellRun(shellRun('shell-1'));
     const legacyShellPath = join(
       root,

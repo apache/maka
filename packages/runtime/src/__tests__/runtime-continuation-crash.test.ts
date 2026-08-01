@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
 import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
-import { createAgentRunStore, createSessionStore, createSqliteRuntimeStore } from '@maka/storage';
+import { createSessionStore, createSqliteRuntimeStore } from '@maka/storage';
+import { createLegacyAgentRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
 
 import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
@@ -37,7 +38,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
           await crashContinuationAt(workspaceRoot, failpoint);
 
           const store = createSessionStore(workspaceRoot);
-          const runStore = createAgentRunStore(workspaceRoot);
+          const runStore = createLegacyAgentRunStoreForTest(workspaceRoot);
           const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
           const [session] = await store.list();
           assert.ok(session, `${failpoint} did not persist a session`);
@@ -122,7 +123,7 @@ async function runCrashChild(): Promise<void> {
     'MAKA_RUNTIME_CONTINUATION_FAILPOINT',
   ) as RuntimeContinuationFailpoint;
   const store = createSessionStore(workspaceRoot);
-  const runStore = createAgentRunStore(workspaceRoot);
+  const runStore = createLegacyAgentRunStoreForTest(workspaceRoot);
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(
@@ -215,7 +216,7 @@ function createManager(workspaceRoot: string): {
   sessionStore: ReturnType<typeof createSessionStore>;
 } {
   const store = createSessionStore(workspaceRoot);
-  const runStore = createAgentRunStore(workspaceRoot);
+  const runStore = createLegacyAgentRunStoreForTest(workspaceRoot);
   const runtimeEventStore = createCrashRuntimeStore(workspaceRoot);
   const backends = new BackendRegistry();
   backends.register(

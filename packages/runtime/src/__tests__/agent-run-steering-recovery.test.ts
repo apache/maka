@@ -5,11 +5,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
+import { createLegacyFileSessionStore } from '@maka/storage';
 import {
-  createAgentRunStore,
-  createLegacyFileSessionStore,
-  createRuntimeEventStore,
-} from '@maka/storage';
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import { AgentRun } from '../agent-run.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
 
@@ -24,7 +24,7 @@ test('does not re-append atomically committed tool facts through the generic eve
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const runId = 'run-atomic-tool';
     const turnId = 'turn-atomic-tool';
     const run = new AgentRun({
@@ -99,8 +99,8 @@ test('acks a steering event whose canonical append preceded proof publication fa
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const runId = 'run-1';
     const turnId = 'turn-1';
     await runStore.createRun(makeRunHeader(session.id, runId, turnId));
@@ -154,7 +154,7 @@ test('acks a steering event whose canonical append preceded proof publication fa
 
     await chmod(proofDirectory, 0o700);
     await rm(proofDirectory, { recursive: true });
-    const recovered = createRuntimeEventStore(root);
+    const recovered = createLegacyRuntimeEventStoreForTest(root);
     await recovered.repairImmutableSteeringMessageProofsForRecovery(session.id);
     assert.deepEqual(await recovered.readImmutableRuntimeEvents(session.id, runId), [runtimeEvent]);
     assert.deepEqual(
@@ -177,8 +177,8 @@ test('awaits canonical Run status persistence before accepting an interaction re
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const runId = 'run-status-barrier';
     const turnId = 'turn-status-barrier';
     await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
@@ -257,8 +257,8 @@ test('required interaction resume recovers a failed best-effort Run Store latch 
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const runId = 'run-status-latch';
     const turnId = 'turn-status-latch';
     await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
@@ -372,8 +372,8 @@ test('required interaction resume stays fail-closed until a later required write
       model: 'fake-model',
       permissionMode: 'ask',
     });
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const runId = 'run-status-latch-failure';
     const turnId = 'turn-status-latch-failure';
     await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));

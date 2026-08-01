@@ -3,8 +3,32 @@ export * from './session-transcript.js';
 export * from './sqlite-session-metadata-store.js';
 export * from './session-metadata-transfer.js';
 export * from './session-metadata-maintenance.js';
-export * from './agent-run-store.js';
-export * from './shell-run-store.js';
+export {
+  ROOT_TURN_ADMISSION_MAX_CONTENT_BYTES,
+  ROOT_TURN_ADMISSION_MAX_RECORD_BYTES,
+  ROOT_TURN_ADMISSION_MAX_SOURCE_MESSAGES,
+  ROOT_TURN_ADMISSION_SCHEMA_VERSION,
+  createSqliteAgentRunStore,
+  normalizeRootTurnAdmissionPayload,
+} from './agent-run-store.js';
+export type {
+  AdmitRootTurnInput,
+  AdmitRootTurnResult,
+  ConversationCopyRuntimeEventBatch,
+  DurableAgentRunStore,
+  DurableRuntimeEventStore,
+  ImmutableSteeringMessageProof,
+  RootTurnAdmission,
+  RootTurnAdmissionStore,
+  RootTurnSourceMessage,
+  RootTurnSourceMessageReceipt,
+  SqliteAgentRunStoreOptions,
+} from './agent-run-store.js';
+export { createSqliteShellRunStore } from './shell-run-store.js';
+export type {
+  ClosableShellRunStore,
+  SqliteShellRunStoreOptions,
+} from './shell-run-store.js';
 export * from './connection-store.js';
 // Narrow public surface: only the typed store + the one-time migration. The
 // file lock and atomic writer stay internal so callers can't bypass the

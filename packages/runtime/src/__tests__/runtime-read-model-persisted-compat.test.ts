@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core';
-import { createAgentRunStore, createRuntimeEventStore } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import { RuntimeReadModel } from '../runtime-read-model.js';
 import { isHardRuntimeEventReadModelDiagnostic } from '../runtime-event-read-model.js';
 
@@ -36,14 +39,14 @@ const header: AgentRunHeader = {
 test('reopens a persisted legacy subagent RuntimeEvent without rewriting it', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-runtime-persisted-compat-'));
   try {
-    await createAgentRunStore(root).createRun(header);
+    await createLegacyAgentRunStoreForTest(root).createRun(header);
     const ledgerPath = join(root, 'sessions', sessionId, 'runs', runId, 'runtime-events.jsonl');
     await copyFile(fixtureUrl, ledgerPath);
     const originalBytes = await readFile(ledgerPath);
 
     const view = await new RuntimeReadModel({
-      runStore: createAgentRunStore(root),
-      runtimeEventStore: createRuntimeEventStore(root),
+      runStore: createLegacyAgentRunStoreForTest(root),
+      runtimeEventStore: createLegacyRuntimeEventStoreForTest(root),
     }).getSessionView(sessionId);
 
     const persistedResponse = view.events.find(
