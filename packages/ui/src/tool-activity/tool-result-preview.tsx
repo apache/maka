@@ -24,16 +24,16 @@ import { isSandboxDeniedToolResult } from './sandbox-denial.js';
  * Body type uses font-size-base (13px), not caption.
  */
 export const TOOL_OUTPUT_PANEL_CLASS =
-  'mt-1 grid gap-2 rounded-[var(--radius-surface)] border border-[var(--border)] bg-[var(--foreground-3)] px-3 py-2.5';
+  'maka-tool-output-panel';
 
 export const TOOL_OUTPUT_COMMAND_CLASS =
-  'block min-w-0 [font-family:var(--font-mono)] [font-variant-ligatures:none] text-[length:var(--font-size-base)] leading-normal text-[color:var(--foreground)] [white-space:pre-wrap] [word-break:break-word]';
+  'maka-tool-output-command';
 
 export const TOOL_OUTPUT_BODY_CLASS =
-  'm-0 max-h-64 overflow-y-auto whitespace-pre-wrap [word-break:break-word] [font-family:var(--font-mono)] [font-variant-ligatures:none] text-[length:var(--font-size-base)] leading-normal text-[color:var(--muted-foreground)] [scroll-behavior:auto]';
+  'maka-tool-output-body';
 
 export const TOOL_OUTPUT_NOTE_CLASS =
-  'm-0 text-[length:var(--font-size-base)] leading-normal text-[color:var(--muted-foreground)]';
+  'maka-tool-output-note';
 
 /** Routes persisted tool results to bounded, kind-specific preview cards. */
 export function ToolResultPreview(props: {
@@ -142,7 +142,7 @@ function PtyControlPreview(props: {
   const copy = getToolActivityCopy(useUiLocale()).result;
   const operation = props.result.operation;
   if (operation?.kind !== 'pty_control') {
-    return <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'text-[color:var(--destructive)]')}>{copy.ptyFailed}</p>;
+    return <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'maka-tool-output-destructive')}>{copy.ptyFailed}</p>;
   }
   const parts: string[] = [];
   if (operation.input) {
@@ -166,8 +166,8 @@ function PtyControlPreview(props: {
   return (
     <p className={cn(
       TOOL_OUTPUT_NOTE_CLASS,
-      'min-w-0 [overflow-wrap:anywhere]',
-      operation.failed && 'text-[color:var(--destructive)]',
+      'maka-tool-output-wrap',
+      operation.failed && 'maka-tool-output-destructive',
     )}>
       {parts.join(' · ') || copy.ptyCompleted}
     </p>
@@ -219,7 +219,7 @@ function TerminalPreview(props: {
     <div
       data-slot="tool-output"
       data-kind="terminal"
-      className="mt-1 flex min-w-0 flex-col gap-1.5"
+      className="maka-tool-output-stack"
     >
       {props.output ? (
         <ShellOutputBody
@@ -234,22 +234,22 @@ function TerminalPreview(props: {
         </>
       )}
       {props.failureMessage && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'text-[color:var(--warning-text,var(--info-text))]' : 'text-[color:var(--destructive)]')}>
+        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'maka-tool-output-warning' : 'maka-tool-output-destructive')}>
           {redactSecrets(props.failureMessage)}
         </p>
       )}
       {cancelled && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'text-[color:var(--destructive)]')}>
+        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'maka-tool-output-destructive')}>
           {props.exitCode !== undefined ? `${copy.cancelled} · ${copy.exitCode(props.exitCode)}` : copy.cancelled}
         </p>
       )}
       {timedOut && !cancelled && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'text-[color:var(--destructive)]')}>
+        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'maka-tool-output-destructive')}>
           {props.exitCode !== undefined ? `${copy.timedOut} · ${copy.exitCode(props.exitCode)}` : copy.timedOut}
         </p>
       )}
       {props.sandboxBlocked && !cancelled && !timedOut && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'text-[color:var(--warning-text,var(--info-text))]')}>
+        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'maka-tool-output-warning')}>
           {props.exitCode !== undefined
             ? `${activityCopy.status.sandboxBlocked} · ${copy.exitCode(props.exitCode)}`
             : activityCopy.status.sandboxBlocked}
@@ -273,8 +273,8 @@ function ShellRunPreview(props: {
   const output = isShellOutput(result.output) ? result.output : undefined;
   const attention = result.status === 'failed' || result.status === 'orphaned' || (result.exitCode !== undefined && result.exitCode !== 0);
   const attentionBorder = sandboxBlocked
-    ? 'border-[oklch(from_var(--warning)_l_c_h_/_0.32)]'
-    : 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]';
+    ? 'maka-tool-output-warning-border'
+    : 'maka-tool-output-destructive-border';
 
   if (result.mode === 'pty') {
     return (
@@ -313,7 +313,7 @@ function ShellRunPreview(props: {
         {safeRef ? ` · ${safeRef}` : ''}
       </p>
       {result.failureMessage && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, sandboxBlocked ? 'text-[color:var(--warning-text,var(--info-text))]' : 'text-[color:var(--destructive)]')}>
+        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, sandboxBlocked ? 'maka-tool-output-warning' : 'maka-tool-output-destructive')}>
           {redactSecrets(result.failureMessage)}
         </p>
       )}
@@ -345,20 +345,20 @@ function PtyShellSurface(props: {
       data-kind="pty-shell"
       className={cn(
         TOOL_OUTPUT_PANEL_CLASS,
-        'gap-0 overflow-hidden p-0',
+        'maka-pty-shell',
         props.attention && (
           props.sandboxBlocked
-            ? 'border-[oklch(from_var(--warning)_l_c_h_/_0.32)]'
-            : 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]'
+            ? 'maka-tool-output-warning-border'
+            : 'maka-tool-output-destructive-border'
         ),
       )}
     >
-      <header className="flex min-w-0 items-center px-3 pt-2.5 pb-1">
-        <span className="text-[length:var(--font-size-base)] font-medium text-[color:var(--foreground-secondary)]">
+      <header className="maka-pty-shell-header">
+        <span className="maka-pty-shell-title">
           Shell
         </span>
       </header>
-      <div className="grid min-w-0 gap-2 px-3 py-1.5">
+      <div className="maka-pty-shell-body">
         {props.safeCmd.length > 0 && (
           <code className={TOOL_OUTPUT_COMMAND_CLASS}>$ {props.safeCmd}</code>
         )}
@@ -375,12 +375,12 @@ function PtyShellSurface(props: {
           </p>
         )}
         {result.failureMessage && (
-          <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'text-[color:var(--warning-text,var(--info-text))]' : 'text-[color:var(--destructive)]')}>
+          <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'maka-tool-output-warning' : 'maka-tool-output-destructive')}>
             {redactSecrets(result.failureMessage)}
           </p>
         )}
       </div>
-      <footer className="flex min-h-8 items-center justify-end gap-1.5 px-3 pt-1 pb-2.5 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">
+      <footer className="maka-pty-shell-footer">
         <ShellRunStatus
           status={result.status}
           exitCode={result.exitCode}
@@ -409,7 +409,7 @@ function ShellRunStatus(props: {
   switch (props.status) {
     case 'starting':
     case 'running':
-      return <><Loader2 size={15} aria-hidden="true" className="animate-spin" />{copy.running}</>;
+      return <><Loader2 size={15} aria-hidden="true" className="maka-spin" />{copy.running}</>;
     case 'completed':
       return <><Check size={15} aria-hidden="true" />{copy.success}</>;
     case 'failed':
@@ -493,7 +493,7 @@ function PtyTerminalSurface(props: { text: string }) {
   return (
     <pre
       ref={ref}
-      className={cn(TOOL_OUTPUT_BODY_CLASS, 'overflow-auto [white-space:pre] [word-break:normal]')}
+      className={cn(TOOL_OUTPUT_BODY_CLASS, 'maka-pty-terminal-body')}
       data-stream="pty"
       style={{ whiteSpace: 'pre', wordBreak: 'normal' }}
       onScroll={(event) => {
@@ -597,35 +597,34 @@ function WebSearchPreview(props: {
 
   if (rows.length === 0) {
     return (
-      <div className="grid gap-1.5 [font-family:var(--font-sans)]" data-kind="web_search">
-        <header className="grid gap-0.5">
-          <strong className="text-[length:var(--font-size-base)] text-[color:var(--foreground)]">{redactSecrets(props.query)}</strong>
-          <small className="text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{props.provider} · {copy.webNoResults}</small>
+      <div className="maka-web-result" data-kind="web_search">
+        <header className="maka-web-result-header">
+          <strong>{redactSecrets(props.query)}</strong>
+          <small>{props.provider} · {copy.webNoResults}</small>
         </header>
       </div>
     );
   }
   return (
-    <div className="grid gap-2 [font-family:var(--font-sans)]" data-kind="web_search">
-      <header className="grid gap-0.5">
-        <strong className="text-[length:var(--font-size-base)] text-[color:var(--foreground)]">{redactSecrets(props.query)}</strong>
-        <small className="text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">
+    <div className="maka-web-result" data-kind="web_search">
+      <header className="maka-web-result-header">
+        <strong>{redactSecrets(props.query)}</strong>
+        <small>
           {props.provider} · {copy.webResults(rows.length)}
         </small>
       </header>
-      <ul className="m-0 grid list-none gap-2 p-0">
+      <ul className="maka-web-result-list">
         {rows.map((row, idx) => (
-          <li key={`${row.url}-${idx}`} className="grid gap-0.5">
+          <li key={`${row.url}-${idx}`}>
             <a
               href={row.url}
               target="_blank"
               rel="noreferrer noopener"
-              className="text-[length:var(--font-size-base)] font-medium text-[color:var(--link)]"
             >
               {redactSecrets(row.title)}
             </a>
-            <small className="text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{redactSecrets(row.source)}</small>
-            <p className="m-0 text-[length:var(--font-size-base)] leading-snug text-[color:var(--foreground-secondary)]">{redactSecrets(row.snippet)}</p>
+            <small>{redactSecrets(row.source)}</small>
+            <p>{redactSecrets(row.snippet)}</p>
           </li>
         ))}
       </ul>
@@ -664,13 +663,13 @@ function WebSearchErrorPreview(props: {
                 ? copy.webGuidance.privacy_mode
                 : copy.webGuidance.unknown;
   return (
-    <div className="grid gap-1.5 [font-family:var(--font-sans)]" data-kind="web_search_error">
-      <header className="grid gap-0.5">
-        <strong className="text-[length:var(--font-size-base)] text-[color:var(--foreground)]">{redactSecrets(props.query ?? copy.webSearch)}</strong>
-        <small className="text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{redactSecrets(props.provider)} · {copy.webFailure} · {sourceCopy}</small>
+    <div className="maka-web-result maka-web-result-error" data-kind="web_search_error">
+      <header className="maka-web-result-header">
+        <strong>{redactSecrets(props.query ?? copy.webSearch)}</strong>
+        <small>{redactSecrets(props.provider)} · {copy.webFailure} · {sourceCopy}</small>
       </header>
-      <p className="m-0 text-[length:var(--font-size-base)] text-[color:var(--destructive)]">{redactSecrets(props.message)}</p>
-      <p className="m-0 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{repairCopy}</p>
+      <p className="maka-web-result-error-message">{redactSecrets(props.message)}</p>
+      <p className="maka-web-result-repair">{repairCopy}</p>
     </div>
   );
 }

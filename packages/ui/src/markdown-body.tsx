@@ -58,9 +58,9 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
 
 function MarkdownImage(props: { src: string; alt: string }) {
   if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
-  // Astryx calls this component only for images inside a paragraph. Tailwind
-  // preflight makes bare images block-level, so preserve the inline flow that
-  // badges and sentence-level icons require; preflight keeps max-width/height.
+  // Astryx calls this component only for images inside a paragraph. The shared
+  // reset makes bare images block-level, so preserve inline flow for badges and
+  // sentence-level icons; the reset keeps max-width/height.
   return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
 }
 

@@ -29,11 +29,7 @@
     align-self: stretch;
     min-height: min(280px, 45vh);
   }
-/* Form-control font inheritance is Tailwind preflight's job (`@layer base`:
-   button/input/select/textarea { font: inherit }). Do NOT re-declare it here:
-   an unlayered duplicate outranks every layered rule, which silently kills
-   all font utilities (text-*, font-*, leading-*) on form controls app-wide.
-   Locked by renderer-form-font-reset-contract.test.ts. */
+/* Form-control font inheritance is owned by the Astryx reset. */
 .maka-visually-hidden {
     position: absolute !important;
     width: 1px !important;

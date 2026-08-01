@@ -550,7 +550,7 @@ function McpCatalogCard(props: {
         >
           {props.phase ? (
             <>
-              <Loader2 className="maka-mcp-install-spinner animate-spin" aria-hidden="true" />
+              <Loader2 className="maka-mcp-install-spinner" aria-hidden="true" />
               <X className="maka-mcp-install-cancel" aria-hidden="true" />
             </>
           ) : <Plus aria-hidden="true" />}

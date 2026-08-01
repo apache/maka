@@ -575,3 +575,4 @@
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
 }
+.settingsPermissionMetaLabel { color: var(--foreground-secondary); font-size: var(--font-size-caption); white-space: nowrap; }

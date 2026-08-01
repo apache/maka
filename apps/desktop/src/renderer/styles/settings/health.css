@@ -162,3 +162,6 @@
     font-size: var(--font-size-caption);
     line-height: var(--leading-normal);
   }
+.settingsHealthMetaLabel { color: var(--foreground-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
+.settingsHealthSignalLabel { color: var(--foreground); font-size: var(--font-size-ui); font-weight: 600; }
+.settingsHealthSignalScope { color: var(--muted-foreground); font-size: var(--font-size-caption); letter-spacing: var(--tracking-wider); text-transform: uppercase; }

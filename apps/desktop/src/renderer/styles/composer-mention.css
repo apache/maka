@@ -1,7 +1,6 @@
 /* Composer mention popup — the @ file / skill overlay rendered by
-   ComposerMentionPopup (@maka/ui). The popover surface (rounded-md bg-popover
-   shadow-maka-panel z-overlay) is set via Tailwind utilities on the element;
-   this file owns layout + row chrome only.
+   ComposerMentionPopup (@maka/ui). The package owns its popover surface;
+   this file owns renderer placement + row chrome only.
 
    The popup is an ABSOLUTE overlay anchored to `.maka-composer-input` (which is
    already position:relative at rest), bottom-anchored so it floats above the

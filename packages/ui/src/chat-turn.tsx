@@ -85,8 +85,8 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
   }, [props.attachment, onReadAttachmentBytes]);
   if (!src) {
     return (
-      <span className="maka-user-attachment-thumb-pending h-32 w-32 rounded-md border border-[var(--border)] bg-[var(--foreground-alpha-6)] grid place-items-center text-[color:var(--muted-foreground)]" aria-hidden="true">
-        <Loader2 className="h-5 w-5 animate-spin" />
+      <span className="maka-user-attachment-thumb-pending" aria-hidden="true">
+        <Loader2 />
       </span>
     );
   }
@@ -94,11 +94,11 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
     <>
       <button
         type="button"
-        className="group relative inline-flex rounded-md overflow-hidden border border-[var(--border)] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        className="maka-user-attachment-thumb"
         onClick={() => setLightboxOpen(true)}
         aria-label={copy.imageAriaLabel(props.attachment.name)}
       >
-        <img className="h-32 w-32 object-cover transition group-hover:opacity-90" src={src} alt={props.attachment.name} />
+        <img className="maka-user-attachment-thumb-image" src={src} alt={props.attachment.name} />
       </button>
       <Dialog
         isOpen={lightboxOpen}
@@ -113,7 +113,7 @@ function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentByt
           height="auto"
           content={
             <LayoutContent padding={0} isScrollable={false}>
-              <img className="max-h-[90vh] max-w-[90vw] object-contain rounded-md shadow-2xl" src={src} alt={props.attachment.name} />
+              <img className="maka-user-attachment-lightbox-image" src={src} alt={props.attachment.name} />
             </LayoutContent>
           }
         />
@@ -142,7 +142,7 @@ const MessageBody = memo(function MessageBody(props: {
       : copyText.editMessage;
     const userMetadata = (
       <ChatMessageMetadata
-        className="maka-message-meta opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/usermsg:opacity-100 focus-within:opacity-100"
+        className="maka-message-meta"
         timestamp={
           props.ts !== undefined ? (
             <small
@@ -185,14 +185,14 @@ const MessageBody = memo(function MessageBody(props: {
       >
         <span>{props.text}</span>
         {props.quotes && props.quotes.length > 0 ? (
-          <div className="maka-user-quotes flex flex-wrap items-start gap-1 mt-1">
+          <div className="maka-user-quotes">
             {props.quotes.map((quote, index) => (
               <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
             ))}
           </div>
         ) : null}
         {props.attachments && props.attachments.length > 0 ? (
-          <div className="maka-user-attachments flex flex-wrap gap-1.5 mt-2">
+          <div className="maka-user-attachments">
             {props.attachments.map((attachment, index) => (
               attachment.kind === 'image' ? (
                 <AttachmentImage key={`${attachment.name}-${index}`} attachment={attachment} onReadAttachmentBytes={props.onReadAttachmentBytes} />
@@ -424,7 +424,7 @@ export const TurnView = memo(function TurnView(props: {
         <LocalizedChatMessage
           accessibleLabel={copy.userAriaLabel}
           sender="user"
-          className="maka-chat-message group/usermsg"
+          className="maka-chat-message maka-user-message"
         >
           <MessageBody
             role="user"
@@ -476,9 +476,9 @@ export const TurnView = memo(function TurnView(props: {
           accessibleLabel={copy.assistantAriaLabel}
           sender="assistant"
           data-turn-status={turn.status}
-          className="maka-chat-message group/answer"
+          className="maka-chat-message maka-assistant-answer"
         >
-          <div className="flex min-w-0 w-full flex-col gap-2">
+          <div className="maka-assistant-answer-content">
             {turn.status === 'aborted' && (
               <Marker variant="aborted" role="status">
                 <Ban size={12} aria-hidden="true" />
@@ -561,7 +561,7 @@ export const TurnView = memo(function TurnView(props: {
                actionable footer here: the live tail's derived status is
                `completed`, so a real `TurnFooterActions` would render a
                clickable regenerate/branch on a still-streaming answer. */
-            <div aria-hidden="true" className="mt-0.5 h-8" />
+            <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
           ) : (
             props.footerActions && props.footerActions.length > 0 && (
               <TurnFooterActions
@@ -725,13 +725,13 @@ const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
 export function ModelProcessingIndicator() {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
-    <div className="flex items-center gap-2 py-0.5" role="status" aria-live="polite">
+    <div className="maka-turn-processing" role="status" aria-live="polite">
       <Loader2
         size={16}
         aria-hidden="true"
-        className="shrink-0 animate-spin text-[color:var(--muted-foreground)]"
+        className="maka-turn-processing-spinner"
       />
-      <TextShimmer active className="min-w-0 truncate text-[length:var(--font-size-base)]">{copy.processing}</TextShimmer>
+      <TextShimmer active className="maka-turn-indicator-text">{copy.processing}</TextShimmer>
     </div>
   );
 }
@@ -740,11 +740,11 @@ export function ModelContinuingIndicator() {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
     <div
-      className="flex items-center py-0.5 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)] opacity-70 [animation:maka-stream-fade-in_var(--duration-emphasized)_var(--ease-out-strong)_both]"
+      className="maka-turn-continuing"
       role="status"
       aria-live="polite"
     >
-      <span className="min-w-0 truncate">{copy.continuing}</span>
+      <span className="maka-turn-indicator-text">{copy.continuing}</span>
     </div>
   );
 }
@@ -761,12 +761,12 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
       : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
   return (
     <div
-      className="flex items-center gap-2 py-0.5 text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]"
+      className="maka-turn-status"
       role="status"
       aria-live="polite"
     >
-      <RefreshCcw size={16} aria-hidden="true" className="shrink-0" />
-      <span className="min-w-0 truncate">{text}</span>
+      <RefreshCcw size={16} aria-hidden="true" className="maka-turn-status-icon" />
+      <span className="maka-turn-indicator-text">{text}</span>
     </div>
   );
 }
@@ -797,7 +797,7 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; truncate
       <Markdown text={displayed} streaming />
       {props.truncated && (
         <div
-          className="mt-1.5 inline-block cursor-help rounded-[var(--radius-control)] border border-[oklch(from_var(--warning)_l_c_h_/_0.24)] bg-[oklch(from_var(--warning)_l_c_h_/_0.05)] px-1 text-xs text-[color:var(--warning-text,var(--info-text))]"
+          className="maka-turn-truncation-badge"
           role="status"
           aria-live="polite"
           title={copy.outputTruncatedTitle}
@@ -859,7 +859,7 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
-      className="min-w-0"
+      className="maka-deep-thinking"
       label={label}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}

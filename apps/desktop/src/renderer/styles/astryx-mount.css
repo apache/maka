@@ -1,5 +1,5 @@
-/* #1565 PR 2 — keep the Astryx Theme wrapper visually inert while legacy CSS
-   owns the screen.
+/* Keep the Astryx Theme wrapper aligned with Maka's product-level font and
+   foreground tokens.
 
    The root <Theme> renders a display:contents wrapper that establishes
    Astryx's inheritance baseline: color: var(--color-text-primary) and
@@ -9,11 +9,8 @@
    inheritance, which the layer order alone cannot stop (the rule targets the
    wrapper, and nothing else competes on that element).
 
-   Living in maka.legacy is the point: this neutralizer wins only while the
-   legacy layer exists, and is deleted with it in PR 11 — at which point
-   Astryx is supposed to own the inheritance baseline. color-scheme is left
-   alone: the wrapper's mode comes from the same resolved `.dark` source as
-   the product's, so the values always agree.
+   color-scheme is left alone: the wrapper's mode comes from the same resolved
+   `.dark` source as the product's, so the values always agree.
 
    Scoped under the Electron and Storybook renderer roots: Theme also mirrors
    data-astryx-theme (and data-theme) onto <html>, and a bare

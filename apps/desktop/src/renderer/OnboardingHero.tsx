@@ -218,7 +218,7 @@ function NeedsConnectionHero(props: {
             return (
               <li key={type}>
                 <Item
-                  className="maka-firstrun-row px-3.5 py-2"
+                  className="maka-firstrun-row"
                   startContent={<ProviderLogo type={type} compact />}
                   label={display.name}
                   description={display.description}

@@ -61,6 +61,13 @@
   gap: var(--space-2-5);
 }
 
+.settingsActionWidthXs { min-width: 3.5rem; }
+.settingsActionWidthSm { min-width: 4rem; }
+.settingsActionWidthMd { min-width: 5rem; }
+.settingsActionWidthLg { min-width: 6rem; }
+.settingsActionWidthXl { min-width: 7rem; }
+.settingsActionWidth2Xl { min-width: 7.5rem; }
+
 .settingsSubheading {
   margin: 0;
   color: var(--foreground-secondary);

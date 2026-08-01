@@ -170,7 +170,7 @@ export function PermissionCenterPage() {
         subtitle={copy.subtitle}
         action={
           <>
-            <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
+            <small className="settingsPermissionMetaLabel">
               {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button

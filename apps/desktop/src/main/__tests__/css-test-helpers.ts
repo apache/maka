@@ -105,9 +105,8 @@ export function parseCssCustomProps(css: string): Map<string, string[]> {
 
 /** Assert a custom property is declared exactly once with the expected value.
  *
- * Works for both token definitions in maka-tokens.css (e.g.
- * `--font-weight-normal: 400`) and Tailwind bridge aliases in styles.css
- * `@theme inline` (e.g. `--leading-normal: var(--leading-normal)`). Stronger
+ * Works for token definitions in maka-tokens.css and other stylesheets (e.g.
+ * `--font-weight-normal: 400`). Stronger
  * than `assert.match(css, /--prop:\s*value\s*;/)`: that only proves a correct
  * declaration exists somewhere — a later overriding declaration (e.g.
  * `--font-weight-normal: 400; --font-weight-normal: 450;`, or

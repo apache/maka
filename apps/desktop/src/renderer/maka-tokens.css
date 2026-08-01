@@ -342,10 +342,9 @@
 
   /* === line-height ===
      PR-LEADING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to a Tailwind leading-scale subset (drop
-     relaxed/loose, zero sites). Token names mirror Tailwind's leading-*
-     utilities so `var(--leading-*)` in CSS and `leading-*` in TSX share
-     one source — same bridge pattern as --space-* / p-N.
+     four-tier scale for single-line, heading, dense UI, and body copy.
+     relaxed/loose had zero sites and were dropped; all consumers share
+     these semantic custom properties as their single source.
 
      Snug is the one tier that can't be cut: 40 sites at 1.3-1.4 (small-
      title / UI text, 13/11px small-text dense zones) collapse to tight
@@ -358,10 +357,8 @@
 
   /* === font-weight ===
      PR-FONT-WEIGHT-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to Tailwind font-weight utilities (drop
-     thin/extralight/light/extrabold/black, zero sites). Token names
-     mirror Tailwind's font-* utilities so `var(--font-weight-*)` in CSS
-     and `font-*` in TSX share one source. Variable-weight Geist +
+     four-tier scale for the weights Maka actually uses (drop
+     thin/extralight/light/extrabold/black, zero sites). Variable-weight Geist +
      system-ui means 550/620/650/680 are mid-axis picks to snap:
      550/620/650 → semibold (600), 680 → bold (700). */
   --font-weight-normal: 400;
@@ -371,7 +368,7 @@
 
   /* === letter-spacing ===
      PR-TRACKING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to a Tailwind tracking-scale subset. No
+     four-tier tracking scale. No
      --tracking-tight: Maka is a CJK-first app, so avoid
      tightening CJK letter-spacing, so all negative values snap to
      normal (0). ALL-CAPS short labels use wider/widest (+5–10%
@@ -429,10 +426,8 @@
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):
      One ruler for every padding/gap/margin. Absolute 4px (not 0.25rem)
      so it holds under any root font-size — the previous 0.25rem was
-     3.75px under the 15px root, silently mis-aligning Tailwind's spacing
-     scale (p-2 = 7.5px) with hand-written px (padding: 8px). The
-     the `@theme inline` bridge in styles.css exports this same 4px to Tailwind so
-     p-2/gap-2/m-4 and var(--space-*) share one ruler.
+     3.75px under the 15px root, silently mis-aligning rem-based spacing
+     with hand-written px. Product CSS and `@maka/ui` both consume this ruler.
 
      Scale: 16-and-below keeps every even number (0/2/4/6/8/10/12) because
      dense UI needs the half-steps (6 between 4-8, 10 between 8-12).
@@ -584,8 +579,8 @@
 
   /* === control-height scale (component sizing, #520 PR4 item 15) =========
      Interactive controls (button / input / select / tab / nav row / badge /
-     kbd) live on the 4px spacing ruler so CSS var(--h-control-*) and Tailwind
-     h-N share one scale (h-5=20, h-6=24, h-7=28, h-8=32, h-9=36, h-10=40).
+     kbd) live on the 4px spacing ruler and share the `--h-control-*` scale
+     (20, 24, 28, 32, 36, and 40px).
      The historic sidebar/会话/设置 height drift came from off-ruler bare px
      (22/26/30/34/38); this scale converges them. Square icon controls use
      the same token for width and height (their footprint = control size).
@@ -1315,9 +1310,8 @@ html[data-os="darwin"].dark {
 
 /* Governance-level keyframe for the `TextShimmer` primitive (streaming UI
    rework). A named `@keyframes` is a global rule, not an element property, so
-   it can't be a Tailwind leaf-literal — it lives here (the shared motion home)
-   like `maka-tool-pulse`, with the shimmer's other declarations
-   as literal utilities in the primitive. Sweeps a clipped light band left→right
+   it lives here in the shared motion home like `maka-tool-pulse`, with the
+   shimmer's other declarations in the primitive stylesheet. Sweeps a clipped light band left→right
    across the glyph shape by translating `background-position`; the two-layer
    primitive keeps an opaque base underneath so the text stays readable. Frozen
    by the global reduced-motion / e2e-fixture rules in base.css and the

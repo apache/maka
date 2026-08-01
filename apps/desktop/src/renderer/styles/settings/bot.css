@@ -425,8 +425,8 @@
 }
 
 /* #520 PR9: .settingsStatsTable retired onto the local native
-   SimpleStatsTable in usage-settings-page.tsx (inline Tailwind classes,
-   no public primitive — a single HTML <table> consumer did not justify one). */
+   SimpleStatsTable in usage-settings-page.tsx; a single HTML <table>
+   consumer did not justify a public primitive. */
 
 /* .settingsRow / .settingsRows moved to rows.css — the single style home
    for the settings-rows.tsx primitives (PR-SETTINGS-ROWS-CONVERGENCE-0). */

@@ -238,6 +238,8 @@
   height: 19px;
 }
 
+.maka-mcp-install-spinner { animation: maka-spin 1s linear infinite; }
+
 .maka-mcp-install-cancel {
   opacity: 0;
   color: var(--destructive-text);

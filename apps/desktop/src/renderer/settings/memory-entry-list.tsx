@@ -81,7 +81,7 @@ export function MemoryEntryList(props: {
                       <Button
                         variant="secondary"
                         size="sm"
-                        className="min-w-[4rem]"
+                        className="settingsActionWidthSm"
                         isDisabled={copyPending}
                         onClick={() => void props.onCopyReference?.(entry)}
                         label={copyPending ? props.copy.text.copying : props.copy.text.copyReference}
@@ -99,7 +99,7 @@ export function MemoryEntryList(props: {
                       <Button
                         variant="secondary"
                         size="sm"
-                        className="min-w-[5rem]"
+                        className="settingsActionWidthMd"
                         aria-label={statusActionAriaLabel}
                         isDisabled={props.busy}
                         onClick={() => void props.onStatusChange?.(entry, props.archived ? 'active' : 'archived')}

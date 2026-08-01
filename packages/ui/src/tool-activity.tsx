@@ -92,7 +92,7 @@ function LoadToolResultPreview(props: { args: unknown; value: unknown }) {
 
 // ── Automation result preview ───────────────────────────────────────────────
 
-const AUTOMATION_RESULT_ICON_CLASS = 'inline align-text-bottom mr-1';
+const AUTOMATION_RESULT_ICON_CLASS = 'maka-automation-result-icon';
 
 /** Icon for one automation description: recurring schedules cycle, one-shots tick. */
 function automationScheduleIcon(text: string): ComponentType<LucideProps> {
@@ -220,7 +220,7 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
       isOpen={open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className={cn('w-full', toolVariants({ part: 'header' }))}>
+        <span className={cn('maka-tool-header-full', toolVariants({ part: 'header' }))}>
           <span className={toolVariants({ part: 'dot' })} data-status={visualStatus} aria-hidden="true" />
           <span className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</span>
           <span className={toolVariants({ part: 'meta' })}>
@@ -287,7 +287,7 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
     );
 
   return (
-    <div className="mt-1 flex flex-col gap-1.5">
+    <div className="maka-tool-card-body">
       {showSandboxBanner && (
         <SandboxBlockedBanner result={displayResult ?? item.result} />
       )}
@@ -306,7 +306,7 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
         )
       )}
       {hasSharedPanelContent && (
-        <div data-slot="tool-output" className="mt-1 flex min-w-0 flex-col gap-1.5">
+        <div data-slot="tool-output" className="maka-tool-output-stack">
           {showLiveStream && (
             <>
               {showInvocation && invocationLine ? (
@@ -373,7 +373,7 @@ export function ToolKindIcon({ kind, ...props }: LucideProps & { kind: TrowActiv
 }
 
 // Group settle landing; only when the group was seen running this session.
-export const SETTLE_FADE = '[animation:maka-stream-fade-in_var(--duration-emphasized)_var(--ease-out-strong)_both]';
+export const SETTLE_FADE = 'maka-tool-settle-fade';
 
 /** Astryx ChatToolCalls for ordinary tools; product trow for permission/sandbox/interrupted. */
 export function ToolTrow({
@@ -454,28 +454,28 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
     (item) => item.status === 'errored' && !isSandboxDeniedTool(item),
   );
   const settledTone = hasError
-    ? 'text-[color:var(--destructive)]'
+    ? 'maka-tool-tone-destructive'
     : hasSandboxBlocked
-      ? 'text-[color:var(--warning-text,var(--info-text))]'
-      : 'text-[color:var(--muted-foreground)]';
+      ? 'maka-tool-tone-warning'
+      : 'maka-tool-tone-muted';
   // Icon + multi-tool summary stay first-bucket stable so parallel tools don't jitter.
   const summary = running
     ? (items.length > 1 ? summarizeTrowTools(items, { live: true, locale }) : firstPresentation.summary)
     : summarizeTrowTools(items, { locale });
   return (
     <AstryxCollapsible
-      className="flex flex-col"
+      className="maka-tool-trow"
       data-trow="group"
       data-settled={settled ? 'true' : undefined}
       isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className="flex min-w-0 items-center gap-[length:var(--spacing-1-5,0.375rem)] py-0.5">
-          <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('shrink-0', settledTone)} />
+        <span className="maka-tool-trow-trigger">
+          <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('maka-tool-trow-icon', settledTone)} />
           {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium">{summary}</TextShimmer>
+            <TextShimmer active delayed className="maka-tool-trow-summary">{summary}</TextShimmer>
           ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium', settledTone, settling && SETTLE_FADE)}>{summary}</span>
+            <span className={cn('maka-tool-trow-summary', settledTone, settling && SETTLE_FADE)}>{summary}</span>
           )}
         </span>
       )}
@@ -486,7 +486,7 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
             {items.length === 1 ? (
               <ToolCardBody item={items[0]!} />
             ) : (
-              <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+              <div className="maka-tool-trow-children">
                 {items.map((item) => (
                   <ToolTrowRow key={item.toolUseId} item={item} />
                 ))}
@@ -509,32 +509,32 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   const sandboxBlocked = isSandboxDeniedTool(item);
   const errored = item.status === 'errored' && !sandboxBlocked;
   const summaryTone = errored
-    ? 'text-[color:var(--destructive)]'
+    ? 'maka-tool-tone-destructive'
     : sandboxBlocked
-      ? 'text-[color:var(--warning-text,var(--info-text))]'
-      : 'text-[color:var(--muted-foreground)]';
+      ? 'maka-tool-tone-warning'
+      : 'maka-tool-tone-muted';
   // Collapsed rows still need a word for fail/block; tint alone is not enough.
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
     <AstryxCollapsible
-      className="flex flex-col"
+      className="maka-tool-trow"
       data-trow="row"
       data-status={sandboxBlocked ? 'blocked' : item.status}
       data-settled={settled ? 'true' : undefined}
       isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className="flex min-w-0 items-center gap-[length:var(--spacing-1-5,0.375rem)] py-0.5">
+        <span className="maka-tool-trow-trigger">
           <ToolKindIcon
             kind={presentation.kind}
             size={16}
             aria-hidden="true"
-            className={cn('shrink-0', summaryTone)}
+            className={cn('maka-tool-trow-icon', summaryTone)}
           />
           {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium">{presentation.summary}</TextShimmer>
+            <TextShimmer active delayed className="maka-tool-trow-summary">{presentation.summary}</TextShimmer>
           ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium', summaryTone)}>
+            <span className={cn('maka-tool-trow-summary', summaryTone)}>
               {errored
                 ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
                 : sandboxBlocked
@@ -543,7 +543,7 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
             </span>
           )}
           {duration && (
-            <span className="shrink-0 text-[length:var(--text-supporting-size)] text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]">
+            <span className="maka-tool-trow-duration">
               {duration}
             </span>
           )}
@@ -580,16 +580,16 @@ function ToolOutputStream(props: {
           <span
             key={chunk.seq}
             className={cn(
-              'contents',
-              chunk.stream === 'stderr' && 'text-[color:var(--destructive)]',
-              chunk.redacted && 'opacity-[0.65]',
+              'maka-tool-output-chunk',
+              chunk.stream === 'stderr' && 'maka-tool-output-chunk-stderr',
+              chunk.redacted && 'maka-tool-output-chunk-redacted',
             )}
             data-stream={chunk.stream}
             data-redacted={chunk.redacted ? 'true' : undefined}
           >
             {chunk.text}
             {chunk.redacted && (
-              <span className="inline ml-0.5 text-[color:var(--warning-text,var(--info-text))]" aria-label={copy.redactedAriaLabel}>
+              <span className="maka-tool-output-redacted" aria-label={copy.redactedAriaLabel}>
                 {' '}{copy.redacted}
               </span>
             )}
@@ -631,14 +631,14 @@ function SandboxBlockedBanner(props: {
   return (
     <Banner
       status="warning"
-      className="mb-2.5"
+      className="maka-sandbox-blocked-banner"
       icon={<ShieldAlert size={16} aria-hidden="true" />}
       title={bannerCopy.title}
       description={(
-        <span className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+        <span className="maka-sandbox-blocked-description">
           <span>{bannerCopy.description}</span>
           {errorText && (
-            <span className="[font-family:var(--font-mono)]">
+            <span className="maka-sandbox-blocked-error">
               {summarizeErrorText(errorText)}
             </span>
           )}
@@ -648,7 +648,7 @@ function SandboxBlockedBanner(props: {
         <UiButton
           variant="ghost"
           size="sm"
-          className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
+          className="maka-sandbox-blocked-copy"
           data-pending={copyPending ? 'true' : undefined}
           data-copy-feedback={copyPhase ?? undefined}
           aria-label={bannerCopy.copyAriaLabel(copyLabel)}

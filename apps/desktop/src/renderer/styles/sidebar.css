@@ -15,8 +15,7 @@
  * handle test id. Remove once Astryx fixes hitAreaOffsetX.
  */
 [data-testid="astryx-sidenav-resize-handle"] > div:not(.astryx-resize-handle-pill) {
-  /* !important: Astryx StyleX injects the bad transform unlayered, which
-     otherwise beats every rule in @layer maka.legacy. */
+  /* !important: Astryx StyleX injects the bad transform unlayered. */
   transform: none !important;
 }
 

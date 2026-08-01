@@ -305,8 +305,8 @@
     padding-top: var(--space-3);
   }
 
-/* Markdown-rendered report body: restore list markers (Tailwind preflight
-   strips them — see the chat-bubble fix) and keep block rhythm tight. */
+/* Markdown-rendered report body: restore list markers after the shared reset
+   and keep block rhythm tight. */
 .maka-daily-review-archive-section-body {
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);

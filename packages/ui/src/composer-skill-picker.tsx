@@ -160,7 +160,7 @@ export function ComposerSkillPicker(props: {
           // trigger's aria-expanded/aria-controls already describe.
           role="group"
           aria-label={copy.panelAriaLabel}
-          className="maka-composer-skill-panel z-[var(--z-overlay)] rounded-md bg-popover text-popover-foreground shadow-maka-panel"
+          className="maka-composer-skill-panel"
         >
           <div className="maka-composer-skill-panel-header">
             <span className="maka-composer-skill-panel-hint">{copy.autoHint}</span>
