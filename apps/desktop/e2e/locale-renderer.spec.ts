@@ -1,17 +1,17 @@
 import { test, expect } from './fixtures';
 
+// The boot-time locale override, which the runtime switch below cannot cover:
+// these windows resolve their locale before the first frame. A rendered control
+// carrying the translated name is the observable evidence — the previous
+// screenshot byte-size floor would have passed on a blank frame just as well.
 test('Chinese e2e-fixture renderer uses the resolved locale', async ({ zhLocaleWindow: page }) => {
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh');
   await expect(page.getByRole('button', { name: '展开侧边栏' })).toBeVisible();
-  const screenshot = await page.locator('.appFrame').screenshot({ animations: 'disabled' });
-  expect(screenshot.byteLength).toBeGreaterThan(10_000);
 });
 
 test('English e2e-fixture renderer uses the resolved locale', async ({ enLocaleWindow: page }) => {
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible();
-  const screenshot = await page.locator('.appFrame').screenshot({ animations: 'disabled' });
-  expect(screenshot.byteLength).toBeGreaterThan(10_000);
 });
 
 test('locale switching, persistence, and Follow system need no reload', async ({ localeSwitchWindow: page }) => {

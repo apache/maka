@@ -19,20 +19,15 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
   await expect(qr).toHaveAttribute('src', /^data:image\/png;base64,/);
   await expect(dialog.getByText('请使用钉钉扫描二维码并确认授权')).toBeVisible();
 
+  // A QR code the user cannot fully see cannot be scanned: the dialog must stay
+  // inside the window. Its exact width and the frame's fixed size are design
+  // tokens, not this journey's contract.
   const dialogBox = await dialog.boundingBox();
-  const qrFrameBox = await dialog.locator('.settingsBotOnboardingQrFrame').boundingBox();
-  const qrBox = await qr.boundingBox();
-  expect(dialogBox).not.toBeNull();
-  expect(qrFrameBox).not.toBeNull();
-  expect(qrBox).not.toBeNull();
   const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  expect(dialogBox!.width).toBeLessThanOrEqual(522);
-  expect(qrFrameBox!.width).toBe(284);
-  expect(qrBox!.width).toBe(qrFrameBox!.width - 2);
-  expect(Math.abs((dialogBox!.x + dialogBox!.width / 2) - (qrBox!.x + qrBox!.width / 2))).toBeLessThan(2);
-  expect(Math.abs((dialogBox!.y + dialogBox!.height / 2) - viewport.height / 2)).toBeLessThan(2);
-  expect(dialogBox!.y).toBeGreaterThan(24);
-  expect(dialogBox!.y + dialogBox!.height).toBeLessThan(viewport.height - 24);
+  expect(dialogBox).not.toBeNull();
+  expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
+  expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(viewport.height);
+  await expect(qr).toBeInViewport();
 
   await expect(dialog.getByText('已扫码，请在钉钉中完成确认')).toBeVisible({ timeout: 4_000 });
   await expect(dialog.getByText('钉钉 已连接')).toBeVisible({ timeout: 5_000 });

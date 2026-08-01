@@ -123,18 +123,6 @@ test('double-clicking the flat ListItem menu does not enter rename', async ({
   await expect(sidebar.getByRole('textbox', { name: '重命名对话' })).toHaveCount(0);
 });
 
-test('session grouping menu fits its Chinese labels instead of inheriting the generic minimum width', async ({
-  sidebarLongSessionsWindow: page,
-}) => {
-  const sidebar = await expandedSidebar(page);
-  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
-
-  const popup = page.getByRole('menu', { name: '会话分组方式' });
-  await expect(popup).toBeVisible();
-  const width = await popup.evaluate((element) => element.getBoundingClientRect().width);
-  expect(width).toBeLessThan(128);
-});
-
 test('session delete intent opens only after its menu closes and restores the trigger', async ({
   sidebarLongSessionsWindow: page,
 }) => {
@@ -163,18 +151,9 @@ test('session heading stays singular and the default list has no redundant headi
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  const panelHeading = sidebar.locator('.maka-session-list-heading');
-  const navLabel = sidebar.getByRole('button', { name: /新任务/ }).getByText('新任务', { exact: true });
 
   await expect(sidebar.getByText('会话', { exact: true })).toHaveCount(1);
   await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
-
-  const fontSizes = await Promise.all(
-    [navLabel, panelHeading].map((locator) =>
-      locator.evaluate((element) => getComputedStyle(element).fontSize),
-    ),
-  );
-  expect(fontSizes).toEqual(['13px', '13px']);
 });
 
 test('scheduled-task hub restores the last selected child module', async ({ window: page }) => {

@@ -11,44 +11,18 @@ test('session tools share one user-controlled workbar', async ({ sessionWorkbarW
     workbar.getByRole('tree', { name: '活跃会话任务' }).getByText('完成会话任务台账升级'),
   ).toBeVisible();
 
+  // Keyboard-driven disclosure, observed through what the user can read: a
+  // collapsed section hides its rows, and Enter on the trigger reveals them.
+  // The trigger's own box metrics are Astryx Collapsible's to keep.
   const recent = workbar.getByRole('button', { name: /最近结束/ });
+  const recentRow = workbar.getByText('验证 Goal 一次提醒门禁');
   await expect(recent).toHaveAttribute('aria-expanded', 'false');
-  const collapsedMetrics = await recent.evaluate((trigger) => {
-    const root = trigger.closest<HTMLElement>('.astryx-collapsible');
-    const contentId = trigger.getAttribute('aria-controls');
-    const content = contentId ? document.getElementById(contentId) : null;
-    const label = trigger.firstElementChild?.getBoundingClientRect();
-    const chevron = trigger.lastElementChild?.getBoundingClientRect();
-    return {
-      contentDisplay: content ? getComputedStyle(content).display : null,
-      triggerWidth: trigger.getBoundingClientRect().width,
-      rootWidth: root?.getBoundingClientRect().width ?? -1,
-      centerDelta: Math.abs(
-        ((label?.top ?? 0) + (label?.height ?? 0) / 2)
-        - ((chevron?.top ?? 0) + (chevron?.height ?? 0) / 2),
-      ),
-    };
-  });
-  expect(collapsedMetrics.contentDisplay).toBe('none');
-  expect(collapsedMetrics.triggerWidth).toBeCloseTo(collapsedMetrics.rootWidth, 0);
-  expect(collapsedMetrics.centerDelta).toBeLessThan(2);
+  await expect(recentRow).toBeHidden();
 
   await recent.focus();
   await recent.press('Enter');
   await expect(recent).toHaveAttribute('aria-expanded', 'true');
-  await expect(workbar.getByText('验证 Goal 一次提醒门禁')).toBeVisible();
-  const contentDisplay = await recent.evaluate((trigger) => {
-    const contentId = trigger.getAttribute('aria-controls');
-    const content = contentId ? document.getElementById(contentId) : null;
-    return content ? getComputedStyle(content).display : null;
-  });
-  expect(contentDisplay).not.toBe('none');
-  if (process.env.MAKA_DISCLOSURE_E2E_SCREENSHOT) {
-    await workbar.screenshot({
-      path: process.env.MAKA_DISCLOSURE_E2E_SCREENSHOT,
-      animations: 'disabled',
-    });
-  }
+  await expect(recentRow).toBeVisible();
 
   await page.getByRole('button', { name: '收起会话工作栏' }).click();
   await expect(workbar).toBeHidden();

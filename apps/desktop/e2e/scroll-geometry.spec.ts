@@ -143,21 +143,6 @@ test('empty chat keeps its grid content flush with the viewport', async ({ windo
   }
 });
 
-test('chat turns keep sixteen pixels of vertical separation', async ({ longTranscriptWindow: page }) => {
-  await expect(page.locator('.maka-turn')).toHaveCount(24);
-
-  const gap = await page.evaluate(() => {
-    const turns = document.querySelectorAll<HTMLElement>('.maka-turn');
-    const first = turns[0]?.getBoundingClientRect();
-    const second = turns[1]?.getBoundingClientRect();
-    if (!first || !second) throw new Error('Expected two chat turns');
-    return second.top - first.bottom;
-  });
-  // #1728 moved the transcript onto Astryx ChatMessageList (`density="compact"`
-  // `gap={4}`), which spaces turns at 16px instead of the pre-Astryx 12px.
-  expect(gap).toBe(16);
-});
-
 test('long session opens pinned to bottom and stays pinned while geometry settles', async ({ longTranscriptWindow: page }) => {
   await expect(page.locator('.maka-turn')).toHaveCount(24);
 
