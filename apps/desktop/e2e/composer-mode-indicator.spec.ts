@@ -6,7 +6,10 @@ async function enableMode(
   mode: 'plan' | 'swarm',
   label: 'Plan' | 'Swarm',
 ): Promise<Locator> {
-  await page.getByRole('button', { name: '添加上下文' }).click();
+  await page
+    .locator('.maka-composer-plus-menu')
+    .getByRole('button', { name: '添加上下文', exact: true })
+    .click();
   // Plus menu: modes are single menuitemcheckbox rows (Astryx CheckboxItem).
   await page.getByRole('menuitemcheckbox', { name: label }).click();
   await page.keyboard.press('Escape');
