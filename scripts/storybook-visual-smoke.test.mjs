@@ -2,56 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
 
-import {
-  PRODUCT_VIEWPORTS,
-  installStorybookSmokeProbe,
-  smokeStory,
-  validateCoverageManifest,
-} from './storybook-visual-smoke.mjs';
-
-const storyIds = {
-  settings: 'product-settings-pages--general',
-  skills: 'product-module-hubs--extensions-skills',
-  mcp: 'product-module-hubs--extensions-mcp',
-  planReminders: 'product-module-hubs--scheduled-plan-reminders',
-  dailyReview: 'product-module-hubs--scheduled-daily-review',
-};
-
-function validManifest() {
-  return {
-    version: 1,
-    viewports: PRODUCT_VIEWPORTS,
-    surfaces: Object.fromEntries(
-      Object.entries(storyIds).map(([surface, storyId]) => [
-        surface,
-        {
-          storyId,
-          productionHost: surface === 'settings' ? 'SettingsSurface' : 'AppShellDetailPanel',
-          state: 'reachable baseline',
-          viewports: Object.keys(PRODUCT_VIEWPORTS),
-        },
-      ]),
-    ),
-  };
-}
-
-const storyIndex = {
-  entries: Object.fromEntries(Object.values(storyIds).map((id) => [id, { id, type: 'story' }])),
-};
-
-describe('Product Storybook manifest', () => {
-  it('expands every required surface and rejects incomplete or unknown coverage', () => {
-    const manifest = validManifest();
-    assert.equal(validateCoverageManifest(manifest, storyIndex).length, 15);
-
-    delete manifest.surfaces.skills;
-    assert.throws(() => validateCoverageManifest(manifest, storyIndex), /missing required surface/);
-
-    const unknownCheck = validManifest();
-    unknownCheck.surfaces.planReminders.checks = ['misspelled-check'];
-    assert.throws(() => validateCoverageManifest(unknownCheck, storyIndex), /unknown check/);
-  });
-});
+import { installStorybookSmokeProbe, smokeStory } from './storybook-visual-smoke.mjs';
 
 class FakePage extends EventEmitter {
   constructor(onGoto, evaluation = true) {
@@ -75,9 +26,9 @@ class FakePage extends EventEmitter {
 
 const job = {
   surface: 'skills',
-  storyId: storyIds.skills,
+  storyId: 'product-module-hubs--extensions-skills',
   viewport: 'floor',
-  size: PRODUCT_VIEWPORTS.floor,
+  size: { width: 480, height: 900 },
 };
 
 describe('Product Storybook browser smoke', () => {

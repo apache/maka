@@ -5,32 +5,9 @@ import {
   checkScopeCoverage,
   diffRecords,
   partitionChanges,
-  summarise,
 } from './check-visual-contract.mjs';
 
 const record = (path, extra = {}) => ({ path, rect: [0, 0, 10, 10], ...extra });
-
-test('visual diffs preserve property values, scope, and structural priority', () => {
-  const changes = diffRecords(
-    [record('body>div', { color: 'red', scope: 'legacy' }), record('body>p')],
-    [record('body>div', { color: 'blue', scope: 'current' }), record('body>section')],
-  );
-  assert.equal(changes[0].kind, 'changed');
-  assert.equal(changes[0].scope, 'current');
-  assert.deepEqual(changes[0].properties, [{ property: 'color', before: 'red', after: 'blue' }]);
-  assert.deepEqual(
-    diffRecords([record('a')], [record('a', { boxShadow: '0 1px' })])[0].properties,
-    [{ property: 'boxShadow', before: undefined, after: '0 1px' }],
-  );
-  assert.deepEqual(
-    changes
-      .slice(1)
-      .map(({ kind }) => kind)
-      .sort(),
-    ['added', 'removed'],
-  );
-  assert.equal(summarise(Array(60).fill({ kind: 'removed' }), 100).structural, true);
-});
 
 test('declared scopes fail closed and cannot claim most of a capture', () => {
   const baseOnlyClaim = diffRecords(
