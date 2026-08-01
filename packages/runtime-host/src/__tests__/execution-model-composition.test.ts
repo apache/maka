@@ -13,18 +13,23 @@ import {
 } from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
-import type {
-  BackendFactoryContext,
-  FilesystemWorkerExecuteInput,
-  MakaTool,
-  MakaToolContext,
-  RunTraceEvent,
-  ScannedSkill,
+import {
+  serializeOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
+  type BackendFactoryContext,
+  type FilesystemWorkerExecuteInput,
+  type MakaTool,
+  type MakaToolContext,
+  type RunTraceEvent,
+  type ScannedSkill,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
-import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import {
+  openInteractiveRuntimePolicyStoresForWrite,
+  type RuntimePolicyStoresWriter,
+} from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
@@ -39,6 +44,7 @@ import { HostClientCapabilityCoordinator } from '../server/client-capability-coo
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 
 const MODEL_ID = 'hosted-real-model';
@@ -89,6 +95,91 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
     name: 'AbortError',
     message: 'Pricing resolution was interrupted',
   });
+});
+
+test('backend creation accepts a current canonical OAuth execution credential', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-oauth-backend-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'backend-creation-connection',
+        name: 'OAuth backend creation',
+        providerType: 'github-copilot',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const tokens: OAuthSubscriptionTokens = {
+      access_token: 'canonical-oauth-access',
+      refresh_token: 'canonical-oauth-refresh',
+      expires_at: Number.MAX_SAFE_INTEGER,
+    };
+    const configured = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'oauth_token',
+      },
+      expected: null,
+      secret: serializeOAuthSubscriptionTokens(tokens),
+    });
+    assert.equal(configured.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const beforeActivation = await policy.operations.resolveExecutionConnection(
+      'backend-creation-connection',
+    );
+    assert.equal(beforeActivation.kind, 'ready');
+    if (beforeActivation.kind !== 'ready') return;
+
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: () =>
+          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+        runtimePolicy: policy,
+        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        claudeDeviceId: capability.rootId,
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+      }),
+    );
+
+    const resolved = await policy.operations.resolveExecutionConnection(
+      'backend-creation-connection',
+    );
+    assert.equal(resolved.kind, 'ready');
+    if (resolved.kind === 'ready') {
+      assert.equal(
+        resolved.secretMaterial.connection?.secret,
+        serializeOAuthSubscriptionTokens(tokens),
+      );
+      assert.equal(
+        resolved.secretMaterial.connection?.revision,
+        beforeActivation.secretMaterial.connection?.revision,
+      );
+    }
+  } finally {
+    try {
+      await backend?.dispose();
+    } finally {
+      await owner.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  }
 });
 
 test('backend creation does not acquire Client Capabilities beyond a bound tool ceiling', async () => {
@@ -410,22 +501,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       secret: API_KEY,
     });
     assert.equal(configured.kind, 'committed');
-    const fetchPreparation = await policy.operations.beginModelFetch(connection.connectionId);
-    assert.equal(fetchPreparation.kind, 'ready');
-    if (fetchPreparation.kind !== 'ready') return;
-    const fetched = await policy.operations.completeModelFetch(fetchPreparation.ticket, {
-      models: [
-        {
-          id: MODEL_ID,
-          capabilities: { chat: true, functionCalling: true },
-          contextWindow: 3_072,
-          maxOutputTokens: 64,
-        },
-      ],
-      source: 'fetched',
-      fetchedAt: Date.now(),
-    });
-    assert.equal(fetched.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -973,10 +1049,36 @@ function isTerminal(snapshot: TurnSnapshot): boolean {
   );
 }
 
+async function publishConnectionModel(
+  policy: RuntimePolicyStoresWriter,
+  connectionId: string,
+  modelId: string,
+): Promise<void> {
+  const prepared = await policy.operations.beginModelFetch(connectionId);
+  assert.equal(prepared.kind, 'ready');
+  if (prepared.kind !== 'ready') throw new Error('Model discovery was not ready');
+  const committed = await policy.operations.completeModelFetch(prepared.ticket, {
+    models: [
+      {
+        id: modelId,
+        capabilities: { chat: true, functionCalling: true },
+        contextWindow: 3_072,
+        maxOutputTokens: 64,
+      },
+    ],
+    source: 'fetched',
+    fetchedAt: Date.now(),
+  });
+  assert.equal(committed.kind, 'committed');
+}
+
 function backendCreationFixture(input: {
   abortSignal: AbortSignal;
   resolveExecutionConnection: () => Promise<unknown>;
   readPricing: () => Promise<unknown>;
+  runtimePolicy?: RuntimePolicyStoresWriter;
+  oauthCredentials?: HostOAuthExecutionAuthority;
+  claudeDeviceId?: string;
   tools?: readonly MakaTool[];
   snapshotClientCapabilities?: () => unknown;
   executionBoundary?: unknown;
@@ -1005,7 +1107,7 @@ function backendCreationFixture(input: {
         readExecutionBoundary: async () => input.executionBoundary,
       },
     } as unknown as BackendFactoryContext,
-    runtimePolicy: {
+    runtimePolicy: input.runtimePolicy ?? {
       operations: {
         resolveExecutionConnection: input.resolveExecutionConnection,
       },
@@ -1016,6 +1118,8 @@ function backendCreationFixture(input: {
         }),
       },
     },
+    ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
+    ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     },
