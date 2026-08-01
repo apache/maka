@@ -41,7 +41,6 @@
   "dependencies": {
     "@astryxdesign/core": "0.2.0",
     "@astryxdesign/theme-neutral": "0.2.0",
-    "@base-ui/react": "^1.5.0",
     "@jackwener/opencli": "1.8.4",
     "@maka/computer-use": "0.1.0",
     "@maka/core": "0.1.0",

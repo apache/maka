@@ -1527,12 +1527,10 @@ description: Exercise workspace-contained open paths.
     const ui = await readFile(join(repoRoot, 'packages/ui/src/skills-panel.tsx'), 'utf8');
     const modulePanelTypes = await readFile(join(repoRoot, 'packages/ui/src/module-panel-types.ts'), 'utf8');
     const workspaceResourcesIpc = await readFile(join(repoRoot, 'apps/desktop/src/main/workspace-resources-ipc-main.ts'), 'utf8');
-    const emptyStateSource = await readFile(join(repoRoot, 'packages/ui/src/empty-state.tsx'), 'utf8');
     const renderer = await readRendererShellCombinedSource();
     const skillsModuleMain = extractFunctionBlock(ui, 'SkillsModuleMain');
     const skillPanel = ui.match(/function SkillLibraryPanel[\s\S]*?function SkillsModuleMain/)?.[0] ?? '';
     const skillEntryContract = modulePanelTypes.match(/export interface SkillEntry[\s\S]*?\n}/)?.[0] ?? '';
-    const emptyState = emptyStateSource;
 
     assert.match(modulePagesSource, /export function SkillsPage[\s\S]*<SkillsModuleMain/, 'SkillsPage must mount the skills main surface');
     assert.match(skillsModuleMain, /const \[pendingSkillAction, setPendingSkillAction\] = useState<string \| null>\(null\)/);
@@ -1681,9 +1679,6 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /isDisabled=\{props\.actionBusy \|\| !props\.onOpenSkill\}/, 'Skill open icon button must be disabled while a Skills action is pending'); // #1565 PR 3
     assert.match(skillPanel, /opening && <span>\{copy\.row\.opening\}<\/span>/);
     assert.match(skillPanel, /updating && <span>\{copy\.row\.updating\}<\/span>/);
-    assert.match(emptyState, /disabled\?: boolean/);
-    assert.match(emptyState, /isDisabled=\{props\.cta\.disabled\}/); // #1565 PR 3
-    assert.match(emptyState, /isDisabled=\{props\.secondaryCta\.disabled\}/); // #1565 PR 3
 
     assert.doesNotMatch(renderer, /onRefreshSkills=\{\(\) => void refreshSkills\(\)\}/, 'renderer must return the refresh promise to the UI pending gate');
     assert.doesNotMatch(renderer, /onCreateSkillTemplate=\{\(\) => void createSkillTemplate\(\)\}/, 'renderer must return the create promise to the UI pending gate');

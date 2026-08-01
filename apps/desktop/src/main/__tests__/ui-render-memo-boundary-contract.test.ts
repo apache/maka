@@ -207,7 +207,7 @@ async function importSessionHistoryList(): Promise<SessionHistoryModule> {
     },
     outfile,
     bundle: true,
-    external: ['@base-ui/react', '@maka/core', LUCIDE_REACT_PACKAGE, 'react', 'react-dom', 'react-dom/*', 'react/jsx-runtime'],
+    external: ['@maka/core', LUCIDE_REACT_PACKAGE, 'react', 'react-dom', 'react-dom/*', 'react/jsx-runtime'],
     platform: 'node',
     format: 'esm',
     target: 'node20',

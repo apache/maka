@@ -41,18 +41,7 @@ import {
 } from '@maka/ui/icons';
 import type { ArtifactKind, ArtifactRecord, UiLocale } from '@maka/core';
 import { formatRelativeTimestamp, generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core';
-import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
-  Badge,
-  Button,
-  formatBytes,
-  useMountedRef,
-  useToast,
-  useUiLocale,
-} from '@maka/ui';
+import { Badge, Button, formatBytes, useMountedRef, useToast, useUiLocale, Banner } from '@maka/ui';
 import { EmptyState as AstryxEmptyState, Toolbar as AstryxToolbar } from '@astryxdesign/core';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { ArtifactPreview } from './artifact-preview';
@@ -358,170 +347,169 @@ export function ArtifactPane(props: {
   return (
     <div className="maka-artifact-pane" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
       {activeListError && (
-            <Alert variant="error" className="maka-artifact-list-error">
-              <AlertTriangle size={14} aria-hidden="true" />
-              <AlertTitle>{copy.pane.listLoadFailed}</AlertTitle>
-              <AlertDescription>{activeListError}</AlertDescription>
-              <AlertAction>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void retryArtifactListRefresh()}
-                  isDisabled={pendingArtifactListRetry}
-                  aria-busy={pendingArtifactListRetry ? 'true' : undefined}
-                  data-pending={pendingArtifactListRetry ? 'true' : undefined}
-                  icon={<RefreshCcw size={13} aria-hidden="true" />}
-                  label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
-                />
-              </AlertAction>
-            </Alert>
+            <Banner
+              status={'error'}
+              className="maka-artifact-list-error"
+              title={copy.pane.listLoadFailed}
+              description={activeListError}
+              endContent={<Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void retryArtifactListRefresh()}
+                isDisabled={pendingArtifactListRetry}
+                aria-busy={pendingArtifactListRetry ? 'true' : undefined}
+                data-pending={pendingArtifactListRetry ? 'true' : undefined}
+                icon={<RefreshCcw size={13} aria-hidden="true" />}
+                label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
+              />}
+              icon={<AlertTriangle size={14} aria-hidden="true" />} />
           )}
-          <ul
-            ref={listRef}
-            className="maka-artifact-list"
-            role="listbox"
-            aria-label={copy.pane.listAria}
-            aria-activedescendant={selectedId ? `maka-artifact-row-${selectedId}` : undefined}
-            tabIndex={0}
-            onKeyDown={handleListKeyDown}
-          >
-            {activeRecords.map((record) => (
-              <li key={record.id} className="maka-artifact-list-item">
-                <Button
-                  id={`maka-artifact-row-${record.id}`}
-                  variant="ghost"
-                  className="maka-artifact-row"
-                  role="option"
-                  aria-selected={record.id === selectedId}
-                  // @kenji a11y gate #1: single tab stop in the list. Each
-                  // row gets tabIndex=-1 so the user reaches the list via
-                  // the list's own tabIndex, then drives selection with
-                  // ArrowUp/Down.
-                  tabIndex={-1}
-                  data-selected={record.id === selectedId ? 'true' : 'false'}
-                  data-deleted={record.status === 'deleted' ? 'true' : 'false'}
-                  onClick={() => setSelectedId(record.id)}
-                  label={record.name}
-                  icon={(
-                    <span className="maka-artifact-row-icon" aria-hidden="true">
-                      <KindIcon kind={record.kind} />
-                    </span>
+      <ul
+        ref={listRef}
+        className="maka-artifact-list"
+        role="listbox"
+        aria-label={copy.pane.listAria}
+        aria-activedescendant={selectedId ? `maka-artifact-row-${selectedId}` : undefined}
+        tabIndex={0}
+        onKeyDown={handleListKeyDown}
+      >
+        {activeRecords.map((record) => (
+          <li key={record.id} className="maka-artifact-list-item">
+            <Button
+              id={`maka-artifact-row-${record.id}`}
+              variant="ghost"
+              className="maka-artifact-row"
+              role="option"
+              aria-selected={record.id === selectedId}
+              // @kenji a11y gate #1: single tab stop in the list. Each
+              // row gets tabIndex=-1 so the user reaches the list via
+              // the list's own tabIndex, then drives selection with
+              // ArrowUp/Down.
+              tabIndex={-1}
+              data-selected={record.id === selectedId ? 'true' : 'false'}
+              data-deleted={record.status === 'deleted' ? 'true' : 'false'}
+              onClick={() => setSelectedId(record.id)}
+              label={record.name}
+              icon={(
+                <span className="maka-artifact-row-icon" aria-hidden="true">
+                  <KindIcon kind={record.kind} />
+                </span>
+              )}
+              endContent={(
+                <span className="maka-artifact-row-meta">
+                  <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
+                  <span className="maka-artifact-row-time">
+                    {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
+                  </span>
+                  {record.status === 'deleted' && (
+                    <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
                   )}
-                  endContent={(
-                    <span className="maka-artifact-row-meta">
-                      <span className="maka-artifact-row-size">{formatBytes(record.sizeBytes)}</span>
-                      <span className="maka-artifact-row-time">
-                        {formatRelativeTimestamp(record.createdAt, Date.now(), locale)}
-                      </span>
-                      {record.status === 'deleted' && (
-                        <Badge variant="error" className="maka-artifact-row-badge" label={copy.pane.deletedBadge} />
-                      )}
-                    </span>
-                  )}
-                />
-              </li>
-            ))}
-          </ul>
-          <div
-            ref={previewRef}
-            className="maka-artifact-preview"
-            data-empty={selected ? 'false' : 'true'}
-            // @kenji a11y gate #1: Enter from the list focuses this region
-            // so screen readers can announce the artifact contents. role +
-            // tabIndex=-1 make the div programmatically focusable without
-            // adding a Tab stop (the list is the single Tab stop).
-            role="region"
-            aria-label={selected ? copy.pane.previewNamed(selected.name) : copy.pane.previewAria}
-            tabIndex={-1}
-          >
-            {selected ? (
-              // PR-UI-RENDER-3a: pass the existing openInFinder
-              // handler so the Unsupported card (when shown) can
-              // render a real "在 Finder 中打开" button. No new IPC.
-              <ArtifactPreview
-                key={selected.id}
-                record={selected}
-                onShowInFolder={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
-              />
-            ) : (
-              <AstryxEmptyState
-                className="maka-artifact-preview-empty"
-                isCompact
-                icon={<FileText aria-hidden="true" />}
-                {...(activeRecords.length > 0
-                  ? {title: copy.pane.notSelected, description: copy.pane.selectHint}
-                  : previewEmptyStateCopy)}
+                </span>
+              )}
+            />
+          </li>
+        ))}
+      </ul>
+      <div
+        ref={previewRef}
+        className="maka-artifact-preview"
+        data-empty={selected ? 'false' : 'true'}
+        // @kenji a11y gate #1: Enter from the list focuses this region
+        // so screen readers can announce the artifact contents. role +
+        // tabIndex=-1 make the div programmatically focusable without
+        // adding a Tab stop (the list is the single Tab stop).
+        role="region"
+        aria-label={selected ? copy.pane.previewNamed(selected.name) : copy.pane.previewAria}
+        tabIndex={-1}
+      >
+        {selected ? (
+          // PR-UI-RENDER-3a: pass the existing openInFinder
+          // handler so the Unsupported card (when shown) can
+          // render a real "在 Finder 中打开" button. No new IPC.
+          (<ArtifactPreview
+            key={selected.id}
+            record={selected}
+            onShowInFolder={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
+          />)
+        ) : (
+          <AstryxEmptyState
+            className="maka-artifact-preview-empty"
+            isCompact
+            icon={<FileText aria-hidden="true" />}
+            {...(activeRecords.length > 0
+              ? {title: copy.pane.notSelected, description: copy.pane.selectHint}
+              : previewEmptyStateCopy)}
+          />
+        )}
+      </div>
+      {selected && (
+        <AstryxToolbar
+          className="maka-artifact-toolbar"
+          label={copy.pane.actionsAria}
+          size="sm"
+          gap={1}
+          startContent={<div className="maka-artifact-toolbar-group">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
+              isDisabled={artifactActionBusy}
+              data-pending={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
+              aria-busy={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
+              icon={<FolderOpen size={14} aria-hidden="true" />}
+              label={pendingArtifactAction === `${selected.id}:open` ? copy.pane.opening : copy.pane.openInFinder}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void runArtifactAction(`${selected.id}:save`, () => saveAs(selected.id))}
+              isDisabled={artifactActionBusy}
+              data-pending={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
+              aria-busy={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
+              icon={<Save size={14} aria-hidden="true" />}
+              label={pendingArtifactAction === `${selected.id}:save` ? copy.pane.saving : copy.pane.saveAs}
+            />
+            {isTextKind(selected.kind) && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void runArtifactAction(`${selected.id}:copy`, () => copyText(selected.id))}
+                isDisabled={artifactActionBusy}
+                data-pending={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
+                aria-busy={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
+                icon={<Copy size={14} aria-hidden="true" />}
+                label={pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}
               />
             )}
-          </div>
-          {selected && (
-            <AstryxToolbar
-              className="maka-artifact-toolbar"
-              label={copy.pane.actionsAria}
-              size="sm"
-              gap={1}
-              startContent={<div className="maka-artifact-toolbar-group">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void runArtifactAction(`${selected.id}:open`, () => openInFinder(selected.id))}
-                  isDisabled={artifactActionBusy}
-                  data-pending={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
-                  aria-busy={pendingArtifactAction === `${selected.id}:open` ? 'true' : undefined}
-                  icon={<FolderOpen size={14} aria-hidden="true" />}
-                  label={pendingArtifactAction === `${selected.id}:open` ? copy.pane.opening : copy.pane.openInFinder}
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void runArtifactAction(`${selected.id}:save`, () => saveAs(selected.id))}
-                  isDisabled={artifactActionBusy}
-                  data-pending={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
-                  aria-busy={pendingArtifactAction === `${selected.id}:save` ? 'true' : undefined}
-                  icon={<Save size={14} aria-hidden="true" />}
-                  label={pendingArtifactAction === `${selected.id}:save` ? copy.pane.saving : copy.pane.saveAs}
-                />
-                {isTextKind(selected.kind) && (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void runArtifactAction(`${selected.id}:copy`, () => copyText(selected.id))}
-                    isDisabled={artifactActionBusy}
-                    data-pending={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
-                    aria-busy={pendingArtifactAction === `${selected.id}:copy` ? 'true' : undefined}
-                    icon={<Copy size={14} aria-hidden="true" />}
-                    label={pendingArtifactAction === `${selected.id}:copy` ? copy.pane.copying : copy.pane.copy}
-                  />
-                )}
-              </div>}
-              endContent={<div className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
-                <Tooltip
-                  content={
-                    selected.source === 'tool_result_archive'
-                      ? copy.pane.runtimeArchiveReadOnly
-                      : pendingArtifactAction === `${selected.id}:delete`
-                        ? copy.pane.deleting
-                        : copy.pane.delete
-                  }
-                >
-                  <Button
-                    label={pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
-                    icon={<Trash2 size={14} aria-hidden="true" />}
-                    isIconOnly
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => void runArtifactAction(`${selected.id}:delete`, () => deleteArtifact(selected.id))}
-                    isDisabled={
-                      artifactActionBusy || selected.source === 'deep_research' ||
-                      selected.source === 'tool_result_archive'
-                    }
-                    data-pending={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
-                    aria-busy={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
-                  />
-                </Tooltip>
-              </div>}
-            />
-          )}
+          </div>}
+          endContent={<div className="maka-artifact-toolbar-group maka-artifact-toolbar-danger-group">
+            <Tooltip
+              content={
+                selected.source === 'tool_result_archive'
+                  ? copy.pane.runtimeArchiveReadOnly
+                  : pendingArtifactAction === `${selected.id}:delete`
+                    ? copy.pane.deleting
+                    : copy.pane.delete
+              }
+            >
+              <Button
+                label={pendingArtifactAction === `${selected.id}:delete` ? copy.pane.deleting : copy.pane.delete}
+                icon={<Trash2 size={14} aria-hidden="true" />}
+                isIconOnly
+                variant="destructive"
+                size="sm"
+                onClick={() => void runArtifactAction(`${selected.id}:delete`, () => deleteArtifact(selected.id))}
+                isDisabled={
+                  artifactActionBusy || selected.source === 'deep_research' ||
+                  selected.source === 'tool_result_archive'
+                }
+                data-pending={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
+                aria-busy={pendingArtifactAction === `${selected.id}:delete` ? 'true' : undefined}
+              />
+            </Tooltip>
+          </div>}
+        />
+      )}
     </div>
   );
 }

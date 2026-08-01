@@ -18,9 +18,6 @@ import {
   type UsageStats,
 } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
   Button,
   IconButton,
   TextInput,
@@ -28,6 +25,7 @@ import {
   Switch,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
 import {
@@ -246,12 +244,10 @@ function UsageRequestsPanel(props: {
 }) {
   if (!props.showDetails) {
     return (
-      <Alert variant="info">
-        <AlertDescription>{props.copy.summaryOnly}</AlertDescription>
-        <AlertAction>
-          <Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />
-        </AlertAction>
-      </Alert>
+      <Banner
+        status={'info'}
+        title={props.copy.summaryOnly}
+        endContent={<Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />} />
     );
   }
   return (

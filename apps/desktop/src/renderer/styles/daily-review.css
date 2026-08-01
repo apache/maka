@@ -222,10 +222,7 @@
     padding: var(--space-2) var(--space-1);
   }
 
-/* Must share maka.legacy with the `.maka-empty-state` base (onboarding.css),
-   whose `position: absolute` centering it overrides by specificity — inside
-   @layer components (below maka.legacy) this override silently never applied,
-   so the empty card floated as a translucent overlay. Reset it to in-flow. */
+/* Keep the Astryx empty state in flow inside the daily-review panel. */
 .maka-daily-review-panel .maka-daily-review-summary-empty {
   position: static;
   left: auto;

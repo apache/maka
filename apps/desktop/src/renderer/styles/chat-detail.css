@@ -139,10 +139,6 @@
   color: var(--muted-foreground);
 }
 
-.maka-browser-empty-hint {
-  max-width: 280px;
-}
-
 .maka-artifact-pane {
   width: 100%;
   height: 100%;

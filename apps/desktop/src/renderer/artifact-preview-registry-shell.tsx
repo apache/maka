@@ -26,7 +26,8 @@
 
 import { useEffect, useState } from 'react';
 import type { ArtifactRecord } from '@maka/core';
-import { Button, Spinner, useUiLocale } from '@maka/ui';
+import { Button, useUiLocale } from '@maka/ui';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   type ArtifactPreviewInput,
   type PreviewResolution,
@@ -167,7 +168,7 @@ function ImageArtifactPreview(props: {
   if (result.state === 'loading') {
     return (
       <div className="maka-artifact-preview-loading" role="status" aria-live="polite">
-        <Spinner className="maka-artifact-preview-spinner" aria-hidden="true" role="presentation" />
+        <Spinner className="maka-artifact-preview-spinner" aria-label={copy.registry.loadingImage} />
         <span>{copy.registry.loadingImage}</span>
       </div>
     );

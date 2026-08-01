@@ -253,7 +253,7 @@ const captureExpr = (scopes = []) => `(() => {
       ? value.replace(/-?\\d+\\.\\d+px/g, (m) => half(Number.parseFloat(m)) + 'px')
       : value;
   const label = (el) => {
-    // Deliberately not el.id: Base UI mints ids through useId, so they change
+    // Deliberately not el.id: component-generated useId values change
     // on every render and would make every capture differ from the last.
     const explicit = el.getAttribute('data-testid') || el.getAttribute('aria-label') || '';
     if (explicit) return explicit.slice(0, 40);

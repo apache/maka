@@ -1,5 +1,4 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
 import { AlertOctagon, Ban, Check, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -287,13 +286,15 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
   }
 
   return (
-    <BaseButton
+    <UiButton
       type="button"
+      label={copyPhase ? `${actionLabel} · ${baseLabel}` : baseLabel}
+      variant="ghost"
+      size="sm"
       className="maka-message-copy"
       onClick={() => void copy()}
-      aria-label={copyPhase ? `${actionLabel} · ${baseLabel}` : baseLabel}
       aria-busy={copyPending ? 'true' : undefined}
-      disabled={copyPending}
+      isDisabled={copyPending}
       data-copied={copied}
       data-copy-feedback={copyPhase ?? undefined}
       data-pending={copyPending ? 'true' : undefined}
@@ -301,7 +302,7 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     >
       {icon}
       {props.label && <span>{copyPhase === 'pending' ? `${copyText.copying}…` : copyPhase === 'failed' ? copyText.copyFailed : copied ? copyText.copied : props.label}</span>}
-    </BaseButton>
+    </UiButton>
   );
 }
 

@@ -7,7 +7,8 @@
 
 import { useEffect, useState } from 'react';
 import { Keyboard } from '@maka/ui/icons';
-import { Kbd, useUiLocale } from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import {
   Dialog,
   DialogHeader,
@@ -101,7 +102,7 @@ export function KeyboardHelpModal(props: {
                               +
                             </span>
                           )}
-                          <Kbd>{key}</Kbd>
+                          <Kbd keys={key === 'Esc' ? 'escape' : key} />
                         </span>
                       ))}
                     </dd>

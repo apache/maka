@@ -44,11 +44,11 @@ import {
   withLiveStreamFallback,
 } from './tool-activity/result-projection.js';
 import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
-import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/alert.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
 import {
   Button as UiButton,
+  Banner,
   ChatToolCalls,
   Collapsible as AstryxCollapsible,
   type ChatToolCallItem,
@@ -671,8 +671,8 @@ function ToolOutputStream(props: {
   );
 }
 
-// Preserve the retired `.maka-tool-error*` leaf utilities onto Alert (#332 PR3c) —
-// Alert owns the shell; these are the few declarations it doesn't set, kept arbitrary
+// Preserve the product-owned diagnostic leaf utilities inside Astryx Banner —
+// Banner owns the shell; these declarations format tool-specific detail content
 // so they map 1:1 to the old CSS (`[align-self:start]`, not Tailwind's `flex-start`).
 function ToolErrorBanner(props: {
   result: ToolActivityItem['result'];
@@ -703,28 +703,28 @@ function ToolErrorBanner(props: {
   }
 
   return (
-    <Alert variant={props.sandboxBlocked ? 'warning' : 'error'} className="mb-2.5">
-      {props.sandboxBlocked
+    <Banner
+      status={props.sandboxBlocked ? 'warning' : 'error'}
+      className="mb-2.5"
+      icon={props.sandboxBlocked
         ? <ShieldAlert size={16} aria-hidden="true" />
         : <AlertOctagon size={16} aria-hidden="true" />}
-      <AlertTitle>{bannerCopy.title}</AlertTitle>
-      {props.sandboxBlocked ? (
-        <AlertDescription className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+      title={bannerCopy.title}
+      description={props.sandboxBlocked ? (
+        <span className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
           <span>{copyText.sandboxBlocked.description}</span>
           {errorText && (
             <span className="[font-family:var(--font-mono)]">
               {summarizeErrorText(errorText)}
             </span>
           )}
-        </AlertDescription>
+        </span>
       ) : errorText ? (
-        <AlertDescription className="[font-family:var(--font-mono)] text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+        <span className="[font-family:var(--font-mono)] text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
           {summarizeErrorText(errorText)}
-        </AlertDescription>
+        </span>
       ) : null}
-      {errorText && (
-        <AlertAction>
-          <UiButton
+      endContent={errorText ? <UiButton
             variant="ghost"
             size="sm"
             className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
@@ -736,10 +736,8 @@ function ToolErrorBanner(props: {
             onClick={() => void copy()}
             icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
             label={copyLabel}
-          />
-        </AlertAction>
-      )}
-    </Alert>
+          /> : undefined}
+    />
   );
 }
 

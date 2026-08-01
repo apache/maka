@@ -229,7 +229,7 @@ export function TextShimmer({
  *
  * NOTE: the args `<pre>` keeps the shared `.maka-code` inline-code base (used by
  * Markdown / artifact previews too — out of scope); the `args` part below is only
- * the `.toolArgs` override. The `ToolErrorBanner` (`Alert` + `.maka-tool-error*`)
+ * the `.toolArgs` override. The `ToolErrorBanner` (Astryx Banner + product diagnostic content)
  * is a separate concern on a different substrate and migrates in its own pass.
  */
 // `waiting_permission` carries a literal underscore, which Tailwind reads as a

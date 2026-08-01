@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
-import { Collapsible, IconButton } from '@astryxdesign/core';
+import { Collapsible, IconButton, Text } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
   AlertCircle,
@@ -12,7 +12,6 @@ import {
 } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy, type SharedUiCopy } from './shared-ui-copy.js';
-import { EmptyState } from './empty-state.js';
 
 const STATUS_ICONS = {
   pending: Clock,
@@ -81,7 +80,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <EmptyState variant="inline" title={copy.empty} body="" />
+            <Text type="supporting">{copy.empty}</Text>
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible

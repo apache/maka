@@ -80,42 +80,15 @@ describe('failed turn presentation', () => {
 
   it('chooses recovery from side-effect and resumability evidence', () => {
     const cases = [
-      {
-        input: ['app_restarted', false, 0, 0] as const,
-        action: 'continue',
-      },
-      {
-        input: [SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS, false, 0, 0] as const,
-        action: 'retry',
-      },
-      {
-        input: ['tool_failed', false, 1, 1] as const,
-        action: 'inspect_tool',
-      },
-      {
-        input: ['tool_step_cap_reached', true, 1, 0] as const,
-        action: 'continue',
-      },
-      {
-        input: ['auth', false, 0, 0] as const,
-        action: 'check_connection',
-      },
-      {
-        input: ['provider_billing', false, 0, 0] as const,
-        action: 'check_connection',
-      },
-      {
-        input: ['timeout', true, 0, 0] as const,
-        action: 'continue',
-      },
-      {
-        input: ['timeout', false, 1, 0] as const,
-        action: 'inspect_tool',
-      },
-      {
-        input: ['timeout', false, 0, 0] as const,
-        action: 'retry',
-      },
+      { input: ['app_restarted', false, 0, 0] as const, action: 'continue' },
+      { input: [SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS, false, 0, 0] as const, action: 'retry' },
+      { input: ['tool_failed', false, 1, 1] as const, action: 'inspect_tool' },
+      { input: ['tool_step_cap_reached', true, 1, 0] as const, action: 'continue' },
+      { input: ['auth', false, 0, 0] as const, action: 'check_connection' },
+      { input: ['provider_billing', false, 0, 0] as const, action: 'check_connection' },
+      { input: ['timeout', true, 0, 0] as const, action: 'continue' },
+      { input: ['timeout', false, 1, 0] as const, action: 'inspect_tool' },
+      { input: ['timeout', false, 0, 0] as const, action: 'retry' },
     ];
 
     for (const { input, action } of cases) {

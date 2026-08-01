@@ -122,10 +122,11 @@ describe('PR-TOOL-ERROR-COLLAPSE-0 contract (issue #741)', () => {
     // rendered ~161 lines (~2656px). The summary now caps both chars and lines.
     const multiLine = Array.from({ length: 180 }, (_, i) => `line ${i}`).join('\n');
     const markup = renderExpanded(multiLine);
-    const m = markup.match(/data-slot="alert-description"[^>]*>([\s\S]*?)<\/div>/);
-    const summary = m?.[1] ?? '';
-    assert.ok(summary.split('\n').length <= 4, `banner summary must cap at 4 lines, got ${summary.split('\n').length}`);
-    assert.ok(summary.endsWith('…'), 'a truncated multi-line summary must end with an ellipsis');
+    assert.match(
+      markup,
+      /line 0\nline 1\nline 2\nline 3…/,
+      'the Astryx Banner description must contain exactly the truncated four-line summary',
+    );
   });
 
   it('redacts secrets before diagnostics reach either the banner or disclosure content', () => {
