@@ -4,16 +4,7 @@ import type { BotChannelSettings, BotProvider } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { EmptyState, Item } from '@astryxdesign/core';
-import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
-  Button,
-  Badge,
-  RelativeTime,
-  useUiLocale,
-} from '@maka/ui';
+import { Button, Badge, RelativeTime, useUiLocale, Banner } from '@maka/ui';
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
@@ -68,15 +59,12 @@ export function BotChatOverview(props: {
   return (
     <div className="settingsRemoteAccessOverview">
       {props.statusLoadError && (
-        <Alert variant="error">
-          <AlertTitle>{copy.loadFailed}</AlertTitle>
-          <AlertDescription>{props.statusLoadError}</AlertDescription>
-          <AlertAction>
-            <Button variant="secondary" onClick={() => void props.onRefreshStatuses()} label={copy.reload} />
-          </AlertAction>
-        </Alert>
+        <Banner
+          status="error"
+          title={copy.loadFailed}
+          description={props.statusLoadError}
+          endContent={<Button variant="secondary" onClick={() => void props.onRefreshStatuses()} label={copy.reload} />} />
       )}
-
       <section className="settingsRemoteAccessSection" aria-labelledby="remote-access-active-heading">
         <div className="settingsRemoteAccessSectionHeader">
           <h3 id="remote-access-active-heading">{copy.active}</h3>
@@ -113,7 +101,6 @@ export function BotChatOverview(props: {
           ))}
         </div>
       </section>
-
       <section className="settingsRemoteAccessSection" aria-labelledby="remote-access-available-heading">
         <div className="settingsRemoteAccessSectionHeader">
           <h3 id="remote-access-available-heading">{copy.more}</h3>

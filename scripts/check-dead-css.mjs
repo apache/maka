@@ -54,6 +54,7 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // do not appear as className literals in Maka source.
   'astryx-button',
   'astryx-badge',
+  'astryx-resize-handle-pill',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in

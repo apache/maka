@@ -36,7 +36,8 @@ import type {
   ArtifactRecord,
   ArtifactTextReadResult,
 } from '@maka/core';
-import { cn, previewVariants, Spinner, useUiLocale } from '@maka/ui';
+import { cn, previewVariants, useUiLocale } from '@maka/ui';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import { RegistryArtifactPreview } from './artifact-preview-registry-shell';
 import { getArtifactCopy, type ArtifactCopy } from './locales/artifact-copy';
 
@@ -182,7 +183,12 @@ function PdfPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
 function PreviewLoading(props: { label: string }) {
   return (
     <div className="maka-artifact-preview-loading" role="status" aria-live="polite">
-      <Spinner className="maka-artifact-preview-spinner" aria-hidden="true" role="presentation" />
+      <Spinner
+        className="maka-artifact-preview-spinner"
+        size="sm"
+        aria-hidden="true"
+        role="presentation"
+      />
       <span>{props.label}</span>
     </div>
   );

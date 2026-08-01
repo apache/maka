@@ -31,7 +31,7 @@ import {
   ShieldAlert,
   Trash2,
 } from './icons.js';
-import { EmptyState } from './empty-state.js';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
 import {
   DropdownMenu,
   DropdownMenuItem,
@@ -121,7 +121,9 @@ export function SessionHistoryList(props: {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
     const active = document.activeElement as HTMLElement | null;
     if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
-    const row = active.closest<HTMLElement>('[role="treeitem"], .astryx-list-item, [data-session-id]');
+    const row = active.closest<HTMLElement>(
+      '[role="treeitem"], [data-maka-contract="list-row"], [data-session-id]',
+    );
     const sessionId = row?.dataset.sessionId ?? row?.querySelector<HTMLElement>('[data-session-id]')?.dataset.sessionId;
     if (sessionId && props.rowActions) {
       event.preventDefault();
@@ -139,10 +141,10 @@ export function SessionHistoryList(props: {
         // pure "no sessions yet" copy — no inline CTA. The top-of-
         // sidebar `+ 新任务` button is the only create-session entry.
         <EmptyState
-          Icon={MessageSquare}
+          icon={<MessageSquare />}
           title={copy.emptyTitle}
-          body={copy.emptyBody}
-          extraClassName="maka-session-empty-state"
+          description={copy.emptyBody}
+          className="maka-session-empty-state"
         />
       ) : (
         <div className="maka-list-stackContent">
@@ -331,6 +333,7 @@ function SessionListGroups(props: {
                 <ListItem
                   key={session.id}
                   className="maka-session-list-item"
+                  data-maka-contract="list-row"
                   data-subagent={nested ? 'true' : undefined}
                   isSelected={session.id === props.activeId}
                   onClick={isEditing ? undefined : (event) => {

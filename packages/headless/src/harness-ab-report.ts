@@ -9,6 +9,12 @@ export interface HarnessAbArmEffectiveness {
   armId: string;
   passed: number;
   evaluated: number;
+  /** passed / evaluated over the arm's OWN valid cells (arm-local denominator):
+   * each arm's rate covers the cells that arm actually executed. Since v4 the
+   * top-level effectiveness fields use this basis; the shared paired-sample
+   * comparison lives in pairedCandidateMinusBaseline and nonBudgetConditional.
+   * Runs with unilateral infra gaps therefore score differently from v3,
+   * where every rate shared the paired denominator. */
   passRate: number | null;
 }
 
@@ -52,12 +58,19 @@ export interface HarnessAbReport {
     pairedEvaluated: number;
     baseline: HarnessAbArmEffectiveness;
     candidate: HarnessAbArmEffectiveness;
+    /** Delta of the arm-local pass rates (candidate.passRate -
+     * baseline.passRate); denominators may differ between arms. */
     candidateMinusBaseline: number | null;
+    /** Delta over the shared paired sample only (v3's candidateMinusBaseline
+     * basis): both arms are scored on exactly the tasks both evaluated. */
     pairedCandidateMinusBaseline: number | null;
     candidateWins: number;
     baselineWins: number;
     ties: number;
     nonBudgetConditional: {
+      /** Diagnostic decomposition over pairs where NEITHER arm exhausted its
+       * budget: a budget-killed cell is the harness's own cap firing, not
+       * model-failure evidence. Disclosure only — never the headline. */
       pairedEvaluated: number;
       excludedBudgetPairs: number;
       baseline: HarnessAbArmEffectiveness;

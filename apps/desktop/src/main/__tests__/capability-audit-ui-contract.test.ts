@@ -81,7 +81,7 @@ describe('capability audit visible system contract', () => {
   it('keeps the exception-only strip free of the retired metrics band CSS', async () => {
     const styles = await readRendererContractCss();
 
-    // The Alert primitive owns the warning chrome; the module CSS must not
+    // Astryx Banner owns the warning chrome; the module CSS must not
     // regrow the old full-width band (kicker / metrics dl / media grid).
     assert.doesNotMatch(styles, /\.maka-capability-audit-metrics/);
     assert.doesNotMatch(styles, /\.maka-capability-audit-kicker/);

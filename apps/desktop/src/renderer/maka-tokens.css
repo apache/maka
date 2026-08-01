@@ -406,15 +406,10 @@
      only misuse, and a contract test pinned the result. Adjacency is
      the whole rule; state it or the rule licenses nonsense.
 
-     Both legitimate forms in this codebase:
-       1. Tier swap, when outer − inset lands on a tier — the segmented
-          track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
-          --radius-control for the buttons that hug its ends.
-          See styles/segmented.css.
-       2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
+     A legitimate form in this codebase is
+       `calc(var(--radius-*) - 1px)`, the border inset — a ::before
           overlay at inset-0 hugging the inner edge of a 1px border.
-          See primitives/empty.tsx.
-     Both are corner-adjacent with a uniform inset. If a proposed
+     It is corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */
   --radius-control: 6px;
@@ -1287,34 +1282,6 @@ html[data-os="darwin"].dark {
     gap: var(--space-2);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-  }
-
-  /* ---- Tabs ------------------------------------------------------- */
-
-  /* Shared tab spec (#499 P0-3): one `maka-tab` class + `underline`/`pill`
-   * variants on the Base UI Tabs primitive. Active/hover use the neutral
-   * state tokens — no brand color, no per-surface hand-written tab CSS.
-   * underline = neutral under-bar via the Base UI indicator (no bg fill);
-   * pill = neutral bg fill + bold (indicator hidden). */
-  .maka-tabs-list[data-variant="pill"] .maka-tab {
-    min-height: 34px;
-    border-radius: var(--radius-pill);
-    border: var(--border-width-hairline) solid transparent;
-    background: var(--foreground-5);
-    color: var(--foreground-secondary);
-    padding: 0 var(--space-4);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab:hover {
-    background: var(--state-hover-bg);
-    color: var(--foreground);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab[data-active] {
-    border-color: oklch(from var(--foreground) l c h / 0.16);
-    background: var(--state-selected-bg);
-    font-weight: var(--font-weight-semibold);
-  }
-  .maka-tabs-list[data-variant="underline"] .maka-tab[data-active] {
-    color: var(--foreground);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */

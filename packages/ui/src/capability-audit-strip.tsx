@@ -1,6 +1,6 @@
 import type { CapabilityAuditReport, UiLocale } from '@maka/core';
 import { useUiLocale } from './locale-context.js';
-import { Alert, AlertDescription } from './primitives/alert.js';
+import { Banner } from '@astryxdesign/core/Banner';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 /**
@@ -18,9 +18,12 @@ export function CapabilityAuditStrip(props: { report: CapabilityAuditReport; foc
   const issues = capabilityAuditIssues(props.report, locale);
   if (issues.length === 0) return null;
   return (
-    <Alert variant="warning" className="maka-capability-audit-strip" aria-label={copy.ariaLabel}>
-      <AlertDescription>{issues.join(' · ')}</AlertDescription>
-    </Alert>
+    <Banner
+      status="warning"
+      className="maka-capability-audit-strip"
+      aria-label={copy.ariaLabel}
+      title={issues.join(' · ')}
+    />
   );
 }
 

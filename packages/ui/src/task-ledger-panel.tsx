@@ -12,7 +12,6 @@ import {
 } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy, type SharedUiCopy } from './shared-ui-copy.js';
-import { EmptyState } from './empty-state.js';
 
 const STATUS_ICONS = {
   pending: Clock,
@@ -81,7 +80,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <EmptyState variant="inline" title={copy.empty} body="" />
+            <p className="m-0 text-[length:var(--font-size-ui)] leading-normal text-[color:var(--muted-foreground)]">{copy.empty}</p>
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible

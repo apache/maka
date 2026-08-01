@@ -56,7 +56,6 @@
 @import "./styles/empty-state.css" layer(maka.legacy);
 @import "./styles/module-pages.css" layer(maka.legacy);
 @import "./styles/settings/select.css" layer(maka.legacy);
-@import "./styles/segmented.css" layer(maka.legacy);
 @import "./styles/model-switcher.css" layer(maka.legacy);
 @import "./styles/chat-header.css" layer(maka.legacy);
 @import "./styles/task-ledger.css" layer(maka.legacy);

@@ -12,9 +12,6 @@ import type { BotStatus } from '@maka/runtime';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
   BOT_BRAND,
   Button,
   Badge,
@@ -27,6 +24,7 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { BotWeChatFields, WechatQrLoginModal } from './bot-wechat-login';
@@ -251,22 +249,26 @@ export function BotChatChannelDetail(props: {
         </section>
 
         {props.statusLoadError && (
-          <Alert variant="error">
-            <AlertTitle>{detailCopy.statusRefreshFailed}</AlertTitle>
-            <AlertDescription>{props.statusLoadError}</AlertDescription>
-          </Alert>
+          <Banner
+            status="error"
+            title={detailCopy.statusRefreshFailed}
+            description={props.statusLoadError} />
         )}
         {status?.reason && channel.enabled && !viewState.liveOperational && (
-          <Alert variant="warning">
-            <AlertTitle>{botStatusDetail(status, locale)}</AlertTitle>
-            <AlertDescription>{readinessCopy.detail}</AlertDescription>
-          </Alert>
+          <Banner
+            status="warning"
+            title={botStatusDetail(status, locale)}
+            description={readinessCopy.detail} />
         )}
         {viewState.currentError && support !== 'planned' && (
-          <Alert variant="error">
-            <AlertTitle>{detailCopy.latestFailure}</AlertTitle>
-            <AlertDescription>{locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}</AlertDescription>
-          </Alert>
+          <Banner
+            status="error"
+            title={detailCopy.latestFailure}
+            description={(
+              <span className="settingsBotBannerDescription">
+                {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
+              </span>
+            )} />
         )}
 
         <div className="settingsBotConfigurationHeader">
@@ -344,9 +346,7 @@ export function BotChatChannelDetail(props: {
         )}
 
         {support === 'planned' && (
-          <Alert variant="passive">
-            <AlertDescription>{detailCopy.planned}</AlertDescription>
-          </Alert>
+          <Banner status="info" title={detailCopy.planned} />
         )}
 
         {/* WeChat keeps scan login as a first-class action, separate from
@@ -530,11 +530,7 @@ function BotCredentialFields(props: {
               />
             );
           case 'notice':
-            return (
-              <Alert key={`notice-${index}`} variant="info">
-                <AlertDescription>{field.text}</AlertDescription>
-              </Alert>
-            );
+            return <Banner status="info" key={`notice-${index}`} title={field.text} />;
         }
       })}
     </FormLayout>

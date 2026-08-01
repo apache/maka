@@ -46,7 +46,7 @@ import {
 } from '@astryxdesign/core/DropdownMenu';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
-import { Kbd } from './primitives/kbd.js';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { PermissionModeSelect } from './permission-mode-menu.js';
 import { ComposerSkillPicker, type ComposerSkillOption } from './composer-skill-picker.js';
 
@@ -722,6 +722,7 @@ export const Composer = forwardRef<
       >
         <AstryxChatComposer
           className="maka-composer-astryx"
+          data-maka-contract="composer-inner"
           data-streaming={props.streaming ? 'true' : undefined}
           onSubmit={() => void sendCurrent()}
           isDisabled={props.disabled}
@@ -1100,7 +1101,7 @@ export const Composer = forwardRef<
                       ? copy.processing
                       : props.continuing
                         ? copy.continuing
-                        : copy.streaming} <Kbd>Esc</Kbd> {copy.interruptHint}
+                        : copy.streaming} <Kbd keys="escape" /> {copy.interruptHint}
                   </span>
                 ) : null}
               </span>

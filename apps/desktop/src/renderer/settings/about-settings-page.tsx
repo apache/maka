@@ -1,7 +1,15 @@
 import { useEffect, useId, useState } from 'react';
 import { Card } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
-import { Alert, AlertDescription, AlertTitle, Button, PageHeader, SectionHeader, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Button,
+  PageHeader,
+  SectionHeader,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+  Banner,
+} from '@maka/ui';
 import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
@@ -64,10 +72,11 @@ export function AboutSettingsPage() {
   if (!info) {
     return (
       <div className="settingsStructuredPage">
-        <Alert variant="info" role="alert">
-          <AlertTitle>{copy.unavailable}</AlertTitle>
-          <AlertDescription>{infoError}</AlertDescription>
-        </Alert>
+        <Banner
+          status="info"
+          role="alert"
+          title={copy.unavailable}
+          description={infoError} />
       </div>
     );
   }
@@ -138,18 +147,14 @@ export function AboutSettingsPage() {
         subtitle={copy.subtitle}
         subtitleClassName="settingsAboutTagline"
       />
-
       <section className="settingsPrivacyBlock" aria-label={copy.privacyLabel}>
         <SectionHeader as="h3" title={copy.privacyTitle} />
-        <Alert variant="passive">
-          <AlertDescription>
-            <ul className="settingsPrivacyPoints">
-              {copy.privacyPoints.map((point) => <li key={point}>{point}</li>)}
-            </ul>
-          </AlertDescription>
-        </Alert>
+        <Banner
+          status="info"
+          title={<ul className="settingsPrivacyPoints">
+            {copy.privacyPoints.map((point) => <li key={point}>{point}</li>)}
+          </ul>} />
       </section>
-
       <Card padding={0} className="settingsRows">
         <SettingRow
           title={copy.runtime}
@@ -169,7 +174,6 @@ export function AboutSettingsPage() {
           value={copy.local}
         />
       </Card>
-
       <div className="settingsActionRow">
         <Button variant="primary" isDisabled={copyingEnvSummary} aria-describedby={envSummaryHelpId} onClick={() => void copyEnvSummary()} label={copyingEnvSummary ? copy.copying : copy.copyEnvironment} />
       </div>

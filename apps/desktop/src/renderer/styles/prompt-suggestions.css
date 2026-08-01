@@ -14,49 +14,5 @@
 
 .maka-prompt-chip {
   flex: 1;
-  display: grid;
-  gap: var(--space-0-5);
-  /* PR-UI-LAYOUT-5 (@yuejing): tighter chip chrome — was 12px
-   * radius + var(--background-elevated) bg + 12/14px padding. the reference design
-   * uses lighter pills; we keep two-line content (label + hint)
-   * but pull the visual weight down so the grid feels lighter and
-   * less card-like. Border drops to hairline `--border`,
-   * background to transparent (inherits warm panel bg); hover uses
-   * neutral `--state-hover-bg` + `--border-strong` (no brand tint). */
-  border: var(--border-width-hairline) solid var(--foreground-8);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground);
-  padding: var(--space-2-5) var(--space-3);
-  text-align: left;
-  transition:
-    border-color var(--duration-base) var(--ease-out-strong),
-    background var(--duration-base) var(--ease-out-strong);
+  width: 100%;
 }
-
-.maka-prompt-chip:hover {
-  border-color: var(--border-strong);
-  background: var(--state-hover-bg);
-}
-
-.maka-prompt-chip:active {
-  background: var(--state-selected-bg);
-}
-
-.maka-prompt-chip-label {
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-prompt-chip-hint {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-

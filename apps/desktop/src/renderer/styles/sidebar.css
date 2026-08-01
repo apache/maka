@@ -246,7 +246,7 @@
   opacity: var(--opacity-muted);
 }
 
-:is(.astryx-list-item[aria-current="true"], [role="treeitem"][aria-selected="true"])
+:is([data-maka-contract="list-row"][aria-current="true"], [role="treeitem"][aria-selected="true"])
   .maka-session-item-label[data-stale="true"] {
   opacity: 1;
 }

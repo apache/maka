@@ -1,5 +1,5 @@
 /* Designer audit P1-7: the capability audit surface is now an
-   exception-only warning line (Alert primitive owns the chrome); the old
+   exception-only Astryx Banner; the old
    full-width metrics band (kicker/copy/dl grid) was removed together with
    its component markup. Only page-flow spacing lives here. */
 .maka-capability-audit-strip {

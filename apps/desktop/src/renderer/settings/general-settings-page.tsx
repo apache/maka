@@ -10,8 +10,6 @@ import type {
 } from '@maka/core';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import {
-  Alert,
-  AlertDescription,
   Button,
   FormLayout,
   TextInput,
@@ -26,6 +24,7 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { ProviderBrandMark } from './provider-brand-marks';
 import { buildCatalogChatModelChoices } from '../model-catalog-choices';
@@ -302,7 +301,6 @@ function NetworkProxySection(props: {
           onChange={(enabled) => void updateProxy({ enabled })}
         />}
       />
-
       {proxyDraft.enabled && (
         <>
           <FormLayout className="settingsFormLayout" direction="horizontal">
@@ -363,9 +361,9 @@ function NetworkProxySection(props: {
             />
           </div>
 
-          <Alert variant="info">
-            <AlertDescription>{copy.autoBypass(proxyDraft.autoBypassDomains.length)}</AlertDescription>
-          </Alert>
+          <Banner
+            status="info"
+            title={copy.autoBypass(proxyDraft.autoBypassDomains.length)} />
 
           <div className="settingsActionRow">
             <Button

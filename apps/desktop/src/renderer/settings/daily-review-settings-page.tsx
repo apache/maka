@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Banner, Card, Item } from '@astryxdesign/core';
 import type { DailyReviewConfig, DailyReviewMode, LlmConnection } from '@maka/core';
-import { Alert, AlertDescription, Button, Selector, Switch, TextInput, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  Button,
+  Selector,
+  Switch,
+  TextInput,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
@@ -146,13 +154,12 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       {!hasConfigIpc && (
         <Banner status="info" title={copy.unavailable} />
       )}
-
       {loadError ? (
-        <Alert variant="error" className="settingsSurfaceAlert">
-          <AlertDescription>{copy.loadFailed(loadError)}</AlertDescription>
-        </Alert>
+        <Banner
+          status="error"
+          className="settingsSurfaceAlert"
+          title={copy.loadFailed(loadError)} />
       ) : null}
-
       <Card padding={0} className="settingsRows">
         <Item
           label={copy.enabled}
@@ -275,7 +282,6 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
           />}
         />
       </Card>
-
       {(props.onOpenDailyReview || hasRunOnceIpc) && (
         <div className="settingsPageFooterActions" role="toolbar" aria-label={copy.actionsAria}>
           {hasRunOnceIpc && (

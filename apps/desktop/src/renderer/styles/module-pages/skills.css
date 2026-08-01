@@ -482,11 +482,6 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   color: var(--muted-foreground);
 }
 
-/* .maka-skill-library-runtime-label / .maka-skill-library-status-label are now
-   rendered by the Chip primitive (squared status label, tone→alpha authority in
-   packages/ui/src/primitives/chip.tsx). The tone derivation lives in
-   skills-panel.tsx (skillStatusChipTone); no bespoke label CSS remains. */
-
 .maka-skill-library-open-button {
   justify-self: end;
 }

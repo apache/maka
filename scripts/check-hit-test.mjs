@@ -123,11 +123,10 @@ const PROBE_EXPR = `(() => {
         const style = styleOf(node);
         if (style.overflow === 'visible' && style.overflowX === 'visible' && style.overflowY === 'visible') continue;
         const clip = rectOf(node);
-        // display:contents and other zero-box wrappers report an empty rect
-        // while clipping nothing. Intersecting with those collapses the
-        // probe to the origin and makes every point land on whatever sits in
-        // the top-left corner.
-        if (clip.width <= 0 || clip.height <= 0) continue;
+        // display:contents reports an empty box while clipping nothing. A real
+        // zero-size overflow container is different: it is how collapsed
+        // Astryx content leaves its descendants mounted but unreachable.
+        if (style.display === 'contents') continue;
         left = Math.max(left, clip.left);
         top = Math.max(top, clip.top);
         right = Math.min(right, clip.right);
@@ -254,10 +253,12 @@ const PROBE_EXPR = `(() => {
   });
 })()`;
 
-function parseArgs(argv) {
+export class HitTestArgumentError extends Error {}
+
+export function parseHitTestArgs(argv) {
   const args = { routes: null };
   const routeIds = ROUTES.map((route) => route.id);
-  for (let i = 2; i < argv.length; i += 1) {
+  for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--route') {
       // Closed set, checked per value. Filtering later and failing only when
@@ -266,16 +267,16 @@ function parseArgs(argv) {
       // requested coverage silently.
       const next = argv[++i];
       if (!routeIds.includes(next)) {
-        console.error(`[hit-test] --route must be one of: ${routeIds.join(', ')}`);
-        process.exit(2);
+        throw new HitTestArgumentError(`[hit-test] --route must be one of: ${routeIds.join(', ')}`);
       }
       (args.routes ??= []).push(next);
     } else if (arg === '--help' || arg === '-h') {
-      console.log(`Usage: check-hit-test.mjs [--route id]...\n\nRoutes: ${routeIds.join(', ')}\n`);
-      process.exit(0);
+      return {
+        help: `Usage: check-hit-test.mjs [--route id]...\n\nRoutes: ${routeIds.join(', ')}\n`,
+        routes: null,
+      };
     } else {
-      console.error(`[hit-test] unknown arg: ${arg}`);
-      process.exit(2);
+      throw new HitTestArgumentError(`[hit-test] unknown arg: ${arg}`);
     }
   }
   return args;
@@ -307,8 +308,19 @@ function coverage(report) {
   return `${report.probed} of ${report.matched} probed${dropped ? ` (${dropped})` : ''}${scope}`;
 }
 
-async function main() {
-  const args = parseArgs(process.argv);
+async function main(argv) {
+  let args;
+  try {
+    args = parseHitTestArgs(argv);
+  } catch (error) {
+    if (!(error instanceof HitTestArgumentError)) throw error;
+    console.error(error.message);
+    return 2;
+  }
+  if (args.help) {
+    console.log(args.help);
+    return 0;
+  }
   const routes = args.routes ? ROUTES.filter((route) => args.routes.includes(route.id)) : ROUTES;
   let failures = 0;
   for (const [index, route] of routes.entries()) {
@@ -350,12 +362,12 @@ async function main() {
       ? `hit-test contract: ${routes.length} route(s) clean`
       : `FAIL: ${failures} route(s)`,
   );
-  process.exit(failures === 0 ? 0 : 1);
+  return failures === 0 ? 0 : 1;
 }
 
 // Only when run directly. pathToFileURL, not string concatenation: a
 // percent-encoding path segment (a space, a non-ASCII directory) would
 // otherwise make the direct run a silent no-op that exits 0.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main();
+  process.exitCode = await main(process.argv.slice(2));
 }

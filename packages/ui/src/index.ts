@@ -43,15 +43,11 @@ export * from './tool-output-stream.js';
 export * from './ui.js';
 export * from './utils.js';
 
-// shared primitive UI primitives (copy/own from upstream primitive source). Each file is
-// dropped in `./primitives/` with the `cn()` import rewritten to our
-// local helper. Net-new components that aren't already covered
-// by our shared component-style wrappers in `./ui.js` re-export here so
-// consumers can `import { Alert, Empty, ... } from '@maka/ui'`.
+// Maka-owned product assets and compositions remain public only where they do
+// not duplicate a published Astryx component authority.
 export * from './bot-brand.js';
 export * from './bot-brand-logo.js';
 export * from './maka-wordmark.js';
-export * from './primitives/alert.js';
 // #1565 PR 3: Card is the Astryx primitive now (the thin data-slot recipe is
 // retired); same barrel slot, implementation swapped behind it.
 export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
@@ -65,38 +61,14 @@ export { Card, type CardProps, type CardVariant } from '@astryxdesign/core';
 // promotion condition the off-barrel convention named, so the export is the rule.
 export { previewVariants } from './primitives/chat.js';
 export { formatTurnDuration } from './chat-display-helpers.js';
-export * from './primitives/empty.js';
-export * from './primitives/item.js';
-export * from './primitives/spinner.js';
-export * from './primitives/kbd.js';
 export * from './primitives/stat-tile.js';
-export * from './primitives/data-table.js';
 export * from './primitives/section-header.js';
-export { EmptyState } from './empty-state.js';
-export * from './primitives/segmented.js';
-export * from './primitives/toolbar.js';
-export {
-  Tabs as PrimitiveTabs,
-  TabsList as PrimitiveTabsList,
-  TabsTrigger as PrimitiveTabsTrigger,
-  TabsPanel as PrimitiveTabsPanel,
-  TabsContent as PrimitiveTabsContent,
-  TabsPrimitive as PrimitiveTabsPrimitive,
-} from './primitives/tabs.js';
 // PR-USE-SHADCN-BASE-UI-BADGE: the canonical pill Badge primitive. #520 PR9
 // collapsed the legacy ui.tsx Badge onto this one. #1565 PR 3: the recipe is
 // the Astryx Badge now (label prop, status + palette variants); same barrel
 // slot, implementation swapped behind it. badgeVariants retired with the cva
 // recipe (no consumers).
 export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
-// PR-USE-SHADCN-BASE-UI-CHIP: squared compact status label. #520 PR9 collapsed
-// .settingsBadge + .settingsConnectionBadge CSS chips onto this one. Chip is
-// the squared (radius-control) counterpart to pill Badge, for dense settings
-// status rows. Status variants mirror StatusTone: neutral / info / success /
-// warning / destructive; `accent` is the separate brand-accent marker
-// (default-connection flags) outside the status scale.
-export { Chip, chipVariants } from './primitives/chip.js';
-export type { ChipProps } from './primitives/chip.js';
 // PageHeader — the shared page-header shell (convergence round 3). One shell
 // for the module hero (as='h2': 技能 / 定时任务) and the settings intros
 // (as='h3': permission / health / voice / about). Wrapper class + per-slot
@@ -147,6 +119,9 @@ export {
   type ButtonProps,
   type ButtonVariant,
   type ButtonSize,
+  Banner,
+  type BannerProps,
+  type BannerStatus,
   Divider,
   type DividerProps,
   Text,
@@ -163,6 +138,14 @@ export {
   type VStackProps,
   IconButton,
   type IconButtonProps,
+  EmptyState,
+  type EmptyStateProps,
+  Kbd,
+  type KbdProps,
+  Spinner,
+  type SpinnerProps,
+  type SpinnerSize,
+  type SpinnerShade,
   ClickableCard,
   type ClickableCardProps,
   TextInput,

@@ -1,13 +1,5 @@
 import type { ComponentProps, Ref } from 'react';
-import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
-  Composer,
-  SandboxBoundaryPrompt,
-  UserQuestionPrompt,
-} from '@maka/ui';
+import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
 
 /**
@@ -79,26 +71,21 @@ export function ChatComposerRegion({
             thing to answer. */}
         {boundaryUnreadableNotice && active && !activeInteraction && (
           <div className="maka-boundary-unreadable-notice">
-            <Alert
+            <Banner
+              status="warning"
               className="maka-boundary-unreadable-notice-alert"
-              variant="warning"
               role="status"
-            >
-              <AlertTitle>{boundaryUnreadableNotice.title}</AlertTitle>
-              <AlertDescription>{boundaryUnreadableNotice.detail}</AlertDescription>
-              <AlertAction>
-                <button
-                  type="button"
-                  className="maka-boundary-unreadable-notice-action"
-                  disabled={boundaryUnreadableNotice.retryPending}
-                  onClick={boundaryUnreadableNotice.onRetry}
-                >
-                  {boundaryUnreadableNotice.retryPending
-                    ? boundaryUnreadableNotice.retryPendingLabel
-                    : boundaryUnreadableNotice.retryLabel}
-                </button>
-              </AlertAction>
-            </Alert>
+              title={boundaryUnreadableNotice.title}
+              description={boundaryUnreadableNotice.detail}
+              endContent={<Button
+                variant="secondary"
+                size="sm"
+                label={boundaryUnreadableNotice.retryPending
+                  ? boundaryUnreadableNotice.retryPendingLabel
+                  : boundaryUnreadableNotice.retryLabel}
+                isDisabled={boundaryUnreadableNotice.retryPending}
+                onClick={boundaryUnreadableNotice.onRetry}
+              />} />
           </div>
         )}
         {activeSandboxBoundary && (

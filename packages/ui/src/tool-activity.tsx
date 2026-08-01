@@ -43,11 +43,11 @@ import {
   withLiveStreamFallback,
 } from './tool-activity/result-projection.js';
 import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
-import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/alert.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
 import {
   Button as UiButton,
+  Banner,
   ChatToolCalls,
   Collapsible as AstryxCollapsible,
   type ChatToolCallItem,
@@ -629,35 +629,37 @@ function SandboxBlockedBanner(props: {
   }
 
   return (
-    <Alert variant="warning" className="mb-2.5">
-      <ShieldAlert size={16} aria-hidden="true" />
-      <AlertTitle>{bannerCopy.title}</AlertTitle>
-      <AlertDescription className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
-        <span>{bannerCopy.description}</span>
-        {errorText && (
-          <span className="[font-family:var(--font-mono)]">
-            {summarizeErrorText(errorText)}
-          </span>
-        )}
-      </AlertDescription>
-      {errorText && (
-        <AlertAction>
-          <UiButton
-            variant="ghost"
-            size="sm"
-            className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
-            data-pending={copyPending ? 'true' : undefined}
-            data-copy-feedback={copyPhase ?? undefined}
-            aria-label={bannerCopy.copyAriaLabel(copyLabel)}
-            aria-busy={copyPending ? 'true' : undefined}
-            isDisabled={copyPending}
-            onClick={() => void copy()}
-            icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-            label={copyLabel}
-          />
-        </AlertAction>
+    <Banner
+      status="warning"
+      className="mb-2.5"
+      icon={<ShieldAlert size={16} aria-hidden="true" />}
+      title={bannerCopy.title}
+      description={(
+        <span className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+          <span>{bannerCopy.description}</span>
+          {errorText && (
+            <span className="[font-family:var(--font-mono)]">
+              {summarizeErrorText(errorText)}
+            </span>
+          )}
+        </span>
       )}
-    </Alert>
+      endContent={errorText ? (
+        <UiButton
+          variant="ghost"
+          size="sm"
+          className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
+          data-pending={copyPending ? 'true' : undefined}
+          data-copy-feedback={copyPhase ?? undefined}
+          aria-label={bannerCopy.copyAriaLabel(copyLabel)}
+          aria-busy={copyPending ? 'true' : undefined}
+          isDisabled={copyPending}
+          onClick={() => void copy()}
+          icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          label={copyLabel}
+        />
+      ) : undefined}
+    />
   );
 }
 

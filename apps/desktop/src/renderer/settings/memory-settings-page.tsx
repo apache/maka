@@ -1,6 +1,16 @@
 import type { AppSettings, UpdateAppSettingsResult } from '@maka/core';
 import { Card, Item } from '@astryxdesign/core';
-import { Alert, AlertDescription, Badge, Button, FormLayout, TextInput, RelativeTime, Switch, TextArea, useUiLocale } from '@maka/ui';
+import {
+  Badge,
+  Button,
+  FormLayout,
+  TextInput,
+  RelativeTime,
+  Switch,
+  TextArea,
+  useUiLocale,
+  Banner,
+} from '@maka/ui';
 import { getMemorySettingsCopy } from '../locales/settings-memory-copy';
 import { MemoryEntryList } from './memory-entry-list';
 import { MemoryPromptPreviewSection, WorkspaceInstructionsSection } from './memory-settings-sections';
@@ -128,7 +138,6 @@ export function MemorySettingsPage(props: {
           />}
         />
       </Card>
-
       <WorkspaceInstructionsSection
         copy={copy}
         state={workspaceInstructions.state}
@@ -137,7 +146,6 @@ export function MemorySettingsPage(props: {
         onOpen={workspaceInstructions.openFile}
         onCreate={workspaceInstructions.createFile}
       />
-
       <div className="settingsConnectionMeta settingsMemoryMeta">
         <span className="settingsMemoryPath" title={effective.path || undefined}>
           {effective.path ? displayMemoryPath(effective.path) : copy.text.waitingFile}
@@ -161,7 +169,6 @@ export function MemorySettingsPage(props: {
           </span>
         )}
       </div>
-
       {effective.backups && effective.backups.length > 1 && (
         <div className="settingsMemoryBackupList" role="status">
           <strong>{copy.text.backupCandidates}</strong>
@@ -213,7 +220,6 @@ export function MemorySettingsPage(props: {
           <small>{copy.text.backupHelp}</small>
         </div>
       )}
-
       {lastSaveSummary && !memoryDraftDirty && (
         <div className="settingsMemorySaveSummary" role="status">
           <strong>{lastSaveSummary.title}</strong>
@@ -223,14 +229,12 @@ export function MemorySettingsPage(props: {
           <small>{lastSaveSummary.detail}</small>
         </div>
       )}
-
       {memoryEntryPreviewBlockedReason && (
         <div className="settingsMemoryEntryPreviewNotice" role="status">
           <strong>{copy.text.previewPaused}</strong>
           <small>{memoryEntryPreviewBlockedReason}</small>
         </div>
       )}
-
       <MemoryPromptPreviewSection
         copy={copy}
         active={promptPreviewWillInject}
@@ -241,7 +245,6 @@ export function MemorySettingsPage(props: {
         copyPending={isMemoryActionPending('memory:prompt-preview:copy')}
         onCopy={copyLocalMemoryPromptPreview}
       />
-
       {visibleMemoryEntries.entries.length > 0 && (
         <>
           <div className="settingsMemoryFilter">
@@ -306,14 +309,12 @@ export function MemorySettingsPage(props: {
           )}
         </>
       )}
-
       {visibleMemoryEntries.entries.length === 0 && !memoryEntryPreviewBlockedReason && (
         <div className="settingsMemoryListEmpty" role="status">
           <strong>{copy.text.waitingEntry}</strong>
           <small>{copy.text.waitingEntryHelp}</small>
         </div>
       )}
-
       <div className="settingsMemoryManualAdd" role="group" aria-label={copy.text.manualAddAria}>
         <div className="settingsMemoryManualAddHeader">
           <strong>{copy.text.manualAdd}</strong>
@@ -355,14 +356,12 @@ export function MemorySettingsPage(props: {
           label={copy.text.addDraft}
         />
       </div>
-
       {memoryDraftHasSensitiveFields && (
         <div className="settingsMemoryDraftWarning" role="status">
           <strong>{copy.text.sensitiveDraft}</strong>
           <small>{copy.text.sensitiveDraftHelp}</small>
         </div>
       )}
-
       <TextArea
         ref={editorRef}
         value={draft}
@@ -373,13 +372,9 @@ export function MemorySettingsPage(props: {
         label={copy.text.fileContent}
         width="100%"
       />
-
       {effective.reason && (
-        <Alert variant="passive" role="status">
-          <AlertDescription>{effective.reason}</AlertDescription>
-        </Alert>
+        <Banner status="info" role="status" title={effective.reason} />
       )}
-
       <div className="settingsActionRow" role="group" aria-label={copy.text.fileActionsAria}>
         <Button variant="primary" className="min-w-[3.5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || !memoryDraftDirty} onClick={() => void save()} label={pendingMemoryWriteAction === 'save' ? copy.text.saving : memoryDraftDirty ? copy.text.save : copy.text.saved} />
         <Button variant="ghost" className="min-w-[7.5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || isMemoryActionPending('memory:file:open')} onClick={() => void openFile()} label={isMemoryActionPending('memory:file:open') ? copy.text.opening : copy.text.openFile} />

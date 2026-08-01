@@ -7,6 +7,7 @@ import {
   TabList,
   Table,
   type TableColumn,
+  type TablePlugin,
   pixel,
   proportional,
 } from '@astryxdesign/core';
@@ -18,9 +19,6 @@ import {
   type UsageStats,
 } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
   Button,
   IconButton,
   TextInput,
@@ -28,6 +26,7 @@ import {
   Switch,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
 import {
@@ -246,12 +245,10 @@ function UsageRequestsPanel(props: {
 }) {
   if (!props.showDetails) {
     return (
-      <Alert variant="info">
-        <AlertDescription>{props.copy.summaryOnly}</AlertDescription>
-        <AlertAction>
-          <Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />
-        </AlertAction>
-      </Alert>
+      <Banner
+        status="info"
+        title={props.copy.summaryOnly}
+        endContent={<Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />} />
     );
   }
   return (
@@ -436,6 +433,19 @@ interface UsageColumn {
   grow?: boolean;
 }
 
+type UsageTableRow = Record<string, unknown> & {
+  id: number;
+  cells: Array<ReactNode>;
+};
+
+const usageTablePlugins = {
+  rowHeader: {
+    transformBodyCell: (cell, _column, _row, columnIndex) => columnIndex === 0
+      ? { ...cell, htmlProps: { ...cell.htmlProps, role: 'rowheader' } }
+      : cell,
+  },
+} satisfies Record<string, TablePlugin<UsageTableRow>>;
+
 interface UsageEmpty {
   /** A lucide icon (same shape EmptyState accepts). */
   Icon: typeof Search;
@@ -459,11 +469,6 @@ function UsageStatsTable(props: {
       />
     );
   }
-  type UsageTableRow = Record<string, unknown> & {
-    id: number;
-    cells: Array<ReactNode>;
-  };
-
   const data: UsageTableRow[] = props.rows.map((cells, id) => ({ id, cells }));
   const columns: Array<TableColumn<UsageTableRow>> = props.columns.map((column, index) => ({
     key: `cell-${index}`,
@@ -487,6 +492,7 @@ function UsageStatsTable(props: {
         density="compact"
         dividers="rows"
         textOverflow="truncate"
+        plugins={usageTablePlugins}
       />
     </div>
   );

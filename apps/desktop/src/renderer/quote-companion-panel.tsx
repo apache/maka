@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import {
   ChatView,
+  Button,
   Composer,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
@@ -128,14 +129,13 @@ export function QuoteCompanionPanel(props: {
       />
       {props.onClear && (
         <div className="maka-quote-companion-actions">
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             className="maka-quote-panel-clear"
-            aria-label={copy.exit}
+            label={copy.exit}
             onClick={props.onClear}
-          >
-            {copy.exit}
-          </button>
+          />
         </div>
       )}
     </div>

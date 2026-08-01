@@ -304,7 +304,7 @@ function ProviderStoryFrame(props: {
           width: '100%',
         }}
       >
-        <section className="settingsMainPane agents-content-area" data-agents-view="settings">
+        <section className="settingsMainPane" data-agents-view="settings">
           <div className="settingsPageContent" style={{ overflow: 'auto' }}>
             <div className="settingsPageContentInner">
               <div className="settingsStructuredPage settingsModelsPage">

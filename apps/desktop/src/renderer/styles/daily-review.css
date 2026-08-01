@@ -149,37 +149,7 @@
     padding: var(--space-1-5) var(--space-2-5);
     border-radius: var(--radius-surface);
     background: transparent;
-    transition: background var(--duration-base) var(--ease-out-strong);
   }
-.maka-daily-review-list-item:hover {
-    background: var(--state-hover-bg);
-  }
-.maka-daily-review-list-item:active:not(:has(button:disabled)) {
-    background: var(--state-selected-bg);
-  }
-@media (prefers-reduced-motion: reduce) {
-    .maka-daily-review-list-item {
-      transition: background 0ms;
-    }
-  }
-
-.maka-daily-review-session-button {
-  appearance: none;
-  background: none;
-  border: 0;
-  padding: 0;
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: var(--space-2);
-  color: var(--foreground);
-  font: inherit;
-  text-align: left;
-}
-
-.maka-daily-review-session-button:disabled {
-  cursor: default;
-}
 
 .maka-daily-review-session-name {
     min-width: 0;
@@ -222,10 +192,7 @@
     padding: var(--space-2) var(--space-1);
   }
 
-/* Must share maka.legacy with the `.maka-empty-state` base (onboarding.css),
-   whose `position: absolute` centering it overrides by specificity — inside
-   @layer components (below maka.legacy) this override silently never applied,
-   so the empty card floated as a translucent overlay. Reset it to in-flow. */
+/* Keep the Astryx empty state in flow inside the daily-review panel. */
 .maka-daily-review-panel .maka-daily-review-summary-empty {
   position: static;
   left: auto;

@@ -253,7 +253,7 @@ const captureExpr = (scopes = []) => `(() => {
       ? value.replace(/-?\\d+\\.\\d+px/g, (m) => half(Number.parseFloat(m)) + 'px')
       : value;
   const label = (el) => {
-    // Deliberately not el.id: Base UI mints ids through useId, so they change
+    // Deliberately not el.id: component-generated useId values change
     // on every render and would make every capture differ from the last.
     const explicit = el.getAttribute('data-testid') || el.getAttribute('aria-label') || '';
     if (explicit) return explicit.slice(0, 40);
@@ -319,7 +319,8 @@ const captureExpr = (scopes = []) => `(() => {
     // content is attributed the same way: a portal root that carries the
     // scope's identity hook claims its whole subtree, even though that
     // subtree is nowhere near the trigger in the DOM.
-    const ownScope = scopeOf(el) ?? scope;
+    const matchedScope = scopeOf(el);
+    const ownScope = matchedScope ?? scope;
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     // Opacity multiplies down the tree and is not inherited: every descendant
@@ -364,6 +365,7 @@ const captureExpr = (scopes = []) => `(() => {
       const contract = el.getAttribute(CONTRACT_HOOK);
       if (contract) record.contract = contract;
       if (ownScope) record.scope = ownScope;
+      if (matchedScope) record.scopeRoot = true;
       writeStyles(style, record, inherited);
       out.push(record);
       // Painted pseudo-elements. A cascade migration can flip a decoration
@@ -731,7 +733,7 @@ export function diffRecords(baseline, current) {
   // Harness bookkeeping, not visual properties: `contract` names the hook,
   // `scope` names the migration scope that claimed the element. Adding a hook
   // or declaring a scope must never itself read as a visual diff.
-  const BOOKKEEPING = new Set(['path', 'contract', 'scope']);
+  const BOOKKEEPING = new Set(['path', 'contract', 'scope', 'scopeRoot']);
   for (const [path, record] of before) {
     const next = after.get(path);
     if (!next) {
@@ -797,19 +799,56 @@ export function partitionChanges(changes, declaredNames) {
  * everything without touching those roots — which is indistinguishable from
  * disabling the gate. #1565 scopes are components (a workbar, a panel, a
  * rail); neither one scope nor the union of several scopes may legitimately
- * claim most of a route's boxes on either side of the comparison.
+ * claim most of a route's boxes on either side of the comparison. The sole
+ * exception is an explicitly repeatable component: every matched root must
+ * own at least one captured descendant, remain a small independently bounded
+ * subtree, and their union may exceed the ordinary ceiling by only ten
+ * percentage points. This lets a reviewed list-item migration fill a sparse
+ * route without letting either two broad containers or leaf selectors turn
+ * the contract off.
  */
 export const SCOPE_COVERAGE_LIMIT = 0.5;
+export const REPEATABLE_SCOPE_MIN_ROOT_SIZE = 2;
+export const REPEATABLE_SCOPE_ROOT_LIMIT = 0.15;
+export const REPEATABLE_SCOPE_COVERAGE_LIMIT = 0.6;
 
-export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT) {
+export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT, scopes = []) {
   if (records.length === 0) return [];
+  const repeatable = new Set(
+    scopes.filter((scope) => scope.repeatable === true).map((scope) => scope.name),
+  );
   const claimed = new Map();
   for (const record of records) {
-    if (record.scope) claimed.set(record.scope, (claimed.get(record.scope) ?? 0) + 1);
+    if (!record.scope) continue;
+    claimed.set(record.scope, (claimed.get(record.scope) ?? 0) + 1);
   }
   const violations = [];
   for (const [scope, count] of claimed) {
-    if (count > records.length * limit) {
+    if (count <= records.length * limit) continue;
+    const rootPaths = records
+      .filter((record) => record.scope === scope && record.scopeRoot)
+      .map((record) => record.path);
+    const rootSizes = rootPaths.map(
+      (root) =>
+        records.filter(
+          (record) =>
+            record.scope === scope &&
+            (record.path === root ||
+              record.path.startsWith(`${root}>`) ||
+              record.path.startsWith(`${root}::`)),
+        ).length,
+    );
+    const boundedRepeatedRoots =
+      repeatable.has(scope) &&
+      rootPaths.length > 1 &&
+      count <= records.length * REPEATABLE_SCOPE_COVERAGE_LIMIT &&
+      rootSizes.reduce((total, size) => total + size, 0) === count &&
+      rootSizes.every(
+        (size) =>
+          size >= REPEATABLE_SCOPE_MIN_ROOT_SIZE &&
+          size <= records.length * REPEATABLE_SCOPE_ROOT_LIMIT,
+      );
+    if (!boundedRepeatedRoots) {
       violations.push({ scope, claimed: count, total: records.length });
     }
   }
@@ -864,10 +903,11 @@ async function main() {
         `Builds the base ref (cached, temp worktree) and the working tree, captures\n` +
         `every route x theme x platform from both builds, and diffs them in memory.\n\n` +
         `--scopes points at a JSON file declaring the subtrees a slice migrates:\n` +
-        `  { "slice": "pr3-atoms", "scopes": [ { "name": "button", "selectors": ["..."] } ] }\n` +
+        `  { "slice": "pr3-atoms", "scopes": [ { "name": "button", "selectors": ["..."], "repeatable": true } ] }\n` +
         `Each scope lists selectors for the legacy element it replaces AND the\n` +
         `migrated element it lands. Diffs inside a declared scope are reported for\n` +
-        `review; any diff outside them fails. Without --scopes the gate is zero diff.\n\n` +
+        `review; any diff outside them fails. Set repeatable only for repeated,\n` +
+        `individually bounded component roots. Without --scopes the gate is zero diff.\n\n` +
         `Routes: ${ROUTES.map((route) => route.id).join(', ')}\n`,
     );
     return;
@@ -890,11 +930,12 @@ async function main() {
           typeof scope.name !== 'string' ||
           !Array.isArray(scope.selectors) ||
           scope.selectors.length === 0 ||
-          scope.selectors.some((selector) => typeof selector !== 'string'),
+          scope.selectors.some((selector) => typeof selector !== 'string') ||
+          (scope.repeatable !== undefined && typeof scope.repeatable !== 'boolean'),
       )
     ) {
       console.error(
-        `[visual-contract] ${args.scopes} must be { "slice": string, "scopes": [{ "name": string, "selectors": [string, ...] }, ...] }`,
+        `[visual-contract] ${args.scopes} must be { "slice": string, "scopes": [{ "name": string, "selectors": [string, ...], "repeatable"?: boolean }, ...] }`,
       );
       process.exit(2);
     }
@@ -987,7 +1028,7 @@ async function main() {
           { name: 'base', records: baseRecords },
           { name: 'current', records },
         ]) {
-          for (const violation of checkScopeCoverage(side.records)) {
+          for (const violation of checkScopeCoverage(side.records, undefined, scopes ?? [])) {
             failures += 1;
             console.log(
               `FAIL ${key}: scope "${violation.scope}" claims ${violation.claimed} of ${violation.total} captured elements on the ${side.name} side — a scope declares a component, not the app`,
