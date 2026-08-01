@@ -371,7 +371,7 @@
   gap: var(--space-2-5);
 }
 
-/* Empty / load-error CTA shown when there are no connections yet.
+/* Empty state shown when there are no connections yet.
    Despite the name this is a full-width two-line card (16px padding,
    <strong> heading + <small> body), not a chip — surface tier, matching
    its structural twin .settingsWechatQrState. The control tier here came
@@ -387,11 +387,6 @@
   color: var(--foreground);
   padding: var(--space-4) var(--space-4);
   text-align: left;
-}
-
-.enabledEmptyAction:hover {
-  border-color: var(--border-strong);
-  background: var(--background-elevated);
 }
 
 .enabledEmptyChip strong {

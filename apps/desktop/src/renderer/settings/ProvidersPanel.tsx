@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
-import { Item, Tab, TabList } from '@astryxdesign/core';
+import { Banner, Button, Item, Tab, TabList } from '@astryxdesign/core';
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -231,10 +230,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             count={connections.length > 0 ? copy.count(connections.length) : undefined}
           />
           {loadError ? (
-            <BaseButton className="enabledEmptyChip enabledEmptyAction" type="button" onClick={() => void reload()}>
-              <strong>{copy.loadFailed}</strong>
-              <small>{loadError} · {copy.retry}</small>
-            </BaseButton>
+            <Banner
+              status="error"
+              title={copy.loadFailed}
+              description={loadError}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
           ) : connections.length === 0 ? (
             <div className="enabledEmptyChip" role="note">
               <strong>{copy.empty}</strong>
