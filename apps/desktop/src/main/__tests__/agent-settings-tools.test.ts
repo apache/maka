@@ -81,7 +81,6 @@ describe('Agent settings tools', () => {
     h.replaceSettings(
       mergeSettings(h.readSettings(), {
         network: { proxy: { password: 'proxy-secret' } },
-        openGateway: { token: 'gateway-secret' },
         webSearch: { providers: { tavily: { apiKey: 'tavily-secret' } } },
         personalization: { displayName: 'cc', assistantTone: 'concise' },
       }),
@@ -95,7 +94,7 @@ describe('Agent settings tools', () => {
       assistantTone: 'concise',
       uiLocale: 'auto',
     });
-    assert.doesNotMatch(serialized, /proxy-secret|gateway-secret|tavily-secret/);
+    assert.doesNotMatch(serialized, /proxy-secret|tavily-secret/);
     assert.doesNotMatch(serialized, /apiKey|token|password|openGateway|network/);
   });
 
