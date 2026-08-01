@@ -27,3 +27,11 @@ test('MCP diagnostics and advanced fields delegate disclosure behavior to Astryx
   const css = read('apps/desktop/src/renderer/styles/module-pages/mcp.css');
   assert.doesNotMatch(css, /\.maka-mcp-(?:server-details|advanced)\s+summary\b/);
 });
+
+test('Daily Review archive history delegates single-open disclosure to Astryx CollapsibleGroup', () => {
+  const source = read('packages/ui/src/daily-review-panel.tsx');
+  assert.match(source, /import[^;]*\bCollapsible\b[^;]*\bCollapsibleGroup\b[^;]*from '@astryxdesign\/core'/s);
+  assert.match(source, /<CollapsibleGroup\b[^>]*type="single"[^>]*value=\{selectedArchiveId \?\? ''\}/s);
+  assert.match(source, /<Collapsible\b[^>]*value=\{archive\.id\}/s);
+  assert.doesNotMatch(source, /<button\b[^>]*aria-expanded=\{selected\}/s);
+});

@@ -258,68 +258,13 @@
     font-variant-numeric: tabular-nums;
   }
 
-.maka-daily-review-report-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: var(--space-2);
-    min-width: 0;
-  }
-
-.maka-daily-review-report-list > li {
-    margin: 0;
-    padding: 0;
-    min-width: 0;
-  }
-
-/* Each report is one full-width surface. The meta head is always visible; the
-   selected report expands its body below. One frame only (no box-in-box): the
-   body sections divide with hairlines, not nested cards. */
-.maka-daily-review-report {
-    display: grid;
-    min-width: 0;
-    border: var(--border-width-hairline) solid var(--card-border-color);
-    border-radius: var(--radius-surface);
-    background: oklch(from var(--foreground) l c h / 0.025);
-    box-shadow: var(--card-highlight);
-    overflow: hidden;
-  }
-
-.maka-daily-review-report[data-selected] {
-    border-color: var(--border-strong);
-  }
-
-/* The whole meta head is the select/expand target. Reset native button chrome;
-   layout is title-column + optional exception chip. */
-.maka-daily-review-report-head {
-    appearance: none;
-    background: none;
-    border: 0;
-    font: inherit;
-    text-align: left;
-    width: 100%;
+.maka-daily-review-report-trigger {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-2-5);
-    padding: var(--space-2-5) var(--space-3);
-    color: var(--foreground);
-    transition: background var(--duration-base) var(--ease-out-strong);
-  }
-
-.maka-daily-review-report-head:hover {
-    background: var(--state-hover-bg);
-  }
-
-.maka-daily-review-report[data-selected] .maka-daily-review-report-head {
-    background: var(--state-selected-bg);
-  }
-
-@media (prefers-reduced-motion: reduce) {
-    .maka-daily-review-report-head {
-      transition: background 0ms;
-    }
+    min-width: 0;
+    width: 100%;
   }
 
 .maka-daily-review-report-heading {
@@ -360,8 +305,6 @@
     display: grid;
     gap: var(--space-2);
     min-width: 0;
-    padding: var(--space-1) var(--space-3) var(--space-3);
-    border-top: var(--border-width-hairline) solid var(--foreground-10);
   }
 
 .maka-daily-review-archive-empty {
