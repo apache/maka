@@ -83,7 +83,9 @@ export type {
 // Function-tool JSON schemas require an object at the top level.
 // Keep the wire schema as one top-level object, then apply the strict
 // discriminated union above immediately at execution.
-const computerWireParams = z
+// Exported for the parity check in `computer-use-schema-parity.test.ts`, which
+// is the only thing that can tell this schema and `computerParams` apart.
+export const computerWireParams = z
   .object({
     action: z
       .enum([
