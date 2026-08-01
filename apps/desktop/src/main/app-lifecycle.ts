@@ -33,6 +33,7 @@ import type { createDailyReviewMainService } from './daily-review-main.js';
 import type { createMainAutomationWiring } from './automation-wiring.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createMainWindowController } from './main-window.js';
+import type { DesktopExecutionStoreWiring } from './execution-store-wiring.js';
 import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
@@ -71,6 +72,7 @@ export interface AppLifecycleDeps {
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
+  executionStoreWiring: DesktopExecutionStoreWiring;
   closeWorkflowStores: () => Promise<void>;
   mainWindowController: ReturnType<typeof createMainWindowController>;
   runtime: SessionManager;
@@ -125,6 +127,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     shellRuns,
     mcpManager,
     runtimePersistence,
+    executionStoreWiring,
     closeWorkflowStores,
     mainWindowController,
     runtime,
@@ -399,6 +402,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       console.error('[shutdown] cleanup failed:', error);
     }
     runtimePersistence.close();
+    executionStoreWiring.close();
     agentGraphControlStore.close();
     await sessionStore.close?.();
   }

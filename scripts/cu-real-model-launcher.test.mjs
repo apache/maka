@@ -47,7 +47,8 @@ test('real-model launcher owns a synthetic fixture and emits only sanitized evid
   assert.match(launcher, /sanitizeCuReport/);
   assert.match(launcher, /sanitizeCuTrace/);
   assert.match(launcher, /evaluateCuE2eScenarioState/);
-  assert.match(launcher, /createAgentRunStore/);
+  assert.match(launcher, /createSqliteAgentRunStore/);
+  assert.match(launcher, /await runStore\.ready\?\.\(\)/);
   assert.match(launcher, /safeFailureMetadata\(runHeader\.failureMessage\)/);
   assert.doesNotMatch(launcher, /failureMessage:\s*runHeader\.failureMessage/);
   assert.match(launcher, /minimumActionsPassed/);
