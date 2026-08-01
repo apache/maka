@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Banner, Button, Item, Tab, TabList } from '@astryxdesign/core';
+import { Banner, Button, Item, Skeleton, Tab, TabList } from '@astryxdesign/core';
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -207,11 +207,11 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     return (
       <div className="providersPanel providersLoading" data-maka-contract="providers-panel" aria-busy="true" aria-label={copy.loadingAria}>
         <div className="providersLoadingStrip">
-          <div className="maka-skeleton maka-skeleton-line" data-size="lg" style={{ width: '34%' }} />
-          <div className="maka-skeleton maka-skeleton-line" data-size="sm" style={{ width: '52%' }} />
+          <Skeleton width="34%" height={16} radius="rounded" index={0} />
+          <Skeleton width="52%" height={9} radius="rounded" index={1} />
         </div>
         <div className="providersLoadingGrid">
-          {[0, 1, 2, 3, 4, 5].map((index) => <div key={index} className="maka-skeleton maka-skeleton-card" />)}
+          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={92} radius={3} index={index + 2} />)}
         </div>
       </div>
     );

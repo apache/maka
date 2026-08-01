@@ -1388,44 +1388,6 @@ html[data-os="darwin"].dark {
   animation: maka-shimmer 1.5s var(--ease-in-out-strong) infinite;
 }
 
-/* Skeleton placeholder primitives — used while data is still in flight.
-   The base block carries the shimmer animation and a token-based tint so
-   they read the same in light + dark modes. Compose `.maka-skeleton-line`
-   widths via `style={{ width: '40%' }}` from the consuming component. */
-.maka-skeleton {
-  position: relative;
-  overflow: hidden;
-  background: var(--foreground-3);
-  border-radius: var(--radius-control);
-}
-.maka-skeleton::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    oklch(from var(--foreground) l c h / 0.06) 50%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: maka-shimmer 1.6s var(--ease-in-out-strong) infinite;
-}
-.maka-skeleton-line {
-  height: 12px;
-  border-radius: var(--radius-pill);
-}
-.maka-skeleton-line[data-size="lg"] { height: 16px; }
-.maka-skeleton-line[data-size="sm"] { height: 9px; }
-.maka-skeleton-card {
-  height: 92px;
-  border-radius: var(--radius-surface);
-}
-.maka-skeleton-stack {
-  display: grid;
-  gap: var(--space-2-5);
-}
-
 /* =============================================================================
    Icon stroke governance: call sites had
    accumulated EIGHT different strokeWidth values (1.5 → 2) across 143
