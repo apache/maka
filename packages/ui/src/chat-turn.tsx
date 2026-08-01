@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
 import { AlertOctagon, Ban, Brain, Check, ChevronDown, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
@@ -28,6 +28,24 @@ import { Marker, markerVariants, TextShimmer } from './primitives/chat.js';
 import { ToolTrow } from './tool-activity.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { AstryxLocaleProvider } from './astryx-i18n.js';
+
+function LocalizedChatMessage({
+  accessibleLabel,
+  ...props
+}: Omit<ComponentPropsWithoutRef<typeof ChatMessage>, 'aria-label'> & {
+  accessibleLabel: string;
+}) {
+  const overrides = useMemo(
+    () => ({ '@astryx.chatMessage.messageFrom': accessibleLabel }),
+    [accessibleLabel],
+  );
+  return (
+    <AstryxLocaleProvider overrides={overrides}>
+      <ChatMessage {...props} />
+    </AstryxLocaleProvider>
+  );
+}
 
 /**
  * Injected host capability that reads a session attachment's bytes. @maka/ui is
@@ -441,9 +459,9 @@ export const TurnView = memo(function TurnView(props: {
         </Marker>
       )}
       {turn.user && (
-        <ChatMessage
+        <LocalizedChatMessage
+          accessibleLabel={copy.userAriaLabel}
           sender="user"
-          aria-label={copy.userAriaLabel}
           className="maka-chat-message group/usermsg"
         >
           <MessageBody
@@ -482,22 +500,23 @@ export const TurnView = memo(function TurnView(props: {
             }
           />
 
-        </ChatMessage>
+        </LocalizedChatMessage>
       )}
       {turn.notes.map((note) => (
-        <ChatMessage
+        <LocalizedChatMessage
+          accessibleLabel={copy.systemAriaLabel}
           key={note.id}
           sender="system"
           className="maka-chat-message"
         >
           <MessageBody role="system" text={note.text} ts={note.ts} />
-        </ChatMessage>
+        </LocalizedChatMessage>
       ))}
       {showAssistantMessage && (
-        <ChatMessage
+        <LocalizedChatMessage
+          accessibleLabel={copy.assistantAriaLabel}
           sender="assistant"
           data-turn-status={turn.status}
-          aria-label={copy.assistantAriaLabel}
           className="maka-chat-message group/answer"
         >
           <div className="flex flex-col gap-2">
@@ -603,7 +622,7 @@ export const TurnView = memo(function TurnView(props: {
               />
             )
           )}
-        </ChatMessage>
+        </LocalizedChatMessage>
       )}
     </section>
   );
