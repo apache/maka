@@ -519,12 +519,12 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
       isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className="flex min-w-0 items-center gap-2 py-0.5">
+        <span className="flex min-w-0 items-center gap-[length:var(--spacing-1-5,0.375rem)] py-0.5">
           <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('shrink-0', settledTone)} />
           {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium">{summary}</TextShimmer>
           ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
+            <span className={cn('min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium', settledTone, settling && SETTLE_FADE)}>{summary}</span>
           )}
         </span>
       )}
@@ -585,7 +585,7 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
       isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className="flex min-w-0 items-center gap-2 py-0.5">
+        <span className="flex min-w-0 items-center gap-[length:var(--spacing-1-5,0.375rem)] py-0.5">
           <ToolKindIcon
             kind={presentation.kind}
             size={16}
@@ -593,9 +593,9 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
             className={cn('shrink-0', summaryTone)}
           />
           {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium">{presentation.summary}</TextShimmer>
           ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
+            <span className={cn('min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium', summaryTone)}>
               {errored
                 ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
                 : sandboxBlocked
@@ -604,7 +604,7 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
             </span>
           )}
           {duration && (
-            <span className="shrink-0 text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]">
+            <span className="shrink-0 text-[length:var(--text-supporting-size)] text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]">
               {duration}
             </span>
           )}

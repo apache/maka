@@ -50,6 +50,73 @@
   gap: var(--space-1);
 }
 
+/* Chat activity disclosure dialect
+   ----------------------------------------------------------------------------
+   Reasoning, tool calls, and the product trow fallback share one trigger
+   language inside a turn body. Authority is Astryx ChatToolCalls (supporting
+   size / medium weight / 24px row / overlay-hover / body label). Product only
+   closes the deltas StyleX leaves open — do not invent a third component.
+
+   !important: StyleX atoms ship as `.x*:not(#\#)…` (often unlayered). Same
+   seam as sidebar.css when product must win a single dialect property. */
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
+  /* callName is mono in core; chat-body labels stay body like 深度思考. */
+  font-family: var(--font-family-body) !important;
+}
+
+.maka-turn .astryx-chat-reasoning [role="button"] > span:last-child,
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child {
+  /* ChatToolCalls chevron box is 14px; glyph is Icon xsm (0.75rem). */
+  width: 14px !important;
+  height: 14px !important;
+  margin-inline-start: auto;
+}
+
+.maka-turn .astryx-chat-reasoning [role="button"] > span:last-child svg,
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child svg,
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child > * {
+  width: 0.75rem !important;
+  height: 0.75rem !important;
+}
+
+@media (hover: hover) {
+  /* Group headers lack callRowClickable; detail rows already set the same bg. */
+  .maka-turn .astryx-chat-tool-calls > [role="button"]:hover {
+    background-color: var(--color-overlay-hover);
+    border-radius: var(--radius-element);
+  }
+}
+
+/* Product-owned permission / sandbox / interrupted trow (Astryx Collapsible).
+   Collapsible defaults to large/semibold section headers — pin to supporting. */
+.maka-turn [data-trow] .astryx-collapsible-trigger {
+  min-height: 24px;
+  gap: var(--spacing-1-5, 6px);
+  padding-block: 2px;
+  border-radius: var(--radius-element);
+  font-family: var(--font-family-body) !important;
+  font-size: var(--text-supporting-size) !important;
+  font-weight: var(--font-weight-medium, 500) !important;
+  color: var(--color-text-secondary) !important;
+}
+
+.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child svg,
+.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child > * {
+  width: 0.75rem !important;
+  height: 0.75rem !important;
+}
+
+@media (hover: hover) {
+  .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
+    background-color: var(--color-overlay-hover);
+  }
+}
+
 /* --- Assistant bubble shell ----------------------------------------------- */
 /* User message: a tinted, width-capped Astryx bubble anchored to the right. */
 /* Assistant: no bubble — just text on background, like an editor. The
