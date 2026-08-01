@@ -32,7 +32,6 @@ import {
   AUTOMATION_RESULT_MAX_BYTES,
   type AutomationMutateInput,
   type AutomationMutateResult,
-  type AutomationMutationRejection,
   type AutomationProjection,
   type AutomationQueryInput,
   type AutomationQueryResult,
@@ -100,7 +99,9 @@ class AutomationMutationFailure extends Error {
       | 'limit_reached'
       | 'invalid_schedule'
       | 'session_archived'
-      | 'session_unavailable',
+      | 'session_unavailable'
+      | 'host_not_ready'
+      | 'host_draining',
     message: string,
   ) {
     super(message);
@@ -240,7 +241,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     try {
       return (await this.#create(input)).automation;
     } catch (error) {
-      return { error: modelMutationError(error) };
+      return { error: modelMutationError(this.#classifyMutationError(error)) };
     }
   }
 
@@ -249,7 +250,8 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       await this.#delete(id, sessionId);
       return true;
     } catch (error) {
-      if (error instanceof AutomationMutationFailure) return false;
+      const failure = this.#classifyMutationError(error);
+      if (failure && isModelMutationRejection(failure)) return false;
       throw error;
     }
   }
@@ -258,7 +260,8 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     try {
       return (await this.#pause(id, sessionId)).automation;
     } catch (error) {
-      if (error instanceof AutomationMutationFailure) return undefined;
+      const failure = this.#classifyMutationError(error);
+      if (failure && isModelMutationRejection(failure)) return undefined;
       throw error;
     }
   }
@@ -267,7 +270,8 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     try {
       return (await this.#resume(id, sessionId)).automation;
     } catch (error) {
-      if (error instanceof AutomationMutationFailure) return undefined;
+      const failure = this.#classifyMutationError(error);
+      if (failure && isModelMutationRejection(failure)) return undefined;
       throw error;
     }
   }
@@ -371,17 +375,23 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         automation,
       });
     } catch (error) {
-      if (error instanceof AutomationMutationFailure) {
-        if (error.kind === 'not_found') return mutationFailure('not_found', error.message);
-        if (error.kind === 'session_archived') {
-          return mutationFailure('session_archived', error.message);
+      const failure = this.#classifyMutationError(error);
+      if (failure) {
+        if (failure.kind === 'host_not_ready') {
+          return mutationFailure('host_not_ready', failure.message);
         }
-        if (error.kind === 'session_unavailable') {
-          return mutationFailure('operation_unavailable', error.message);
+        if (failure.kind === 'host_draining') {
+          return mutationFailure('host_draining', failure.message);
         }
-        return mutationSuccess({ kind: 'rejected', reason: error.kind });
+        if (failure.kind === 'not_found') return mutationFailure('not_found', failure.message);
+        if (failure.kind === 'session_archived') {
+          return mutationFailure('session_archived', failure.message);
+        }
+        if (failure.kind === 'session_unavailable') {
+          return mutationFailure('operation_unavailable', failure.message);
+        }
+        return mutationSuccess({ kind: 'rejected', reason: failure.kind });
       }
-      this.#requestDrain();
       return mutationFailure('persistence_failed', 'Automation mutation could not be committed');
     }
   }
@@ -516,10 +526,18 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   }
 
   #assertWritable(): void {
-    if (!this.#prepared) throw new Error('Automation authority is not ready');
-    if (this.#fireCoordinator.isDraining || this.#closed) {
-      throw new Error('Automation authority is draining');
+    if (!this.#prepared) {
+      throw new AutomationMutationFailure('host_not_ready', 'Automation authority is not ready');
     }
+    if (this.#fireCoordinator.isDraining || this.#closed) {
+      throw new AutomationMutationFailure('host_draining', 'Automation authority is draining');
+    }
+  }
+
+  #classifyMutationError(error: unknown): AutomationMutationFailure | undefined {
+    if (error instanceof AutomationMutationFailure) return error;
+    this.#requestDrain();
+    return undefined;
   }
 
   #listDueAutomations(now: number): Promise<readonly AutomationDefinition[]> {
@@ -892,8 +910,12 @@ function mutationFailure(
   return { ok: false, error: { code, message } };
 }
 
-function modelMutationError(error: unknown): string {
-  if (error instanceof AutomationMutationFailure) return error.message;
+function isModelMutationRejection(error: AutomationMutationFailure): boolean {
+  return error.kind !== 'host_not_ready' && error.kind !== 'host_draining';
+}
+
+function modelMutationError(error: AutomationMutationFailure | undefined): string {
+  if (error && isModelMutationRejection(error)) return error.message;
   return 'Automation authority is unavailable.';
 }
 

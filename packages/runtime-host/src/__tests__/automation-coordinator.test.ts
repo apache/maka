@@ -8,6 +8,7 @@ import type { AutomationDefinition, AutomationPendingFire } from '@maka/core/aut
 import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
+  type MakaToolContext,
   type RuntimeHostedRootExecutionInput,
   type SessionManager,
 } from '@maka/runtime';
@@ -394,6 +395,46 @@ describe('Host Automation coordinator', () => {
     });
   });
 
+  test('model mutation persistence failure drains and rolls back canonical state', async () => {
+    await withHarness(async (harness) => {
+      await harness.coordinator.prepareRecovery();
+      await harness.coordinator.recover();
+      const concurrentCommit = await harness.store.commit({
+        expectedRevision: 0,
+        automations: [],
+        pendingFires: [],
+      });
+      assert.equal(concurrentCommit.kind, 'committed');
+
+      const output = await harness.coordinator.modelTool.impl(
+        {
+          mode: 'create',
+          kind: 'heartbeat',
+          name: 'check build',
+          prompt: 'Check the build.',
+          schedule: { type: 'interval', seconds: 60 },
+        },
+        {
+          sessionId: 'creator-session',
+          turnId: 'turn-model',
+          cwd: '/workspace',
+          toolCallId: 'tool-model',
+          abortSignal: new AbortController().signal,
+          emitOutput: () => {},
+        } satisfies MakaToolContext,
+      );
+
+      assert.equal(output, 'Error: Automation authority is unavailable.');
+      assert.equal(harness.drainCount, 1);
+      assert.deepEqual(await harness.store.read(), {
+        revision: 1,
+        automations: [],
+        pendingFires: [],
+      });
+      assert.deepEqual(await harness.coordinator.listVisibleForSession('creator-session'), []);
+    });
+  });
+
   test('drain waits for a scheduler admission already crossing the durable commit boundary', async () => {
     const admitEntered = deferred();
     const releaseAdmission = deferred();
@@ -629,6 +670,7 @@ interface Harness {
   now: number;
   rootMode: 'run' | 'busy' | 'unavailable';
   residencyCount: number;
+  drainCount: number;
   fireTimer(): void;
   finishRun(): void;
   timerCount(): number;
@@ -668,6 +710,7 @@ async function withHarness(
     now: 1_000,
     rootMode: options.rootMode ?? 'run',
     residencyCount: 0,
+    drainCount: 0,
     fireTimer: () => {
       const timer = timers.shift();
       assert.ok(timer, 'Expected an Automation scheduler timer');
@@ -767,7 +810,9 @@ async function withHarness(
         },
       };
     },
-    requestDrain: () => undefined,
+    requestDrain: () => {
+      harness.drainCount += 1;
+    },
     newId: sequentialIds(),
     now: () => harness.now,
     random: () => 0,

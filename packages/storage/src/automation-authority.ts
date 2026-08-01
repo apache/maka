@@ -30,7 +30,7 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 
-const LEGACY_AUTOMATION_FILE = 'automations.json';
+export const LEGACY_AUTOMATION_FILE = 'automations.json';
 const MAX_AUTOMATIONS = 10_000;
 const MAX_PENDING_FIRES = 10_000;
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -379,6 +379,13 @@ async function readLegacyAutomationFile(
     }
     throw error;
   }
+  return {
+    fingerprint: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
+    automations: decodeLegacyAutomationFile(contents),
+  };
+}
+
+export function decodeLegacyAutomationFile(contents: string): readonly AutomationDefinition[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(contents);
@@ -398,10 +405,7 @@ async function readLegacyAutomationFile(
     automations.map((automation) => automation.id),
     'Automation id',
   );
-  return {
-    fingerprint: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
-    automations,
-  };
+  return automations;
 }
 
 function normalizeCommitInput(
