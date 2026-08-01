@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION, type ModelCallAttempt } from '../model-call-attempt.js';
 import { mergeUsageBuckets, mergeUsageLogs, mergeUsageSummary } from '../usage-ledger-merge.js';
+import { usageBucketKey } from '../usage-stats/bucket-key.js';
 import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from '../usage-stats/types.js';
 
 // A realistic epoch-ms clock: a small NOW would push relative ranges negative
@@ -95,11 +96,15 @@ function legacyBucket(overrides: Partial<UsageBucket> = {}): UsageBucket {
   };
 }
 
+function hourKey(ts: number): string {
+  return usageBucketKey({ providerId: 'anthropic', modelId: 'claude-opus-5', ts }, 'hour');
+}
+
 describe('usage ledger merge', () => {
   test('sums both sources and reports how much came from the frozen table', () => {
     const merged = mergeUsageSummary(
       legacySummary(),
-      { attempts: [attempt({ attemptId: 'a' })], unreadableRecords: 0 },
+      { attempts: [attempt({ attemptId: 'a' })], unreadableRecords: 0, pendingRepairs: 0 },
       { range: 'all' },
       NOW,
     );
@@ -122,6 +127,7 @@ describe('usage ledger merge', () => {
       {
         attempts: [attempt({ attemptId: 'a', costBasis: 'unpriced', costUsd: undefined })],
         unreadableRecords: 0,
+        pendingRepairs: 0,
       },
       { range: 'all' },
       NOW,
@@ -136,7 +142,7 @@ describe('usage ledger merge', () => {
   test('records that could not be decoded are reported, not silently dropped', () => {
     const merged = mergeUsageSummary(
       legacySummary(),
-      { attempts: [], unreadableRecords: 3 },
+      { attempts: [], unreadableRecords: 3, pendingRepairs: 0 },
       { range: 'all' },
       NOW,
     );
@@ -153,6 +159,7 @@ describe('usage ledger merge', () => {
           attempt({ attemptId: 'b', latencyMs: 800, status: 'failed' }),
         ],
         unreadableRecords: 0,
+        pendingRepairs: 0,
       },
       { range: 'all' },
       'model',
@@ -173,7 +180,7 @@ describe('usage ledger merge', () => {
   test('buckets with no counterpart in the other source pass through intact', () => {
     const merged = mergeUsageBuckets(
       [legacyBucket({ key: 'openai:gpt-5', label: 'openai:gpt-5' })],
-      { attempts: [attempt({ attemptId: 'a' })], unreadableRecords: 0 },
+      { attempts: [attempt({ attemptId: 'a' })], unreadableRecords: 0, pendingRepairs: 0 },
       { range: 'all' },
       'model',
       NOW,
@@ -183,6 +190,28 @@ describe('usage ledger merge', () => {
       'anthropic:claude-opus-5',
       'openai:gpt-5',
     ]);
+  });
+
+  test('a legacy and a canonical call in the same hour land in one bucket', () => {
+    // The two sources used to derive the hour differently — an epoch-hour
+    // ordinal against an ISO hour — so the merge saw two keys and split one
+    // hour in half without failing anywhere.
+    const ts = NOW - 60_000;
+    const merged = mergeUsageBuckets(
+      [legacyBucket({ key: hourKey(ts), label: hourKey(ts), requests: 2 })],
+      {
+        attempts: [attempt({ attemptId: 'a', completedAt: ts })],
+        unreadableRecords: 0,
+        pendingRepairs: 0,
+      },
+      { range: 'all' },
+      'hour',
+      NOW,
+    );
+
+    assert.equal(merged.buckets.length, 1);
+    assert.equal(merged.buckets[0]?.key, hourKey(ts));
+    assert.equal(merged.buckets[0]?.requests, 3);
   });
 
   test('log pages interleave both sources newest first and page across the boundary', () => {
@@ -197,6 +226,7 @@ describe('usage ledger merge', () => {
         }),
       ],
       unreadableRecords: 0,
+      pendingRepairs: 0,
     };
 
     const first = mergeUsageLogs(
@@ -231,7 +261,7 @@ describe('usage ledger merge', () => {
   test('a page beyond both sources is empty rather than throwing', () => {
     const merged = mergeUsageLogs(
       { rows: [], total: 0 },
-      { attempts: [], unreadableRecords: 0 },
+      { attempts: [], unreadableRecords: 0, pendingRepairs: 0 },
       { range: 'all' },
       NOW,
       0,

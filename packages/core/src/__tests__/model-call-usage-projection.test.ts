@@ -43,6 +43,33 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('model-call usage projection', () => {
+  test('a log row keeps its cost basis, so free and unpriced stay distinguishable', () => {
+    // The page-level coverage says how many rows were unpriced but not which
+    // ones. Without a per-row basis a genuinely free call and a call whose
+    // price could not be resolved both render as $0.
+    const { rows } = projectModelCallUsageLogs(
+      [
+        attempt({ attemptId: 'free', logicalCallId: 'free', costBasis: 'priced', costUsd: 0 }),
+        attempt({
+          attemptId: 'unknown',
+          logicalCallId: 'unknown',
+          costBasis: 'unpriced',
+          costUsd: undefined,
+        }),
+      ],
+      { range: 'all' },
+      NOW,
+    );
+
+    const free = rows.find((row) => row.id === 'free');
+    const unknown = rows.find((row) => row.id === 'unknown');
+    assert.equal(free?.costBasis, 'priced');
+    assert.equal(free?.costUsd, 0);
+    assert.equal(unknown?.costBasis, 'unpriced');
+    assert.equal(unknown?.costUsd, undefined);
+    assert.equal(Object.hasOwn(unknown ?? {}, 'costUsd'), false);
+  });
+
   test('a total never counts unpriced spend as zero, and says so in coverage', () => {
     // The old per-send table had nowhere to record "we could not price this",
     // so it wrote 0 and unpriced spend looked free. The total here excludes it

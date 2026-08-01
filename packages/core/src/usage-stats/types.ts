@@ -70,7 +70,17 @@ export interface UsageLogRow {
   cacheWriteTokens: number;
   reasoningTokens: number;
   totalTokens: number;
-  costUsd: number;
+  /**
+   * Absent when `costBasis` is `'unpriced'`. Zero means the call was genuinely
+   * free — it must never stand in for a price that could not be resolved.
+   */
+  costUsd?: number;
+  /**
+   * Whether a price could be resolved for this row. Rows from the frozen
+   * pre-cutover table have no recorded basis and leave this undefined, which is
+   * itself the honest answer for them.
+   */
+  costBasis?: 'priced' | 'unpriced';
   latencyMs: number;
   status: 'success' | 'error' | 'aborted';
   errorClass?: string;

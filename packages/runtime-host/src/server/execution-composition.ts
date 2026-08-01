@@ -323,6 +323,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       runtimePolicyActivation,
       registerBackendInvalidation,
+      // The authority read behind Usage read-model repair (#1679).
+      (sessionId, runId) => stores.agentRunStore.readEvents(sessionId, runId),
     );
     rootCoordinator = new RootTurnCoordinator(
       manager,

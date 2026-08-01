@@ -10,6 +10,7 @@ import {
 import {
   createSqliteModelCallLedger,
   ModelCallLedgerClosedError,
+  repairPendingModelCallProjections,
   type ModelCallLedger,
 } from '../model-call-ledger.js';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
@@ -139,5 +140,96 @@ describe('canonical model call ledger', () => {
     );
     assert.throws(() => ledger.read({ from: 0, to: NOW }), ModelCallLedgerClosedError);
     await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe('re-projecting a run the read model fell behind on', () => {
+  const runEvents = (attempts: readonly ModelCallAttempt[]) => [
+    { type: 'model_stream_started', data: {} },
+    ...attempts.map((attempt) => ({
+      type: 'model_call_attempt_recorded',
+      data: { ...attempt } as Record<string, unknown>,
+    })),
+  ];
+
+  function target(ledger: ModelCallLedger) {
+    return {
+      record: (attempt: ModelCallAttempt) => ledger.record(attempt),
+      pending: () => ledger.pendingReprojections(),
+      clear: (sessionId: string, runId: string) =>
+        ledger.clearPendingReprojection(sessionId, runId),
+    };
+  }
+
+  test('a call the authority holds but the table missed is recovered, not lost', async () => {
+    await withLedger(async (ledger) => {
+      // The AgentRun append committed and the table write failed: the marker is
+      // all that survived, and the record has to come back from the stream.
+      const committed = attempt({ attemptId: 'missed' });
+      await ledger.markRunPendingReprojection('session-1', 'run-1');
+      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 0);
+
+      const result = await repairPendingModelCallProjections({
+        ledger: target(ledger),
+        readRunEvents: async () => runEvents([committed]),
+      });
+
+      assert.deepEqual(result, { repaired: 1, remaining: 0 });
+      assert.deepEqual(
+        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
+        ['missed'],
+      );
+      assert.deepEqual(ledger.pendingReprojections(), []);
+    });
+  });
+
+  test('re-projecting a run the table already holds changes nothing', async () => {
+    await withLedger(async (ledger) => {
+      const committed = attempt({ attemptId: 'already-there' });
+      await ledger.record(committed);
+      await ledger.markRunPendingReprojection('session-1', 'run-1');
+
+      await repairPendingModelCallProjections({
+        ledger: target(ledger),
+        readRunEvents: async () => runEvents([committed, committed]),
+      });
+
+      assert.equal(ledger.read({ from: 0, to: NOW }).attempts.length, 1);
+    });
+  });
+
+  test('a run whose authority read fails keeps its marker and is reported', async () => {
+    await withLedger(async (ledger) => {
+      await ledger.markRunPendingReprojection('session-1', 'run-1');
+
+      const result = await repairPendingModelCallProjections({
+        ledger: target(ledger),
+        readRunEvents: async () => {
+          throw new Error('authority unavailable');
+        },
+      });
+
+      assert.deepEqual(result, { repaired: 0, remaining: 1 });
+      assert.equal(ledger.pendingReprojections().length, 1);
+    });
+  });
+
+  test('an undecodable event does not block the rest of its run', async () => {
+    await withLedger(async (ledger) => {
+      await ledger.markRunPendingReprojection('session-1', 'run-1');
+
+      await repairPendingModelCallProjections({
+        ledger: target(ledger),
+        readRunEvents: async () => [
+          { type: 'model_call_attempt_recorded', data: { schemaVersion: 1 } },
+          ...runEvents([attempt({ attemptId: 'good' })]),
+        ],
+      });
+
+      assert.deepEqual(
+        ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
+        ['good'],
+      );
+    });
   });
 });

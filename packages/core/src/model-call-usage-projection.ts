@@ -4,6 +4,7 @@ import {
   type ModelCallAttempt,
   type ModelCallCoverage,
 } from './model-call-attempt.js';
+import { usageBucketKey } from './usage-stats/bucket-key.js';
 import type {
   TimeRange,
   UsageBucket,
@@ -164,14 +165,6 @@ export function projectModelCallUsageSummary(
   };
 }
 
-function bucketKey(attempt: ModelCallAttempt, groupBy: UsageGroupBy): string {
-  if (groupBy === 'provider') return attempt.providerId;
-  if (groupBy === 'model') return `${attempt.providerId}:${attempt.modelId}`;
-  if (groupBy === 'day') return new Date(attempt.completedAt).toISOString().slice(0, 10);
-  if (groupBy === 'hour') return new Date(attempt.completedAt).toISOString().slice(0, 13);
-  return attempt.modelId;
-}
-
 export function projectModelCallUsageBuckets(
   attempts: readonly ModelCallAttempt[],
   query: UsageQuery,
@@ -181,7 +174,10 @@ export function projectModelCallUsageBuckets(
   const { rows } = selectModelCallAttempts(attempts, query, now);
   const groups = new Map<string, ModelCallAttempt[]>();
   for (const attempt of rows) {
-    const key = bucketKey(attempt, groupBy);
+    const key = usageBucketKey(
+      { providerId: attempt.providerId, modelId: attempt.modelId, ts: attempt.completedAt },
+      groupBy,
+    );
     const group = groups.get(key);
     if (group) group.push(attempt);
     else groups.set(key, [attempt]);
@@ -258,7 +254,11 @@ export function projectModelCallUsageLogs(
       cacheWriteTokens: t.cacheWrite,
       reasoningTokens: t.reasoning,
       totalTokens: t.total,
-      costUsd: pricedCost(attempt),
+      // A row keeps its basis, not just its number. Collapsing an unpriced call
+      // to 0 here would reproduce, per row, exactly the ambiguity the coverage
+      // breakdown removes from the totals.
+      ...(attempt.costBasis === 'priced' ? { costUsd: attempt.costUsd ?? 0 } : {}),
+      costBasis: attempt.costBasis,
       latencyMs: attempt.latencyMs,
       status: usageStatusForAttempt(attempt.status),
       ...(attempt.errorClass !== undefined ? { errorClass: attempt.errorClass } : {}),

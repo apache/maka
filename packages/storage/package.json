@@ -21,6 +21,7 @@
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",
     "./task-ledger-authority": "./dist/task-ledger-authority.js",
+    "./model-call-ledger": "./dist/model-call-ledger.js",
     "./usage-stores": "./dist/usage-stores.js",
     "./workspace-identity": "./dist/workspace-identity.js",
     "./write-queue": "./dist/write-queue.js"

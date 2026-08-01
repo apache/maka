@@ -343,14 +343,16 @@ export class AgentRun {
    * source of truth, and a record lost to a crashed flush is spend nothing else
    * can reconstruct.
    *
-   * It still resolves on failure. Settlement runs inside the model stream's
-   * `pull` handler, so raising here would fail a response that already
-   * completed and was already billed. A failed append surfaces as
-   * `trace_write_failed`, which is what marks the run's accounting incomplete.
+   * It reports the failure as `trace_write_failed` and then rejects, so the
+   * caller can tell whether the authority actually holds the record — the Usage
+   * read model must not be written for a call the authority never committed.
+   * Rejecting here is safe: settlement runs inside the model stream's `pull`
+   * handler, and the seam swallows this so a billed, completed response is
+   * never failed by its own bookkeeping.
    */
   recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void> {
     if (!this.input.runStore) return Promise.resolve();
-    return this.enqueueReportedRunStoreWrite('append model call attempt', async () => {
+    return this.enqueueRequiredRunStoreWrite('append model call attempt', async () => {
       await this.input.runStore?.appendEvent(
         this.sessionId,
         this.runId,
@@ -1464,23 +1466,10 @@ export class AgentRun {
    * provider dispatch.
    */
   private enqueueBestEffortProviderAttempt(label: string, operation: () => Promise<void>): void {
-    void this.enqueueReportedRunStoreWrite(label, operation);
-  }
-
-  /**
-   * Serialize an append whose failure is reported rather than raised: the
-   * returned promise resolves either way, and a failure surfaces as
-   * `trace_write_failed` without touching the best-effort latch.
-   */
-  private enqueueReportedRunStoreWrite(
-    label: string,
-    operation: () => Promise<void>,
-  ): Promise<void> {
     const next = this.traceQueue
       .then(operation, operation)
       .catch((error) => this.enqueueTraceWriteFailure(error, label));
     this.traceQueue = next.catch(() => {});
-    return next;
   }
 
   /**

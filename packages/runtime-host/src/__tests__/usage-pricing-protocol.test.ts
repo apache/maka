@@ -591,6 +591,7 @@ function validProvenance() {
     },
     legacyRecords: 0,
     unreadableRecords: 0,
+    pendingRepairs: 0,
   };
 }
 

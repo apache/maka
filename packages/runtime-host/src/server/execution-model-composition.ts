@@ -489,21 +489,35 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     void recordLlmCall({ repo: telemetry, lookupPricing: pricing }, event);
   };
   /**
-   * One canonical record, two sinks (#1679). The AgentRun stream is the durable
-   * log of record; the usage ledger is the read model the Usage authority
-   * queries, since no Usage question is shaped per-run. Neither may fail the
-   * turn — settlement runs after the provider call has completed and billed.
+   * One canonical record, one commit point (#1679).
+   *
+   * The AgentRun stream is the only durable authority. The Usage ledger is a
+   * projection of it and is written only once the authority holds the record —
+   * writing both in parallel would make the ledger a second source of truth,
+   * free to diverge with no way back.
+   *
+   * A failed projection is recoverable, not lost: the run is marked so the
+   * Usage authority re-derives it from the stream, and even a lost marker is
+   * recovered by a full re-projection. Neither step may fail the turn — the
+   * provider call has already completed and billed.
    */
-  const recordModelCallAttempt = (attempt: ModelCallAttempt): Promise<void> =>
-    Promise.allSettled([
-      input.context.recordModelCallAttempt?.(attempt) ?? Promise.resolve(),
-      persistTelemetry(() => input.usage.modelCalls.recordModelCallAttempt(attempt)),
-    ]).then(() => undefined);
-  /**
-   * Fail-closed pre-dispatch gate. Once an accounting write has failed hard
-   * enough to request a drain, further dispatches would produce spend this host
-   * cannot record, so the send fails before the provider is called.
-   */
+  let accountingAuthorityFailed = false;
+  const recordModelCallAttempt = async (attempt: ModelCallAttempt): Promise<void> => {
+    try {
+      await input.context.recordModelCallAttempt?.(attempt);
+    } catch (error) {
+      accountingAuthorityFailed = true;
+      throw error;
+    }
+    try {
+      await input.usage.modelCalls.recordModelCallAttempt(attempt);
+    } catch (error) {
+      await input.usage.modelCalls
+        .markRunPendingReprojection(attempt.sessionId, attempt.runId)
+        .catch(() => undefined);
+      throw error;
+    }
+  };
   const assertModelCallAccountingReady = (): void => {
     if (telemetryDrainRequested) {
       throw new Error('Canonical model-call accounting is unavailable on this host');

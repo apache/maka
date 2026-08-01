@@ -86,6 +86,9 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
     const canonical = {
       attempts: ledgerPage.attempts,
       unreadableRecords: ledgerPage.unreadableRecords,
+      // The Daily Review reads the ledger as it stands; repairing it is the
+      // Usage authority's job on its own read path.
+      pendingRepairs: deps.modelCallLedger.pendingReprojections().length,
     };
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
       Promise.resolve(

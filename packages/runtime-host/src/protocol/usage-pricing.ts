@@ -77,6 +77,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'reasoningTokens',
   'totalTokens',
   'costUsd',
+  'costBasis',
   'latencyMs',
   'status',
   'errorClass',
@@ -138,7 +139,10 @@ export interface LlmUsageLogProjection {
   readonly cacheMissInputSource?: CacheMissInputSource;
   readonly reasoningTokens: number;
   readonly totalTokens: number;
-  readonly costUsd: number;
+  /** Absent when `costBasis` is `'unpriced'`. Zero means genuinely free. */
+  readonly costUsd?: number;
+  /** Undefined for rows from the frozen table, which never recorded a basis. */
+  readonly costBasis?: 'priced' | 'unpriced';
   readonly latencyMs: number;
   readonly status: 'success' | 'error' | 'aborted';
   readonly errorClass?: string;
@@ -797,6 +801,7 @@ function decodeUsageProvenance(value: unknown): UsageProvenance {
     'coverage',
     'legacyRecords',
     'unreadableRecords',
+    'pendingRepairs',
   ]);
   const coverage = requireExactRecord(provenance.coverage, 'usage provenance coverage', [
     'attempts',
@@ -829,6 +834,7 @@ function decodeUsageProvenance(value: unknown): UsageProvenance {
       provenance.unreadableRecords,
       'usage provenance unreadable records',
     ),
+    pendingRepairs: requireCount(provenance.pendingRepairs, 'usage provenance pending repairs'),
   };
 }
 
@@ -888,11 +894,16 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     'cacheWriteTokens',
     'reasoningTokens',
     'totalTokens',
-    'costUsd',
     'latencyMs',
     'status',
   ]);
   if (row.source !== 'llm') throw invalidProtocolFrame('Invalid LLM usage log source');
+  const costBasis = optionalEnum(row, 'costBasis', ['priced', 'unpriced'] as const);
+  // An unpriced row carries no amount. Admitting one would put a number on the
+  // wire that reads as a price and is not one.
+  if ('costBasis' in costBasis && costBasis.costBasis === 'unpriced' && row.costUsd !== undefined) {
+    throw invalidProtocolFrame('Unpriced usage log row carries a cost');
+  }
   return {
     source: 'llm',
     id: projectionText(row.id, 'usage log id'),
@@ -912,7 +923,10 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
       : { cacheMissInputSource: decodeCacheMissInputSource(row.cacheMissInputSource) }),
     reasoningTokens: requireCount(row.reasoningTokens, 'usage log reasoning tokens'),
     totalTokens: requireCount(row.totalTokens, 'usage log total tokens'),
-    costUsd: nonnegativeFinite(row.costUsd, 'usage log cost'),
+    ...(row.costUsd === undefined
+      ? {}
+      : { costUsd: nonnegativeFinite(row.costUsd, 'usage log cost') }),
+    ...costBasis,
     latencyMs: nonnegativeFinite(row.latencyMs, 'usage log latency'),
     status: decodeUsageLogStatus(row.status),
     ...optionalProjectionText(row, 'errorClass'),

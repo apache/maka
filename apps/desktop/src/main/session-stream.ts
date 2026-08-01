@@ -282,15 +282,23 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       shellRunContextSummary: ctx.shellRunContextSummary,
       lookupPricing: getLookupPricing(),
       recordLlmCall: (event: LlmCallRecord) => recordLlmCall({ repo: telemetryRepo, lookupPricing: getLookupPricing() }, event),
-      // One canonical record, two sinks (#1679): the AgentRun stream is the
-      // durable log of record, the ledger is the read model the Usage surface
-      // queries. Settlement runs after the provider call completed and billed,
-      // so neither sink may fail the turn.
-      recordModelCallAttempt: (attempt) =>
-        Promise.allSettled([
-          ctx.recordModelCallAttempt?.(attempt) ?? Promise.resolve(),
-          modelCallLedger.record(attempt),
-        ]).then(() => undefined),
+      // One canonical record, one commit point (#1679): the AgentRun stream is
+      // the only durable authority, and the ledger is a projection written only
+      // after the authority holds the record. A failed projection marks the run
+      // so the Usage read path re-derives it from the stream. Settlement runs
+      // after the provider call completed and billed, so neither step may fail
+      // the turn — the seam swallows what is thrown here.
+      recordModelCallAttempt: async (attempt) => {
+        await ctx.recordModelCallAttempt?.(attempt);
+        try {
+          await modelCallLedger.record(attempt);
+        } catch (error) {
+          await modelCallLedger
+            .markRunPendingReprojection(attempt.sessionId, attempt.runId)
+            .catch(() => undefined);
+          throw error;
+        }
+      },
       recordToolInvocation: (event: ToolInvocationRecord) =>
         recordToolInvocation(
           { repo: telemetryRepo },

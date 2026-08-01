@@ -42,6 +42,12 @@ export interface UsageProvenance {
    * because a total that silently omits them overstates what is known.
    */
   unreadableRecords: number;
+  /**
+   * Runs whose attempts the authority holds but the read model has not folded
+   * in yet. Their spend is missing from these numbers and is recoverable, which
+   * is a different claim from "this is everything".
+   */
+  pendingRepairs: number;
 }
 
 export interface MergedUsageSummary extends UsageSummaryV2 {
@@ -62,6 +68,7 @@ export interface MergedUsageLogs {
 export interface CanonicalUsageSource {
   attempts: readonly ModelCallAttempt[];
   unreadableRecords: number;
+  pendingRepairs: number;
 }
 
 export function mergeUsageSummary(
@@ -91,6 +98,7 @@ export function mergeUsageSummary(
       coverage: projected.coverage,
       legacyRecords: legacy.totalRequests,
       unreadableRecords: canonical.unreadableRecords,
+      pendingRepairs: canonical.pendingRepairs,
     },
   };
 }
@@ -114,6 +122,7 @@ export function mergeUsageBuckets(
       coverage: projectModelCallUsageSummary(canonical.attempts, query, now).coverage,
       legacyRecords: legacy.reduce((total, bucket) => total + bucket.requests, 0),
       unreadableRecords: canonical.unreadableRecords,
+      pendingRepairs: canonical.pendingRepairs,
     },
   };
 }
@@ -159,6 +168,7 @@ export function mergeUsageLogs(
       coverage: projected.coverage,
       legacyRecords: legacy.total,
       unreadableRecords: canonical.unreadableRecords,
+      pendingRepairs: canonical.pendingRepairs,
     },
   };
 }

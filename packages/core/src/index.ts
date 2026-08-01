@@ -380,6 +380,7 @@ export {
   MODEL_CALL_USAGE_BASES,
   decodeModelCallAttempt,
   dedupeModelCallAttempts,
+  modelCallAttemptsFromRunEvents,
   groupModelCallAttempts,
   isModelCallAttempt,
   settledAttempt,

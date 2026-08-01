@@ -15,6 +15,7 @@ import {
   type ModelCallLedger,
   type ModelCallLedgerPage,
   type ModelCallLedgerReader,
+  type PendingReprojection,
 } from './model-call-ledger.js';
 import {
   PricingCommitUnknownError,
@@ -87,6 +88,9 @@ export interface ModelCallIndexReader {
 
 export interface ModelCallIndexWriter extends ModelCallIndexReader {
   recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void>;
+  markRunPendingReprojection(sessionId: string, runId: string): Promise<void>;
+  pendingReprojections(): Promise<PendingReprojection[]>;
+  clearPendingReprojection(sessionId: string, runId: string): Promise<void>;
 }
 
 export interface PricingAuthorityReader {
@@ -404,6 +408,11 @@ function createWriterFacade(
     modelCalls: {
       modelCallAttempts: (range) => read(() => modelCalls.read(range)),
       recordModelCallAttempt: (attempt) => admit(() => run(() => modelCalls.record(attempt))),
+      markRunPendingReprojection: (sessionId, runId) =>
+        admit(() => run(() => modelCalls.markRunPendingReprojection(sessionId, runId))),
+      pendingReprojections: () => read(() => modelCalls.pendingReprojections()),
+      clearPendingReprojection: (sessionId, runId) =>
+        admit(() => run(() => modelCalls.clearPendingReprojection(sessionId, runId))),
     },
     pricing: {
       snapshot: () => read(() => pricing.snapshot()),

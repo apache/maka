@@ -1212,6 +1212,7 @@ function registerIpc(): void {
     settingsStore,
     telemetryRepo,
     modelCallLedger,
+    readRunEvents: (sessionId, runId) => runStore.readEvents(sessionId, runId),
     ensureUsageReady,
     refreshPricingLookup: () => {
       lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());

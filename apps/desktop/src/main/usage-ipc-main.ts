@@ -13,6 +13,7 @@ import {
   mergeUsageSummary,
   type CanonicalUsageSource,
 } from '@maka/core/usage-ledger-merge';
+import { repairPendingModelCallProjections } from '@maka/storage/model-call-ledger';
 import type { createSettingsStore, createSqliteModelCallLedger, TelemetryRepo } from '@maka/storage';
 import type { createMainWindowController } from './main-window.js';
 
@@ -25,10 +26,18 @@ export interface UsageIpcDeps {
   settingsStore: SettingsStore;
   telemetryRepo: TelemetryRepo;
   modelCallLedger: ModelCallLedger;
+  /** Authority read used to rebuild the Usage read model for one run (#1679). */
+  readRunEvents?: (
+    sessionId: string,
+    runId: string,
+  ) => Promise<readonly { readonly type: string; readonly data?: Record<string, unknown> }[]>;
   ensureUsageReady: () => Promise<void>;
   refreshPricingLookup: () => void;
   sendToRenderer: MainWindowController['send'];
 }
+
+/** Bounds one repair pass so a backlog drains across reads, not inside one. */
+const USAGE_REPAIR_RUNS_PER_QUERY = 16;
 
 export function registerUsageIpc(deps: UsageIpcDeps): void {
   /**
@@ -37,9 +46,25 @@ export function registerUsageIpc(deps: UsageIpcDeps): void {
    * that have not been routed through the canonical seam yet. Every merged
    * result carries the provenance that qualifies it.
    */
-  const canonicalUsage = (query: UsageQuery, now: number): CanonicalUsageSource => {
+  const canonicalUsage = async (query: UsageQuery, now: number): Promise<CanonicalUsageSource> => {
+    // Fold in whatever the authority holds and this read model is behind on
+    // before answering; report what a pass could not repair.
+    const pendingRepairs = deps.readRunEvents
+      ? (
+          await repairPendingModelCallProjections({
+            ledger: {
+              record: (attempt) => deps.modelCallLedger.record(attempt),
+              pending: () => deps.modelCallLedger.pendingReprojections(),
+              clear: (sessionId, runId) =>
+                deps.modelCallLedger.clearPendingReprojection(sessionId, runId),
+            },
+            readRunEvents: deps.readRunEvents,
+            limit: USAGE_REPAIR_RUNS_PER_QUERY,
+          })
+        ).remaining
+      : 0;
     const page = deps.modelCallLedger.read(resolveUsageRange(query.range, now));
-    return { attempts: page.attempts, unreadableRecords: page.unreadableRecords };
+    return { attempts: page.attempts, unreadableRecords: page.unreadableRecords, pendingRepairs };
   };
   let pricingMutationQueue: Promise<void> = Promise.resolve();
   const enqueuePricingMutation = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -58,7 +83,12 @@ export function registerUsageIpc(deps: UsageIpcDeps): void {
     tryResult(async () => {
       await deps.ensureUsageReady();
       const now = Date.now();
-      return mergeUsageSummary(deps.telemetryRepo.summary(query), canonicalUsage(query, now), query, now);
+      return mergeUsageSummary(
+        deps.telemetryRepo.summary(query),
+        await canonicalUsage(query, now),
+        query,
+        now,
+      );
     }, 'USAGE_SUMMARY_FAILED'),
   );
   deps.ipcMain.handle('usage:buckets', (_event, query: UsageQuery & { groupBy: UsageGroupBy }) =>
@@ -72,7 +102,7 @@ export function registerUsageIpc(deps: UsageIpcDeps): void {
       if (query.groupBy === 'tool') return deps.telemetryRepo.buckets(query, 'tool');
       return mergeUsageBuckets(
         deps.telemetryRepo.buckets(query, query.groupBy),
-        canonicalUsage(query, now),
+        await canonicalUsage(query, now),
         query,
         query.groupBy,
         now,
@@ -91,7 +121,7 @@ export function registerUsageIpc(deps: UsageIpcDeps): void {
         // from each source's own first `offset + limit` rows.
         return mergeUsageLogs(
           deps.telemetryRepo.logs(query, 0, offset + limit),
-          canonicalUsage(query, now),
+          await canonicalUsage(query, now),
           query,
           now,
           offset,
