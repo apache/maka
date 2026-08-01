@@ -17,27 +17,14 @@ interface IconEntry {
   Comp: ElementType<{ size?: number | string; strokeWidth?: number | string; 'aria-hidden'?: boolean }>;
 }
 
-const OMITTED_RUNTIME_EXPORTS = new Set<string>();
-
-function isIconComponent(value: unknown): value is IconEntry['Comp'] {
-  return typeof value === 'function' || (typeof value === 'object' && value !== null);
-}
-
 const LUCIDE_ICONS: IconEntry[] = Object.entries(Icons)
-  .filter(([name, value]) => !OMITTED_RUNTIME_EXPORTS.has(name) && isIconComponent(value))
   .map(([name, value]) => ({ name, Comp: value as IconEntry['Comp'] }))
   .sort((a, b) => a.name.localeCompare(b.name));
 
-const BOT_BRAND_PROVIDERS = [
-  'telegram',
-  'feishu',
-  'wecom',
-  'wechat',
-  'discord',
-  'dingtalk',
-  'qq',
-  'slack',
-] as const satisfies ReadonlyArray<keyof typeof BOT_BRAND>;
+// Derived from BOT_BRAND, the registry BotBrandLogo itself reads. A hand-kept
+// list here is satisfied by any subset, so a newly supported channel would
+// silently never render.
+const BOT_BRAND_PROVIDERS = Object.keys(BOT_BRAND) as Array<keyof typeof BOT_BRAND>;
 
 export const LucideIcons: Story = {
   render: () => (
