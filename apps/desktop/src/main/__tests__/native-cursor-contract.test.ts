@@ -46,6 +46,11 @@ describe('native-cursor convention', () => {
     );
     assert.match(
       sheet,
+      /:where\([\s\S]*\blabel\b[\s\S]*\[role="treeitem"\][\s\S]*\)[\s\S]*cursor:\s*default\s*!important/,
+      'FieldLabel and TreeList rows must neutralize Astryx pointer',
+    );
+    assert.match(
+      sheet,
       /:where\([\s\S]*a\[href\][\s\S]*\[role="link"\][\s\S]*\)[\s\S]*cursor:\s*pointer\s*!important/,
       'links must keep cursor: pointer !important',
     );

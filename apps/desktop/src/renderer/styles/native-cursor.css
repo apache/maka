@@ -28,9 +28,12 @@
  * per-control patches. :where() keeps specificity zero for later exceptions.
  */
 
-/* 1. Generic interactive roles (Button, menu rows, options, …). */
+/* 1. Generic interactive roles (Button, menu rows, options, labels, trees…).
+ * Astryx FieldLabel / TreeListItem set StyleX cursor:pointer on <label> and
+ * [role=treeitem] — cover them here so the product rule stays one sheet. */
 :where(
   button,
+  label,
   [role="button"],
   [role="menuitem"],
   [role="menuitemradio"],
@@ -40,17 +43,20 @@
   [role="tab"],
   [role="combobox"],
   [role="radio"],
-  [role="checkbox"]
+  [role="checkbox"],
+  [role="treeitem"]
 ):not(:disabled):not([aria-disabled="true"]),
 :where(
   button,
+  label,
   [role="button"],
   [role="menuitem"],
   [role="menuitemradio"],
   [role="menuitemcheckbox"],
   [role="option"],
   [role="switch"],
-  [role="tab"]
+  [role="tab"],
+  [role="treeitem"]
 ):not(:disabled):not([aria-disabled="true"])
   :where(svg, span, div, p, i, img, path) {
   cursor: default !important;

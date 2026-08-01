@@ -68,18 +68,11 @@ export interface ConversationCopy {
     continuing: string;
     interruptHint: string;
     addContext: string;
-    importText: string;
-    attachFile: string;
     selectModel: string;
     dropToImport: string;
     addingAttachment: string;
     addFileOrDirectory: string;
-    /** Standalone upload button in the composer toolbar (PR-COMPOSER-TOOLBAR-SPLIT). */
-    uploadTitle: string;
-    /** Standalone Plan/Swarm/Graph button in the toolbar (PR-COMPOSER-TOOLBAR-SPLIT). */
-    modesLabel: string;
-    modesTitle: string;
-    /** Standalone Skills picker button + its panel (PR-COMPOSER-TOOLBAR-SPLIT). */
+    /** Skills panel opened from ＋ (title, search, bulk actions). */
     skillPicker: {
       label: string;
       title: string;
@@ -339,9 +332,8 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
-      interruptHint: '或点停止中断', addContext: '添加上下文', importText: '导入文本文件', attachFile: '附加文件',
+      interruptHint: '或点停止中断', addContext: '添加上下文',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
-      uploadTitle: '上传文件或目录', modesLabel: '模式', modesTitle: '协作模式',
       skillPicker: {
         label: '技能', title: '选择技能', panelAriaLabel: '技能选择', searchPlaceholder: '搜索技能…',
         autoHint: '不选择时，Maka 自动匹配相关技能', selectAll: '全选', clearAll: '清除全部',
@@ -489,9 +481,8 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
-      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', importText: 'Import text file', attachFile: 'Attach file',
+      interruptHint: 'or click Stop to interrupt', addContext: 'Add context',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
-      uploadTitle: 'Upload a file or directory', modesLabel: 'Modes', modesTitle: 'Collaboration modes',
       skillPicker: {
         label: 'Skills', title: 'Choose skills', panelAriaLabel: 'Skill selection', searchPlaceholder: 'Search skills…',
         autoHint: 'Leave empty and Maka picks the relevant skills', selectAll: 'Select all', clearAll: 'Clear all',

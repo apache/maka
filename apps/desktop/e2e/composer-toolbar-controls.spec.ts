@@ -22,6 +22,7 @@ test('the plus menu exposes attach, skills, and collaboration modes', async ({
   await expect(page.getByRole('menuitem', { name: '选择技能' })).toBeVisible();
   await expect(page.getByRole('menuitemcheckbox', { name: 'Plan' })).toBeVisible();
   await expect(page.getByRole('menuitemcheckbox', { name: 'Swarm' })).toBeVisible();
+  await expect(page.getByRole('menuitemcheckbox', { name: 'Graph' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Plan' })).toHaveCount(0);
   await page.keyboard.press('Escape');
 });

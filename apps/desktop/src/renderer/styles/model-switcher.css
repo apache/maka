@@ -11,6 +11,8 @@
   opacity: var(--opacity-disabled);
 }
 
+/* Justified state-cursor exception: pending model change shows progress,
+   not the product default. native-cursor owns default/pointer/text only. */
 .maka-model-switcher[data-pending="true"] {
   opacity: var(--opacity-pending);
   cursor: progress !important;

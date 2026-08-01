@@ -16,7 +16,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { cn } from './utils.js';
 
-type PermissionModeAppearance = 'field' | 'quiet' | 'icon';
+type PermissionModeAppearance = 'field' | 'icon';
 
 function permissionModeIcon(mode: PermissionMode) {
   if (mode === 'bypass') return <ShieldAlert size={15} aria-hidden="true" />;
@@ -53,8 +53,8 @@ export const PERMISSION_MODE_ORDER: readonly ChatDefaultPermissionMode[] = CHAT_
 /**
  * Shared permission-mode picker.
  *
- * - **field / quiet** (Settings, roomy chrome): Astryx Selector with option
- *   hints — the correct single-value primitive.
+ * - **field** (Settings): Astryx Selector with option hints — the correct
+ *   single-value primitive.
  * - **icon** (quiet composer footer): ghost icon button + radio menu of the
  *   two selectable modes (label only). Hints stay on the trigger tooltip /
  *   aria-description so the open panel stays short and matches the ＋ control.
@@ -92,7 +92,6 @@ export function PermissionModeSelect(props: {
     label: modeMeta[mode].label,
   }));
   const ariaLabel = props.ariaLabel ?? permissionCopy.modeAriaLabel(meta.label);
-  const isCompact = props.appearance === 'quiet';
 
   // Composer footer: match the ＋ ghost icon button. Astryx puts DropdownMenu
   // className on the panel, so product anchors wrap the whole control.
@@ -149,9 +148,8 @@ export function PermissionModeSelect(props: {
       isDisabled={props.disabled}
       disabledMessage={props.disabledReason}
       aria-description={meta.hint}
-      size={isCompact ? 'sm' : undefined}
-      placement={isCompact ? 'above' : 'below'}
-      width={isCompact ? undefined : 320}
+      placement="below"
+      width={320}
       className={cn('permissionModeSelector', props.className)}
       renderOption={(option) => (
         <SelectorOption
