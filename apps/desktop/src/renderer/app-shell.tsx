@@ -303,7 +303,7 @@ function AppShellContent({
     pendingPermissionModeBySession,
     pendingSessionModelBySession,
   } = sessionUiState;
-  // PR-MEMORY-VISIBILITY-INDICATOR-0: chat-header memory pill (MEMORY.md
+  // PR-MEMORY-VISIBILITY-INDICATOR-0: session-context memory state (MEMORY.md
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
   // subscriptions) and when Settings closes (closeSettings).
@@ -984,7 +984,7 @@ function AppShellContent({
     openSessionInChatRef.current(sessionId);
   }, []);
 
-  // PR109f: branched session banner. When the active session was
+  // PR109f: branched session context. When the active session was
   // created via `sessions:branchFromTurn`, its `parentSessionId` is
   // set; render a banner above the chat surface so the user knows
   // they're in a derived conversation and can jump back to the parent.
@@ -1946,7 +1946,7 @@ function AppShellContent({
     // write (e.g. defaultSlug picked) may not always fire one.
     onboarding.refresh();
     // PR-MEMORY-VISIBILITY-INDICATOR-0: same recompute path for the
-    // chat-header memory pill — user may have just flipped the
+    // session-context memory state — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
     // PR-DEFAULT-PERMISSION-MODE-0: the General page writes

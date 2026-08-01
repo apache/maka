@@ -257,7 +257,8 @@ export interface ConversationCopy {
     };
     clearGoal: (condition: string, iteration: number, max: number, status: string) => string;
     clearGoalAriaLabel: (iteration: number, max: number) => string;
-    goalLabel: (iteration: number, max: number) => string;
+    goalProgress: (iteration: number, max: number) => string;
+    goalRunningAriaLabel: string;
     loadFailed: string;
     loading: string;
     retryLoad: string;
@@ -265,8 +266,10 @@ export interface ConversationCopy {
     quoteSelection: string;
     askInSidePanel: string;
     noMessages: string;
-    branchTitle: (name: string, beforeAbort: boolean) => string;
-    branchLabel: (name: string, beforeAbort: boolean) => string;
+    branchBeforeInterrupt: string;
+    sessionContextAriaLabel: string;
+    sessionLineageAriaLabel: string;
+    sessionContextMore: (count: number) => string;
     revisionVersionsAriaLabel: string;
     revisionVersion: (current: number, total: number) => string;
     previousRevision: string;
@@ -424,9 +427,9 @@ const CONVERSATION_COPY = {
           verification: '验证',
         },
       },
-      clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalLabel: (iteration, max) => `目标 ${iteration}/${max} · 清除`,
+      clearGoal: (condition, iteration, max, status) => `自主执行目标进行中：「${condition}」（第 ${iteration}/${max} 轮，${status}）。系统每轮后自动续行；点击可清除目标、停止续行。`, clearGoalAriaLabel: (iteration, max) => `清除自主执行目标（已进行 ${iteration}/${max} 轮）`, goalProgress: (iteration, max) => `目标 ${iteration} / ${max}`, goalRunningAriaLabel: '自主目标正在运行',
       loadFailed: '对话载入失败', loading: '载入中…', retryLoad: '重试载入', jumpLatest: '跳到最新消息', quoteSelection: '引用', askInSidePanel: '在侧栏追问', noMessages: '暂无消息',
-      branchTitle: (name, beforeAbort) => beforeAbort ? `从中断前分支自 ${name} · 点击跳回原会话` : `分自 ${name} · 点击跳回原会话`, branchLabel: (name, beforeAbort) => beforeAbort ? `从中断前分支自 ${name}` : `分自 ${name}`,
+      branchBeforeInterrupt: '从中断前分支', sessionContextAriaLabel: '会话上下文', sessionLineageAriaLabel: '会话来源', sessionContextMore: (count) => `更多会话上下文（${count}）`,
       revisionVersionsAriaLabel: '对话版本', revisionVersion: (current, total) => `版本 ${current} / ${total}`, previousRevision: '查看上一版本', nextRevision: '查看下一版本',
     },
     sessions: {
@@ -572,9 +575,9 @@ const CONVERSATION_COPY = {
           verification: 'Verification',
         },
       },
-      clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalLabel: (iteration, max) => `Goal ${iteration}/${max} · Clear`,
+      clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running',
       loadFailed: 'Conversation failed to load', loading: 'Loading…', retryLoad: 'Retry', jumpLatest: 'Jump to latest message', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
-      branchTitle: (name, beforeAbort) => beforeAbort ? `Branched before interruption from ${name} · Click to return` : `Branched from ${name} · Click to return`, branchLabel: (name, beforeAbort) => beforeAbort ? `Branched before interruption from ${name}` : `Branched from ${name}`,
+      branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Session context', sessionLineageAriaLabel: 'Session origin', sessionContextMore: (count) => `More session context (${count})`,
       revisionVersionsAriaLabel: 'Conversation versions', revisionVersion: (current, total) => `Version ${current} of ${total}`, previousRevision: 'View previous version', nextRevision: 'View next version',
     },
     sessions: {

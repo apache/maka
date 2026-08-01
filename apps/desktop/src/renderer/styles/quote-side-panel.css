@@ -45,15 +45,10 @@
 }
 
 /* ChatView is designed for the wide main column; inside the narrow workbar tab
-   it fills the free space and drops the chrome that only makes sense there (the
-   empty header spacer and the right-edge prompt anchor rail). */
+   it fills the free space and drops the right-edge prompt anchor rail. */
 .maka-quote-companion .maka-main {
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.maka-quote-companion .maka-chat-header {
-  display: none;
 }
 
 .maka-quote-companion .maka-prompt-rail {
