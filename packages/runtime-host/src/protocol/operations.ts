@@ -1,4 +1,5 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
+import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
@@ -99,6 +100,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   CONNECTION_EFFECT_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
+  AUTOMATION_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,

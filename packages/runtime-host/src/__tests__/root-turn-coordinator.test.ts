@@ -11,6 +11,7 @@ import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   LOCAL_READ_AGENT_PROFILE,
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeMessageAuthorityInvariantError,
   SessionManager,
@@ -24,6 +25,7 @@ import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
 import {
   openInteractiveExecutionStoresForWrite,
+  type RootTurnAdmission,
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -45,6 +47,101 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
+
+test('hosted Automation roots preserve one admission, UserMessage, and AgentRun identity', async () => {
+  let recoveryValidationCount = 0;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const automationId = 'automation-root-fixture';
+  const turnId = 'turn-automation-root';
+  const runId = 'run-automation-root';
+  const userMessageId = 'message-automation-root';
+  const prompt = '[Automation: check build]\n\nCheck the build.';
+  try {
+    await fixture.coordinator.executeRoot({
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      userMessageId,
+      execution: { kind: 'automation', automationId },
+      content: { text: prompt },
+      start: ({ runId: admittedRunId, userMessageId: admittedMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          fixture.sessionId,
+          {
+            turnId,
+            text: prompt,
+            origin: { kind: 'automation', automationId },
+          },
+          {
+            runId: admittedRunId,
+            userMessageId: admittedMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.ok(admission);
+    assert.deepEqual(admission?.execution, { kind: 'automation', automationId });
+    assert.equal(admission?.runId, runId);
+    assert.equal(admission?.userMessageId, userMessageId);
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.automationId, automationId);
+    const messages = await fixture.stores.sessionStore.readMessagesSnapshot(fixture.sessionId);
+    const user = messages.find((message) => message.id === userMessageId);
+    assert.ok(user?.type === 'user');
+    if (user?.type === 'user') {
+      assert.deepEqual(user.origin, { kind: 'automation', automationId });
+      assert.equal(user.text, prompt);
+    }
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    const recoveryCoordinator = fixture.createRecoveryCoordinator(() => {
+      recoveryValidationCount += 1;
+    });
+    await recoveryCoordinator.prepareRecovery();
+    assert.equal(recoveryValidationCount, 0);
+
+    await recoveryCoordinator.close();
+    await fixture.messages.close();
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('hosted root target unavailability is retryable without poisoning the Host', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  try {
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeRoot({
+          sessionId: 'missing-session',
+          turnId: 'turn-missing-root',
+          runId: 'run-missing-root',
+          userMessageId: 'message-missing-root',
+          execution: { kind: 'automation', automationId: 'automation-missing-root' },
+          content: { text: 'Retry later.' },
+          start: async function* () {},
+        }),
+      RuntimeHostedRootUnavailableError,
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
 
 test('hosted linked child roots share admission, message, terminal, and stop authority', {
   timeout: 20_000,
@@ -2417,21 +2514,27 @@ async function createFailureFixture(options: {
         }),
       })
     : new SessionManager(managerDeps);
-  coordinator = new RootTurnCoordinator(
-    manager,
-    stores,
-    sessionAdmission,
-    rootAdmissionOwner,
-    interactions ?? {
-      assertTerminalFence: async () => undefined,
-      claimRunClosure: async () => undefined,
-    },
-    messages,
-    continuity,
-    acquireResidency,
-    requestDrain,
-    options.clientCapabilities,
-  );
+  const createCoordinator = (
+    admissionOwner: RootAdmissionOwner,
+    assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+  ) =>
+    new RootTurnCoordinator(
+      manager,
+      stores,
+      sessionAdmission,
+      admissionOwner,
+      interactions ?? {
+        assertTerminalFence: async () => undefined,
+        claimRunClosure: async () => undefined,
+      },
+      messages,
+      continuity,
+      acquireResidency,
+      requestDrain,
+      options.clientCapabilities,
+      assertAutomationRecoveryAdmission,
+    );
+  coordinator = createCoordinator(rootAdmissionOwner);
 
   return {
     stores,
@@ -2444,6 +2547,15 @@ async function createFailureFixture(options: {
     interactions,
     sessionAdmission,
     acquireResidency,
+    createRecoveryCoordinator: (
+      assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+    ) => {
+      coordinator = createCoordinator(
+        new RootAdmissionOwner(stores.agentRunStore),
+        assertAutomationRecoveryAdmission,
+      );
+      return coordinator;
+    },
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
     dispose: async () => {

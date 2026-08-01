@@ -652,6 +652,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
+      'Automation',
       'Bash',
       'Edit',
       'FormatJson',
@@ -947,6 +948,12 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     categoryHint: 'client_capability',
     impl: async () => 'capability',
   };
+  const automationTool: MakaTool = {
+    name: 'Automation',
+    description: 'A root-only Host authority outside the exact child ceiling.',
+    parameters: {},
+    impl: async () => 'automation',
+  };
   const composition = createHostExecutionModelComposition({
     policy: {
       getSnapshot: async () => ({
@@ -960,6 +967,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     memory: {} as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     boundTools: [boundTool],
+    automationTool,
     builtinTools: {},
     clientCapabilities: {
       tools: [capabilityTool],

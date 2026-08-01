@@ -65,6 +65,7 @@ test('backs up live WAL state and restores a writable relational closure', async
         content: 'second payload\n',
         now: 11,
       });
+      seedAutomationState(stateRoot, first.id);
       await writeFile(join(stateRoot, 'credentials.json'), 'secret-canary\n');
       await writeFile(join(stateRoot, 'settings.json'), 'settings-canary\n');
 
@@ -114,6 +115,12 @@ test('backs up live WAL state and restores a writable relational closure', async
       const restoredSessions = createSessionStore(restoreRoot);
       const restoredArtifacts = createSqliteArtifactStore(restoreRoot);
       try {
+        assert.deepEqual(readAutomationState(restoreRoot), {
+          revision: 1,
+          automationId: 'backup-automation',
+          name: 'Backup automation',
+          pendingFireId: 'backup-fire',
+        });
         assert.deepEqual(
           (await restoredSessions.list()).map((session) => session.id).sort(),
           [first.id, second.id].sort(),
@@ -155,6 +162,101 @@ test('backs up live WAL state and restores a writable relational closure', async
     }
   });
 });
+
+function seedAutomationState(root: string, sessionId: string): void {
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+  try {
+    const automation = {
+      id: 'backup-automation',
+      kind: 'heartbeat',
+      name: 'Backup automation',
+      status: 'active',
+      prompt: 'Preserve this Automation.',
+      sessionId,
+      schedule: { type: 'interval', seconds: 60 },
+      createdAt: 1,
+      updatedAt: 1,
+      nextFireAt: null,
+      lastFireAt: 60_001,
+      lastRunId: null,
+      fireCount: 1,
+      maxFires: null,
+      expiresAt: 604_800_001,
+      lastError: null,
+      consecutiveFailures: 0,
+    };
+    database
+      .prepare(`
+        INSERT INTO automation_definitions(
+          automation_id, session_id, created_at, status, durable, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        automation.id,
+        automation.sessionId,
+        automation.createdAt,
+        automation.status,
+        0,
+        JSON.stringify(automation),
+      );
+    const fire = {
+      id: 'backup-fire',
+      automationId: automation.id,
+      automationKind: automation.kind,
+      automationName: automation.name,
+      prompt: automation.prompt,
+      scheduledFor: 60_001,
+      targetSessionId: sessionId,
+      turnId: 'backup-turn',
+      runId: 'backup-run',
+      userMessageId: 'backup-message',
+      status: 'admitted',
+      admittedAt: 60_001,
+      updatedAt: 60_001,
+    };
+    database
+      .prepare(`
+        INSERT INTO automation_pending_fires(
+          fire_id, automation_id, target_session_id, admitted_at, record_json
+        ) VALUES (?, ?, ?, ?, ?)
+      `)
+      .run(fire.id, fire.automationId, fire.targetSessionId, fire.admittedAt, JSON.stringify(fire));
+    database
+      .prepare('UPDATE automation_authority_state SET revision = 1 WHERE singleton = 1')
+      .run();
+  } finally {
+    database.close();
+  }
+}
+
+function readAutomationState(root: string): {
+  revision: number;
+  automationId: string;
+  name: string;
+  pendingFireId: string;
+} {
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+  try {
+    const state = database
+      .prepare('SELECT revision FROM automation_authority_state WHERE singleton = 1')
+      .get() as { revision: number };
+    const row = database
+      .prepare('SELECT automation_id, record_json FROM automation_definitions')
+      .get() as { automation_id: string; record_json: string };
+    const fire = database.prepare('SELECT fire_id FROM automation_pending_fires').get() as {
+      fire_id: string;
+    };
+    const record = JSON.parse(row.record_json) as { name: string };
+    return {
+      revision: state.revision,
+      automationId: row.automation_id,
+      name: record.name,
+      pendingFireId: fire.fire_id,
+    };
+  } finally {
+    database.close();
+  }
+}
 
 test('linearizes an Artifact mutation after the backup snapshot', async () => {
   await withBackupRoots(async ({ stateRoot, backupRoot, restoreRoot }) => {

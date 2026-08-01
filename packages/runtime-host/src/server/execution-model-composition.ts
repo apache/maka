@@ -101,6 +101,7 @@ export interface HostExecutionModelCompositionInput {
   readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
+  readonly automationTool?: MakaTool;
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -110,7 +111,12 @@ export function createHostExecutionModelComposition(
   const inventoryFor = createTurnSkillInventoryResolver(input.skills);
   const defaultTools = input.boundTools
     ? input.boundTools
-    : buildDefaultHostTools(input.taskLedger, inventoryFor, input.builtinTools);
+    : buildDefaultHostTools(
+        input.taskLedger,
+        inventoryFor,
+        input.builtinTools,
+        input.automationTool,
+      );
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
     tools: defaultTools,
@@ -201,6 +207,7 @@ export interface HostAiSdkBackendInput {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
+  readonly automationTool?: MakaTool;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -266,6 +273,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.context.tools ? { boundTools: input.context.tools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
+      ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -597,6 +605,7 @@ function buildDefaultHostTools(
   taskLedger: TaskLedgerStore,
   inventoryFor: SkillInventoryResolver,
   builtinOptions?: BuildBuiltinToolsOptions,
+  automationTool?: MakaTool,
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
@@ -607,6 +616,7 @@ function buildDefaultHostTools(
     'Skill',
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
+    ...(automationTool ? [automationTool.name] : []),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
@@ -620,6 +630,7 @@ function buildDefaultHostTools(
       shadowTracker,
     }),
     ...taskTools,
+    ...(automationTool ? [automationTool] : []),
   ];
 }
 

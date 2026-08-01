@@ -8,10 +8,11 @@ import {
   type MessageContent,
   type SessionEvent,
 } from '@maka/core/events';
-import { isDeepResearchSession, type SessionHeader, type StoredMessage } from '@maka/core/session';
+import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   classifyTerminalRuntimeLedger,
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
@@ -54,6 +55,7 @@ import {
   SessionContinuityCoordinator,
 } from './session-continuity-coordinator.js';
 import type { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
+import { runtimeHostSessionUnavailableReason } from './host-session-availability.js';
 
 type RootTerminalInteractionFence = Pick<
   HostInteractionCoordinator,
@@ -65,6 +67,7 @@ interface ActiveRootTurn {
   runId: string;
   userMessageId: string | null;
   execution?: RuntimeHostedRootExecutionInput;
+  admissionExecution: RootTurnAdmission['execution'];
   startSettled: Deferred;
   done: Promise<void>;
   residency: RuntimeHostResidency;
@@ -126,6 +129,7 @@ export class RootTurnCoordinator {
     private readonly acquireRecoveryResidency: () => RuntimeHostResidency,
     private readonly requestHostDrain: () => void,
     private readonly clientCapabilities?: HostClientCapabilityCoordinator,
+    private readonly assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
   }
@@ -153,6 +157,18 @@ export class RootTurnCoordinator {
           ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
           : [];
         const executionContract = recoveryExecutionContract(admission.execution);
+        if (
+          admission.execution.kind === 'automation' &&
+          (!run ||
+            (run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled'))
+        ) {
+          if (!this.assertAutomationRecoveryAdmission) {
+            throw new RuntimeMessageAuthorityInvariantError(
+              'Automation recovery admission has no canonical authority validator',
+            );
+          }
+          this.assertAutomationRecoveryAdmission(admission);
+        }
         if (!executionContract.allowsQueueSources && admission.sourceMessages.length !== 0) {
           throw new Error(
             `Admitted Turn ${admission.turnId} has queue-independent execution with Message queue sources`,
@@ -256,8 +272,11 @@ export class RootTurnCoordinator {
         await this.stores.sessionStore.appendMessage(plan.sessionId, message);
       }
       for (const admission of plan.pendingChildAdmissions) {
-        if (admission.execution.kind === 'external_message') {
-          throw new Error('External Message admission cannot use child recovery closure');
+        if (
+          admission.execution.kind === 'external_message' ||
+          admission.execution.kind === 'automation'
+        ) {
+          throw new Error('Root-replay admission cannot use child recovery closure');
         }
         await this.manager.closePendingHostedLinkedChildAdmission({
           sessionId: admission.sessionId,
@@ -340,7 +359,7 @@ export class RootTurnCoordinator {
       if (header.conversationCopy?.state === 'preparing') return null;
       return {
         isArchived: header.isArchived || header.status === 'archived',
-        unavailableReason: unsupportedSessionModeReason(header),
+        unavailableReason: runtimeHostSessionUnavailableReason(header),
       };
     } catch (error) {
       if (isSessionNotFoundError(error)) return null;
@@ -394,12 +413,29 @@ export class RootTurnCoordinator {
           );
         }
 
-        const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
-        if (header.status === 'archived' || header.isArchived) {
-          throw new Error('Cannot start a hosted root execution in an archived Session');
+        let header: SessionHeader;
+        try {
+          header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        } catch (error) {
+          if (isSessionNotFoundError(error)) {
+            throw new RuntimeHostedRootUnavailableError(
+              input.sessionId,
+              'Hosted root execution target Session is unavailable',
+              { cause: error },
+            );
+          }
+          throw error;
         }
-        const unavailableReason = unsupportedSessionModeReason(header);
-        if (unavailableReason) throw new Error(unavailableReason);
+        if (header.status === 'archived' || header.isArchived) {
+          throw new RuntimeHostedRootUnavailableError(
+            input.sessionId,
+            'Cannot start a hosted root execution in an archived Session',
+          );
+        }
+        const unavailableReason = runtimeHostSessionUnavailableReason(header);
+        if (unavailableReason) {
+          throw new RuntimeHostedRootUnavailableError(input.sessionId, unavailableReason);
+        }
         if (this.#activeBySession.has(input.sessionId)) {
           throw new RuntimeHostedRootConflictError(
             input.sessionId,
@@ -707,7 +743,7 @@ export class RootTurnCoordinator {
         if (header.status === 'archived' || header.isArchived) {
           return completedStart(sessionArchived('Cannot start a new Turn in an archived Session'));
         }
-        const unavailableReason = unsupportedSessionModeReason(header);
+        const unavailableReason = runtimeHostSessionUnavailableReason(header);
         if (unavailableReason) {
           return completedStart(operationUnavailable(unavailableReason));
         }
@@ -944,6 +980,7 @@ export class RootTurnCoordinator {
       runId,
       userMessageId: admission.userMessageId,
       ...(execution ? { execution } : {}),
+      admissionExecution: admission.execution,
       startSettled,
       done: Promise.resolve(),
       residency,
@@ -1007,7 +1044,18 @@ export class RootTurnCoordinator {
           })
         : this.manager.sendMessage(
             input.sessionId,
-            { turnId: input.turnId, ...normalizeMessageContent(input.content) },
+            {
+              turnId: input.turnId,
+              ...normalizeMessageContent(input.content),
+              ...(active.admissionExecution.kind === 'automation'
+                ? {
+                    origin: {
+                      kind: 'automation' as const,
+                      automationId: active.admissionExecution.automationId,
+                    },
+                  }
+                : {}),
+            },
             {
               runId: active.runId,
               userMessageId: active.userMessageId ?? undefined,
@@ -1321,6 +1369,7 @@ export class RootTurnCoordinator {
     } catch (error) {
       if (
         !(error instanceof RuntimeHostedRootConflictError) &&
+        !(error instanceof RuntimeHostedRootUnavailableError) &&
         !(error instanceof HostedRootAdmissionGateError)
       ) {
         this.requestHostDrain();
@@ -1357,6 +1406,14 @@ function recoveryUserMessage(admission: RootTurnAdmission): RecoveryUserMessage 
     turnId: admission.turnId,
     ts: admission.admittedAt,
     ...normalizeMessageContent(admission.normalizedInput),
+    ...(admission.execution.kind === 'automation'
+      ? {
+          origin: {
+            kind: 'automation' as const,
+            automationId: admission.execution.automationId,
+          },
+        }
+      : {}),
   };
 }
 
@@ -1377,6 +1434,22 @@ function assertRunMatchesExecution(
   switch (execution.kind) {
     case 'external_message':
       return;
+    case 'automation':
+      if (
+        run.automationId === execution.automationId &&
+        run.parentRunId === undefined &&
+        run.resumedFromRunId === undefined &&
+        run.retriedFromRunId === undefined &&
+        run.parentSessionId === undefined &&
+        run.agentId === undefined &&
+        run.agentName === undefined &&
+        run.continuationSource === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      ) {
+        return;
+      }
+      break;
     case 'linked_child_initial':
     case 'claimed_agent_graph_intent':
       assertTrustedAgentIdentity(run, turnId, execution);
@@ -1405,7 +1478,10 @@ function assertRunMatchesExecution(
 function assertTrustedAgentIdentity(
   run: AgentRunHeader,
   turnId: string,
-  execution: Exclude<RootTurnAdmission['execution'], { kind: 'external_message' }>,
+  execution: Exclude<
+    RootTurnAdmission['execution'],
+    { kind: 'external_message' } | { kind: 'automation' }
+  >,
 ): void {
   if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
     throw new RuntimeMessageAuthorityInvariantError(
@@ -1427,6 +1503,12 @@ function recoveryExecutionContract(
     case 'external_message':
       return {
         allowsQueueSources: true,
+        requiresUserMessage: true,
+        pendingWithoutRun: 'root_replay',
+      };
+    case 'automation':
+      return {
+        allowsQueueSources: false,
         requiresUserMessage: true,
         pendingWithoutRun: 'root_replay',
       };
@@ -1508,18 +1590,6 @@ function deferred(): Deferred {
 
 function isMissingFile(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-}
-
-function unsupportedSessionModeReason(
-  header: Pick<SessionHeader, 'collaborationMode' | 'labels'>,
-): string | undefined {
-  if (header.collaborationMode === 'plan') {
-    return 'Plan sessions are not yet supported by Runtime Host.';
-  }
-  if (isDeepResearchSession(header.labels)) {
-    return 'Deep Research sessions are not yet supported by Runtime Host.';
-  }
-  return undefined;
 }
 
 function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {

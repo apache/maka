@@ -2874,7 +2874,7 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   }
   if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
     throw new Error(
-      'Invalid root turn admission contract: linked child execution cannot have source messages',
+      'Invalid root turn admission contract: host-authored execution cannot have source messages',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {
@@ -2936,6 +2936,16 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   if (value.kind === 'external_message') {
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
     return Object.freeze({ kind: 'external_message' });
+  }
+  if (value.kind === 'automation') {
+    if (
+      !hasExactKeys(value, ['kind', 'automationId']) ||
+      typeof value.automationId !== 'string' ||
+      !isSafeId(value.automationId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'automation', automationId: value.automationId });
   }
   if (value.kind === 'claimed_agent_graph_intent') {
     if (

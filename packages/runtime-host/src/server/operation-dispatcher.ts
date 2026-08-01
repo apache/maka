@@ -67,6 +67,7 @@ export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pr
 export type MemoryOperationKey = Extract<OperationKey, `memory.${string}`>;
 export type RuntimeResourceOperationKey = Extract<OperationKey, `runtime.resource.${string}`>;
 export type ClientCapabilityOperationKey = Extract<OperationKey, `client.capability.${string}`>;
+export type AutomationOperationKey = Extract<OperationKey, `automation.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type RuntimePolicyOperationHandlerMap = Pick<OperationHandlerMap, RuntimePolicyOperationKey>;
@@ -101,6 +102,7 @@ export type ClientCapabilityOperationHandlerMap = Pick<
   OperationHandlerMap,
   ClientCapabilityOperationKey
 >;
+export type AutomationOperationHandlerMap = Pick<OperationHandlerMap, AutomationOperationKey>;
 
 export function composeOperationHandlers(
   ...handlerMaps: readonly Partial<OperationHandlerMap>[]

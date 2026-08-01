@@ -75,6 +75,7 @@ describe('operational state database cutover', () => {
           .map((row) => ({ ...row })),
         [
           { scope: 'artifact', version: 1 },
+          { scope: 'automation', version: 1 },
           { scope: 'core_execution', version: 1 },
           { scope: 'operational', version: 1 },
           { scope: 'runtime', version: SQLITE_RUNTIME_SCHEMA_VERSION },

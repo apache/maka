@@ -1741,3 +1741,13 @@ export {
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
 } from './attachments.js';
 export type { AttachmentByteReader } from './attachments.js';
+
+export type {
+  AutomationAuthoritySnapshot,
+  AutomationDefinition,
+  AutomationExecutionTemplate,
+  AutomationKind,
+  AutomationPendingFire,
+  AutomationSchedule,
+  AutomationStatus,
+} from './automation.js';

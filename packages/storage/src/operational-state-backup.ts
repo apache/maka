@@ -31,6 +31,7 @@ import {
   OPERATIONAL_STATE_SCHEMA_VERSION,
 } from './operational-state-store.js';
 import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
+import { SQLITE_AUTOMATION_SCHEMA_VERSION } from './sqlite-automation-schema.js';
 import { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
 import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -54,6 +55,7 @@ const supportedSchemaVersions = new Map<string, number>([
   ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
   ['usage', SQLITE_USAGE_SCHEMA_VERSION],
   ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
+  ['automation', SQLITE_AUTOMATION_SCHEMA_VERSION],
   ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
 ]);
 

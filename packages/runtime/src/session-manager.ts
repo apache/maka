@@ -4221,7 +4221,10 @@ export class SessionManager {
     turnId: string;
     runId: string;
     admittedAt: number;
-    execution: Exclude<RootExecutionDescriptor, { kind: 'external_message' }>;
+    execution: Exclude<
+      RootExecutionDescriptor,
+      { kind: 'external_message' } | { kind: 'automation' }
+    >;
   }): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
       throw new Error('Linked child admission recovery requires execution stores');
@@ -5474,7 +5477,10 @@ function assertClaimOwnsHostedLinkedChildAdmission(
     sessionId: string;
     turnId: string;
     runId: string;
-    execution: Exclude<RootExecutionDescriptor, { kind: 'external_message' }>;
+    execution: Exclude<
+      RootExecutionDescriptor,
+      { kind: 'external_message' } | { kind: 'automation' }
+    >;
   },
   claim: ContinuationClaimV1,
 ): void {

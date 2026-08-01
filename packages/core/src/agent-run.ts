@@ -50,6 +50,7 @@ export type AgentRunContinuationSource =
 
 export type RootExecutionDescriptor =
   | { kind: 'external_message' }
+  | { kind: 'automation'; automationId: string }
   | {
       kind: 'linked_child_initial';
       agentId: string;

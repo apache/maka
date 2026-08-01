@@ -263,6 +263,37 @@ describe('Automation integration: turn-tail shows active automations', () => {
     assert.ok(listResult.includes('monitor ci'));
     assert.ok(listResult.includes('ACTIVE'));
   });
+
+  test('list mode bounds app-global durable Automation output', async () => {
+    const t = createIntegrationSetup();
+    t.manager.hydrate(
+      Array.from({ length: 101 }, (_, index) => ({
+        id: `durable-${index}`,
+        kind: 'cron' as const,
+        name: `durable automation ${index}`,
+        status: 'paused' as const,
+        prompt: 'check',
+        sessionId: `other-session-${index}`,
+        schedule: { type: 'interval' as const, seconds: 60 },
+        createdAt: index,
+        updatedAt: index,
+        nextFireAt: null,
+        lastFireAt: null,
+        lastRunId: null,
+        fireCount: 0,
+        maxFires: null,
+        expiresAt: null,
+        lastError: null,
+        consecutiveFailures: 0,
+        durable: true,
+      })),
+    );
+
+    const result = (await t.tool.impl({ mode: 'list' }, t.ctx())) as string;
+    assert.match(result, /durable automation 99/);
+    assert.doesNotMatch(result, /durable automation 100/);
+    assert.match(result, /1 additional automations omitted\./);
+  });
 });
 
 describe('Automation integration: expired automations do not fire', () => {
@@ -469,5 +500,21 @@ describe('Automation integration: cron gating by host capability', () => {
       schedule: { type: 'interval', seconds: 30 },
     });
     assert.equal(parsed.success, true);
+  });
+
+  test('model schema accepts the legacy Unicode boundary and rejects larger text', () => {
+    const mgr = new AutomationManager({ generateId: () => 'g', now: () => 1 });
+    const tool = buildAutomationTool({ automationManager: mgr, cronEnabled: true });
+    const schema = tool.parameters as { safeParse: (value: unknown) => { success: boolean } };
+    const input = {
+      mode: 'create',
+      kind: 'heartbeat',
+      name: '名'.repeat(100),
+      prompt: '提'.repeat(2_000),
+      schedule: { type: 'interval', seconds: 30 },
+    };
+    assert.equal(schema.safeParse(input).success, true);
+    assert.equal(schema.safeParse({ ...input, name: '名'.repeat(101) }).success, false);
+    assert.equal(schema.safeParse({ ...input, prompt: '提'.repeat(2_001) }).success, false);
   });
 });

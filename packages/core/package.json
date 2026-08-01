@@ -25,6 +25,7 @@
     "./orchestration": "./dist/orchestration.js",
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
+    "./automation": "./dist/automation.js",
     "./model-call-attempt": "./dist/model-call-attempt.js",
     "./shell-run": "./dist/shell-run.js",
     "./shell-run-result": "./dist/shell-run-result.js",

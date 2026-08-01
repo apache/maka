@@ -9,6 +9,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./artifact-stores": "./dist/artifact-stores.js",
+    "./automation-authority": "./dist/automation-authority.js",
     "./execution-stores": "./dist/execution-stores.js",
     "./agent-graph-control-store": "./dist/agent-graph-control-store.js",
     "./interaction-store": "./dist/interaction-store-public.js",
