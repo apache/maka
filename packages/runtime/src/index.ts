@@ -812,6 +812,37 @@ export type {
   ResolveAndPersistOAuthSubscriptionTokensInput,
   ResolveOAuthSubscriptionAccessTokenInput,
 } from './subscription-credentials.js';
+export {
+  OAUTH_LOGIN_PROVIDER_CONFIG,
+  OAuthTokenEndpointError,
+  buildOAuthLoginAuthorization,
+  exchangeOAuthAuthorizationCode,
+  isDeterministicOAuthCredentialRejection,
+  pkceChallengeFromVerifier,
+  readBoundedOAuthJson,
+  requestOAuthEndpointJson,
+  requestOAuthTokenEndpointJson,
+} from './oauth-login.js';
+export {
+  pollXaiDeviceAuthorization,
+  startXaiDeviceAuthorization,
+} from './xai-oauth-enrollment.js';
+export type {
+  PollXaiDeviceAuthorizationInput,
+  StartXaiDeviceAuthorizationInput,
+  XaiDeviceAuthorization,
+} from './xai-oauth-enrollment.js';
+export type {
+  ExchangeOAuthAuthorizationCodeInput,
+  OAuthLoginAuthorization,
+  OAuthLoginAuthorizationInput,
+  OAuthLoginPresentationKind,
+  OAuthLoginProvider,
+  OAuthTokenEndpointErrorCategory,
+  OAuthEndpointJsonResponse,
+  OAuthTokenEndpointJsonRequestInput,
+  OAuthTokenEndpointJsonResponse,
+} from './oauth-login.js';
 export { buildSubscriptionModelFetch } from './subscription-model-fetch.js';
 export type { SubscriptionModelFetchInput } from './subscription-model-fetch.js';
 export { extractCodexAccountId, openAiCodexHeaders } from './subscription-auth.js';

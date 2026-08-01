@@ -37,6 +37,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/model-catalog',
   '@maka/core/model-metadata',
   '@maka/core/model-thinking',
+  '@maka/core/oauth-subscription',
   '@maka/core/redaction',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
@@ -61,6 +62,7 @@ const allowedServerExternalImports = new Set([
   '@maka/storage/task-ledger-authority',
   '@maka/storage/usage-stores',
   'node:async_hooks',
+  'node:http',
 ]);
 const allowedExternalImports = {
   client: allowedHostExternalImports,

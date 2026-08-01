@@ -765,6 +765,60 @@ function connectionContext(connectionId: string) {
   };
 }
 
+test('Host services stay bound to the explicitly initiating Client connection', async () => {
+  const coordinator = createCoordinator();
+  const calls: string[] = [];
+  const attach = (connectionId: string) => {
+    let connection!: ReturnType<HostClientCapabilityCoordinator['attachConnection']>;
+    connection = coordinator.attachConnection(connectionId, {
+      send: async (frame) => {
+        if (frame.kind === 'client.capability.service_call') {
+          calls.push(connectionId);
+          connection.accept({
+            kind: 'client.capability.accepted',
+            invocationId: frame.invocationId,
+          });
+          return;
+        }
+        if (frame.kind === 'client.capability.admitted') {
+          connection.accept({
+            kind: 'client.capability.result',
+            invocationId: frame.invocationId,
+            result: { content: [], structuredContent: { kind: 'presented' } },
+          });
+        }
+      },
+    });
+    return connection;
+  };
+  const first = attach('connection-a');
+  const second = attach('connection-b');
+  for (const connectionId of ['connection-a', 'connection-b']) {
+    const outcome = await coordinator.handlers['client.capability.replace'](
+      {
+        registrationId: `registration-${connectionId}`,
+        offers: [],
+        services: [{ serviceId: 'vendor_service', version: '1' }],
+      },
+      connectionContext(connectionId),
+    );
+    assert.equal(outcome.ok, true);
+  }
+
+  const result = await coordinator.callService({
+    connectionId: 'connection-b',
+    serviceId: 'vendor_service',
+    version: '1',
+    method: 'present',
+    input: {},
+  });
+  assert.deepEqual(result, { kind: 'presented' });
+  assert.deepEqual(calls, ['connection-b']);
+  first.close();
+  second.close();
+  coordinator.close();
+});
+
 async function invoke(tool: NonNullable<ReturnType<typeof toolAt>>): Promise<unknown> {
   return tool.impl(
     {},

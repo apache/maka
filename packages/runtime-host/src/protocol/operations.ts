@@ -9,6 +9,7 @@ import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
+import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import {
   composeOperationSpecMaps,
   type HostOperationError,
@@ -89,6 +90,7 @@ export * from './connection-effects.js';
 export * from './client-capability.js';
 export * from './goal.js';
 export * from './memory.js';
+export * from './oauth.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './session-catalog.js';
@@ -114,6 +116,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SKILL_CATALOG_OPERATION_SPECS,
   USAGE_PRICING_OPERATION_SPECS,
   MEMORY_OPERATION_SPECS,
+  OAUTH_OPERATION_SPECS,
   CLIENT_CAPABILITY_OPERATION_SPECS,
 );
 

@@ -74,6 +74,7 @@
     "./model-thinking": "./dist/model-thinking.js",
     "./connection-readiness": "./dist/connection-readiness.js",
     "./provider-auth": "./dist/provider-auth.js",
+    "./oauth-subscription": "./dist/oauth-subscription.js",
     "./onboarding": "./dist/onboarding.js",
     "./text-file-import": "./dist/text-file-import.js",
     "./redaction": "./dist/redaction.js",
