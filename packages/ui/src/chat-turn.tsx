@@ -1,7 +1,7 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
-import { AlertOctagon, Ban, Brain, Check, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
+import { AlertOctagon, Ban, Brain, Check, ChevronDown, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
@@ -11,9 +11,10 @@ import {
   Button as UiButton,
   ChatMessage,
   ChatMessageBubble,
-  Collapsible as AstryxCollapsible,
   IconButton as UiIconButton,
+  Text as AstryxText,
 } from '@astryxdesign/core';
+import { useCollapsible } from '@astryxdesign/core/Collapsible';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
@@ -965,8 +966,9 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
 
 /**
  * "深度思考" — the unified reasoning disclosure for both live streaming and
- * committed history. Controlled Astryx Collapsible, collapsed by default, with
- * the fixed title "深度思考".
+ * committed history. Astryx's public `useCollapsible` owns disclosure state;
+ * the custom row follows ChatToolCalls geometry without pretending reasoning
+ * is a tool call. It starts collapsed with the fixed title "深度思考".
  *
  * `live=true` (thinking still flowing): the title shimmers (TextShimmer) and the
  * expanded body streams plain redacted text through `useSmoothStreamContent`
@@ -989,10 +991,12 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
   // so we tokenize `displayed` directly and wrap post-boundary tokens. Inactive
   // (returns undefined) when settled or under snap.
   const streamFade = useStreamFade(displayed, props.live && !snap);
-  // Controlled open (see ReasoningPanel history: a raw `open` attribute lets the
-  // ~60Hz stream re-render re-assert open state and undo a manual collapse).
-  // Collapsed by default so the answer reads cleanly; the click sticks.
-  const [open, setOpen] = useState(false);
+  // Astryx's state machine keeps a manual disclosure choice stable across the
+  // ~60Hz streaming re-renders. Collapsed by default so the answer reads cleanly.
+  const { isOpen: open, toggle } = useCollapsible({
+    isCollapsible: { defaultIsOpen: false },
+  });
+  const contentId = useId();
   const bodyRef = useRef<HTMLPreElement>(null);
   useEffect(() => {
     if (!props.live || !open) return;
@@ -1000,68 +1004,86 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
     if (el) el.scrollTop = el.scrollHeight;
   }, [displayed, props.live, open]);
   return (
-    <AstryxCollapsible
-      className="flex flex-col"
+    <div
+      className="flex w-full flex-col"
+      data-slot="reasoning-disclosure"
       data-deep-thinking={props.live ? 'live' : undefined}
-      isOpen={open}
-      onOpenChange={setOpen}
-      trigger={(
-        <span className="flex min-w-0 items-center gap-2 py-0.5">
-          <Brain
-            size={16}
-            aria-hidden="true"
-            className="shrink-0 text-[color:var(--muted-foreground)]"
-          />
-          {props.live ? (
-            <TextShimmer active={!snap} className="min-w-0 truncate text-[length:var(--font-size-base)]">{copy.thinking}</TextShimmer>
-          ) : (
-            <span className="min-w-0 truncate text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">{copy.thinking}</span>
-          )}
-          {props.truncated && (
-            <span
-              className="rounded-[var(--radius-control)] border border-[oklch(from_var(--warning)_l_c_h_/_0.30)] bg-[oklch(from_var(--warning)_l_c_h_/_0.06)] px-1 text-[length:var(--font-size-caption)] text-[color:var(--warning-text,var(--info-text))]"
-              data-truncated="true"
-              title={copy.thinkingTruncatedTitle}
-            >
-              {copy.truncated}
-            </span>
-          )}
-        </span>
-      )}
     >
-      {/* Left-border-indented quiet detail block, one language with the tool
-          trow's expanded body. `live` and settled render the SAME plain-text
-          body at the caption tier so the two states never jump size; settled
-          is muted + regular weight (long reasoning in italic reads poorly).
+      <BaseButton
+        type="button"
+        data-slot="reasoning-trigger"
+        aria-expanded={open}
+        aria-controls={contentId}
+        onClick={toggle}
+        className="flex min-h-6 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-[var(--radius-control)] border-0 bg-transparent py-0.5 text-left font-normal text-[color:var(--muted-foreground)] outline-none [transition:background-color_var(--duration-quick)_var(--ease-out-strong)] hover:bg-[var(--foreground-alpha-4)] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+      >
+        <Brain
+          size={16}
+          aria-hidden="true"
+          className="shrink-0 text-[color:var(--muted-foreground)]"
+        />
+        {props.live ? (
+          <TextShimmer active={!snap} className="min-w-0 truncate">
+            <AstryxText type="supporting">{copy.thinking}</AstryxText>
+          </TextShimmer>
+        ) : (
+          <AstryxText type="supporting" className="min-w-0 truncate">{copy.thinking}</AstryxText>
+        )}
+        {props.truncated && (
+          <span
+            className="rounded-[var(--radius-control)] border border-[oklch(from_var(--warning)_l_c_h_/_0.30)] bg-[oklch(from_var(--warning)_l_c_h_/_0.06)] px-1 text-[length:var(--font-size-caption)] text-[color:var(--warning-text,var(--info-text))]"
+            data-truncated="true"
+            title={copy.thinkingTruncatedTitle}
+          >
+            {copy.truncated}
+          </span>
+        )}
+        <ChevronDown
+          size={14}
+          aria-hidden="true"
+          className={cn(
+            'ml-auto shrink-0 text-[color:var(--muted-foreground)] [transition:transform_var(--duration-quick)_var(--ease-out-strong)]',
+            open && 'rotate-180',
+          )}
+        />
+      </BaseButton>
+      {/* ChatToolCalls indents detail by its 16px status slot plus the 6px row
+          gap. Reasoning uses the same 22px content edge while retaining a
+          prose body instead of impersonating tool output. `live` and settled
+          render the SAME plain-text body at the caption tier so the two states
+          never jump size; settled is muted + regular weight (long reasoning in
+          italic reads poorly).
           The copy action is an icon-only hover affordance pinned top-right so
           it never squeezes the reading column into a vertical char stack. */}
-      {open ? (
-        <div className="group/reasoning relative mt-1 ml-2 border-l border-[var(--border)] pl-2.5 pr-7">
-          {props.live ? (
-            <pre
-              ref={bodyRef}
-              className="m-0 max-h-64 overflow-y-auto whitespace-pre-wrap [word-break:break-word] [font-family:inherit] text-[length:var(--font-size-base)] leading-normal text-[color:var(--muted-foreground)] [scroll-behavior:auto]"
-            >
-              <DeepThinkingBody text={displayed} streamFade={streamFade} />
-            </pre>
-          ) : (
-            <>
-              {/* Same `max-h-64 overflow-y-auto` bound as the live `<pre>` above
-                  so an expanded panel doesn't jump taller the frame thinking
-                  settles (live→settled swaps this body in place). Long reasoning
-                  stays a compact scroll box in both states. Body uses base 13px
-                  so tool output and thinking share one reading size. */}
-              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap [word-break:break-word] text-[length:var(--font-size-base)] leading-normal text-[color:var(--muted-foreground)]">
-                {props.text}
-              </div>
-              <div className="absolute right-0 top-0 opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/reasoning:opacity-100 focus-within:opacity-100">
-                <MessageCopyButton text={props.text} label={copy.copyThinking} footerStyle />
-              </div>
-            </>
-          )}
-        </div>
-      ) : null}
-    </AstryxCollapsible>
+      <div id={contentId} data-slot="reasoning-content" hidden={!open}>
+        {open ? (
+          <div className="group/reasoning relative ml-[22px] pb-2 pr-7">
+            {props.live ? (
+              <pre
+                ref={bodyRef}
+                className="m-0 max-h-64 overflow-y-auto whitespace-pre-wrap [word-break:break-word] [font-family:inherit] text-[length:var(--font-size-base)] leading-normal text-[color:var(--muted-foreground)] [scroll-behavior:auto]"
+              >
+                <DeepThinkingBody text={displayed} streamFade={streamFade} />
+              </pre>
+            ) : (
+              <>
+                {/* Same `max-h-64 overflow-y-auto` bound as the live `<pre>` above
+                    so an expanded panel doesn't jump taller the frame thinking
+                    settles (live→settled swaps this body in place). Long reasoning
+                    stays a compact scroll box in both states. Body uses base 13px
+                    so tool output and thinking share one reading size. */}
+                <div className="max-h-64 overflow-y-auto whitespace-pre-wrap [word-break:break-word] text-[length:var(--font-size-base)] leading-normal text-[color:var(--muted-foreground)]">
+                  {props.text}
+                </div>
+                <div className="absolute right-0 top-0 opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/reasoning:opacity-100 focus-within:opacity-100">
+                  <MessageCopyButton text={props.text} label={copy.copyThinking} footerStyle />
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

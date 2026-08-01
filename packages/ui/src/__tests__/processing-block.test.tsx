@@ -56,7 +56,7 @@ describe('ProcessingBlock disclosure wiring (#1307)', () => {
 });
 
 describe('deep-thinking disclosure', () => {
-  it('starts collapsed and delegates its trigger, chevron, and keyboard semantics to Astryx', () => {
+  it('starts collapsed with the same compact activity-row structure as Astryx tool calls', () => {
     const markup = renderToStaticMarkup(createElement(TurnView, {
       turn: {
         turnId: 'thinking-turn',
@@ -69,11 +69,13 @@ describe('deep-thinking disclosure', () => {
       },
     }));
 
-    assert.match(markup, /class="[^"]*astryx-collapsible[^"]*"/);
-    assert.match(markup, /<button[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/);
-    const trigger = markup.match(/(<button[^>]*aria-expanded="false"[\s\S]*?<\/button>)/)?.[1];
+    assert.match(markup, /data-slot="reasoning-disclosure"/);
+    assert.match(markup, /<button[^>]*data-slot="reasoning-trigger"[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/);
+    const trigger = markup.match(/(<button[^>]*data-slot="reasoning-trigger"[\s\S]*?<\/button>)/)?.[1];
     assert.ok(trigger, 'deep-thinking disclosure must expose a collapsed trigger');
-    assert.doesNotMatch(trigger, /lucide-chevron-right/);
+    assert.match(trigger, /lucide-chevron-down/);
+    assert.match(trigger, /min-h-6/);
+    assert.match(trigger, /class="[^"]*astryx-text supporting[^"]*"/);
     assert.doesNotMatch(markup, /private reasoning/);
   });
 });
