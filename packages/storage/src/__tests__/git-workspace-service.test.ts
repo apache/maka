@@ -335,6 +335,68 @@ describe('Git workspace service', () => {
     });
   }
 
+  for (const failpoint of [
+    'after_quarantine_intent',
+    'after_quarantine_unlock',
+    'after_quarantine_move',
+    'after_quarantine_binding_removed',
+    'after_quarantine_pruned',
+  ] as const) {
+    test(`converges quarantine after a real-process crash at ${failpoint}`, {
+      timeout: 60_000,
+    }, async () => {
+      const root = await temporaryRoot();
+      const sourceRoot = await createEligibleSource(join(root, 'source'));
+      const sourceSnapshot = await snapshotSource(sourceRoot);
+      const storageRoot = join(root, 'storage');
+      const bindingOutput = join(root, 'binding.json');
+      const child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(
+            new URL('./fixtures/git-workspace-service-crash-child.js', import.meta.url),
+          ),
+        ],
+        {
+          env: {
+            ...process.env,
+            MAKA_GIT_WORKSPACE_STORAGE: storageRoot,
+            MAKA_GIT_WORKSPACE_SOURCE: sourceRoot,
+            MAKA_GIT_WORKSPACE_EXECUTABLE: gitExecutablePath,
+            MAKA_GIT_WORKSPACE_SHA256: gitExecutableSha256,
+            MAKA_GIT_WORKSPACE_FAILPOINT: failpoint,
+            MAKA_GIT_WORKSPACE_ACTION: 'quarantine',
+            MAKA_GIT_WORKSPACE_BINDING_OUTPUT: bindingOutput,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      try {
+        await waitForReady(child, 30_000);
+        child.kill('SIGKILL');
+        await waitForExit(child);
+        const binding = JSON.parse(
+          await readFile(bindingOutput, 'utf8'),
+        ) as ManagedWorkspaceBinding;
+        const service = await serviceAt(storageRoot);
+
+        await assert.rejects(
+          service.openManagedWorkspaceFromBinding(binding),
+          isWorkspaceError('managed_workspace_unavailable'),
+        );
+        const first = await service.quarantineManagedWorkspace(binding, 'crash_convergence_test');
+        const retry = await service.quarantineManagedWorkspace(binding, 'crash_convergence_test');
+
+        assert.deepEqual(retry, first);
+        assert.equal((await stat(first.quarantinePath)).isDirectory(), true);
+        assert.equal(existsSync(binding.worktreePath), false);
+        await assertSourceUnchanged(sourceRoot, sourceSnapshot);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    });
+  }
+
   test('rejects dirty or unsupported source state without falling back to attached execution', async () => {
     const root = await temporaryRoot();
     const sourceRoot = await createEligibleSource(join(root, 'source'));
@@ -423,6 +485,37 @@ describe('Git workspace service', () => {
     const sourceRoot = await createEligibleSource(join(root, 'source'));
     await git(sourceRoot, 'config', 'extensions.worktreeConfig', 'true');
     await git(sourceRoot, 'config', '--worktree', 'core.fsmonitor', 'untrusted-monitor');
+    const service = await serviceAt(join(root, 'storage'));
+
+    await assert.rejects(
+      service.createManagedWorkspaceFromSource(openRequest(sourceRoot)),
+      isWorkspaceError('repository_ineligible'),
+    );
+  });
+
+  test('rejects a local includeIf source configuration after Git key normalization', async () => {
+    const root = await temporaryRoot();
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    await git(
+      sourceRoot,
+      'config',
+      '--local',
+      'includeIf.gitdir:/definitely-never/.path',
+      '../untrusted-config',
+    );
+    const service = await serviceAt(join(root, 'storage'));
+
+    await assert.rejects(
+      service.createManagedWorkspaceFromSource(openRequest(sourceRoot)),
+      isWorkspaceError('repository_ineligible'),
+    );
+  });
+
+  test('rejects a worktree partial-clone source configuration after key normalization', async () => {
+    const root = await temporaryRoot();
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    await git(sourceRoot, 'config', 'extensions.worktreeConfig', 'true');
+    await git(sourceRoot, 'config', '--worktree', 'extensions.partialClone', 'origin');
     const service = await serviceAt(join(root, 'storage'));
 
     await assert.rejects(

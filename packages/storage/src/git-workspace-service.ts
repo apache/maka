@@ -21,6 +21,7 @@ const GIT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const BINDING_SCHEMA_VERSION = 1;
 const REPOSITORY_SCHEMA_VERSION = 1;
 const EPOCH_ARTIFACT_SCHEMA_VERSION = 1;
+const QUARANTINE_INTENT_SCHEMA_VERSION = 1;
 const IDENTIFIER_PATTERN = /^(repository|workspace|epoch|instance)_[a-f0-9]{32}$/u;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const OID_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
@@ -75,6 +76,14 @@ const EPOCH_ARTIFACT_KEYS = [
   'materializationProfileDigest',
   'materializationSemantics',
 ] as const;
+const QUARANTINE_INTENT_KEYS = [
+  'schemaVersion',
+  'protocol',
+  'reason',
+  'quarantinePath',
+  'binding',
+] as const;
+const QUARANTINE_RECORD_KEYS = ['protocol', 'reason', 'binding'] as const;
 const MATERIALIZATION_SEMANTICS = 'git_tree_materialized_with_fixed_config_v1';
 const BASELINE_MESSAGE = 'maka managed workspace baseline v1\n';
 const BASELINE_DATE = '2000-01-01T00:00:00Z';
@@ -116,7 +125,12 @@ export type GitWorkspaceServiceFailpoint =
   | 'after_baseline_ref_created'
   | 'after_worktree_materialized'
   | 'after_worktree_locked'
-  | 'after_head_ref_updated';
+  | 'after_head_ref_updated'
+  | 'after_quarantine_intent'
+  | 'after_quarantine_unlock'
+  | 'after_quarantine_move'
+  | 'after_quarantine_binding_removed'
+  | 'after_quarantine_pruned';
 
 export interface ManagedWorkspaceIdentity {
   /**
@@ -239,6 +253,20 @@ interface ManagedWorkspaceEpochArtifact {
   readonly materializationSemantics: typeof MATERIALIZATION_SEMANTICS;
 }
 
+interface ManagedWorkspaceQuarantineIntent {
+  readonly schemaVersion: 1;
+  readonly protocol: 'maka_managed_workspace_quarantine_intent_v1';
+  readonly reason: string;
+  readonly quarantinePath: string;
+  readonly binding: ManagedWorkspaceBinding;
+}
+
+interface ManagedWorkspaceQuarantineRecord {
+  readonly protocol: 'maka_managed_workspace_quarantine_v1';
+  readonly reason: string;
+  readonly binding: ManagedWorkspaceBinding;
+}
+
 interface WorkspaceLayout {
   readonly managedRoot: string;
   readonly repositoryRoot: string;
@@ -252,6 +280,8 @@ interface WorkspaceLayout {
   readonly bindingPath: string;
   readonly worktreePath: string;
   readonly quarantineRoot: string;
+  readonly quarantineIntentRoot: string;
+  readonly quarantineIntentPath: string;
 }
 
 class GitWorkspaceServiceImpl implements GitWorkspaceService {
@@ -278,6 +308,14 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       await ensureOwnedDirectory(layout.managedRoot, canonicalStorageRoot);
       await ensureOwnedDirectory(layout.quarantineRoot, layout.managedRoot);
       await ensureOwnedDirectory(layout.homePath, layout.managedRoot);
+
+      const quarantined = await this.resumePendingQuarantine(input, layout, runtime.digest);
+      if (quarantined) {
+        throw new GitWorkspaceServiceError(
+          'managed_workspace_unavailable',
+          `Managed workspace instance was quarantined: ${input.workspaceInstanceId}`,
+        );
+      }
 
       const existingBinding = await readBinding(layout.bindingPath);
       if (existingBinding) {
@@ -352,7 +390,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       };
       const inspection = await this.inspectBinding(binding, layout);
       if (inspection.state !== 'ready') {
-        await this.quarantineWorktreeLocked(binding, layout, 'initial_materialization_drift');
+        await this.beginQuarantine(binding, layout, 'initial_materialization_drift');
         throw new GitWorkspaceServiceError(
           'managed_workspace_drifted',
           'Git materialization did not produce a clean managed workspace',
@@ -370,6 +408,13 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     const runtime = await this.runtime.verify();
     return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
       const layout = workspaceLayout(canonicalStorageRoot, input);
+      const quarantined = await this.resumePendingQuarantine(input, layout, runtime.digest);
+      if (quarantined) {
+        throw new GitWorkspaceServiceError(
+          'managed_workspace_unavailable',
+          `Managed workspace instance was quarantined: ${input.workspaceInstanceId}`,
+        );
+      }
       const binding = await readBinding(layout.bindingPath);
       if (!binding) {
         throw new GitWorkspaceServiceError(
@@ -404,12 +449,19 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
   async inspectManagedWorkspace(
     binding: ManagedWorkspaceBinding,
   ): Promise<ManagedWorkspaceInspection> {
-    await this.runtime.verify();
+    const runtime = await this.runtime.verify();
     assertBindingShape(binding);
     assertOpenIdentity(binding);
     return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
       const layout = workspaceLayout(canonicalStorageRoot, binding);
       assertBindingPaths(binding, layout);
+      const quarantined = await this.resumePendingQuarantine(binding, layout, runtime.digest);
+      if (quarantined) {
+        throw new GitWorkspaceServiceError(
+          'managed_workspace_unavailable',
+          `Managed workspace instance was quarantined: ${binding.workspaceInstanceId}`,
+        );
+      }
       const stored = await readBinding(layout.bindingPath);
       if (!stored || !sameBinding(stored, binding)) {
         throw new GitWorkspaceServiceError(
@@ -436,7 +488,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     binding: ManagedWorkspaceBinding,
     reason: string,
   ): Promise<ManagedWorkspaceQuarantine> {
-    await this.runtime.verify();
+    const runtime = await this.runtime.verify();
     assertBindingShape(binding);
     assertOpenIdentity(binding);
     if (!reason.trim()) {
@@ -448,6 +500,12 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
       const layout = workspaceLayout(canonicalStorageRoot, binding);
       assertBindingPaths(binding, layout);
+      const pending = await readQuarantineIntent(layout.quarantineIntentPath);
+      if (pending) {
+        assertQuarantineIntentMatches(pending, binding, reason, layout);
+        await this.assertQuarantineBindingAuthority(binding, layout, runtime.digest);
+        return this.resumeQuarantineIntent(pending, layout);
+      }
       const stored = await readBinding(layout.bindingPath);
       if (!stored || !sameBinding(stored, binding)) {
         throw new GitWorkspaceServiceError(
@@ -466,7 +524,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       await this.assertRepositoryArtifact(repository);
       const epoch = await this.requireEpochArtifact(binding, repository, layout);
       assertBindingEpoch(binding, epoch);
-      return this.quarantineWorktreeLocked(binding, layout, reason);
+      return this.beginQuarantine(binding, layout, reason);
     });
   }
 
@@ -620,15 +678,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       );
     }
     const unsafeConfig = await this.runtime.runOptional(
-      [
-        '-C',
-        sourceRoot,
-        'config',
-        '--no-includes',
-        '--local',
-        '--get-regexp',
-        '^(include\\.|includeIf\\.|extensions\\.(objectFormat|partialClone)$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
-      ],
+      ['-C', sourceRoot, 'config', '--no-includes', '--local', '--name-only', '--get-regexp', '.*'],
       1,
     );
     const worktreeConfigEnabled = (
@@ -655,8 +705,9 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
               'config',
               '--no-includes',
               '--worktree',
+              '--name-only',
               '--get-regexp',
-              '^(include\\.|includeIf\\.|extensions\\.(objectFormat|partialClone)$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
+              '.*',
             ],
             1,
           )
@@ -667,7 +718,11 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       undefined,
       [1],
     );
-    if (unsafeConfig?.trim() || unsafeWorktreeConfig?.trim() || replaceRefs.trim()) {
+    if (
+      hasUnsafeSourceConfig(unsafeConfig) ||
+      hasUnsafeSourceConfig(unsafeWorktreeConfig) ||
+      replaceRefs.trim()
+    ) {
       throw new GitWorkspaceServiceError(
         'repository_ineligible',
         'Managed workspace source contains unsupported Git indirection or runtime configuration',
@@ -1159,30 +1214,150 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     }
   }
 
-  private async quarantineWorktreeLocked(
+  private async resumePendingQuarantine(
+    input: ManagedWorkspaceIdentity,
+    layout: WorkspaceLayout,
+    runtimeDigest: `sha256:${string}`,
+  ): Promise<ManagedWorkspaceQuarantine | undefined> {
+    const intent = await readQuarantineIntent(layout.quarantineIntentPath);
+    if (!intent) return undefined;
+    assertQuarantineIntentMatches(intent, intent.binding, intent.reason, layout);
+    assertBindingIdentity(intent.binding, input, layout, runtimeDigest);
+    await this.assertQuarantineBindingAuthority(intent.binding, layout, runtimeDigest);
+    return this.resumeQuarantineIntent(intent, layout);
+  }
+
+  private async assertQuarantineBindingAuthority(
+    binding: ManagedWorkspaceBinding,
+    layout: WorkspaceLayout,
+    runtimeDigest: `sha256:${string}`,
+  ): Promise<void> {
+    assertBindingIdentity(binding, binding, layout, runtimeDigest);
+    const repository = await this.requireRepository(binding, layout);
+    assertBindingRepository(binding, repository);
+    const epoch = await this.requireEpochArtifact(binding, repository, layout);
+    assertBindingEpoch(binding, epoch);
+  }
+
+  private async beginQuarantine(
     binding: ManagedWorkspaceBinding,
     layout: WorkspaceLayout,
     reason: string,
   ): Promise<ManagedWorkspaceQuarantine> {
-    await this.runtime.run(
-      ['--git-dir', binding.repositoryPath, 'worktree', 'unlock', binding.worktreePath],
-      layout.homePath,
-    );
-    const quarantinePath = await moveToQuarantine(
+    await ensureOwnedDirectory(layout.quarantineIntentRoot, layout.managedRoot);
+    const existing = await readQuarantineIntent(layout.quarantineIntentPath);
+    if (existing) {
+      assertQuarantineIntentMatches(existing, binding, reason, layout);
+      return this.resumeQuarantineIntent(existing, layout);
+    }
+    const intent: ManagedWorkspaceQuarantineIntent = {
+      schemaVersion: QUARANTINE_INTENT_SCHEMA_VERSION,
+      protocol: 'maka_managed_workspace_quarantine_intent_v1',
+      reason,
+      quarantinePath: join(
+        layout.quarantineRoot,
+        `${compactIdentity(binding.workspaceInstanceId)}-${sanitizeReason(reason)}-${randomUUID()}`,
+      ),
+      binding,
+    };
+    assertQuarantineIntentMatches(intent, binding, reason, layout);
+    await atomicWriteJson(layout.quarantineIntentPath, intent);
+    await this.input.failpoint?.('after_quarantine_intent');
+    return this.resumeQuarantineIntent(intent, layout);
+  }
+
+  private async resumeQuarantineIntent(
+    intent: ManagedWorkspaceQuarantineIntent,
+    layout: WorkspaceLayout,
+  ): Promise<ManagedWorkspaceQuarantine> {
+    const { binding, reason, quarantinePath } = intent;
+    assertQuarantineIntentMatches(intent, binding, reason, layout);
+    const registration = findWorktreeRegistration(
+      await this.runtime.run(
+        ['--git-dir', binding.repositoryPath, 'worktree', 'list', '--porcelain'],
+        layout.homePath,
+      ),
       binding.worktreePath,
-      layout.quarantineRoot,
-      `${binding.workspaceInstanceId}-${sanitizeReason(reason)}`,
     );
+    if (
+      registration &&
+      (registration.headOid !== binding.baselineCommitOid ||
+        (registration.lockReason !== undefined &&
+          registration.lockReason !== worktreeLockReason(binding)))
+    ) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine worktree registration does not match its durable intent',
+      );
+    }
+    if (registration?.lockReason !== undefined) {
+      await this.runtime.run(
+        ['--git-dir', binding.repositoryPath, 'worktree', 'unlock', binding.worktreePath],
+        layout.homePath,
+      );
+    }
+    await this.input.failpoint?.('after_quarantine_unlock');
+
+    const sourceExists = await pathEntryExists(binding.worktreePath);
+    const targetExists = await pathEntryExists(quarantinePath);
+    if (sourceExists && targetExists) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine source and target both exist',
+      );
+    }
+    if (sourceExists) {
+      await mkdir(layout.quarantineRoot, { recursive: true });
+      await rename(binding.worktreePath, quarantinePath);
+    } else if (!targetExists) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine intent has neither a source worktree nor a target artifact',
+      );
+    }
+    await this.input.failpoint?.('after_quarantine_move');
+
+    const stored = await readBinding(layout.bindingPath);
+    if (stored && !sameBinding(stored, binding)) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine binding changed after its durable intent was recorded',
+      );
+    }
     await rm(layout.bindingPath, { force: true });
+    await this.input.failpoint?.('after_quarantine_binding_removed');
     await this.runtime.run(
       ['--git-dir', binding.repositoryPath, 'worktree', 'prune', '--expire=now'],
       layout.homePath,
     );
-    await atomicWriteJson(`${quarantinePath}.json`, {
+    const remaining = findWorktreeRegistration(
+      await this.runtime.run(
+        ['--git-dir', binding.repositoryPath, 'worktree', 'list', '--porcelain'],
+        layout.homePath,
+      ),
+      binding.worktreePath,
+    );
+    if (remaining) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine could not remove the managed worktree registration',
+      );
+    }
+    await this.input.failpoint?.('after_quarantine_pruned');
+
+    const record: ManagedWorkspaceQuarantineRecord = {
       protocol: 'maka_managed_workspace_quarantine_v1',
       reason,
       binding,
-    });
+    };
+    const existingRecord = await readQuarantineRecord(`${quarantinePath}.json`);
+    if (existingRecord && !sameQuarantineRecord(existingRecord, record)) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine record conflicts with its durable intent',
+      );
+    }
+    if (!existingRecord) await atomicWriteJson(`${quarantinePath}.json`, record);
     return { quarantinePath, reason };
   }
 }
@@ -1255,27 +1430,37 @@ class VerifiedGitRuntime {
     repositoryPath: string,
     homePath: string,
   ): Promise<void> {
-    const runtime = await this.verify();
+    const packRuntime = await this.verify();
     const hooksPath = join(homePath, 'empty-hooks');
     await mkdir(hooksPath, { recursive: true });
-    const env = isolatedGitEnvironment(runtime.executablePath, homePath);
     const fixed = fixedGitArguments(hooksPath);
     const pack = spawn(
-      runtime.executablePath,
+      packRuntime.executablePath,
       [...fixed, '-C', sourceRoot, 'pack-objects', '--stdout', '--revs'],
       {
         cwd: homePath,
-        env,
+        env: isolatedGitEnvironment(packRuntime.executablePath, homePath),
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },
     );
+    let indexRuntime: Awaited<ReturnType<VerifiedGitRuntime['verify']>>;
+    try {
+      // Each Git process is an independent trust decision. Re-check the
+      // executable immediately before index-pack instead of extending the
+      // pack-objects verification across a second invocation.
+      indexRuntime = await this.verify();
+    } catch (error) {
+      pack.kill('SIGKILL');
+      await waitForChildExit(pack).catch(() => undefined);
+      throw error;
+    }
     const index = spawn(
-      runtime.executablePath,
+      indexRuntime.executablePath,
       [...fixed, '--git-dir', repositoryPath, 'index-pack', '--stdin', '--fix-thin'],
       {
         cwd: homePath,
-        env,
+        env: isolatedGitEnvironment(indexRuntime.executablePath, homePath),
         stdio: ['pipe', 'ignore', 'pipe'],
         windowsHide: true,
       },
@@ -1351,6 +1536,7 @@ function workspaceLayout(
   >,
 ): WorkspaceLayout {
   const managedRoot = join(canonicalStorageRoot, 'managed-workspaces');
+  const quarantineIntentRoot = join(managedRoot, 'quarantine-intents');
   const repositoryRoot = join(managedRoot, 'r', compactIdentity(identity.repositoryId));
   const epochRoot = join(
     managedRoot,
@@ -1373,6 +1559,11 @@ function workspaceLayout(
     bindingPath: join(instanceRoot, 'binding.json'),
     worktreePath: join(instanceRoot, 'worktree'),
     quarantineRoot: join(managedRoot, 'quarantine'),
+    quarantineIntentRoot,
+    quarantineIntentPath: join(
+      quarantineIntentRoot,
+      `${compactIdentity(identity.workspaceInstanceId)}.json`,
+    ),
   };
 }
 
@@ -1594,6 +1785,55 @@ async function readEpochArtifact(path: string): Promise<ManagedWorkspaceEpochArt
   return value;
 }
 
+async function readQuarantineIntent(
+  path: string,
+): Promise<ManagedWorkspaceQuarantineIntent | undefined> {
+  const value = await readJson(path);
+  if (value === undefined) return undefined;
+  if (!isQuarantineIntent(value)) {
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_identity_conflict',
+      `Invalid managed workspace quarantine intent: ${path}`,
+    );
+  }
+  return value;
+}
+
+async function readQuarantineRecord(
+  path: string,
+): Promise<ManagedWorkspaceQuarantineRecord | undefined> {
+  const value = await readJson(path);
+  if (value === undefined) return undefined;
+  if (!isQuarantineRecord(value)) {
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_identity_conflict',
+      `Invalid managed workspace quarantine record: ${path}`,
+    );
+  }
+  return value;
+}
+
+function assertQuarantineIntentMatches(
+  intent: ManagedWorkspaceQuarantineIntent,
+  binding: ManagedWorkspaceBinding,
+  reason: string,
+  layout: WorkspaceLayout,
+): void {
+  assertBindingShape(intent.binding);
+  assertBindingPaths(intent.binding, layout);
+  if (
+    !sameBinding(intent.binding, binding) ||
+    intent.reason !== reason ||
+    !isPathWithin(intent.quarantinePath, layout.quarantineRoot) ||
+    !samePath(dirname(intent.quarantinePath), layout.quarantineRoot)
+  ) {
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_identity_conflict',
+      'Managed workspace quarantine intent does not match its binding or owned namespace',
+    );
+  }
+}
+
 function isBinding(value: unknown): value is ManagedWorkspaceBinding {
   if (!isRecord(value)) return false;
   return (
@@ -1692,6 +1932,31 @@ function isEpochArtifact(value: unknown): value is ManagedWorkspaceEpochArtifact
   );
 }
 
+function isQuarantineIntent(value: unknown): value is ManagedWorkspaceQuarantineIntent {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactKeys(value, QUARANTINE_INTENT_KEYS) &&
+    value.schemaVersion === QUARANTINE_INTENT_SCHEMA_VERSION &&
+    value.protocol === 'maka_managed_workspace_quarantine_intent_v1' &&
+    typeof value.reason === 'string' &&
+    value.reason.length > 0 &&
+    typeof value.quarantinePath === 'string' &&
+    isAbsolute(value.quarantinePath) &&
+    isBinding(value.binding)
+  );
+}
+
+function isQuarantineRecord(value: unknown): value is ManagedWorkspaceQuarantineRecord {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactKeys(value, QUARANTINE_RECORD_KEYS) &&
+    value.protocol === 'maka_managed_workspace_quarantine_v1' &&
+    typeof value.reason === 'string' &&
+    value.reason.length > 0 &&
+    isBinding(value.binding)
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -1705,6 +1970,13 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
 }
 
 function sameBinding(left: ManagedWorkspaceBinding, right: ManagedWorkspaceBinding): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameQuarantineRecord(
+  left: ManagedWorkspaceQuarantineRecord,
+  right: ManagedWorkspaceQuarantineRecord,
+): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -1813,6 +2085,16 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function pathEntryExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 async function isNonSymlinkDirectory(path: string): Promise<boolean> {
   try {
     const info = await lstat(path);
@@ -1852,6 +2134,21 @@ function sanitizeReason(value: string): string {
       .replace(/^-+|-+$/gu, '')
       .slice(0, 64) || 'unknown'
   );
+}
+
+function hasUnsafeSourceConfig(raw: string | undefined): boolean {
+  if (!raw) return false;
+  return raw.split(/\r?\n/u).some((line) => {
+    const key = line.trim().toLowerCase();
+    return (
+      key.startsWith('include.') ||
+      key.startsWith('includeif.') ||
+      key === 'extensions.objectformat' ||
+      key === 'extensions.partialclone' ||
+      key === 'core.fsmonitor' ||
+      (key.startsWith('remote.') && key.endsWith('.promisor'))
+    );
+  });
 }
 
 function compactIdentity(value: string): string {
