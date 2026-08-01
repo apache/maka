@@ -17,7 +17,7 @@ Create a GitHub Environment named `release`. Add required reviewers if the repos
 1. Confirm the intended commit is on `main`, CI is green, and `apps/desktop/package.json` contains a version that has never been released.
 2. In GitHub Actions, run `Release macOS arm64` against `main`.
 3. Confirm every workflow step passes and a draft release named `v<version>` exists.
-4. Confirm the draft records the intended commit SHA and contains the DMG, its `.sha256` file, the ZIP, and `latest-mac.yml`.
+4. Confirm the draft records the intended commit SHA and contains the DMG, CLI/TUI tarball, both `.sha256` files, the ZIP, and `latest-mac.yml`.
 
 ## Acceptance on another Apple Silicon Mac
 
@@ -30,5 +30,16 @@ Download the DMG and its `.sha256` file through the GitHub UI. This download pat
 5. Configure a model connection, send one basic prompt, and run one representative file-tool task.
 6. Install `ripgrep` with `brew install ripgrep`, then confirm a task using `Grep` works.
 7. Confirm the known limitation is accurate: Computer Use is not included.
+
+## CLI/TUI acceptance on another Apple Silicon Mac
+
+Download `Maka-<version>-cli-mac-arm64.tar.gz` and its `.sha256` file through the GitHub UI.
+
+1. Run `shasum -a 256 -c Maka-<version>-cli-mac-arm64.tar.gz.sha256`.
+2. Extract the tarball and add its `bin` directory to `PATH` without installing the desktop app.
+3. Confirm `maka --version` matches the desktop version and `maka-agent --version` reports the same value.
+4. Confirm `maka --help` lists `run`, `eval`, and `inspect`.
+5. Run `maka`, complete or cancel the first-run setup, and confirm the TUI renders correctly.
+6. Run one representative non-interactive command and confirm it completes without a repository checkout or system Node.js installation.
 
 Publish the draft only after all checks pass. If acceptance fails, keep the draft unpublished, fix the issue, increment the desktop version, and run the workflow again; do not replace an existing release identity.

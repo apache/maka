@@ -55,6 +55,7 @@ jobs:
           dmg="apps/desktop/release/Maka-${version}-mac-arm64.dmg"
           zip="apps/desktop/release/Maka-${version}-mac-arm64.zip"
           update_yml="apps/desktop/release/latest-mac.yml"
+          cli="apps/desktop/release/Maka-${version}-cli-mac-arm64.tar.gz"
 
           if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
             echo "Tag ${tag} already exists." >&2
@@ -71,6 +72,7 @@ jobs:
             echo "dmg=${dmg}"
             echo "zip=${zip}"
             echo "update_yml=${update_yml}"
+            echo "cli=${cli}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Package signed and notarized DMG
@@ -87,6 +89,12 @@ jobs:
 
       - name: Verify the final DMG
         run: npm run verify:macos-arm64 -- "${{ steps.release.outputs.dmg }}"
+
+      - name: Package standalone CLI and TUI
+        run: npm run package:macos-arm64-cli
+
+      - name: Verify the standalone CLI and TUI
+        run: npm run verify:macos-arm64-cli -- "${{ steps.release.outputs.cli }}"
 
       - name: Create draft GitHub Release
         env:
@@ -106,6 +114,8 @@ jobs:
             "${DMG_PATH}.sha256" \
             "${{ steps.release.outputs.zip }}" \
             "${{ steps.release.outputs.update_yml }}" \
+            "${{ steps.release.outputs.cli }}" \
+            "${{ steps.release.outputs.cli }}.sha256" \
             --draft \
             --target "$GITHUB_SHA" \
             --title "Maka ${RELEASE_VERSION}" \

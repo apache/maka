@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const signingEnvironment = {
@@ -23,7 +24,6 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
     packageMacosArm64({ platform: 'darwin', arch: 'arm64', env: {} }),
     /CSC_LINK/,
   );
-
   await assert.rejects(
     verifyPackagedMacApp('/tmp/Maka.app', {
       run: async (command, args) => {
@@ -41,6 +41,54 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
     }),
     /arm64/,
   );
+});
+
+test('standalone CLI release has stable paths, aliases, and an Apple Silicon host gate', async () => {
+  const {
+    assertMacosArm64CliHost,
+    macosArm64CliInstallArgs,
+    macosArm64CliWrapper,
+    packageMacosArm64Cli,
+    resolveMacosArm64CliArtifactPaths,
+  } = await import(new URL('package-macos-arm64-cli.mjs', import.meta.url));
+  const { verifyMacosArm64Cli } = await import(
+    new URL('verify-macos-arm64-cli.mjs', import.meta.url)
+  );
+
+  assert.doesNotThrow(() => assertMacosArm64CliHost('darwin', 'arm64'));
+  assert.throws(() => assertMacosArm64CliHost('darwin', 'x64'), /Apple Silicon macOS host/);
+  await assert.rejects(
+    packageMacosArm64Cli({ platform: 'linux', arch: 'x64' }),
+    /Apple Silicon macOS host/,
+  );
+  await assert.rejects(
+    verifyMacosArm64Cli('/missing', { platform: 'linux', arch: 'x64' }),
+    /Apple Silicon macOS host/,
+  );
+
+  const paths = resolveMacosArm64CliArtifactPaths('1.2.3');
+  const installArgs = macosArm64CliInstallArgs('/staging');
+  assert.ok(paths.archivePath.endsWith('/Maka-1.2.3-cli-mac-arm64.tar.gz'));
+  assert.equal(paths.checksumPath, `${paths.archivePath}.sha256`);
+  assert.equal(installArgs[0], 'ci');
+  assert.deepEqual(installArgs.slice(1, 3), ['--prefix', '/staging']);
+  assert.ok(installArgs.includes('--workspace'));
+  assert.ok(installArgs.includes('maka-agent'));
+  assert.match(macosArm64CliWrapper(), /libexec\/node\/bin\/node/);
+  assert.match(macosArm64CliWrapper(), /maka-agent\/dist\/cli\.js/);
+  assert.match(macosArm64CliWrapper(), /"\$@"/);
+});
+
+test('release workflow verifies and uploads both terminal artifacts', async () => {
+  const workflow = await readFile(
+    new URL('../.github/workflows/release-macos-arm64.yml', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(workflow, /npm run package:macos-arm64-cli/);
+  assert.match(workflow, /npm run verify:macos-arm64-cli/);
+  assert.match(workflow, /steps\.release\.outputs\.cli/);
+  assert.match(workflow, /steps\.release\.outputs\.cli \}\}\.sha256/);
 });
 
 test('renderer readiness rejects the static preload skeleton', async () => {
