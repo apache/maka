@@ -19,6 +19,7 @@ import {
   linuxExecutableRoots,
 } from '../sandbox/linux-sandbox.js';
 import { detectLinuxSandboxCapability } from '../sandbox/linux-capability.js';
+import { LINUX_BWRAP_PROBE_ARGS } from '../sandbox/linux-capability.js';
 import type { SandboxPathContext, SandboxTransformRequest } from '../sandbox/types.js';
 
 function workspaceRequest(profile: PermissionProfile): SandboxTransformRequest {
@@ -72,6 +73,19 @@ function protectedMetadataProfile(): PermissionProfile {
 }
 
 describe('detectLinuxSandboxCapability', () => {
+  it('probes every namespace required by production commands', () => {
+    const request = workspaceRequest(createWorkspaceWritePermissionProfile());
+    const productionArgv = buildBubblewrapArgv({
+      bwrapPath: '/usr/bin/bwrap',
+      command: request.command,
+    });
+    const requiredNamespaces = productionArgv.filter((arg) => arg.startsWith('--unshare-'));
+
+    for (const namespace of requiredNamespaces) {
+      assert.ok((LINUX_BWRAP_PROBE_ARGS as readonly string[]).includes(namespace));
+    }
+  });
+
   it('reports non-Linux platforms without probing bwrap', () => {
     assert.deepEqual(detectLinuxSandboxCapability({ platform: 'win32' }), {
       available: false,
