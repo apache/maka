@@ -9,6 +9,7 @@ import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   createWorkspaceWritePermissionProfile,
+  type ModelCallKind,
   type RuntimeEvent,
 } from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
@@ -34,12 +35,14 @@ import {
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
+  createHostGoalEvaluator,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
@@ -657,6 +660,11 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Edit',
       'FormatJson',
       'Glob',
+      'GoalClear',
+      'GoalPause',
+      'GoalResume',
+      'GoalSet',
+      'GoalStatus',
       'Grep',
       'Read',
       'Skill',
@@ -749,6 +757,123 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         await rm(base, { recursive: true, force: true });
       }
     }
+  }
+});
+
+test('Host Goal evaluator meters provider usage and aborts its physical request', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+    const evaluator = createHostGoalEvaluator(evaluatorInput);
+    const result = await evaluator.evaluate(
+      'Judge the completed Goal.',
+      session.id,
+      new AbortController().signal,
+    );
+    assert.equal(result, SUMMARY_TEXT);
+    const logs = await usage.telemetry.logs({ range: 'all' });
+    const recorded = logs.rows.find((row) => row.callKind === 'goal_evaluation');
+    assert.ok(recorded);
+    assert.equal(recorded.callId, `goal_evaluation_${session.id}_call-1`);
+    assert.equal(recorded.inputTokens, 7);
+    assert.equal(recorded.outputTokens, 3);
+    assert.equal(recorded.status, 'success');
+
+    let providerSignal: AbortSignal | undefined;
+    let transportCloses = 0;
+    const stalled = createHostGoalEvaluator({
+      ...evaluatorInput,
+      newId: () => 'call-2',
+      createFetchTransport: () => ({
+        fetch: async (_request, init) => {
+          providerSignal = init?.signal ?? undefined;
+          return await new Promise<Response>((_resolve, reject) => {
+            providerSignal?.addEventListener(
+              'abort',
+              () => reject(providerSignal?.reason ?? new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          });
+        },
+        close: async () => {
+          transportCloses += 1;
+        },
+      }),
+    });
+    const abort = new AbortController();
+    const pending = stalled.evaluate('Wait forever.', session.id, abort.signal);
+    await waitForCondition(() => providerSignal !== undefined, 'Goal evaluator did not dispatch');
+    abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
+    await assert.rejects(settleWithin(pending));
+    assert.equal(providerSignal?.aborted, true);
+    assert.equal(transportCloses, 1);
+    const abortedLogs = await usage.telemetry.logs({ range: 'all' });
+    assert.ok(
+      abortedLogs.rows.some(
+        (row) => row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
+      ),
+    );
+  } finally {
+    await usage.close();
+    await execution.sessionStore.close?.();
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -1053,7 +1178,7 @@ async function waitForUsage(
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
   context: ConnectionContext,
   connectionSlug: string,
-  callKind: 'main' | 'semantic_compact' | 'history_compact',
+  callKind: ModelCallKind,
 ): Promise<Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const queried = await composition.handlers['usage.query'](
@@ -1244,6 +1369,14 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(message);
 }
 
 function controlledOAuthTransports(): {

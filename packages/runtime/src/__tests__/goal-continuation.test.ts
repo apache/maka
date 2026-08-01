@@ -708,7 +708,11 @@ describe('GoalContinuationCoordinator settlement', () => {
   test('archive invalidates queued and in-flight outcomes before Goal replacement', async () => {
     const { manager, coordinator, deps, admitted } = setup();
     const evaluation = controlledCall<string>();
-    deps.evaluator.evaluate = evaluation.invoke;
+    let evaluationSignal: AbortSignal | undefined;
+    deps.evaluator.evaluate = (_prompt, _sessionId, signal) => {
+      evaluationSignal = signal;
+      return evaluation.invoke();
+    };
     manager.create(SESSION, 'old');
 
     const inFlight = settleExternal(coordinator, SESSION, {
@@ -722,6 +726,7 @@ describe('GoalContinuationCoordinator settlement', () => {
     });
 
     const archive = coordinator.beginSessionClose(SESSION, 'archive');
+    assert.equal(evaluationSignal?.aborted, true);
     assert.equal(manager.remove(SESSION), true);
     archive.commit();
     coordinator.unarchiveSession(SESSION);
@@ -742,6 +747,52 @@ describe('GoalContinuationCoordinator settlement', () => {
     assert.equal(manager.get(SESSION)?.condition, 'replacement');
     assert.equal(manager.get(SESSION)?.status, 'active');
     assert.equal(admitted.length, 0);
+  });
+
+  test('model pause and clear abort an older evaluator without revoking their own turn', async (t) => {
+    for (const action of ['pause', 'clear'] as const) {
+      await t.test(action, async () => {
+        const { manager, coordinator, deps, admitted } = setup();
+        const evaluation = controlledCall<string>();
+        let evaluationSignal: AbortSignal | undefined;
+        deps.evaluator.evaluate = (_prompt, _sessionId, signal) => {
+          evaluationSignal = signal;
+          return evaluation.invoke();
+        };
+        manager.create(SESSION, 'ship');
+        const priorSettlement = settleExternal(coordinator, SESSION, {
+          kind: 'completed',
+          turnId: 'turn-evaluating',
+        });
+        await evaluation.started;
+
+        const settleControl = registerExternalTurn(coordinator, SESSION, 'turn-control');
+        const tools = goalToolsFor(manager, coordinator);
+        const context = goalToolContext('turn-control');
+        const toolName = action === 'pause' ? GOAL_PAUSE_TOOL_NAME : GOAL_CLEAR_TOOL_NAME;
+        const tool = tools.find((candidate) => candidate.name === toolName);
+        assert.ok(tool);
+        assert.match(String(await tool.impl({}, context)), /Goal/);
+        assert.equal(evaluationSignal?.aborted, true);
+        await priorSettlement;
+
+        if (action === 'pause') {
+          const resume = tools.find((candidate) => candidate.name === GOAL_RESUME_TOOL_NAME);
+          assert.ok(resume);
+          assert.match(String(await resume.impl({}, context)), /Goal resumed/);
+          assert.match(String(await tool.impl({}, context)), /Goal paused/);
+        } else {
+          const set = tools.find((candidate) => candidate.name === GOAL_SET_TOOL_NAME);
+          assert.ok(set);
+          assert.match(String(await set.impl({ condition: 'replacement' }, context)), /Goal set/);
+          assert.match(String(await tool.impl({}, context)), /Goal cleared/);
+        }
+
+        await settleControl({ kind: 'completed', turnId: 'turn-control' });
+        assert.equal(manager.get(SESSION)?.status, action === 'pause' ? 'paused' : 'cleared');
+        assert.equal(admitted.length, 0);
+      });
+    }
   });
 
   test('archive consumes an external turn that has not reached the FIFO', async () => {

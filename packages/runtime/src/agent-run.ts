@@ -1029,6 +1029,9 @@ export class AgentRun {
       ...(this.input.userInput.origin?.kind === 'automation'
         ? { automationId: this.input.userInput.origin.automationId }
         : {}),
+      ...(this.input.userInput.origin?.kind === 'goal'
+        ? { goalId: this.input.userInput.origin.goalId }
+        : {}),
       ...(this.input.userInput.origin?.kind === 'agent_graph'
         ? {
             agentGraphWakeId: this.input.userInput.origin.wakeId,

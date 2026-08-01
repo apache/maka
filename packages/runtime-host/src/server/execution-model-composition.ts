@@ -3,6 +3,7 @@ import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/l
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
+import type { SessionHeader } from '@maka/core/session';
 import {
   filterModelVisibleTaskLedgerTasks,
   renderTaskLedgerPromptText,
@@ -27,6 +28,8 @@ import {
   createProviderRequestCaptureRecorder,
   createProxiedFetchTransport,
   getAIModel,
+  generateGoalEvaluationModelCall,
+  llmCallUsageFields,
   projectEffectiveProductToolSurface,
   recordLlmCall,
   recordToolInvocation,
@@ -35,6 +38,7 @@ import {
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
   type BuildBuiltinToolsOptions,
+  type GoalEvaluatorDeps,
   type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
@@ -102,6 +106,7 @@ export interface HostExecutionModelCompositionInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly automationTool?: MakaTool;
+  readonly goalTools?: readonly MakaTool[];
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -116,6 +121,7 @@ export function createHostExecutionModelComposition(
         inventoryFor,
         input.builtinTools,
         input.automationTool,
+        input.goalTools,
       );
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
@@ -208,7 +214,150 @@ export interface HostAiSdkBackendInput {
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly automationTool?: MakaTool;
+  readonly goalTools?: readonly MakaTool[];
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+}
+
+export interface HostGoalEvaluatorInput {
+  readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly oauthCredentials: HostOAuthExecutionAuthority;
+  readonly claudeDeviceId: string;
+  readonly usage: InteractiveUsageStoresWriter;
+  readonly requestDrain: () => void;
+  readonly readSessionHeader: (sessionId: string) => Promise<SessionHeader>;
+  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  readonly now?: () => number;
+  readonly newId?: () => string;
+}
+
+/** Creates a tool-free Goal judge on the Session's canonical connection and model. */
+export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEvaluatorDeps {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
+  const now = input.now ?? Date.now;
+  const newId = input.newId ?? randomUUID;
+  let telemetryDrainRequested = false;
+  const telemetry = {
+    insertLlmCall: async (
+      record: Parameters<typeof input.usage.telemetry.recordLlmCall>[0],
+    ): Promise<void> => {
+      try {
+        await input.usage.telemetry.recordLlmCall(record);
+      } catch (error) {
+        if (!telemetryDrainRequested) {
+          telemetryDrainRequested = true;
+          input.requestDrain();
+        }
+        throw error;
+      }
+    },
+  };
+  return {
+    evaluate: async (prompt, sessionId, signal) => {
+      const header = await readDuringBackendCreation(
+        () => input.readSessionHeader(sessionId),
+        signal,
+      );
+      const [target, pricingSnapshot] = await Promise.all([
+        readDuringBackendCreation(
+          () =>
+            resolveExecutionTarget(
+              header,
+              input.runtimePolicy,
+              input.oauthCredentials,
+              createFetchTransport,
+            ),
+          signal,
+        ),
+        readDuringBackendCreation(() => input.usage.pricing.snapshot(), signal),
+      ]);
+      const pricing = buildPricingLookup(pricingSnapshot.overrides);
+      const transport = createFetchTransport(
+        toProxySettings(target.networkProxy, target.proxySecret),
+      );
+      let apiKey = target.apiKey;
+      let modelFetch: typeof fetch = transport.fetch;
+      try {
+        if (target.oauthBinding) {
+          const initialOAuthTokens = await readDuringBackendCreation(
+            () => target.oauthBinding!.resolve(),
+            signal,
+          );
+          apiKey = initialOAuthTokens.access_token;
+          modelFetch = createHostOAuthModelFetch({
+            binding: target.oauthBinding,
+            initialTokens: initialOAuthTokens,
+            connection: target.connection,
+            sessionId,
+            modelId: target.model,
+            claudeDeviceId: input.claudeDeviceId,
+            fetchFn: transport.fetch,
+          });
+        }
+        const startedAt = now();
+        const callId = `goal_evaluation_${sessionId}_${newId()}`;
+        const baseRecord = {
+          sessionId,
+          callKind: 'goal_evaluation' as const,
+          callId,
+          connectionSlug: target.connection.slug,
+          providerId: target.connection.providerType,
+          modelId: target.model,
+          startedAt,
+        };
+        try {
+          const result = await generateGoalEvaluationModelCall({
+            model: getAIModel({
+              connection: target.connection,
+              apiKey,
+              modelId: target.model,
+              fetch: modelFetch,
+            }),
+            prompt,
+            abortSignal: signal,
+            providerOptions: buildProviderOptions(
+              target.connection,
+              target.model,
+              header.thinkingLevel,
+            ),
+          });
+          await recordLlmCall(
+            { repo: telemetry, lookupPricing: pricing },
+            {
+              ...baseRecord,
+              ...(result.usage
+                ? llmCallUsageFields(result.usage)
+                : { inputTokens: 0, outputTokens: 0 }),
+              ...(result.finishReason && !result.usage
+                ? { rawFinishReason: result.finishReason }
+                : {}),
+              latencyMs: Math.max(0, now() - startedAt),
+              status: 'success',
+            },
+          );
+          return result.text;
+        } catch (error) {
+          await recordLlmCall(
+            { repo: telemetry, lookupPricing: pricing },
+            {
+              ...baseRecord,
+              inputTokens: 0,
+              outputTokens: 0,
+              latencyMs: Math.max(0, now() - startedAt),
+              status: signal.aborted ? 'aborted' : 'error',
+              errorClass: evaluatorErrorClass(error),
+            },
+          );
+          throw error;
+        }
+      } finally {
+        await transport.close();
+      }
+    },
+  };
+}
+
+function evaluatorErrorClass(error: unknown): string {
+  return error instanceof Error ? error.name : 'UnknownError';
 }
 
 /** Builds one real provider backend from canonical Host state. */
@@ -274,6 +423,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
+      ...(input.goalTools ? { goalTools: input.goalTools } : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -606,6 +756,7 @@ function buildDefaultHostTools(
   inventoryFor: SkillInventoryResolver,
   builtinOptions?: BuildBuiltinToolsOptions,
   automationTool?: MakaTool,
+  goalTools: readonly MakaTool[] = [],
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
@@ -617,6 +768,7 @@ function buildDefaultHostTools(
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
     ...(automationTool ? [automationTool.name] : []),
+    ...goalTools.map((tool) => tool.name),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
@@ -631,6 +783,7 @@ function buildDefaultHostTools(
     }),
     ...taskTools,
     ...(automationTool ? [automationTool] : []),
+    ...goalTools,
   ];
 }
 

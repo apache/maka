@@ -1067,6 +1067,7 @@ export {
   buildPricingLookup,
   computeCost,
   getBuiltinPricing,
+  llmCallUsageFields,
   recordLlmCall,
   recordToolInvocation,
 } from './telemetry/index.js';
@@ -1425,21 +1426,34 @@ export {
   TERMINAL_GOAL_STATUSES,
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_BLOCK_CAP,
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  goalCheckpoint,
+  isGoalTextWithinLimit,
+  truncateGoalText,
 } from './goal-state.js';
 export type {
   GoalCheckpoint,
+  GoalControlLease,
   GoalManagerDeps,
   GoalPauseOptions,
   GoalState,
   GoalStatus,
+  GoalTextLimit,
 } from './goal-state.js';
 export {
   evaluateGoal,
   buildGoalEvaluationPrompt,
   parseGoalEvaluation,
+  generateGoalEvaluationModelCall,
   DEFAULT_EVALUATOR_TIMEOUT_MS,
 } from './goal-evaluator.js';
-export type { GoalEvaluation, GoalEvaluatorDeps } from './goal-evaluator.js';
+export type {
+  GoalEvaluation,
+  GoalEvaluationModelInput,
+  GoalEvaluationModelResult,
+  GoalEvaluatorDeps,
+} from './goal-evaluator.js';
 export {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,

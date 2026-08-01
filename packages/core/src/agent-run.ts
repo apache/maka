@@ -51,6 +51,7 @@ export type AgentRunContinuationSource =
 export type RootExecutionDescriptor =
   | { kind: 'external_message' }
   | { kind: 'automation'; automationId: string }
+  | { kind: 'goal'; goalId: string }
   | {
       kind: 'linked_child_initial';
       agentId: string;
@@ -135,6 +136,8 @@ export interface AgentRunHeader {
   continuationSource?: AgentRunContinuationSource;
   /** Non-user trigger for this run (e.g. a scheduled automation fire). */
   automationId?: string;
+  /** Host-owned Goal generation that triggered this continuation Run. */
+  goalId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
   agentGraphWakeId?: string;
   /** Durable delivery attempt for this host-authored supervisor turn. */
@@ -249,6 +252,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'workspaceIdentity',
     'continuationSource',
     'automationId',
+    'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
     'failureClass',
@@ -306,6 +310,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.parentSessionId,
       value.workspaceIdentity,
       value.automationId,
+      value.goalId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,
       value.failureClass,

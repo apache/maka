@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
   BackendRegistry,
@@ -35,7 +36,8 @@ import { HostAutomationCoordinator } from './automation-coordinator.js';
 import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
-import { createHostAiSdkBackend } from './execution-model-composition.js';
+import { createHostAiSdkBackend, createHostGoalEvaluator } from './execution-model-composition.js';
+import { HostGoalCoordinator } from './goal-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
@@ -134,6 +136,7 @@ export async function createExecutionRuntimeHostComposition(
     let memory: HostMemoryCoordinator | undefined;
     let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     let automations: HostAutomationCoordinator | undefined;
+    let goal: HostGoalCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -169,6 +172,7 @@ export async function createExecutionRuntimeHostComposition(
       stores,
       rootAdmissions: rootAdmissionOwner,
       messages,
+      readGoal: (sessionId) => requireGoal(goal).readProjection(sessionId),
     });
     canonicalProjection = canonicalProjectionReader;
     continuity = new SessionContinuityCoordinator(
@@ -188,6 +192,8 @@ export async function createExecutionRuntimeHostComposition(
     const beginDrain = () => {
       if (draining) return;
       draining = true;
+      goal?.beginDrain();
+      rootCoordinator?.beginDrain();
       runtimeResources?.beginDrain();
       automations?.beginDrain();
       messages.beginDrain();
@@ -236,6 +242,7 @@ export async function createExecutionRuntimeHostComposition(
         usage: openedUsageStores,
         clientCapabilities: requireClientCapabilities(clientCapabilities),
         automationTool: requireAutomationCoordinator(automations).modelTool,
+        goalTools: requireGoal(goal).tools,
         builtinTools: {
           shellRuns: requireRuntimeResources(runtimeResources),
           runtimeResources: requireRuntimeResources(runtimeResources),
@@ -328,6 +335,7 @@ export async function createExecutionRuntimeHostComposition(
       context.acquireResidency,
       context.requestDrain,
       clientCapabilities,
+      () => requireGoal(goal),
       (admission) => requireAutomationCoordinator(automations).assertRecoveryAdmission(admission),
     );
     const coordinator = rootCoordinator;
@@ -338,9 +346,35 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       root: { executeRoot: (input) => coordinator.executeRoot(input) },
       runtimePolicy: runtimePolicyStores,
-      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind === 'active',
+      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       acquireResidency: context.acquireResidency,
       requestDrain: context.requestDrain,
+    });
+    goal = new HostGoalCoordinator({
+      stores,
+      sessionAdmission,
+      evaluator: createHostGoalEvaluator({
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
+        usage: openedUsageStores,
+        requestDrain: context.requestDrain,
+        readSessionHeader: (sessionId) => stores.sessionStore.readHeaderSnapshot(sessionId),
+      }),
+      admitTurn: (sessionId, text, checkpoint, controlLease) =>
+        coordinator.admitGoalTurn(sessionId, checkpoint, controlLease, text),
+      listActionableTaskKeys: async (sessionId) => {
+        const tasks = await taskLedger.list(sessionId, {
+          includeTerminal: false,
+          includeArchived: false,
+          classifyResumeTrust: true,
+        });
+        return filterModelVisibleTaskLedgerTasks(tasks)
+          .filter((task) => task.status === 'pending' || task.status === 'in_progress')
+          .map((task) => task.key);
+      },
+      acquireResidency: context.acquireResidency,
+      onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
     });
     const runtimePolicy = new HostRuntimePolicyCoordinator(
       runtimePolicyStores,
@@ -375,7 +409,7 @@ export async function createExecutionRuntimeHostComposition(
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
-      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind === 'active',
+      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       requestDrain: context.requestDrain,
     });
     const artifacts = new HostArtifactCoordinator(
@@ -385,6 +419,7 @@ export async function createExecutionRuntimeHostComposition(
     );
     const handlers = {
       ...coordinator.handlers,
+      ...requireGoal(goal).handlers,
       ...sessionCatalog.handlers,
       ...sessionRevisions.handlers,
       ...messages.handlers,
@@ -435,6 +470,11 @@ export async function createExecutionRuntimeHostComposition(
         const errors: unknown[] = [];
         try {
           await recover();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          goal?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -652,5 +692,10 @@ function requireRuntimeResources(
   coordinator: HostRuntimeResourceCoordinator | undefined,
 ): HostRuntimeResourceCoordinator {
   if (!coordinator) throw new Error('Runtime Host Runtime Resource coordinator is not composed');
+  return coordinator;
+}
+
+function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Goal coordinator is not composed');
   return coordinator;
 }

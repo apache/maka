@@ -37,7 +37,10 @@ import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
-import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import {
+  type HostGoalRootAuthority,
+  RootTurnCoordinator,
+} from '../server/root-turn-coordinator.js';
 import {
   SessionAdmissionGate,
   type SessionAdmissionLease,
@@ -47,6 +50,10 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
+const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
+  beginExternalTurn: () => ({ kind: 'unavailable', reason: 'Goal authority is not composed.' }),
+  matchesActive: () => false,
+};
 
 test('hosted Automation roots preserve one admission, UserMessage, and AgentRun identity', async () => {
   let recoveryValidationCount = 0;
@@ -288,6 +295,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       () => {
         drainRequested = true;
       },
+      undefined,
+      () => NO_GOAL_ROOT_AUTHORITY,
     );
 
     const parentSink = new RecordingContinuitySink();
@@ -2532,6 +2541,7 @@ async function createFailureFixture(options: {
       acquireResidency,
       requestDrain,
       options.clientCapabilities,
+      () => NO_GOAL_ROOT_AUTHORITY,
       assertAutomationRecoveryAdmission,
     );
   coordinator = createCoordinator(rootAdmissionOwner);

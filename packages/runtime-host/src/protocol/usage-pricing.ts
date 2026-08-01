@@ -5,6 +5,7 @@ import {
 } from '@maka/core/usage-stats/pricing';
 import type {
   CacheMissInputSource,
+  ModelCallKind,
   PricingConfig,
   ToolInvocationResultSummary,
   UsageBucket,
@@ -12,6 +13,7 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { MODEL_CALL_KINDS } from '@maka/core/usage-stats/types';
 import { requireCount, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
@@ -122,7 +124,7 @@ export interface LlmUsageLogProjection {
   readonly source: 'llm';
   readonly id: string;
   readonly ts: number;
-  readonly callKind?: 'main' | 'semantic_compact' | 'history_compact';
+  readonly callKind?: ModelCallKind;
   readonly callId?: string;
   readonly connectionSlug?: string;
   readonly providerId: string;
@@ -814,7 +816,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     source: 'llm',
     id: projectionText(row.id, 'usage log id'),
     ts: nonnegativeFinite(row.ts, 'usage log timestamp'),
-    ...optionalEnum(row, 'callKind', ['main', 'semantic_compact', 'history_compact'] as const),
+    ...optionalEnum(row, 'callKind', MODEL_CALL_KINDS),
     ...optionalProjectionText(row, 'callId'),
     ...optionalProjectionText(row, 'connectionSlug'),
     providerId: projectionText(row.providerId, 'usage log provider'),

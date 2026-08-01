@@ -17,6 +17,7 @@
     "./tool-recovery-fact": "./dist/tool-recovery-fact.js",
     "./tool-recovery-bundle": "./dist/tool-recovery-bundle.js",
     "./runtime-policy": "./dist/runtime-policy.js",
+    "./goal": "./dist/goal.js",
     "./execution-evidence": "./dist/execution-evidence.js",
     "./events": "./dist/events.js",
     "./interaction": "./dist/interaction.js",

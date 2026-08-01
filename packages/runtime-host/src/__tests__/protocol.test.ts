@@ -61,6 +61,8 @@ describe('Runtime Host bootstrap protocol', () => {
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',
+      'goal.control',
+      'goal.query',
       'host.status',
       'interaction.answer',
       'interaction.query',
@@ -127,7 +129,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 2);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
     assert.deepEqual(
       Object.fromEntries(
         (['subscription.open', 'subscription.close'] as const).map((operation) => [
@@ -1072,6 +1074,7 @@ function continuitySnapshot(hostEpoch: string) {
       runId: 'run-1',
       status: 'running' as const,
     },
+    goal: null,
     queue: {
       hostEpoch,
       queueRevision: 1,

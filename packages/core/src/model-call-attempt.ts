@@ -6,7 +6,9 @@ import {
   isOptionalString,
   isRecord,
 } from './record-schema.js';
-import type { PricingConfig } from './usage-stats/types.js';
+import { MODEL_CALL_KINDS, type ModelCallKind, type PricingConfig } from './usage-stats/types.js';
+
+export { MODEL_CALL_KINDS, type ModelCallKind } from './usage-stats/types.js';
 
 /**
  * Canonical accounting record for one physical provider request attempt.
@@ -29,9 +31,6 @@ export const MODEL_CALL_ATTEMPT_SCHEMA_VERSION = 1 as const;
 
 /** AgentRun event type carrying a {@link ModelCallAttempt} in `data`. */
 export const MODEL_CALL_ATTEMPT_EVENT_TYPE = 'model_call_attempt_recorded' as const;
-
-export const MODEL_CALL_KINDS = ['main', 'semantic_compact', 'history_compact'] as const;
-export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
 
 export const MODEL_CALL_ATTEMPT_STATUSES = [
   'completed',

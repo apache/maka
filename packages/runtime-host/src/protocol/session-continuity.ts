@@ -18,8 +18,9 @@ import {
 } from './message.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
+import { decodeGoalProjection, type GoalProjection } from './goal.js';
 
-export const SESSION_CONTINUITY_SCHEMA_VERSION = 2 as const;
+export const SESSION_CONTINUITY_SCHEMA_VERSION = 3 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
@@ -53,6 +54,7 @@ export interface SessionContinuitySnapshot {
   session: SessionContinuityIdentity;
   projectionRevision: number;
   rootTurn: TurnSnapshot | null;
+  goal: GoalProjection | null;
   queue: SessionMessageQueueProjection;
   interactions: SessionInteractionProjection;
 }
@@ -283,6 +285,7 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
     'session',
     'projectionRevision',
     'rootTurn',
+    'goal',
     'queue',
     'interactions',
   ]);
@@ -295,11 +298,16 @@ export function decodeSessionContinuitySnapshot(value: unknown): SessionContinui
     throw invalidProtocolFrame('Session continuity root Turn belongs to a different Session');
   }
   const interactions = decodeSessionInteractionProjection(record.interactions, session.sessionId);
+  const goal = record.goal === null ? null : decodeGoalProjection(record.goal);
+  if (goal !== null && goal.sessionId !== session.sessionId) {
+    throw invalidProtocolFrame('Session continuity Goal belongs to a different Session');
+  }
   return {
     schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
     session,
     projectionRevision: requirePositiveCount(record.projectionRevision, 'projectionRevision'),
     rootTurn,
+    goal,
     queue: decodeSessionMessageQueueProjection(record.queue),
     interactions,
   };

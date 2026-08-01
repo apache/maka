@@ -67,6 +67,7 @@ export interface HostMessageSessionHeader {
 
 export type HostMessageRootState =
   | { readonly kind: 'idle' }
+  | { readonly kind: 'reserved' }
   | ({ readonly kind: 'active' } & RuntimeMessageRunIdentity);
 
 export interface HostMessageStartInput {
@@ -555,6 +556,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           }
           const result = { disposition: 'turn_started', turnId: started.turnId } as const;
           return success(result);
+        }
+        if (rootState.kind === 'reserved') {
+          return failure('session_busy', 'A Goal continuation is reserving the next root Turn');
         }
         const state = this.#requireState(input.sessionId);
         if (state.phase !== 'open') {

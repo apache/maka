@@ -190,7 +190,7 @@ describe('Usage/Pricing protocol', () => {
       usageResponse({
         kind: 'logs',
         source: 'llm',
-        rows: [validLog(), { ...validLog(1), callKind: 'history_compact' }],
+        rows: [validLog(), { ...validLog(1), callKind: 'goal_evaluation' }],
         offset: 0,
         total: 2,
         nextOffset: null,

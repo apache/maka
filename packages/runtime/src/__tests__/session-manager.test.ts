@@ -1159,7 +1159,7 @@ describe('SessionManager claimed graph intent execution', () => {
       targetRunId: 'recovered-graph-run',
     });
 
-    await manager.closePendingHostedLinkedChildAdmission({
+    await manager.closePendingHostedAdmission({
       sessionId: child.id,
       turnId: claim.targetTurnId,
       runId: claim.targetRunId,
@@ -2273,7 +2273,7 @@ describe('SessionManager child-session runtime primitive', () => {
     if (!claimedHeader.agentId || !claimedHeader.agentName) {
       throw new Error('linked child continuation claim lost its trusted agent identity');
     }
-    await manager.closePendingHostedLinkedChildAdmission({
+    await manager.closePendingHostedAdmission({
       sessionId: child.childSessionId,
       turnId: claimState.claim.target.turnId,
       runId: claimState.claim.target.runId,

@@ -376,6 +376,7 @@ function canonical(
       overrides.rootTurn === undefined
         ? { sessionId: SESSION_ID, turnId: 'turn-1', runId: 'run-1', status: 'running' }
         : overrides.rootTurn,
+    goal: null,
     queue: {
       hostEpoch: HOST_EPOCH,
       queueRevision: 0,

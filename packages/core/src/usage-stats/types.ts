@@ -1,3 +1,11 @@
+export const MODEL_CALL_KINDS = [
+  'main',
+  'semantic_compact',
+  'history_compact',
+  'goal_evaluation',
+] as const;
+export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
+
 export type TimeRange = '24h' | '7d' | '30d' | 'all' | { from: number; to: number };
 
 export type UsageGroupBy = 'provider' | 'model' | 'tool' | 'day' | 'hour';
@@ -49,7 +57,7 @@ export interface UsageBucket {
 export interface UsageLogRow {
   id: string;
   ts: number;
-  callKind?: 'main' | 'semantic_compact' | 'history_compact';
+  callKind?: ModelCallKind;
   callId?: string;
   connectionSlug?: string;
   providerId: string;
@@ -94,7 +102,7 @@ export interface LlmCallRecord {
    * Distinguishes the main agent stream from auxiliary model calls such as
    * semantic or history compaction. Omitted means the historical main stream call.
    */
-  callKind?: 'main' | 'semantic_compact' | 'history_compact';
+  callKind?: ModelCallKind;
   /** Stable id for auxiliary calls so multiple records in one turn do not collide. */
   callId?: string;
   connectionSlug?: string;

@@ -66,6 +66,7 @@ const allowedExternalImports = {
     '@maka/core/automation',
     '@maka/core/collaboration',
     '@maka/core/events',
+    '@maka/core/goal',
     '@maka/core/interaction',
     '@maka/core/local-memory',
     '@maka/core/model-thinking',
