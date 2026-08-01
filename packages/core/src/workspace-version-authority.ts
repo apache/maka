@@ -116,7 +116,7 @@ export interface WorkspaceHeadRecordV1 {
   workspaceId: string;
   workspaceEpochId: string;
   workspaceVersionId: string;
-  baselineAcceptedEventId: string;
+  acceptedEventId: string;
   commitOid: string;
   treeOid: string;
   revision: number;

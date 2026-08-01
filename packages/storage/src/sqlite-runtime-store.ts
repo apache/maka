@@ -61,6 +61,7 @@ import {
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
+import { registerWorkspaceBaselineAuthorityWriterInternal } from './workspace-version-authority-internal.js';
 import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
@@ -215,6 +216,7 @@ export class SqliteRuntimeStore
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
+      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter();
       return;
     }
     const DatabaseSync = loadDatabaseSync();
@@ -237,6 +239,7 @@ export class SqliteRuntimeStore
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
+      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter();
     } catch (error) {
       this.db.close();
       this.closed = true;
@@ -838,7 +841,7 @@ export class SqliteRuntimeStore
     return ordered.map((item) => item.event);
   }
 
-  async commitWorkspaceBaseline(
+  async #commitWorkspaceBaseline(
     input: WorkspaceBaselineAuthorityInput,
   ): Promise<WorkspaceBaselineCommitResult> {
     const events = buildWorkspaceBaselineAuthorityEvents(input);
@@ -903,6 +906,12 @@ export class SqliteRuntimeStore
       this.assertWorkspaceProjectionsMatchSync(scanned);
       return { created: true, head: workspaceHeadRecord(accepted) };
     });
+  }
+
+  private registerWorkspaceBaselineAuthorityWriter(): void {
+    registerWorkspaceBaselineAuthorityWriterInternal(this, (input) =>
+      this.#commitWorkspaceBaseline(input),
+    );
   }
 
   async readWorkspaceEpoch(
@@ -1142,7 +1151,7 @@ export class SqliteRuntimeStore
         head.workspaceEpochId,
         head.repositoryId,
         head.workspaceVersionId,
-        head.baselineAcceptedEventId,
+        head.acceptedEventId,
         head.commitOid,
         head.treeOid,
         head.revision,
@@ -2858,7 +2867,7 @@ function workspaceHeadRecord(authority: ScannedWorkspaceBaselineAuthority): Work
     workspaceId: authority.epoch.workspaceId,
     workspaceEpochId: authority.epoch.workspaceEpochId,
     workspaceVersionId: authority.baseline.workspaceVersionId,
-    baselineAcceptedEventId: authority.baselineAcceptedEventId,
+    acceptedEventId: authority.baselineAcceptedEventId,
     commitOid: authority.baseline.commitOid,
     treeOid: authority.baseline.treeOid,
     revision: 1,
@@ -2926,7 +2935,7 @@ function workspaceHeadProjectionRow(
     workspace_epoch_id: record.workspaceEpochId,
     repository_id: record.repositoryId,
     workspace_version_id: record.workspaceVersionId,
-    accepted_event_id: record.baselineAcceptedEventId,
+    accepted_event_id: record.acceptedEventId,
     commit_oid: record.commitOid,
     tree_oid: record.treeOid,
     revision: record.revision,

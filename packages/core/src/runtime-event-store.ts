@@ -5,8 +5,6 @@ import type {
   RuntimeBoundaryDigest,
 } from './runtime-boundary.js';
 import type {
-  WorkspaceBaselineAuthorityInput,
-  WorkspaceBaselineCommitResult,
   WorkspaceEpochRecordV1,
   WorkspaceHeadRecordV1,
   WorkspaceProjectionRebuildResult,
@@ -108,9 +106,6 @@ export interface RuntimeContinuationAuthorityStore extends RuntimeEventStore {
 
 export interface RuntimeWorkspaceVersionAuthorityStore extends RuntimeEventStore {
   readonly workspaceVersionAuthorityCapability: typeof WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
-  commitWorkspaceBaseline(
-    input: WorkspaceBaselineAuthorityInput,
-  ): Promise<WorkspaceBaselineCommitResult>;
   readWorkspaceEpoch(
     workspaceId: string,
     workspaceEpochId: string,

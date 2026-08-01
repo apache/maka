@@ -32,17 +32,19 @@ projection，公开 reader 会 fail closed，直到显式 rebuild；这种损坏
 也不改变 Desktop/CLI 行为。这种收缩是刻意的：一个 PR 只证明一个主要不变量。
 
 当前分支只证明事实合同、SQLite 原子写入与 projection 可重建性，**尚未证明 supplied Git object
-真实存在**。因此 `commitWorkspaceBaseline()` 不能拥有生产 caller，本 PR 也不能独立合并为可用的
-“accepted workspace”能力。Ready 的硬门槛是后续 Baseline Open slice 提供一份由
+真实存在**。因此 raw baseline writer 已从 `@maka/core` store contract 与 `@maka/storage` package API
+移除，只保留为 storage 内部 symbol seam，供本切片的 persistence/crash tests 使用；本 PR 也不能独立
+合并为可用的“accepted workspace”能力。Ready 的硬门槛是后续 Baseline Open slice 提供一份由
 `GitWorkspaceService` 持久化、可重读、可重新验证的 receipt，并让唯一 composition owner 在验证
-receipt 后调用本 writer。裸 OID、TypeScript brand 或 caller 自报的 `verified: true` 都不能跨过该门槛。
+receipt 后调用未来的 `commitVerifiedWorkspaceBaseline(receipt)`。裸 OID、TypeScript brand 或 caller
+自报的 `verified: true` 都不能跨过该门槛。
 
 ## 2. Owner、边界、失败状态与回滚
 
 | 项目 | 决策 |
 |---|---|
 | 协议 owner | `@maka/core` 的 strict fact contract 与 pure scanner |
-| 写入 owner | `SqliteRuntimeStore.commitWorkspaceBaseline()` |
+| 写入 owner | storage 内部 `WORKSPACE_BASELINE_AUTHORITY_COMMIT` symbol；不属于 package API |
 | 原子性边界 | 单个 `BEGIN IMMEDIATE ... COMMIT` SQLite transaction |
 | canonical source | store-owned authority stream 中的两条 immutable RuntimeEvents |
 | disposable state | `runtime_workspace_epochs`、`runtime_workspace_versions`、`runtime_workspace_heads` |
@@ -170,8 +172,10 @@ Writer reservation 同时覆盖：
 - ordinary event 占用保留 authority stream；
 - ordinary Session purge 试图删除 authority session。
 
-专用 API 接受 typed baseline input，由 store 自己构造 RuntimeEvents。它不接受 caller 拼好的 event，
-因此 caller 没有机会夹带另一条 semantic lane。
+storage 内部 writer 接受 typed baseline input，由 store 自己构造 RuntimeEvents。它不接受 caller 拼好的
+event，因此 caller 没有机会夹带另一条 semantic lane。该 seam 所在模块不从 `@maka/storage` 导出；
+公开 store 只暴露 capability、reader 与 projection rebuild。未来唯一的生产入口必须接收并重新验证
+durable Git receipt，而不是把这条 raw seam 重新公开。
 
 ## 6. Baseline Open Bundle 时序
 
@@ -184,7 +188,8 @@ sequenceDiagram
 
   G->>G: 验证 source repository、commit/tree、fixed materialization profile
   G->>G: 导入并验证 internal baseline commit/tree
-  G->>S: verify durable receipt, then commitWorkspaceBaseline(receipt identity)
+  G->>S: commitVerifiedWorkspaceBaseline(durable receipt)
+  S->>S: re-read and verify receipt, derive frozen identity
   S->>S: BEGIN IMMEDIATE
   S->>S: 扫描全部 canonical workspace facts
   alt exact bundle 已存在
@@ -204,8 +209,8 @@ sequenceDiagram
 
 Git 验证与 tree-delta 计算故意不放进 SQLite transaction。后续 Baseline Open Bundle 负责在调用
 writer 前读取并重新验证 durable receipt；SQLite writer 负责冻结已验证 identity，并保证
-facts/projections 原子提交。在该 composition 存在前，当前 typed input 只是 foundation test seam，不能
-成为 Desktop、CLI、tool 或自动恢复的生产入口。
+facts/projections 原子提交。在该 composition 存在前，当前 typed input 只存在于 storage 内部 test seam，
+不能成为 Desktop、CLI、tool 或自动恢复的生产入口。
 `treeDeltaDigest` 必须是 canonical empty-tree → baseline-tree delta 的摘要，不能由 caller 随意填写。
 
 ## 7. Schema 7 与 projection
@@ -223,6 +228,10 @@ runtime_workspace_version_authority @ 1
 | `runtime_workspace_epochs` | epoch identity、source 与 materialization policy |
 | `runtime_workspace_versions` | accepted baseline commit/tree 与因果引用 |
 | `runtime_workspace_heads` | 当前 epoch head；M0 必须等于 baseline |
+
+公开的 `WorkspaceHeadRecordV1` 使用通用字段 `acceptedEventId`，因为后续 head 可能由 mutation acceptance
+推进；只有 baseline version record 与 canonical scanner 使用更具体的 `baselineAcceptedEventId`。SQLite
+列继续使用语义稳定的 `accepted_event_id`，不把 M0 的 baseline 特例固化为长期 head 合同。
 
 构造 store 时缺少 capability、capability 版本未知或数据库 schema 比 binary 新，全部拒绝打开；不静默
 降级到 JSONL 或无 authority 模式。

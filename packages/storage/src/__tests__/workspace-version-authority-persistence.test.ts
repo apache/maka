@@ -18,8 +18,19 @@ import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
+import { commitWorkspaceBaselineInternal } from '../workspace-version-authority-internal.js';
 
 describe('workspace version persistence authority', () => {
+  it('does not expose the unverified baseline writer on the public SQLite store', () => {
+    const store = createSqliteRuntimeStore(':memory:');
+    try {
+      // @ts-expect-error Raw baseline authority is an internal persistence seam.
+      assert.equal(store.commitWorkspaceBaseline, undefined);
+    } finally {
+      store.close();
+    }
+  });
+
   it('cannot be purged through the ordinary conversation lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workspace-authority-purge-'));
     const store = createConversationOperationalStateStore(root);
@@ -39,13 +50,13 @@ describe('workspace version persistence authority', () => {
     const dbPath = join(root, 'runtime.sqlite');
     const input = baselineInput();
     const writer = createSqliteRuntimeStore(dbPath);
-    let writePromise: ReturnType<typeof writer.commitWorkspaceBaseline> | undefined;
+    let writePromise: ReturnType<typeof commitWorkspaceBaselineInternal> | undefined;
     let injected = false;
     const reader = createSqliteRuntimeStore(dbPath, {
       failpoint: (point) => {
         if (point !== 'after_workspace_canonical_scan' || injected) return;
         injected = true;
-        writePromise = writer.commitWorkspaceBaseline(input);
+        writePromise = commitWorkspaceBaselineInternal(writer, input);
       },
     });
     try {
@@ -70,7 +81,7 @@ describe('workspace version persistence authority', () => {
   it('atomically opens a baseline and makes only an exact retry idempotent', async () => {
     await withDatabase(async ({ dbPath, store }) => {
       const input = baselineInput();
-      const first = await store.commitWorkspaceBaseline(input);
+      const first = await commitWorkspaceBaselineInternal(store, input);
       assert.equal(first.created, true);
       assert.equal(first.head.workspaceVersionId, input.baseline.workspaceVersionId);
       assert.equal(first.head.revision, 1);
@@ -89,7 +100,7 @@ describe('workspace version persistence authority', () => {
         first.head,
       );
 
-      const retry = await store.commitWorkspaceBaseline(input);
+      const retry = await commitWorkspaceBaselineInternal(store, input);
       assert.deepEqual(retry, { ...first, created: false });
 
       const conflict = baselineInput({
@@ -101,7 +112,7 @@ describe('workspace version persistence authority', () => {
         },
       });
       await assert.rejects(
-        store.commitWorkspaceBaseline(conflict),
+        commitWorkspaceBaselineInternal(store, conflict),
         /workspace baseline authority conflict/i,
       );
 
@@ -130,7 +141,7 @@ describe('workspace version persistence authority', () => {
     it(`rolls the entire baseline back at ${failpoint}`, async () => {
       await withDatabase(async ({ dbPath, store, setFailpoint }) => {
         setFailpoint(failpoint);
-        await assert.rejects(store.commitWorkspaceBaseline(baselineInput()), /failpoint/);
+        await assert.rejects(commitWorkspaceBaselineInternal(store, baselineInput()), /failpoint/);
         store.close();
 
         const reopened = createSqliteRuntimeStore(dbPath);
@@ -159,7 +170,7 @@ describe('workspace version persistence authority', () => {
   it('rebuilds disposable projections from strict RuntimeEvents and detects corruption', async () => {
     await withDatabase(async ({ dbPath, store }) => {
       const input = baselineInput();
-      const committed = await store.commitWorkspaceBaseline(input);
+      const committed = await commitWorkspaceBaselineInternal(store, input);
       const raw = new DatabaseSync(dbPath);
       try {
         raw.exec(`
@@ -210,7 +221,7 @@ describe('workspace version persistence authority', () => {
           | undefined;
         assert.deepEqual(head && { ...head }, {
           workspace_version_id: committed.head.workspaceVersionId,
-          accepted_event_id: committed.head.baselineAcceptedEventId,
+          accepted_event_id: committed.head.acceptedEventId,
         });
       } finally {
         afterFailedRebuild.close();
