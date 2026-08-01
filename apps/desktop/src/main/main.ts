@@ -24,6 +24,7 @@ import { runThreadSearch } from './search/thread-search.js';
 import { assembleDesktopTools } from './tool-assembly.js';
 import { createToolArtifactPersistence } from './tool-artifact-persistence.js';
 import { ClaudeSubscriptionService } from './oauth/claude-subscription-service.js';
+import { isSubscriptionExperimentalEnabled } from './oauth/claude-subscription-helpers.js';
 import { OpenAiCodexService } from './oauth/openai-codex-service.js';
 import { createOpenAiCodexE2eFixtureService } from './openai-codex-e2e-fixture.js';
 import { GitHubCopilotSubscriptionService } from './oauth/github-copilot-subscription-service.js';
@@ -1111,6 +1112,7 @@ function registerIpc(): void {
       voiceIpcService.consumeNativeAudioOperation(input),
   });
   registerSubscriptionIpc({
+    ipcMain,
     connectionStore,
     claudeSubscription,
     openAiCodex,
@@ -1118,6 +1120,7 @@ function registerIpc(): void {
     xaiOAuth,
     cursorSubscription,
     antigravitySubscription,
+    isClaudeSubscriptionExperimentalEnabled: isSubscriptionExperimentalEnabled,
     isClaudeSubscriptionAuthenticatedState,
     syncClaudeSubscriptionConnection,
     activateOpenAiCodexConnection,

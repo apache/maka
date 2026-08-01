@@ -1,10 +1,7 @@
-import { ipcMain } from 'electron';
+import type { IpcMain } from 'electron';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { ConnectionStore } from '@maka/storage';
-import {
-  type ClaudeSubscriptionService,
-  isSubscriptionExperimentalEnabled,
-} from './oauth/claude-subscription-service.js';
+import type { ClaudeSubscriptionService } from './oauth/claude-subscription-service.js';
 import {
   type OpenAiCodexService,
   isOpenAiCodexExperimentalEnabled,
@@ -27,6 +24,7 @@ import type { GitHubCopilotSubscriptionService } from './oauth/github-copilot-su
 import type { XaiOAuthService } from './oauth/xai-oauth-service.js';
 
 interface SubscriptionIpcDeps {
+  ipcMain: Pick<IpcMain, 'handle'>;
   connectionStore: ConnectionStore;
   claudeSubscription: ClaudeSubscriptionService;
   openAiCodex: OpenAiCodexService;
@@ -34,6 +32,7 @@ interface SubscriptionIpcDeps {
   xaiOAuth: XaiOAuthService;
   cursorSubscription: CursorSubscriptionService;
   antigravitySubscription: AntigravitySubscriptionService;
+  isClaudeSubscriptionExperimentalEnabled(): boolean;
   isClaudeSubscriptionAuthenticatedState(
     state: Awaited<ReturnType<ClaudeSubscriptionService['getAccountState']>>,
   ): boolean;
@@ -47,6 +46,9 @@ interface SubscriptionIpcDeps {
 }
 
 export function registerSubscriptionIpc(deps: SubscriptionIpcDeps): void {
+  const { ipcMain } = deps;
+  const isSubscriptionExperimentalEnabled =
+    deps.isClaudeSubscriptionExperimentalEnabled;
   async function rollbackFailedGitHubCopilotConnect() {
     await deps.githubCopilotSubscription.logout().catch(() => undefined);
     const existing = await deps.connectionStore.get(GITHUB_COPILOT_CONNECTION_SLUG).catch(() => null);
