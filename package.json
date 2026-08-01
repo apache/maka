@@ -48,8 +48,6 @@
     "verify:macos-arm64": "node scripts/verify-macos-arm64-dmg.mjs",
     "measure:session-bundle": "node scripts/measure-session-bundle.mjs",
     "astryx:theme": "node scripts/build-astryx-theme.mjs",
-    "check:visual-contract": "node scripts/check-visual-contract.mjs",
-    "check:hit-test": "node scripts/check-hit-test.mjs",
     "sync:model-metadata": "node scripts/sync-model-metadata.mjs",
     "cost:deepseek-baseline": "node scripts/deepseek-live-cost-baseline.mjs",
     "benchmark:kimi-protocol-ab": "node packages/headless/harbor/run-kimi-protocol-ab.mjs",
