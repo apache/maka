@@ -357,20 +357,15 @@ export function catalogJobs(storyIndex, manifestJobs) {
 
 async function runJobs(browser, baseUrl, jobs, concurrency) {
   const queue = [...jobs];
-  const failed = [];
-  const passed = [];
+  const failures = [];
   const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
     for (let job = queue.shift(); job; job = queue.shift()) {
       const page = await browser.newPage();
       try {
         await smokeStory(page, baseUrl, job);
-        passed.push(job.storyId);
         process.stdout.write(`✓ ${job.storyId} @ ${job.viewport}\n`);
       } catch (error) {
-        failed.push({
-          storyId: job.storyId,
-          message: error instanceof Error ? error.message : String(error),
-        });
+        failures.push(error instanceof Error ? error.message : String(error));
         process.stdout.write(`✗ ${job.storyId} @ ${job.viewport}\n`);
       } finally {
         await page.close();
@@ -378,26 +373,7 @@ async function runJobs(browser, baseUrl, jobs, concurrency) {
     }
   });
   await Promise.all(workers);
-  return { failed, passed };
-}
-
-/**
- * Reconciles catalog results against the known-broken list. A story that fails
- * without being listed is a regression. A story that PASSES while still listed
- * is also an error: otherwise the list silently accumulates entries nobody
- * revisits, which is how a baseline becomes a permanent exemption.
- */
-export function reconcileCatalog({ failed, passed }, knownBroken) {
-  const problems = [];
-  for (const { storyId, message } of failed) {
-    if (!(storyId in knownBroken)) problems.push(message);
-  }
-  for (const storyId of passed) {
-    if (storyId in knownBroken) {
-      problems.push(`${storyId} now passes — remove it from storybook-catalog-baseline.json`);
-    }
-  }
-  return problems;
+  return failures;
 }
 
 const MIME_TYPES = {
@@ -456,12 +432,10 @@ async function runCli() {
   const manifestPath = resolve(
     process.argv[3] ?? join(repoRoot, 'apps/desktop/stories/product-smoke-manifest.json'),
   );
-  const [manifest, storyIndex, baseline] = await Promise.all([
+  const [manifest, storyIndex] = await Promise.all([
     readFile(manifestPath, 'utf8').then(JSON.parse),
     readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse),
-    readFile(join(repoRoot, 'scripts/storybook-catalog-baseline.json'), 'utf8').then(JSON.parse),
   ]);
-  const knownBroken = baseline.knownBroken ?? {};
   const jobs = validateCoverageManifest(manifest, storyIndex);
   const catalog = catalogJobs(storyIndex, jobs);
   const { chromium } = await import('@playwright/test');
@@ -470,14 +444,9 @@ async function runCli() {
   const problems = [];
   try {
     // The manifest jobs run first and serially: they assert on layout geometry,
-    // which is why they pin a viewport in the first place. No baseline applies
-    // to them — a curated surface check has no business being known-broken.
-    problems.push(
-      ...(await runJobs(browser, server.baseUrl, jobs, 1)).failed.map((f) => f.message),
-    );
-    problems.push(
-      ...reconcileCatalog(await runJobs(browser, server.baseUrl, catalog, 4), knownBroken),
-    );
+    // which is why they pin a viewport in the first place.
+    problems.push(...(await runJobs(browser, server.baseUrl, jobs, 1)));
+    problems.push(...(await runJobs(browser, server.baseUrl, catalog, 4)));
   } finally {
     await server.close();
     await browser.close();
@@ -485,10 +454,9 @@ async function runCli() {
   if (problems.length > 0) {
     throw new Error(`${problems.length} story check(s) failed:\n${problems.join('\n')}`);
   }
-  const skipped = Object.keys(knownBroken).length;
   process.stdout.write(
     `Product Storybook smoke passed (${jobs.length} manifest check(s), ` +
-      `${catalog.length} catalog render(s), ${skipped} known-broken).\n`,
+      `${catalog.length} catalog render(s)).\n`,
   );
 }
 

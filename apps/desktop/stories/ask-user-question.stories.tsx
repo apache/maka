@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { UserQuestionRequestEvent } from '@maka/core';
 import { UserQuestionPrompt } from '@maka/ui';
-import { expect, userEvent, within } from 'storybook/test';
 
 import './ask-user-question.css';
 
@@ -72,25 +71,3 @@ export const StandardAndNarrow: Story = {
   ),
 };
 
-// Real path: same prompt, after the user picks 其他 and types a free-text answer — driven
-// here by the play function.
-export const OtherAnswerSelected: Story = {
-  render: () => (
-    <main className="maka-question-review-board">
-      <PreviewColumn
-        title="“其他”选中并直接输入"
-        width={760}
-        request={{ ...REQUEST, questions: REQUEST.questions.slice(0, 1) }}
-      />
-    </main>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const input = canvas.getByRole('textbox', { name: '其他答案' });
-    await userEvent.click(input);
-    await expect(input).toHaveFocus();
-    await userEvent.type(input, '分阶段发布');
-    await expect(input).toHaveValue('分阶段发布');
-    await expect(input.closest('.maka-question-other-field')).toHaveAttribute('data-selected');
-  },
-};

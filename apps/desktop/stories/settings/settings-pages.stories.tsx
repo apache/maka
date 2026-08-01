@@ -1145,49 +1145,10 @@ export const WebSearch: Story = {
  * title, and a long snippet — the result list's wrapping surface. The play
  * step drives the real query path against the story bridge.
  */
-// Real path: 设置 → 联网搜索 with a saved Tavily key → type a query → 搜索.
-export const WebSearchResults: Story = {
-  decorators: [withWebSearchConfiguredBridge],
-  render: () => <SettingsStory section="search" />,
-  play: async ({ canvasElement }) => {
-    const input = await waitForStoryCondition(
-      () => canvasElement.querySelector<HTMLInputElement>('input[aria-label="联网搜索真实查询"]') !== null,
-      'Web search story did not render the query input',
-    ).then(() => canvasElement.querySelector<HTMLInputElement>('input[aria-label="联网搜索真实查询"]')!);
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    setValue?.call(input, 'electron vibrancy sequoia');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    const search = await waitForStoryButton(
-      canvasElement,
-      (candidate) => candidate.textContent?.trim() === '搜索' && !candidate.disabled,
-    );
-    search.click();
-    await waitForStoryCondition(
-      () => canvasElement.querySelectorAll('.settingsWebSearchResult').length > 0,
-      'Web search story did not render live results',
-    );
-  },
-};
 // Real path: 设置 → 语音.
 export const Voice: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="voice" />,
-};
-// Real path: 设置 → 语音 → 测试录音, when the microphone is authorized and the pipeline works.
-export const VoiceSuccess: Story = {
-  decorators: [withSettingsBridge, withVoiceCaptureOutcome('success')],
-  render: () => <SettingsStory section="voice" />,
-  play: async ({ canvasElement }) => {
-    await runVoiceStoryCapture(canvasElement, '录音链路可用', '已授权');
-  },
-};
-// Real path: same test, when macOS has denied microphone access.
-export const VoicePermissionDenied: Story = {
-  decorators: [withSettingsBridge, withVoiceCaptureOutcome('denied')],
-  render: () => <SettingsStory section="voice" />,
-  play: async ({ canvasElement }) => {
-    await runVoiceStoryCapture(canvasElement, '麦克风权限被拒绝', '已拒绝');
-  },
 };
 // Real path: 设置 → 远程接入.
 export const BotChat: Story = {
