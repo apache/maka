@@ -766,6 +766,28 @@ function SettingsStory(props: {
   );
 }
 
+async function waitForStoryButton(
+  canvasElement: HTMLElement,
+  predicate: (button: HTMLButtonElement) => boolean,
+): Promise<HTMLButtonElement> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find(
+      predicate,
+    );
+    if (button) return button;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error('Story action button did not render');
+}
+
+async function waitForStoryCondition(predicate: () => boolean, errorMessage: string): Promise<void> {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error(errorMessage);
+}
+
 // Real path: sidebar footer 设置 → 模型.
 export const Models: Story = {
   decorators: [withSettingsBridge],
@@ -795,9 +817,8 @@ export const UsageRequestsPopulated: Story = {
 };
 /**
  * #1364: entry list (long title / content / tag set), archived group, and
- * backup-candidate rows. The default story is the clean empty state — the
- * bridge used to lack the `memory` channel entirely, so the page booted
- * into error toasts instead of either state.
+ * backup-candidate rows. The bridge used to lack the `memory` channel
+ * entirely, so the page booted into error toasts instead of any state.
  */
 // Real path: 设置 → 记忆, on a workspace with saved memories and backup candidates.
 export const MemoryPopulated: Story = {
@@ -809,15 +830,40 @@ export const WebSearch: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="search" />,
 };
-/**
- * #1364: configured key + live-query results with a long title, a bare-URL
- * title, and a long snippet — the result list's wrapping surface. The play
- * step drives the real query path against the story bridge.
- */
 // Real path: 设置 → 语音.
 export const Voice: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="voice" />,
+};
+/**
+ * The idle story above cannot show the page's only error surface. `permissionSnapshot`
+ * already reports microphone `denied` on darwin, and `runCaptureSmoke` returns on that
+ * snapshot before it ever reaches `getUserMedia` — so the real path gets here with no
+ * MediaRecorder mock at all, which is why the old decorator-driven story was both
+ * heavier and wrong.
+ */
+// Real path: 设置 → 语音 → 运行录音自检, when macOS has denied microphone access.
+export const VoicePermissionDenied: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="voice" />,
+  play: async ({ canvasElement }) => {
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('运行录音自检') === true,
+    );
+    button.click();
+    // The page renders several `[role="status"]` regions and the capture result
+    // is not the first one, so this must scan them all — taking `querySelector`
+    // here is what left the previous voice stories asserting against an empty
+    // node and passing on a state they never reached.
+    await waitForStoryCondition(
+      () =>
+        Array.from(canvasElement.querySelectorAll<HTMLElement>('[role="status"]')).some(
+          (region) => region.textContent?.includes('麦克风权限被拒绝') === true,
+        ),
+      'Voice story did not reach the denied state',
+    );
+  },
 };
 // Real path: same page when a bound channel needs attention — e.g. a WeChat session that
 // has to be re-scanned.
@@ -835,16 +881,31 @@ export const Data: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="data" />,
 };
-// Real path: 设置 → 权限与能力, with diagnostics collapsed — the state the page opens in.
-export const PermissionCenter: Story = {
+/**
+ * The expanded state, not the collapsed one the page opens in: the capability layers grid
+ * and the guidance block are hidden until diagnostics are expanded, so the collapsed story
+ * gives those layouts no baseline at all — which is exactly where the remaining overflow
+ * was hiding. Everything the collapsed story shows is still on screen here.
+ */
+// Real path: 设置 → 权限与能力 → 展开详情.
+export const PermissionCenterDiagnosticsExpanded: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="permissions" />,
+  play: async ({ canvasElement }) => {
+    const toggle = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('展开详情') === true,
+    );
+    toggle.click();
+    await waitForStoryCondition(
+      () =>
+        canvasElement
+          .querySelector('.settingsCapabilityList')
+          ?.getAttribute('data-diagnostics-open') === 'true',
+      'Permission Center story did not expand the capability diagnostics',
+    );
+  },
 };
-/**
- * The capability layers grid and guidance block are hidden until diagnostics are expanded, so the
- * collapsed story gives those layouts no baseline at all — which is exactly
- * where the remaining overflow was hiding.
- */
 // Real path: 设置 → 健康 (also reachable from the topbar health action), with probes
 // reporting.
 export const HealthCenter: Story = {
