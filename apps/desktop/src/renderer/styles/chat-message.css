@@ -53,10 +53,10 @@
 /* Chat activity disclosure dialect
    ----------------------------------------------------------------------------
    Reasoning, tool calls, and the product trow fallback share one trigger
-   language inside a turn body. Lab ChatToolCalls uses pointer + overlay-hover;
-   product chat keeps a document feel: default arrow (native-cursor convention
-   — hand reserved for links), no hover wash. Supporting size / medium weight /
-   24px row / body label stay. Do not invent a third component.
+   language inside a turn body. Keep Astryx overlay-hover wash; pin default
+   cursor (native-cursor convention — hand reserved for links). Supporting
+   size / medium weight / 24px row / body label stay. Do not invent a third
+   component.
 
    !important: StyleX atoms ship as `.x*:not(#\#)…` (often unlayered). Same
    seam as sidebar.css when product must win a single dialect property. */
@@ -87,11 +87,13 @@
 }
 
 @media (hover: hover) {
-  /* Kill lab callRowClickable / group-header overlay wash inside chat. */
+  /* Group headers / reasoning / product trow lack lab callRowClickable;
+     detail rows already set the same bg via StyleX. Unify the wash. */
   .maka-turn .astryx-chat-tool-calls [role="button"]:hover,
   .maka-turn .astryx-chat-reasoning [role="button"]:hover,
   .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
-    background-color: transparent !important;
+    background-color: var(--color-overlay-hover);
+    border-radius: var(--radius-element);
   }
 }
 

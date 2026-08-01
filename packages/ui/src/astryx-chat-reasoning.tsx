@@ -13,9 +13,9 @@
  * call has already been compiled, matching the published package output.
  *
  * Product dialect (chat body): chevron size / edge align with ChatToolCalls.
- * No pointer / overlay hover — chat-message.css pins default cursor and kills
- * lab wash so reasoning and tools share a document-feel disclosure. Glyph
- * stays lab's ThinkingIcon; margin-inline-start:auto ships in core atoms.
+ * Overlay-hover wash stays (chat-message.css); cursor is default arrow only
+ * (native-cursor convention — hand reserved for links). Glyph stays lab's
+ * ThinkingIcon; margin-inline-start:auto ships in core atoms.
  */
 import { useCallback, useState, type HTMLAttributes, type ReactNode } from 'react';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';
