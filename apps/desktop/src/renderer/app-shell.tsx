@@ -339,6 +339,8 @@ function AppShellContent({
     setUserLabel,
     defaultPermissionMode,
     setDefaultPermissionMode,
+    voiceCaptureConfigured,
+    realtimeVoiceConfigured,
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -1949,19 +1951,11 @@ function AppShellContent({
     // chat-header memory pill — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
-    // PR-DEFAULT-PERMISSION-MODE-0: the General page writes
-    // chatDefaults.permissionMode through its own settings-surface.tsx
-    // state, which app-shell.tsx never sees live. Re-read it here so a
-    // change takes effect for the next new chat without requiring an
-    // app restart. New-chat creation can't happen while Settings is open
-    // anyway, so a close-time refresh is timely enough (unlike theme,
-    // which needs to apply instantly and has its own onThemeChange wire).
-    void window.maka.settings
-      .get()
-      .then((next) => {
-      setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
-      })
-      .catch(() => {});
+    // Settings pages own optimistic local drafts, so the shell does not see
+    // every write live. Refresh its display mirrors on close: permission mode
+    // and the independently configured voice routes must both update without
+    // requiring an app restart.
+    void refreshShellSettings();
   }
 
   function showModelSetupToast(description: string, reason?: string) {
@@ -2382,9 +2376,9 @@ function AppShellContent({
                 voiceCaptureState={voiceInput.captureState}
                 realtimeVoiceState={voiceInput.realtimeState}
                 voiceProviderLabel={voiceInput.providerLabel}
-                onToggleVoiceCapture={voiceInput.toggleCapture}
-                onCancelVoiceCapture={voiceInput.cancelCapture}
-                onToggleRealtimeVoice={voiceInput.toggleRealtime}
+                onToggleVoiceCapture={voiceCaptureConfigured ? voiceInput.toggleCapture : undefined}
+                onCancelVoiceCapture={voiceCaptureConfigured ? voiceInput.cancelCapture : undefined}
+                onToggleRealtimeVoice={realtimeVoiceConfigured ? voiceInput.toggleRealtime : undefined}
                 onSend={sendWithAttachments}
                 onStop={stop}
                 revisionNotice={

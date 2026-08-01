@@ -9,6 +9,7 @@ import type {
 import { createUiLocaleUpdateGate } from './settings/ui-locale-update-gate';
 import { applyTheme, applyThemePalette } from './theme';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy';
+import { voiceComposerAvailability } from './voice-composer-availability.js';
 
 type ToastApi = {
   error(title: string, description?: string): void;
@@ -47,6 +48,8 @@ export function useShellAppearance({
   // so a stale value here can briefly mislabel the chip but never changes
   // which mode a session is created with.
   const [defaultPermissionMode, setDefaultPermissionMode] = useState<ChatDefaultPermissionMode>('ask');
+  const [voiceCaptureConfigured, setVoiceCaptureConfigured] = useState(false);
+  const [realtimeVoiceConfigured, setRealtimeVoiceConfigured] = useState(false);
 
   async function refreshShellSettings() {
     const uiLocaleHydration = uiLocaleUpdateGate.beginHydration();
@@ -67,6 +70,9 @@ export function useShellAppearance({
       setThemePalette(palette);
       setUserLabel(name);
       setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
+      const voiceAvailability = voiceComposerAvailability(next);
+      setVoiceCaptureConfigured(voiceAvailability.capture);
+      setRealtimeVoiceConfigured(voiceAvailability.realtime);
       applyTheme(pref);
       applyThemePalette(palette);
     } catch (error) {
@@ -88,6 +94,8 @@ export function useShellAppearance({
     setUserLabel,
     defaultPermissionMode,
     setDefaultPermissionMode,
+    voiceCaptureConfigured,
+    realtimeVoiceConfigured,
     refreshShellSettings,
   };
 }
