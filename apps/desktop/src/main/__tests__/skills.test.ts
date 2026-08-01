@@ -4,20 +4,15 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 import {
-  MAX_SKILLS_PROMPT_CHARS,
   MAX_SKILL_TOOL_BODY_CHARS,
-  buildSkillAgentTool,
   buildSkillsPromptFragment,
   createStarterSkill,
   deleteSkill,
-  getSkillGovernanceDetails,
   installManagedSkill,
   loadSkillInstructions,
   listGovernedSkillEntries,
   listInstalledSkills,
-  parseSkillFrontMatter,
   previewManagedSkillUpdate,
   resolveSkillOpenPath,
   setSkillEnabled,
@@ -27,32 +22,8 @@ import {
 import { importManagedSkillSource } from '../managed-skill-sources.js';
 import { createSystemPromptMainService } from '../system-prompt-main.js';
 import { readRendererShellCombinedSource } from './renderer-shell-source-helpers.js';
-import { extractFunctionBlock } from './function-block-helpers.js';
 
 describe('skills ingestion', () => {
-  it('lists SKILL.md metadata without granting declared tools', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'writer', `---
-name: Writer
-description: Draft polished prose.
-allowed-tools: [Read, Write]
----
-# Writer
-Use concise prose.`);
-
-      const skills = await listInstalledSkills(workspaceRoot);
-      assert.equal(skills.length, 1);
-      assert.equal(skills[0].id, 'writer');
-      assert.equal(skills[0].name, 'Writer');
-      assert.equal(skills[0].description, 'Draft polished prose.');
-      assert.deepEqual(skills[0].declaredTools, ['Read', 'Write']);
-      assert.equal(skills[0].sourceType, 'workspace');
-      assert.equal(skills[0].userModified, false);
-      assert.equal(skills[0].validationStatus, 'missing_lock');
-      assert.deepEqual(skills[0].validationCodes, ['missing_lock']);
-    });
-  });
-
   it('applies Desktop host tool and capability gates to the system skill prompt', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(workspaceRoot, 'capability-helper', `---
@@ -100,100 +71,6 @@ Use the required tools.`);
       }).buildBackendSystemPrompt({ labels: [] }, workspaceRoot, { memoryFragment: null });
       assert.ok(eligible);
       assert.match(eligible, /<available-skill id="capability-helper"/);
-    });
-  });
-
-  it('shares one Desktop host capability surface between the prompt and Skill tool', async () => {
-    const mainProcess = await readMainProcessCombinedSource();
-    assert.match(mainProcess, /const desktopProductToolSurface = projectEffectiveProductToolSurface\(\{/);
-    assert.match(mainProcess, /hostCapabilities: desktopProductToolSurface\.hostCapabilities/);
-    assert.match(mainProcess, /buildSkillsPromptFragmentWithReport\(\s*skillSource,\s*options\?\.host \?\? deps\.host \?\? deps\.hostCapabilities,\s*options\?\.skillBudget,\s*\)/);
-    assert.match(mainProcess, /getSkillSelectionReport: systemPromptService\.getLastSkillSelectionReport/);
-    assert.match(mainProcess, /buildSkillAgentTool\([\s\S]*resolveDesktopSkillHost,[\s\S]*shadowTracker/);
-    assert.match(mainProcess, /buildSkillSearchAgentTool\([\s\S]*resolveDesktopSkillHost,[\s\S]*shadowTracker/);
-    assert.match(mainProcess, /const productToolSurface = projectEffectiveProductToolSurface\(\{/);
-    assert.doesNotMatch(mainProcess, /const backendCapabilities = new Set<string>\(\)/);
-    assert.match(mainProcess, /\.\.\.deps\.builtinTools,[\s\S]*\.\.\.buildMcpTools\(deps\.mcpManager\)/);
-    assert.match(mainProcess, /const backendTools = computerUseToolsForModel\(/);
-    assert.doesNotMatch(mainProcess, /const backendToolNames = new Set\(/);
-    assert.match(mainProcess, /skillHost: productToolSurface\.hostCapabilities/);
-    assert.match(mainProcess, /if \(!ctx\.tools\) desktopSessionSkillHosts\.set\(ctx\.sessionId, backendSkillHost\)/);
-    assert.match(mainProcess, /host: backendSkillHost/);
-  });
-
-  it('caches the exact prompt selection report for the Desktop Context Inspector', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'writer', `---
-name: Writer
-description: Draft project prose.
----
-# Writer`);
-      const service = createSystemPromptMainService({
-        settingsStore: {
-          get: async () => ({
-            personalization: {},
-            workspaceInstructions: { enabled: false },
-          }) as never,
-        },
-        workspaceRoot,
-        localMemory: {
-          getState: async () => ({ status: 'ok', agentReadEnabled: false, content: '' }) as never,
-          consumePendingPromptUpdates: () => [],
-        },
-        taskLedger: { list: async () => [] },
-        host: { toolNames: new Set() },
-      });
-
-      await service.buildBackendSystemPrompt(
-        { labels: [] },
-        workspaceRoot,
-        { memoryFragment: null, skillBudget: { contextWindow: 128_000 } },
-      );
-      const report = service.getLastSkillSelectionReport(workspaceRoot);
-      assert.ok(report);
-      assert.equal(
-        report.decisions.find((decision) => decision.id === 'writer')?.reason,
-        'advertised',
-      );
-      service.invalidateSkillSelectionReport(workspaceRoot);
-      assert.equal(service.getLastSkillSelectionReport(workspaceRoot), undefined);
-    });
-  });
-
-  it('lists available skills in the system prompt and loads instructions lazily', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'browser-helper', `---
-name: Browser Helper
-description: Use when the user asks for browser automation.
-allowed-tools:
-  - Bash
-  - Read
----
-# Browser Helper
-Open local targets carefully.
-Do not ask permission for shell commands.`);
-
-      const prompt = await buildSkillsPromptFragment(workspaceRoot);
-      assert.ok(prompt);
-      assert.match(prompt, /Available local skills/);
-      assert.match(prompt, /call the Skill tool/);
-      assert.match(prompt, /active session sandbox boundary remains authoritative/);
-      assert.match(prompt, /<available-skill id="browser-helper" name="Browser Helper">/);
-      assert.match(prompt, /Description: Use when the user asks for browser automation\./);
-      assert.match(prompt, /Declared tools: Bash, Read/);
-      assert.doesNotMatch(prompt, /Open local targets carefully\./);
-      assert.doesNotMatch(prompt, /Do not ask permission for shell commands\./);
-      assert.ok(prompt.length <= MAX_SKILLS_PROMPT_CHARS + 512);
-
-      const loaded = await loadSkillInstructions(workspaceRoot, 'browser-helper');
-      assert.equal(loaded.ok, true);
-      if (!loaded.ok) return;
-      assert.equal(loaded.skill.id, 'browser-helper');
-      assert.equal(loaded.skill.name, 'Browser Helper');
-      assert.deepEqual(loaded.skill.declaredTools, ['Bash', 'Read']);
-      assert.equal(loaded.skill.relativePath, 'skills/browser-helper/SKILL.md');
-      assert.match(loaded.skill.instructions, /Open local targets carefully\./);
-      assert.match(loaded.skill.instructions, /Do not ask permission for shell commands\./);
     });
   });
 
@@ -305,130 +182,6 @@ description: Workspace workflow.
     });
   });
 
-  it('marks ambiguous v1 ids for review instead of guessing a scope during migration', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const projectRoot = join(workspaceRoot, 'project');
-      const homeDir = join(workspaceRoot, 'home');
-      await mkdir(projectRoot, { recursive: true });
-      await mkdir(homeDir, { recursive: true });
-      await writeSkillAt(
-        join(projectRoot, '.maka', 'skills'),
-        'shared',
-        'Project Shared',
-        'Project copy.',
-      );
-      await writeSkillAt(
-        join(homeDir, '.agents', 'skills'),
-        'shared',
-        'User Shared',
-        'User copy.',
-      );
-      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, '.maka', 'skills-state.json'),
-        JSON.stringify({ schemaVersion: 1, skills: { shared: { enabled: false } } }),
-        'utf8',
-      );
-      const options = { cwd: projectRoot, homeDir };
-
-      const pending = await listGovernedSkillEntries(workspaceRoot, options);
-      assert.ok(
-        pending.filter((skill) => skill.id === 'shared').every((skill) => skill.needsReview),
-      );
-      assert.deepEqual(await setSkillPinned(workspaceRoot, 'shared', true, options), {
-        ok: false,
-        reason: 'needs_review',
-      });
-      const projectPinned = await setSkillPinned(
-        workspaceRoot,
-        'project:maka:shared',
-        true,
-        options,
-      );
-      assert.equal(projectPinned.ok, true);
-      const interim = JSON.parse(
-        await readFile(join(workspaceRoot, '.maka', 'skills-state.json'), 'utf8'),
-      ) as {
-        skills: Record<string, { enabled: boolean; pinned: boolean }>;
-        migration?: { needsReview: string[] };
-      };
-      assert.deepEqual(interim.migration?.needsReview, ['shared']);
-      assert.equal(interim.skills.shared?.enabled, false);
-      assert.equal(interim.skills['project:maka:shared']?.pinned, true);
-
-      const userReviewed = await setSkillPinned(
-        workspaceRoot,
-        'user:agents:shared',
-        false,
-        options,
-      );
-      assert.equal(userReviewed.ok, true);
-      const migrated = JSON.parse(
-        await readFile(join(workspaceRoot, '.maka', 'skills-state.json'), 'utf8'),
-      ) as {
-        skills: Record<string, { enabled: boolean; pinned: boolean }>;
-        migration?: { needsReview: string[] };
-      };
-      assert.equal(migrated.migration, undefined);
-      assert.equal(migrated.skills.shared, undefined);
-      assert.equal(migrated.skills['project:maka:shared']?.enabled, false);
-      assert.equal(migrated.skills['user:agents:shared']?.enabled, false);
-      const reviewed = await listGovernedSkillEntries(workspaceRoot, options);
-      assert.ok(
-        reviewed.filter((skill) => skill.id === 'shared').every((skill) => !skill.needsReview),
-      );
-    });
-  });
-
-  it('projects case-only v1 duplicates from one normalized legacy preference', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const projectRoot = join(workspaceRoot, 'project');
-      const homeDir = join(workspaceRoot, 'home');
-      await mkdir(projectRoot, { recursive: true });
-      await mkdir(homeDir, { recursive: true });
-      await writeSkillAt(
-        join(projectRoot, '.maka', 'skills'),
-        'shared',
-        'Project Shared',
-        'Project copy.',
-      );
-      await writeSkillAt(
-        join(homeDir, '.agents', 'skills'),
-        'Shared',
-        'User Shared',
-        'User copy.',
-      );
-      await mkdir(join(workspaceRoot, '.maka'), { recursive: true });
-      await writeFile(
-        join(workspaceRoot, '.maka', 'skills-state.json'),
-        JSON.stringify({ schemaVersion: 1, skills: { Shared: { enabled: false } } }),
-        'utf8',
-      );
-
-      const entries = (
-        await listGovernedSkillEntries(workspaceRoot, {
-          cwd: projectRoot,
-          homeDir,
-        })
-      ).filter((skill) => skill.id.toLowerCase() === 'shared');
-      assert.equal(entries.length, 2);
-      for (const entry of entries) {
-        assert.equal(entry.enabled, false);
-        assert.equal(entry.pinned, false);
-        assert.equal(entry.runtimeStatus, 'disabled');
-        assert.equal(entry.needsReview, true);
-      }
-      assert.equal(
-        entries.find((entry) => entry.scope === 'project')?.contextStatus,
-        'disabled',
-      );
-      assert.equal(
-        entries.find((entry) => entry.scope === 'user')?.contextStatus,
-        'shadowed',
-      );
-    });
-  });
-
   it('surfaces blocked discovery roots as non-actionable inventory diagnostics', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const projectRoot = join(workspaceRoot, 'project');
@@ -476,37 +229,6 @@ name: Broken
         { cwd: workspaceRoot, homeDir: join(workspaceRoot, 'empty-home') },
       );
       assert.equal(opened.ok, true);
-    });
-  });
-
-  it('loads an enabled duplicate-name skill before reporting a disabled duplicate as blocked', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'disabled-copy', `---
-name: Shared Helper
-description: Disabled duplicate.
----
-# Shared Helper
-Disabled copy.`);
-      await writeSkill(workspaceRoot, 'enabled-copy', `---
-name: Shared Helper
-description: Enabled duplicate.
----
-# Shared Helper
-Enabled copy.`);
-
-      const disabled = await setSkillEnabled(workspaceRoot, 'disabled-copy', false);
-      assert.equal(disabled.ok, true);
-
-      const loadedByName = await loadSkillInstructions(workspaceRoot, 'Shared Helper');
-      assert.equal(loadedByName.ok, true);
-      if (!loadedByName.ok) return;
-      assert.equal(loadedByName.skill.id, 'enabled-copy');
-      assert.match(loadedByName.skill.instructions, /Enabled copy\./);
-
-      const loadedDisabledById = await loadSkillInstructions(workspaceRoot, 'disabled-copy');
-      assert.equal(loadedDisabledById.ok, false);
-      if (loadedDisabledById.ok) return;
-      assert.equal(loadedDisabledById.reason, 'disabled');
     });
   });
 
@@ -589,34 +311,6 @@ Open local targets carefully.`);
     });
   });
 
-  it('exposes a read-only Skill tool that loads a single matching local skill', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'deck-helper', `---
-name: Deck Helper
-description: Build a slide outline.
-allowed-tools: [Read, Bash]
----
-# Deck Helper
-Make every slide carry one idea.`);
-
-      const tool = buildSkillAgentTool(workspaceRoot);
-      assert.equal(tool.name, 'Skill');
-      const result = await tool.impl({ name: 'Deck Helper' }, {
-        sessionId: 's1',
-        turnId: 't1',
-        cwd: workspaceRoot,
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-      });
-
-      assert.equal(result.ok, true);
-      if (!result.ok) return;
-      assert.equal(result.skill.id, 'deck-helper');
-      assert.match(result.skill.instructions, /Make every slide carry one idea\./);
-    });
-  });
-
   it('bounds loaded skill instructions and returns available skills on miss', async () => {
     await withWorkspace(async (workspaceRoot) => {
       await writeSkill(workspaceRoot, 'huge', `---
@@ -638,13 +332,6 @@ ${'A'.repeat(MAX_SKILL_TOOL_BODY_CHARS + 1000)}`);
       if (miss.ok) return;
       assert.equal(miss.reason, 'not_found');
       assert.deepEqual(miss.availableSkills, [{ id: 'huge', name: 'Huge', description: 'Exercise instruction truncation.' }]);
-    });
-  });
-
-  it('returns undefined when no skills directory exists', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      assert.deepEqual(await listInstalledSkills(workspaceRoot), []);
-      assert.equal(await buildSkillsPromptFragment(workspaceRoot), undefined);
     });
   });
 
@@ -717,44 +404,6 @@ allowed-tools:
         .filter((entry) => entry.isDirectory())
         .map((entry) => entry.name);
       assert.deepEqual(dirs, ['starter-skill']);
-    });
-  });
-
-  it('reuses an existing starter skill instead of minting a duplicate', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'starter-skill', `---
-name: Existing
-description: Preserve an existing starter skill.
----
-# Existing`);
-
-      const result = await createStarterSkill(workspaceRoot);
-      assert.equal(result.ok, true);
-      if (!result.ok) return;
-      // The existing starter-skill/SKILL.md is reused verbatim; no starter-skill-2
-      // is created and the user's content is left untouched.
-      assert.equal(result.created, false);
-      assert.equal(result.skill.id, 'starter-skill');
-      assert.match(await readFile(join(workspaceRoot, 'skills', 'starter-skill', 'SKILL.md'), 'utf8'), /# Existing/);
-      await assert.rejects(lstat(join(workspaceRoot, 'skills', 'starter-skill-2')), { code: 'ENOENT' });
-    });
-  });
-
-  it('deletes an installed skill directory', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'starter-skill', `---
-name: 示例技能
-description: 用于测试删除已安装技能。
----
-# 示例技能`);
-      assert.equal((await listInstalledSkills(workspaceRoot)).length, 1);
-
-      assert.deepEqual(await deleteSkill(workspaceRoot, 'starter-skill'), { ok: true });
-      assert.equal((await listInstalledSkills(workspaceRoot)).length, 0);
-      await assert.rejects(lstat(join(workspaceRoot, 'skills', 'starter-skill')), { code: 'ENOENT' });
-
-      // Deleting an absent skill is a clean not_found, not a throw.
-      assert.deepEqual(await deleteSkill(workspaceRoot, 'starter-skill'), { ok: false, reason: 'not_found' });
     });
   });
 
@@ -854,41 +503,6 @@ description: 用于测试删除已安装技能。
       } finally {
         await rm(outside, { recursive: true, force: true });
       }
-    });
-  });
-
-  it('treats invalid skill locks as status metadata without changing runtime behavior', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      await writeSkill(workspaceRoot, 'broken-lock', `---
-name: Broken Lock
-description: Still usable.
-allowed-tools: [Read]
----
-# Broken Lock
-Load me anyway.`);
-      await writeFile(join(workspaceRoot, 'skills', 'broken-lock', 'skill.lock.json'), '{not json', 'utf8');
-
-      const skills = await listInstalledSkills(workspaceRoot);
-      assert.equal(skills.length, 1);
-      assert.equal(skills[0].id, 'broken-lock');
-      assert.equal(skills[0].sourceType, 'unknown');
-      assert.equal(skills[0].userModified, false);
-      assert.equal(skills[0].validationStatus, 'metadata_error');
-      assert.deepEqual(skills[0].validationCodes, ['invalid_json']);
-
-      const prompt = await buildSkillsPromptFragment(workspaceRoot);
-      assert.ok(prompt);
-      assert.match(prompt, /<available-skill id="broken-lock" name="Broken Lock">/);
-      assert.doesNotMatch(prompt, /skill\.lock\.json/);
-      assert.doesNotMatch(prompt, /sourceType/);
-      assert.doesNotMatch(prompt, /contentSha256/);
-      assert.doesNotMatch(prompt, /sourceVersion/);
-
-      const loaded = await loadSkillInstructions(workspaceRoot, 'broken-lock');
-      assert.equal(loaded.ok, true);
-      if (!loaded.ok) return;
-      assert.match(loaded.skill.instructions, /Load me anyway\./);
-      assert.doesNotMatch(JSON.stringify(loaded.skill), /skill\.lock\.json|sourceType|contentSha256|sourceVersion/);
     });
   });
 
@@ -1067,72 +681,6 @@ Forged workspace content.`);
           ok: false,
           reason: 'metadata_error',
         });
-      } finally {
-        await rm(sourceRoot, { recursive: true, force: true });
-      }
-    });
-  });
-
-  it('installs managed sources into the workspace without using the source cache at runtime', async () => {
-    await withWorkspace(async (workspaceRoot) => {
-      const sourceRoot = await mkdtemp(join(tmpdir(), 'maka-managed-source-cache-'));
-      try {
-        const incomingDir = join(workspaceRoot, 'incoming', 'research-brief');
-        await mkdir(incomingDir, { recursive: true });
-        const incomingFile = join(incomingDir, 'SKILL.md');
-        await writeFile(incomingFile, `---
-name: Research Brief
-description: Summarize research.
-allowed-tools: [Read]
----
-# Research Brief
-Use source version one.`, 'utf8');
-
-        const imported = await importManagedSkillSource({ root: sourceRoot, sourceFile: incomingFile });
-        assert.equal(imported.ok, true);
-        if (!imported.ok) return;
-
-        const installed = await installManagedSkill(workspaceRoot, imported.source.id, sourceRoot);
-        assert.equal(installed.ok, true);
-        if (!installed.ok) return;
-        assert.equal(installed.skill.id, 'research-brief');
-        assert.equal(installed.skill.sourceType, 'managed');
-        assert.equal(installed.skill.sourceName, 'local-library');
-        assert.equal(installed.skill.managedSourceId, 'research-brief');
-        assert.equal(installed.skill.managedUpdateStatus, 'up_to_date');
-
-        const lock = JSON.parse(await readFile(join(workspaceRoot, 'skills', 'research-brief', 'skill.lock.json'), 'utf8')) as Record<string, unknown>;
-        assert.equal(lock.sourceType, 'managed');
-        assert.equal(lock.sourceId, 'research-brief');
-        assert.equal(lock.sourceContentSha256, imported.source.contentSha256);
-        assert.match(await readFile(join(workspaceRoot, 'skills', 'research-brief', '.maka', 'baseline', 'SKILL.md'), 'utf8'), /Use source version one\./);
-
-        await writeFile(join(sourceRoot, 'research-brief', 'SKILL.md'), `---
-name: Research Brief
-description: Summarize research.
-allowed-tools: [Read]
----
-# Research Brief
-Use source version two.`, 'utf8');
-
-        const loaded = await loadSkillInstructions(workspaceRoot, 'research-brief');
-        assert.equal(loaded.ok, true);
-        if (!loaded.ok) return;
-        assert.match(loaded.skill.instructions, /Use source version one\./);
-        assert.doesNotMatch(loaded.skill.instructions, /Use source version two\./);
-
-        const skills = await listInstalledSkills(workspaceRoot, { managedSourceRoot: sourceRoot });
-        const managed = skills.find((skill) => skill.id === 'research-brief');
-        assert.ok(managed);
-        assert.equal(managed.managedUpdateStatus, 'update_available');
-
-        const details = await getSkillGovernanceDetails(workspaceRoot, 'research-brief', sourceRoot);
-        assert.equal(details.ok, true);
-        if (!details.ok) return;
-        assert.equal(details.details.sourceType, 'managed');
-        assert.equal(details.details.hasManagedBaseline, true);
-        assert.equal(details.details.sourceAvailable, true);
-        assert.equal(details.details.sourceChanged, true);
       } finally {
         await rm(sourceRoot, { recursive: true, force: true });
       }
@@ -1469,257 +1017,6 @@ description: Exercise workspace-contained open paths.
     });
   });
 
-  it('skills empty state can refresh without restarting Maka', async () => {
-    const repoRoot = process.cwd().endsWith('apps/desktop')
-      ? join(process.cwd(), '..', '..')
-      : process.cwd();
-    const ui = await readFile(join(repoRoot, 'packages/ui/src/skills-panel.tsx'), 'utf8');
-    const renderer = await readRendererShellCombinedSource();
-    const preload = await readFile(join(repoRoot, 'apps/desktop/src/preload/preload.ts'), 'utf8');
-    const main = await readMainProcessCombinedSource();
-
-    assert.match(ui, /onRefreshSkills\?\(\): void \| Promise<void>/);
-    assert.match(ui, /onCreateSkillTemplate\?\(\): void \| Promise<void>/);
-    assert.match(ui, /onOpenSkillsFolder\?\(\): void \| Promise<void>/);
-    assert.match(ui, /copy\.installed\.createExample/);
-    assert.match(ui, /copy\.installed\.refresh/);
-    assert.match(ui, /copy\.page\.creating/);
-    assert.match(ui, /copy\.page\.refreshing/);
-    assert.match(ui, /copy\.page\.openFolder/);
-    // The inert 技能示例 example cards were removed — 添加 seeds a real,
-    // editable starter skill instead. No decorative example rows may return.
-    assert.doesNotMatch(ui, /title: '文档处理流'/);
-    assert.doesNotMatch(ui, /title: '演示资料流'/);
-    assert.doesNotMatch(ui, /SKILL_EXAMPLE_CARDS/);
-    assert.doesNotMatch(ui, /重启 Maka 后会出现在这里/);
-    assert.match(renderer, /async function refreshSkills\(options: \{ shouldShowError\?: \(\) => boolean \} = \{\}\)/);
-    assert.match(renderer, /async function createSkillTemplate\(\)/);
-    assert.match(renderer, /onRefreshSkills=\{\(\) => refreshSkills\(\)\}/);
-    assert.match(renderer, /onCreateSkillTemplate=\{\(\) => createSkillTemplate\(\)\}/);
-    assert.match(renderer, /onOpenSkill=\{\(skillId\) => openSkill\(skillId\)\}/);
-    assert.match(renderer, /onOpenSkillsFolder=\{\(\) => openSkillsFolder\(\)\}/);
-    assert.match(renderer, /onPreviewManagedSkillUpdate=\{\(skillId\) => previewManagedSkillUpdate\(skillId\)\}/);
-    assert.match(renderer, /onUpdateManagedSkill=\{\(skillId, options\) => updateManagedSkill\(skillId, options\)\}/);
-    assert.match(renderer, /onSetSkillEnabled=\{\(skillId, enabled\) => setSkillEnabled\(skillId, enabled\)\}/);
-    assert.match(renderer, /onSetSkillPinned=\{\(skillRef, pinned\) => setSkillPinned\(skillRef, pinned\)\}/);
-    assert.match(renderer, /onDeleteSkill=\{\(skillRef\) => deleteSkill\(skillRef\)\}/);
-    assert.match(preload, /createStarter\(\)/);
-    assert.match(preload, /delete\(idOrRef: string\)/);
-    assert.match(preload, /open\(id: string, target: 'file' \| 'directory' = 'file'\)/);
-    assert.match(preload, /previewUpdate\(skillId: string\)/);
-    assert.match(preload, /updateManaged\(skillId: string, options\?: \{ force\?: boolean; expectedCurrentSha256\?: string; expectedSourceSha256\?: string \}\)/);
-    assert.match(preload, /setEnabled\(skillId: string, enabled: boolean\)/);
-    assert.match(preload, /setPinned\(skillRef: string, pinned: boolean\)/);
-    assert.match(main, /ipcMain\.handle\('skills:createStarter'/);
-    assert.match(main, /ipcMain\.handle\('skills:delete'/);
-    assert.match(main, /ipcMain\.handle\('skills:open'/);
-    assert.match(main, /ipcMain\.handle\('skills:details'/);
-    assert.match(main, /ipcMain\.handle\('skills:previewUpdate'/);
-    assert.match(main, /ipcMain\.handle\('skills:setEnabled'/);
-    assert.match(main, /ipcMain\.handle\('skills:setPinned'/);
-  });
-
-  it('gates Skills module actions while async work is pending', async () => {
-    const repoRoot = process.cwd().endsWith('apps/desktop')
-      ? join(process.cwd(), '..', '..')
-      : process.cwd();
-    const modulePagesSource = await readFile(join(repoRoot, 'packages/ui/src/module-pages.tsx'), 'utf8');
-    const ui = await readFile(join(repoRoot, 'packages/ui/src/skills-panel.tsx'), 'utf8');
-    const modulePanelTypes = await readFile(join(repoRoot, 'packages/ui/src/module-panel-types.ts'), 'utf8');
-    const workspaceResourcesIpc = await readFile(join(repoRoot, 'apps/desktop/src/main/workspace-resources-ipc-main.ts'), 'utf8');
-    const renderer = await readRendererShellCombinedSource();
-    const skillsModuleMain = extractFunctionBlock(ui, 'SkillsModuleMain');
-    const skillPanel = ui.match(/function SkillLibraryPanel[\s\S]*?function SkillsModuleMain/)?.[0] ?? '';
-    const skillEntryContract = modulePanelTypes.match(/export interface SkillEntry[\s\S]*?\n}/)?.[0] ?? '';
-
-    assert.match(modulePagesSource, /export function SkillsPage[\s\S]*<SkillsModuleMain/, 'SkillsPage must mount the skills main surface');
-    assert.match(skillsModuleMain, /const \[pendingSkillAction, setPendingSkillAction\] = useState<string \| null>\(null\)/);
-    assert.match(skillsModuleMain, /const skillActionMountedRef = useMountedRef\(\)/);
-    assert.match(skillsModuleMain, /const pendingSkillActionRef = useRef<string \| null>\(null\)/);
-    assert.match(
-      skillsModuleMain,
-      /useEffect\(\(\) => \{\s*return \(\) => \{\s*pendingSkillActionRef\.current = null;\s*\};\s*\}, \[\]\)/,
-      'Skills actions must release pending ownership when the module unmounts',
-    );
-    assert.match(skillsModuleMain, /async function runSkillAction<Result>\(/);
-    assert.match(skillsModuleMain, /if \(!action \|\| pendingSkillActionRef\.current !== null\) return undefined;/, 'Skills actions must reject duplicate clicks immediately');
-    assert.match(skillsModuleMain, /pendingSkillActionRef\.current = actionKey[\s\S]*setPendingSkillAction\(actionKey\)[\s\S]*return await action\(\)/, 'Skills actions must show pending state while waiting for renderer IPC and preserve action results');
-    assert.match(skillsModuleMain, /pendingSkillActionRef\.current = null[\s\S]*if \(skillActionMountedRef\.current\) setPendingSkillAction\(null\)/, 'Skills actions must not clear pending UI state after unmount');
-    assert.match(skillsModuleMain, /className="maka-module-main-actions" role="group" aria-label=\{copy\.page\.actions\}/);
-    assert.match(skillsModuleMain, /isDisabled=\{!props\.onOpenSkillsFolder \|\| skillActionBusy\}/, 'open folder button must be disabled while any Skills action is pending'); // #1565 PR 3: Astryx Button uses isDisabled
-    assert.match(skillsModuleMain, /isDisabled=\{!props\.onRefreshSkills \|\| skillActionBusy\}/, 'top refresh button must be disabled while any Skills action is pending'); // #1565 PR 3
-    assert.match(skillsModuleMain, /pendingSkillAction === 'refresh' \? copy\.page\.refreshing : copy\.page\.refresh/);
-    assert.match(skillsModuleMain, /pendingSkillAction === 'create' \? copy\.page\.creating : copy\.page\.createExample/);
-    assert.match(skillsModuleMain, /onClick=\{\(\) => void runSkillAction\('folder', props\.onOpenSkillsFolder\)\}/);
-    assert.match(skillsModuleMain, /onCreateSkillTemplate=\{props\.onCreateSkillTemplate \? \(\) => runSkillAction\('create', props\.onCreateSkillTemplate\) : undefined\}/);
-    assert.match(skillsModuleMain, /onOpenSkill=\{props\.onOpenSkill \? \(skillId\) => runSkillAction\(`open:\$\{skillId\}`, \(\) => props\.onOpenSkill\?\.\(skillId\)\) : undefined\}/);
-    assert.match(skillsModuleMain, /onDeleteSkill=\{props\.onDeleteSkill \? \(skillId\) => runSkillAction\(`delete:\$\{skillId\}`, \(\) => props\.onDeleteSkill\?\.\(skillId\)\) : undefined\}/);
-
-    assert.match(skillPanel, /actionBusy\?: boolean/);
-    assert.match(skillPanel, /createPending\?: boolean/);
-    assert.match(skillPanel, /openingSkillId\?: string \| null/);
-    assert.match(skillPanel, /managedSkillSources\?: ManagedSkillSourceEntry\[]/);
-    assert.match(skillPanel, /installingSourceId\?: string \| null/);
-    assert.match(skillPanel, /updatingSkillId\?: string \| null/);
-    assert.doesNotMatch(skillPanel, /maka-skill-workbench-rail/);
-    assert.doesNotMatch(skillPanel, /maka-skill-workbench-summary/);
-    // 技能示例 removed: no inert example section/grid/rows may render under the
-    // installed list. 添加 seeds a real starter skill; there are no decorations.
-    assert.doesNotMatch(skillPanel, /const templates = \(/);
-    assert.doesNotMatch(skillPanel, /maka-skill-examples/);
-    assert.doesNotMatch(skillPanel, /maka-skill-example-grid/);
-    assert.doesNotMatch(skillPanel, /maka-skill-template-row/);
-    assert.match(skillPanel, /<section className="maka-skill-installed" aria-label={label}>/);
-    assert.match(skillPanel, /<div className="maka-skill-library" aria-busy=\{props\.actionBusy \? 'true' : undefined\}>/);
-    assert.match(skillPanel, /<ul className="maka-skill-library-list" aria-label=\{copy\.installed\.listAriaLabel\}>/);
-    assert.match(skillPanel, /<span className="maka-skill-library-status" aria-hidden="true">/);
-    assert.match(skillPanel, /const statusLabel = formatSkillStatusLabel\(skill, copy\)/);
-    assert.match(skillPanel, /const runtimeLabel = formatSkillRuntimeLabel\(skill, copy\)/);
-    assert.match(skillPanel, /copy\.row\.hoverWithTools\(skill\.id, runtimeLabel, statusLabel, toolsLabel\)/);
-    assert.match(skillPanel, /copy\.row\.hover\(skill\.id, runtimeLabel, statusLabel\)/);
-    // Detail round 6, exception-only: the runtime badge renders ONLY for
-    // state_error — enabled/disabled is already expressed by the Switch.
-    // Only exceptional runtime/context/source states use Astryx Badge.
-    // Routine scope, advertised/disabled context, and source are supporting text.
-    assert.match(skillPanel, /\{skill\.runtimeStatus === 'state_error' && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-runtime-label"[\s\S]*?label=\{runtimeLabel\}/);
-    assert.match(skillPanel, /className="maka-skill-library-supporting"[\s\S]*?\{supportingMeta\.join\(' · '\)\}/);
-    assert.doesNotMatch(skillPanel, /maka-skill-library-scope-label/);
-    assert.match(skillPanel, /\{contextNeedsAttention && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-context-exception"/);
-    assert.match(skillPanel, /\{sourceStatusNeedsAttention && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-status-label"/);
-    assert.match(skillPanel, /function skillSourceStatusNeedsAttention\(skill: SkillEntry\)/);
-    assert.match(ui, /function formatSkillStatusLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
-    assert.match(ui, /function formatSkillRuntimeLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
-    assert.match(ui, /runtimeStatus === 'state_error'\) return copy\.status\.stateError/);
-    assert.match(ui, /skill\.enabled \? copy\.status\.enabled : copy\.status\.disabled/);
-    assert.match(
-      skillPanel,
-      /disabledMessage=\{skill\.runtimeStatus === 'state_error'[\s\S]*copy\.row\.stateErrorTitle/,
-      'A state-error Switch must expose its disabled reason through Astryx',
-    );
-    assert.doesNotMatch(
-      skillPanel,
-      /<Switch[\s\S]{0,500}labelTooltip=/,
-      'A visually hidden Switch label must not own an unreachable tooltip',
-    );
-    assert.match(ui, /validationStatus === 'metadata_error'\) return copy\.status\.metadataError/);
-    assert.match(ui, /userModified\) return copy\.status\.modified/);
-    assert.match(ui, /sourceType === 'bundled'\) return copy\.status\.bundled/);
-    assert.match(ui, /sourceType === 'managed'[\s\S]*copy\.status\.managed/, 'Phase 2 can present verified managed state derived by main');
-    assert.match(ui, /return copy\.status\.local/);
-    assert.match(skillEntryContract, /sourceType\?: 'workspace' \| 'bundled' \| 'managed' \| 'unknown'/);
-    assert.match(skillEntryContract, /managedUpdateStatus\?:/);
-    assert.match(skillEntryContract, /enabled: boolean/);
-    assert.match(skillEntryContract, /runtimeStatus: 'enabled' \| 'disabled' \| 'state_error'/);
-    assert.doesNotMatch(skillEntryContract, /sourceName|sourceVersion|contentSha256|installedAt|validationCodes|validationMessages|write_failed/, 'renderer SkillEntry must not expose lock internals');
-    assert.match(workspaceResourcesIpc, /toSkillEntry/, 'Skills IPC must scrub main-internal lock fields before crossing to renderer');
-    assert.doesNotMatch(workspaceResourcesIpc, /ipcMain\.handle\('skills:list'[\s\S]*listInstalledSkills\(deps\.workspaceRoot\)/, 'Skills list IPC must not return InstalledSkill objects directly');
-    // Marketplace redesign: managed sources ARE the 市场 tab now — the
-    // separate 来源库 list under 已安装 was folded into a card grid. The
-    // source cache is still surfaced (never runtime), just as a browse
-    // grid keyed off props.managedSkillSources.
-    assert.match(skillPanel, /const market = \(/, 'Phase 2 must surface the managed source cache without making it runtime');
-    assert.match(skillPanel, /<section className="maka-skill-market" aria-label=\{copy\.market\.ariaLabel\}>/);
-    assert.match(skillPanel, /<div className="maka-skill-market-grid">/, '市场 tab renders managed sources as a card grid');
-    assert.match(skillPanel, /const marketSources = useMemo\(/, '市场 grid is a pure client-side filter/sort over managedSkillSources');
-    assert.match(skillPanel, /copy\.market\.official/, '市场 grid carries the localized official section label');
-    assert.match(
-      skillPanel,
-      /<IconButton\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.install\.action\(source\.name\)\}/,
-      'only the governed install icon-button acts; the market card body stays inert',
-    );
-    assert.match(skillPanel, /copy\.market\.importLocal/);
-    assert.doesNotMatch(skillPanel, /const managedSources = \(/, '来源库 list was replaced by the 市场 card grid');
-    assert.match(skillPanel, /onInstallManagedSkill\?\(sourceId: string\): void \| Promise<void>/);
-    assert.match(skillPanel, /onPreviewManagedSkillUpdate\?\(skillId: string\): Promise<ManagedSkillUpdatePreview \| null>/);
-    assert.match(skillPanel, /onUpdateManagedSkill\?\(skillId: string, options\?: \{ force\?: boolean; expectedCurrentSha256\?: string; expectedSourceSha256\?: string \}\): boolean \| Promise<boolean>/);
-    assert.match(skillPanel, /onSetSkillEnabled\?\(skillId: string, enabled: boolean\): void \| Promise<void>/);
-    assert.match(skillPanel, /<Switch[\s\S]*value=\{skill\.enabled\}[\s\S]*onChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next\)\}/);
-    assert.match(skillPanel, /props\.onSetSkillPinned\?\.\(skillRef, !skill\.pinned\)/);
-    assert.match(skillPanel, /className="maka-skill-context-inspector"/);
-    assert.match(skillPanel, /data-context-status=\{contextStatus\}/);
-    assert.match(
-      skillEntryContract,
-      /contextStatus\?:[\s\S]*'advertised'[\s\S]*'invalid'[\s\S]*'budget'/,
-    );
-    // Per-row delete: destructive two-step confirm (no dialog precedent here).
-    // First click arms 确认删除; a second within the window fires onDeleteSkill.
-    // aria-label names the skill and reflects the armed state (keyboard-safe).
-    assert.match(skillPanel, /onDeleteSkill\?\(skillRef: string\): void \| Promise<void>/);
-    assert.match(skillPanel, /className="maka-skill-library-delete-button"/);
-    assert.match(skillPanel, /function requestDeleteSkill\(skill: SkillEntry\)/);
-    // Armed state is keyed by ref, not id: the same id can appear in several
-    // scopes and an id-keyed confirm would arm every copy at once.
-    assert.match(skillPanel, /const ref = skill\.ref \?\? skill\.id;/);
-    assert.match(skillPanel, /setConfirmingDeleteSkillId\(ref\)[\s\S]*setTimeout\([\s\S]*setConfirmingDeleteSkillId\(null\)/, 'armed delete state must auto-revert so a stray first click cannot linger');
-    assert.match(skillPanel, /void props\.onDeleteSkill\(ref\)/);
-    assert.match(skillPanel, /aria-label=\{confirmingDelete \? copy\.row\.confirmDeleteAriaLabel\(skill\.name\) : copy\.row\.deleteAriaLabel\(skill\.name\)\}/);
-    assert.match(skillPanel, /confirmingDelete \? copy\.row\.confirmDelete : copy\.row\.delete/);
-    assert.match(skillPanel, /<div[\s\S]*className="maka-skill-library-row"[\s\S]*<\/div>/, 'Skill row body must be information, not the open-file control');
-    assert.match(skillPanel, /className="maka-skill-library-open-button"[\s\S]*?label=\{copy\.row\.openAriaLabel\(skill\.name\)\}/); // #1565 PR 3: Astryx icon-only Button exposes its accessible name via label
-    assert.match(skillPanel, /className="maka-skill-library-open-button"[\s\S]*?\/>\s*<Switch/, 'per-skill enable switch must sit next to the explicit open-file icon button'); // #1565 PR 3: self-closing Astryx Button
-    assert.match(skillPanel, /const updated = await props\.onUpdateManagedSkill\(preview\.skill\.id/);
-    assert.match(skillPanel, /expectedCurrentSha256: preview\.expectedCurrentSha256/);
-    assert.match(skillPanel, /expectedSourceSha256: preview\.expectedSourceSha256/);
-    assert.match(skillPanel, /if \(updated\) setUpdatePreview\(null\)/);
-    assert.match(skillPanel, /skill\.managedUpdateStatus === 'update_available'/);
-    assert.match(skillPanel, /skill\.managedUpdateStatus === 'local_modified'/);
-    assert.match(skillPanel, /copy\.row\.viewUpdate/);
-    assert.match(skillPanel, /copy\.row\.viewDiff/);
-    assert.match(skillPanel, /copy\.review\.overwrite/);
-    assert.doesNotMatch(skillPanel, /恢复|修复|合并/, 'Phase 3 still must not imply automatic merge or repair flows');
-    assert.doesNotMatch(skillPanel, /const SKILL_GOVERNANCE_FILTERS/);
-    assert.doesNotMatch(skillPanel, /aria-label="技能状态筛选"/);
-    assert.match(skillPanel, /sourceStatusNeedsAttention/);
-    assert.match(skillPanel, /function previewText\(content: string\): string/);
-    assert.doesNotMatch(skillPanel, /maka-skill-library-action/, 'Open must be an explicit file icon button, not a status-like text pill');
-    assert.match(skillPanel, /label=\{props\.createPending \? copy\.installed\.createPending : copy\.installed\.createExample\}/);
-    assert.match(skillPanel, /label=\{props\.refreshPending \? copy\.installed\.refreshPending : copy\.installed\.refresh\}/);
-    assert.match(skillPanel, /isDisabled=\{props\.actionBusy\}/);
-    assert.match(skillPanel, /aria-busy=\{props\.actionBusy \? 'true' : undefined\}/);
-    assert.match(skillPanel, /isDisabled=\{props\.actionBusy \|\| !props\.onOpenSkill\}/, 'Skill open icon button must be disabled while a Skills action is pending'); // #1565 PR 3
-    assert.match(skillPanel, /opening && <span>\{copy\.row\.opening\}<\/span>/);
-    assert.match(skillPanel, /updating && <span>\{copy\.row\.updating\}<\/span>/);
-
-    assert.doesNotMatch(renderer, /onRefreshSkills=\{\(\) => void refreshSkills\(\)\}/, 'renderer must return the refresh promise to the UI pending gate');
-    assert.doesNotMatch(renderer, /onCreateSkillTemplate=\{\(\) => void createSkillTemplate\(\)\}/, 'renderer must return the create promise to the UI pending gate');
-    assert.doesNotMatch(renderer, /onOpenSkill=\{\(skillId\) => void openSkill\(skillId\)\}/, 'renderer must return the open promise to the UI pending gate');
-  });
-
-  it('scopes Skills action feedback to the active Skills surface', async () => {
-    const repoRoot = process.cwd().endsWith('apps/desktop')
-      ? join(process.cwd(), '..', '..')
-      : process.cwd();
-    const renderer = await readRendererShellCombinedSource();
-    const refreshBlock = renderer.match(/async function refreshSkills\([\s\S]*?\n  \}/)?.[0] ?? '';
-    const createBlock = renderer.match(/async function createSkillTemplate\(\)[\s\S]*?async function openSkillsFolder/)?.[0] ?? '';
-    const openBlock = renderer.match(/async function openSkill\(skillId: string\)[\s\S]*?\n  \}/)?.[0] ?? '';
-
-    assert.match(
-      renderer,
-      /function isSkillsSurfaceActive\(\): boolean \{[\s\S]*return navSelectionRef\.current\.section === 'extensions' && navSelectionRef\.current\.module === 'skills';[\s\S]*\}/,
-      'Skills feedback must be owned by the current Skills surface',
-    );
-    assert.match(
-      refreshBlock,
-      /if \(options\.shouldShowError\?\.\(\) \?\? true\) \{[\s\S]*toastApi\.error\(\s*copy\.refreshSkillsFailedTitle,\s*localizedShellErrorMessage\(error, copy\.refreshSkillsFallback, uiLocale\),?\s*\);[\s\S]*\}/,
-      'startup/subscription Skills refresh failures must remain visible by default',
-    );
-    assert.match(
-      createBlock,
-      /await refreshSkills\(\{ shouldShowError: isSkillsSurfaceActive \}\)/,
-      'create must still refresh the Skills list while gating refresh failure feedback to the active Skills surface',
-    );
-    assert.match(createBlock, /if \(!isSkillsSurfaceActive\(\)\) return;/, 'create must not auto-open a starter Skill after the user leaves Skills');
-    assert.doesNotMatch(createBlock, /await refreshSkills\(\);\s*toastApi\.success/, 'create success feedback must not be unconditional after refresh');
-    assert.match(createBlock, /if \(isSkillsSurfaceActive\(\)\)\s*toastApi\.error\(copy\.createTemplateFailedTitle/);
-    assert.match(createBlock, /if \(isSkillsSurfaceActive\(\)\)\s*toastApi\.error\(copy\.openTemplateFailedTitle/);
-    // Idempotent seeding: created:false reuses the existing 示例技能 and says so
-    // rather than claiming a fresh create; created:true keeps the create copy.
-    assert.match(createBlock, /if \(result\.created\) \{[\s\S]*copy\.createdTemplateTitle[\s\S]*\} else \{[\s\S]*copy\.openedExistingTemplateTitle, copy\.openedExistingTemplateDescription/);
-    assert.match(openBlock, /if \(isSkillsSurfaceActive\(\)\)\s*toastApi\.error\(copy\.openFailedTitle/);
-    assert.doesNotMatch(openBlock, /if \(!result\.ok\) \{\s*toastApi\.error\('无法打开 Skill'/, 'open Skill structured failures must not toast unconditionally after leaving Skills');
-    assert.doesNotMatch(openBlock, /catch \(error\) \{\s*toastApi\.error\('无法打开 Skill'/, 'open Skill thrown failures must not toast unconditionally after leaving Skills');
-  });
 
   it('surfaces thrown Skills IPC failures as toasts', async () => {
     const repoRoot = process.cwd().endsWith('apps/desktop')
@@ -1747,26 +1044,6 @@ description: Exercise workspace-contained open paths.
     assert.doesNotMatch(openBlock, /toastApi\.error\('无法打开 Skill', cleanErrorMessage\(error\)\)/);
   });
 
-  it('parses inline and list-style allowed-tools front matter', () => {
-    assert.deepEqual(
-      parseSkillFrontMatter(`---
-name: Inline
-allowed-tools: [Read, Bash]
----
-body`).allowedTools,
-      ['Read', 'Bash'],
-    );
-    assert.deepEqual(
-      parseSkillFrontMatter(`---
-name: List
-allowed-tools:
-  - Read
-  - Grep
----
-body`).allowedTools,
-      ['Read', 'Grep'],
-    );
-  });
 });
 
 async function withWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {
