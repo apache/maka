@@ -293,7 +293,11 @@ export {
   interpretScannedToolRecovery,
   validateToolRecoveryEventBundle,
 } from './tool-recovery-bundle.js';
-export { canonicalToolArgsHash, stableJsonStringify } from './tool-args-identity.js';
+export {
+  canonicalToolArgsHash,
+  stableJsonStringify,
+  stripUndefinedDeep,
+} from './tool-args-identity.js';
 export {
   encodeCanonicalRuntimeEvent,
   type CanonicalRuntimeEventEncoding,

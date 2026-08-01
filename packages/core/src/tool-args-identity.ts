@@ -130,3 +130,34 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
   }
   return result;
 }
+
+/**
+ * The same value with every `undefined`-valued property removed.
+ *
+ * Provider metadata is handed to Maka as the SDK parsed it, and a field the
+ * response did not carry arrives as an explicit `undefined` — Anthropic's
+ * `caller` object comes through as `{ type: 'direct', toolId: undefined }` when
+ * there is no tool id. JSON drops such a property, so the value no longer
+ * round-trips, and `encodeCanonicalRuntimeEvent` refuses it. That refusal is
+ * correct: an immutable event must mean the same thing after it is read back.
+ *
+ * The cost of not doing this was total. The refused write marked the runtime
+ * event store unavailable, the turn's terminal write then threw, and every turn
+ * that called any tool died a tenth of a second after the tool returned —
+ * `load_tools` succeeded, reported the group loaded, and the turn ended there.
+ *
+ * Dropping the key is lossless in the only sense that matters: JSON cannot tell
+ * an absent property from one set to `undefined`, so this writes down what
+ * would have been persisted anyway.
+ */
+export function stripUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((entry) => stripUndefinedDeep(entry)) as unknown as T;
+  if (value === null || typeof value !== 'object') return value;
+  if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (entry === undefined) continue;
+    out[key] = stripUndefinedDeep(entry);
+  }
+  return out as unknown as T;
+}
