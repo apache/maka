@@ -86,4 +86,9 @@ test('command palette presents navigation keys as alternatives, not a chord', as
 
   assert.doesNotMatch(source, /<Kbd keys="up\+down"\s*\/>/);
   assert.match(source, /<Kbd keys="up"\s*\/>\s*<Kbd keys="down"\s*\/>/);
+  assert.match(
+    source,
+    /emptySearchText=\{\([\s\S]*?<EmptyState[\s\S]*?role="presentation"/,
+    'Astryx CommandPalette owns the sole no-results live region',
+  );
 });

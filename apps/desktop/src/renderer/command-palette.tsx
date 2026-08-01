@@ -152,6 +152,7 @@ export function CommandPalette(props: {
         )}
         emptySearchText={(
           <EmptyState
+            role="presentation"
             className="maka-palette-empty py-8 md:py-10 gap-3"
             title={copy.emptyTitle}
             description={copy.emptyDescription}
