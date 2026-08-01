@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { describe, test } from 'node:test';
 import type { AgentRunHeader, SessionHeader } from '@maka/core';
 import type { AutomationDefinition, AutomationPendingFire } from '@maka/core/automation';
@@ -35,6 +36,9 @@ const CONNECTION_CONTEXT: ConnectionContext = {
   acquireResidency: () => ({ release() {} }),
 };
 
+const ASYNC_STATE_TIMEOUT_MS = 5_000;
+const ASYNC_STATE_POLL_MS = 5;
+
 describe('Host Automation coordinator', () => {
   test('atomically admits one heartbeat fire and settles the same durable Run identity', async () => {
     await withHarness(async (harness) => {
@@ -54,7 +58,10 @@ describe('Host Automation coordinator', () => {
       harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
 
       harness.fireTimer();
-      await waitFor(async () => (await harness.store.read()).pendingFires[0]?.status === 'running');
+      await waitFor(
+        'heartbeat fire to enter running state',
+        async () => (await harness.store.read()).pendingFires[0]?.status === 'running',
+      );
       const admitted = await harness.store.read();
       assert.equal(admitted.pendingFires.length, 1);
       assert.equal(admitted.automations[0]?.fireCount, 1);
@@ -66,7 +73,10 @@ describe('Host Automation coordinator', () => {
       assert.equal(harness.rootInputs[0]?.userMessageId, fire.userMessageId);
 
       harness.finishRun();
-      await waitFor(async () => (await harness.store.read()).pendingFires.length === 0);
+      await waitFor(
+        'heartbeat fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
+      );
       const settled = await harness.store.read();
       assert.equal(settled.automations[0]?.status, 'completed');
       assert.equal(settled.automations[0]?.lastRunId, fire.runId);
@@ -87,7 +97,10 @@ describe('Host Automation coordinator', () => {
 
       await harness.coordinator.prepareRecovery();
       await harness.coordinator.recover();
-      await waitFor(() => harness.rootInputs.length === 1);
+      await waitFor(
+        'recovered fire to enter the root coordinator',
+        () => harness.rootInputs.length === 1,
+      );
       const input = harness.rootInputs[0];
       assert.ok(input);
       assert.deepEqual(
@@ -108,7 +121,10 @@ describe('Host Automation coordinator', () => {
       );
 
       harness.finishRun();
-      await waitFor(async () => (await harness.store.read()).pendingFires.length === 0);
+      await waitFor(
+        'recovered fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
+      );
       assert.equal((await harness.store.read()).automations[0]?.lastRunId, fire.runId);
     });
   });
@@ -202,7 +218,10 @@ describe('Host Automation coordinator', () => {
       assert.equal(harness.rootInputs[0]?.userMessageId, fire.userMessageId);
 
       harness.finishRun();
-      await waitFor(async () => (await harness.store.read()).pendingFires.length === 0);
+      await waitFor(
+        'recovered running fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
+      );
       assert.equal((await harness.store.read()).automations[0]?.lastRunId, fire.runId);
     });
   });
@@ -235,7 +254,10 @@ describe('Host Automation coordinator', () => {
 
         harness.coordinator.start();
         harness.fireTimer();
-        await waitFor(() => harness.rootInputs.length === 2);
+        await waitFor(
+          'busy fire retry to enter the root coordinator',
+          () => harness.rootInputs.length === 2,
+        );
         assert.equal(harness.rootInputs[1]?.runId, fire.runId);
         assert.equal((await harness.store.read()).pendingFires[0]?.id, fire.id);
       },
@@ -261,7 +283,10 @@ describe('Host Automation coordinator', () => {
 
         harness.coordinator.start();
         harness.fireTimer();
-        await waitFor(() => harness.rootInputs.length === 2);
+        await waitFor(
+          'unavailable fire retry to enter the root coordinator',
+          () => harness.rootInputs.length === 2,
+        );
         assert.equal(harness.rootInputs[1]?.runId, fire.runId);
         assert.equal((await harness.store.read()).pendingFires[0]?.id, fire.id);
       },
@@ -286,7 +311,7 @@ describe('Host Automation coordinator', () => {
       harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
 
       harness.fireTimer();
-      await waitFor(() => harness.stableCreates.length === 1);
+      await waitFor('cron Session creation', () => harness.stableCreates.length === 1);
       const request = harness.stableCreates[0];
       assert.ok(request);
       assert.match(request.sessionId, /^automation_session_[0-9a-f]{48}$/);
@@ -297,7 +322,10 @@ describe('Host Automation coordinator', () => {
       assert.equal(request.input.permissionMode, 'explore');
 
       harness.finishRun();
-      await waitFor(async () => (await harness.store.read()).pendingFires.length === 0);
+      await waitFor(
+        'cron fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
+      );
     });
   });
 
@@ -351,7 +379,7 @@ describe('Host Automation coordinator', () => {
         harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
 
         harness.fireTimer();
-        await waitFor(() => harness.timerCount() === 1);
+        await waitFor('deferred heartbeat retry timer', () => harness.timerCount() === 1);
         const snapshot = await harness.store.read();
         assert.equal(snapshot.automations[0]?.deferredFireCount, 1);
         assert.equal(snapshot.automations[0]?.fireCount, 0);
@@ -527,7 +555,10 @@ describe('Host Automation coordinator', () => {
       if ('error' in created) return;
       harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
       harness.fireTimer();
-      await waitFor(async () => (await harness.store.read()).pendingFires[0]?.status === 'running');
+      await waitFor(
+        'accepted fire to enter running state',
+        async () => (await harness.store.read()).pendingFires[0]?.status === 'running',
+      );
 
       let closed = false;
       const closing = harness.coordinator.close().then(() => {
@@ -559,14 +590,20 @@ describe('Host Automation coordinator', () => {
       if ('error' in created) return;
       harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
       harness.fireTimer();
-      await waitFor(async () => (await harness.store.read()).pendingFires[0]?.status === 'running');
+      await waitFor(
+        'draining fire to enter running state',
+        async () => (await harness.store.read()).pendingFires[0]?.status === 'running',
+      );
       const pendingRunId = (await harness.store.read()).pendingFires[0]?.runId;
       assert.ok(pendingRunId);
 
       const paused = await harness.coordinator.pause(created.id, 'creator-session');
       assert.equal(paused?.status, 'paused');
       harness.finishRun();
-      await waitFor(async () => (await harness.store.read()).pendingFires.length === 0);
+      await waitFor(
+        'draining fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
+      );
       const settled = (await harness.store.read()).automations[0];
       assert.equal(settled?.status, 'paused');
       assert.equal(settled?.lastRunId, pendingRunId);
@@ -591,7 +628,10 @@ describe('Host Automation coordinator', () => {
       if ('error' in created) return;
       harness.now = created.nextFireAt ?? assert.fail('Expected a scheduled fire');
       harness.fireTimer();
-      await waitFor(async () => (await harness.store.read()).pendingFires[0]?.status === 'running');
+      await waitFor(
+        'closing fire to enter running state',
+        async () => (await harness.store.read()).pendingFires[0]?.status === 'running',
+      );
 
       assert.deepEqual(
         await harness.coordinator.handlers['automation.mutate'](
@@ -609,7 +649,10 @@ describe('Host Automation coordinator', () => {
       assert.equal(pending.pendingFires[0]?.automationId, created.id);
 
       harness.finishRun();
-      await waitFor(async () => (await harness.store.read()).pendingFires.length === 0);
+      await waitFor(
+        'closing fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
+      );
     });
   });
 
@@ -642,7 +685,7 @@ describe('Host Automation coordinator', () => {
         } finally {
           releasePolicy.resolve();
         }
-        await waitFor(() => harness.timerCount() === 1);
+        await waitFor('policy-unblocked scheduler timer', () => harness.timerCount() === 1);
 
         const snapshot = await harness.store.read();
         assert.equal(snapshot.revision, 3);
@@ -992,10 +1035,15 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   return { promise, resolve: resolvePromise };
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+async function waitFor(
+  description: string,
+  predicate: () => boolean | Promise<boolean>,
+): Promise<void> {
+  const deadline = performance.now() + ASYNC_STATE_TIMEOUT_MS;
+  while (true) {
     if (await predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (performance.now() >= deadline) break;
+    await new Promise<void>((resolve) => setTimeout(resolve, ASYNC_STATE_POLL_MS));
   }
-  assert.fail('Timed out waiting for Automation coordinator state');
+  assert.fail(`Timed out waiting for ${description}`);
 }
