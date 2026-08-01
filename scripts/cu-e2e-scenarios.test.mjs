@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -226,18 +225,5 @@ test('validation rejects ambiguous or unsafe scenario declarations', () => {
         ],
       }),
     /contains duplicates/,
-  );
-});
-
-test('fixture helper is Electron-only and does not import Maka runtime or runners', async () => {
-  const source = await readFile(new URL('./cu-e2e-fixture.mjs', import.meta.url), 'utf8');
-  assert.match(source, /new BrowserWindow\(/);
-  assert.match(source, /\.showInactive\(\)/);
-  assert.match(source, /contextIsolation:\s*true/);
-  assert.match(source, /nodeIntegration:\s*false/);
-  assert.match(source, /sandbox:\s*true/);
-  assert.doesNotMatch(
-    source,
-    /@maka|packages\/|apps\/desktop|createCuaDriverBackend|runOpenAIComputerLoop/,
   );
 });

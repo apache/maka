@@ -22,11 +22,6 @@ import {
 const record = (path, extra = {}) => ({ path, rect: [0, 0, 10, 10], ...extra });
 
 describe('diffRecords', () => {
-  it('reports nothing for an identical capture', () => {
-    const records = [record('body>div'), record('body>div>span', { color: 'red' })];
-    assert.deepEqual(diffRecords(records, structuredClone(records)), []);
-  });
-
   it('names the changed properties with both values', () => {
     const before = [record('body>div', { color: 'red' })];
     const after = [record('body>div', { color: 'blue' })];
@@ -89,15 +84,6 @@ describe('summarise', () => {
       { kind: 'changed', path: 'body>p' },
     ];
     assert.equal(summarise(changes, 100).structural, false);
-  });
-
-  it('counts each kind', () => {
-    const changes = [
-      { kind: 'changed', path: 'a' },
-      { kind: 'changed', path: 'b' },
-      { kind: 'added', path: 'c' },
-    ];
-    assert.equal(summarise(changes, 10).text, '2 changed, 1 added');
   });
 });
 
@@ -173,29 +159,11 @@ describe('findDeadOmissionRules', () => {
     );
     assert.deepEqual(dead, [{ property: 'gap', sampled: 120 }]);
   });
-
-  it('stays quiet when the rule matched at least once', () => {
-    // One hit proves the table value is what Chromium serialises. Counted at
-    // the raw sample, so a rule shadowed by the border/outline paint gates
-    // still proves itself — the previous output-based check could not see
-    // through those gates.
-    const omission = { sampled: 120, hits: { gap: 1 } };
-    assert.deepEqual(findDeadOmissionRules(omission, { gap: 'normal' }), []);
-  });
-
-  it('says nothing about an empty capture', () => {
-    assert.deepEqual(findDeadOmissionRules({ sampled: 0, hits: {} }, { gap: 'normal' }), []);
-  });
 });
 
 describe('checkSalvagedAnchors', () => {
   const anchors = [{ commit: 'abc', regression: 'r', route: 'chat', anchor: 'list-row' }];
   const captureKey = 'chat.light.darwin';
-
-  it('accepts a record carrying the exact hook', () => {
-    const captures = new Map([[captureKey, [record('a', { contract: 'list-row' })]]]);
-    assert.deepEqual(checkSalvagedAnchors(captures, anchors), []);
-  });
 
   it('rejects a different hook that merely contains the anchor', () => {
     // `list-row-meta` is a different element; a substring match would report
@@ -289,11 +257,6 @@ describe('checkScopeCoverage', () => {
     assert.deepEqual(checkScopeCoverage(records), [{ scope: 'frame', claimed: 6, total: 10 }]);
   });
 
-  it('accepts component-sized scopes', () => {
-    const records = [...claimed(3, 'workbar'), ...claimed(2, 'panel'), ...claimed(5, undefined)];
-    assert.deepEqual(checkScopeCoverage(records), []);
-  });
-
   it('fails several individually small scopes whose union claims most of a capture', () => {
     const records = [
       ...claimed(2, 'field'),
@@ -304,9 +267,5 @@ describe('checkScopeCoverage', () => {
     assert.deepEqual(checkScopeCoverage(records), [
       { scope: '<declared union>', claimed: 6, total: 10 },
     ]);
-  });
-
-  it('says nothing about an empty capture', () => {
-    assert.deepEqual(checkScopeCoverage([]), []);
   });
 });

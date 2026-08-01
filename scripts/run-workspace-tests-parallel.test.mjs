@@ -8,6 +8,7 @@ import {
   SERIAL_WORKSPACE_DIRS,
   loadWorkspaceDirs,
   nameForDir,
+  parseCliArgs,
   partitionWorkspaces,
   runWorkspaceTests,
 } from './run-workspace-tests-parallel.mjs';
@@ -55,6 +56,23 @@ test('partitionWorkspaces keeps serial packages out of the parallel batch', () =
 test('nameForDir strips packages/ and apps/ prefixes', () => {
   assert.equal(nameForDir('packages/headless'), 'headless');
   assert.equal(nameForDir('apps/desktop'), 'desktop');
+});
+
+test('CLI selection preserves root workspace order and validates bounded concurrency', () => {
+  const available = ['packages/core', 'packages/headless', 'apps/desktop'];
+  assert.deepEqual(
+    parseCliArgs(['--concurrency=2', '--workspaces=apps/desktop,packages/core'], available),
+    {
+      concurrency: 2,
+      serial: false,
+      workspaceDirs: ['packages/core', 'apps/desktop'],
+    },
+  );
+  assert.throws(() => parseCliArgs(['--concurrency=0'], available), /positive integer/);
+  assert.throws(
+    () => parseCliArgs(['--workspace=packages/missing'], available),
+    /Unknown workspace/,
+  );
 });
 
 test('serial mode runs every workspace via package-owned npm run test:dist', async () => {
@@ -131,6 +149,27 @@ test('parallel mode aggregates every failed workspace name', async () => {
       return true;
     },
   );
+});
+
+test('bounded parallel mode never exceeds its configured concurrency', async () => {
+  const repoRoot = '/repo';
+  const workspaceDirs = ['packages/core', 'packages/ui', 'apps/desktop'];
+  let active = 0;
+  let maxActive = 0;
+  const spawn = () => {
+    const child = new EventEmitter();
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    setImmediate(() => {
+      active -= 1;
+      child.emit('close', 0);
+    });
+    return child;
+  };
+
+  await runWorkspaceTests({ repoRoot, workspaceDirs, concurrency: 2, spawn });
+
+  assert.equal(maxActive, 2);
 });
 
 test('spawn errors are reported with the workspace name', async () => {

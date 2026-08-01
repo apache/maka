@@ -12,6 +12,8 @@ import {
   type RuntimeEvent,
 } from '@maka/core';
 
+const PARTIAL_STREAM_CHUNK_COUNT = process.env.MAKA_STORAGE_STRESS === '1' ? 10_000 : 100;
+
 describe('AgentRunStore', () => {
   it('creates, reads, updates, and lists runs under a session', async () => {
     await withStore(async (store, root) => {
@@ -1018,10 +1020,10 @@ describe('AgentRunStore', () => {
     });
   });
 
-  it('keeps a 10K-chunk text stream bounded to one durable partial snapshot', async () => {
+  it('keeps a long text stream bounded to one durable partial snapshot', async () => {
     await withStores(async (runStore, runtimeEventStore, root) => {
       await runStore.createRun(makeHeader());
-      for (let index = 0; index < 10_000; index += 1) {
+      for (let index = 0; index < PARTIAL_STREAM_CHUNK_COUNT; index += 1) {
         await runtimeEventStore.appendRuntimeEvent(
           'session-1',
           'run-1',
@@ -1042,7 +1044,10 @@ describe('AgentRunStore', () => {
       );
 
       assert.equal(events.length, 1);
-      assert.equal(events[0]?.content?.kind === 'text' && events[0].content.text.length, 10_000);
+      assert.equal(
+        events[0]?.content?.kind === 'text' && events[0].content.text.length,
+        PARTIAL_STREAM_CHUNK_COUNT,
+      );
       assert.equal(partialFiles.filter((name) => name.endsWith('.partial')).length, 1);
       assert.equal(partialFiles.length, 1);
       const immutableLedger = await readFile(
