@@ -165,6 +165,7 @@
   margin-inline: 0;
   border-radius: var(--radius-control);
   font-size: var(--font-size-caption);
+  line-height: var(--leading-snug);
 }
 
 .maka-turn-aborted-marker {

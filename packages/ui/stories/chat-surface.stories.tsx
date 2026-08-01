@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps, ReactNode } from 'react';
 import type { SessionSummary, StoredMessage } from '@maka/core';
+import { expect } from 'storybook/test';
 import { ChatSurfaceLayout, ChatView, Composer, type TurnFooterActionMeta } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
@@ -61,7 +62,12 @@ function session(overrides: Partial<SessionSummary> = {}): SessionSummary {
   };
 }
 
-function user(id: string, turnId: string, minutesAgo: number, text: string): StoredMessage {
+function user(
+  id: string,
+  turnId: string,
+  minutesAgo: number,
+  text: string,
+): Extract<StoredMessage, { type: 'user' }> {
   return {
     type: 'user',
     id,
@@ -379,6 +385,32 @@ export const ActiveEmptyChat: Story = {
       }}
     />
   ),
+};
+
+// Real path: a scheduled automation injects a turn and the transcript marks
+// that provenance above the user bubble instead of impersonating typed input.
+export const AutomationOrigin: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: [
+          {
+            ...user('msg-user-automation', 'turn-automation', 6, '生成今日项目回顾'),
+            origin: { kind: 'automation', automationId: 'daily-review' },
+          },
+          assistant('msg-assistant-automation', 'turn-automation', 5, '今日项目回顾已生成。'),
+          turnState('turn-automation', 'completed'),
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const marker = canvasElement.querySelector<HTMLElement>('.maka-turn-automation-origin');
+    await expect(marker).not.toBeNull();
+    const style = getComputedStyle(marker as HTMLElement);
+    const lineHeightRatio = Number.parseFloat(style.lineHeight) / Number.parseFloat(style.fontSize);
+    await expect(lineHeightRatio).toBeCloseTo(1.375, 3);
+  },
 };
 
 // Real path: send a message → the turn is running and text is streaming in; the composer
