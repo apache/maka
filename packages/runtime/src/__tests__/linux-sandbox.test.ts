@@ -148,6 +148,16 @@ describe('buildBubblewrapArgv', () => {
     assert.equal(argv.includes('--seccomp'), false);
   });
 
+  it('isolates host process namespaces when network is enabled', () => {
+    const request = workspaceRequest(enabledNetworkProfile());
+    const argv = buildBubblewrapArgv({ bwrapPath: '/usr/bin/bwrap', command: request.command });
+
+    assert.deepEqual(
+      argv.filter((arg) => arg.startsWith('--unshare-')),
+      ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup'],
+    );
+  });
+
   it('mounts an absolute program directory outside the default host paths', () => {
     const request = workspaceRequest(createWorkspaceWritePermissionProfile());
     const programDirectory = '/opt/hostedtoolcache/node/22.23.1/x64/bin';
