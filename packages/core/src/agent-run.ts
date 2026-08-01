@@ -148,6 +148,37 @@ export interface AgentRunHeader {
   traceWriteError?: string;
 }
 
+type HostedRootExecutionDescriptor = Extract<
+  RootExecutionDescriptor,
+  { kind: 'automation' | 'goal' }
+>;
+
+export function agentRunMatchesHostedRootExecution(
+  run: AgentRunHeader,
+  execution: HostedRootExecutionDescriptor,
+): boolean {
+  const authorityMatches =
+    execution.kind === 'automation'
+      ? run.automationId === execution.automationId && run.goalId === undefined
+      : run.goalId === execution.goalId && run.automationId === undefined;
+  return (
+    authorityMatches &&
+    run.parentRunId === undefined &&
+    run.resumedFromRunId === undefined &&
+    run.retriedFromRunId === undefined &&
+    run.agentId === undefined &&
+    run.agentName === undefined &&
+    run.parentTurnId === undefined &&
+    run.retriedFromTurnId === undefined &&
+    run.regeneratedFromTurnId === undefined &&
+    run.branchOfTurnId === undefined &&
+    run.parentSessionId === undefined &&
+    run.continuationSource === undefined &&
+    run.agentGraphWakeId === undefined &&
+    run.agentGraphWakeAttemptId === undefined
+  );
+}
+
 export interface AgentRunInputSummary {
   textLength: number;
   attachmentCount: number;
@@ -293,6 +324,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isEffectiveOrchestrationSource(value.orchestrationSource)) &&
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
+    !(value.automationId !== undefined && value.goalId !== undefined) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&

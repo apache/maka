@@ -663,8 +663,11 @@ describe('automation turn attribution (F6)', () => {
       { type: 'assistant', id: 'a1', turnId: 't1', ts: 2, text: '好的' },
       { type: 'user', id: 'u2', turnId: 't2', ts: 3, text: '你好' },
     ] as StoredMessage[]);
-    assert.equal(turns[0]?.user?.automationOrigin?.automationId, 'auto-1');
-    assert.equal(turns[1]?.user?.automationOrigin, undefined);
+    assert.deepEqual(turns[0]?.user?.hostOrigin, {
+      kind: 'automation',
+      automationId: 'auto-1',
+    });
+    assert.equal(turns[1]?.user?.hostOrigin, undefined);
   });
 });
 
@@ -686,7 +689,8 @@ describe('Agent Graph supervisor turn attribution', () => {
         },
       },
     ] as StoredMessage[]);
-    assert.deepEqual(turns[0]?.user?.agentGraphOrigin, {
+    assert.deepEqual(turns[0]?.user?.hostOrigin, {
+      kind: 'agent_graph',
       graphId: 'graph-1',
       wakeId: 'graph-1:snapshot-1',
       attemptId: 'attempt-1',

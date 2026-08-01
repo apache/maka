@@ -106,7 +106,7 @@ function createTestGoalLifecycle(
 ): MakaPiTuiGoalLifecycle {
   return {
     activities,
-    beginExternalTurn: (sessionId, turnId) => ({
+    beginObservedTurn: (sessionId, turnId) => ({
       kind: 'registered',
       settle: async (outcome) => {
         onSettled?.(sessionId, turnId, outcome);
@@ -1955,7 +1955,7 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(lifecycle.activities.whenIdle('session-1'), undefined);
 
     assert.equal(manager.create('session-1', 'old session goal').kind, 'created');
-    const switched = lifecycle.beginExternalTurn('session-1', 'turn-after-switch');
+    const switched = lifecycle.beginObservedTurn('session-1', 'turn-after-switch');
     assert.equal(switched.kind, 'registered');
     if (switched.kind !== 'registered') throw new Error('expected registered switch-boundary turn');
     await driver.switchSession('session-2');
@@ -2020,7 +2020,7 @@ describe('Maka Pi TUI runner', () => {
       goalLifecycle: {
         activities,
         bindHost: () => () => {},
-        beginExternalTurn: (sessionId, turnId) => {
+        beginObservedTurn: (sessionId, turnId) => {
           assert.equal(sessionId, 'session-first');
           assert.equal(turnId, 'turn-first');
           assert.ok(activities.whenIdle(sessionId));
@@ -8245,7 +8245,7 @@ async function runSignalExitProbe(
     const terminal = new ReportingTerminal();
     const goalLifecycle = {
       activities: {},
-      beginExternalTurn() { throw new Error('unused'); },
+      beginObservedTurn() { throw new Error('unused'); },
       bindHost() { return () => {}; },
     };
     const driver = {
@@ -8340,7 +8340,7 @@ async function runFatalExitProbe(
     const terminal = new ReportingTerminal();
     const goalLifecycle = {
       activities: {},
-      beginExternalTurn() { throw new Error('unused'); },
+      beginObservedTurn() { throw new Error('unused'); },
       bindHost() { return () => {}; },
     };
     const driver = {

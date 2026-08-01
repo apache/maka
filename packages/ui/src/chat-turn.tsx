@@ -388,24 +388,33 @@ export const TurnView = memo(function TurnView(props: {
           ))}
         </Marker>
       )}
-      {/* Automation provenance: a turn injected by a scheduled automation is
-          NOT something the user typed — say so above the bubble instead of
-          impersonating the user. Id stays in the tooltip (no raw ids inline). */}
-      {turn.user?.automationOrigin && (
+      {/* Host provenance keeps non-user prompts from impersonating the user.
+          Durable ids stay in tooltips instead of the transcript body. */}
+      {turn.user?.hostOrigin?.kind === 'automation' && (
         <Marker
           variant="automation-origin"
           role="note"
-          title={copy.automationTitle(turn.user.automationOrigin.automationId)}
+          title={copy.automationTitle(turn.user.hostOrigin.automationId)}
         >
           <Timer size={12} aria-hidden="true" />
           <span>{copy.automationTriggered}</span>
         </Marker>
       )}
-      {turn.user?.agentGraphOrigin && (
+      {turn.user?.hostOrigin?.kind === 'goal' && (
         <Marker
           variant="automation-origin"
           role="note"
-          title={copy.agentGraphTitle(turn.user.agentGraphOrigin.graphId)}
+          title={copy.goalTitle(turn.user.hostOrigin.goalId)}
+        >
+          <RefreshCcw size={12} aria-hidden="true" />
+          <span>{copy.goalContinued}</span>
+        </Marker>
+      )}
+      {turn.user?.hostOrigin?.kind === 'agent_graph' && (
+        <Marker
+          variant="automation-origin"
+          role="note"
+          title={copy.agentGraphTitle(turn.user.hostOrigin.graphId)}
         >
           <GitBranch size={12} aria-hidden="true" />
           <span>{copy.agentGraphTriggered}</span>
@@ -425,9 +434,7 @@ export const TurnView = memo(function TurnView(props: {
             quotes={turn.user.quotes}
             onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
-              props.onEditUserMessage &&
-              !turn.user.automationOrigin &&
-              !turn.user.agentGraphOrigin
+              props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }

@@ -319,7 +319,7 @@ async function runFirstRunOnboarding(workspaceRoot: string): Promise<boolean> {
     firstRun: true,
     goalLifecycle: {
       activities: new SessionActivityRegistry(),
-      beginExternalTurn: () => ({ kind: 'registered', settle: async () => {} }),
+      beginObservedTurn: () => ({ kind: 'registered', settle: async () => {} }),
       bindHost: () => () => {},
     } satisfies MakaPiTuiGoalLifecycle,
     onboarding: createApiKeyOnboardingSurface({

@@ -481,8 +481,8 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
       goalBoundary: options.goalBoundary,
       activities: sessionActivities,
       ...(options.activity ? { activity: options.activity } : {}),
-      beginExternalTurn: (externalSessionId, externalTurnId) =>
-        goalWiring.coordinator.beginExternalTurn(externalSessionId, externalTurnId),
+      beginObservedTurn: (externalSessionId, externalTurnId) =>
+        goalWiring.coordinator.beginObservedTurn(externalSessionId, externalTurnId),
       onEvent: (event) => {
         if (!userAppendBroadcasted) {
           emitSessionsChanged('message-appended', sessionId);

@@ -39,7 +39,7 @@ function makeTools(getTokenCount?: (s: string) => number) {
     getRecentContext: async () => '',
     admitTurn: () => ({ kind: 'unavailable', reason: 'tool test' }),
   });
-  assert.equal(goalContinuation.beginExternalTurn(SESSION, 't').kind, 'registered');
+  assert.equal(goalContinuation.beginObservedTurn(SESSION, 't').kind, 'registered');
   const tools = buildGoalTools({
     goalManager: mgr,
     goalContinuation,
@@ -113,7 +113,7 @@ describe('goal tools', () => {
     assert.ok(pauseOut.includes('paused'));
     assert.equal(mgr.get(SESSION)?.status, 'paused');
 
-    assert.equal(goalContinuation.beginExternalTurn(SESSION, 'resume-turn').kind, 'registered');
+    assert.equal(goalContinuation.beginObservedTurn(SESSION, 'resume-turn').kind, 'registered');
     const resumeOut = (await findTool(tools, GOAL_RESUME_TOOL_NAME).impl(
       {},
       ctx('resume-turn'),

@@ -1472,8 +1472,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
-  GoalExternalTurnStart,
-  GoalExternalTurnSettler,
+  GoalObservedTurnStart,
+  GoalObservedTurnSettler,
   GoalSessionCloseOperation,
   GoalTaskGateDecision,
   GoalTaskGateDeps,

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import { agentRunMatchesHostedRootExecution, type AgentRunHeader } from '@maka/core/agent-run';
 import type { AutomationDefinition, AutomationPendingFire } from '@maka/core/automation';
 import type { MessageContent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
@@ -489,16 +489,10 @@ export function assertFireRunIdentity(fire: AutomationPendingFire, run: AgentRun
     run.sessionId !== fire.targetSessionId ||
     run.turnId !== fire.turnId ||
     run.runId !== fire.runId ||
-    run.automationId !== fire.automationId ||
-    run.parentRunId !== undefined ||
-    run.resumedFromRunId !== undefined ||
-    run.retriedFromRunId !== undefined ||
-    run.parentSessionId !== undefined ||
-    run.agentId !== undefined ||
-    run.agentName !== undefined ||
-    run.continuationSource !== undefined ||
-    run.agentGraphWakeId !== undefined ||
-    run.agentGraphWakeAttemptId !== undefined
+    !agentRunMatchesHostedRootExecution(run, {
+      kind: 'automation',
+      automationId: fire.automationId,
+    })
   ) {
     throw new AutomationAuthorityInvariantError(
       `Run ${run.runId} does not match pending Automation fire ${fire.id}`,

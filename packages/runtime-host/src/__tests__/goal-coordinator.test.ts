@@ -54,7 +54,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
       now: () => 10,
     });
 
-    const external = coordinator.beginExternalTurn(session.id, 'turn-1');
+    const external = coordinator.beginObservedTurn(session.id, 'turn-1');
     assert.equal(external.kind, 'registered');
     if (external.kind !== 'registered') return;
     const created = coordinator.continuation.activateGoal(

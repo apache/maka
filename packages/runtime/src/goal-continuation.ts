@@ -45,8 +45,8 @@ export type GoalTurnAdmission =
   | { kind: 'busy'; whenIdle: Promise<void> }
   | { kind: 'unavailable'; reason: string };
 
-/** Exactly-once settlement capability captured when an external Agent turn starts. */
-export type GoalExternalTurnSettler = (outcome: GoalTurnOutcome) => Promise<void>;
+/** Exactly-once settlement capability captured when a non-Goal Agent turn starts. */
+export type GoalObservedTurnSettler = (outcome: GoalTurnOutcome) => Promise<void>;
 
 export interface GoalContinuationScheduler {
   setTimeout: (callback: () => void, delayMs: number) => unknown;
@@ -118,8 +118,8 @@ interface SessionLane {
   consecutiveWaits: number;
 }
 
-export type GoalExternalTurnStart =
-  | { kind: 'registered'; settle: GoalExternalTurnSettler }
+export type GoalObservedTurnStart =
+  | { kind: 'registered'; settle: GoalObservedTurnSettler }
   | { kind: 'unavailable'; reason: string };
 
 export class GoalContinuationCoordinator {
@@ -148,11 +148,11 @@ export class GoalContinuationCoordinator {
   }
 
   /**
-   * Register an external Agent turn before its iterator starts. The returned
+   * Register a non-Goal Agent turn before its iterator starts. The returned
    * closure is the only legal settlement path, so terminal handling never has
    * to rediscover Goal ownership from mutable current state.
    */
-  beginExternalTurn(sessionId: string, turnId: string): GoalExternalTurnStart {
+  beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
     if (this.disposed) {
       return { kind: 'unavailable', reason: 'Goal continuation is disposed.' };
     }

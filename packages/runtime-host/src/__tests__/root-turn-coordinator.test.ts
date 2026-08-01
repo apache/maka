@@ -51,7 +51,7 @@ import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
-  beginExternalTurn: () => ({ kind: 'unavailable', reason: 'Goal authority is not composed.' }),
+  beginObservedTurn: () => ({ kind: 'unavailable', reason: 'Goal authority is not composed.' }),
   matchesActive: () => false,
 };
 

@@ -91,7 +91,7 @@ describe('bot incoming Goal lifecycle', () => {
           turnId: input.turnId,
           goalBoundary: 'external',
           activities,
-          beginExternalTurn: (sessionId, turnId) => coordinator.beginExternalTurn(sessionId, turnId),
+          beginObservedTurn: (sessionId, turnId) => coordinator.beginObservedTurn(sessionId, turnId),
           onEvent: input.onEvent,
           onStreamError: (error) => { assert.fail(String(error)); },
           onDrained: () => {},

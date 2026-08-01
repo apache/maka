@@ -10,7 +10,7 @@ import {
   type GoalEvaluatorResource,
   type GoalCheckpoint,
   type GoalControlLease,
-  type GoalExternalTurnStart,
+  type GoalObservedTurnStart,
   type GoalState,
   type GoalTaskGateTrace,
   type GoalTurnAdmission,
@@ -105,8 +105,8 @@ export class HostGoalCoordinator {
     return goal ? projectGoalState(goal) : null;
   }
 
-  beginExternalTurn(sessionId: string, turnId: string): GoalExternalTurnStart {
-    return this.continuation.beginExternalTurn(sessionId, turnId);
+  beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
+    return this.continuation.beginObservedTurn(sessionId, turnId);
   }
 
   matchesActive(

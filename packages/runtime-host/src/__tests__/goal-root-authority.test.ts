@@ -4,9 +4,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import type { AgentRunHeader } from '@maka/core';
 import {
   BackendRegistry,
   FakeBackend,
+  GOAL_SET_TOOL_NAME,
   goalCheckpoint,
   SessionManager,
   type RuntimeHostedRootAuthority,
@@ -155,6 +157,201 @@ test('queued Goal control revokes a prepared root before durable admission', asy
   }
 });
 
+test('Goal continuation cannot overtake a pending Automation admission', async () => {
+  const fixture = await createFixture();
+  const admissionEntered = deferred();
+  const releaseAdmission = deferred();
+  try {
+    const automationTurnId = randomUUID();
+    const automationRunId = randomUUID();
+    const automationId = 'automation-reservation';
+    const automation = fixture.coordinator.executeRoot({
+      sessionId: fixture.sessionId,
+      turnId: automationTurnId,
+      runId: automationRunId,
+      userMessageId: randomUUID(),
+      execution: { kind: 'automation', automationId },
+      content: { text: 'Hold the shared root reservation.' },
+      admitExecution: async () => {
+        admissionEntered.resolve();
+        await releaseAdmission.promise;
+        return 'executing';
+      },
+      start: ({ runId, userMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          fixture.sessionId,
+          {
+            turnId: automationTurnId,
+            text: 'Hold the shared root reservation.',
+            origin: { kind: 'automation', automationId },
+          },
+          {
+            runId,
+            userMessageId: userMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+    await admissionEntered.promise;
+
+    const overtakingGoal = fixture.coordinator.admitGoalTurn(
+      fixture.sessionId,
+      { goalId: 'goal-pending', revision: 1 },
+      { goalId: 'goal-pending' },
+      'Do not overtake the Automation admission.',
+    );
+    assert.equal(overtakingGoal.kind, 'busy');
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'reserved' });
+
+    releaseAdmission.resolve();
+    await automation;
+    if (overtakingGoal.kind === 'busy') await overtakingGoal.whenIdle;
+
+    const goal = fixture.goal.manager.create(fixture.sessionId, 'Run after Automation').goal;
+    const controlLease = fixture.goal.manager.getControlLease(fixture.sessionId);
+    assert.ok(controlLease);
+    if (!controlLease) return;
+    const goalAdmission = fixture.coordinator.admitGoalTurn(
+      fixture.sessionId,
+      goalCheckpoint(goal),
+      controlLease,
+      'Continue after Automation.',
+    );
+    assert.equal(goalAdmission.kind, 'prepared');
+    if (goalAdmission.kind !== 'prepared') return;
+    assert.deepEqual(await goalAdmission.start(), {
+      kind: 'completed',
+      turnId: goalAdmission.turnId,
+    });
+
+    const durableGoal = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      goalAdmission.turnId,
+    );
+    assert.equal(durableGoal?.previousRootTurnId, automationTurnId);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    releaseAdmission.resolve();
+    await fixture.close();
+  }
+});
+
+test('drain revokes pending Automation before durable root admission', async () => {
+  const fixture = await createFixture();
+  const admissionEntered = deferred();
+  const releaseAdmission = deferred();
+  const turnId = randomUUID();
+  const runId = randomUUID();
+  try {
+    const automation = fixture.coordinator.executeRoot({
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      userMessageId: randomUUID(),
+      execution: { kind: 'automation', automationId: 'draining-automation' },
+      content: { text: 'Do not admit after drain.' },
+      admitExecution: async () => {
+        admissionEntered.resolve();
+        await releaseAdmission.promise;
+        return 'executing';
+      },
+      start: ({ runId: admittedRunId, userMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          fixture.sessionId,
+          {
+            turnId,
+            text: 'Do not admit after drain.',
+            origin: { kind: 'automation', automationId: 'draining-automation' },
+          },
+          {
+            runId: admittedRunId,
+            userMessageId: userMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+    await admissionEntered.promise;
+
+    fixture.coordinator.beginDrain();
+    releaseAdmission.resolve();
+
+    await assert.rejects(automation, /lost its pending reservation/);
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, turnId),
+      undefined,
+    );
+    assert.equal(
+      (await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId)).some(
+        (run) => run.runId === runId,
+      ),
+      false,
+    );
+  } finally {
+    releaseAdmission.resolve();
+    await fixture.close();
+  }
+});
+
+test('Automation turns can use Goal tools and contribute evaluation evidence', async () => {
+  const fixture = await createFixture();
+  try {
+    const automationId = 'automation-goal-tool';
+    const turnId = randomUUID();
+    const runId = randomUUID();
+    const goalSet = fixture.goal.tools.find((tool) => tool.name === GOAL_SET_TOOL_NAME);
+    assert.ok(goalSet);
+    if (!goalSet) return;
+
+    await fixture.coordinator.executeRoot({
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      userMessageId: randomUUID(),
+      execution: { kind: 'automation', automationId },
+      content: { text: 'Set and verify a Goal.' },
+      start: ({ runId: admittedRunId, userMessageId, onRunStarted }) => {
+        const result = goalSet.impl(
+          { condition: 'Automation Goal completes' },
+          {
+            sessionId: fixture.sessionId,
+            runId: admittedRunId,
+            turnId,
+            cwd: fixture.base,
+            toolCallId: 'goal-set-from-automation',
+            abortSignal: new AbortController().signal,
+            emitOutput: () => {},
+          },
+        );
+        assert.equal(typeof result, 'string');
+        assert.match(result as string, /Goal set/);
+        return fixture.manager.sendMessage(
+          fixture.sessionId,
+          {
+            turnId,
+            text: 'Set and verify a Goal.',
+            origin: { kind: 'automation', automationId },
+          },
+          {
+            runId: admittedRunId,
+            userMessageId: userMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        );
+      },
+    });
+
+    const goal = await waitForGoalStatus(fixture, 'achieved');
+    assert.equal(goal.condition, 'Automation Goal completes');
+    assert.equal(goal.lastReason, 'verified');
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('Host Goal continuation bridges its exact generation into root authority', async () => {
   const fixture = await createFixture();
   try {
@@ -253,6 +450,42 @@ test('restart rejects an admitted Goal whose existing UserMessage lost its origi
   }
 });
 
+test('restart rejects a Goal Run carrying delegated execution lineage', async () => {
+  const fixture = await createFixture({ recoverAdmissions: false });
+  try {
+    const turnId = randomUUID();
+    const runId = randomUUID();
+    const goalId = 'goal-cross-lineage';
+    await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: randomUUID(),
+      execution: { kind: 'goal', goalId },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Reject ambiguous root ownership.' },
+      sourceMessages: [],
+      admittedAt: 1,
+    });
+    await fixture.stores.agentRunStore.createRun(
+      runHeader({
+        sessionId: fixture.sessionId,
+        turnId,
+        runId,
+        goalId,
+        parentRunId: 'foreign-parent-run',
+      }),
+    );
+
+    await assert.rejects(
+      () => fixture.coordinator.prepareRecovery(),
+      /changed its root execution identity/,
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 interface Fixture {
   readonly owner: InteractiveRootOwner;
   readonly base: string;
@@ -261,6 +494,7 @@ interface Fixture {
   readonly rootAdmissions: RootAdmissionOwner;
   readonly coordinator: RootTurnCoordinator;
   readonly goal: HostGoalCoordinator;
+  readonly manager: SessionManager;
   readonly messages: HostMessageCoordinator;
   readonly sessionAdmission: SessionAdmissionGate;
   readonly drainRequested: () => boolean;
@@ -411,6 +645,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     rootAdmissions,
     coordinator: rootCoordinator,
     goal: goalCoordinator,
+    manager,
     messages,
     sessionAdmission: admission,
     drainRequested: () => requestedDrain,
@@ -449,6 +684,36 @@ async function waitForGoalRun(
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error('Goal continuation did not reach the root authority');
+}
+
+async function waitForGoalStatus(
+  fixture: Fixture,
+  status: NonNullable<ReturnType<Fixture['goal']['manager']['get']>>['status'],
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const goal = fixture.goal.manager.get(fixture.sessionId);
+    if (goal?.status === status) return goal;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`Goal did not reach ${status}`);
+}
+
+function runHeader(overrides: Partial<AgentRunHeader>): AgentRunHeader {
+  return {
+    runId: 'run-1',
+    invocationId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    status: 'created',
+    backendKind: 'fake',
+    llmConnectionSlug: 'fake',
+    modelId: 'fake-model',
+    cwd: '/workspace',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
 }
 
 function operationContext() {
