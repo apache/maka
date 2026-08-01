@@ -7,15 +7,18 @@
    whole cascade, and why the layers are top-level names rather than
    astryx.* sub-layers.
 
-   Two Astryx sheets are deliberately NOT imported yet — each targets bare
-   elements or shadows product tokens, which no layer order can bury (a rule
-   wins wherever no product rule competes; a custom property on the Theme
-   wrapper wins by tree distance):
-   - reset.css (cursor on buttons, small/code sizing) replaces Tailwind
-     preflight and lands with the slice that removes it (PR 12).
-   - tailwind-theme.css: the existing @theme inline bridge below stays the
-     single source for utility tokens until Tailwind leaves in PR 12.
-   Layer slots for them are already reserved in cascade-layers.css.
+   reset.css is deliberately NOT imported yet: it targets bare elements
+   (cursor on buttons, small/code sizing), which no layer order can bury — a
+   rule wins wherever no product rule competes. It replaces Tailwind preflight
+   and lands with the slice that removes it (Slice 13). Its layer slot is
+   already reserved in cascade-layers.css.
+
+   Astryx also ships tailwind-theme.css, and it is NOT part of that endgame.
+   Its own header calls it a "Tailwind Bridge": it maps Astryx tokens onto
+   Tailwind v4 @theme variables so utilities like `text-primary` resolve. That
+   is only useful while Tailwind is here, and Slice 13 deletes Tailwind — so
+   this file should never be imported, not "imported once Tailwind leaves".
+   The @theme inline bridge below is the Maka-side equivalent and dies with it.
 
    maka.css below lands with the first Astryx atom consumers: an `astryx
    theme build` of the Maka-named theme (a pure extends of neutral). The CLI
