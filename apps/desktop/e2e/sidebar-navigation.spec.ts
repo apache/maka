@@ -113,7 +113,7 @@ test('scheduled-task hub restores the last selected child module', async ({ wind
 
   const selector = page.locator('.maka-module-hub-selector');
   await expect(selector).toHaveAccessibleName('定时任务内容：计划提醒');
-  await selector.getByRole('radio', { name: '每日回顾' }).click();
+  await selector.getByRole('button', { name: '每日回顾' }).click();
   await expect(selector).toHaveAccessibleName('定时任务内容：每日回顾');
 
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();

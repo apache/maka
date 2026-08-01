@@ -20,7 +20,7 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
 
   const extensionSelector = page.locator('.maka-module-hub-selector');
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：技能');
-  await extensionSelector.getByRole('radio', { name: 'MCP' }).click();
+  await extensionSelector.getByRole('button', { name: 'MCP' }).click();
   const mcp = page.getByRole('main', { name: '扩展' });
   await expect(mcp.getByRole('heading', { name: '扩展' })).toBeVisible();
   await expect(extensionSelector).toHaveAccessibleName('扩展内容：MCP');
@@ -35,14 +35,15 @@ test('MCP module completes stdio add, discovery, disable, JSON import, and delet
     await page.screenshot({ path: variantPath(screenshotPath, 'market') });
     await page.getByRole('button', { name: '设置', exact: true }).click();
     const settings = page.getByRole('main', { name: '设置内容' });
-    await settings.getByRole('button', { name: '外观', exact: true }).click();
+    const settingsNav = page.getByRole('navigation', { name: '设置分组' });
+    await settingsNav.getByRole('button', { name: '外观', exact: true }).click();
     await settings.getByRole('radio', { name: '深色' }).click();
-    await settings.getByRole('button', { name: '返回应用' }).click();
+    await settingsNav.getByRole('button', { name: '返回应用' }).click();
     await page.screenshot({ path: variantPath(screenshotPath, 'dark-market') });
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await settings.getByRole('button', { name: '外观', exact: true }).click();
+    await settingsNav.getByRole('button', { name: '外观', exact: true }).click();
     await settings.getByRole('radio', { name: '浅色' }).click();
-    await settings.getByRole('button', { name: '返回应用' }).click();
+    await settingsNav.getByRole('button', { name: '返回应用' }).click();
     const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     await page.setViewportSize({ width: 760, height: 700 });
     await page.screenshot({ path: variantPath(screenshotPath, 'narrow-market') });

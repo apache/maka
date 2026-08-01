@@ -1,9 +1,14 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
+
+function settingsNavigation(page: Page) {
+  return page.getByRole('navigation', { name: /^(设置分组|Settings sections)$/ });
+}
 
 test('settings switches keep the compact shared control geometry', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
 
   const privacySwitch = page.getByRole('switch', { name: '启用隐身模式' });
   await expect(privacySwitch).toBeVisible();
@@ -22,7 +27,7 @@ test('general default-model options keep provider marks inside the Selector slot
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   const settings = page.getByRole('main', { name: '设置内容' });
-  await settings.getByRole('button', { name: '通用', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
 
   await settings.getByRole('button', { name: '默认模型' }).click();
   const mark = page.getByRole('listbox').locator('.modelPickerProviderMark').first();
@@ -69,7 +74,7 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   await page.getByRole('button', { name: '设置' }).click();
   await expect(page.getByLabel('设置内容')).toBeVisible();
 
-  await page.locator('[aria-label="设置分组"]').getByText('外观').click();
+  await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
   const themeGroup = page.getByRole('radiogroup', { name: '主题' });
   const lightTheme = themeGroup.getByRole('radio', { name: '浅色' });
   const darkTheme = themeGroup.getByRole('radio', { name: '深色' });
@@ -85,7 +90,7 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
 test('settings textareas use Astryx native resizing and persist edits across section re-entry', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
 
   const textarea = page.getByRole('textbox', { name: '助手语气偏好' });
   await expect(textarea).toBeVisible();
@@ -94,7 +99,7 @@ test('settings textareas use Astryx native resizing and persist edits across sec
   await textarea.fill(edited);
   await expect(textarea).toHaveValue(edited);
 
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '记忆', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
   await expect(page.locator('label').filter({ hasText: '记忆标题' })).toBeVisible();
   await expect(page.locator('label').filter({ hasText: '记忆标签' })).toBeVisible();
   await expect(page.locator('label').filter({ hasText: '记忆内容' })).toBeVisible();
@@ -102,10 +107,10 @@ test('settings textareas use Astryx native resizing and persist edits across sec
   await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'vertical');
   await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'vertical');
 
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '数据', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '数据', exact: true }).click();
   await expect(page.locator('label').filter({ hasText: '导入时同名连接的处理方式' })).toBeVisible();
 
-  await page.getByRole('main', { name: '设置内容' }).getByRole('button', { name: '通用', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toHaveValue(edited);
 });
 
@@ -113,7 +118,7 @@ test('voice settings expose Astryx-owned fields and persist a draft on blur', as
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   const settings = page.getByRole('main', { name: '设置内容' });
-  await settings.getByRole('button', { name: '语音', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '语音', exact: true }).click();
 
   await expect(settings.getByRole('combobox', { name: '模型连接' })).toHaveCount(2);
   await expect(settings.getByRole('textbox', { name: '模型 ID' })).toHaveCount(2);
@@ -123,8 +128,8 @@ test('voice settings expose Astryx-owned fields and persist a draft on blur', as
 
   await language.fill('en');
   await language.press('Tab');
-  await settings.getByRole('button', { name: '通用', exact: true }).click();
-  await settings.getByRole('button', { name: '语音', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '语音', exact: true }).click();
   await expect(settings.getByRole('textbox', { name: '语言（可选）' })).toHaveValue('en');
 });
 
@@ -217,7 +222,7 @@ test('permission rows keep their text at the window floor', async ({ permissionS
 test('health summary tiles stay readable at the window floor', async ({ window: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
-  await settings.getByRole('button', { name: '健康', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '健康', exact: true }).click();
 
   const healthSummary = settings.locator('.settingsHealthSummary');
   await expect(healthSummary).toBeVisible();
@@ -240,7 +245,7 @@ test('permission and health summaries keep one track per metric when wide', asyn
   const settings = await openSettings(page);
 
   // `auto-fit` must not cost the full-width layout: one track per metric.
-  await settings.getByRole('button', { name: '权限与能力', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '权限与能力', exact: true }).click();
   await expect(settings.locator('.settingsPermissionSummary')).toBeVisible();
   await expect.poll(async () => {
     const { trackCount, tileCount } = await summaryGeometry(
@@ -249,7 +254,7 @@ test('permission and health summaries keep one track per metric when wide', asyn
     return { trackCount, tileCount };
   }).toEqual({ trackCount: 4, tileCount: 4 });
 
-  await settings.getByRole('button', { name: '健康', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '健康', exact: true }).click();
   await expect(settings.locator('.settingsHealthSummary')).toBeVisible();
   await expect.poll(async () => {
     const { trackCount, tileCount } = await summaryGeometry(
@@ -302,7 +307,7 @@ test('usage and web search stay contained at the window floor', async ({ window:
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
 
-  await settings.getByRole('button', { name: '使用统计', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '使用统计', exact: true }).click();
   const tabsBar = settings.locator('.settingsUsageTabsBar');
   await expect(tabsBar).toBeVisible();
   await expect(tabsBar).toHaveCSS('overflow-x', 'auto');
@@ -317,7 +322,7 @@ test('usage and web search stay contained at the window floor', async ({ window:
   ).toBe(true);
 
   // Not `exact`: the nav entry's accessible name carries its Beta badge.
-  await settings.getByRole('button', { name: '联网搜索' }).click();
+  await settingsNavigation(page).getByRole('button', { name: '联网搜索' }).click();
   const disabledReason = settings.locator('.settingsWebSearchDisabledReason');
   await expect(disabledReason).toBeVisible();
   await expect(disabledReason).toHaveCSS('overflow-wrap', 'anywhere');
@@ -325,7 +330,7 @@ test('usage and web search stay contained at the window floor', async ({ window:
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
 
-  await settings.getByRole('button', { name: '记忆', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
   const previewHeader = settings.locator('.settingsMemoryPromptPreviewHeader');
   await expect(previewHeader).toBeVisible();
   await expect(previewHeader).toHaveCSS('flex-wrap', 'wrap');
@@ -392,7 +397,7 @@ test('web search results wrap inside their cards at the window floor', async ({
 test('usage keeps one summary track per metric when wide', async ({ window: page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const settings = await openSettings(page);
-  await settings.getByRole('button', { name: '使用统计', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '使用统计', exact: true }).click();
 
   // `auto-fit` must not cost the full-width layout: four metrics, four tracks.
   await expect(settings.locator('.settingsUsageSummary')).toBeVisible();
@@ -409,7 +414,7 @@ test('remote access opens a channel detail from the overview and returns', async
   await page.getByRole('button', { name: '设置' }).click();
 
   const settings = page.getByRole('main', { name: '设置内容' });
-  await settings.getByRole('button', { name: '远程接入' }).click();
+  await settingsNavigation(page).getByRole('button', { name: '远程接入' }).click();
 
   await expect(settings.getByRole('heading', { name: '远程接入' })).toBeVisible();
   await expect(settings.getByRole('heading', { name: '接入更多渠道' })).toBeVisible();
@@ -485,7 +490,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   const settings = page.getByRole('main', { name: '设置内容' });
-  await settings.getByRole('button', { name: '远程接入' }).click();
+  await settingsNavigation(page).getByRole('button', { name: '远程接入' }).click();
 
   const activeChannels = page.getByRole('region', { name: '正在使用' }).getByRole('button');
   await expect(activeChannels).toHaveCount(2);
@@ -592,7 +597,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
 test('general forms and Astryx Item controls stay contained across widths', async ({ window: page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const settings = await openSettings(page);
-  await settings.getByRole('button', { name: '通用', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
 
   const formLayout = settings.locator('.settingsFormLayout').first();
   const incognitoRow = settings.locator('.astryx-item').filter({ hasText: '隐身模式' });
@@ -634,7 +639,7 @@ test('appearance palette names stay fully visible at the window floor', async ({
 }) => {
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
-  await settings.getByRole('button', { name: '外观', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
 
   const label = settings.getByText('Catppuccin Mocha', { exact: true });
   await expect(label).toBeVisible();
@@ -662,7 +667,7 @@ test('data, about, and daily review stay contained at the window floor', async (
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
 
-  await settings.getByRole('button', { name: '数据', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '数据', exact: true }).click();
   const strategy = settings.getByRole('combobox', { name: '导入时同名连接的处理方式' });
   await expect(strategy).toBeVisible();
   const strategyBox = await strategy.boundingBox();
@@ -682,13 +687,13 @@ test('data, about, and daily review stay contained at the window floor', async (
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
 
-  await settings.getByRole('button', { name: '关于', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '关于', exact: true }).click();
   await expect(settings.locator('.settingsAboutPage')).toBeVisible();
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
 
-  await settings.getByRole('button', { name: '每日回顾', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '每日回顾', exact: true }).click();
   await expect(settings.locator('.settingsFeatureStatusPage')).toBeVisible();
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
@@ -707,7 +712,7 @@ test('data config strategy stays contained at the window floor in English', asyn
   await page.getByRole('button', { name: 'Expand sidebar' }).click();
   await page.getByRole('button', { name: 'Settings' }).click();
   const settings = page.getByRole('main', { name: 'Settings content' });
-  await settings.getByRole('button', { name: 'Data', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: 'Data', exact: true }).click();
 
   const strategy = settings.getByRole('combobox', {
     name: 'How to handle connections with the same name during import',
@@ -731,7 +736,7 @@ test('data config strategy stays contained at the window floor in English', asyn
 test('memory status Item stays contained at the window floor', async ({ window: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
-  await settings.getByRole('button', { name: '记忆', exact: true }).click();
+  await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
 
   const statusRow = settings.locator('.astryx-item').filter({ hasText: '本地 MEMORY.md' });
   await expect(statusRow).toBeVisible();
