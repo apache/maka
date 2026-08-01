@@ -130,6 +130,23 @@ const baseComposerProps: ComposerProps = {
   onModelChange: noop,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
+  // Match production app-shell wiring so the quiet ＋ menu is complete in
+  // every surface story (attach / skills / Plan / Swarm / Graph).
+  planModeActive: false,
+  onPlanModeChange: noop,
+  swarmModeActive: false,
+  onSwarmModeChange: noop,
+  graphModeActive: false,
+  onGraphModeChange: noop,
+  // Thinking is nested in the model menu footer. Wire levels so opening the
+  // model picker surfaces the flyout row in quiet-chrome review stories.
+  activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
+  activeThinkingLevel: 'medium',
+  onThinkingLevelChange: noop,
+  mentionSkills: [
+    { ref: 'user:pdf', id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
+    { ref: 'user:commit', id: 'commit', name: 'Commit', description: '生成提交信息' },
+  ],
   workspacePicker: {
     label: 'maka-agent',
     branch: 'codex/storybook-chat-surface',
@@ -417,7 +434,7 @@ export const AstryxNativeConversation: Story = {
           { id: 'review', name: 'Review', description: '检查实现与回归风险' },
           { id: 'frontend-design', name: 'Frontend Design', description: '检查界面层级与交互' },
         ],
-        activeThinkingLevels: ['off', 'low', 'medium', 'high'],
+        activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
         activeThinkingLevel: 'medium',
         onThinkingLevelChange: noop,
         onPlanModeChange: noop,

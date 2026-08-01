@@ -172,6 +172,12 @@ const baseComposerProps: ComposerProps = {
   onPlanModeChange: noop,
   swarmModeActive: false,
   onSwarmModeChange: noop,
+  graphModeActive: false,
+  onGraphModeChange: noop,
+  // Thinking is a separate right-footer Selector when levels are offered.
+  activeThinkingLevels: ['off', 'low', 'medium', 'high', 'xhigh'],
+  activeThinkingLevel: 'medium',
+  onThinkingLevelChange: noop,
   mentionSkills: [
     { ref: 'user:pdf', id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
     { ref: 'user:commit', id: 'commit', name: 'Commit', description: '生成提交信息' },

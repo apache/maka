@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent, within } from 'storybook/test';
 import type { ProviderType, ThinkingLevel } from '@maka/core';
-import { NewChatModelPicker } from '../src/chat-model-switcher.js';
+import { NewChatModelPicker, ThinkingLevelSelector } from '../src/chat-model-switcher.js';
 import {
   modelChoiceValue,
   type ChatModelChoice,
@@ -35,7 +36,8 @@ const CHOICES: ChatModelChoice[] = [
   },
 ];
 
-const THINKING_LEVELS: ThinkingLevel[] = ['minimal', 'low', 'medium', 'high'];
+// Canonical user-facing ladder when a model offers the common set.
+const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh'];
 
 function providerMark(type: ProviderType) {
   const labels: Partial<Record<ProviderType, string>> = {
@@ -51,9 +53,8 @@ function selectedLabel(value: string) {
   return CHOICES.find((choice) => modelChoiceValue(choice.connectionSlug, choice.model) === value)?.label ?? value;
 }
 
-function ModelPickerFrame(props: { initialValue?: string; thinking?: boolean }) {
+function ModelPickerFrame(props: { initialValue?: string }) {
   const [value, setValue] = useState(props.initialValue ?? 'anthropic-team:claude-sonnet-4');
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | undefined>('medium');
   return (
     <div style={{ width: 460 }}>
       <NewChatModelPicker
@@ -63,9 +64,6 @@ function ModelPickerFrame(props: { initialValue?: string; thinking?: boolean }) 
         currentProviderType="anthropic"
         renderProviderMark={providerMark}
         onPick={({ llmConnectionSlug, model }) => setValue(modelChoiceValue(llmConnectionSlug, model))}
-        thinkingLevels={props.thinking ? THINKING_LEVELS : undefined}
-        thinkingLevel={props.thinking ? thinkingLevel : undefined}
-        onThinkingLevelChange={props.thinking ? setThinkingLevel : undefined}
       />
     </div>
   );
@@ -91,3 +89,32 @@ export const EmptyCatalog: Story = {
   ),
 };
 
+// Real path: quiet composer left footer — model + adjacent thinking Selector.
+export const ThinkingLevelSeparate: Story = {
+  render: function ThinkingLevelSeparateRender() {
+    const [value, setValue] = useState('anthropic-team:claude-sonnet-4');
+    const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel | undefined>('medium');
+    return (
+      <div className="maka-model-selection-controls" style={{ width: 'max-content' }}>
+        <NewChatModelPicker
+          label={selectedLabel(value)}
+          choices={CHOICES}
+          currentValue={value}
+          currentProviderType="anthropic"
+          renderProviderMark={providerMark}
+          onPick={({ llmConnectionSlug, model }) => setValue(modelChoiceValue(llmConnectionSlug, model))}
+        />
+        <ThinkingLevelSelector
+          levels={THINKING_LEVELS}
+          current={thinkingLevel}
+          onChange={setThinkingLevel}
+        />
+      </div>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const thinking = within(canvasElement).getByRole('combobox', { name: '思考级别' });
+    await userEvent.click(thinking);
+    await within(document.body).findByRole('option', { name: '中' });
+  },
+};

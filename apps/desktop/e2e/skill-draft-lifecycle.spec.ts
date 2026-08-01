@@ -40,7 +40,7 @@ async function failStarterSkillRevision(page: Page): Promise<void> {
   await composer.press('Enter');
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
   await expect(composer).toHaveValue('edited with skill');
-  await expect(page.locator('.maka-composer-skill-chip')).toContainText('示例技能');
+  await expect(page.locator('.maka-composer-skill-token')).toContainText('示例技能');
 }
 
 test('a successful revision retry clears both child and source drafts', async ({
@@ -60,13 +60,13 @@ test('a successful revision retry clears both child and source drafts', async ({
   await page.locator('.maka-composer-textarea').press('Enter');
 
   await expect(page.locator('[data-revision-notice="true"]')).toHaveCount(0);
-  await expect(page.locator('.maka-composer-skill-chip')).toHaveCount(0);
+  await expect(page.locator('.maka-composer-skill-token')).toHaveCount(0);
   await expect(page.locator('.maka-composer-textarea')).toHaveValue('');
   await page.getByRole('button', { name: '查看上一版本' }).click();
   await expect(
     page.getByLabel('你发送的消息').getByText('original message', { exact: true }),
   ).toBeVisible();
-  await expect(page.locator('.maka-composer-skill-chip')).toHaveCount(0);
+  await expect(page.locator('.maka-composer-skill-token')).toHaveCount(0);
   await expect(page.locator('.maka-composer-textarea')).toHaveValue('');
 });
 
@@ -80,7 +80,7 @@ test('cancelling a failed revision restores the complete pre-edit draft', async 
   await selectSkill(page, /Workspace Only/);
   await composer.fill('previous unsent draft');
   await beginRevision(page);
-  await page.locator('.maka-composer-skill-chip').getByRole('button').click();
+  await page.locator('.maka-composer-skill-token').getByRole('button').click();
   await selectSkill(page, /示例技能/);
   await composer.fill('edited with skill');
   await failStarterSkillRevision(page);
@@ -89,6 +89,6 @@ test('cancelling a failed revision restores the complete pre-edit draft', async 
 
   await expect(page.locator('[data-revision-notice="true"]')).toHaveCount(0);
   await expect(composer).toHaveValue('previous unsent draft');
-  await expect(page.locator('.maka-composer-skill-chip')).toHaveCount(1);
-  await expect(page.locator('.maka-composer-skill-chip')).toContainText('Workspace Only');
+  await expect(page.locator('.maka-composer-skill-token')).toHaveCount(1);
+  await expect(page.locator('.maka-composer-skill-token')).toContainText('Workspace Only');
 });

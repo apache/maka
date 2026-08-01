@@ -364,7 +364,9 @@ const CONVERSATION_COPY = {
     },
     model: {
       thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
-      level: { off: '关', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
+      // Short single-token labels — trigger + popout size to content.
+      // Canonical ladder: 默认 / 关 / 低 / 中 / 高 / 超高 (minimal/max when offered).
+      level: { off: '关', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最高' },
       switching: '切换中', model: '模型', switchAriaLabel: '切换当前会话模型', switchSession: '切换当前会话使用的模型',
       pinnedSession: (connection, model) => `本会话固定模型：${connection} · ${model}`,
       switchTitle: (title) => `${title}。设置里的默认模型只影响新建会话；这里会更新当前会话。`,
@@ -373,10 +375,10 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: '只读', hint: '只读取和搜索，不写入文件、不访问网络；需要这些权限时会先来问你。' },
-        ask: { label: '自动', hint: '在 Maka 的保护层内自动执行；需要超出当前权限范围时会先来问你。' },
-        execute: { label: '自动执行', hint: '常见工具直接执行；破坏性、特权和浏览器操作仍会请求确认。' },
-        bypass: { label: '完全权限', hint: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。仅用于你完全信任的任务。' },
+        explore: { label: '只读', hint: '只读搜索，不写文件、不上网；需要时先问你。' },
+        ask: { label: '自动', hint: '保护层内自动执行，越权先问你。' },
+        execute: { label: '自动执行', hint: '常见工具直接执行；危险操作仍会确认。' },
+        bypass: { label: '完全权限', hint: '直接访问文件和网络，仅限可信任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
     },
@@ -521,10 +523,10 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: 'Read only', hint: 'Reads and searches only — no writing files, no network. Asks you first when it needs either.' },
-        ask: { label: 'Auto', hint: "Runs automatically inside Maka's protection layer; asks you first when something needs to go beyond the current permissions." },
-        execute: { label: 'Auto execute', hint: 'Common tools run directly; destructive, privileged, and browser actions still require confirmation.' },
-        bypass: { label: 'Full access', hint: "Local tools reach your files and your network directly, outside Maka's protection layer. Use only for tasks you fully trust." },
+        explore: { label: 'Read only', hint: 'Read and search only; asks before write or network.' },
+        ask: { label: 'Auto', hint: "Runs inside Maka's protection; asks before going further." },
+        execute: { label: 'Auto execute', hint: 'Common tools run; risky actions still confirm.' },
+        bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
     },

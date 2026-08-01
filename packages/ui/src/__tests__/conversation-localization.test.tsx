@@ -161,24 +161,25 @@ describe('localized conversation journey', () => {
     assert.match(en, /Go to model settings/);
   });
 
-  it('keeps Plan Mode out of the toolbar and reachable from the modes menu (#1433)', () => {
+  it('keeps Plan Mode out of the toolbar and reachable from the plus menu (#1433)', () => {
     const markup = render(
       'zh',
       <Composer onSend={() => {}} onStop={() => {}} onPickAttachments={() => {}} onPlanModeChange={() => {}} />,
     );
     // The toolbar no longer carries a standalone Plan switch…
     assert.doesNotMatch(markup, /maka-composer-plan-mode-control/);
-    // …but the modes trigger is present so the mode stays reachable.
-    assert.match(markup, /aria-label="模式"/);
+    // …but the ＋ menu is present so the mode stays reachable.
+    assert.match(markup, /maka-composer-plus-menu/);
+    assert.match(markup, /aria-label="添加上下文"/);
   });
 
-  it('keeps the modes menu available when only mode switches are wired', () => {
+  it('keeps the plus menu available when only mode switches are wired', () => {
     const markup = render('zh', <Composer onSend={() => {}} onStop={() => {}} onPlanModeChange={() => {}} />);
-    assert.match(markup, /aria-label="模式"/);
+    assert.match(markup, /maka-composer-plus-menu/);
     assert.doesNotMatch(markup, /maka-composer-plan-mode-control/);
   });
 
-  it('splits upload, modes and skills into three named toolbar buttons (PR-COMPOSER-TOOLBAR-SPLIT)', () => {
+  it('collapses upload, modes and skills into the plus menu (quiet composer)', () => {
     const markup = render(
       'zh',
       <Composer
@@ -189,20 +190,19 @@ describe('localized conversation journey', () => {
         mentionSkills={[{ id: 'skill-a', name: '技能 A', description: '描述 A' }]}
       />,
     );
-    // Upload is its own control with an upload mark — no longer an item
-    // buried in a generic ＋ menu.
-    assert.match(markup, /maka-composer-upload-button/);
-    assert.match(markup, /aria-label="添加文件或目录"/);
-    assert.match(markup, /class="lucide lucide-upload"/);
-    // Collaboration modes keep one menu of their own.
-    assert.match(markup, /aria-label="模式"/);
-    assert.match(markup, /class="lucide lucide-workflow"/);
-    // Skills get a dedicated trigger; the panel itself opens on click.
-    assert.match(markup, /maka-composer-skill-trigger/);
-    assert.match(markup, /aria-label="技能"/);
-    assert.doesNotMatch(markup, /maka-composer-skill-panel/);
-    // The retired ＋ trigger is gone.
-    assert.doesNotMatch(markup, /aria-label="添加"[^>]*>/);
+    // One ＋ menu owns attach / skills / modes — no standalone toolbar triggers.
+    assert.match(markup, /maka-composer-plus-menu/);
+    assert.match(markup, /aria-label="添加上下文"/);
+    assert.doesNotMatch(markup, /maka-composer-upload-button/);
+    assert.doesNotMatch(markup, /maka-composer-skill-trigger/);
+    assert.doesNotMatch(markup, /maka-composer-modes-menu/);
+    // Menu contents are in the SSR tree for the open popover host.
+    // Modes are single menuitemcheckbox rows (not nested Switch controls).
+    assert.match(markup, /添加文件或目录/);
+    assert.match(markup, /选择技能/);
+    assert.match(markup, /role="menuitemcheckbox"/);
+    assert.match(markup, /aria-checked="false"/);
+    assert.doesNotMatch(markup, /role="switch"/);
 
     const en = render(
       'en',
@@ -214,12 +214,11 @@ describe('localized conversation journey', () => {
         mentionSkills={[]}
       />,
     );
-    assert.match(en, /aria-label="Add file or directory"/);
-    assert.match(en, /aria-label="Modes"/);
-    assert.match(en, /aria-label="Skills"/);
+    assert.match(en, /aria-label="Add context"/);
+    assert.match(en, /Add file or directory/);
   });
 
-  it('hides the upload button while a turn is streaming but keeps modes reachable', () => {
+  it('disables attach inside plus while streaming but keeps the plus menu reachable', () => {
     const markup = render(
       'zh',
       <Composer
@@ -230,33 +229,28 @@ describe('localized conversation journey', () => {
         onPlanModeChange={() => {}}
       />,
     );
-    // Import no-ops mid-turn, so upload is disabled rather than removed…
-    assert.match(markup, /maka-composer-upload-button[^>]*aria-disabled="true"|aria-disabled="true"[^>]*maka-composer-upload-button/);
-    // …while the modes menu stays usable (#1444).
-    assert.match(markup, /aria-label="模式"/);
+    // Plus menu stays usable mid-turn (#1444).
+    assert.match(markup, /maka-composer-plus-menu/);
+    assert.match(markup, /aria-label="添加上下文"/);
+    // Attach row is disabled rather than removed.
+    assert.match(markup, /aria-disabled="true"[^>]*>[\s\S]*?添加文件或目录|添加文件或目录[\s\S]*?aria-disabled="true"/);
   });
 
-  it('shows a quiet Plan indicator next to permission mode only while Plan is active', () => {
+  it('shows a Plan token in the drawer only while Plan is active', () => {
     const on = render(
       'zh',
       <Composer onSend={() => {}} onStop={() => {}} planModeActive onPlanModeChange={() => {}} />,
     );
-    assert.match(on, /maka-composer-mode-indicator/);
-    assert.match(on, /Plan 模式已启用/);
-    // Same visual language as the permission select: a quiet text BUTTON
-    // with an explicit close icon (no chevron — it cannot drop down);
-    // clicking turns the mode off.
-    assert.match(on, /<button[^>]*maka-composer-mode-indicator/);
-    assert.match(
-      on,
-      /<button[^>]*maka-composer-mode-indicator[^>]*>(?:(?!<\/button>)[\s\S])*?<svg[^>]*class="lucide lucide-x"[^>]*aria-hidden="true"/,
-    );
+    assert.match(on, /maka-composer-mode-indicator[^>]*data-mode="plan"/);
+    assert.match(on, /Plan 模式已启用|title="Plan 模式已启用/);
+    assert.match(on, /astryx-token/);
+    assert.match(on, /aria-label="Remove Plan"/);
 
     const off = render('zh', <Composer onSend={() => {}} onStop={() => {}} onPlanModeChange={() => {}} />);
     assert.doesNotMatch(off, /maka-composer-mode-indicator/);
   });
 
-  it('keeps the active-mode indicator visible but disabled with reason while streaming', () => {
+  it('keeps the active-mode token visible but non-removable with reason while streaming', () => {
     const markup = render(
       'zh',
       <Composer
@@ -268,17 +262,13 @@ describe('localized conversation journey', () => {
         onSwarmModeChange={() => {}}
       />,
     );
-    assert.match(markup, /maka-composer-mode-indicator/);
-    assert.match(markup, /Swarm 模式已启用/);
-    assert.match(markup, /disabled=""/);
+    assert.match(markup, /maka-composer-mode-indicator[^>]*data-mode="swarm"/);
     assert.match(markup, /等待流式输出结束/);
-    assert.match(
-      markup,
-      /<button[^>]*maka-composer-mode-indicator[^>]*>(?:(?!<\/button>)[\s\S])*?<svg[^>]*class="lucide lucide-x"[^>]*aria-hidden="true"/,
-    );
+    // Disabled reason keeps the remove control off the token.
+    assert.doesNotMatch(markup, /aria-label="Remove Swarm"/);
   });
 
-  it('localizes the active Graph Mode indicator', () => {
+  it('localizes the active Graph Mode token title', () => {
     const zh = render(
       'zh',
       <Composer
@@ -301,7 +291,7 @@ describe('localized conversation journey', () => {
     assert.match(en, /Graph mode is on/);
   });
 
-  it('keeps the modes menu reachable while streaming (#1444)', () => {
+  it('keeps the plus menu reachable while streaming (#1444)', () => {
     const markup = render(
       'zh',
       <Composer
@@ -313,10 +303,10 @@ describe('localized conversation journey', () => {
         onSwarmModeChange={() => {}}
       />,
     );
-    // The modes trigger must stay mounted mid-turn so Plan/Swarm remain
-    // reachable (import itself stays blocked mid-stream by runImportAction /
-    // the disabled upload button).
-    assert.match(markup, /aria-label="模式"/);
+    // The ＋ menu must stay mounted mid-turn so Plan/Swarm remain
+    // reachable (attach itself stays disabled mid-stream).
+    assert.match(markup, /maka-composer-plus-menu/);
+    assert.match(markup, /aria-label="添加上下文"/);
   });
 
   it('keeps Swarm Mode out of the toolbar (#1433)', () => {
@@ -325,7 +315,7 @@ describe('localized conversation journey', () => {
       <Composer onSend={() => {}} onStop={() => {}} onPickAttachments={() => {}} onSwarmModeChange={() => {}} />,
     );
     assert.doesNotMatch(markup, /maka-composer-swarm-mode-control/);
-    assert.match(markup, /aria-label="模式"/);
+    assert.match(markup, /maka-composer-plus-menu/);
   });
 
   it('localizes question chrome while preserving raw values', () => {

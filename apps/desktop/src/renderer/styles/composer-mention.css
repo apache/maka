@@ -32,8 +32,7 @@
   padding: var(--space-1-5) var(--space-2);
   border-radius: var(--radius-control);
   color: var(--foreground);
-  /* No cursor:pointer — native macOS reserves the hand for links; menu-like
-     rows keep the default arrow (native-cursor-convention contract). */
+  /* Cursor: styles/native-cursor.css (hand only on links). */
   transition: background var(--duration-base) var(--ease-out-strong);
 }
 
@@ -309,26 +308,4 @@
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   text-align: center;
-}
-
-.maka-composer-skill-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1-5);
-  margin: 0;
-  padding: var(--space-2) var(--space-3) 0;
-  list-style: none;
-}
-
-.maka-composer-skill-chip {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: var(--space-1);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--state-selected-bg);
-  padding-left: var(--space-2-5);
-  color: var(--foreground);
-  font-size: var(--font-size-caption);
 }

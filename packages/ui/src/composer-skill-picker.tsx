@@ -1,19 +1,14 @@
 /**
- * Composer Skills button (PR-COMPOSER-TOOLBAR-SPLIT) — the standalone toolbar
- * affordance for choosing Skills. Until now Skills were reachable only by
- * typing `/` in the textarea, which is discoverable once you know it exists
- * and invisible otherwise. This button surfaces the same structured selection
- * the `/` popup produces (`useComposerSkillDraft` chips), so both paths
- * converge on one draft state instead of a second selection model.
+ * Composer Skills picker — multi-select panel that writes the same structured
+ * draft chips the `/` mention popup produces (`useComposerSkillDraft`).
  *
- * The panel is an ABSOLUTE overlay anchored to its own trigger wrapper and
- * bottom-anchored above it, so it never grows the composer box
- * (composer-constant-footprint-contract), same discipline as the mention popup.
+ * Quiet composer: the panel is opened from the ＋ menu (no standalone toolbar
+ * trigger). Optional controlled `open` / `onOpenChange` support that host.
+ * A legacy icon trigger remains available when `hideTrigger` is false for
+ * Storybook and older call sites.
  *
- * Interaction: click the trigger to open, type to filter, click a row to
- * toggle, Esc or an outside click to close. Rows are `role="checkbox"`
- * buttons — multi-select with no implicit send, matching the human-in-the-loop
- * rule the `/` popup already follows.
+ * The panel is an absolute overlay bottom-anchored to its wrapper so it never
+ * grows the composer box (composer-constant-footprint-contract).
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -55,14 +50,35 @@ export function ComposerSkillPicker(props: {
   /** Select every skill currently visible under the search filter. */
   onSelectAll(skills: readonly ComposerSkillOption[]): void;
   onClearAll(): void;
+  /**
+   * Controlled open state. When omitted the picker owns open/closed for the
+   * legacy icon trigger.
+   */
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
+  /** Hide the standalone sparkles trigger (quiet composer opens from ＋). */
+  hideTrigger?: boolean;
+  /**
+   * When `hideTrigger` is set, Esc dismiss restores focus via this callback
+   * (the ＋ opener). Without it keyboard focus falls to the document root.
+   */
+  onDismissFocus?(): void;
 }) {
   const copy = getConversationCopy(useUiLocale()).composer.skillPicker;
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = props.open ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (props.open === undefined) setUncontrolledOpen(next);
+    props.onOpenChange?.(next);
+  };
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const onDismissFocusRef = useRef(props.onDismissFocus);
+  onDismissFocusRef.current = props.onDismissFocus;
   const panelId = useId();
+  const hideTrigger = props.hideTrigger === true;
 
   useEffect(() => {
     if (props.disabled) setOpen(false);
@@ -80,9 +96,10 @@ export function ComposerSkillPicker(props: {
       // clear an unrelated overlay behind it.
       event.stopPropagation();
       setOpen(false);
-      // Focus came from the trigger and must go back to it — otherwise a
-      // keyboard user lands at the top of the document after dismissing.
-      triggerRef.current?.focus();
+      // Focus came from the trigger (legacy) or the ＋ opener (quiet) and must
+      // go back — otherwise a keyboard user lands at the document root.
+      if (hideTrigger) onDismissFocusRef.current?.();
+      else triggerRef.current?.focus();
     }
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown, true);
@@ -91,7 +108,7 @@ export function ComposerSkillPicker(props: {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [open]);
+  }, [open, hideTrigger]);
 
   const selectedKeys = useMemo(
     () => new Set(props.selected.map(composerSkillKey)),
@@ -105,28 +122,34 @@ export function ComposerSkillPicker(props: {
   const allVisibleSelected =
     visible.length > 0 && visible.every((skill) => selectedKeys.has(composerSkillKey(skill)));
 
+  if (hideTrigger && !open) return null;
+
   return (
-    <div className="maka-composer-skill-picker" ref={rootRef}>
-      <IconButton
-        ref={triggerRef}
-        variant="ghost"
-        type="button"
-        size="sm"
-        className="maka-composer-skill-trigger"
-        data-open={open ? 'true' : undefined}
-        data-selected={selectedCount > 0 ? 'true' : undefined}
-        isDisabled={props.disabled}
-        label={copy.label}
-        tooltip={selectedCount > 0 ? copy.selectedCount(selectedCount) : copy.title}
-        aria-expanded={open}
-        aria-controls={open ? panelId : undefined}
-        onClick={() => setOpen((value) => !value)}
-        icon={<Sparkles size={15} aria-hidden="true" />}
-      />
-      {selectedCount > 0 ? (
-        <span className="maka-composer-skill-trigger-count" aria-hidden="true">
-          {selectedCount}
-        </span>
+    <div className="maka-composer-skill-picker" ref={rootRef} data-anchored={hideTrigger ? 'footer' : undefined}>
+      {!hideTrigger ? (
+        <>
+          <IconButton
+            ref={triggerRef}
+            variant="ghost"
+            type="button"
+            size="sm"
+            className="maka-composer-skill-trigger"
+            data-open={open ? 'true' : undefined}
+            data-selected={selectedCount > 0 ? 'true' : undefined}
+            isDisabled={props.disabled}
+            label={copy.label}
+            tooltip={selectedCount > 0 ? copy.selectedCount(selectedCount) : copy.title}
+            aria-expanded={open}
+            aria-controls={open ? panelId : undefined}
+            onClick={() => setOpen(!open)}
+            icon={<Sparkles size={15} aria-hidden="true" />}
+          />
+          {selectedCount > 0 ? (
+            <span className="maka-composer-skill-trigger-count" aria-hidden="true">
+              {selectedCount}
+            </span>
+          ) : null}
+        </>
       ) : null}
       {open ? (
         <div
@@ -174,9 +197,6 @@ export function ComposerSkillPicker(props: {
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
-          {/* The list carries no aria-label of its own — the group above
-              already names the region, and a second identical label doubles
-              the announcement on entry. */}
           {visible.length === 0 ? (
             <div className="maka-composer-skill-panel-status">
               {props.skills.length === 0 ? copy.empty : copy.noMatches}

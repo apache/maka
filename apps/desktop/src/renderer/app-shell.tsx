@@ -1511,6 +1511,29 @@ function AppShellContent({
     },
   });
 
+  // Quiet composer: show the single mic only when recognition is configured.
+  // Unconfigured voice is a dead control and must not occupy sendActions.
+  const [composerVoiceCaptureReady, setComposerVoiceCaptureReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshVoiceCaptureReady() {
+      try {
+        const settings = await window.maka.settings.get();
+        if (cancelled) return;
+        const recognition = settings.voice?.recognition;
+        setComposerVoiceCaptureReady(
+          Boolean(recognition?.connectionSlug?.trim() && recognition?.model?.trim()),
+        );
+      } catch {
+        if (!cancelled) setComposerVoiceCaptureReady(false);
+      }
+    }
+    void refreshVoiceCaptureReady();
+    return window.maka.settings.subscribeExternalChanged(() => {
+      void refreshVoiceCaptureReady();
+    });
+  }, []);
+
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
@@ -2232,11 +2255,13 @@ function AppShellContent({
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   voiceCaptureState={voiceInput.captureState}
-                  realtimeVoiceState={voiceInput.realtimeState}
                   voiceProviderLabel={voiceInput.providerLabel}
-                  onToggleVoiceCapture={voiceInput.toggleCapture}
-                  onCancelVoiceCapture={voiceInput.cancelCapture}
-                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
+                  onToggleVoiceCapture={
+                    composerVoiceCaptureReady ? voiceInput.toggleCapture : undefined
+                  }
+                  onCancelVoiceCapture={
+                    composerVoiceCaptureReady ? voiceInput.cancelCapture : undefined
+                  }
                   onSend={sendWithAttachments}
                   onStop={stop}
                   revisionNotice={

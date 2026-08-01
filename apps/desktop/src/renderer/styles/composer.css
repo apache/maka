@@ -21,6 +21,45 @@
   max-width: var(--maka-chat-measure);
 }
 
+/* New-chat project/branch bar — above the composer card, same measure. */
+.maka-composer-workspace-dock {
+  display: flex;
+  width: min(var(--maka-chat-measure), 100%);
+  max-width: var(--maka-chat-measure);
+  margin-inline: auto;
+  padding-inline: var(--space-6);
+  box-sizing: border-box;
+}
+
+.maka-composer-workspace-dock .maka-composer-workspace-row {
+  width: 100%;
+  margin: 0;
+  padding-block: var(--space-1) 0;
+}
+
+/* Skill panel opened from the ＋ menu — containing block is left-controls
+   (starts at ＋), not the zero-width picker host at the end of the row. */
+.maka-composer-left-controls {
+  position: relative;
+}
+
+.maka-composer-skill-picker[data-anchored="footer"] {
+  /* Stay out of the positioning chain so the absolute panel uses left-controls. */
+  position: static;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+  border: none;
+  pointer-events: none;
+}
+
+.maka-composer-skill-picker[data-anchored="footer"] .maka-composer-skill-panel {
+  pointer-events: auto;
+  inset-inline-start: 0;
+}
+
 .maka-composer-context-drawer,
 .maka-composer-context-items {
   display: flex;
@@ -102,11 +141,28 @@
   white-space: nowrap;
 }
 
-/* Product-owned quiet controls. Model and thinking selectors now keep Astryx
-   control chrome instead of sharing this legacy trigger recipe. */
-.maka-composer-left-controls .permissionModeSelector,
-.maka-composer-model-chip,
-.maka-composer-mode-indicator {
+/* Quiet footer: ＋ and permission are both ghost icon buttons. */
+.maka-composer-left-controls .permissionModeIcon,
+.maka-composer-left-controls .maka-composer-plus-menu {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Cursor: product-wide native-cursor.css (maka.legacy) owns default vs pointer. */
+
+/* Astryx sm list density: DropdownMenuItem + Selector options use
+   padding-block: var(--spacing-1) (4px) when size=sm. RadioItem only sizes its
+   radio glyph from menuSize and never applies itemSizeStyles, so it stays on
+   Item balanced (8px) and permission rows look taller than + / model. Quiet
+   menus force the sm block pad so all three composer popouts share one ladder.
+   Use product --space-1 (same 4px step as Astryx --spacing-1). Upstream
+   should wire itemSizeStyles into RadioItem; drop this when it does. */
+.maka-composer-quiet-menu [role="menuitemradio"] {
+  padding-block: var(--space-1);
+}
+
+/* Model chip (static fallback) still owns its own quiet geometry. */
+.maka-composer-model-chip {
   height: 26px;
   display: inline-flex;
   align-items: center;
@@ -120,42 +176,42 @@
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
+  max-width: min(180px, 28vw);
   transition:
     background-color var(--duration-base) var(--ease-out-strong),
     color var(--duration-base) var(--ease-out-strong);
 }
-.maka-composer-left-controls .permissionModeSelector:hover,
-.maka-composer-model-chip:hover,
-.maka-composer-mode-indicator:hover:not(:disabled) {
+.maka-composer-model-chip:hover {
   background: var(--state-hover-bg);
   color: var(--foreground);
   border-color: transparent;
 }
 
-/* #1433: active-mode mark (Plan/Swarm) uses the unified composer-control
-   geometry above. Its stronger text plus the trailing X communicate both
-   “enabled” and the direct click-to-close action without inventing a smaller
-   chip or hover footprint beside the permission picker. */
+/* Mode ON marks are drawer Tokens; wrapper only carries data-mode / title for
+   E2E and tooltips — no second pill geometry on top of Token chrome.
+   Keep a real box (not display:contents) so Playwright visibility and
+   title hover still work on the host. */
 .maka-composer-mode-indicator {
-  color: var(--foreground);
-  font-weight: var(--font-weight-semibold);
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
 }
-
-.maka-composer-mode-indicator:disabled {
-  cursor: not-allowed;
-  color: var(--muted-foreground);
+/* Model + thinking pair lives in left-controls (after permission), not send. */
+.maka-composer-left-controls .maka-model-selection-controls {
+  min-width: 0;
+  max-width: min(420px, 52vw);
 }
-
-.maka-composer-model-chip {
-  max-width: min(180px, 28vw);
-}
-.maka-composer-right-controls .maka-model-switcher {
+.maka-composer-left-controls .maka-model-switcher {
   margin: 0;
   max-width: min(360px, 42vw);
 }
-.maka-composer-right-controls .maka-model-switcher-trigger {
+.maka-composer-left-controls .maka-model-switcher-trigger,
+.maka-composer-left-controls .maka-new-chat-model-selector {
   min-width: 100px;
   max-width: min(220px, 28vw);
+}
+.maka-composer-left-controls .maka-thinking-level-selector {
+  margin: 0;
 }
 
 .maka-composer-model-chip-text {
@@ -182,31 +238,47 @@
 }
 
 /* The textarea owns no chrome (the card does). It auto-resizes from
-   --h-composer-min up to 240px (capped in @maka/ui), then scrolls. Font is
-   set explicitly on the element AND its placeholder so neither relies on the
-   fragile `[font: inherit]` chain from the bare-field reset. */
+   --h-composer-min up to 240px (capped in @maka/ui), then scrolls. Type
+   matches Astryx ChatComposer / ChatComposerInput: body scale tokens, not
+   a local 14/22 magic pair. --text-body-* comes from the Astryx theme;
+   --font-size-base / product leading cover Storybook or mounts where the
+   theme wrapper is absent.
+
+   Kill the global `*:focus-visible` ring (maka-tokens) — Astryx ChatComposer
+   elevates the outer shell on focus-within; a second rectangle on the field
+   is the bug users describe as “输入后出现长方形边框”. */
 .composer .maka-composer-textarea {
   display: block;
   width: 100%;
   appearance: none;
   border: none;
   outline: none;
+  box-shadow: none;
   resize: none;
   overflow-y: auto;
   background: transparent;
   color: var(--foreground);
   font-family: var(--font-default);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--text-body-size, var(--font-size-base));
+  font-weight: var(--text-body-weight, var(--font-weight-normal, 400));
+  line-height: var(--text-body-leading, var(--leading-normal, 1.4286));
   min-height: var(--h-composer-min);
   max-height: 240px;
+}
+
+.composer .maka-composer-textarea:focus,
+.composer .maka-composer-textarea:focus-visible {
+  border: none;
+  outline: none;
+  box-shadow: none;
 }
 
 .composer .maka-composer-textarea::placeholder {
   color: var(--muted-foreground);
   font-family: var(--font-default);
-  font-size: 14px;
-  line-height: 22px;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
   transition: opacity var(--duration-emphasized) var(--ease-out-strong);
 }
 

@@ -4,7 +4,7 @@
    selection in the transcript. Positioned via inline top/left (viewport coords
    of the selection) and centered on the selection midpoint with
    translateX(-50%). Low-key elevated pill that brightens on hover; uses
-   neutral state tokens and no cursor:pointer (CSS governance). */
+   neutral state tokens. Cursor: styles/native-cursor.css. */
 .maka-quote-action {
   position: fixed;
   transform: translateX(-50%);

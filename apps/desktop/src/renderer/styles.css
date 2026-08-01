@@ -43,6 +43,9 @@
 @import "./maka-tokens.css";
 @import "./reference-shell.css" layer(maka.legacy);
 @import "./styles/base.css" layer(maka.legacy);
+/* Single owner of the native-cursor convention (hand only on links). Must
+   sit in maka.legacy so it beats Astryx StyleX in astryx-components. */
+@import "./styles/native-cursor.css" layer(maka.legacy);
 @import "./styles/shell-layout.css" layer(maka.legacy);
 @import "./styles/sidebar.css" layer(maka.legacy);
 @import "./styles/search-modal.css" layer(maka.legacy);

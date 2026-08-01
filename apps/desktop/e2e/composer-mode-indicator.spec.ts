@@ -6,18 +6,18 @@ async function enableMode(
   mode: 'plan' | 'swarm',
   label: 'Plan' | 'Swarm',
 ): Promise<Locator> {
-  await page.getByRole('button', { name: '模式' }).click();
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  // Plus menu: modes are single menuitemcheckbox rows (Astryx CheckboxItem).
   await page.getByRole('menuitemcheckbox', { name: label }).click();
   await page.keyboard.press('Escape');
   const indicator = page.locator(
     `.maka-composer-mode-indicator[data-mode="${mode}"]`,
   );
   await expect(indicator).toBeVisible();
-  await expect(indicator.locator('svg.lucide-x')).toBeVisible();
   return indicator;
 }
 
-test('Plan and Swarm indicators remain visible and close directly', async ({
+test('Plan and Swarm tokens remain visible and close from the drawer', async ({
   window: page,
 }) => {
   const firstSend = page.locator('.maka-composer-textarea');
@@ -25,7 +25,10 @@ test('Plan and Swarm indicators remain visible and close directly', async ({
   await firstSend.press('Enter');
   await expect(page.getByText(/Fake backend received: open composer/)).toBeVisible();
 
-  const permissionTrigger = page.locator('.maka-composer-header-context .permissionModeSelector');
+  // Permission is a ghost icon control in the left footer, not header context.
+  const permissionTrigger = page
+    .locator('.maka-composer-left-controls .permissionModeIcon')
+    .getByRole('button');
   await expect(permissionTrigger).toBeVisible();
 
   for (const [mode, label] of [
@@ -33,7 +36,8 @@ test('Plan and Swarm indicators remain visible and close directly', async ({
     ['swarm', 'Swarm'],
   ] as const) {
     const indicator = await enableMode(page, mode, label);
-    await indicator.click();
+    // Token remove control dismisses the active mode.
+    await indicator.getByRole('button').click();
     await expect(indicator).toHaveCount(0);
   }
 });
