@@ -112,6 +112,18 @@ function withLedgerCounts(report) {
   };
 }
 
+const provider = {
+  id: 'openai',
+  readiness: 'real',
+  producer: 'cu-real-model-launcher',
+  model: 'gpt-5.4',
+  report: 'r',
+};
+
+function reportErrors(report, reportScenario = scenario()) {
+  return validateRealReport(report, provider, reportScenario).join('; ');
+}
+
 test('matrix generation never executes provider command templates', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'cu-matrix-'));
   const marker = join(directory, 'executed');
@@ -149,7 +161,7 @@ test('matrix generation never executes provider command templates', async () => 
   }
 });
 
-test('real reports reject invalid identity, provenance, and lineage', () => {
+test('real reports reject invalid identity, provenance, sequence, budget, and ledger', () => {
   for (const [label, patch, reportScenario, patterns] of [
     [
       'scenario mismatch',
@@ -194,142 +206,81 @@ test('real reports reject invalid identity, provenance, and lineage', () => {
       scenario(),
       [/gitRevision/, /contentLineage/],
     ],
+    [
+      'wrong action sequence',
+      {},
+      scenario({ expectedActionSequence: ['observe', 'observe', 'click_element'] }),
+      [/action sequence mismatch/],
+    ],
+    ['over budget', {}, scenario({ maxTotalActions: 1 }), [/total action budget exceeded/]],
+    [
+      'ledger mismatch',
+      { actionAttempts: 1, actionCounts: { observe: 2 } },
+      scenario(),
+      [/actionAttempts mismatch/, /actionCounts mismatch/],
+    ],
   ]) {
-    const errors = validateRealReport(
-      realReport(patch),
-      { id: 'openai', producer: 'cu-real-model-launcher', model: 'gpt-5.4' },
-      reportScenario,
-    ).join('; ');
+    const errors = reportErrors(realReport(patch), reportScenario);
     for (const pattern of patterns) assert.match(errors, pattern, label);
   }
 });
 
-test('an explicit action sequence is checked exactly', async () => {
-  const orderedScenario = scenario({
-    expectedActionSequence: ['observe', 'observe', 'click_element'],
-    minimumActionCounts: { observe: 2, click_element: 1 },
-    maxActionCounts: { observe: 2, click_element: 1 },
-  });
-  const report = realReport({
-    actions: [
-      {
-        type: 'observe',
-        resultObservationId: 'observation-1',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-      {
-        type: 'click_element',
-        sourceObservationId: 'observation-1',
-        resultObservationId: 'observation-2',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-      {
-        type: 'observe',
-        resultObservationId: 'observation-3',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-    ],
-    actionCount: 3,
-  });
+test('real readiness accepts one canonical report and rejects an unowned producer', async () => {
   const matrix = await buildProviderMatrix({
-    scenarios: [orderedScenario],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () => report,
+    scenarios: [scenario()],
+    providers: [provider],
+    loadReport: async () => realReport(),
   });
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /action sequence mismatch/);
-});
+  assert.equal(matrix.rows[0].status, 'pass');
 
-test('real readiness requires an explicit known producer', async () => {
   await assert.rejects(
     buildProviderMatrix({
       scenarios: [scenario()],
-      providers: [
-        {
-          id: 'openai',
-          readiness: 'real',
-          model: 'gpt-5.4',
-          report: 'r',
-        },
-      ],
+      providers: [{ id: 'openai', readiness: 'real', model: 'gpt-5.4', report: 'r' }],
     }),
     /explicit known producer/,
   );
 });
 
-test('L1 mutation must use the latest observation rather than any prior observation', async () => {
-  const report = realReport({
-    actions: [
-      {
-        type: 'observe',
-        resultObservationId: 'observation-1',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-      {
-        type: 'observe',
-        resultObservationId: 'observation-2',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-      {
-        type: 'click_element',
-        sourceObservationId: 'observation-1',
-        resultObservationId: 'observation-3',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-    ],
-    actionCount: 3,
+test('action evidence fails closed for stale lineage, self-authorization, and missing dispatch', () => {
+  const staleLineage = withLedgerCounts(
+    realReport({
+      actions: [
+        {
+          type: 'observe',
+          resultObservationId: 'observation-1',
+          targetPid: 42,
+          targetWindowId: 7,
+          success: true,
+          targetOwned: true,
+        },
+        {
+          type: 'observe',
+          resultObservationId: 'observation-2',
+          targetPid: 42,
+          targetWindowId: 7,
+          success: true,
+          targetOwned: true,
+        },
+        {
+          type: 'click_element',
+          sourceObservationId: 'observation-1',
+          resultObservationId: 'observation-3',
+          targetPid: 42,
+          targetWindowId: 7,
+          success: true,
+          targetOwned: true,
+        },
+      ],
+    }),
+  );
+  const orderedScenario = scenario({
+    expectedActionSequence: ['observe', 'observe', 'click_element'],
+    minimumActionCounts: { observe: 2, click_element: 1 },
+    maxActionCounts: { observe: 2, click_element: 1 },
   });
-  const matrix = await buildProviderMatrix({
-    scenarios: [
-      scenario({
-        expectedActionSequence: ['observe', 'observe', 'click_element'],
-        minimumActionCounts: { observe: 2, click_element: 1 },
-        maxActionCounts: { observe: 2, click_element: 1 },
-      }),
-    ],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () => report,
-  });
+  assert.match(reportErrors(staleLineage, orderedScenario), /observation lineage/);
 
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /observation lineage/);
-});
-
-test('a report cannot authorize its own expected failure', async () => {
   const failedAction = {
     type: 'click_element',
     sourceObservationId: 'observation-1',
@@ -340,157 +291,73 @@ test('a report cannot authorize its own expected failure', async () => {
     resultCode: 'stale_frame',
     targetOwned: true,
   };
-  const provider = {
-    id: 'openai',
-    readiness: 'real',
-    producer: 'cu-real-model-launcher',
-    model: 'gpt-5.4',
-    report: 'r',
-  };
-  const unapproved = await buildProviderMatrix({
-    scenarios: [scenario()],
-    providers: [provider],
-    loadReport: async () =>
-      withLedgerCounts(
-        realReport({
-          actions: [realReport().actions[0], failedAction],
-        }),
-      ),
-  });
-  assert.equal(unapproved.rows[0].status, 'invalid-report');
-  assert.match(unapproved.rows[0].reportError, /scenario-authorized/);
-
-  const approved = await buildProviderMatrix({
-    scenarios: [
-      scenario({
-        expectedFailures: [{ action: 'click_element', error: 'stale_frame' }],
-      }),
-    ],
-    providers: [provider],
-    loadReport: async () =>
-      withLedgerCounts(
-        realReport({
-          actions: [realReport().actions[0], failedAction],
-        }),
-      ),
-  });
-  assert.equal(approved.rows[0].status, 'pass');
-});
-
-test('every successful mutation requires its own target-bound dispatch trace', async () => {
-  const report = realReport({
-    actions: [
-      {
-        type: 'observe',
-        toolCallId: 'observe-1',
-        resultObservationId: 'observation-1',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-      {
-        type: 'set_value',
-        toolCallId: 'set-1',
-        sourceObservationId: 'observation-1',
-        resultObservationId: 'observation-2',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-      {
-        type: 'click_element',
-        toolCallId: 'click-1',
-        sourceObservationId: 'observation-2',
-        resultObservationId: 'observation-3',
-        targetPid: 42,
-        targetWindowId: 7,
-        success: true,
-        targetOwned: true,
-      },
-    ],
-    actionCount: 3,
-    driverTraces: [
-      {
-        type: 'dispatch',
-        toolCallId: 'set-1',
-        actionType: 'set_value',
-        pid: 42,
-        windowId: 7,
-        address: 'ax',
-      },
-    ],
-  });
-  const matrix = await buildProviderMatrix({
-    scenarios: [
-      scenario({
-        allowedActions: ['observe', 'set_value', 'click_element'],
-        minimumActionCounts: { observe: 1, set_value: 1, click_element: 1 },
-        maxActionCounts: { observe: 1, set_value: 1, click_element: 1 },
-        maxTotalActions: 3,
-      }),
-    ],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () => report,
-  });
-
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /safe dispatch evidence missing for click_element/);
-});
-
-test('over-budget action sequence is invalid', async () => {
-  const report = realReport({
-    actions: [
-      { type: 'observe', success: true, targetOwned: true },
-      { type: 'observe', success: true, targetOwned: true },
-      { type: 'observe', success: true, targetOwned: true },
-      { type: 'click_element', success: true, targetOwned: true },
-    ],
-    actionCount: 4,
-  });
-  const matrix = await buildProviderMatrix({
-    scenarios: [scenario()],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () => report,
-  });
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /budget exceeded/);
-});
-
-test('validator rejects action attempt and per-action counts that diverge from the ledger', () => {
-  const report = realReport({
-    actionAttempts: 1,
-    actionCounts: { observe: 2 },
-  });
-  const errors = validateRealReport(
-    report,
-    {
-      id: 'openai',
-      producer: 'cu-real-model-launcher',
-      model: 'gpt-5.4',
-    },
-    scenario(),
+  const selfAuthorized = withLedgerCounts(
+    realReport({ actions: [realReport().actions[0], failedAction] }),
+  );
+  assert.match(reportErrors(selfAuthorized), /scenario-authorized/);
+  assert.doesNotMatch(
+    reportErrors(
+      selfAuthorized,
+      scenario({ expectedFailures: [{ action: 'click_element', error: 'stale_frame' }] }),
+    ),
+    /scenario-authorized/,
   );
 
-  assert.match(errors.join('; '), /actionAttempts mismatch/);
-  assert.match(errors.join('; '), /actionCounts mismatch/);
+  const missingDispatch = withLedgerCounts(
+    realReport({
+      actions: [
+        {
+          type: 'observe',
+          toolCallId: 'observe-1',
+          resultObservationId: 'observation-1',
+          targetPid: 42,
+          targetWindowId: 7,
+          success: true,
+          targetOwned: true,
+        },
+        {
+          type: 'set_value',
+          toolCallId: 'set-1',
+          sourceObservationId: 'observation-1',
+          resultObservationId: 'observation-2',
+          targetPid: 42,
+          targetWindowId: 7,
+          success: true,
+          targetOwned: true,
+        },
+        {
+          type: 'click_element',
+          toolCallId: 'click-1',
+          sourceObservationId: 'observation-2',
+          resultObservationId: 'observation-3',
+          targetPid: 42,
+          targetWindowId: 7,
+          success: true,
+          targetOwned: true,
+        },
+      ],
+      driverTraces: [
+        {
+          type: 'dispatch',
+          toolCallId: 'set-1',
+          actionType: 'set_value',
+          pid: 42,
+          windowId: 7,
+          address: 'ax',
+        },
+      ],
+    }),
+  );
+  const dispatchScenario = scenario({
+    allowedActions: ['observe', 'set_value', 'click_element'],
+    minimumActionCounts: { observe: 1, set_value: 1, click_element: 1 },
+    maxActionCounts: { observe: 1, set_value: 1, click_element: 1 },
+    maxTotalActions: 3,
+  });
+  assert.match(
+    reportErrors(missingDispatch, dispatchScenario),
+    /safe dispatch evidence missing for click_element/,
+  );
 });
 
 test('restart recovery requires target_missing then fresh observation and AX set_value retry', () => {
@@ -536,15 +403,7 @@ test('restart recovery requires target_missing then fresh observation and AX set
       driverTraces: [],
     }),
   );
-  const provider = {
-    id: 'openai',
-    producer: 'cu-real-model-launcher',
-    model: 'gpt-5.4',
-  };
-  assert.match(
-    validateRealReport(incomplete, provider, restartScenario).join('; '),
-    /restart recovery requires/,
-  );
+  assert.match(reportErrors(incomplete, restartScenario), /restart recovery requires/);
 
   const complete = withLedgerCounts({
     ...incomplete,
@@ -572,8 +431,5 @@ test('restart recovery requires target_missing then fresh observation and AX set
       },
     ],
   });
-  assert.doesNotMatch(
-    validateRealReport(complete, provider, restartScenario).join('; '),
-    /restart recovery requires/,
-  );
+  assert.doesNotMatch(reportErrors(complete, restartScenario), /restart recovery requires/);
 });
