@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps } from 'react';
 import type { AttachmentRef, SessionSummary, StoredMessage } from '@maka/core';
-import { ChatView, Composer } from '../src/components.js';
+import { ChatSurfaceLayout, ChatView, Composer } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
@@ -134,6 +134,14 @@ function Frame({ children }: { children: React.ReactNode }) {
   );
 }
 
+function AttachmentChat(props: ComponentProps<typeof ChatView>) {
+  return (
+    <ChatSurfaceLayout composer={null}>
+      <ChatView {...props} />
+    </ChatSurfaceLayout>
+  );
+}
+
 // Real path: composer → ＋ → attach files → the pending chips before the message is sent.
 export const ComposerPendingChips: Story = {
   render: () => (
@@ -160,7 +168,7 @@ export const ComposerPendingChips: Story = {
 export const ChatAttachmentChips: Story = {
   render: () => (
     <Frame>
-      <ChatView
+      <AttachmentChat
         {...baseChat}
         messages={[user('u1', 't1', '帮我看下这几个文件，哪些要改。', [pdfAttachment, docAttachment, codeAttachment, otherAttachment])]}
       />
@@ -172,7 +180,7 @@ export const ChatAttachmentChips: Story = {
 export const ImageThumbnails: Story = {
   render: () => (
     <Frame>
-      <ChatView
+      <AttachmentChat
         {...baseChat}
         messages={[user('u2', 't2', '这两张截图帮我对比一下。', [imageAttachment, metricsAttachment])]}
       />
@@ -186,7 +194,7 @@ export const PendingSkeleton: Story = {
   render: () => (
     <Frame>
       {/* No reader wired — the thumbnail stays in the pending skeleton state. */}
-      <ChatView
+      <AttachmentChat
         {...baseChat}
         onReadAttachmentBytes={undefined}
         messages={[user('u3', 't3', '这张图还在读。', [attachment('image', 'loading.png', 'image/png', 1024)])]}
@@ -199,7 +207,7 @@ export const PendingSkeleton: Story = {
 export const Lightbox: Story = {
   render: () => (
     <Frame>
-      <ChatView
+      <AttachmentChat
         {...baseChat}
         messages={[user('u4', 't4', '点击图片放大查看。', [imageAttachment])]}
       />

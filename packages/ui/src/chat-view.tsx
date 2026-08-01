@@ -328,8 +328,10 @@ export function ChatView(props: {
   }, [props.conversationItems]);
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
   const chatLayout = useChatLayoutContext();
-  const standaloneScrollRef = useRef<HTMLElement>(null);
-  const scrollRef = chatLayout?.scrollContainerRef ?? standaloneScrollRef;
+  if (!chatLayout) {
+    throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
+  }
+  const scrollRef = chatLayout.scrollContainerRef;
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,

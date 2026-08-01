@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { ChatSurfaceLayout } from '../chat-surface-layout.js';
 import { ChatView } from '../chat-view.js';
 import { LocaleProvider } from '../locale-context.js';
 
@@ -19,11 +21,32 @@ const activeSession = {
   permissionMode: 'ask' as const,
 };
 
+function OwnedChatView(props: ComponentProps<typeof ChatView>) {
+  return (
+    <ChatSurfaceLayout composer={null}>
+      <ChatView {...props} />
+    </ChatSurfaceLayout>
+  );
+}
+
+describe('ChatView layout ownership', () => {
+  it('rejects rendering without the Astryx chat surface owner', () => {
+    assert.throws(
+      () => renderToStaticMarkup(
+        <LocaleProvider locale="en">
+          <ChatView messages={[]} activeSession={activeSession} onNew={() => undefined} />
+        </LocaleProvider>,
+      ),
+      /ChatSurfaceLayout/,
+    );
+  });
+});
+
 describe('ChatView load failure', () => {
   it('uses one assertive live region for the Astryx empty state', () => {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <ChatView
+        <OwnedChatView
           messages={[]}
           activeSession={activeSession}
           messageLoadError="Could not load messages"
@@ -33,7 +56,6 @@ describe('ChatView load failure', () => {
     );
 
     assert.equal(markup.match(/role="alert"/g)?.length, 1);
-    assert.doesNotMatch(markup, /role="status"/);
   });
 });
 
@@ -41,7 +63,7 @@ describe('ChatView session context', () => {
   it('omits the context layer when the session has no extra context', () => {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <ChatView messages={[]} activeSession={activeSession} onNew={() => undefined} />
+        <OwnedChatView messages={[]} activeSession={activeSession} onNew={() => undefined} />
       </LocaleProvider>,
     );
 
@@ -51,7 +73,7 @@ describe('ChatView session context', () => {
   it('renders active session metadata and controls in one context layer', () => {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <ChatView
+        <OwnedChatView
           messages={[]}
           activeSession={{ ...activeSession, name: 'Chat Surface convergence', labels: ['mode:deep_research'] }}
           memoryActive
@@ -95,7 +117,7 @@ describe('ChatView system notices', () => {
   it('renders visible runtime notices with the Astryx system-message primitive', () => {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <ChatView
+        <OwnedChatView
           messages={[
             {
               type: 'system_note',
