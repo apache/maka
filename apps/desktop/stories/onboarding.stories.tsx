@@ -2,6 +2,7 @@ import { type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
 import { ChatSurfaceLayout, ChatView } from '@maka/ui';
+import { expect } from 'storybook/test';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -110,5 +111,11 @@ export const NeedsConnection: Story = {
       <OnboardingHero {...heroProps({ kind: 'needs_connection' })} />
     </DetailPane>
   ),
+  play: async ({ canvasElement }) => {
+    const providerRow = canvasElement.querySelector<HTMLElement>('.maka-firstrun-row');
+    await expect(providerRow).not.toBeNull();
+    const style = getComputedStyle(providerRow as HTMLElement);
+    await expect(style.paddingTop).toBe('8px');
+    await expect(style.paddingRight).toBe('14px');
+  },
 };
-
