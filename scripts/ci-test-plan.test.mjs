@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import { loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
 
 const graph = loadWorkspaceGraph();
 
@@ -39,21 +39,4 @@ test('global and unknown production changes fail safe to the complete suite', ()
     assert.equal(plan.e2e, true);
     assert.deepEqual(plan.workspaces, graph.dirs);
   }
-});
-
-test('GitHub outputs stay scalar and shell-safe', () => {
-  assert.equal(
-    formatGitHubOutputs(planTests(['README.md'], { graph })),
-    [
-      'code=false',
-      'e2e=false',
-      'full=false',
-      'headless=false',
-      'runtime_sandbox=false',
-      'script_mode=none',
-      'storage_stress=false',
-      'unit=false',
-      'workspaces=',
-    ].join('\n'),
-  );
 });

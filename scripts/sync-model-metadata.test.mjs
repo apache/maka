@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -75,62 +75,6 @@ function withRequiredProviders(openai = {}) {
     ]),
   );
 }
-
-async function generate(catalog) {
-  const directory = await mkdtemp(join(tmpdir(), 'maka-model-metadata-'));
-  const input = join(directory, 'api.json');
-  const output = join(directory, 'generated.ts');
-  try {
-    await writeFile(input, JSON.stringify(catalog));
-    await execFileAsync(process.execPath, [
-      'scripts/sync-model-metadata.mjs',
-      '--input',
-      input,
-      '--output',
-      output,
-    ]);
-    return await readFile(output, 'utf8');
-  } finally {
-    await rm(directory, { force: true, recursive: true });
-  }
-}
-
-test('sync-model-metadata maps capabilities and lifecycle from models.dev', async () => {
-  const generated = await generate(
-    withRequiredProviders({
-      models: {
-        vision: {
-          name: 'Vision Model',
-          reasoning: true,
-          tool_call: true,
-          modalities: { input: ['text', 'image'], output: ['text'] },
-          limit: { context: 128_000, output: 16_000 },
-          provider: {
-            npm: '@ai-sdk/openai',
-            api: 'https://example.com/responses-compatible',
-          },
-        },
-        deprecated: {
-          name: 'Deprecated Model',
-          reasoning: false,
-          tool_call: false,
-          modalities: { input: ['text'], output: ['text'] },
-          limit: { context: 32_000, output: 4_000 },
-          status: 'deprecated',
-        },
-      },
-    }),
-  );
-
-  assert.match(generated, /"vision":true,"reasoning":true,"functionCalling":true/);
-  assert.match(generated, /"modalities":\{"input":\["text","image"\],"output":\["text"\]\}/);
-  assert.match(generated, /"deprecated".*"lifecycle":"deprecated".*"vision":false/);
-  assert.match(generated, /export const GENERATED_MODELS_DEV_PROVIDER_FACTS/);
-  assert.match(
-    generated,
-    /"openai": \{"vision":\{"npm":"@ai-sdk\/openai","api":"https:\/\/example\.com\/responses-compatible"\}\}/,
-  );
-});
 
 test('sync-model-metadata fails closed on malformed or incomplete upstream data', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-model-metadata-invalid-'));

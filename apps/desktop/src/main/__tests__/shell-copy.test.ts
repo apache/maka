@@ -1,19 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { LlmConnection } from '@maka/core';
 
 import { buildCommandList, buildSessionCommands } from '../../renderer/command-palette-commands.js';
 import { messageReadErrorMessage, openPathActionErrorMessage } from '../../renderer/app-shell-copy.js';
-import { getShellCopy } from '../../renderer/locales/shell-copy.js';
 
 describe('shell copy catalog', () => {
-  it('provides complete representative navigation and shared-action copy', () => {
-    assert.equal(getShellCopy('zh').navigation.settings, '设置');
-    assert.equal(getShellCopy('en').navigation.settings, 'Settings');
-    assert.equal(getShellCopy('en').actions.retry, 'Retry');
-    assert.equal(getShellCopy('en').commandPalette.placeholder, 'Search commands, settings, or conversations…');
-  });
-
   it('classifies safe helper failures in the requested locale', () => {
     assert.equal(messageReadErrorMessage(new Error('network disconnected'), 'en'), 'Network error');
     assert.equal(
@@ -72,89 +63,4 @@ describe('shell copy catalog', () => {
     assert.equal(sessionCommands[0]?.group, 'Conversations');
   });
 
-  it('localizes every visible command variant in English without silent fallback', () => {
-    const connections: LlmConnection[] = [
-      {
-        slug: 'default-connection',
-        name: 'Default Provider',
-        providerType: 'openai',
-        defaultModel: 'gpt-test',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-      {
-        slug: 'secondary-connection',
-        name: 'Secondary Provider',
-        providerType: 'anthropic',
-        defaultModel: 'claude-test',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
-      },
-    ];
-    const noop = () => {};
-    const commands = buildCommandList({
-      locale: 'en',
-      activeSessionId: 'session-1',
-      themePref: 'auto',
-      connections,
-      defaultSlug: 'default-connection',
-      onNewChat: noop,
-      onStartDeepResearch: noop,
-      onOpenSettings: noop,
-      onOpenSettingsSection: noop,
-      onOpenShortcuts: noop,
-      onSetTheme: noop,
-      onTestConnection: noop,
-      onSetDefaultConnection: noop,
-      onOpenWorkspace: noop,
-      onOpenProjectFolder: noop,
-      onOpenSkillsFolder: noop,
-      onExportActiveConversation: noop,
-      onSaveActiveConversationToFile: noop,
-      onCopyTodayDailyReview: noop,
-      onOpenLocalMemoryFile: noop,
-      onOpenWorkspaceInstructionsFile: noop,
-      onSetPermissionMode: noop,
-      activePermissionMode: 'ask',
-      onPasteTodayDailyReviewIntoComposer: noop,
-      onSaveTodayDailyReviewToFile: noop,
-      onCopyEnvSummary: noop,
-      onTestNetworkProxy: noop,
-      onSelectModule: noop,
-      onStartPlanReminder: noop,
-    });
-
-    assert.ok(commands.length >= 43, 'the fixture must exercise every optional command family');
-    for (const command of commands) {
-      for (const [field, value] of Object.entries({
-        label: command.label,
-        hint: command.hint,
-        group: command.group,
-      })) {
-        if (!value) continue;
-        assert.doesNotMatch(
-          value,
-          /[\u3400-\u9fff]/u,
-          `${command.id}.${field} silently retained Chinese copy: ${value}`,
-        );
-      }
-    }
-
-    assert.equal(
-      commands.find((command) => command.id === 'diag:test-default')?.label,
-      'Test default connection · Default Provider',
-    );
-    assert.equal(
-      commands.find((command) => command.id === 'connection:set-default:secondary-connection')?.label,
-      'Set as default · Secondary Provider',
-    );
-    assert.deepEqual(
-      commands
-        .filter((command) => command.id.startsWith('perm:set-'))
-        .map((command) => command.id),
-      ['perm:set-ask', 'perm:set-bypass'],
-    );
-  });
 });

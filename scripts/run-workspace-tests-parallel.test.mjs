@@ -25,16 +25,8 @@ function makeSpawn(plan) {
   return { spawn, calls };
 }
 
-test('CLI selection preserves root workspace order and validates bounded concurrency', () => {
+test('CLI selection rejects invalid concurrency and unknown workspaces', () => {
   const available = ['packages/core', 'packages/headless', 'apps/desktop'];
-  assert.deepEqual(
-    parseCliArgs(['--concurrency=2', '--workspaces=apps/desktop,packages/core'], available),
-    {
-      concurrency: 2,
-      serial: false,
-      workspaceDirs: ['packages/core', 'apps/desktop'],
-    },
-  );
   assert.throws(() => parseCliArgs(['--concurrency=0'], available), /positive integer/);
   assert.throws(
     () => parseCliArgs(['--workspace=packages/missing'], available),

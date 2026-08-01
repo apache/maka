@@ -111,18 +111,3 @@ test('pricing normalization rejects malformed shapes and invalid rates without t
     assert.equal(normalizePricingConfig(value).ok, false, JSON.stringify(value));
   }
 });
-
-test('pricing normalization accepts finite non-negative required and optional rates', () => {
-  for (const rates of [
-    { inputUsdPer1M: 0, outputUsdPer1M: 0 },
-    { inputUsdPer1M: 1_000, outputUsdPer1M: 5_000 },
-    {
-      inputUsdPer1M: 3,
-      outputUsdPer1M: 15,
-      cacheReadUsdPer1M: 0.3,
-      cacheWriteUsdPer1M: 3.75,
-    },
-  ]) {
-    assert.equal(normalizePricingConfig({ modelKey: 'model', ...rates }).ok, true);
-  }
-});

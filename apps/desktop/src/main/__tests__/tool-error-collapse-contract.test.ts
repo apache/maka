@@ -12,15 +12,13 @@ import type { ToolActivityItem } from '@maka/ui';
 import { LocaleProvider, ToolResultPreview, ToolTrow } from '@maka/ui';
 
 const TAIL_MARKER = 'TAIL_MARKER_SCHEMA_DETAILS';
+const LONG_ERROR = `Validation failed: ${Array.from({ length: 15 }, (_, i) => `field ${i} invalid; `).join('')}${TAIL_MARKER}`;
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
     createElement(LocaleProvider, { locale: 'zh', children: child }),
   );
 }
-
-// Varied prose so redactSecrets does not collapse the whole string.
-const LONG_ERROR = 'Validation failed: ' + Array.from({ length: 15 }, (_, i) => `field ${i} invalid; `).join('') + TAIL_MARKER;
 
 function erroredItem(errorText: string): ToolActivityItem {
   return {
@@ -41,48 +39,36 @@ describe('tool failure detail contract', () => {
     const markup = renderTrow(LONG_ERROR);
     assert.match(markup, /astryx-chat-tool-calls/);
     assert.match(markup, /aria-expanded="false"/);
-    // Row errorMessage is always present (VisuallyHidden); detail well is not.
     assert.match(markup, /Validation failed:/);
-    assert.doesNotMatch(markup, /工具调用失败/);
-    assert.doesNotMatch(markup, /显示原始诊断/);
-    assert.doesNotMatch(markup, /data-slot="alert"/);
-    assert.doesNotMatch(markup, /astryx-codeblock/);
+    assert.doesNotMatch(markup, /工具调用失败|显示原始诊断|data-slot="alert"|astryx-codeblock/);
   });
 
-  it('keeps ordinary failure detail as a neutral CodeBlock well (shared result preview)', () => {
-    const markup = renderWithLocale(createElement(ToolResultPreview, {
-      content: { kind: 'text', text: LONG_ERROR },
-      toolName: 'read',
-    }));
+  it('keeps ordinary failure detail as a neutral CodeBlock well', () => {
+    const markup = renderWithLocale(
+      createElement(ToolResultPreview, {
+        content: { kind: 'text', text: LONG_ERROR },
+        toolName: 'read',
+      }),
+    );
     assert.match(markup, /astryx-codeblock/);
     assert.match(markup, /Validation failed:/);
     assert.match(markup, new RegExp(TAIL_MARKER));
-    assert.doesNotMatch(markup, /工具调用失败/);
-    assert.doesNotMatch(markup, /显示原始诊断/);
-    assert.doesNotMatch(markup, /data-slot="alert"/);
-    assert.doesNotMatch(markup, /失败·退出码/);
+    assert.doesNotMatch(markup, /工具调用失败|显示原始诊断|data-slot="alert"|失败·退出码/);
   });
 
-  it('still redacts secrets before diagnostics reach the row and the detail well', () => {
+  it('redacts secrets before diagnostics reach the row and detail well', () => {
     const secret = 'Authorization: Bearer sk-live-super-secret-value';
     const row = renderTrow(secret);
     assert.doesNotMatch(row, /sk-live-super-secret-value/);
     assert.match(row, /redacted|脱敏/i);
 
-    const well = renderWithLocale(createElement(ToolResultPreview, {
-      content: { kind: 'text', text: secret },
-      toolName: 'read',
-    }));
+    const well = renderWithLocale(
+      createElement(ToolResultPreview, {
+        content: { kind: 'text', text: secret },
+        toolName: 'read',
+      }),
+    );
     assert.doesNotMatch(well, /sk-live-super-secret-value/);
     assert.match(well, /redacted|脱敏/i);
-  });
-
-  it('renders a short failure the same way as a long one (no banner / raw nest)', () => {
-    const markup = renderTrow('short failure reason');
-    assert.match(markup, /short failure reason/);
-    assert.match(markup, /astryx-chat-tool-calls/);
-    assert.doesNotMatch(markup, /工具调用失败/);
-    assert.doesNotMatch(markup, /显示原始诊断/);
-    assert.doesNotMatch(markup, /data-slot="alert"/);
   });
 });

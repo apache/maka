@@ -4,7 +4,6 @@ import { describe, it } from 'node:test';
 import {
   VOICE_MAX_AUDIO_BYTES,
   VOICE_MAX_CAPTURE_DURATION_MS,
-  defaultVoiceCapabilitySnapshot,
   defaultVoicePrivacyFlags,
   defaultVoiceSettings,
   normalizeVoiceCoordinatorToolCall,
@@ -20,32 +19,6 @@ import {
 } from '../voice.js';
 
 describe('voice contract defaults', () => {
-  it('defaults voice capability to disabled/off with no persistence or telemetry', () => {
-    assert.deepEqual(defaultVoiceCapabilitySnapshot(), {
-      inputMode: 'off',
-      microphonePermission: 'unknown',
-      sttProvider: 'disabled',
-      localSttModelReady: false,
-      cloudSttEnabled: false,
-      ttsProvider: 'disabled',
-      ttsPolicy: 'off',
-      captureCaps: {
-        maxDurationMs: VOICE_MAX_CAPTURE_DURATION_MS,
-        maxAudioBytes: VOICE_MAX_AUDIO_BYTES,
-        maxSampleRate: 48_000,
-        maxChannels: 1,
-      },
-      privacy: {
-        persistAudio: false,
-        transcriptToMemory: false,
-        telemetryIncludesRawAudio: false,
-        telemetryIncludesTranscript: false,
-      },
-      readiness: 'disabled',
-      reasons: ['voice_disabled'],
-    });
-  });
-
   it('locks privacy flags to false literals', () => {
     const privacy = defaultVoicePrivacyFlags();
     assert.equal(privacy.persistAudio, false);

@@ -52,9 +52,11 @@ function renderWithLocale(
   );
 }
 
+const rendererComponents = importRendererComponents();
+
 describe('Astryx component behavior', () => {
   it('announces artifact loading exactly once', async () => {
-    const { ArtifactPreview, LocaleProvider } = await importRendererComponents();
+    const { ArtifactPreview, LocaleProvider } = await rendererComponents;
     const record: ArtifactRecord = {
       id: 'artifact-1',
       sessionId: 'session-1',
@@ -73,7 +75,7 @@ describe('Astryx component behavior', () => {
   });
 
   it('gives keyboard glyphs spoken Astryx key names', async () => {
-    const { KeyboardHelpModal, LocaleProvider } = await importRendererComponents();
+    const { KeyboardHelpModal, LocaleProvider } = await rendererComponents;
     const markup = renderWithLocale(LocaleProvider, createElement(KeyboardHelpModal, {
       isOpen: true,
       onOpenChange: () => undefined,
@@ -88,7 +90,7 @@ describe('Astryx component behavior', () => {
   });
 
   it('uses native button semantics for onboarding provider items', async () => {
-    const { LocaleProvider, OnboardingHero } = await importRendererComponents();
+    const { LocaleProvider, OnboardingHero } = await rendererComponents;
     const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
       state: { kind: 'needs_connection' },
       onOpenSettings: () => undefined,
@@ -103,7 +105,7 @@ describe('Astryx component behavior', () => {
   });
 
   it('opens WeChat advanced settings only when advanced values already exist', async () => {
-    const { BotWeChatFields, LocaleProvider, ToastProvider } = await importRendererComponents();
+    const { BotWeChatFields, LocaleProvider, ToastProvider } = await rendererComponents;
     const channel: BotChannelSettings = {
       provider: 'wechat',
       enabled: false,
@@ -126,7 +128,7 @@ describe('Astryx component behavior', () => {
   });
 
   it('exposes the first usage cell in each body row as its row header', async () => {
-    const { LocaleProvider, ToastProvider, UsageSettingsPage } = await importRendererComponents();
+    const { LocaleProvider, ToastProvider, UsageSettingsPage } = await rendererComponents;
     const settings = {
       usage: {
         range: '7d',
