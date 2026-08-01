@@ -170,6 +170,7 @@ export function DeepResearchEmptyHero(props: { onPromptSuggestion?(prompt: strin
               <Item
                 label={suggestion.label}
                 description={`${suggestion.prompt.slice(0, 60)}…`}
+                descriptionLines={2}
                 density="spacious"
                 align="start"
                 className="maka-prompt-chip"

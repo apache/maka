@@ -154,8 +154,8 @@ const MessageBody = memo(function MessageBody(props: {
     // absolute HH:mm time + a copy affordance in a meta row beneath it. #642:
     // the whole meta row is hover-gated on the user bubble (`group/usermsg`) —
     // hidden at rest, revealed on hover / focus-within, matching the assistant
-    // footer's hover reveal. Copy reuses MessageCopyButton in `footerStyle`, so
-    // it's the same quiet ghost action as the assistant turn footer's copy
+    // footer's hover reveal. Copy reuses MessageCopyButton, so it's the same
+    // quiet ghost action as the assistant turn footer's copy
     // (same primitive + `markerVariants('footer-action')`).
     return (
       <>
@@ -200,7 +200,7 @@ const MessageBody = memo(function MessageBody(props: {
               {formatClockTime(props.ts, locale)}
             </small>
           )}
-          <MessageCopyButton text={props.text} footerStyle />
+          <MessageCopyButton text={props.text} />
           {props.onEditUserMessage && (
             <Tooltip content={editActionLabel}>
               <UiIconButton
@@ -226,13 +226,13 @@ const MessageBody = memo(function MessageBody(props: {
   // duration · cost) lives in the footer's info tooltip; copy + the other
   // actions live in the turn footer.
   return (
-    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-with-actions">
+    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
       <Markdown text={props.text} />
     </ChatMessageBubble>
   );
 });
 
-function MessageCopyButton(props: { text: string; label?: string; footerStyle?: boolean }) {
+function MessageCopyButton(props: { text: string; label?: string }) {
   const copyText = getConversationCopy(useUiLocale()).messages;
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
   const copyPhase = copyFeedback.phaseFor('message');
@@ -243,15 +243,7 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     await copyFeedback.copy('message', props.text);
   }
 
-  // `footerStyle` renders this copy through the same semantic footer-action
-  // seam as the assistant turn footer.
-  // The user-message copy and the assistant copy then read as one button by
-  // construction — same seam, same class, same icon metrics — instead
-  // of a look-alike bespoke treatment.
-  const footer = props.footerStyle === true;
-  const iconSize = footer ? 12 : 14;
-
-  const baseLabel = props.label ?? (footer ? copyText.copy : copyText.copyMessage);
+  const baseLabel = props.label ?? copyText.copy;
   const actionLabel = copyPhase === 'pending'
     ? copyText.copying
     : copyPhase === 'copied'
@@ -260,49 +252,25 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
         ? copyText.copyFailed
         : baseLabel;
   const icon = copied
-    ? <Check size={iconSize} aria-hidden="true" />
-    : <Copy size={iconSize} aria-hidden="true" />;
-
-  if (footer) {
-    // icon-only + tooltip, matching the assistant footer copy action (#546)
-    // so the user-message copy and the assistant copy read as one button.
-    return (
-      <Tooltip content={actionLabel}>
-        <UiIconButton
-          label={baseLabel}
-          icon={icon}
-          variant="ghost"
-          size="sm"
-          className={markerVariants({ variant: 'footer-action' })}
-          aria-busy={copyPending ? 'true' : undefined}
-          isDisabled={copyPending}
-          data-copied={copied}
-          data-copy-feedback={copyPhase ?? undefined}
-          data-pending={copyPending ? 'true' : undefined}
-          onClick={() => void copy()}
-        />
-      </Tooltip>
-    );
-  }
+    ? <Check size={12} aria-hidden="true" />
+    : <Copy size={12} aria-hidden="true" />;
 
   return (
-    <UiButton
-      type="button"
-      label={copyPhase ? `${actionLabel} · ${baseLabel}` : baseLabel}
-      variant="ghost"
-      size="sm"
-      className="maka-message-copy"
-      onClick={() => void copy()}
-      aria-busy={copyPending ? 'true' : undefined}
-      isDisabled={copyPending}
-      data-copied={copied}
-      data-copy-feedback={copyPhase ?? undefined}
-      data-pending={copyPending ? 'true' : undefined}
-      data-labelled={props.label ? 'true' : undefined}
-    >
-      {icon}
-      {props.label && <span>{copyPhase === 'pending' ? `${copyText.copying}…` : copyPhase === 'failed' ? copyText.copyFailed : copied ? copyText.copied : props.label}</span>}
-    </UiButton>
+    <Tooltip content={actionLabel}>
+      <UiIconButton
+        label={baseLabel}
+        icon={icon}
+        variant="ghost"
+        size="sm"
+        className={markerVariants({ variant: 'footer-action' })}
+        aria-busy={copyPending ? 'true' : undefined}
+        isDisabled={copyPending}
+        data-copied={copied}
+        data-copy-feedback={copyPhase ?? undefined}
+        data-pending={copyPending ? 'true' : undefined}
+        onClick={() => void copy()}
+      />
+    </Tooltip>
   );
 }
 
@@ -1019,7 +987,7 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
       </ChatReasoning>
       {open && !props.live ? (
         <div className="flex justify-end opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/reasoning:opacity-100 focus-within:opacity-100">
-          <MessageCopyButton text={safeText} label={copy.copyThinking} footerStyle />
+          <MessageCopyButton text={safeText} label={copy.copyThinking} />
         </div>
       ) : null}
     </div>

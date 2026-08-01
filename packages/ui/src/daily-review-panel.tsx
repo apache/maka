@@ -498,26 +498,22 @@ export function DailyReviewPanel(props: {
                     <SectionHeader as="h4" accent title={copy.overview.activeConversations} />
                     <ul className="maka-daily-review-list" aria-label={copy.overview.activeConversationList}>
                       {visibleSummary.sessions.map((session) => (
-                        <li key={session.id} className="maka-daily-review-list-item">
-                          {/* Active-conversation rows are composite navigation
-                              controls. Their semantic row seam owns layout and state;
-                              they are not a shared Button size or variant. */}
+                        <li key={session.id}>
                           <Item
-                            className="maka-daily-review-session-button"
                             density="compact"
                             onClick={() => props.onSelectSession?.(session.id)}
                             isDisabled={!props.onSelectSession}
                             label={<span className="maka-daily-review-session-name">{session.name}</span>}
+                            description={session.lastMessagePreview ? (
+                              <span className="maka-daily-review-session-preview">
+                                {session.lastMessagePreview}
+                              </span>
+                            ) : undefined}
                             endContent={<RelativeTime
                               ts={session.lastMessageAt}
                               className="maka-daily-review-session-time"
                             />}
                           />
-                          {session.lastMessagePreview && (
-                            <span className="maka-daily-review-session-preview">
-                              {session.lastMessagePreview}
-                            </span>
-                          )}
                         </li>
                       ))}
                     </ul>

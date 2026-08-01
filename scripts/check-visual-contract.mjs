@@ -801,12 +801,14 @@ export function partitionChanges(changes, declaredNames) {
  * rail); neither one scope nor the union of several scopes may legitimately
  * claim most of a route's boxes on either side of the comparison. The sole
  * exception is an explicitly repeatable component: every matched root must
- * remain a small, independently bounded subtree. This lets a reviewed list-
- * item migration fill a sparse route without letting two broad containers
- * turn the contract off.
+ * remain a small, independently bounded subtree, and their union may exceed
+ * the ordinary ceiling by only ten percentage points. This lets a reviewed
+ * list-item migration fill a sparse route without letting either two broad
+ * containers or a leaf selector turn the contract off.
  */
 export const SCOPE_COVERAGE_LIMIT = 0.5;
 export const REPEATABLE_SCOPE_ROOT_LIMIT = 0.15;
+export const REPEATABLE_SCOPE_COVERAGE_LIMIT = 0.6;
 
 export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT, scopes = []) {
   if (records.length === 0) return [];
@@ -837,6 +839,7 @@ export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT, scopes
     const boundedRepeatedRoots =
       repeatable.has(scope) &&
       rootPaths.length > 1 &&
+      count <= records.length * REPEATABLE_SCOPE_COVERAGE_LIMIT &&
       rootSizes.reduce((total, size) => total + size, 0) === count &&
       rootSizes.every((size) => size <= records.length * REPEATABLE_SCOPE_ROOT_LIMIT);
     if (!boundedRepeatedRoots) {

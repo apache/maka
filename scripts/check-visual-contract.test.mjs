@@ -22,7 +22,13 @@ test('visual diffs preserve property values, scope, and structural priority', ()
     diffRecords([record('a')], [record('a', { boxShadow: '0 1px' })])[0].properties,
     [{ property: 'boxShadow', before: undefined, after: '0 1px' }],
   );
-  assert.deepEqual(changes.slice(1).map(({ kind }) => kind).sort(), ['added', 'removed']);
+  assert.deepEqual(
+    changes
+      .slice(1)
+      .map(({ kind }) => kind)
+      .sort(),
+    ['added', 'removed'],
+  );
   assert.equal(summarise(Array(60).fill({ kind: 'removed' }), 100).structural, true);
 });
 
@@ -76,7 +82,7 @@ test('repeatable scopes stay bounded per root and in total', () => {
   );
 
   const leafRoots = Array.from({ length: 100 }, (_, index) =>
-    record(`leaf${index}`, { scope: 'item', scopeRoot: true })
+    record(`leaf${index}`, { scope: 'item', scopeRoot: true }),
   );
   assert.deepEqual(checkScopeCoverage(leafRoots, undefined, scope), [
     { scope: 'item', claimed: 100, total: 100 },

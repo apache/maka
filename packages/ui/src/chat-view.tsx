@@ -405,9 +405,9 @@ export function ChatView(props: {
             data-active="true"
             onClick={() => props.onOpenMemorySettings?.()}
             tooltip={copy.memoryTitle}
+            icon={<BookOpen size={12} aria-hidden="true" />}
           >
-            <BookOpen size={12} aria-hidden="true" />
-            <span>{copy.memory}</span>
+            {copy.memory}
           </Button>
         )}
         {deepResearchActive && (
@@ -434,9 +434,9 @@ export function ChatView(props: {
             data-mode="goal"
             onClick={() => props.goalIndicator?.onClear()}
             tooltip={copy.clearGoal(props.goalIndicator.condition, props.goalIndicator.iterations, props.goalIndicator.maxIterations, props.goalIndicator.status)}
+            icon={<Target size={12} aria-hidden="true" />}
           >
-            <Target size={12} aria-hidden="true" />
-            <span>{copy.goalLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}</span>
+            {copy.goalLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}
           </Button>
         )}
         {/* PR-MOVE-PERMISSION-MODE: switcher relocated into the
