@@ -627,7 +627,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
         '--no-includes',
         '--local',
         '--get-regexp',
-        '^(include\\.|includeIf\\.|extensions\\.partialClone$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
+        '^(include\\.|includeIf\\.|extensions\\.(objectFormat|partialClone)$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
       ],
       1,
     );
@@ -656,7 +656,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
               '--no-includes',
               '--worktree',
               '--get-regexp',
-              '^(include\\.|includeIf\\.|extensions\\.partialClone$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
+              '^(include\\.|includeIf\\.|extensions\\.(objectFormat|partialClone)$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
             ],
             1,
           )
@@ -1123,6 +1123,9 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
           'Incomplete managed worktree registration does not match its durable identity',
         );
       }
+      // Git cannot unlock a registration after its worktree path has been moved
+      // (notably on Windows), so unlock only after exact identity validation and
+      // immediately before quarantining the path under the global writer lock.
       if (registration.lockReason !== undefined) {
         await this.runtime.run(
           ['--git-dir', layout.repositoryPath, 'worktree', 'unlock', layout.worktreePath],
