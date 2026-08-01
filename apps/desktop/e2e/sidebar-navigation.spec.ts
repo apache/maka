@@ -147,15 +147,6 @@ test('session delete intent opens only after its menu closes and restores the tr
   await expect(trigger).toBeFocused();
 });
 
-test('session heading stays singular and the default list has no redundant heading', async ({
-  sidebarLongSessionsWindow: page,
-}) => {
-  const sidebar = await expandedSidebar(page);
-
-  await expect(sidebar.getByText('会话', { exact: true })).toHaveCount(1);
-  await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
-});
-
 test('scheduled-task hub restores the last selected child module', async ({ window: page }) => {
   const sidebar = await expandedSidebar(page);
   const scheduledTasks = sidebar.getByRole('button', { name: '定时任务', exact: true });

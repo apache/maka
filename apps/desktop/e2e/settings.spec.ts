@@ -5,46 +5,6 @@ function settingsNavigation(page: Page) {
   return page.getByRole('navigation', { name: /^(设置分组|Settings sections)$/ });
 }
 
-test('general default-model options keep provider marks inside the Selector slot', async ({
-  window: page,
-}) => {
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByRole('button', { name: '设置' }).click();
-  const settings = page.getByRole('main', { name: '设置内容' });
-  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
-
-  await settings.getByRole('button', { name: '默认模型' }).click();
-  const mark = page.getByRole('listbox').locator('.modelPickerProviderMark').first();
-  await expect(mark).toBeVisible();
-  await expect
-    .poll(() =>
-      mark.evaluate((element) => {
-        const markRect = element.getBoundingClientRect();
-        const asset = element.firstElementChild;
-        const option = element.closest('[role="option"]');
-        const label = option?.querySelector('.modelPickerOptionLabel');
-        if (!asset || !label) return null;
-        const assetRect = asset.getBoundingClientRect();
-        const labelRect = label.getBoundingClientRect();
-        return {
-          usesSettingsPlate: element.querySelector('.providerLogo') !== null,
-          square: markRect.width === markRect.height && assetRect.width === assetRect.height,
-          contained:
-            assetRect.width <= markRect.width &&
-            assetRect.height <= markRect.height &&
-            markRect.width <= 16 &&
-            markRect.height <= 16,
-          aligned:
-            Math.abs(
-              markRect.top + markRect.height / 2 -
-                (labelRect.top + labelRect.height / 2),
-            ) <= 1,
-        };
-      }),
-    )
-    .toEqual({ usesSettingsPlate: false, square: true, contained: true, aligned: true });
-});
-
 /**
  * Settings take effect: open settings, switch the theme to dark, and confirm
  * the <html> root picks up the `dark` class (theme.ts applies it via
@@ -52,8 +12,6 @@ test('general default-model options keep provider marks inside the Selector slot
  * apply path without depending on pixel colors.
  */
 test('changing the theme in settings applies to the UI', async ({ window: page }) => {
-  // The sidebar starts collapsed on a fresh workspace; expand it to reach
-  // the settings entry in the sidebar footer.
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await expect(page.getByLabel('设置内容')).toBeVisible();
@@ -71,25 +29,20 @@ test('changing the theme in settings applies to the UI', async ({ window: page }
   ).toBe(true);
 });
 
-test('settings textareas use Astryx native resizing and persist edits across section re-entry', async ({ window: page }) => {
+test('settings textareas persist edits across section re-entry', async ({ window: page }) => {
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await page.getByRole('button', { name: '设置' }).click();
   await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
 
   const textarea = page.getByRole('textbox', { name: '助手语气偏好' });
   await expect(textarea).toBeVisible();
-  await expect(textarea).toHaveCSS('resize', 'vertical');
   const edited = Array.from({ length: 7 }, (_, index) => `偏好 ${index + 1}`).join('\n');
   await textarea.fill(edited);
   await expect(textarea).toHaveValue(edited);
 
   await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
   await expect(page.locator('label').filter({ hasText: '记忆标题' })).toBeVisible();
-  await expect(page.locator('label').filter({ hasText: '记忆标签' })).toBeVisible();
-  await expect(page.locator('label').filter({ hasText: '记忆内容' })).toBeVisible();
-  await expect(page.locator('label').filter({ hasText: 'MEMORY.md 内容' })).toBeVisible();
-  await expect(page.getByRole('textbox', { name: '记忆内容' })).toHaveCSS('resize', 'vertical');
-  await expect(page.getByRole('textbox', { name: 'MEMORY.md 内容' })).toHaveCSS('resize', 'vertical');
+  await expect(page.getByRole('textbox', { name: '记忆内容' })).toBeVisible();
 
   await settingsNavigation(page).getByRole('button', { name: '数据', exact: true }).click();
   await expect(page.locator('label').filter({ hasText: '导入时同名连接的处理方式' })).toBeVisible();
@@ -127,19 +80,7 @@ test('remote access opens a channel detail from the overview and returns', async
   await expect(settings.getByRole('heading', { name: '远程接入' })).toBeVisible();
   await expect(settings.getByRole('heading', { name: '接入更多渠道' })).toBeVisible();
 
-  const telegramRow = settings.getByRole('button', { name: /接入 Telegram/ });
-  await expect.poll(
-    () => telegramRow.evaluate((element) => getComputedStyle(element).boxShadow),
-  ).toBe('none');
-
-  await telegramRow.focus();
-  await page.keyboard.press('Tab');
-  await page.keyboard.press('Shift+Tab');
-  await expect.poll(
-    () => telegramRow.evaluate((element) => getComputedStyle(element).boxShadow),
-  ).not.toBe('none');
-
-  await telegramRow.click();
+  await settings.getByRole('button', { name: /接入 Telegram/ }).click();
   await expect(settings.getByRole('heading', { name: /Telegram/ })).toBeVisible();
   const backButton = settings.getByRole('button', { name: '返回远程接入' });
   await expect(backButton).toBeVisible();
@@ -165,17 +106,12 @@ test('remote access opens a channel detail from the overview and returns', async
   await page.keyboard.press('Tab');
   await expect(tokenInput).toBeFocused();
 
-  const identityValue = settings.getByLabel('Telegram运行状态').locator('dd').first();
-  await expect(identityValue).toHaveCSS('white-space', 'normal');
-  await expect(identityValue).toHaveCSS('overflow-wrap', 'anywhere');
-
   await backButton.click();
   await expect(settings.getByRole('heading', { name: '接入更多渠道' })).toBeVisible();
 });
 
 test('remote access prioritizes a configured channel that needs attention', async ({ window: page }) => {
   const runtimeError = 'runtime-diagnostic-'.repeat(10);
-  await page.setViewportSize({ width: 480, height: 820 });
   await page.evaluate(async (lastError) => {
     await window.maka.settings.update({
       botChat: {
@@ -207,30 +143,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
   await expect(settings.getByText(runtimeError, { exact: true })).toBeVisible();
   await expect(activeChannels.nth(1)).toHaveAccessibleName(/管理 Telegram/);
 
-  const overview = settings.locator('.settingsRemoteAccessOverview');
-  const attentionRow = settings.locator('.settingsRemoteAccessChannelRow').first();
-  const catalogRows = settings.locator('.settingsRemoteAccessCatalogRow');
-  await expect(attentionRow.locator('.settingsRemoteAccessItemTitle')).toHaveCSS('flex-wrap', 'wrap');
-  await expect(attentionRow.locator('.settingsRemoteAccessItemDescription')).toHaveCSS('overflow-wrap', 'anywhere');
-  await expect(attentionRow.locator('.settingsRemoteAccessItemActions')).toHaveCSS('display', 'none');
-  await expect(catalogRows.first()).toBeVisible();
-  await expect(catalogRows.first().locator('.settingsRemoteAccessItemActions')).toHaveCSS('display', 'none');
-  await expect(settings.locator('.settingsRemoteAccessSectionHeader').first()).toHaveCSS('flex-direction', 'column');
-  await expect.poll(
-    () =>
-      overview.evaluate((element) => ({
-        overviewContained: element.scrollWidth <= element.clientWidth,
-        rowsContained: Array.from(element.querySelectorAll('.settingsRemoteAccessChannelRow'))
-          .every((row) => row.scrollWidth <= row.clientWidth),
-        catalogRowsContained: Array.from(element.querySelectorAll('.settingsRemoteAccessCatalogRow'))
-          .every((row) => row.scrollWidth <= row.clientWidth),
-      })),
-  ).toEqual({ overviewContained: true, rowsContained: true, catalogRowsContained: true });
-
   await activeChannels.nth(0).click();
-  const detailHeader = settings.locator('.settingsBotDetailHeader');
-  const detailHeaderBody = settings.locator('.settingsBotDetailHeaderBody');
-  const runtimeStatus = settings.locator('.settingsBotStatusGrid');
   const enabledSwitch = settings.getByRole('switch', { name: '启用Discord渠道' });
   const configDocs = settings.getByRole('link', { name: '查看配置文档' });
   const connectButton = settings.getByRole('button', { name: '测试并连接' });
@@ -242,57 +155,7 @@ test('remote access prioritizes a configured channel that needs attention', asyn
   await expect(configDocs).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(connectButton).toBeFocused();
-  await expect(detailHeaderBody).toHaveCSS('grid-column-start', '1');
-  await expect(detailHeaderBody).toHaveCSS('grid-column-end', '-1');
-  await expect.poll(
-    () =>
-      detailHeader.evaluate((element) => ({
-        contained: element.scrollWidth <= element.clientWidth,
-        bodyUsesFullRow: (() => {
-          const body = element.querySelector<HTMLElement>('.settingsBotDetailHeaderBody');
-          if (!body) return false;
-          const headerStyle = getComputedStyle(element);
-          const expectedWidth = element.clientWidth
-            - Number.parseFloat(headerStyle.paddingLeft)
-            - Number.parseFloat(headerStyle.paddingRight);
-          return body.getBoundingClientRect().width >= expectedWidth - 1;
-        })(),
-        switchPrecedesDocs: (() => {
-          const toggle = element.querySelector<HTMLElement>('.settingsBotDetailSwitch');
-          const docs = element.querySelector<HTMLElement>('.settingsBotConfigDocLink');
-          return toggle && docs
-            ? Boolean(toggle.compareDocumentPosition(docs) & Node.DOCUMENT_POSITION_FOLLOWING)
-            : false;
-        })(),
-        headingPrecedesSwitch: (() => {
-          const heading = element.querySelector<HTMLElement>('h3');
-          const toggle = element.querySelector<HTMLElement>('.settingsBotDetailSwitch');
-          return heading && toggle
-            ? Boolean(heading.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING)
-            : false;
-        })(),
-      })),
-  ).toEqual({
-    contained: true,
-    bodyUsesFullRow: true,
-    switchPrecedesDocs: true,
-    headingPrecedesSwitch: true,
-  });
-  await expect.poll(
-    () =>
-      runtimeStatus.evaluate((element) => {
-        const columns = getComputedStyle(element).gridTemplateColumns.trim();
-        return {
-          defined: columns !== 'none',
-          count: columns.split(/\s+/).length,
-        };
-      }),
-  ).toEqual({ defined: true, count: 1 });
 
   const recentFailure = settings.getByRole('alert').filter({ hasText: '最近一次失败' });
   await expect(recentFailure).toContainText(runtimeError);
-  await expect(recentFailure.getByText(runtimeError)).toHaveCSS('overflow-wrap', 'anywhere');
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
 });

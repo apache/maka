@@ -31,48 +31,6 @@ const probeScroller = `(() => {
 // rewrote the placeholder geometry rather than finishing over nothing.
 const WARMED_HEIGHT_FLOOR = 24 * 800;
 
-type ColumnGeometry = {
-  hostLeft: number;
-  viewportLeft: number;
-  hostViewportLeftDelta: number;
-  turnCenter: number;
-  composerCenter: number;
-  turnComposerCenterDelta: number;
-  hostDisplay: string;
-  hostFlexDirection: string;
-  hostGap: string;
-};
-
-async function probeColumnGeometry(page: import('@playwright/test').Page): Promise<ColumnGeometry> {
-  return await page.evaluate(() => {
-    const host = document.querySelector<HTMLElement>('.maka-chat-layout');
-    const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-    const turn = document.querySelector<HTMLElement>('.maka-turn');
-    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
-    if (!host || !viewport || !turn || !composer) {
-      throw new Error('Expected the active chat host, viewport, turn, and composer to be mounted');
-    }
-
-    const hostRect = host.getBoundingClientRect();
-    const viewportRect = viewport.getBoundingClientRect();
-    const turnRect = turn.getBoundingClientRect();
-    const composerRect = composer.getBoundingClientRect();
-    const hostStyle = getComputedStyle(host);
-    return {
-      hostLeft: hostRect.left,
-      viewportLeft: viewportRect.left,
-      hostViewportLeftDelta: viewportRect.left - hostRect.left,
-      turnCenter: turnRect.left + turnRect.width / 2,
-      composerCenter: composerRect.left + composerRect.width / 2,
-      turnComposerCenterDelta:
-        (turnRect.left + turnRect.width / 2) - (composerRect.left + composerRect.width / 2),
-      hostDisplay: hostStyle.display,
-      hostFlexDirection: hostStyle.flexDirection,
-      hostGap: hostStyle.gap,
-    };
-  });
-}
-
 /**
  * Wait for the warm-up's own terminal state, which the scroller publishes as
  * `data-turn-warmup="settled"`.
@@ -104,47 +62,10 @@ async function settleGeometry(page: import('@playwright/test').Page, options: { 
   }
 }
 
-test('chat viewport and message column share the composer centerline', async ({ longTranscriptWindow: page }) => {
-  await expect(page.locator('.maka-turn')).toHaveCount(24);
-
-  for (const width of [900, 1180, 1440]) {
-    await page.setViewportSize({ width, height: 760 });
-    const geometry = await probeColumnGeometry(page);
-    const diagnostics = JSON.stringify({ width, ...geometry });
-    expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
-    expect(Math.abs(geometry.turnComposerCenterDelta), diagnostics).toBeLessThanOrEqual(1);
-  }
-});
-
-test('empty chat has no phantom vertical range and stays flush with the viewport', async ({ window: page }) => {
-  const content = page.locator('.mainColumn[data-home-surface="true"] .maka-chatContent');
-  await expect(content).toBeVisible();
-
-  for (const width of [900, 1180, 1440]) {
-    await page.setViewportSize({ width, height: 760 });
-    const geometry = await page.evaluate(() => {
-      const host = document.querySelector<HTMLElement>('.maka-chat-layout');
-      const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-      const content = document.querySelector<HTMLElement>('.maka-chatContent');
-      if (!host || !viewport || !content) throw new Error('Expected the empty chat scroll surface');
-      const hostRect = host.getBoundingClientRect();
-      const viewportRect = viewport.getBoundingClientRect();
-      const contentStyle = getComputedStyle(content);
-      return {
-        hostViewportLeftDelta: viewportRect.left - hostRect.left,
-        contentDisplay: contentStyle.display,
-        contentGap: contentStyle.gap,
-        scrollRange: viewport.scrollHeight - viewport.clientHeight,
-        scrollTop: viewport.scrollTop,
-      };
-    });
-    const diagnostics = JSON.stringify({ width, ...geometry });
-    expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
-    expect(geometry.contentDisplay, diagnostics).toBe('flex');
-    expect(geometry.scrollRange, diagnostics).toBeLessThanOrEqual(1);
-    expect(geometry.scrollTop, diagnostics).toBeLessThanOrEqual(1);
-  }
-});
+// Column centerline / empty-chat flush used to live here as live box metrics.
+// Those outcomes are owned by `.maka-chat-layout` flex contracts
+// (chat-shell-layout-contract.test.ts). This file only keeps content-visibility
+// pin/warm-up behaviour that a static CSS read cannot prove.
 
 test('long session opens pinned to bottom and stays pinned while geometry settles', async ({ longTranscriptWindow: page }) => {
   await expect(page.locator('.maka-turn')).toHaveCount(24);

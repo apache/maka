@@ -123,4 +123,44 @@ describe('settings window-floor CSS contract', () => {
       'settings row cards must clip horizontal overflow of children',
     );
   });
+
+  it('keeps remote-access rows and detail headers readable at the window floor', async () => {
+    const css = await readSettingsCss('bot.css');
+
+    assert.match(
+      css,
+      /\.settingsRemoteAccessItemTitle\s*\{[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?overflow-wrap:\s*anywhere;/,
+      'channel titles must wrap status chips instead of overflowing',
+    );
+    assert.match(
+      css,
+      /\.settingsRemoteAccessItemDescription\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/,
+      'channel diagnostics must wrap unbreakable tokens',
+    );
+    assert.match(
+      css,
+      /\.settingsBotStatusGrid\s+dd\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/,
+      'runtime status values must wrap inside the grid',
+    );
+    assert.match(
+      css,
+      /@media\s*\(\s*max-width:\s*620px\s*\)\s*\{[\s\S]*?\.settingsRemoteAccessItemActions\s*\{[\s\S]*?display:\s*none;/,
+      'narrow overview must drop the redundant chevron column',
+    );
+    assert.match(
+      css,
+      /@media\s*\(\s*max-width:\s*620px\s*\)\s*\{[\s\S]*?\.settingsBotDetailHeaderBody\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/,
+      'narrow detail body must span the full header row',
+    );
+    assert.match(
+      css,
+      /@media\s*\(\s*max-width:\s*620px\s*\)\s*\{[\s\S]*?\.settingsBotStatusGrid\s*\{[\s\S]*?grid-template-columns:\s*1fr;/,
+      'narrow runtime status must collapse to one column',
+    );
+    assert.match(
+      css,
+      /@media\s*\(\s*max-width:\s*620px\s*\)\s*\{[\s\S]*?\.settingsRemoteAccessSectionHeader[\s\S]*?flex-direction:\s*column;/,
+      'narrow section headers must stack',
+    );
+  });
 });

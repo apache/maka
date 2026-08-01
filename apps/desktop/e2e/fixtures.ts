@@ -225,8 +225,6 @@ export const test = base.extend<{
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
-  zhLocaleWindow: Page;
-  enLocaleWindow: Page;
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
   planRemindersWindow: Page;
@@ -357,20 +355,6 @@ export const test = base.extend<{
   botSettingsWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: false, readinessSelector: '[aria-label="设置内容"]', e2eFixtureScenario: 'settings-bots', locale: 'zh' },
-      use,
-    );
-  },
-  // Representative e2e-fixture renderer launches in both supported locales.
-  // These use the same production LocaleProvider override path as screenshot capture.
-  zhLocaleWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.appFrame', e2eFixtureScenario: 'all', locale: 'zh' },
-      use,
-    );
-  },
-  enLocaleWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.appFrame', e2eFixtureScenario: 'all', locale: 'en' },
       use,
     );
   },
