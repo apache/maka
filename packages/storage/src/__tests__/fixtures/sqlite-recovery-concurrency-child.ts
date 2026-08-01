@@ -1,10 +1,6 @@
 import { existsSync, writeSync } from 'node:fs';
-import {
-  createRuntimeBoundaryCursor,
-  runtimePrefixSegment,
-  type RuntimeEvent,
-  type ToolRecoveryFactEnvelope,
-} from '@maka/core';
+import { type RuntimeEvent, type ToolRecoveryFactEnvelope } from '@maka/core';
+import { createRuntimeBoundaryCursor, runtimePrefixSegment } from '@maka/core/runtime-boundary';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
 
 const mode = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_MODE');

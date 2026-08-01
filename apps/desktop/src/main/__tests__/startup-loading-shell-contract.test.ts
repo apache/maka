@@ -33,3 +33,17 @@ test('index.html paints an inline preload skeleton before React mounts', () => {
   // Dark mode handled to match cached-theme-bootstrap fallback.
   assert.match(html, /@media \(prefers-color-scheme: dark\)/);
 });
+
+test('the renderer-facing core barrel does not evaluate Node-only runtime boundary code', () => {
+  const cwd = process.cwd();
+  const repoRoot = cwd.endsWith(join('apps', 'desktop')) ? join(cwd, '..', '..') : cwd;
+  const coreBarrel = readFileSync(join(repoRoot, 'packages', 'core', 'src', 'index.ts'), 'utf8');
+  const runtimeBoundary = readFileSync(
+    join(repoRoot, 'packages', 'core', 'src', 'runtime-boundary.ts'),
+    'utf8',
+  );
+
+  assert.match(runtimeBoundary, /from 'node:crypto'/);
+  assert.doesNotMatch(coreBarrel, /export\s*\{[^;]*\}\s*from '\.\/runtime-boundary\.js'/);
+  assert.match(coreBarrel, /export type\s*\{[^;]*\}\s*from '\.\/runtime-boundary\.js'/);
+});

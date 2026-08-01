@@ -6,8 +6,6 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
   canonicalToolArgsHash,
-  buildImmutableRuntimePrefix,
-  decodeContinuationClaim,
   decodeRuntimeEvent,
   encodeCanonicalRuntimeEvent,
   isPartialRuntimeEvent,
@@ -22,16 +20,20 @@ import {
   validateToolLedgerTransition,
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
-  type ContinuationClaimV1,
   type RuntimeEvent,
-  type ImmutableRuntimePrefixV1,
-  type RuntimeBoundaryDigest,
   type RuntimeContinuationAuthorityStore,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
   type ToolRecoveryDecisionFact,
   type ToolRecoveryMode,
 } from '@maka/core';
+import {
+  buildImmutableRuntimePrefix,
+  decodeContinuationClaim,
+  type ContinuationClaimV1,
+  type ImmutableRuntimePrefixV1,
+  type RuntimeBoundaryDigest,
+} from '@maka/core/runtime-boundary';
 import {
   assertToolRecoveryEventBundle,
   interpretScannedToolRecovery,

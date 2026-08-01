@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { type RuntimeEvent } from '@maka/core';
 import {
   buildImmutableRuntimePrefix,
-  type RuntimeEvent,
   type RuntimePrefixIdentityV1,
-} from '@maka/core';
+} from '@maka/core/runtime-boundary';
 import {
   buildContinuationReplayPlan,
   buildContinuationReplaySegment,
