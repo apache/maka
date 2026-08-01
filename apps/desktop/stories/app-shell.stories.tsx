@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useRef, useState, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
+import { projectRevisionLinkedSessionTree } from '@maka/core';
 import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import { ChatSurfaceLayout, ChatView, Composer, SessionListPanel } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
@@ -229,8 +230,12 @@ function ComposedShell(props: {
    * streaming state. `id` is excluded: the sidebar row, the header and the
    * composer are all located by the fixed active id, so overriding it would
    * desynchronize exactly what this projection exists to keep together.
+   *
+   * `null` means there is no active session at all — the 新任务 state, where
+   * production hands ChatView and Composer `undefined` and the composer swaps
+   * ChatModelSwitcher for NewChatModelPicker.
    */
-  session?: Omit<Partial<SessionSummary>, 'id'> & { streaming?: boolean };
+  session?: (Omit<Partial<SessionSummary>, 'id'> & { streaming?: boolean }) | null;
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
   detailChildren?: ReactNode;
@@ -252,18 +257,26 @@ function ComposedShell(props: {
     ...sidebarSessions.map((s) => (s.id === activeSession.id ? { ...s, ...sessionOverrides } : s)),
     ...(props.relatedSessions ?? []),
   ];
-  const active = sessions.find((s) => s.id === activeSession.id) ?? activeSession;
+  const active =
+    props.session === null
+      ? undefined
+      : (sessions.find((s) => s.id === activeSession.id) ?? activeSession);
   const streamingIds = new Set(
-    sessionStreaming ? ['session-running', active.id] : ['session-running'],
+    sessionStreaming && active ? ['session-running', active.id] : ['session-running'],
   );
   // Same helpers the renderer calls (app-shell.tsx). Deriving here rather than
   // letting a story pass a banner or a footer-action list keeps a story from
   // showing lineage the production rules would not produce for its sessions.
   const branchBanner = deriveBranchBanner(active, sessions);
-  const revisionNavigation = deriveSessionRevisionNavigation(sessions, active.id);
+  const revisionNavigation = deriveSessionRevisionNavigation(sessions, active?.id);
+  // The sidebar shows logical conversations, not physical revisions: production
+  // collapses each family to one row before rendering. Passing the raw list
+  // would put three rows where the app shows one.
+  const sessionTree = projectRevisionLinkedSessionTree(sessions, active?.id);
+  const sidebarRows = sessionTree.roots;
   const messages = props.chat?.messages ?? baseChatProps.messages;
   const { turnFooterActionsByTurn } = deriveAppShellTurnViewModel({
-    activeId: active.id,
+    activeId: active?.id,
     messages,
     pendingTurnActions: new Set<string>(),
     uiLocale: 'zh',
@@ -273,7 +286,7 @@ function ComposedShell(props: {
     id: `project:${item.id}`,
     label: item.name,
     project: item,
-    sessions: sessions.filter((session) => session.projectId === item.id),
+    sessions: sidebarRows.filter((session) => session.projectId === item.id),
   }));
 
   return (
@@ -314,8 +327,9 @@ function ComposedShell(props: {
             minWidth={180}
             maxWidth={480}
             selection={{ section: 'sessions', filter: 'chats' }}
-            sessions={sessions}
-            activeId={active.id}
+            sessions={sidebarRows}
+            childSessionsByParentId={sessionTree.childrenByParentId}
+            activeId={active?.id}
             groups={viewMode === 'project' ? projectGroups : undefined}
             streamingSessionIds={streamingIds}
             viewMode={viewMode}
@@ -398,14 +412,17 @@ export const StreamingTurn: Story = {
 };
 
 // Real path: the agent calls a tool that needs approval → session enters
-// waiting_for_user, composer is disabled, the permission-mode picker is
-// locked with an explanatory reason.
+// waiting_for_user and the permission-mode picker is locked with a reason.
+//
+// The composer stays usable: app-shell.tsx never passes `disabled` to
+// ChatComposerRegion, so the textarea keeps accepting input while a tool waits.
+// This story used to force disabled: true, which made a locked input look like
+// the product's answer to waiting for permission.
 export const WaitingForPermission: Story = {
   render: () => (
     <ComposedShell
       session={{ status: 'waiting_for_user', blockedReason: 'permission_required' }}
       composer={{
-        disabled: true,
         permissionModeDisabledReason: '当前有工具调用正在等待确认，处理后再切换权限模式。',
       }}
     />
@@ -421,14 +438,30 @@ export const WaitingForPermission: Story = {
 // presenting one of them as the empty home makes every comparison against this
 // story wrong.
 //
-// Scope: the chat surface, not the whole shell. ComposedShell always projects
-// one active session across the sidebar, header and composer so those three
-// cannot disagree, so what this story shows is the empty chat WITH history
-// present. The zero-session shell differs only in the sidebar; a story for it
-// would mean making the active session optional throughout ComposedShell, and
-// nothing renders differently in the detail pane.
+// Scope: an EXISTING session with no messages yet. Opening 新任务 is the other
+// half and it is not the same screen — see NewChatComposer below — so this
+// story is the one where the composer still binds to a session.
 export const EmptyHome: Story = {
   render: () => <ComposedShell chat={{ messages: [] }} />,
+};
+
+// Real path: 新任务 → no session exists yet. The composer swaps
+// ChatModelSwitcher for NewChatModelPicker and drops the thinking selector,
+// because both are keyed on an active session (composer.tsx). That branch has
+// no other story, so without this one nothing renders the picker a user meets
+// before their first send.
+export const NewChatComposer: Story = {
+  render: () => (
+    <ComposedShell
+      session={null}
+      chat={{ messages: [] }}
+      composer={{
+        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        onPickNewChatModel: noop,
+        onOpenModelSettings: noop,
+      }}
+    />
+  ),
 };
 
 const longConversation: StoredMessage[] = [
@@ -591,6 +624,32 @@ export const NativeConversation: Story = {
 // The relatives that make the active session a branch AND revision 2 of 3.
 // ComposedShell feeds them to the production derive helpers, so the banner and
 // the revision counter appear only if the real rules still produce them.
+//
+// The shape follows what `reviseBeforeTurn` actually writes: the root keeps no
+// revision fields and each revision gets all five, which is also what the store
+// enforces — `isValidRevisionLineage` accepts the five together or not at all,
+// and rejects any index below 2. Revising a branched session keeps its
+// parentSessionId, so branch and revision lineage coexist by design.
+const REVISION_ROOT_ID = 'session-active-v1';
+
+function revision(input: {
+  id: string;
+  name: string;
+  parentRevisionId: string;
+  index: number;
+}): SessionSummary {
+  return {
+    ...makeSession({ id: input.id, name: input.name }),
+    parentSessionId: 'session-parent',
+    branchOfTurnId: 'turn-1',
+    revisionRootSessionId: REVISION_ROOT_ID,
+    revisionParentSessionId: input.parentRevisionId,
+    revisionOfTurnId: 'turn-1',
+    revisionIndex: input.index,
+    revisionState: 'committed',
+  };
+}
+
 const LINEAGE_SESSIONS: SessionSummary[] = [
   makeSession({
     id: 'session-parent',
@@ -598,15 +657,16 @@ const LINEAGE_SESSIONS: SessionSummary[] = [
     lastMessageAt: NOW - 90 * 60_000,
   }),
   {
-    ...makeSession({ id: 'session-active-revision-1', name: 'Session Context Layer 收敛（初版）' }),
-    revisionRootSessionId: 'session-active',
-    revisionIndex: 1,
+    ...makeSession({ id: REVISION_ROOT_ID, name: 'Session Context Layer 收敛（初版）' }),
+    parentSessionId: 'session-parent',
+    branchOfTurnId: 'turn-1',
   },
-  {
-    ...makeSession({ id: 'session-active-revision-3', name: 'Session Context Layer 收敛（第三版）' }),
-    revisionRootSessionId: 'session-active',
-    revisionIndex: 3,
-  },
+  revision({
+    id: 'session-active-v3',
+    name: 'Session Context Layer 收敛（第三版）',
+    parentRevisionId: 'session-active',
+    index: 3,
+  }),
 ];
 
 // Real path: open a derived revision that is running an autonomous goal with
@@ -628,8 +688,11 @@ export const SessionContextLayer: Story = {
         labels: ['mode:deep_research'],
         parentSessionId: 'session-parent',
         branchOfTurnId: 'turn-1',
-        revisionRootSessionId: 'session-active',
+        revisionRootSessionId: REVISION_ROOT_ID,
+        revisionParentSessionId: REVISION_ROOT_ID,
+        revisionOfTurnId: 'turn-1',
         revisionIndex: 2,
+        revisionState: 'committed',
       }}
       chat={{
         memoryActive: true,

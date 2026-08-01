@@ -10,12 +10,16 @@ const PRODUCT_VIEWPORTS = Object.freeze({
   floor: Object.freeze({ width: 480, height: 900 }),
 });
 
+// A surface listed here cannot be switched off by deleting its manifest entry:
+// the validator fails instead. Without that, a guard is only as durable as the
+// line that opts into it.
 const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'settings',
   'skills',
   'mcp',
   'planReminders',
   'dailyReview',
+  'sessionContext',
 ]);
 
 const PRODUCT_CHECKS = new Set(['plan-reminder-row', 'session-context-layer']);
@@ -245,11 +249,42 @@ async function smokeStory(page, baseUrl, job, options = {}) {
           if (!layer) {
             failures.push('session context layer is missing');
           } else {
-            if (!layer.querySelector('.maka-session-context__breadcrumbs')) {
+            const isVisible = (element) => {
+              if (!element) return false;
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden'
+              );
+            };
+            // OverflowList keeps a hidden measurement copy of every item, so
+            // ask whether ANY copy is visible — querySelector alone would read
+            // the measurement clone and report a rendered item as missing.
+            const anyVisible = (selector) => [...layer.querySelectorAll(selector)].some(isVisible);
+
+            if (!anyVisible('.maka-session-context__breadcrumbs')) {
               failures.push('branch breadcrumbs are missing — deriveBranchBanner returned nothing');
             }
-            if (!layer.querySelector('.maka-session-context__revision')) {
-              failures.push('revision navigation is missing — the revision family did not resolve');
+            // Goal, memory and the revision counter share that OverflowList, so
+            // a narrow viewport is allowed to move them into the MoreMenu — but
+            // not to drop them. Absent from both places means the state the
+            // manifest names is not on screen at all.
+            const inOverflowMenu = anyVisible(
+              '[data-slot="more-menu"], .astryx-more-menu, button[aria-haspopup="menu"]',
+            );
+            for (const [selector, label] of [
+              ['.maka-session-context__revision', 'revision navigation'],
+              ['.maka-session-context__goal', 'goal indicator'],
+            ]) {
+              if (!anyVisible(selector) && !inOverflowMenu) {
+                failures.push(`${label} is neither visible nor collapsed into the overflow menu`);
+              }
+            }
+            if (!anyVisible('.maka-session-context__cluster')) {
+              failures.push('session context cluster rendered no items');
             }
             if (layer.scrollWidth > layer.clientWidth + 1) {
               failures.push(
@@ -312,6 +347,18 @@ async function smokeStory(page, baseUrl, job, options = {}) {
                 );
               }
             }
+          }
+          // The margin loop above runs zero times if countdowns stop rendering,
+          // which would make the spacing contract pass by vacancy. Rows with a
+          // scheduled next run are exactly the ones that must show one.
+          const scheduledRows = rows.filter((row) => row.querySelector('.maka-plan-card-schedule'));
+          if (
+            scheduledRows.length > 0 &&
+            !rows.some((row) => row.querySelector('.maka-plan-card-countdown'))
+          ) {
+            failures.push(
+              'no plan reminder row rendered a countdown, so its spacing went unchecked',
+            );
           }
           if (document.documentElement.clientWidth >= 1100 && rows[0]) {
             const columns = getComputedStyle(rows[0])

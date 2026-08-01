@@ -27,6 +27,18 @@ export const Sneaky = { render: () => null };
   assert.match(problems[0], /Sneaky is not `export const <Name>: Story = …`/);
 });
 
+// TSX allows the break after `export`, so a line-based scanner sees no export
+// on either line. This shape used to slip through unannotated while the check
+// reported that every story names its path.
+test('an export broken across lines is reported, not skipped', () => {
+  const problems = problemsFor(`${PRODUCT_META}
+export
+const Sneaky: Story = { render: () => null };
+`);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /is not `export const <Name>: Story = …`/);
+});
+
 test('an empty `// Real path:` is not an annotation', () => {
   const problems = problemsFor(`${PRODUCT_META}
 // Real path:

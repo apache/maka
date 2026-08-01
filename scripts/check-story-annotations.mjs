@@ -36,9 +36,15 @@ const EXEMPT_TITLE_PREFIXES = ['Primitives/', 'Design System/'];
 // `export async function` too: anything it matches and STORY_EXPORT does not
 // is reported rather than waved through. Widening STORY_EXPORT is a deliberate
 // edit here.
+// The leading `^export\s*$` alternative matters: TSX accepts a line break
+// straight after `export`, and a line-based scanner sees neither a keyword on
+// the `export` line nor an export on the `const` line — so a story in that
+// shape used to pass unread while the check reported success. It is reported
+// as unclassifiable rather than parsed, which is the fail-closed half of the
+// contract above.
 const STORY_EXPORT = /^export const ([A-Za-z0-9_]+): Story =(?:\s|$)/;
 const ANY_EXPORT =
-  /^export (?:default |async )?(?:const|function|let|var|class|\{)\s*([A-Za-z0-9_]+)?/;
+  /^export\s*$|^export (?:default |async )?(?:const|function|let|var|class|\{)\s*([A-Za-z0-9_]+)?/;
 // Anchored at `const meta`, not the first `title:` in the file: a fixture
 // literal carrying its own `title` would otherwise decide the whole file's
 // namespace — including exempting it outright with `Design System/…`.

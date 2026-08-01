@@ -11,24 +11,25 @@ const meta = {
   parameters: {
     layout: 'fullscreen',
   },
-  // The production slot is `display: contents` and the prompt caps itself at
-  // `--maka-chat-measure`, so the only thing the frame owes it is a full-height
-  // canvas pinning it to the composer's position at the bottom of the chat
-  // column. A narrower column is a viewport, not a second story — the smoke
-  // manifest renders this one at compact and floor.
+  // The prompt's root carries the `composer` class, and `.mainColumn` zeroes
+  // that class's top padding in production. Without that ancestor the story
+  // would render the prompt var(--space-2) lower than the app does, so the
+  // frame reproduces the two wrappers the renderer puts around the composer
+  // slot rather than approximating them with a bare canvas.
+  //
+  // A narrower column is a viewport, not a second story — the smoke manifest
+  // renders this one at compact and floor.
   decorators: [
     (Story) => (
       <div
-        style={{
-          minHeight: '100vh',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'flex-end',
-          padding: 'var(--space-6) 0',
-          background: 'var(--surface-canvas)',
-        }}
+        className="maka-panel maka-panel-detail"
+        style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
       >
-        <Story />
+        <div className="maka-detail-with-artifacts">
+          <div className="mainColumn" style={{ justifyContent: 'flex-end' }}>
+            <Story />
+          </div>
+        </div>
       </div>
     ),
   ],
