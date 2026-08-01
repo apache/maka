@@ -68,20 +68,20 @@ describe('BotRegistry', () => {
     );
   });
 
-  test('queues overlapping applySettings calls so the newest settings win deterministically', async () => {
+  test('keeps the newest settings when overlapping updates disable and re-enable a bot', async () => {
     const registry = new BotRegistry({
       onIncomingMessage: () => {},
       onStatusChange: () => {},
     });
 
     await Promise.all([
-      registry.applySettings(settingsWith({ wecom: { enabled: true } })),
-      registry.applySettings(settingsWith({ wecom: { enabled: true } })),
-      registry.applySettings(settingsWith({ wecom: { enabled: false } })),
+      registry.applySettings(settingsWith({ wecom: { enabled: true, token: 'old-token' } })),
+      registry.applySettings(settingsWith({ wecom: { enabled: false, token: 'old-token' } })),
+      registry.applySettings(settingsWith({ wecom: { enabled: true, token: 'new-token' } })),
     ]);
 
     assert.equal(registry.getStatus('wecom').running, false);
-    assert.equal(registry.getStatus('wecom').reason, 'disabled');
+    assert.equal(registry.getStatus('wecom').reason, 'no-credentials');
     assert.equal(registry.getStatus('wecom').readiness, 'scaffolded');
   });
 
