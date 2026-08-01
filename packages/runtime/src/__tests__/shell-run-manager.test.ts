@@ -212,6 +212,31 @@ describe('ShellRunProcessManager', () => {
     );
   });
 
+  test('persists completion notification through a real background process lifecycle', async () => {
+    const updates: ShellRunUpdate[] = [];
+    const store = createLegacyShellRunStoreForTest(await workspace());
+    const manager = createManager(store, (update) => updates.push(update));
+    const initial = await manager.runBackgroundBash(
+      shellInput({
+        cwd: await workspace(),
+        command: 'unknown-duration-task',
+        argv: [process.execPath, '-e', 'setTimeout(() => process.stdout.write("done"), 50)'],
+        notifyOnComplete: true,
+      }),
+    );
+
+    assert.equal(initial.kind, 'shell_run');
+    assert.equal(initial.notifyOnComplete, true);
+    assert.equal((await store.readShellRun('session-1', 'shell-run-1')).notifyOnComplete, true);
+
+    await waitUntil(() => updates.some((update) => update.result.status === 'completed'));
+    const terminal = updates.find((update) => update.result.status === 'completed')?.result;
+    assert.equal(terminal?.notifyOnComplete, true);
+    assert.equal(terminal?.output?.mode, 'pipes');
+    if (terminal?.output?.mode !== 'pipes') throw new Error('expected terminal pipe output');
+    assert.equal(terminal.output.stdout, 'done');
+  });
+
   test('notifies resource owners when foreground and background commands reach terminal state', async () => {
     const store = createSqliteShellRunStore(await workspace());
     const manager = createManager(store);
@@ -2315,6 +2340,7 @@ function shellInput(input: {
   fdInputs?: readonly { fd: number; data: Uint8Array }[];
   pty?: boolean;
   timeoutMs?: number;
+  notifyOnComplete?: boolean;
   abortSignal?: AbortSignal;
   emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
@@ -2333,6 +2359,7 @@ function shellInput(input: {
     ...(input.fdInputs !== undefined ? { fdInputs: input.fdInputs } : {}),
     ...(input.pty !== undefined ? { pty: input.pty } : {}),
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    ...(input.notifyOnComplete === true ? { notifyOnComplete: true as const } : {}),
     ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
     ...(input.shell !== undefined ? { shell: input.shell } : {}),
     ...(input.onCompletion !== undefined ? { onCompletion: input.onCompletion } : {}),

@@ -881,6 +881,7 @@ export class ShellRunProcessManager
       startedAt,
       updatedAt: startedAt,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(input.notifyOnComplete === true ? { notifyOnComplete: true as const } : {}),
       ...(input.sandboxType
         ? {
             sandboxExecution: {
