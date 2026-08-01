@@ -1,5 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
+import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { AlertOctagon, Ban, Check, Copy, GitBranch, Info, Loader2, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -10,13 +9,13 @@ import {
   Button as UiButton,
   ChatMessage,
   ChatMessageBubble,
+  ChatMessageMetadata,
   IconButton as UiIconButton,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Dialog } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { cn } from './ui.js';
 import type { AttachmentRef, ProviderRetryEvent, QuoteRef } from '@maka/core';
 import type { TurnTimelineItem, TurnViewModel } from './materialize.js';
 import { foldTimeline, type FoldedTimelineChild } from './timeline-fold.js';
@@ -66,8 +65,8 @@ export type ReadAttachmentBytes = (
  * - `assistant` / `system` (and anything else) flow through the markdown
  *   renderer so code fences, lists, tables, and links display natively.
  *
- * Assistant messages get a hover Copy button that yanks the raw markdown
- * source to the clipboard.
+ * Assistant answer actions (copy / regenerate / branch) live on
+ * ChatMessageMetadata, matching Astryx's message composition pattern.
  *
  * Memoized because chat scroll re-renders the whole list on every streaming
  * delta; this keeps already-final bubbles from re-parsing markdown.
@@ -150,49 +149,15 @@ const MessageBody = memo(function MessageBody(props: {
     const editActionLabel = props.editDisabled
       ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
       : copyText.editMessage;
-    // User turn: the message sits in a tinted, width-capped block aligned to
-    // the right (so the right-anchor reads even for long messages), with an
-    // absolute HH:mm time + a copy affordance in a meta row beneath it. #642:
-    // the whole meta row is hover-gated on the user bubble (`group/usermsg`) —
-    // hidden at rest, revealed on hover / focus-within, matching the assistant
-    // footer's hover reveal. Copy reuses MessageCopyButton in `footerStyle`, so
-    // it's the same quiet ghost action as the assistant turn footer's copy
-    // (same primitive + `markerVariants('footer-action')`).
-    return (
-      <>
-        <ChatMessageBubble className="maka-chat-message-bubble maka-chat-message-bubble-user">
-          <span>{props.text}</span>
-          {props.quotes && props.quotes.length > 0 ? (
-            <div className="maka-user-quotes flex flex-wrap items-start gap-1 mt-1">
-              {props.quotes.map((quote, index) => (
-                <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
-              ))}
-            </div>
-          ) : null}
-          {props.attachments && props.attachments.length > 0 ? (
-            <div className="maka-user-attachments flex flex-wrap gap-1.5 mt-2">
-              {props.attachments.map((attachment, index) => (
-                attachment.kind === 'image' ? (
-                  <AttachmentImage key={`${attachment.name}-${index}`} attachment={attachment} onReadAttachmentBytes={props.onReadAttachmentBytes} />
-                ) : (
-                  <AttachmentFileCard
-                    key={`${attachment.name}-${index}`}
-                    name={attachment.name}
-                    kind={attachment.kind}
-                    size={attachment.bytes}
-                  />
-                )
-              ))}
-            </div>
-          ) : null}
-        </ChatMessageBubble>
-        {/* #642: the whole meta row — absolute HH:mm time + copy — hides by
-            default and appears when the user bubble is hovered or keyboard
-            focus lands inside (keys off `group/usermsg` on the user ChatMessage).
-            Absolute wall-clock time (not relative "N 小时前"); the full date
-            stays on the time's `title` and the bubble's own `title`. */}
-        <div className="maka-message-meta opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/usermsg:opacity-100 focus-within:opacity-100">
-          {props.ts !== undefined && (
+    // User turn: Astryx ChatMessageBubble + ChatMessageMetadata. Absolute
+    // HH:mm time sits in `timestamp`; copy / edit sit in `footer`. #642 keeps
+    // the whole metadata row hover-gated on `group/usermsg` (product
+    // interaction — Astryx does not forbid it).
+    const userMetadata = (
+      <ChatMessageMetadata
+        className="maka-message-meta opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/usermsg:opacity-100 focus-within:opacity-100"
+        timestamp={
+          props.ts !== undefined ? (
             <small
               className="maka-message-time-inline tabular-nums"
               aria-hidden="true"
@@ -200,32 +165,67 @@ const MessageBody = memo(function MessageBody(props: {
             >
               {formatClockTime(props.ts, locale)}
             </small>
-          )}
-          <MessageCopyButton text={props.text} footerStyle />
-          {props.onEditUserMessage && (
-            <Tooltip content={editActionLabel}>
-              <UiIconButton
-                label={editActionLabel}
-                icon={<Pencil size={12} aria-hidden="true" />}
-                variant="ghost"
-                size="sm"
-                className={markerVariants({ variant: 'footer-action' })}
-                aria-disabled={props.editDisabled === true ? 'true' : undefined}
-                data-action="edit"
-                onClick={() => {
-                  if (props.editDisabled) return;
-                  props.onEditUserMessage?.();
-                }}
-              />
-            </Tooltip>
-          )}
-        </div>
-      </>
+          ) : undefined
+        }
+        footer={
+          <>
+            <MessageCopyButton text={props.text} />
+            {props.onEditUserMessage ? (
+              <Tooltip content={editActionLabel}>
+                <UiIconButton
+                  label={editActionLabel}
+                  icon={<Pencil size={12} aria-hidden="true" />}
+                  variant="ghost"
+                  size="sm"
+                  className={markerVariants({ variant: 'footer-action' })}
+                  aria-disabled={props.editDisabled === true ? 'true' : undefined}
+                  data-action="edit"
+                  onClick={() => {
+                    if (props.editDisabled) return;
+                    props.onEditUserMessage?.();
+                  }}
+                />
+              </Tooltip>
+            ) : null}
+          </>
+        }
+      />
+    );
+    return (
+      <ChatMessageBubble
+        className="maka-chat-message-bubble maka-chat-message-bubble-user"
+        metadata={userMetadata}
+      >
+        <span>{props.text}</span>
+        {props.quotes && props.quotes.length > 0 ? (
+          <div className="maka-user-quotes flex flex-wrap items-start gap-1 mt-1">
+            {props.quotes.map((quote, index) => (
+              <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
+            ))}
+          </div>
+        ) : null}
+        {props.attachments && props.attachments.length > 0 ? (
+          <div className="maka-user-attachments flex flex-wrap gap-1.5 mt-2">
+            {props.attachments.map((attachment, index) => (
+              attachment.kind === 'image' ? (
+                <AttachmentImage key={`${attachment.name}-${index}`} attachment={attachment} onReadAttachmentBytes={props.onReadAttachmentBytes} />
+              ) : (
+                <AttachmentFileCard
+                  key={`${attachment.name}-${index}`}
+                  name={attachment.name}
+                  kind={attachment.kind}
+                  size={attachment.bytes}
+                />
+              )
+            ))}
+          </div>
+        ) : null}
+      </ChatMessageBubble>
     );
   }
-  // Assistant / system body: open prose, no bubble. Per-turn meta (model ·
-  // duration · cost) lives in the footer's info tooltip; copy + the other
-  // actions live in the turn footer.
+  // Assistant / system body: ghost bubble (open prose). Per-turn meta (model ·
+  // duration · cost) lives in the ChatMessageMetadata info tooltip; copy + the
+  // other actions live in that same metadata footer.
   return (
     <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-with-actions">
       <Markdown text={props.text} />
@@ -233,7 +233,8 @@ const MessageBody = memo(function MessageBody(props: {
   );
 });
 
-function MessageCopyButton(props: { text: string; label?: string; footerStyle?: boolean }) {
+/** Icon-only copy for ChatMessageMetadata footers (user + assistant). */
+function MessageCopyButton(props: { text: string }) {
   const copyText = getConversationCopy(useUiLocale()).messages;
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
   const copyPhase = copyFeedback.phaseFor('message');
@@ -244,15 +245,7 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
     await copyFeedback.copy('message', props.text);
   }
 
-  // `footerStyle` renders this copy through the same semantic footer-action
-  // seam as the assistant turn footer.
-  // The user-message copy and the assistant copy then read as one button by
-  // construction — same seam, same class, same icon metrics — instead
-  // of a look-alike bespoke treatment.
-  const footer = props.footerStyle === true;
-  const iconSize = footer ? 12 : 14;
-
-  const baseLabel = props.label ?? (footer ? copyText.copy : copyText.copyMessage);
+  const baseLabel = copyText.copy;
   const actionLabel = copyPhase === 'pending'
     ? copyText.copying
     : copyPhase === 'copied'
@@ -261,47 +254,25 @@ function MessageCopyButton(props: { text: string; label?: string; footerStyle?: 
         ? copyText.copyFailed
         : baseLabel;
   const icon = copied
-    ? <Check size={iconSize} aria-hidden="true" />
-    : <Copy size={iconSize} aria-hidden="true" />;
-
-  if (footer) {
-    // icon-only + tooltip, matching the assistant footer copy action (#546)
-    // so the user-message copy and the assistant copy read as one button.
-    return (
-      <Tooltip content={actionLabel}>
-        <UiIconButton
-          label={baseLabel}
-          icon={icon}
-          variant="ghost"
-          size="sm"
-          className={markerVariants({ variant: 'footer-action' })}
-          aria-busy={copyPending ? 'true' : undefined}
-          isDisabled={copyPending}
-          data-copied={copied}
-          data-copy-feedback={copyPhase ?? undefined}
-          data-pending={copyPending ? 'true' : undefined}
-          onClick={() => void copy()}
-        />
-      </Tooltip>
-    );
-  }
+    ? <Check size={12} aria-hidden="true" />
+    : <Copy size={12} aria-hidden="true" />;
 
   return (
-    <BaseButton
-      type="button"
-      className="maka-message-copy"
-      onClick={() => void copy()}
-      aria-label={copyPhase ? `${actionLabel} · ${baseLabel}` : baseLabel}
-      aria-busy={copyPending ? 'true' : undefined}
-      disabled={copyPending}
-      data-copied={copied}
-      data-copy-feedback={copyPhase ?? undefined}
-      data-pending={copyPending ? 'true' : undefined}
-      data-labelled={props.label ? 'true' : undefined}
-    >
-      {icon}
-      {props.label && <span>{copyPhase === 'pending' ? `${copyText.copying}…` : copyPhase === 'failed' ? copyText.copyFailed : copied ? copyText.copied : props.label}</span>}
-    </BaseButton>
+    <Tooltip content={actionLabel}>
+      <UiIconButton
+        label={baseLabel}
+        icon={icon}
+        variant="ghost"
+        size="sm"
+        className={markerVariants({ variant: 'footer-action' })}
+        aria-busy={copyPending ? 'true' : undefined}
+        isDisabled={copyPending}
+        data-copied={copied}
+        data-copy-feedback={copyPhase ?? undefined}
+        data-pending={copyPending ? 'true' : undefined}
+        onClick={() => void copy()}
+      />
+    </Tooltip>
   );
 }
 
@@ -627,16 +598,17 @@ export const TurnView = memo(function TurnView(props: {
 });
 
 /**
- * Turn footer actions row. Renders icon-only buttons (regenerate /
- * branch / copy, plus an optional info action whose tooltip carries
- * the turn meta) driven by the pure helper's enabled matrix. Disabled
- * buttons stay rendered so the user can see what actions exist on the
- * turn; click handlers no-op when disabled (#546: retry merged into
- * regenerate).
+ * Assistant ChatMessageMetadata footer. Renders icon-only buttons
+ * (regenerate / branch / copy, plus an optional info action whose tooltip
+ * carries the turn meta) driven by the pure helper's enabled matrix.
+ * Disabled buttons stay rendered so the user can see what actions exist;
+ * click handlers no-op when disabled (#546: retry merged into regenerate).
  *
- * Copy action is handled locally (write to clipboard) so the
- * consumer doesn't need a clipboard IPC for it. Other actions
- * (regenerate / branch) bubble up via `onAction`.
+ * Structure matches Astryx: actions live in ChatMessageMetadata.footer.
+ * #642 hover-gate (opacity via Marker `footer` variant) is product
+ * interaction layered on that slot.
+ *
+ * Copy is handled locally (clipboard). Other actions bubble via `onAction`.
  */
 export interface TurnFooterActionMeta {
   id: 'regenerate' | 'branch' | 'copy' | 'info';
@@ -727,57 +699,60 @@ function TurnFooterActions(props: {
     props.onAction?.(action.id);
   }
   return (
-    <Marker
-      variant="footer"
+    <ChatMessageMetadata
+      className={markerVariants({ variant: 'footer' })}
       role="toolbar"
       aria-label={copy.answerActionsAriaLabel}
-    >
-      {props.actions.map((action) => {
-        // Per @kenji review: pending state must keep the original button
-        // label visible (not a spinner-only) so screen readers can hear
-        // which action is processing. `data-pending` + `aria-busy="true"`
-        // are the signals — the `footer-action` marker shell renders as a
-        // bare `quiet` button in every state, so pending never keys off the
-        // Button `variant`, and no presentation-priority hook is emitted.
-        const isPending = action.tooltip === copy.processing;
-        const isCopyAction = action.id === 'copy';
-        const copyIsPending = isCopyAction && copyPhase === 'pending';
-        const copyFeedbackLabel = copyPhase === 'pending'
-          ? `${copy.copying}…`
-          : copyPhase === 'copied'
-            ? copy.copied
-            : copyPhase === 'failed'
-              ? copy.copyFailed
-              : action.label;
-        const isActionPending = isPending || copyIsPending;
-        // Copy's tooltip comes from the helper (enabled affordance vs disabled
-        // reason). Only while clipboard feedback is active do we surface that
-        // transient state; otherwise the helper's tooltip wins.
-        const tooltipText = isCopyAction
-          ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
-          : (action.tooltip ?? action.label);
-        const icon = isCopyAction && copyPhase === 'copied'
-          ? <Check size={12} aria-hidden="true" />
-          : STATUS_FOOTER_ICON[action.id];
-        return (
-          <Tooltip key={action.id} content={tooltipText}>
-            <UiIconButton
-              label={action.label}
-              icon={icon}
-              variant="ghost"
-              size="sm"
-              className={markerVariants({ variant: 'footer-action' })}
-              data-action={action.id}
-              data-pending={isActionPending || undefined}
-              data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-              aria-disabled={!action.enabled || copyIsPending}
-              aria-busy={isActionPending || undefined}
-              onClick={() => void handleClick(action)}
-            />
-          </Tooltip>
-        );
-      })}
-    </Marker>
+      footer={
+        <>
+          {props.actions.map((action) => {
+            // Per @kenji review: pending state must keep the original button
+            // label visible (not a spinner-only) so screen readers can hear
+            // which action is processing. `data-pending` + `aria-busy="true"`
+            // are the signals — the `footer-action` marker shell renders as a
+            // bare `quiet` button in every state, so pending never keys off the
+            // Button `variant`, and no presentation-priority hook is emitted.
+            const isPending = action.tooltip === copy.processing;
+            const isCopyAction = action.id === 'copy';
+            const copyIsPending = isCopyAction && copyPhase === 'pending';
+            const copyFeedbackLabel = copyPhase === 'pending'
+              ? `${copy.copying}…`
+              : copyPhase === 'copied'
+                ? copy.copied
+                : copyPhase === 'failed'
+                  ? copy.copyFailed
+                  : action.label;
+            const isActionPending = isPending || copyIsPending;
+            // Copy's tooltip comes from the helper (enabled affordance vs disabled
+            // reason). Only while clipboard feedback is active do we surface that
+            // transient state; otherwise the helper's tooltip wins.
+            const tooltipText = isCopyAction
+              ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
+              : (action.tooltip ?? action.label);
+            const icon = isCopyAction && copyPhase === 'copied'
+              ? <Check size={12} aria-hidden="true" />
+              : STATUS_FOOTER_ICON[action.id];
+            return (
+              <Tooltip key={action.id} content={tooltipText}>
+                <UiIconButton
+                  label={action.label}
+                  icon={icon}
+                  variant="ghost"
+                  size="sm"
+                  className={markerVariants({ variant: 'footer-action' })}
+                  data-action={action.id}
+                  data-pending={isActionPending || undefined}
+                  data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
+                  aria-disabled={!action.enabled || copyIsPending}
+                  aria-busy={isActionPending || undefined}
+                  onClick={() => void handleClick(action)}
+                />
+              </Tooltip>
+            );
+          })}
+        </>
+      }
+    />
   );
 }
 
@@ -982,46 +957,32 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
 }
 
 /**
- * "深度思考" uses Astryx's official ChatReasoning directly. Astryx owns the
- * disclosure geometry, keyboard behavior, streaming shimmer, collapsed preview,
- * and expanded prose. Maka owns only its product data and capabilities: stream
- * pacing, redaction/capping before render, and clipboard feedback.
+ * "深度思考" is Astryx ChatReasoning only — no product chrome around it.
+ * Astryx owns disclosure geometry, keyboard, streaming shimmer, collapsed
+ * preview, and expanded prose. Maka owns only data prep: stream pacing,
+ * redaction/capping, and the localized label (incl. truncation notice).
  *
  * `props.text` is the already-redacted-and-capped buffer (C0 chokepoint);
  * `prepareSmoothStreamText` re-runs `redactSecrets` (idempotent) as
- * defense-in-depth so the smoother never sees a raw secret. A truncated buffer
- * is announced in the official label instead of adding parallel visual chrome.
+ * defense-in-depth so the smoother never sees a raw secret.
  */
 function DeepThinking(props: { text: string; live: boolean; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const snap = useStreamSnap();
   const safeText = prepareSmoothStreamText(props.text);
   const { displayed } = useSmoothStreamContent(safeText, { streaming: props.live, snap });
-  const [open, setOpen] = useState(false);
   const visibleText = props.live ? displayed : safeText;
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
-    <div
-      className="group/reasoning flex min-w-0 w-full flex-col"
-      data-slot="reasoning-disclosure"
+    <ChatReasoning
+      className="min-w-0"
+      label={label}
+      isStreaming={props.live}
+      title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
       data-deep-thinking={props.live ? 'live' : undefined}
     >
-      <ChatReasoning
-        className="min-w-0"
-        label={label}
-        isStreaming={props.live}
-        isExpanded={open}
-        onExpandedChange={setOpen}
-        title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
-      >
-        {visibleText}
-      </ChatReasoning>
-      {open && !props.live ? (
-        <div className="flex justify-end opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/reasoning:opacity-100 focus-within:opacity-100">
-          <MessageCopyButton text={safeText} label={copy.copyThinking} footerStyle />
-        </div>
-      ) : null}
-    </div>
+      {visibleText}
+    </ChatReasoning>
   );
 }
 

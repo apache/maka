@@ -74,6 +74,33 @@ describe('deep-thinking disclosure', () => {
     assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
     assert.match(markup, /private reasoning/);
     assert.doesNotMatch(markup, /data-slot="reasoning-trigger"/);
+    // No Maka product chrome around reasoning (no secondary copy button).
+    assert.doesNotMatch(markup, /复制思考过程/);
+    assert.doesNotMatch(markup, /data-slot="reasoning-disclosure"/);
+  });
+
+  it('places assistant actions on ChatMessageMetadata, not a product Marker footer shell', () => {
+    const markup = renderToStaticMarkup(createElement(TurnView, {
+      turn: {
+        turnId: 'footer-turn',
+        status: 'completed',
+        partialOutputRetained: false,
+        tools: [],
+        notes: [],
+        timeline: [{ kind: 'text', text: 'answer body', messageId: 'a1', ts: 1 }],
+        startedAt: 1,
+        assistant: { id: 'a1', role: 'assistant', text: 'answer body', ts: 1 },
+      },
+      footerActions: [
+        { id: 'copy', label: '复制', enabled: true },
+        { id: 'regenerate', label: '重新生成', enabled: true },
+      ],
+    }));
+
+    assert.match(markup, /astryx-chat-message-metadata|chat-message-metadata/);
+    assert.match(markup, /data-action="copy"/);
+    assert.match(markup, /data-action="regenerate"/);
+    assert.doesNotMatch(markup, /data-variant="footer"/);
   });
 
   it('keeps redaction and truncation product behavior outside the Astryx disclosure', () => {
