@@ -37,6 +37,7 @@ import {
   type BuildBuiltinToolsOptions,
   type MakaTool,
   type ProxiedFetchProxy,
+  type ProxiedFetchTransport,
   type RuntimeCommitSink,
   type ScannedSkill,
   type SkillCatalogBudgetOptions,
@@ -200,12 +201,20 @@ export interface HostAiSdkBackendInput {
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
+  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const target = await readDuringBackendCreation(
-    () => resolveExecutionTarget(input.context.header, input.runtimePolicy, input.oauthCredentials),
+    () =>
+      resolveExecutionTarget(
+        input.context.header,
+        input.runtimePolicy,
+        input.oauthCredentials,
+        createFetchTransport,
+      ),
     input.context.abortSignal,
   );
   const pricingSnapshot = await readDuringBackendCreation(
@@ -213,16 +222,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     input.context.abortSignal,
   );
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
-  const transport = createProxiedFetchTransport(
-    toProxySettings(target.networkProxy, target.proxySecret),
-  );
+  const transport = createFetchTransport(toProxySettings(target.networkProxy, target.proxySecret));
   let apiKey = target.apiKey;
   let modelFetch: typeof fetch = transport.fetch;
   const oauthBinding = target.oauthBinding;
   if (oauthBinding) {
     try {
       const initialOAuthTokens = await readDuringBackendCreation(
-        () => oauthBinding.resolve(transport.fetch),
+        () => oauthBinding.resolve(),
         input.context.abortSignal,
       );
       apiKey = initialOAuthTokens.access_token;
@@ -523,6 +530,7 @@ async function resolveExecutionTarget(
   header: BackendFactoryContext['header'],
   runtimePolicy: RuntimePolicyStoresWriter,
   oauthCredentials: HostOAuthExecutionAuthority,
+  createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     header.llmConnectionSlug,
@@ -553,6 +561,10 @@ async function resolveExecutionTarget(
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) throw new Error('Runtime Host OAuth credential is not configured');
+    const refreshProxy = toProxySettings(
+      resolved.networkProxy,
+      resolved.secretMaterial.networkProxy?.secret,
+    );
     return {
       connection,
       model,
@@ -561,6 +573,7 @@ async function resolveExecutionTarget(
         providerType: resolved.connection.providerType,
         connectionSlug: resolved.connection.slug,
         material,
+        createRefreshTransport: () => createFetchTransport(refreshProxy),
       }),
       networkProxy: resolved.networkProxy,
       ...(resolved.secretMaterial.networkProxy

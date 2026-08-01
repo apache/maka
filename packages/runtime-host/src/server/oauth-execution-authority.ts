@@ -8,6 +8,7 @@ import {
   type OAuthSubscriptionCredentialStore,
   type OAuthSubscriptionProvider,
   type OAuthSubscriptionTokens,
+  type ProxiedFetchTransport,
 } from '@maka/runtime';
 import {
   authenticateRuntimePolicyStoresWriter,
@@ -44,7 +45,6 @@ interface CredentialState {
   readonly credentialId: string;
   revision: number;
   raw: string;
-  superseded: boolean;
   uncertainCommit?: CredentialCommitCandidate;
   resolving?: Promise<OAuthSubscriptionTokens>;
 }
@@ -58,7 +58,7 @@ interface CredentialCommitCandidate {
 export interface HostOAuthExecutionBinding {
   readonly providerType: OAuthSubscriptionProvider;
   readonly connectionSlug: string;
-  resolve(fetchFn?: typeof fetch): Promise<OAuthSubscriptionTokens>;
+  resolve(): Promise<OAuthSubscriptionTokens>;
 }
 
 /** Host-local generation binding over the canonical Runtime Policy OAuth credential. */
@@ -76,6 +76,7 @@ export class HostOAuthExecutionAuthority {
     providerType: RuntimeExecutionConnection['providerType'];
     connectionSlug: string;
     material: RuntimePolicyCredentialMaterial;
+    createRefreshTransport: () => ProxiedFetchTransport;
   }): HostOAuthExecutionBinding {
     if (!isOAuthSubscriptionProvider(input.providerType)) {
       throw new OAuthExecutionCredentialError(
@@ -123,7 +124,6 @@ export class HostOAuthExecutionAuthority {
         credentialId: input.material.credentialId,
         revision: input.material.revision,
         raw: input.material.secret,
-        superseded: false,
       };
       this.#states.set(state.locator.connectionId, state);
     }
@@ -132,13 +132,17 @@ export class HostOAuthExecutionAuthority {
     return Object.freeze({
       providerType: bound.providerType,
       connectionSlug: bound.connectionSlug,
-      resolve: (fetchFn?: typeof fetch) => this.#resolve(bound, fetchFn),
+      resolve: () => this.#resolve(bound, input.createRefreshTransport),
     });
   }
 
-  async #resolve(state: CredentialState, fetchFn?: typeof fetch): Promise<OAuthSubscriptionTokens> {
+  async #resolve(
+    state: CredentialState,
+    createRefreshTransport: () => ProxiedFetchTransport,
+  ): Promise<OAuthSubscriptionTokens> {
+    this.#assertCurrent(state);
     if (state.resolving) return state.resolving;
-    const resolving = this.#resolveUnshared(state, fetchFn);
+    const resolving = this.#resolveUnshared(state, createRefreshTransport);
     state.resolving = resolving;
     try {
       return await resolving;
@@ -149,31 +153,39 @@ export class HostOAuthExecutionAuthority {
 
   async #resolveUnshared(
     state: CredentialState,
-    fetchFn?: typeof fetch,
+    createRefreshTransport: () => ProxiedFetchTransport,
   ): Promise<OAuthSubscriptionTokens> {
-    if (state.superseded) throw supersededError();
     await this.#reconcileUncertainCommit(state);
     const credentialStore = this.#credentialStore(state);
-    const result = await resolveAndPersistOAuthSubscriptionTokens({
-      providerType: state.providerType,
-      slug: state.connectionSlug,
-      credentialStore,
-      now: this.#now,
-      ...(fetchFn ? { fetchFn } : {}),
-    });
+    let refreshTransport: ProxiedFetchTransport | undefined;
+    let result;
+    try {
+      result = await resolveAndPersistOAuthSubscriptionTokens({
+        providerType: state.providerType,
+        slug: state.connectionSlug,
+        credentialStore,
+        now: this.#now,
+        fetchFn: async (url, init) => {
+          if (!this.#isCurrent(state)) throw new OAuthCredentialSupersededError();
+          refreshTransport ??= createRefreshTransport();
+          return refreshTransport.fetch(url, init);
+        },
+      });
+    } finally {
+      await refreshTransport?.close();
+    }
+    this.#assertCurrent(state);
     switch (result.outcome) {
       case 'current':
       case 'refreshed':
         return result.tokens;
       case 'superseded':
-        state.superseded = true;
+        this.#invalidate(state);
         throw supersededError();
       case 'logged-out':
         throw new OAuthExecutionCredentialError(
-          state.superseded ? 'credential_superseded' : 'credential_unavailable',
-          state.superseded
-            ? 'OAuth credential changed during backend execution'
-            : 'OAuth credential is no longer configured',
+          'credential_unavailable',
+          'OAuth credential is no longer configured',
         );
       case 'refresh-failed':
         throw new OAuthExecutionCredentialError(
@@ -207,6 +219,7 @@ export class HostOAuthExecutionAuthority {
         { cause: error },
       );
     }
+    this.#assertCurrent(state);
     const material = resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined;
     if (
       material &&
@@ -222,7 +235,7 @@ export class HostOAuthExecutionAuthority {
     }
 
     state.uncertainCommit = undefined;
-    state.superseded = true;
+    this.#invalidate(state);
     throw supersededError();
   }
 
@@ -230,12 +243,12 @@ export class HostOAuthExecutionAuthority {
     return {
       getSecret: async (slug, kind) => {
         assertBoundRequest(state, slug, kind);
-        if (state.superseded) throw new OAuthCredentialSupersededError();
+        if (!this.#isCurrent(state)) throw new OAuthCredentialSupersededError();
         return state.raw;
       },
       compareAndSetSecret: async (slug, kind, expected, value) => {
         assertBoundRequest(state, slug, kind);
-        if (state.superseded) throw new OAuthCredentialSupersededError();
+        if (!this.#isCurrent(state)) throw new OAuthCredentialSupersededError();
         if (expected !== state.raw) return { committed: false, current: state.raw };
         let committed;
         try {
@@ -248,6 +261,7 @@ export class HostOAuthExecutionAuthority {
             secret: value,
           });
         } catch (error) {
+          if (!this.#isCurrent(state)) throw new OAuthCredentialSupersededError();
           if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
             state.uncertainCommit = {
               credentialId: state.credentialId,
@@ -258,14 +272,27 @@ export class HostOAuthExecutionAuthority {
           throw error;
         }
         if (committed.kind !== 'committed') {
-          state.superseded = true;
+          this.#invalidate(state);
           throw new OAuthCredentialSupersededError();
         }
+        if (!this.#isCurrent(state)) throw new OAuthCredentialSupersededError();
         state.revision = committed.revision;
         state.raw = value;
         return { committed: true };
       },
     };
+  }
+
+  #isCurrent(state: CredentialState): boolean {
+    return this.#states.get(state.locator.connectionId) === state;
+  }
+
+  #assertCurrent(state: CredentialState): void {
+    if (!this.#isCurrent(state)) throw supersededError();
+  }
+
+  #invalidate(state: CredentialState): void {
+    if (this.#isCurrent(state)) this.#states.delete(state.locator.connectionId);
   }
 }
 
@@ -290,7 +317,7 @@ export function createHostOAuthModelFetch(input: {
   return async (url, init) => {
     const signal = effectiveRequestSignal(url, init);
     signal?.throwIfAborted();
-    const tokens = await waitForCaller(input.binding.resolve(input.fetchFn), signal);
+    const tokens = await waitForCaller(input.binding.resolve(), signal);
     signal?.throwIfAborted();
     const authenticatedFetch = authenticatedOAuthFetch(input, tokens);
     const subscriptionFetch = buildSubscriptionModelFetch({

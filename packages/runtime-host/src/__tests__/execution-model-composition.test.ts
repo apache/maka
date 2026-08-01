@@ -20,6 +20,8 @@ import {
   type FilesystemWorkerExecuteInput,
   type MakaTool,
   type MakaToolContext,
+  type ProxiedFetchProxy,
+  type ProxiedFetchTransport,
   type RunTraceEvent,
   type ScannedSkill,
 } from '@maka/runtime';
@@ -97,7 +99,7 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
-test('backend creation accepts a current canonical OAuth execution credential', async () => {
+test('backend abort cannot cancel the authority-owned OAuth refresh used by its successor', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-oauth-backend-'));
   const capability = await resolveStorageRoot({
     path: join(base, 'interactive'),
@@ -106,7 +108,8 @@ test('backend creation accepts a current canonical OAuth execution credential', 
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
-  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let secondBackend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
     const created = await policy.connectionCatalog.create({
@@ -114,7 +117,7 @@ test('backend creation accepts a current canonical OAuth execution credential', 
       connection: {
         slug: 'backend-creation-connection',
         name: 'OAuth backend creation',
-        providerType: 'github-copilot',
+        providerType: 'claude-subscription',
         enabled: true,
         enabledModelIds: [MODEL_ID],
       },
@@ -125,56 +128,98 @@ test('backend creation accepts a current canonical OAuth execution credential', 
     assert.ok(connection);
     if (!connection) return;
     const tokens: OAuthSubscriptionTokens = {
-      access_token: 'canonical-oauth-access',
-      refresh_token: 'canonical-oauth-refresh',
-      expires_at: Number.MAX_SAFE_INTEGER,
+      access_token: 'expired-oauth-access',
+      refresh_token: 'rotating-oauth-refresh',
+      expires_at: 0,
+      account_uuid: 'oauth-account-v1',
     };
-    const configured = await policy.credentialVault.set({
-      locator: {
-        scope: 'connection',
-        connectionId: connection.connectionId,
-        kind: 'oauth_token',
-      },
-      expected: null,
-      secret: serializeOAuthSubscriptionTokens(tokens),
-    });
-    assert.equal(configured.kind, 'committed');
-    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
-    const beforeActivation = await policy.operations.resolveExecutionConnection(
-      'backend-creation-connection',
+    await writeFile(
+      join(capability.canonicalPath, 'credential-vault.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          revision: 1,
+          entries: [
+            {
+              locator: {
+                scope: 'connection',
+                connectionId: connection.connectionId,
+                kind: 'oauth_token',
+              },
+              credentialId: randomUUID(),
+              revision: 1,
+              secret: serializeOAuthSubscriptionTokens(tokens),
+              updatedAt: Date.now(),
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
     );
-    assert.equal(beforeActivation.kind, 'ready');
-    if (beforeActivation.kind !== 'ready') return;
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    transports = controlledOAuthTransports();
+    const authority = new HostOAuthExecutionAuthority(policy);
+    const firstAbort = new AbortController();
+    const firstCreation = createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: firstAbort.signal,
+        resolveExecutionConnection: () =>
+          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+        runtimePolicy: policy,
+        oauthCredentials: authority,
+        claudeDeviceId: capability.rootId,
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        createFetchTransport: transports.create,
+      }),
+    );
+    await transports.refreshStarted;
 
-    backend = await createHostAiSdkBackend(
+    const abortReason = new DOMException('First backend stopped', 'AbortError');
+    firstAbort.abort(abortReason);
+    await assert.rejects(settleWithin(firstCreation), (error) => error === abortReason);
+    assert.equal(transports.modelTransportsClosed, 1);
+    assert.equal(transports.refreshTransportClosed, false);
+
+    transports.completeRefresh();
+    await transports.refreshTransportSettled;
+    assert.equal(transports.refreshTransportClosed, true);
+
+    secondBackend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
         resolveExecutionConnection: () =>
           policy.operations.resolveExecutionConnection('backend-creation-connection'),
         runtimePolicy: policy,
-        oauthCredentials: new HostOAuthExecutionAuthority(policy),
+        oauthCredentials: authority,
         claudeDeviceId: capability.rootId,
         readPricing: async () => ({ revision: 0, overrides: [] }),
+        createFetchTransport: transports.create,
       }),
     );
+    assert.equal(transports.refreshCalls, 1);
 
     const resolved = await policy.operations.resolveExecutionConnection(
       'backend-creation-connection',
     );
     assert.equal(resolved.kind, 'ready');
     if (resolved.kind === 'ready') {
-      assert.equal(
-        resolved.secretMaterial.connection?.secret,
-        serializeOAuthSubscriptionTokens(tokens),
-      );
-      assert.equal(
-        resolved.secretMaterial.connection?.revision,
-        beforeActivation.secretMaterial.connection?.revision,
-      );
+      const persisted = JSON.parse(
+        resolved.secretMaterial.connection?.secret ?? '',
+      ) as OAuthSubscriptionTokens;
+      assert.equal(persisted.access_token, 'refreshed-oauth-access');
+      assert.equal(persisted.refresh_token, 'rotated-oauth-refresh');
+      assert.equal(persisted.account_uuid, 'oauth-account-v2');
+      assert.ok((persisted.expires_at ?? 0) > Date.now());
     }
   } finally {
     try {
-      await backend?.dispose();
+      if (transports && transports.refreshCalls > 0) {
+        transports.completeRefresh();
+        await transports.refreshTransportSettled;
+      }
+      await secondBackend?.dispose();
     } finally {
       await owner.close();
       await rm(base, { recursive: true, force: true });
@@ -1085,6 +1130,7 @@ function backendCreationFixture(input: {
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
+  createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
 }): HostAiSdkBackendInput {
   return {
     context: {
@@ -1149,6 +1195,7 @@ function backendCreationFixture(input: {
       snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
     },
     ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
+    ...(input.createFetchTransport ? { createFetchTransport: input.createFetchTransport } : {}),
   } as unknown as HostAiSdkBackendInput;
 }
 
@@ -1189,6 +1236,86 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+function controlledOAuthTransports(): {
+  readonly create: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  readonly refreshStarted: Promise<void>;
+  readonly refreshTransportSettled: Promise<void>;
+  readonly refreshCalls: number;
+  readonly refreshTransportClosed: boolean;
+  readonly modelTransportsClosed: number;
+  completeRefresh(): void;
+} {
+  let markRefreshStarted!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    markRefreshStarted = resolve;
+  });
+  let markRefreshTransportSettled!: () => void;
+  const refreshTransportSettled = new Promise<void>((resolve) => {
+    markRefreshTransportSettled = resolve;
+  });
+  let refreshCalls = 0;
+  let refreshTransportClosed = false;
+  let modelTransportsClosed = 0;
+  let resolveRefresh: ((response: Response) => void) | undefined;
+  let rejectRefresh: ((error: Error) => void) | undefined;
+  let refreshCompleted = false;
+
+  const create = (_proxy: ProxiedFetchProxy | null): ProxiedFetchTransport => {
+    let usedForRefresh = false;
+    let closed = false;
+    return {
+      fetch: async (url) => {
+        assert.equal(String(url), 'https://platform.claude.com/v1/oauth/token');
+        usedForRefresh = true;
+        refreshCalls += 1;
+        markRefreshStarted();
+        return new Promise<Response>((resolve, reject) => {
+          resolveRefresh = resolve;
+          rejectRefresh = reject;
+        });
+      },
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        if (usedForRefresh) {
+          refreshTransportClosed = true;
+          rejectRefresh?.(new Error('Controlled OAuth transport closed'));
+          markRefreshTransportSettled();
+        } else {
+          modelTransportsClosed += 1;
+        }
+      },
+    };
+  };
+
+  return {
+    create,
+    refreshStarted,
+    refreshTransportSettled,
+    get refreshCalls() {
+      return refreshCalls;
+    },
+    get refreshTransportClosed() {
+      return refreshTransportClosed;
+    },
+    get modelTransportsClosed() {
+      return modelTransportsClosed;
+    },
+    completeRefresh: () => {
+      if (refreshCompleted || !resolveRefresh) return;
+      refreshCompleted = true;
+      resolveRefresh(
+        Response.json({
+          access_token: 'refreshed-oauth-access',
+          refresh_token: 'rotated-oauth-refresh',
+          expires_in: 3_600,
+          account: { uuid: 'oauth-account-v2' },
+        }),
+      );
+    },
+  };
 }
 
 function toolNames(body: Record<string, unknown> | undefined): string[] {

@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { mock, test } from 'node:test';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import { serializeOAuthSubscriptionTokens, type OAuthSubscriptionTokens } from '@maka/runtime';
+import {
+  serializeOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
+  type ProxiedFetchTransport,
+} from '@maka/runtime';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyCredentialMaterial,
@@ -31,12 +35,10 @@ test('one OAuth generation singleflights refresh and persists its lease with can
       providerType: 'github-copilot',
       connectionSlug: CONNECTION_SLUG,
       material: before,
+      createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
     });
 
-    const [first, second] = await Promise.all([
-      binding.resolve(unexpectedFetch),
-      binding.resolve(unexpectedFetch),
-    ]);
+    const [first, second] = await Promise.all([binding.resolve(), binding.resolve()]);
 
     assert.deepEqual(first, expiredTokens('access-v1'));
     assert.deepEqual(second, first);
@@ -47,12 +49,13 @@ test('one OAuth generation singleflights refresh and persists its lease with can
   });
 });
 
-test('an active OAuth binding cannot adopt a credential generation replaced by the user', async () => {
-  await withCopilotCredential(expiredTokens('old-access'), async (fixture) => {
+test('an active OAuth binding cannot use a credential generation replaced by the user', async () => {
+  await withCopilotCredential(currentTokens('old-access'), async (fixture) => {
     const oldBinding = fixture.authority.bind({
       providerType: 'github-copilot',
       connectionSlug: CONNECTION_SLUG,
       material: fixture.material,
+      createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
     });
     const replacement = currentTokens('replacement-access');
     const replaced = await fixture.stores.credentialVault.set({
@@ -69,11 +72,12 @@ test('an active OAuth binding cannot adopt a credential generation replaced by t
       providerType: 'github-copilot',
       connectionSlug: CONNECTION_SLUG,
       material: replacementMaterial,
+      createRefreshTransport: () => testRefreshTransport(unexpectedFetch),
     });
 
-    assert.deepEqual(await newBinding.resolve(unexpectedFetch), replacement);
+    assert.deepEqual(await newBinding.resolve(), replacement);
     await assert.rejects(
-      () => oldBinding.resolve(unexpectedFetch),
+      () => oldBinding.resolve(),
       (error) =>
         error instanceof OAuthExecutionCredentialError && error.code === 'credential_superseded',
     );
@@ -88,11 +92,6 @@ test('a rotated Claude token crosses canonical CAS into request auth and identit
     'claude-subscription',
     expiredTokens('access-v1', 'account-v1'),
     async (fixture) => {
-      const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
-        connectionSlug: CONNECTION_SLUG,
-        material: fixture.material,
-      });
       const observed: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
       let refreshCalls = 0;
       const providerFetch: typeof fetch = async (url, init) => {
@@ -106,8 +105,14 @@ test('a rotated Claude token crosses canonical CAS into request auth and identit
         });
         return Response.json({ ok: true });
       };
+      const binding = fixture.authority.bind({
+        providerType: 'claude-subscription',
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
 
-      const initialTokens = await binding.resolve(providerFetch);
+      const initialTokens = await binding.resolve();
       const modelFetch = createHostOAuthModelFetch({
         binding,
         initialTokens,
@@ -134,7 +139,7 @@ test('a rotated Claude token crosses canonical CAS into request auth and identit
         account_uuid: 'account-v2',
       });
       assert.equal(canonical.revision, fixture.material.revision + 2);
-      assert.equal((await binding.resolve(providerFetch)).access_token, initialTokens.access_token);
+      assert.equal((await binding.resolve()).access_token, initialTokens.access_token);
       assert.equal(refreshCalls, 1);
     },
   );
@@ -201,35 +206,31 @@ test('reconciles a published OAuth lease claim before the next demand', async ()
     'claude-subscription',
     expiredTokens('claim-v1', 'account-v1'),
     async (fixture) => {
+      let refreshCalls = 0;
+      const providerFetch = successfulClaudeRefresh(() => {
+        refreshCalls += 1;
+      });
       const binding = fixture.authority.bind({
         providerType: 'claude-subscription',
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
-      });
-      let refreshCalls = 0;
-      const providerFetch = successfulClaudeRefresh(() => {
-        refreshCalls += 1;
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
       });
       let leaseNow = FIXED_NOW;
       const nowMock = mock.method(Date, 'now', () => leaseNow);
       try {
         await withPublishedSyncFailure(fixture.root, 2, async () => {
-          await assert.rejects(
-            () => binding.resolve(providerFetch),
-            isOAuthError('persistence_failed'),
-          );
+          await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
         });
         assert.equal(refreshCalls, 0);
         const secondBinding = fixture.authority.bind({
           providerType: 'claude-subscription',
           connectionSlug: CONNECTION_SLUG,
           material: await readMaterial(fixture.stores),
+          createRefreshTransport: () => testRefreshTransport(providerFetch),
         });
         leaseNow += 30_001;
-        const [first, second] = await Promise.all([
-          binding.resolve(providerFetch),
-          secondBinding.resolve(providerFetch),
-        ]);
+        const [first, second] = await Promise.all([binding.resolve(), secondBinding.resolve()]);
         assert.equal(first.access_token, 'access-v2');
         assert.equal(second.access_token, 'access-v2');
         assert.equal(refreshCalls, 1);
@@ -245,23 +246,21 @@ test('reconciles a published OAuth refresh finalization before the next demand',
     'claude-subscription',
     expiredTokens('finalize-v1', 'account-v1'),
     async (fixture) => {
-      const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
-        connectionSlug: CONNECTION_SLUG,
-        material: fixture.material,
-      });
       let refreshCalls = 0;
       const providerFetch = successfulClaudeRefresh(() => {
         refreshCalls += 1;
       });
+      const binding = fixture.authority.bind({
+        providerType: 'claude-subscription',
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
 
       await withPublishedSyncFailure(fixture.root, 4, async () => {
-        await assert.rejects(
-          () => binding.resolve(providerFetch),
-          isOAuthError('persistence_failed'),
-        );
+        await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
       });
-      assert.equal((await binding.resolve(providerFetch)).access_token, 'access-v2');
+      assert.equal((await binding.resolve()).access_token, 'access-v2');
       assert.equal(refreshCalls, 1);
     },
   );
@@ -272,11 +271,6 @@ test('reconciles a published OAuth lease release before retrying refresh', async
     'claude-subscription',
     expiredTokens('release-v1', 'account-v1'),
     async (fixture) => {
-      const binding = fixture.authority.bind({
-        providerType: 'claude-subscription',
-        connectionSlug: CONNECTION_SLUG,
-        material: fixture.material,
-      });
       let refreshCalls = 0;
       const providerFetch: typeof fetch = async (url) => {
         assert.equal(String(url), CLAUDE_TOKEN_ENDPOINT);
@@ -285,14 +279,17 @@ test('reconciles a published OAuth lease release before retrying refresh', async
           ? Response.json({ error: 'temporary failure' }, { status: 503 })
           : claudeRefreshResponse('access-v2', 'refresh-v2', 'account-v2');
       };
+      const binding = fixture.authority.bind({
+        providerType: 'claude-subscription',
+        connectionSlug: CONNECTION_SLUG,
+        material: fixture.material,
+        createRefreshTransport: () => testRefreshTransport(providerFetch),
+      });
 
       await withPublishedSyncFailure(fixture.root, 4, async () => {
-        await assert.rejects(
-          () => binding.resolve(providerFetch),
-          isOAuthError('persistence_failed'),
-        );
+        await assert.rejects(() => binding.resolve(), isOAuthError('persistence_failed'));
       });
-      assert.equal((await binding.resolve(providerFetch)).access_token, 'access-v2');
+      assert.equal((await binding.resolve()).access_token, 'access-v2');
       assert.equal(refreshCalls, 2);
     },
   );
@@ -653,3 +650,7 @@ function codexAccessToken(accountId: string): string {
 const unexpectedFetch: typeof fetch = async () => {
   throw new Error('GitHub Copilot credential refresh must not perform provider I/O');
 };
+
+function testRefreshTransport(fetchFn: typeof fetch): ProxiedFetchTransport {
+  return { fetch: fetchFn, close: async () => undefined };
+}
