@@ -213,18 +213,15 @@ function ComposedShell(props: {
   sidebarCollapsed?: boolean;
   initialViewMode?: SessionViewMode;
   /**
-   * The ONE active-session scenario. ComposedShell projects it across the
-   * sidebar row, the chat header, and the composer, so the three regions
-   * can never disagree about what state the active session is in (review
-   * P2: stories used to patch each region independently and drifted).
-   * `streaming` additionally marks the active session as live-streaming
-   * and flips the composer into its streaming state.
+   * The ONE active-session scenario, as an overlay on the sidebar's active
+   * row. ComposedShell projects the result across the sidebar row, the chat
+   * header, and the composer, so the three regions can never disagree about
+   * what state the active session is in (review P2: stories used to patch
+   * each region independently and drifted). `streaming` additionally marks
+   * the active session as live-streaming and flips the composer into its
+   * streaming state.
    */
-  session?: {
-    status?: SessionSummary['status'];
-    blockedReason?: SessionSummary['blockedReason'];
-    streaming?: boolean;
-  };
+  session?: Partial<SessionSummary> & { streaming?: boolean };
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
   detailChildren?: ReactNode;
@@ -234,14 +231,13 @@ function ComposedShell(props: {
   const sidebarHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
   const sidebarWidth = 260;
+  const { streaming: sessionStreaming, ...sessionOverrides } = props.session ?? {};
   const sessions = sidebarSessions.map((s) =>
-    s.id === activeSession.id && (props.session?.status || props.session?.blockedReason)
-      ? { ...s, status: props.session.status ?? s.status, blockedReason: props.session.blockedReason ?? s.blockedReason }
-      : s,
+    s.id === activeSession.id ? { ...s, ...sessionOverrides } : s,
   );
   const active = sessions.find((s) => s.id === activeSession.id) ?? activeSession;
   const streamingIds = new Set(
-    props.session?.streaming ? ['session-running', active.id] : ['session-running'],
+    sessionStreaming ? ['session-running', active.id] : ['session-running'],
   );
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,
@@ -318,7 +314,7 @@ function ComposedShell(props: {
                     <Composer
                       {...baseComposerProps}
                       activeSession={active}
-                      streaming={props.session?.streaming ?? false}
+                      streaming={sessionStreaming ?? false}
                       {...props.composer}
                     />
                   </div>
@@ -395,4 +391,207 @@ export const WaitingForPermission: Story = {
 // nothing renders differently in the detail pane.
 export const EmptyHome: Story = {
   render: () => <ComposedShell chat={{ messages: [] }} />,
+};
+
+const longConversation: StoredMessage[] = [
+  user(
+    'msg-user-long',
+    'turn-long-1',
+    42,
+    [
+      '我想把 Chat surface 的 review 状态固定下来，但不要把 PR 做大。',
+      '请同时考虑窄窗口、很长的用户输入、很长的模型回复，以及 composer 被禁用时用户是否能看懂当前系统在等什么。',
+      '这段消息故意很长，用来观察右侧用户气泡的换行、时间和复制按钮是否仍然稳。',
+    ].join('\n\n'),
+  ),
+  assistant(
+    'msg-assistant-long',
+    'turn-long-1',
+    39,
+    [
+      '可以按状态板而不是重构来切。',
+      '',
+      '第一步只把可见状态摆出来：空态、streaming、tool activity、branch banner、import actions、disabled composer 和长消息。第二步才进入 polish。这样 reviewer 能在 Storybook 里逐个看状态，而不需要手动把桌面 app 驱动到这些路径。',
+      '',
+      '- 空态用于确认初始引导没有被 app shell 依赖卡住。',
+      '- streaming 用于确认 live bubble 与 composer stop 状态同时出现。',
+      '- long messages 用于确认阅读列、用户气泡和 markdown 内容不会互相挤压。',
+      '',
+      '这个 story 不评价最终视觉，只提供稳定的 review 基线。',
+    ].join('\n'),
+  ),
+  user('msg-user-long-2', 'turn-long-2', 34, '再给一个短问题：如果工具调用失败，这个 PR 要覆盖吗？'),
+  assistant(
+    'msg-assistant-long-2',
+    'turn-long-2',
+    33,
+    '不用。失败、截断、overlay preview 等细分工具状态属于 ToolActivity storyboard。Chat surface 这里只需要证明工具活动能嵌入对话。',
+  ),
+];
+
+// Multi-step reasoning turn (streaming UI rework): two think->say->call steps
+// in a single turn. Each step persists an assistant row (thinking + text) plus
+// tool_calls tagged with that row's id as `stepId`, so the turn timeline
+// reconstructs the real order — 深度思考 → answer text → tool row — per step,
+// instead of lumping every tool into one trailing group.
+const multiStepConversation: StoredMessage[] = [
+  user('msg-user-multistep', 'turn-multistep', 12, '看一下 stream-fade 的环逻辑有没有边界问题，然后跑一下单测。'),
+  {
+    type: 'tool_call',
+    id: 'tool-read-stream-fade',
+    turnId: 'turn-multistep',
+    ts: NOW - 11 * 60_000,
+    toolName: 'Read',
+    displayName: '读取 stream-fade.ts',
+    intent: '读取淡入环的实现，确认窗口滑动与上限',
+    stepId: 'msg-assistant-step-1',
+    args: { file_path: 'packages/ui/src/stream-fade.ts' },
+  },
+  {
+    type: 'tool_result',
+    id: 'tool-read-stream-fade-result',
+    turnId: 'turn-multistep',
+    ts: NOW - 11 * 60_000 + 900,
+    toolUseId: 'tool-read-stream-fade',
+    isError: false,
+    durationMs: 640,
+    content: {
+      kind: 'text',
+      text: 'export function updateFadeRing(...) { /* prune + cap */ }',
+    },
+  },
+  {
+    type: 'assistant',
+    id: 'msg-assistant-step-1',
+    turnId: 'turn-multistep',
+    ts: NOW - 10 * 60_000,
+    text: '环逻辑没问题：增长记录批次、超窗剪枝、再按上限截断，收缩时整体重置。接下来我跑一下单测确认。',
+    thinking: {
+      text: '先读实现，确认 boundary 取的是最老存活批次的 start，age 用 now 减去覆盖该 offset 的批次时间。看起来窗口滑动和上限都覆盖了，值得跑一遍测试坐实。',
+    },
+    modelId: 'claude-sonnet-4-5',
+  },
+  {
+    type: 'tool_call',
+    id: 'tool-run-tests',
+    turnId: 'turn-multistep',
+    ts: NOW - 10 * 60_000 + 500,
+    toolName: 'Bash',
+    displayName: '运行 stream-fade 单测',
+    intent: '执行 node --test 跑淡入环与 tokenizer 的单测',
+    stepId: 'msg-assistant-step-2',
+    args: { cmd: 'node --test dist/main/__tests__/stream-fade.test.js' },
+  },
+  {
+    type: 'tool_result',
+    id: 'tool-run-tests-result',
+    turnId: 'turn-multistep',
+    ts: NOW - 9 * 60_000,
+    toolUseId: 'tool-run-tests',
+    isError: false,
+    durationMs: 1930,
+    content: {
+      kind: 'terminal',
+      cwd: '/workspace/maka-agent/apps/desktop',
+      cmd: 'node --test dist/main/__tests__/stream-fade.test.js',
+      status: 'completed',
+      exitCode: 0,
+      output: {
+        mode: 'pipes',
+        stdout: 'tests 13\npass 13\nfail 0\n',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    },
+  },
+  {
+    type: 'assistant',
+    id: 'msg-assistant-step-2',
+    turnId: 'turn-multistep',
+    ts: NOW - 8 * 60_000,
+    text: '13 个单测全绿，环的窗口滑动、乱序快照取龄和上限都被覆盖。边界没有问题。',
+    thinking: {
+      text: '测试包含窗口滑动、乱序 age 查询与上限三类，全过说明剪枝和 cap 的顺序是对的，可以收尾。',
+    },
+    modelId: 'claude-sonnet-4-5',
+  },
+];
+
+// Real path: a long session that has accumulated reasoning, several native
+// Astryx tool calls and long prose, with an image staged in the composer and
+// thinking set to medium. Each part is individually reachable; they are stacked
+// into one screen on purpose, as the canonical visual-acceptance scaffold for
+// the transcript. Open this first, then the focused stories above.
+export const NativeConversation: Story = {
+  render: () => (
+    <ComposedShell
+      chat={{
+        messages: [...longConversation, ...multiStepConversation],
+        memoryActive: true,
+        onOpenMemorySettings: noop,
+      }}
+      composer={{
+        pendingAttachments: [
+          {
+            displayName: 'chat-surface-review.png',
+            kind: 'image',
+            mimeType: 'image/png',
+            size: 284_160,
+          },
+        ],
+        onRemoveAttachment: noop,
+        activeThinkingLevels: ['off', 'low', 'medium', 'high'],
+        activeThinkingLevel: 'medium',
+        onThinkingLevelChange: noop,
+        onGraphModeChange: noop,
+        onToggleVoiceCapture: noop,
+        onToggleRealtimeVoice: noop,
+        voiceProviderLabel: '系统语音',
+      }}
+    />
+  ),
+};
+
+// Real path: open a derived revision that is running an autonomous goal with
+// local memory and Deep Research enabled. Session metadata stays in one context
+// layer above the transcript instead of splitting across header pills and
+// standalone branch/revision rows. The long session name is the point: it is
+// what forces that layer to collapse rather than wrap.
+export const SessionContextLayer: Story = {
+  render: () => (
+    <ComposedShell
+      session={{
+        name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
+        labels: ['mode:deep_research'],
+        parentSessionId: 'session-parent',
+        branchOfTurnId: 'turn-1',
+      }}
+      chat={{
+        memoryActive: true,
+        onOpenMemorySettings: noop,
+        goalIndicator: {
+          condition: '把 Session Context Layer 收敛到可 review 状态',
+          status: 'active',
+          iterations: 4,
+          maxIterations: 12,
+          onClear: noop,
+        },
+        branchBanner: {
+          parentSessionId: 'session-parent',
+          parentSessionName: 'UI polish 主线评审与跨会话来源追踪的完整上下文',
+          fromAbortedTurn: true,
+        },
+        onBranchBannerClick: noop,
+        revisionNavigation: {
+          current: 2,
+          total: 3,
+          previousSessionId: 'session-context-revision-1',
+          nextSessionId: 'session-context-revision-3',
+        },
+        onRevisionNavigate: noop,
+      }}
+    />
+  ),
 };

@@ -80,6 +80,13 @@
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light", "dark"]
     },
+    "sessionContext": {
+      "storyId": "product-shell-official-appshell--session-context-layer",
+      "productionHost": "AppShell > ChatView",
+      "state": "Goal, branch, revision and memory metadata above the transcript",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
     "askUserQuestion": {
       "storyId": "product-ask-user-question--pending-decisions",
       "productionHost": "ChatComposerRegion > UserQuestionPrompt",
