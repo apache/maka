@@ -6,8 +6,9 @@ import { defineConfig } from '@playwright/test';
  * Each test launches a real Electron window backed by the deterministic fake
  * backend (MAKA_E2E=1) against its OWN throwaway userData dir (the fixture
  * mkdtemps one per test), so windows share no *state*. The wall clock is
- * dominated by Electron boot, which overlaps well: measured on the full
- * 94-test suite, 1 worker ≈ 7min and 4 workers ≈ 2.4min.
+ * dominated by Electron boot, which overlaps well: measured back when the
+ * suite held 94 tests, 1 worker ≈ 7min and 4 workers ≈ 2.4min. The suite is
+ * 86 tests now, so both figures are upper bounds.
  *
  * What parallel windows DO share is OS focus. A run at 2 workers showed it:
  * composer-mode-indicator compares hover backgrounds and plan-reminders
