@@ -330,6 +330,76 @@ async function smokeStory(page, baseUrl, job, options = {}) {
   }
 }
 
+/**
+ * Every story the manifest does NOT name, rendered once at wide/light.
+ *
+ * The manifest is a curated list — 12 surfaces across viewports and colour
+ * schemes, because those checks are expensive and only worth paying for where
+ * layout actually varies. But that left the other ~130 stories verified by
+ * nothing: `build-storybook` bundles a story without mounting it, so a render
+ * that throws, a play function that rejects, or a console error ships green.
+ *
+ * This pass is deliberately shallow. It answers one question — does the story
+ * still mount and finish its play function without errors — and leaves
+ * viewport, colour-scheme and surface-specific assertions to the manifest.
+ */
+export function catalogJobs(storyIndex, manifestJobs) {
+  const covered = new Set(manifestJobs.map((job) => job.storyId));
+  return Object.values(storyIndex.entries)
+    .filter((entry) => entry.type === 'story' && !covered.has(entry.id))
+    .map((entry) => ({
+      storyId: entry.id,
+      viewport: 'catalog',
+      size: PRODUCT_VIEWPORTS.wide,
+      colorScheme: 'light',
+    }));
+}
+
+async function runJobs(browser, baseUrl, jobs, concurrency) {
+  const queue = [...jobs];
+  const failed = [];
+  const passed = [];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    for (let job = queue.shift(); job; job = queue.shift()) {
+      const page = await browser.newPage();
+      try {
+        await smokeStory(page, baseUrl, job);
+        passed.push(job.storyId);
+        process.stdout.write(`✓ ${job.storyId} @ ${job.viewport}\n`);
+      } catch (error) {
+        failed.push({
+          storyId: job.storyId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        process.stdout.write(`✗ ${job.storyId} @ ${job.viewport}\n`);
+      } finally {
+        await page.close();
+      }
+    }
+  });
+  await Promise.all(workers);
+  return { failed, passed };
+}
+
+/**
+ * Reconciles catalog results against the known-broken list. A story that fails
+ * without being listed is a regression. A story that PASSES while still listed
+ * is also an error: otherwise the list silently accumulates entries nobody
+ * revisits, which is how a baseline becomes a permanent exemption.
+ */
+export function reconcileCatalog({ failed, passed }, knownBroken) {
+  const problems = [];
+  for (const { storyId, message } of failed) {
+    if (!(storyId in knownBroken)) problems.push(message);
+  }
+  for (const storyId of passed) {
+    if (storyId in knownBroken) {
+      problems.push(`${storyId} now passes — remove it from storybook-catalog-baseline.json`);
+    }
+  }
+  return problems;
+}
+
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -386,29 +456,40 @@ async function runCli() {
   const manifestPath = resolve(
     process.argv[3] ?? join(repoRoot, 'apps/desktop/stories/product-smoke-manifest.json'),
   );
-  const [manifest, storyIndex] = await Promise.all([
+  const [manifest, storyIndex, baseline] = await Promise.all([
     readFile(manifestPath, 'utf8').then(JSON.parse),
     readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse),
+    readFile(join(repoRoot, 'scripts/storybook-catalog-baseline.json'), 'utf8').then(JSON.parse),
   ]);
+  const knownBroken = baseline.knownBroken ?? {};
   const jobs = validateCoverageManifest(manifest, storyIndex);
+  const catalog = catalogJobs(storyIndex, jobs);
   const { chromium } = await import('@playwright/test');
   const browser = await chromium.launch({ headless: true });
   const server = await startStaticServer(staticDir);
+  const problems = [];
   try {
-    for (const job of jobs) {
-      const page = await browser.newPage();
-      try {
-        await smokeStory(page, server.baseUrl, job);
-        process.stdout.write(`✓ ${job.storyId} @ ${job.viewport}\n`);
-      } finally {
-        await page.close();
-      }
-    }
+    // The manifest jobs run first and serially: they assert on layout geometry,
+    // which is why they pin a viewport in the first place. No baseline applies
+    // to them — a curated surface check has no business being known-broken.
+    problems.push(
+      ...(await runJobs(browser, server.baseUrl, jobs, 1)).failed.map((f) => f.message),
+    );
+    problems.push(
+      ...reconcileCatalog(await runJobs(browser, server.baseUrl, catalog, 4), knownBroken),
+    );
   } finally {
     await server.close();
     await browser.close();
   }
-  process.stdout.write(`Product Storybook smoke passed (${jobs.length} render/play checks).\n`);
+  if (problems.length > 0) {
+    throw new Error(`${problems.length} story check(s) failed:\n${problems.join('\n')}`);
+  }
+  const skipped = Object.keys(knownBroken).length;
+  process.stdout.write(
+    `Product Storybook smoke passed (${jobs.length} manifest check(s), ` +
+      `${catalog.length} catalog render(s), ${skipped} known-broken).\n`,
+  );
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
