@@ -3,8 +3,6 @@
 .settingsSurface {
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--background);
 }
@@ -54,15 +52,6 @@
 .settingsSurface[data-modal="true"] {
   position: relative;
   background: transparent;
-  grid-template-columns: 260px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 0;
-}
-
-@media (max-width: 760px) {
-  .settingsSurface[data-modal="true"] {
-    grid-template-columns: 48px minmax(0, 1fr);
-  }
 }
 
 .settingsActionRow {
