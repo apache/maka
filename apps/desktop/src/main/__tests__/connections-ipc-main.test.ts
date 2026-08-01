@@ -178,6 +178,56 @@ describe('connection IPC credential boundary', () => {
     assert.deepEqual(sideEffects, []);
   });
 
+  test('every renderer-controlled slug handler rejects traversal before external work', async () => {
+    const sideEffects: string[] = [];
+    const mark = (effect: string) => {
+      sideEffects.push(effect);
+      return null;
+    };
+    const handlers = registerHandlers({
+      connectionStore: {
+        get: async () => mark('connection:get'),
+        update: async () => mark('connection:update'),
+        remove: async () => mark('connection:remove'),
+        setDefault: async () => mark('connection:setDefault'),
+      },
+      credentialStore: {
+        setSecret: async () => mark('credential:set'),
+        deleteSecret: async () => mark('credential:delete'),
+      },
+      resolveConnectionSecret: async () => mark('credential:resolve'),
+      hasConnectionSecret: async () => {
+        mark('credential:has');
+        return false;
+      },
+      disconnectManagedOAuthConnection: async () => {
+        mark('oauth:disconnect');
+      },
+      fetchModels: async () => {
+        mark('provider:fetchModels');
+        return [];
+      },
+    });
+    const cases: Array<{ channel: string; args: unknown[] }> = [
+      { channel: 'connections:setDefault', args: ['../escape'] },
+      {
+        channel: 'connections:setDefaultModel',
+        args: [{ slug: '../escape', model: 'test-model' }],
+      },
+      { channel: 'connections:delete', args: ['../escape'] },
+      { channel: 'connections:test', args: ['../escape'] },
+      { channel: 'connections:fetchModels', args: ['../escape'] },
+      { channel: 'connections:hasSecret', args: ['../escape'] },
+    ];
+
+    for (const { channel, args } of cases) {
+      const handler = handlers.get(channel);
+      assert.ok(handler, `${channel} must be registered`);
+      await assert.rejects(handler({}, ...args), /connection slug/);
+    }
+    assert.deepEqual(sideEffects, []);
+  });
+
   test('update rejects an invalid API key without reading, mutating, or exposing it', async () => {
     const sideEffects: string[] = [];
     const secret = 'private-value\u0000with-control-character';
