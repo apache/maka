@@ -174,6 +174,29 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
     bottomBoundary.lastTurnBottom,
     JSON.stringify(bottomBoundary),
   ).toBeLessThanOrEqual(bottomBoundary.dockTop + 1);
+  expect(
+    bottomBoundary.dockTop - bottomBoundary.lastTurnBottom,
+    JSON.stringify(bottomBoundary),
+  ).toBeLessThanOrEqual(48);
+});
+
+test('graph status stays docked above the composer while transcript history scrolls', async ({ longTranscriptWindow: page }) => {
+  await settleGeometry(page, { pinned: true });
+  const graphPanel = page.locator('.maka-agent-graph-panel');
+  await expect(graphPanel).toBeVisible();
+
+  const before = await graphPanel.boundingBox();
+  expect(before).not.toBeNull();
+  await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!scroller) throw new Error('Expected the Astryx chat scroller');
+    scroller.scrollTop = 0;
+  });
+  const after = await graphPanel.boundingBox();
+  expect(after).not.toBeNull();
+  if (before && after) {
+    expect(Math.abs(after.y - before.y), JSON.stringify({ before, after })).toBeLessThanOrEqual(1);
+  }
 });
 
 async function climbToTop(page: import('@playwright/test').Page) {

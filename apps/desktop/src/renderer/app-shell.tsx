@@ -2183,7 +2183,20 @@ function AppShellContent({
               <ChatSurfaceLayout
                 hidden={navSelection.section !== 'sessions'}
                 composer={
-                  <ChatComposerRegion
+                  <>
+                    {navSelection.section === 'sessions' &&
+                    activeId &&
+                    activeSessionForView &&
+                    !activeSessionForView.subagentParent ? (
+                      <AgentGraphPanel
+                        rootSessionId={activeId}
+                        enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}
+                        locale={uiLocale}
+                        onOpenSession={openSessionInChat}
+                      />
+                    ) : null}
+                    {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    <ChatComposerRegion
                   composerRef={composerRef}
                   active={navSelection.section === 'sessions'}
                   onboardingComposerHidden={
@@ -2383,12 +2396,12 @@ function AppShellContent({
                   onGraphModeChange={(active) => {
                     void setGraphMode(active);
                   }}
-                  />
+                    />
+                  </>
                 }
               >
                 {navSelection.section === 'sessions' ? (
-                  <>
-                    <ChatMessageSurface
+                  <ChatMessageSurface
                 messages={messages}
                 liveTurn={activeLiveTurn}
                 shellRunUpdates={activeShellRunUpdates}
@@ -2514,17 +2527,7 @@ function AppShellContent({
                   }
                 }}
                 conversationItems={planConversationItems}
-                    />
-                    {activeId && activeSessionForView && !activeSessionForView.subagentParent ? (
-                      <AgentGraphPanel
-                        rootSessionId={activeId}
-                        enabled={(activeSessionForView?.orchestrationMode ?? 'default') === 'graph'}
-                        locale={uiLocale}
-                        onOpenSession={openSessionInChat}
-                      />
-                    ) : null}
-                    <PlanExecutionPanel planMode={planMode} />
-                  </>
+                  />
                 ) : null}
               </ChatSurfaceLayout>
             </div>
