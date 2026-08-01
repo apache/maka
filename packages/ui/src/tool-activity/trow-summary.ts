@@ -138,10 +138,7 @@ export function isTrowRunning(items: readonly ToolActivityItem[]): boolean {
 
 /**
  * True when the group must force itself open: a permission prompt is inside.
- * A prompt is actionable content that a collapsed summary line would hide. An
- * errored tool no longer force-opens the group — the settled summary line
- * keeps the failure signal (「N 个失败」 in destructive color), and the error
- * banner + output stay one click away behind the disclosure.
+ * Errored tools stay collapsed; expand for detail.
  */
 export function trowNeedsAttention(items: readonly ToolActivityItem[]): boolean {
   return items.some((item) => item.status === 'waiting_permission');

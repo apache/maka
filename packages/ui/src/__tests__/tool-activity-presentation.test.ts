@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import type { StoredMessage, ToolResultContent } from '@maka/core';
-import { ToolActivity, ToolErrorDetails, ToolTrow } from '../tool-activity.js';
+import { ToolActivity, ToolTrow } from '../tool-activity.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import {
   createToolDisclosureState,
@@ -30,17 +30,6 @@ function renderTool(item: ToolActivityItem): string {
 }
 
 describe('tool activity presentation', () => {
-  it('does not mount collapsed raw error diagnostics', () => {
-    const markup = renderToStaticMarkup(createElement(
-      ToolErrorDetails,
-      null,
-      createElement('pre', null, 'large private diagnostic payload'),
-    ));
-
-    assert.match(markup, /aria-expanded="false"/);
-    assert.doesNotMatch(markup, /large private diagnostic payload/);
-  });
-
   it('prefers a declared semantic kind over the legacy tool-name fallback', () => {
     const item: ToolActivityItem = {
       toolUseId: 'tool-kind',
@@ -197,7 +186,17 @@ describe('tool activity presentation', () => {
     assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
     assert.match(markup, /Bash/);
     assert.match(markup, /Error: boom/);
-    assert.doesNotMatch(markup, /Error: Error:|data-slot="tool-output"/);
+    assert.doesNotMatch(markup, /Error: Error:|data-slot="tool-output"|工具调用失败|data-slot="alert"|astryx-codeblock/);
+  });
+
+  it('renders ordinary failure text as a neutral CodeBlock well', () => {
+    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
+      content: { kind: 'text', text: 'Validation failed: field invalid TAIL_OK' },
+      toolName: 'read',
+    }));
+    assert.match(markup, /astryx-codeblock/);
+    assert.match(markup, /Validation failed: field invalid TAIL_OK/);
+    assert.doesNotMatch(markup, /工具调用失败|data-slot="alert"|失败·退出码/);
   });
 
   it('presents a command sandbox denial as blocked instead of failed', () => {

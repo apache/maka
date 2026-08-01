@@ -210,7 +210,7 @@ const MessageBody = memo(function MessageBody(props: {
     );
   }
   return (
-    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-with-actions">
+    <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
       <Markdown text={props.text} />
     </ChatMessageBubble>
   );

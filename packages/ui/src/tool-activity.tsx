@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 import type { ToolResultContent } from '@maka/core';
 import {
-  AlertOctagon,
   Check,
   Clock,
   Copy,
@@ -290,10 +289,7 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
   return (
     <div className="mt-1 flex flex-col gap-1.5">
       {showSandboxBanner && (
-        <ToolErrorBanner
-          result={displayResult ?? item.result}
-          sandboxBlocked
-        />
+        <SandboxBlockedBanner result={displayResult ?? item.result} />
       )}
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
@@ -607,13 +603,13 @@ function ToolOutputStream(props: {
   );
 }
 
-function ToolErrorBanner(props: {
+/** Warning banner only for sandbox denials; ordinary failures use row status + wells. */
+function SandboxBlockedBanner(props: {
   result: ToolActivityItem['result'];
-  sandboxBlocked?: boolean;
 }) {
   const locale = useUiLocale();
   const copyText = getToolActivityCopy(locale);
-  const bannerCopy = props.sandboxBlocked ? copyText.sandboxBlocked : copyText.error;
+  const bannerCopy = copyText.sandboxBlocked;
   // UI-level mask before display and copy (main-side redaction can miss paths).
   const errorText = formatUserVisibleToolText(redactSecrets(extractErrorText(props.result, locale)), locale);
   const copyFeedback = useClipboardCopyFeedback();
@@ -633,25 +629,17 @@ function ToolErrorBanner(props: {
   }
 
   return (
-    <Alert variant={props.sandboxBlocked ? 'warning' : 'error'} className="mb-2.5">
-      {props.sandboxBlocked
-        ? <ShieldAlert size={16} aria-hidden="true" />
-        : <AlertOctagon size={16} aria-hidden="true" />}
+    <Alert variant="warning" className="mb-2.5">
+      <ShieldAlert size={16} aria-hidden="true" />
       <AlertTitle>{bannerCopy.title}</AlertTitle>
-      {props.sandboxBlocked ? (
-        <AlertDescription className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
-          <span>{copyText.sandboxBlocked.description}</span>
-          {errorText && (
-            <span className="[font-family:var(--font-mono)]">
-              {summarizeErrorText(errorText)}
-            </span>
-          )}
-        </AlertDescription>
-      ) : errorText ? (
-        <AlertDescription className="[font-family:var(--font-mono)] text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
-          {summarizeErrorText(errorText)}
-        </AlertDescription>
-      ) : null}
+      <AlertDescription className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+        <span>{bannerCopy.description}</span>
+        {errorText && (
+          <span className="[font-family:var(--font-mono)]">
+            {summarizeErrorText(errorText)}
+          </span>
+        )}
+      </AlertDescription>
       {errorText && (
         <AlertAction>
           <UiButton
@@ -670,31 +658,6 @@ function ToolErrorBanner(props: {
         </AlertAction>
       )}
     </Alert>
-  );
-}
-
-/** @deprecated No production callers; ordinary failures use resultDetail wells. */
-export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
-  children: ReactNode;
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-}) {
-  const copy = getToolActivityCopy(useUiLocale()).output;
-  const [internalOpen, setInternalOpen] = useState(false);
-  const open = openProp ?? internalOpen;
-  const setOpen = (next: boolean) => {
-    setInternalOpen(next);
-    onOpenChange?.(next);
-  };
-  return (
-    <AstryxCollapsible
-      isOpen={open}
-      onOpenChange={setOpen}
-      className="mt-1"
-      trigger={<span className="text-[length:var(--font-size-ui)] text-[color:var(--muted-foreground)]">{open ? copy.hideRaw : copy.showRaw}</span>}
-    >
-      {open ? <div className="mt-1">{children}</div> : null}
-    </AstryxCollapsible>
   );
 }
 
