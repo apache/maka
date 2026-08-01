@@ -193,13 +193,9 @@ describe('SQLite recovery authority multi-process races', () => {
         'workspace_baseline_a',
         'workspace_baseline_b',
       ]);
-      assert.deepEqual(
-        results.map(({ code }) => code).sort(),
-        [0, 2],
-      );
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
       assert.equal(
-        results.filter(({ stderr }) => /Workspace baseline authority conflict/.test(stderr))
-          .length,
+        results.filter(({ stderr }) => /Workspace baseline authority conflict/.test(stderr)).length,
         1,
       );
 
