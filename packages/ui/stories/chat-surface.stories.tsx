@@ -624,10 +624,11 @@ export const ProcessingExpanded: Story = {
   },
 };
 
-// Canonical review path for Slice 9: a real long conversation containing
-// reasoning, multiple native Astryx tool calls, long prose, and the complete
-// composer control area with staged context. This is the first story to open
-// for visual acceptance; the focused stories below isolate individual states.
+// Real path: a long session that has accumulated reasoning, several native
+// Astryx tool calls and long prose, with an image staged in the composer and
+// thinking set to medium. Each part is individually reachable; they are stacked
+// into one screen on purpose, as the canonical Slice 9 visual-acceptance
+// scaffold. Open this first, then the focused stories below for single states.
 export const AstryxNativeConversation: Story = {
   render: () => (
     <ChatSurface

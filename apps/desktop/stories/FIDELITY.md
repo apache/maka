@@ -1,6 +1,6 @@
 # Storybook fidelity convention
 
-Applies to every `Product/*` story in `apps/desktop/stories` and `packages/ui/stories`. `Primitives/*` and `Design System/*` are exempt: they demonstrate a component's states, not a product surface, and there is no user path to a Button variant.
+Applies to every `Product/*` story in `apps/desktop/stories` and `packages/ui/stories`. `Primitives/*` and `Design System/*` are exempt: they demonstrate a component's states, not a product surface, and there is no user path to a StatTile emphasis.
 
 ## Every product story maps to a state a real user can reach
 
@@ -15,9 +15,9 @@ So each story carries a `// Real path:` comment directly above it, naming how a 
 export const Populated: Story = { … }
 ```
 
-The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a machine-checkable schema would be satisfied by a plausible-looking lie just as easily. `story-annotation-contract.test.ts` checks that the sentence exists — nothing more. **It cannot tell you the sentence is true.** Only a reviewer following the call chain can, and reviewing that sentence is the point of writing it.
+The annotation is prose on purpose. Its value is that someone traced the path and wrote it down; a machine-checkable schema would be satisfied by a plausible-looking lie just as easily. Nothing enforces it — a `story-annotation-contract.test.ts` used to check that the sentence exists, and #1724 retired it along with the rest of the source-scanning contract suite. Even while it ran it could not tell you the sentence was *true*; only a reviewer following the call chain can, and reviewing that sentence is the point of writing it.
 
-What it does guarantee is that nothing slips past it unseen. It derives the files it scans from `.storybook/main.ts` rather than restating them, and it fails on any top-level export it cannot classify instead of skipping it. A contract that quietly ignores what it does not parse passes *because* it did not understand — which is the same failure as a story that quietly shows a screen the app does not render. So stories use `export const Name: Story = …` and nothing else; a new form is a deliberate widening of the contract, not a silent exemption.
+So this is a review convention, and it decays like one: `chat-surface.stories.tsx` already carries thirteen stories and twelve annotations. Writing the sentence is on the author, checking it is on the reviewer, and a story that arrives without one is incomplete rather than exempt.
 
 Two of the first batch of annotations were wrong, and both were caught by reading rather than by running anything: one named a path through a builder that cannot produce the state (`CommandPaletteDisabledCommand`), and one named two hosts for a frame that is only one of them. Write the sentence narrow enough to be falsifiable — the host, the builder, the gate — because a sentence vague enough to always be true buys nothing.
 
