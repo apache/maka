@@ -227,26 +227,52 @@ test('official SideNav resize handle updates the sidebar width from the keyboard
     .toBe(beforeWidth + 10);
 });
 
-test('titlebar restores the official SideNav width after pointer collapse', async ({
+/**
+ * A collapse/expand round trip must return the sidebar to a usable width, and
+ * to the width the user had chosen rather than the default.
+ *
+ * This used to drive the collapse by dragging the resize handle past its
+ * minimum. That no longer works: since the Astryx 0.2.0 upgrade (#1750) the
+ * handle does not respond to synthesised pointer input at all. Measured on this
+ * branch — after `mouse.down()` on the handle and a drag across the panel,
+ * `aria-valuenow` and the panel's rendered width both stay at 260, and
+ * dispatching a hand-built `PointerEvent` sequence (correct `pointerId`,
+ * `buttons`, and `isPrimary`, delivered both to the handle and to `window`)
+ * moves neither. The handle still works from the keyboard, which the test above
+ * covers, so this is specific to pointer drag. The test kept asserting
+ * `data-sidebar-state="collapsed"` after a drag that no longer collapsed
+ * anything, which is why it has failed on every CI run since #1750.
+ *
+ * Collapsing through the titlebar control is the same round trip by the path a
+ * user actually has, and it is drivable.
+ *
+ * NOT covered here, and deliberately: `app-shell.tsx` refuses to persist a
+ * width below `SESSION_LIST_EXPANDED_MIN_WIDTH`, which is what stops a
+ * drag-to-collapse from writing a sub-minimum width that the next expand would
+ * restore. Reaching that guard needs Astryx to report an under-minimum width,
+ * and pointer drag is the only thing that produces one. It has no renderer-side
+ * test seam today, so it is currently unlocked rather than silently "covered".
+ */
+test('titlebar restores the chosen SideNav width across a collapse round trip', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const shell = page.locator('.appFrame');
   const panel = page.locator('.maka-session-panel');
   const handle = page.getByTestId('astryx-sidenav-resize-handle');
-  const handleBox = await handle.boundingBox();
-  const panelBox = await panel.boundingBox();
-  expect(handleBox).not.toBeNull();
-  expect(panelBox).not.toBeNull();
-  if (!handleBox || !panelBox) return;
+  const panelWidth = () => panel.evaluate((element) => element.getBoundingClientRect().width);
 
-  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(panelBox.x + 100, handleBox.y + handleBox.height / 2, { steps: 4 });
-  await page.mouse.up();
+  // Choose a non-default width from the keyboard, so the restore assertion can
+  // tell "came back" apart from "fell back to the 260px default".
+  await handle.focus();
+  const chosenWidth = Number(await handle.getAttribute('aria-valuenow')) + 10;
+  await handle.press('ArrowRight');
+  await expect.poll(panelWidth).toBe(chosenWidth);
 
+  await page.getByRole('button', { name: '收起侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'collapsed');
+
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
-  await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
-    .toBeGreaterThanOrEqual(180);
+  await expect.poll(panelWidth).toBe(chosenWidth);
+  expect(chosenWidth).toBeGreaterThanOrEqual(180);
 });
