@@ -1,15 +1,32 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
 
-// Runtime locale switching must not require a reload; boot-time hydration must
-// still read the persisted uiLocale after a full remount.
-test('locale switching, persistence, and Follow system need no reload', async ({ localeSwitchWindow: page }) => {
-  await page.getByRole('button', { name: /展开侧边栏|Expand sidebar/ }).click();
+/** Sidebar expand is absent when already expanded (state can survive reload). */
+async function ensureSidebarExpanded(page: Page): Promise<void> {
+  const expand = page.getByRole('button', { name: /展开侧边栏|Expand sidebar/ });
+  if (await expand.isVisible().catch(() => false)) {
+    await expand.click();
+  }
+}
+
+async function openSettingsGeneral(page: Page): Promise<{
+  settingsNavigation: ReturnType<Page['getByRole']>;
+  settings: ReturnType<Page['getByRole']>;
+}> {
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: /设置|Settings/ }).click();
   const settingsNavigation = page.getByRole('navigation', {
     name: /设置分组|Settings sections/,
   });
   const settings = page.getByRole('main', { name: /设置内容|Settings content/ });
   await settingsNavigation.getByRole('button', { name: /通用|General/, exact: true }).click();
+  return { settingsNavigation, settings };
+}
+
+// Runtime locale switching must not require a reload; boot-time hydration must
+// still read the persisted uiLocale after a full remount.
+test('locale switching, persistence, and Follow system need no reload', async ({ localeSwitchWindow: page }) => {
+  let { settings } = await openSettingsGeneral(page);
 
   let language = settings.getByRole('radiogroup', { name: /界面语言|Interface language/ });
   await language.getByRole('radio', { name: 'English', exact: true }).click();
@@ -22,9 +39,7 @@ test('locale switching, persistence, and Follow system need no reload', async ({
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect.poll(() => page.evaluate(() => window.maka.settings.get().then((value) => value.personalization.uiLocale))).toBe('en');
 
-  await page.getByRole('button', { name: /Expand sidebar|展开侧边栏/ }).click();
-  await page.getByRole('button', { name: /Settings|设置/ }).click();
-  await settingsNavigation.getByRole('button', { name: /General|通用/, exact: true }).click();
+  ({ settings } = await openSettingsGeneral(page));
 
   await page.evaluate(() => { (window as unknown as { __localeE2eMarker: string }).__localeE2eMarker = 'alive'; });
   language = settings.getByRole('radiogroup', { name: 'Interface language' });
