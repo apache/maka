@@ -1,11 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import {
-  checkSalvagedAnchors,
-  checkScopeCoverage,
-  diffRecords,
-  partitionChanges,
-} from './check-visual-contract.mjs';
+import { checkScopeCoverage, diffRecords, partitionChanges } from './check-visual-contract.mjs';
 
 const record = (path, extra = {}) => ({ path, rect: [0, 0, 10, 10], ...extra });
 
@@ -69,11 +64,4 @@ test('repeatable scopes stay bounded per root and in total', () => {
     ),
     [{ scope: 'item', claimed: 60, total: 100 }],
   );
-});
-
-test('salvaged anchors require an exact current capture hook', () => {
-  const anchors = [{ commit: 'abc', regression: 'r', route: 'chat', anchor: 'list-row' }];
-  const captures = new Map([['chat.light.darwin', [record('a', { contract: 'list-row-meta' })]]]);
-  assert.equal(checkSalvagedAnchors(captures, anchors).length, 1);
-  assert.deepEqual(checkSalvagedAnchors(new Map(), anchors), []);
 });

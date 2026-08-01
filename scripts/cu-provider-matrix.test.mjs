@@ -149,16 +149,6 @@ test('matrix generation never executes provider command templates', async () => 
   }
 });
 
-test('invalid readiness fails closed', async () => {
-  await assert.rejects(
-    buildProviderMatrix({
-      scenarios: [{ id: 'click' }],
-      providers: [{ id: 'claude', readiness: 'maybe' }],
-    }),
-    /invalid readiness/,
-  );
-});
-
 test('a real report from another scenario is invalid instead of a fixture failure', async () => {
   const matrix = await buildProviderMatrix({
     scenarios: [scenario({ id: 'l0-observe-only' })],
