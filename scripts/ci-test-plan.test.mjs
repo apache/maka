@@ -32,6 +32,20 @@ test('stress and specialized script checks run only for their owning surfaces', 
   assert.deepEqual(measurement.workspaces, []);
 });
 
+test('sandbox is flagged whenever the cli workspace runs in the closure', () => {
+  // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
+  // shell tools, so any change whose dependency closure selects packages/cli must
+  // provision the sandbox — not only direct cli/runtime edits.
+  for (const path of [
+    'packages/cli/src/__tests__/runtime-bootstrap.test.ts',
+    'packages/runtime/src/shell-tools.ts',
+    'packages/storage/src/session-store.ts',
+    'packages/headless/src/cell-output.ts',
+  ]) {
+    assert.equal(planTests([path], { graph }).runtimeSandbox, true, path);
+  }
+});
+
 test('global and unknown production changes fail safe to the complete suite', () => {
   for (const path of ['package-lock.json', 'scripts/ci-test-plan.mjs', 'new-root/file.ts']) {
     const plan = planTests([path], { graph });

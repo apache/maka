@@ -141,11 +141,11 @@ const baseComposerProps: ComposerProps = {
   },
 };
 
-function SurfaceFrame(props: { children: ReactNode; narrow?: boolean }) {
+function SurfaceFrame(props: { children: ReactNode; narrow?: boolean; width?: number }) {
   return (
     <div
       style={{
-        width: props.narrow ? 560 : 960,
+        width: props.width ?? (props.narrow ? 560 : 960),
         maxWidth: 'calc(100vw - 48px)',
         height: props.narrow ? 700 : 760,
         margin: '0 auto',
@@ -166,13 +166,14 @@ function ChatSurface(props: {
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
   narrow?: boolean;
+  width?: number;
 }) {
   const messages = props.chat?.messages ?? baseChatProps.messages;
   const turnFooterActionsByTurn = Object.fromEntries(
     [...new Set(messages.map((m) => m.turnId))].map((id) => [id, DEFAULT_FOOTER_ACTIONS]),
   );
   return (
-    <SurfaceFrame narrow={props.narrow}>
+    <SurfaceFrame narrow={props.narrow} width={props.width}>
       <div
         style={{
           display: 'flex',
@@ -684,6 +685,106 @@ export const BranchedConversation: Story = {
       }}
     />
   ),
+};
+
+// Real path: a derived revision is running an autonomous goal with local
+// memory and Deep Research enabled. Session metadata stays in one context
+// layer above the transcript instead of splitting across header pills and
+// standalone branch/revision rows.
+export const SessionContextCombined: Story = {
+  render: () => {
+    const activeSession = session({
+      id: 'session-context-combined',
+      name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
+      labels: ['mode:deep_research'],
+      parentSessionId: 'session-parent',
+      branchOfTurnId: 'turn-1',
+    });
+    return (
+      <ChatSurface
+        chat={{
+          activeSession,
+          messages: shortConversation,
+          memoryActive: true,
+          onOpenMemorySettings: noop,
+          goalIndicator: {
+            condition: '把 Session Context Layer 收敛到可 review 状态',
+            status: 'active',
+            iterations: 4,
+            maxIterations: 12,
+            onClear: noop,
+          },
+          branchBanner: {
+            parentSessionId: 'session-parent',
+            parentSessionName: 'UI polish 主线评审与跨会话来源追踪的完整上下文',
+            fromAbortedTurn: true,
+          },
+          onBranchBannerClick: noop,
+          revisionNavigation: {
+            current: 2,
+            total: 3,
+            previousSessionId: 'session-context-revision-1',
+            nextSessionId: 'session-context-revision-3',
+          },
+          onRevisionNavigate: noop,
+        }}
+        composer={{
+          draftKey: 'composer-session-context-combined',
+          activeSession,
+        }}
+      />
+    );
+  },
+};
+
+// Real path: the same combined context with a narrow chat column. Goal remains
+// visible while lower-priority metadata collapses into Astryx MoreMenu.
+export const SessionContextNarrow: Story = {
+  render: () => {
+    const activeSession = session({
+      id: 'session-context-narrow',
+      name: 'Chat Surface 收敛',
+      labels: ['mode:deep_research'],
+      parentSessionId: 'session-parent',
+      branchOfTurnId: 'turn-1',
+    });
+    return (
+      <ChatSurface
+        narrow
+        width={360}
+        chat={{
+          activeSession,
+          messages: shortConversation,
+          memoryActive: true,
+          onOpenMemorySettings: noop,
+          goalIndicator: {
+            condition: '把 Session Context Layer 收敛到可 review 状态',
+            status: 'active',
+            iterations: 4,
+            maxIterations: 12,
+            onClear: noop,
+          },
+          branchBanner: {
+            parentSessionId: 'session-parent',
+            parentSessionName: 'UI polish 主线评审',
+            fromAbortedTurn: true,
+          },
+          onBranchBannerClick: noop,
+          revisionNavigation: {
+            current: 2,
+            total: 3,
+            previousSessionId: 'session-context-revision-1',
+            nextSessionId: 'session-context-revision-3',
+          },
+          onRevisionNavigate: noop,
+        }}
+        composer={{
+          draftKey: 'composer-session-context-narrow',
+          activeSession,
+        }}
+      />
+    );
+  },
 };
 
 // Real path: two composer states, side by side as a review scaffold: left = Stop pressed
