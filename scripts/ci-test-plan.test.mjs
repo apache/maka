@@ -18,6 +18,14 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   // job now builds and smokes Storybook, so a core change must reach it.
   assert.equal(planTests(['packages/core/src/settings.ts'], { graph }).e2e, true);
 
+  // A script the e2e job RUNS must re-run it; a script it does not stays off.
+  // Otherwise the smoke runner is the one file that can stop guarding without
+  // the guard ever running against the change.
+  const smoke = planTests(['scripts/storybook-visual-smoke.mjs'], { graph });
+  assert.equal(smoke.e2e, true);
+  assert.equal(smoke.scriptMode, 'fast');
+  assert.equal(planTests(['scripts/check-story-annotations.mjs'], { graph }).e2e, false);
+
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
   assert.equal(backend.e2e, false);
   for (const workspace of ['packages/storage', 'packages/runtime', 'apps/desktop']) {

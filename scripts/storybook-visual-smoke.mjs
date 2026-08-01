@@ -317,10 +317,8 @@ async function smokeStory(page, baseUrl, job, options = {}) {
       },
       { checks: job.checks ?? [], colorScheme: job.colorScheme ?? 'light' },
     );
-    if (result !== true) {
-      browserFailures.push(...result.failures);
-      if (!result.hasContent) browserFailures.push('story root rendered empty content');
-    }
+    browserFailures.push(...result.failures);
+    if (!result.hasContent) browserFailures.push('story root rendered empty content');
     if (browserFailures.length > 0) {
       throw new Error(`${prefix} ${browserFailures.join('; ')}`);
     }
@@ -343,7 +341,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
  * still mount and finish its play function without errors — and leaves
  * viewport, colour-scheme and surface-specific assertions to the manifest.
  */
-export function catalogJobs(storyIndex, manifestJobs) {
+function catalogJobs(storyIndex, manifestJobs) {
   const covered = new Set(manifestJobs.map((job) => job.storyId));
   return Object.values(storyIndex.entries)
     .filter((entry) => entry.type === 'story' && !covered.has(entry.id))
@@ -355,6 +353,11 @@ export function catalogJobs(storyIndex, manifestJobs) {
     }));
 }
 
+/**
+ * Every job is attempted and every story failure is collected, so one broken
+ * story cannot hide the rest behind it. Only an infrastructure failure — a page
+ * that cannot be opened or closed — is allowed to reject and abort the run.
+ */
 async function runJobs(browser, baseUrl, jobs, concurrency) {
   const queue = [...jobs];
   const failures = [];

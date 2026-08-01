@@ -26,6 +26,14 @@ const TYPECHECK_ONLY_FILES = new Set([
   'tsconfig.lib.json',
 ]);
 
+// Scripts the e2e job runs. Editing one of these changes what that job
+// verifies, so it has to re-run — a unit test on the runner is not evidence
+// that the run it drives still works.
+const E2E_DRIVING_SCRIPTS = new Set([
+  'scripts/audit-alignment.mjs',
+  'scripts/storybook-visual-smoke.mjs',
+]);
+
 const EXTENDED_SCRIPT_FILES = new Set([
   'scripts/check-cua-driver-bundle.mjs',
   'scripts/cu-provider-matrix.mjs',
@@ -163,10 +171,16 @@ export function planTests(changedFiles, options = {}) {
     // the one exception: .storybook/preview.tsx reads THEME_PALETTES straight
     // out of packages/core/src/settings.ts, so a core change can break the
     // Storybook build without touching apps/desktop or packages/ui.
+    //
+    // The scripts that DRIVE those suites belong here too. `scripts/**` only
+    // sets scriptMode, so without this a change to the smoke runner itself was
+    // verified by its unit tests and never by the run it orchestrates — the one
+    // change most able to make the guard silently stop guarding.
     e2e:
       directWorkspaces.has('apps/desktop') ||
       directWorkspaces.has('packages/ui') ||
-      directWorkspaces.has('packages/core'),
+      directWorkspaces.has('packages/core') ||
+      files.some((path) => E2E_DRIVING_SCRIPTS.has(path)),
     full: false,
     headless: workspaces.includes('packages/headless'),
     // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
