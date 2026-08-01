@@ -1181,7 +1181,9 @@ export class AgentRun {
           { durable: true },
         );
       });
-      this.enqueueRunStore('append run status audit', appendAudit);
+      // The audit remains best-effort, but its physical write belongs to this
+      // required transition and must settle before the resume acknowledgement.
+      await this.enqueueRunStore('append run status audit', appendAudit);
     } else {
       this.enqueueRunStore('record run status', async () => {
         await runStore.updateRun(this.sessionId, this.runId, { status, updatedAt: ts });
