@@ -29,14 +29,14 @@ const MODEL_SWITCHER_CSS = resolve(
 );
 
 describe('native-cursor convention', () => {
-  it('ships a single maka.legacy sheet that defaults interactive roles and keeps pointer on links', async () => {
+  it('ships a single product component sheet that defaults interactive roles and keeps pointer on links', async () => {
     const sheet = stripCssComments(await readFile(NATIVE_CURSOR_CSS, 'utf8'));
     const entry = await readFile(STYLES_ENTRY, 'utf8');
 
     assert.match(
       entry,
-      /native-cursor\.css"\s+layer\(maka\.legacy\)/,
-      'native-cursor.css must load in maka.legacy (above astryx-components)',
+      /native-cursor\.css"\s+layer\(components\)/,
+      'native-cursor.css must load in product components (above astryx-components)',
     );
 
     assert.match(
