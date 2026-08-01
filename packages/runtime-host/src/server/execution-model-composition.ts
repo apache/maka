@@ -509,18 +509,31 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       accountingAuthorityFailed = true;
       throw error;
     }
-    try {
-      await input.usage.modelCalls.recordModelCallAttempt(attempt);
-    } catch (error) {
-      await input.usage.modelCalls
-        .markRunPendingReprojection(attempt.sessionId, attempt.runId)
-        .catch(() => undefined);
-      throw error;
-    }
+    // Mark before projecting, not after failing. A marker written only on a
+    // caught error cannot cover the case the error path never runs — the
+    // process exiting between the two writes — which would leave the record in
+    // the authority and invisible to Usage. Marking first makes this an intent
+    // record: a crash anywhere after it still leaves a run the repair finds.
+    await input.usage.modelCalls
+      .markRunPendingReprojection(attempt.sessionId, attempt.runId)
+      .catch(() => undefined);
+    await input.usage.modelCalls.recordModelCallAttempt(attempt);
+    await input.usage.modelCalls
+      .clearPendingReprojection(attempt.sessionId, attempt.runId)
+      .catch(() => undefined);
   };
+  /**
+   * Fail-closed pre-dispatch gate, keyed on the authority alone. A stale
+   * projection is recoverable and must not block a send; an authority that has
+   * stopped accepting records means the next dispatch produces spend nothing
+   * will ever hold, so the send fails before the provider is called.
+   *
+   * Not `telemetryDrainRequested`: that flag tracks the frozen legacy table,
+   * which no longer meters main sends at all.
+   */
   const assertModelCallAccountingReady = (): void => {
-    if (telemetryDrainRequested) {
-      throw new Error('Canonical model-call accounting is unavailable on this host');
+    if (accountingAuthorityFailed) {
+      throw new Error('Canonical model-call accounting authority is unavailable');
     }
   };
   let artifactDrainRequested = false;

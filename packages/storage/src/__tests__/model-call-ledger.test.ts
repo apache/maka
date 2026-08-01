@@ -174,7 +174,7 @@ describe('re-projecting a run the read model fell behind on', () => {
         readRunEvents: async () => runEvents([committed]),
       });
 
-      assert.deepEqual(result, { repaired: 1, remaining: 0 });
+      assert.deepEqual(result, { repaired: 1, remaining: 0, unreadableEvents: 0 });
       assert.deepEqual(
         ledger.read({ from: 0, to: NOW }).attempts.map((row) => row.attemptId),
         ['missed'],
@@ -209,8 +209,30 @@ describe('re-projecting a run the read model fell behind on', () => {
         },
       });
 
-      assert.deepEqual(result, { repaired: 0, remaining: 1 });
+      assert.deepEqual(result, { repaired: 0, remaining: 1, unreadableEvents: 0 });
       assert.equal(ledger.pendingReprojections().length, 1);
+    });
+  });
+
+  test('an undecodable authority event is counted out, not dropped with the marker', async () => {
+    // Clearing the marker is right — it will not decode next pass either, and
+    // holding the run would stall every later repair behind it. But the call
+    // was real, so the count has to leave with the result or it vanishes from
+    // the totals and the pending count at the same time.
+    await withLedger(async (ledger) => {
+      await ledger.markRunPendingReprojection('session-1', 'run-1');
+
+      const result = await repairPendingModelCallProjections({
+        ledger: target(ledger),
+        readRunEvents: async () => [
+          { type: 'model_call_attempt_recorded', data: { schemaVersion: 1 } },
+          ...runEvents([attempt({ attemptId: 'good' })]),
+        ],
+      });
+
+      assert.equal(result.unreadableEvents, 1);
+      assert.equal(result.repaired, 1);
+      assert.deepEqual(ledger.pendingReprojections(), []);
     });
   });
 

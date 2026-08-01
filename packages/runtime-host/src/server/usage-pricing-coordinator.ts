@@ -79,19 +79,21 @@ export class HostUsagePricingCoordinator {
     // Fold in anything the authority holds that this read model is behind on,
     // before answering. Whatever a pass cannot repair is reported rather than
     // silently missing from the totals.
-    const remaining = await this.#repairPendingProjections();
+    const repair = await this.#repairPendingProjections();
     const page = await this.#stores.modelCalls.modelCallAttempts(
       resolveUsageRange(query.range, now),
     );
     return {
       attempts: page.attempts,
-      unreadableRecords: page.unreadableRecords,
-      pendingRepairs: remaining,
+      // Both kinds of unreadable record count: a stored row that will not
+      // decode, and an authority event a repair could not turn into one.
+      unreadableRecords: page.unreadableRecords + repair.unreadableEvents,
+      pendingRepairs: repair.remaining,
     };
   }
 
-  async #repairPendingProjections(): Promise<number> {
-    if (!this.#readRunEvents) return 0;
+  async #repairPendingProjections(): Promise<{ remaining: number; unreadableEvents: number }> {
+    if (!this.#readRunEvents) return { remaining: 0, unreadableEvents: 0 };
     const result = await repairPendingModelCallProjections({
       ledger: {
         record: (attempt) => this.#stores.modelCalls.recordModelCallAttempt(attempt),
@@ -102,7 +104,7 @@ export class HostUsagePricingCoordinator {
       readRunEvents: this.#readRunEvents,
       limit: USAGE_REPAIR_RUNS_PER_QUERY,
     });
-    return result.remaining;
+    return { remaining: result.remaining, unreadableEvents: result.unreadableEvents };
   }
 
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {

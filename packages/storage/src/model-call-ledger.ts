@@ -18,12 +18,17 @@ import {
  *
  * The table exists because the AgentRun store answers "what happened in this
  * run" and no Usage question is shaped that way. It may fall behind the stream
- * — a failed upsert, a crash between the two — and that is recoverable rather
- * than lost: the authority still holds every record, so re-projecting a run
- * restores it. {@link ModelCallLedgerWriter.markRunPendingReprojection} makes
- * that targeted instead of a full sweep, but correctness does not depend on the
- * marker surviving; a full re-projection recovers a run whose marker was never
- * written.
+ * — a failed upsert, a crash between the two — and that is recoverable: the
+ * authority still holds every record, so re-projecting the run restores it.
+ *
+ * Recovery is driven by {@link ModelCallLedgerWriter.markRunPendingReprojection},
+ * which is written *before* the projection is attempted, so it is an intent
+ * record rather than an error record: a crash at any point after it still
+ * leaves a run the repair finds. The honest limit is the window between the
+ * authority append and the marker — a process that dies inside it leaves a
+ * committed record this table will not learn about, because nothing sweeps the
+ * whole stream. Closing that needs a full re-projection pass over every run,
+ * which is not implemented here.
  *
  * Deliberately separate from `usage_llm_calls`. That table is a frozen
  * historical projection with no way to express `usageBasis` or `costBasis`, so
@@ -241,6 +246,13 @@ export interface RepairModelCallProjectionsResult {
   readonly repaired: number;
   /** Runs still marked afterwards — whatever this pass could not fix. */
   readonly remaining: number;
+  /**
+   * Authority events that could not be decoded into an attempt. Real calls
+   * whose cost is now unknown: clearing the marker without carrying this count
+   * would drop them out of the totals and out of the pending count at once,
+   * leaving nothing to say they existed.
+   */
+  readonly unreadableEvents: number;
 }
 
 /**
@@ -260,22 +272,28 @@ export async function repairPendingModelCallProjections(
   try {
     pending = await input.ledger.pending();
   } catch {
-    return { repaired: 0, remaining: 0 };
+    return { repaired: 0, remaining: 0, unreadableEvents: 0 };
   }
-  if (pending.length === 0) return { repaired: 0, remaining: 0 };
+  if (pending.length === 0) return { repaired: 0, remaining: 0, unreadableEvents: 0 };
 
   const batch = pending.slice(0, input.limit ?? pending.length);
   let repaired = 0;
+  let unreadableEvents = 0;
   for (const entry of batch) {
     try {
       const events = await input.readRunEvents(entry.sessionId, entry.runId);
-      const { attempts } = modelCallAttemptsFromRunEvents(events);
-      for (const attempt of attempts) await input.ledger.record(attempt);
+      const decoded = modelCallAttemptsFromRunEvents(events);
+      for (const attempt of decoded.attempts) await input.ledger.record(attempt);
+      // The marker still clears: an event that cannot be decoded will not
+      // decode on the next pass either, and keeping the run marked forever
+      // would stall every later repair behind it. The count travels out with
+      // the result instead, so the gap stays visible.
+      unreadableEvents += decoded.unreadableEvents;
       await input.ledger.clear(entry.sessionId, entry.runId);
       repaired += 1;
     } catch {
       // Keep the marker. The authority still holds this run's records.
     }
   }
-  return { repaired, remaining: pending.length - repaired };
+  return { repaired, remaining: pending.length - repaired, unreadableEvents };
 }

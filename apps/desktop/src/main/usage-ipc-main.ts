@@ -49,22 +49,24 @@ export function registerUsageIpc(deps: UsageIpcDeps): void {
   const canonicalUsage = async (query: UsageQuery, now: number): Promise<CanonicalUsageSource> => {
     // Fold in whatever the authority holds and this read model is behind on
     // before answering; report what a pass could not repair.
-    const pendingRepairs = deps.readRunEvents
-      ? (
-          await repairPendingModelCallProjections({
-            ledger: {
-              record: (attempt) => deps.modelCallLedger.record(attempt),
-              pending: () => deps.modelCallLedger.pendingReprojections(),
-              clear: (sessionId, runId) =>
-                deps.modelCallLedger.clearPendingReprojection(sessionId, runId),
-            },
-            readRunEvents: deps.readRunEvents,
-            limit: USAGE_REPAIR_RUNS_PER_QUERY,
-          })
-        ).remaining
-      : 0;
+    const repair = deps.readRunEvents
+      ? await repairPendingModelCallProjections({
+          ledger: {
+            record: (attempt) => deps.modelCallLedger.record(attempt),
+            pending: () => deps.modelCallLedger.pendingReprojections(),
+            clear: (sessionId, runId) =>
+              deps.modelCallLedger.clearPendingReprojection(sessionId, runId),
+          },
+          readRunEvents: deps.readRunEvents,
+          limit: USAGE_REPAIR_RUNS_PER_QUERY,
+        })
+      : { remaining: 0, unreadableEvents: 0 };
     const page = deps.modelCallLedger.read(resolveUsageRange(query.range, now));
-    return { attempts: page.attempts, unreadableRecords: page.unreadableRecords, pendingRepairs };
+    return {
+      attempts: page.attempts,
+      unreadableRecords: page.unreadableRecords + repair.unreadableEvents,
+      pendingRepairs: repair.remaining,
+    };
   };
   let pricingMutationQueue: Promise<void> = Promise.resolve();
   const enqueuePricingMutation = <T>(operation: () => Promise<T>): Promise<T> => {

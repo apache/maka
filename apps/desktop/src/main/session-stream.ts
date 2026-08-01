@@ -290,14 +290,15 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       // the turn — the seam swallows what is thrown here.
       recordModelCallAttempt: async (attempt) => {
         await ctx.recordModelCallAttempt?.(attempt);
-        try {
-          await modelCallLedger.record(attempt);
-        } catch (error) {
-          await modelCallLedger
-            .markRunPendingReprojection(attempt.sessionId, attempt.runId)
-            .catch(() => undefined);
-          throw error;
-        }
+        // Marked before the projection, so a crash between the two still
+        // leaves a run the repair path can find.
+        await modelCallLedger
+          .markRunPendingReprojection(attempt.sessionId, attempt.runId)
+          .catch(() => undefined);
+        await modelCallLedger.record(attempt);
+        await modelCallLedger
+          .clearPendingReprojection(attempt.sessionId, attempt.runId)
+          .catch(() => undefined);
       },
       recordToolInvocation: (event: ToolInvocationRecord) =>
         recordToolInvocation(
