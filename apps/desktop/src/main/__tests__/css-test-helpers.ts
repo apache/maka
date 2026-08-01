@@ -57,6 +57,80 @@ export function stripCssComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
+/** Escape a CSS selector for a RegExp, allowing flexible whitespace. */
+function escapeCssSelector(selector: string): string {
+  return selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+}
+
+/**
+ * Slice the body of a `{ ... }` block starting at `openBraceIndex`.
+ * Brace-depth aware so nested blocks (e.g. inside `@media`) stay intact.
+ */
+function extractBraceBlock(source: string, openBraceIndex: number): string | null {
+  if (source[openBraceIndex] !== '{') return null;
+  let depth = 0;
+  for (let i = openBraceIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(openBraceIndex + 1, i);
+    }
+  }
+  return null;
+}
+
+/**
+ * Return the declaration body of the first rule whose selector matches,
+ * stopping at that rule's own closing `}`.
+ *
+ * Unlike `/selector\s*\{[\s\S]*?prop:/`, this does not crawl into later
+ * sibling rules. Removing a property from the target rule fails even when a
+ * child or neighbor rule still declares it — the cross-`}` false-green bug
+ * that demoted layout contracts used to have.
+ *
+ * The selector must start a rule (after `^`, `{`, or `}`), so a right-hand
+ * combinator target like `.row + .row` does not satisfy a search for `.row`.
+ */
+export function cssRuleBody(css: string, selector: string): string | null {
+  const stripped = stripCssComments(css);
+  const re = new RegExp(`(?:^|[\\{\\}])\\s*${escapeCssSelector(selector)}\\s*\\{`);
+  const match = re.exec(stripped);
+  if (!match) return null;
+  return extractBraceBlock(stripped, match.index + match[0].length - 1);
+}
+
+/**
+ * Return the body of the first `@media <condition> { ... }` block.
+ * `mediaCondition` is the part after `@media`, e.g. `(max-width: 620px)`.
+ */
+export function cssMediaBody(css: string, mediaCondition: string): string | null {
+  const stripped = stripCssComments(css);
+  const cond = escapeCssSelector(mediaCondition);
+  const re = new RegExp(`@media\\s*${cond}\\s*\\{`);
+  const match = re.exec(stripped);
+  if (!match) return null;
+  return extractBraceBlock(stripped, match.index + match[0].length - 1);
+}
+
+/** Assert a selector's own rule body matches each declaration pattern. */
+export function assertCssRuleDecls(
+  css: string,
+  selector: string,
+  decls: RegExp[],
+  message?: string,
+): void {
+  const body = cssRuleBody(css, selector);
+  assert.ok(body != null, message ?? `rule ${selector} must exist`);
+  for (const decl of decls) {
+    assert.match(
+      body!,
+      decl,
+      message ?? `${selector} must declare ${decl} in its own rule body`,
+    );
+  }
+}
+
 /** Ban non-literal `font:` shorthand in renderer CSS.
  *
  * `font:` shorthand can hide bare font-weight (`font: 600 12px sans-serif`),

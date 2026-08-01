@@ -5,13 +5,18 @@
  * clusters carve themselves out with `no-drag`. Live rendered-geometry checks
  * stay in e2e/window-titlebar.spec.ts (Playwright cannot exercise the OS hit
  * test). These contracts pin the declarations that used to be only assumed by
- * comments in main-window.ts.
+ * comments in main-window.ts — scoped to each rule body, not a cross-`}` scan.
  */
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { REPO_ROOT, readAllRendererCss, stripCssComments } from './css-test-helpers.js';
+import {
+  REPO_ROOT,
+  readAllRendererCss,
+  stripCssComments,
+  assertCssRuleDecls,
+} from './css-test-helpers.js';
 
 const SHELL_LAYOUT = resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/shell-layout.css');
 const WINDOW_STATE = resolve(REPO_ROOT, 'apps/desktop/src/main/window-state.ts');
@@ -28,34 +33,34 @@ describe('app-region hygiene', () => {
     );
 
     const shell = stripCssComments(await readFile(SHELL_LAYOUT, 'utf8'));
-    assert.match(
+    assertCssRuleDecls(
       shell,
-      /\.maka-window-titlebar\s*\{[\s\S]*?-webkit-app-region:\s*drag;/,
-      'titlebar must be the drag surface',
+      '.maka-window-titlebar',
+      [
+        /-webkit-app-region:\s*drag/,
+        /height:\s*calc\(\s*var\(--h-titlebar\)\s*-\s*var\(--maka-window-resize-edge\)\s*\)/,
+        /margin:\s*var\(--maka-window-resize-edge\)\s+var\(--maka-window-resize-edge\)\s+0/,
+      ],
+      'titlebar must be the sole drag surface with resize-edge insets',
     );
-    assert.match(
+    assertCssRuleDecls(
       shell,
-      /\.maka-shell-topbar-rail\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+      '.maka-shell-topbar-rail',
+      [/-webkit-app-region:\s*no-drag/],
       'left titlebar rail must carve no-drag',
     );
-    assert.match(
+    assertCssRuleDecls(
       shell,
-      /\.maka-workspace-top-actions\s*\{[\s\S]*?-webkit-app-region:\s*no-drag;/,
+      '.maka-workspace-top-actions',
+      [/-webkit-app-region:\s*no-drag/],
       'workspace action cluster must carve no-drag',
-    );
-    assert.match(
-      shell,
-      /\.maka-window-titlebar\s*\{[\s\S]*?height:\s*calc\(\s*var\(--h-titlebar\)\s*-\s*var\(--maka-window-resize-edge\)\s*\);/,
-      'titlebar height must leave the OS resize corridor',
-    );
-    assert.match(
-      shell,
-      /\.maka-window-titlebar\s*\{[\s\S]*?margin:\s*var\(--maka-window-resize-edge\)\s+var\(--maka-window-resize-edge\)\s+0;/,
-      'titlebar must inset from the window frame on the three edges it touches',
     );
   });
 
-  it('keeps the BrowserWindow resize floor aligned with sanitizeBounds', async () => {
+  it('keeps sanitizeBounds floors and BrowserWindow minHeight aligned', async () => {
+    // Product truth today: SAFE_MIN_WIDTH is a restore/fixture floor in
+    // window-state.ts; BrowserWindow only sets minHeight (not minWidth).
+    // Do not claim a runtime width floor that is not wired.
     const windowState = await readFile(WINDOW_STATE, 'utf8');
     const mainWindow = await readFile(MAIN_WINDOW, 'utf8');
     assert.match(windowState, /export const SAFE_MIN_WIDTH = 480;/);
@@ -64,6 +69,11 @@ describe('app-region hygiene', () => {
       mainWindow,
       /minHeight:\s*SAFE_MIN_HEIGHT/,
       'BrowserWindow minHeight must share SAFE_MIN_HEIGHT with sanitizeBounds',
+    );
+    assert.doesNotMatch(
+      mainWindow,
+      /minWidth:\s*SAFE_MIN_WIDTH/,
+      'runtime minWidth is intentionally unset; restore floor is SAFE_MIN_WIDTH only',
     );
     assert.match(mainWindow, /resizable:\s*true/, 'window must stay explicitly resizable');
   });

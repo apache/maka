@@ -5,14 +5,14 @@
  * background-image / opacity on the shell surfaces. Those outcomes are owned
  * by source CSS: the shell must fill the window through min-width/min-height 0
  * + overflow hidden, paint a flat canvas/detail surface, and not attach a
- * product gradient or box-shadow on the shell host. Pin the declarations
- * here; keep interactive shell journeys in e2e.
+ * product gradient or box-shadow on the shell host. Pin the declarations on
+ * each rule body; keep interactive shell journeys in e2e.
  */
 import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { REPO_ROOT, stripCssComments } from './css-test-helpers.js';
+import { REPO_ROOT, stripCssComments, cssRuleBody } from './css-test-helpers.js';
 
 const SHELL_LAYOUT = resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles/shell-layout.css');
 const REFERENCE = resolve(REPO_ROOT, 'apps/desktop/src/renderer/reference-shell.css');
@@ -21,18 +21,12 @@ async function readCss(path: string): Promise<string> {
   return stripCssComments(await readFile(path, 'utf8'));
 }
 
-function ruleBody(css: string, selector: string): string | null {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
-  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
-  return match ? match[1] : null;
-}
-
 describe('flat shell chrome CSS contract', () => {
   it('keeps the Astryx shell a full-window constrained flat host', async () => {
     const shell = await readCss(SHELL_LAYOUT);
-    const appFrame = ruleBody(shell, '.appFrame');
-    const host = ruleBody(shell, '.maka-shell-astryx');
-    const detail = ruleBody(shell, '.maka-shell-astryx .maka-panel-detail');
+    const appFrame = cssRuleBody(shell, '.appFrame');
+    const host = cssRuleBody(shell, '.maka-shell-astryx');
+    const detail = cssRuleBody(shell, '.maka-shell-astryx .maka-panel-detail');
 
     assert.ok(appFrame, '.appFrame rule must exist');
     assert.match(appFrame!, /width:\s*100%/);

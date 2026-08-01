@@ -54,7 +54,6 @@ export type E2eFixtureScenario =
   | 'settings-daily-review'
   | 'settings-permissions'
   | 'settings-voice'
-  | 'settings-search'
   | 'settings-usage'
   | 'settings-health'
   | 'module-skills'

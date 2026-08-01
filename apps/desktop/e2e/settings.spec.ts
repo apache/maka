@@ -6,6 +6,44 @@ function settingsNavigation(page: Page) {
 }
 
 /**
+ * #1361 — one live window-floor smoke. CSS contracts pin the load-bearing
+ * declarations; this still measures the user-visible synthesis (row body
+ * floor + page horizontal containment) at SAFE_MIN_WIDTH.
+ */
+test('permission rows keep their text at the window floor', async ({ permissionSettingsWindow: page }) => {
+  await page.setViewportSize({ width: 480, height: 900 });
+  const settings = page.getByRole('main', { name: '设置内容' });
+  await expect(settings.getByRole('heading', { name: '系统权限' })).toBeVisible();
+
+  // Prove the fixture renders the three-button guided row before measuring —
+  // that shape is what used to squeeze the body to 0px.
+  const rows = settings.locator('.settingsOsPermissionRow');
+  await expect(rows).toHaveCount(5);
+  const guidedRows = rows.filter({
+    has: page.getByRole('button', { name: '引导授权', exact: true }),
+  });
+  await expect(guidedRows).toHaveCount(1);
+  await expect(guidedRows.getByRole('button')).toHaveCount(3);
+
+  await expect.poll(
+    () =>
+      rows.evaluateAll((elements) =>
+        elements.every((element) => {
+          const body = element.querySelector('.settingsOsPermissionBody');
+          if (!body) return false;
+          return (
+            body.getBoundingClientRect().width >= 101 && body.scrollWidth <= body.clientWidth
+          );
+        }),
+      ),
+  ).toBe(true);
+
+  await expect.poll(
+    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+});
+
+/**
  * Settings take effect: open settings, switch the theme to dark, and confirm
  * the <html> root picks up the `dark` class (theme.ts applies it via
  * classList.toggle). This exercises the settings open → navigate → mutate →
