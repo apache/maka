@@ -182,18 +182,19 @@ describe('Git workspace service', () => {
     assert.equal((await service.inspectManagedWorkspace(second)).state, 'ready');
   });
 
-  test('rejects creation when the source changes during baseline import', async () => {
+  test('removes an unpublished baseline ref when the source changes and permits retry', async () => {
     const root = await temporaryRoot();
     const sourceRoot = await createEligibleSource(join(root, 'source'));
+    const storageRoot = join(root, 'storage');
     let changed = false;
     const service = createGitWorkspaceService({
-      storageRoot: join(root, 'storage'),
+      storageRoot,
       gitRuntime: {
         executablePath: gitExecutablePath,
         expectedSha256: gitExecutableSha256,
       },
       failpoint: async (point) => {
-        if (point !== 'before_source_revalidation' || changed) return;
+        if (point !== 'after_baseline_ref_created' || changed) return;
         changed = true;
         await writeFile(join(sourceRoot, 'tracked.txt'), 'raced source\n', 'utf8');
         await git(sourceRoot, 'add', 'tracked.txt');
@@ -215,14 +216,29 @@ describe('Git workspace service', () => {
       service.createManagedWorkspaceFromSource(openRequest(sourceRoot)),
       isWorkspaceError('source_changed_during_baseline_import'),
     );
+    const repositoryPath = await onlyManagedRepositoryPath(storageRoot);
+    await assert.rejects(
+      gitBare(
+        repositoryPath,
+        'rev-parse',
+        '--verify',
+        'refs/maka/baselines/epoch_33333333333333333333333333333333',
+      ),
+    );
+
+    const retried = await service.createManagedWorkspaceFromSource(openRequest(sourceRoot));
+    assert.equal(
+      await readFile(join(retried.worktreePath, 'tracked.txt'), 'utf8'),
+      'raced source\n',
+    );
+    assert.equal((await service.inspectManagedWorkspace(retried)).state, 'ready');
   });
 
-  test('repairs a real-process crash after worktree materialization without accepting residue', {
+  test('repairs a crash after baseline ref publication even when the source later advances', {
     timeout: 60_000,
   }, async () => {
     const root = await temporaryRoot();
     const sourceRoot = await createEligibleSource(join(root, 'source'));
-    const sourceSnapshot = await snapshotSource(sourceRoot);
     const storageRoot = join(root, 'storage');
     const child = spawn(
       process.execPath,
@@ -234,6 +250,7 @@ describe('Git workspace service', () => {
           MAKA_GIT_WORKSPACE_SOURCE: sourceRoot,
           MAKA_GIT_WORKSPACE_EXECUTABLE: gitExecutablePath,
           MAKA_GIT_WORKSPACE_SHA256: gitExecutableSha256,
+          MAKA_GIT_WORKSPACE_FAILPOINT: 'after_baseline_ref_created',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
@@ -242,19 +259,81 @@ describe('Git workspace service', () => {
       await waitForReady(child, 30_000);
       child.kill('SIGKILL');
       await waitForExit(child);
+      await writeFile(join(sourceRoot, 'tracked.txt'), 'advanced after crash\n', 'utf8');
+      await git(sourceRoot, 'add', 'tracked.txt');
+      await git(
+        sourceRoot,
+        '-c',
+        'user.name=Maka Test',
+        '-c',
+        'user.email=test@maka.invalid',
+        'commit',
+        '--quiet',
+        '-m',
+        'advance after baseline publication crash',
+      );
 
       const service = await serviceAt(storageRoot);
       const binding = await service.createManagedWorkspaceFromSource(openRequest(sourceRoot));
-      assert.equal((await service.inspectManagedWorkspace(binding)).state, 'ready');
-      const quarantineEntries = await readdir(
-        join(storageRoot, 'managed-workspaces', 'quarantine'),
+      assert.equal(
+        await readFile(join(binding.worktreePath, 'tracked.txt'), 'utf8'),
+        'advanced after crash\n',
       );
-      assert.ok(quarantineEntries.some((entry) => entry.startsWith('incomplete-')));
-      await assertSourceUnchanged(sourceRoot, sourceSnapshot);
+      assert.equal((await service.inspectManagedWorkspace(binding)).state, 'ready');
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }
   });
+
+  for (const failpoint of [
+    'after_worktree_materialized',
+    'after_worktree_locked',
+    'after_head_ref_updated',
+  ] as const) {
+    test(`repairs a real-process crash at ${failpoint} without accepting residue`, {
+      timeout: 60_000,
+    }, async () => {
+      const root = await temporaryRoot();
+      const sourceRoot = await createEligibleSource(join(root, 'source'));
+      const sourceSnapshot = await snapshotSource(sourceRoot);
+      const storageRoot = join(root, 'storage');
+      const child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(
+            new URL('./fixtures/git-workspace-service-crash-child.js', import.meta.url),
+          ),
+        ],
+        {
+          env: {
+            ...process.env,
+            MAKA_GIT_WORKSPACE_STORAGE: storageRoot,
+            MAKA_GIT_WORKSPACE_SOURCE: sourceRoot,
+            MAKA_GIT_WORKSPACE_EXECUTABLE: gitExecutablePath,
+            MAKA_GIT_WORKSPACE_SHA256: gitExecutableSha256,
+            MAKA_GIT_WORKSPACE_FAILPOINT: failpoint,
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      try {
+        await waitForReady(child, 30_000);
+        child.kill('SIGKILL');
+        await waitForExit(child);
+
+        const service = await serviceAt(storageRoot);
+        const binding = await service.createManagedWorkspaceFromSource(openRequest(sourceRoot));
+        assert.equal((await service.inspectManagedWorkspace(binding)).state, 'ready');
+        const quarantineEntries = await readdir(
+          join(storageRoot, 'managed-workspaces', 'quarantine'),
+        );
+        assert.ok(quarantineEntries.some((entry) => entry.startsWith('incomplete-')));
+        await assertSourceUnchanged(sourceRoot, sourceSnapshot);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+    });
+  }
 
   test('rejects dirty or unsupported source state without falling back to attached execution', async () => {
     const root = await temporaryRoot();
@@ -331,6 +410,19 @@ describe('Git workspace service', () => {
       `${alternateObjects}\n`,
       'utf8',
     );
+    const service = await serviceAt(join(root, 'storage'));
+
+    await assert.rejects(
+      service.createManagedWorkspaceFromSource(openRequest(sourceRoot)),
+      isWorkspaceError('repository_ineligible'),
+    );
+  });
+
+  test('rejects unsafe worktree-scoped source configuration', async () => {
+    const root = await temporaryRoot();
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    await git(sourceRoot, 'config', 'extensions.worktreeConfig', 'true');
+    await git(sourceRoot, 'config', '--worktree', 'core.fsmonitor', 'untrusted-monitor');
     const service = await serviceAt(join(root, 'storage'));
 
     await assert.rejects(
@@ -416,6 +508,12 @@ async function serviceAt(storageRoot: string): Promise<GitWorkspaceService> {
       expectedSha256: gitExecutableSha256,
     },
   });
+}
+
+async function onlyManagedRepositoryPath(storageRoot: string): Promise<string> {
+  const repositoryRoots = await readdir(join(storageRoot, 'managed-workspaces', 'r'));
+  assert.equal(repositoryRoots.length, 1);
+  return join(storageRoot, 'managed-workspaces', 'r', repositoryRoots[0]!, 'repository.git');
 }
 
 function openRequest(sourceRoot: string) {

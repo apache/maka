@@ -8,7 +8,7 @@ const service = createGitWorkspaceService({
     expectedSha256: requiredEnv('MAKA_GIT_WORKSPACE_SHA256') as `sha256:${string}`,
   },
   failpoint(point) {
-    if (point !== 'after_worktree_materialized') return;
+    if (point !== requiredEnv('MAKA_GIT_WORKSPACE_FAILPOINT')) return;
     writeSync(1, 'READY\n');
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   },

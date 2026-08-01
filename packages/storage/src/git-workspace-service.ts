@@ -113,10 +113,17 @@ export interface CreateGitWorkspaceServiceInput {
 
 export type GitWorkspaceServiceFailpoint =
   | 'after_repository_record'
-  | 'before_source_revalidation'
-  | 'after_worktree_materialized';
+  | 'after_baseline_ref_created'
+  | 'after_worktree_materialized'
+  | 'after_worktree_locked'
+  | 'after_head_ref_updated';
 
 export interface ManagedWorkspaceIdentity {
+  /**
+   * Identifies the Maka-owned Git object universe. It is not the identity of the
+   * source checkout; sourceRoot, sourceGitCommonDir, HEAD, and tree OIDs carry
+   * source provenance and must be validated independently.
+   */
   readonly repositoryId: string;
   readonly workspaceId: string;
   readonly workspaceEpochId: string;
@@ -282,7 +289,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       const source = await this.inspectSourceRepository(sourceRoot);
       const repository = await this.openRepository(input, source, layout, runtime.digest);
       const epoch = await this.openEpochArtifact(input, source, repository, layout);
-      await this.clearIncompleteInstance(layout);
+      await this.clearIncompleteInstance(input, epoch, layout);
       await ensureOwnedDirectory(layout.instanceRoot, layout.managedRoot);
       await this.runtime.run(
         [
@@ -311,6 +318,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
         ],
         layout.homePath,
       );
+      await this.input.failpoint?.('after_worktree_locked');
       await this.updateRefCas(
         repository.repositoryPath,
         epoch.headRef,
@@ -318,6 +326,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
         repository.objectFormat,
         layout.homePath,
       );
+      await this.input.failpoint?.('after_head_ref_updated');
 
       const binding: ManagedWorkspaceBinding = {
         schemaVersion: BINDING_SCHEMA_VERSION,
@@ -615,19 +624,50 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
         '-C',
         sourceRoot,
         'config',
+        '--no-includes',
         '--local',
         '--get-regexp',
         '^(include\\.|includeIf\\.|extensions\\.partialClone$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
       ],
       1,
     );
+    const worktreeConfigEnabled = (
+      await this.runtime.runOptional(
+        [
+          '-C',
+          sourceRoot,
+          'config',
+          '--no-includes',
+          '--local',
+          '--bool',
+          '--get',
+          'extensions.worktreeConfig',
+        ],
+        1,
+      )
+    )?.trim();
+    const unsafeWorktreeConfig =
+      worktreeConfigEnabled === 'true'
+        ? await this.runtime.runOptional(
+            [
+              '-C',
+              sourceRoot,
+              'config',
+              '--no-includes',
+              '--worktree',
+              '--get-regexp',
+              '^(include\\.|includeIf\\.|extensions\\.partialClone$|remote\\..*\\.promisor$|core\\.fsmonitor$)',
+            ],
+            1,
+          )
+        : undefined;
     const replaceRefs = await this.runtime.run(
       ['-C', sourceRoot, 'for-each-ref', '--format=%(refname)', 'refs/replace/'],
       undefined,
       undefined,
       [1],
     );
-    if (unsafeConfig?.trim() || replaceRefs.trim()) {
+    if (unsafeConfig?.trim() || unsafeWorktreeConfig?.trim() || replaceRefs.trim()) {
       throw new GitWorkspaceServiceError(
         'repository_ineligible',
         'Managed workspace source contains unsupported Git indirection or runtime configuration',
@@ -648,6 +688,8 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       return existing;
     }
 
+    const baselineRef = managedBaselineRef(input.workspaceEpochId);
+    await this.clearIncompleteBaselineRef(repository.repositoryPath, baselineRef, layout.homePath);
     await ensureOwnedDirectory(layout.epochRoot, layout.managedRoot);
     await this.runtime.importTree(
       source.sourceRoot,
@@ -681,7 +723,8 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
         baselineCommitEnvironment(),
       )
     ).trim();
-    const baselineRef = managedBaselineRef(input.workspaceEpochId);
+    const observedBeforeRef = await this.inspectSourceRepository(source.sourceRoot);
+    assertSameSourceObservation(source, observedBeforeRef);
     await this.updateRefCas(
       repository.repositoryPath,
       baselineRef,
@@ -690,9 +733,19 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       layout.homePath,
     );
 
-    await this.input.failpoint?.('before_source_revalidation');
-    const observedAgain = await this.inspectSourceRepository(source.sourceRoot);
-    assertSameSourceObservation(source, observedAgain);
+    await this.input.failpoint?.('after_baseline_ref_created');
+    try {
+      const observedAgain = await this.inspectSourceRepository(source.sourceRoot);
+      assertSameSourceObservation(source, observedAgain);
+    } catch (error) {
+      await this.deleteRefCas(
+        repository.repositoryPath,
+        baselineRef,
+        baselineCommitOid,
+        layout.homePath,
+      );
+      throw error;
+    }
 
     const artifact: ManagedWorkspaceEpochArtifact = {
       schemaVersion: EPOCH_ARTIFACT_SCHEMA_VERSION,
@@ -858,6 +911,51 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     }
   }
 
+  private async deleteRefCas(
+    repositoryPath: string,
+    ref: string,
+    expectedOid: string,
+    homePath: string,
+  ): Promise<void> {
+    try {
+      await this.runtime.run(
+        ['--git-dir', repositoryPath, 'update-ref', '-d', ref, expectedOid],
+        homePath,
+      );
+    } catch (error) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        `Managed Git ref changed before cleanup: ${ref}`,
+        { cause: error },
+      );
+    }
+  }
+
+  private async clearIncompleteBaselineRef(
+    repositoryPath: string,
+    baselineRef: string,
+    homePath: string,
+  ): Promise<void> {
+    const current = (
+      await this.runtime.runOptional(
+        ['--git-dir', repositoryPath, 'rev-parse', '--verify', '--quiet', baselineRef],
+        1,
+      )
+    )?.trim();
+    if (!current) return;
+    const commitBody = await this.runtime.run(
+      ['--git-dir', repositoryPath, 'cat-file', 'commit', current],
+      homePath,
+    );
+    if (!isOwnedBaselineCommit(commitBody)) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        `Incomplete managed baseline ref is not owned by this protocol: ${baselineRef}`,
+      );
+    }
+    await this.deleteRefCas(repositoryPath, baselineRef, current, homePath);
+  }
+
   private async configureManagedRepository(
     repositoryPath: string,
     hooksPath: string,
@@ -1002,17 +1100,60 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     }
   }
 
-  private async clearIncompleteInstance(layout: WorkspaceLayout): Promise<void> {
-    if (!(await pathExists(layout.instanceRoot))) return;
-    await moveToQuarantine(
-      layout.instanceRoot,
-      layout.quarantineRoot,
-      `incomplete-${randomUUID()}`,
+  private async clearIncompleteInstance(
+    input: ManagedWorkspaceIdentity,
+    epoch: ManagedWorkspaceEpochArtifact,
+    layout: WorkspaceLayout,
+  ): Promise<void> {
+    const registration = findWorktreeRegistration(
+      await this.runtime.run(
+        ['--git-dir', layout.repositoryPath, 'worktree', 'list', '--porcelain'],
+        layout.homePath,
+      ),
+      layout.worktreePath,
     );
+    if (registration) {
+      if (
+        registration.headOid !== epoch.baselineCommitOid ||
+        (registration.lockReason !== undefined &&
+          registration.lockReason !== worktreeLockReason(input))
+      ) {
+        throw new GitWorkspaceServiceError(
+          'managed_workspace_identity_conflict',
+          'Incomplete managed worktree registration does not match its durable identity',
+        );
+      }
+      if (registration.lockReason !== undefined) {
+        await this.runtime.run(
+          ['--git-dir', layout.repositoryPath, 'worktree', 'unlock', layout.worktreePath],
+          layout.homePath,
+        );
+      }
+    }
+    if (await pathExists(layout.instanceRoot)) {
+      await moveToQuarantine(
+        layout.instanceRoot,
+        layout.quarantineRoot,
+        `incomplete-${randomUUID()}`,
+      );
+    }
     await this.runtime.run(
       ['--git-dir', layout.repositoryPath, 'worktree', 'prune', '--expire=now'],
       layout.homePath,
     );
+    const remaining = findWorktreeRegistration(
+      await this.runtime.run(
+        ['--git-dir', layout.repositoryPath, 'worktree', 'list', '--porcelain'],
+        layout.homePath,
+      ),
+      layout.worktreePath,
+    );
+    if (remaining) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Incomplete managed worktree registration could not be removed safely',
+      );
+    }
   }
 
   private async quarantineWorktreeLocked(
@@ -1733,19 +1874,36 @@ function assertWorktreeRegistrationLocked(
   worktreePath: string,
   expectedReason: string,
 ): void {
-  const record = porcelain
-    .split(/\r?\n\r?\n/u)
-    .map((block) => block.split(/\r?\n/u))
-    .find((lines) => {
-      const pathLine = lines.find((line) => line.startsWith('worktree '));
-      return pathLine ? samePath(pathLine.slice('worktree '.length), worktreePath) : false;
-    });
-  if (!record || !record.includes(`locked ${expectedReason}`)) {
+  const registration = findWorktreeRegistration(porcelain, worktreePath);
+  if (!registration || registration.lockReason !== expectedReason) {
     throw new GitWorkspaceServiceError(
       'managed_workspace_identity_conflict',
       'Managed worktree registration or Maka ownership lock is unavailable',
     );
   }
+}
+
+interface WorktreeRegistration {
+  readonly headOid?: string;
+  readonly lockReason?: string;
+}
+
+function findWorktreeRegistration(
+  porcelain: string,
+  worktreePath: string,
+): WorktreeRegistration | undefined {
+  for (const block of porcelain.split(/\r?\n\r?\n/u)) {
+    const lines = block.split(/\r?\n/u);
+    const pathLine = lines.find((line) => line.startsWith('worktree '));
+    if (!pathLine || !samePath(pathLine.slice('worktree '.length), worktreePath)) continue;
+    const headLine = lines.find((line) => line.startsWith('HEAD '));
+    const lockedLine = lines.find((line) => line === 'locked' || line.startsWith('locked '));
+    return {
+      ...(headLine ? { headOid: headLine.slice('HEAD '.length) } : {}),
+      ...(lockedLine ? { lockReason: lockedLine.slice('locked'.length).trim() } : {}),
+    };
+  }
+  return undefined;
 }
 
 function repositoryCapabilityDigest(
@@ -1839,6 +1997,21 @@ function baselineCommitEnvironment(): NodeJS.ProcessEnv {
     GIT_COMMITTER_DATE: BASELINE_DATE,
     GIT_WORKSPACE_BASELINE_MESSAGE: BASELINE_MESSAGE,
   };
+}
+
+function isOwnedBaselineCommit(raw: string): boolean {
+  const normalized = raw.replace(/\r\n/gu, '\n');
+  const separator = normalized.indexOf('\n\n');
+  if (separator < 0) return false;
+  const headers = normalized.slice(0, separator).split('\n');
+  const message = normalized.slice(separator + 2).trimEnd();
+  return (
+    headers.length === 3 &&
+    /^tree (?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(headers[0] ?? '') &&
+    headers[1] === 'author Maka Workspace Service <workspace@maka.invalid> 946684800 +0000' &&
+    headers[2] === 'committer Maka Workspace Service <workspace@maka.invalid> 946684800 +0000' &&
+    message === BASELINE_MESSAGE.trimEnd()
+  );
 }
 
 function isolatedGitEnvironment(executablePath: string, homePath: string): NodeJS.ProcessEnv {
