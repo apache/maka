@@ -1581,12 +1581,14 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /copy\.row\.hover\(skill\.id, runtimeLabel, statusLabel\)/);
     // Detail round 6, exception-only: the runtime badge renders ONLY for
     // state_error — enabled/disabled is already expressed by the Switch.
-    // Round 1 convergence (#520 follow-up): the two status labels now render
-    // the Astryx Badge primitive (was a hand-rolled span). data-status is
-    // preserved for tone derivation; the render condition is unchanged.
+    // Only exceptional runtime/context/source states use Astryx Badge.
+    // Routine scope, advertised/disabled context, and source are supporting text.
     assert.match(skillPanel, /\{skill\.runtimeStatus === 'state_error' && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-runtime-label"[\s\S]*?label=\{runtimeLabel\}/);
-    assert.match(skillPanel, /<Badge[\s\S]*?className="maka-skill-library-status-label"[\s\S]*?label=\{statusLabel\}/);
-    assert.match(skillPanel, /function skillStatusBadgeVariant\(skill: SkillEntry\)/, 'status-label variant derives from data-status via skillStatusBadgeVariant');
+    assert.match(skillPanel, /className="maka-skill-library-supporting"[\s\S]*?\{supportingMeta\.join\(' · '\)\}/);
+    assert.doesNotMatch(skillPanel, /maka-skill-library-scope-label/);
+    assert.match(skillPanel, /\{contextNeedsAttention && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-context-exception"/);
+    assert.match(skillPanel, /\{sourceStatusNeedsAttention && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-status-label"/);
+    assert.match(skillPanel, /function skillSourceStatusNeedsAttention\(skill: SkillEntry\)/);
     assert.match(ui, /function formatSkillStatusLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /function formatSkillRuntimeLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /runtimeStatus === 'state_error'\) return copy\.status\.stateError/);
@@ -1669,7 +1671,7 @@ description: Exercise workspace-contained open paths.
     assert.doesNotMatch(skillPanel, /恢复|修复|合并/, 'Phase 3 still must not imply automatic merge or repair flows');
     assert.doesNotMatch(skillPanel, /const SKILL_GOVERNANCE_FILTERS/);
     assert.doesNotMatch(skillPanel, /aria-label="技能状态筛选"/);
-    assert.match(skillPanel, /className="maka-skill-library-status-label"/);
+    assert.match(skillPanel, /sourceStatusNeedsAttention/);
     assert.match(skillPanel, /function previewText\(content: string\): string/);
     assert.doesNotMatch(skillPanel, /maka-skill-library-action/, 'Open must be an explicit file icon button, not a status-like text pill');
     assert.match(skillPanel, /label=\{props\.createPending \? copy\.installed\.createPending : copy\.installed\.createExample\}/);

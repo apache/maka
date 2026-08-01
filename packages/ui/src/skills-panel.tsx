@@ -16,7 +16,6 @@ import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import {
   Badge,
-  type BadgeProps,
   Button as UiButton,
   EmptyState,
   IconButton,
@@ -470,6 +469,16 @@ function SkillLibraryPanel(props: {
                   : formatSkillLibraryDescription(skill, copy);
               const statusLabel = formatSkillStatusLabel(skill, copy);
               const runtimeLabel = formatSkillRuntimeLabel(skill, copy);
+              const contextLabel = `${isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
+                ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
+                : copy.context.decision[contextStatus]}${!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}`;
+              const contextNeedsAttention = isDiscoveryDiagnostic || (contextStatus !== 'advertised' && contextStatus !== 'disabled');
+              const sourceStatusNeedsAttention = !isDiscoveryDiagnostic && skillSourceStatusNeedsAttention(skill);
+              const supportingMeta = [
+                skill.scope ? copy.context.scope[skill.scope] : null,
+                contextNeedsAttention ? null : contextLabel,
+                !isDiscoveryDiagnostic && !sourceStatusNeedsAttention ? statusLabel : null,
+              ].filter((value): value is string => Boolean(value));
               const opening = props.openingSkillId === skillRef;
               const updating = props.updatingSkillId === skill.id;
               const toggling = props.togglingSkillId === skillRef;
@@ -519,8 +528,8 @@ function SkillLibraryPanel(props: {
                       {skill.runtimeStatus === 'state_error' && (
                         <Badge variant="warning" className="maka-skill-library-runtime-label" data-status={skill.runtimeStatus} label={runtimeLabel} />
                       )}
-                      {skill.scope && (
-                        <Badge variant="neutral" className="maka-skill-library-scope-label" data-scope={skill.scope} label={copy.context.scope[skill.scope]} />
+                      {supportingMeta.length > 0 && (
+                        <span className="maka-skill-library-supporting">{supportingMeta.join(' · ')}</span>
                       )}
                       {skill.needsReview && (
                         <Badge
@@ -529,16 +538,16 @@ function SkillLibraryPanel(props: {
                           label={copy.context.needsReview}
                         />
                       )}
-                      <Badge
-                        variant={contextStatus === 'advertised' ? 'neutral' : 'warning'}
-                        className="maka-skill-library-context-label"
-                        data-status={contextStatus}
-                        label={`${isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
-                          ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
-                          : copy.context.decision[contextStatus]}${!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}`}
-                      />
-                      {!isDiscoveryDiagnostic && (
-                        <Badge variant={skillStatusBadgeVariant(skill)} className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'} label={statusLabel} />
+                      {contextNeedsAttention && (
+                        <Badge
+                          variant="warning"
+                          className="maka-skill-library-context-exception"
+                          data-status={contextStatus}
+                          label={contextLabel}
+                        />
+                      )}
+                      {sourceStatusNeedsAttention && (
+                        <Badge variant="warning" className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'} label={statusLabel} />
                       )}
                       {opening && <span>{copy.row.opening}</span>}
                       {updating && <span>{copy.row.updating}</span>}
@@ -740,19 +749,13 @@ function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): string {
   return skill.enabled ? copy.status.enabled : copy.status.disabled;
 }
 
-// Derive the source-status Badge tone from the same data-status the retired
-// .maka-skill-library-status-label CSS keyed off. Exception-only: 内置 / 本地
-// (expected states) stay neutral; only genuine attention states carry a tone.
-//   metadata_error / local_modified → warning (needs the user's attention)
-//   受管理 (managed base) → info (managed but nothing wrong)
-//   bundled / workspace default → neutral
-function skillStatusBadgeVariant(skill: SkillEntry): BadgeProps['variant'] {
-  if (skill.validationStatus === 'metadata_error') return 'warning';
-  if (skill.sourceType === 'managed') {
-    if (skill.managedUpdateStatus === 'local_modified' || skill.managedUpdateStatus === 'metadata_error') return 'warning';
-    return 'info';
-  }
-  return 'neutral';
+function skillSourceStatusNeedsAttention(skill: SkillEntry): boolean {
+  if (skill.validationStatus && skill.validationStatus !== 'ok') return true;
+  if (skill.userModified) return true;
+  if (skill.sourceType !== 'managed') return false;
+  return skill.managedUpdateStatus !== undefined
+    && skill.managedUpdateStatus !== 'not_managed'
+    && skill.managedUpdateStatus !== 'up_to_date';
 }
 
 function previewText(content: string): string {

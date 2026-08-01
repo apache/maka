@@ -474,21 +474,12 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   overflow: hidden;
 }
 
-/* PR-UI-PIXEL-3: the skill id reads as a soft monospace metadata pill
-   (reference treats ids/counts/sources as filled fill-tertiary pills, §4 rule 8)
-   instead of loose gray text. */
-.maka-skill-library-meta > span:first-child {
+.maka-skill-library-supporting {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-  padding: var(--space-0-5) var(--space-2);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.05);
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  letter-spacing: var(--tracking-normal);
 }
 
 /* .maka-skill-library-runtime-label / .maka-skill-library-status-label are now
