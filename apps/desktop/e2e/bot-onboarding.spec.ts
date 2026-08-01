@@ -19,15 +19,36 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
   await expect(qr).toHaveAttribute('src', /^data:image\/png;base64,/);
   await expect(dialog.getByText('请使用钉钉扫描二维码并确认授权')).toBeVisible();
 
-  // A QR code the user cannot fully see cannot be scanned: the dialog must stay
-  // inside the window. Its exact width and the frame's fixed size are design
-  // tokens, not this journey's contract.
+  // A QR code the user cannot fully see cannot be scanned. What that requires is
+  // a relationship, not a fixed size: the image fills its frame (so it is never
+  // shrunk to a corner of it), the frame is square, the code is wholly on screen
+  // at a scannable size, and the dialog stays inside the window. The frame's
+  // 284px and the dialog's 522px cap are the design tokens; these are not.
+  //
+  // `toBeInViewport()` alone would NOT carry this: its default `ratio: 0` passes
+  // on any positive intersection, so a QR with one corner on screen clears it.
   const dialogBox = await dialog.boundingBox();
+  const qrFrameBox = await dialog.locator('.settingsBotOnboardingQrFrame').boundingBox();
+  const qrBox = await qr.boundingBox();
   const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
   expect(dialogBox).not.toBeNull();
+  expect(qrFrameBox).not.toBeNull();
+  expect(qrBox).not.toBeNull();
+
+  // The image fills its frame, up to the frame's 1px border on each side.
+  expect(qrFrameBox!.width - qrBox!.width).toBeLessThanOrEqual(2);
+  expect(qrFrameBox!.height - qrBox!.height).toBeLessThanOrEqual(2);
+  // Square, and large enough for a phone camera to resolve the modules.
+  expect(Math.abs(qrBox!.width - qrBox!.height)).toBeLessThanOrEqual(1);
+  expect(qrBox!.width).toBeGreaterThanOrEqual(160);
+  // Centred in the dialog it belongs to.
+  expect(
+    Math.abs((dialogBox!.x + dialogBox!.width / 2) - (qrBox!.x + qrBox!.width / 2)),
+  ).toBeLessThan(2);
+  // Wholly on screen — every edge, not merely intersecting.
+  await expect(qr).toBeInViewport({ ratio: 1 });
   expect(dialogBox!.y).toBeGreaterThanOrEqual(0);
   expect(dialogBox!.y + dialogBox!.height).toBeLessThanOrEqual(viewport.height);
-  await expect(qr).toBeInViewport();
 
   await expect(dialog.getByText('已扫码，请在钉钉中完成确认')).toBeVisible({ timeout: 4_000 });
   await expect(dialog.getByText('钉钉 已连接')).toBeVisible({ timeout: 5_000 });
