@@ -3626,9 +3626,8 @@ describe('Maka Pi TUI runner', () => {
 
     await waitFor(() => driver.renames.length === 1);
     await waitFor(() => terminal.titles.includes('Raw title (Maka)'));
-    assert.equal(
+    await waitFor(() =>
       plainTerminalOutput(terminal.output()).includes('Session renamed to "Raw title"'),
-      true,
     );
 
     exitMaka(terminal);
