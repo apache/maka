@@ -180,6 +180,44 @@ describe('SQLite core execution cutover', () => {
     });
   });
 
+  test('fails closed when retired AgentRun or ShellRun writers change cutover evidence', async () => {
+    await withRoot(async (root) => {
+      const legacyRuns = createAgentRunStore(root);
+      await legacyRuns.createRun(runHeader());
+      const legacyShellRuns = createShellRunStore(root);
+      await legacyShellRuns.createShellRun(shellRun());
+
+      const sqliteRuns = createSqliteAgentRunStore(root);
+      const sqliteShellRuns = createSqliteShellRunStore(root);
+      await Promise.all([sqliteRuns.ready?.(), sqliteShellRuns.ready()]);
+      sqliteRuns.close?.();
+      sqliteShellRuns.close();
+
+      await legacyRuns.appendEvent('session-1', 'run-1', runEvent('stale-event', 2));
+      await legacyShellRuns.updateShellRun('session-1', 'shell-1', {
+        status: 'completed',
+        completedAt: 2,
+        exitCode: 0,
+        updatedAt: 2,
+      });
+
+      const rejectedRuns = createSqliteAgentRunStore(root);
+      assert.ok(rejectedRuns.ready);
+      await assert.rejects(
+        rejectedRuns.ready(),
+        /Legacy agent_runs source changed after cutover completed/,
+      );
+      rejectedRuns.close?.();
+
+      const rejectedShellRuns = createSqliteShellRunStore(root);
+      await assert.rejects(
+        rejectedShellRuns.ready(),
+        /Legacy shell_runs source changed after cutover completed/,
+      );
+      rejectedShellRuns.close();
+    });
+  });
+
   test('imports receipts and interactions while new writes stay SQLite-only', async () => {
     await withRoot(async (root) => {
       const receipts = createMessageReceiptStore(root);

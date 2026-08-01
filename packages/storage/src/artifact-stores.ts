@@ -17,7 +17,7 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 
-export { createAttachmentByteReader } from './artifact-attachments.js';
+export { createAttachmentByteReader, createReadImageSnapshotter } from './artifact-attachments.js';
 export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');

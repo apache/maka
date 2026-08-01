@@ -24,16 +24,16 @@ test('deletes a user-scope skill from disk and drops it from the list', async ({
   await access(skillDir);
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
 
-  // The panel always renders all three tabs, and it picks its landing tab from
+  // The panel always renders all three views, and it picks its landing view from
   // whatever the skill list happened to be at mount — so click 已安装
   // unconditionally and let Playwright wait for it. Sampling `isVisible()`
   // first only added a branch that could skip the click on a slow mount and
   // then hunt for the row on the wrong tab.
-  await page.getByRole('tab', { name: '已安装' }).click();
+  await page.getByRole('button', { name: '已安装' }).click();
 
   const row = page.locator('.maka-skill-library-list li').filter({ hasText: 'User Only' });
   await expect(row).toHaveCount(1);
@@ -55,11 +55,11 @@ test('offers no delete for a project-scope skill', async ({ invocableSkillsWindo
   // refuses them with `blocked_scope`, and the panel must not offer a button
   // that cannot work.
   await page.getByRole('button', { name: '展开侧边栏' }).click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('main', { name: '扩展' }).waitFor();
 
-  await page.getByRole('tab', { name: '已安装' }).click();
+  await page.getByRole('button', { name: '已安装' }).click();
 
   const projectRow = page.locator('.maka-skill-library-list li').filter({ hasText: 'Project Only' });
   await expect(projectRow).toHaveCount(1);

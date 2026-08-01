@@ -70,8 +70,7 @@
  * absolute ::after), tinted by the gate reason. The row itself is a plain
  * div Item with no render prop, so it is inert — the provider-surface gate
  * never lets a gated provider read as clickable. The state badge is now the
- * Chip primitive (info = unavailable, warning = experimental); tone→alpha
- * lives in chip.tsx, so no bespoke .is-state tint rules remain here. */
+ * Astryx Badge; no bespoke state tint rules remain here. */
 
 /* PR-UI-13 (@yuejing 2026-05-22): ProviderLogo size normalization.
  *

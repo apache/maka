@@ -8,12 +8,12 @@ import {
   type ToolResultContent,
 } from '@maka/core';
 import { AlertCircle, Ban, Check, Clock, GitBranch, Loader2, Plug, ShieldAlert } from '../icons.js';
-import { previewVariants } from '../primitives/chat.js';
 import { redactSecrets } from '../redact.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
 import { AgentSwarmPreview, ExploreAgentPreview, SubagentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
+import { ToolCodeBlock } from './tool-code-block.js';
 import { TOOL_LINE_CAP, capLines, formatUserVisibleToolText } from './preview-utils.js';
 import { getToolActivityCopy } from './copy.js';
 import { isSandboxDeniedToolResult } from './sandbox-denial.js';
@@ -103,14 +103,14 @@ export function ToolResultPreview(props: {
   }
 
   if (content.kind === 'json') {
-    // Never pretty-print JSON with escaped newlines — quiet plain text only.
+    // No language: quiet text must stay contiguous (tokenizer splits words).
     const quiet = formatQuietJsonValue(content.value, locale);
     return (
-      <div className="grid gap-1.5" data-kind="json">
-        {quiet.headline ? (
-          <code className={TOOL_OUTPUT_COMMAND_CLASS}>{formatUserVisibleToolText(quiet.headline, locale)}</code>
-        ) : null}
-        <pre className={TOOL_OUTPUT_BODY_CLASS}>{formatUserVisibleToolText(quiet.body, locale)}</pre>
+      <div data-kind="json">
+        <ToolCodeBlock
+          code={formatUserVisibleToolText(quiet.body, locale)}
+          title={quiet.headline ? formatUserVisibleToolText(quiet.headline, locale) : undefined}
+        />
       </div>
     );
   }
@@ -118,20 +118,20 @@ export function ToolResultPreview(props: {
   if (content.kind === 'text') {
     const copy = getToolActivityCopy(locale).result;
     const { body, capped } = capLines(formatUserVisibleToolText(redactSecrets(content.text), locale));
+    const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
     return (
-      <pre className={TOOL_OUTPUT_BODY_CLASS} data-kind="text">
-        {body}
-        {capped > 0 && `\n\n${copy.hiddenLines(capped)}`}
-      </pre>
+      <div data-kind="text">
+        <ToolCodeBlock code={code} />
+      </div>
     );
   }
 
   // file_write / image / summary / unknown — show a compact descriptor so the
   // user knows what kind landed without dumping binary or storage refs.
   return (
-    <pre className={TOOL_OUTPUT_BODY_CLASS} data-kind={content.kind}>
-      [{content.kind}]
-    </pre>
+    <div data-kind={content.kind}>
+      <ToolCodeBlock code={`[${content.kind}]`} />
+    </div>
   );
 }
 
@@ -187,51 +187,18 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
   // into a diff (commit body, .env file diff, etc.), and never let a
   // 10k-line diff create 10k React elements.
   const { body, capped } = capLines(redactSecrets(props.diff));
-  const lines = body.split('\n');
-  // Structure kept (paths + colored lines); no second card chrome — parent panel
-  // is the only surface when embedded in a tool row.
+  const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
   return (
-    <div className="grid gap-1.5" data-kind="file_diff">
-      {props.paths.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 [font-family:var(--font-mono)] text-[length:var(--font-size-base)] text-[color:var(--muted-foreground)]">
-          {props.paths.map((path) => (
-            <code key={path} className="bg-transparent text-[color:var(--foreground-secondary)]">{path}</code>
-          ))}
-        </div>
-      )}
-      <pre className={cn(TOOL_OUTPUT_BODY_CLASS, '[white-space:pre] [word-break:normal]')}>
-        {lines.map((line, index) => (
-          <span
-            key={`${index}:${line.slice(0, 16)}`}
-            className={previewVariants({ part: 'diff-line' })}
-            data-line={diffLineKind(line)}
-          >
-            {line || ' '}
-            {'\n'}
-          </span>
-        ))}
-        {capped > 0 && (
-          <span className={previewVariants({ part: 'diff-line' })} data-line="meta">
-            {`\n${copy.hiddenLines(capped)}\n`}
-          </span>
-        )}
-      </pre>
+    <div data-kind="file_diff">
+      <ToolCodeBlock
+        code={code}
+        language="diff"
+        title={props.paths.length > 0 ? props.paths.join(', ') : undefined}
+      />
     </div>
   );
 }
 
-function diffLineKind(line: string): 'add' | 'del' | 'hunk' | 'meta' | 'ctx' {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta';
-  if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+')) return 'add';
-  if (line.startsWith('-')) return 'del';
-  return 'ctx';
-}
-
-/**
- * Terminal output preview — quiet single well: command (no $) + stdout/stderr.
- * Honors runtime `status` and stream truncated flags (not only UI line caps).
- */
 function TerminalPreview(props: {
   cwd: string;
   cmd: string;
@@ -246,27 +213,25 @@ function TerminalPreview(props: {
   const cancelled = isCancelledStatus(props.status);
   const timedOut = props.status === 'timed_out';
   const succeeded = props.status === 'completed';
-  // The cmd line is also user-runtime text — don't echo a `--api-key=...`
-  // arg into the chat without masking it.
   const safeCmd = redactSecrets(props.cmd);
-  const attention = !succeeded || cancelled || timedOut;
-  const attentionBorder = props.sandboxBlocked
-    ? 'border-[oklch(from_var(--warning)_l_c_h_/_0.32)]'
-    : 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]';
 
   return (
     <div
       data-slot="tool-output"
       data-kind="terminal"
-      className={cn(TOOL_OUTPUT_PANEL_CLASS, attention && attentionBorder)}
+      className="mt-1 flex min-w-0 flex-col gap-1.5"
     >
-      {safeCmd.length > 0 && (
-        <code className={TOOL_OUTPUT_COMMAND_CLASS}>{safeCmd}</code>
-      )}
       {props.output ? (
-        <ShellOutputBody output={props.output} failed={!succeeded} />
+        <ShellOutputBody
+          output={props.output}
+          failed={!succeeded}
+          title={safeCmd.length > 0 ? safeCmd : undefined}
+        />
       ) : (
-        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalUnavailable}</p>
+        <>
+          {safeCmd.length > 0 ? <ToolCodeBlock code={safeCmd} /> : null}
+          <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.terminalUnavailable}</p>
+        </>
       )}
       {props.failureMessage && (
         <p className={cn(TOOL_OUTPUT_NOTE_CLASS, props.sandboxBlocked ? 'text-[color:var(--warning-text,var(--info-text))]' : 'text-[color:var(--destructive)]')}>
@@ -288,11 +253,6 @@ function TerminalPreview(props: {
           {props.exitCode !== undefined
             ? `${activityCopy.status.sandboxBlocked} · ${copy.exitCode(props.exitCode)}`
             : activityCopy.status.sandboxBlocked}
-        </p>
-      )}
-      {!succeeded && !cancelled && !timedOut && !props.sandboxBlocked && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'text-[color:var(--destructive)]')}>
-          {props.exitCode !== undefined ? `${copy.failed} · ${copy.exitCode(props.exitCode)}` : copy.failed}
         </p>
       )}
     </div>
@@ -463,7 +423,11 @@ function ShellRunStatus(props: {
   }
 }
 
-function ShellOutputBody(props: { output: ShellOutput; failed: boolean }) {
+function ShellOutputBody(props: {
+  output: ShellOutput;
+  failed: boolean;
+  title?: string;
+}) {
   const copy = getToolActivityCopy(useUiLocale()).result;
   if (props.output.mode === 'pty') {
     const text = redactSecrets(ptyHumanTerminalText(props.output));
@@ -484,20 +448,30 @@ function ShellOutputBody(props: { output: ShellOutput; failed: boolean }) {
   const hiddenLines = stdout.capped + stderr.capped;
   const runtimeTruncated = props.output.stdoutTruncated || props.output.stderrTruncated;
   const hasOutput = props.output.stdout.length > 0 || props.output.stderr.length > 0;
+  const parts: string[] = [];
+  if (stdout.body) {
+    parts.push(stdout.capped > 0
+      ? `${stdout.body}\n\n${copy.streamHidden('stdout', stdout.capped)}`
+      : stdout.body);
+  }
+  if (stderr.body) {
+    parts.push(stderr.capped > 0
+      ? `${stderr.body}\n\n${copy.streamHidden('stderr', stderr.capped)}`
+      : stderr.body);
+  }
+  const code = parts.join('\n');
   return (
     <>
-      {!hasOutput && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
-      {props.output.stdout.length > 0 && (
-        <pre className={TOOL_OUTPUT_BODY_CLASS} data-stream="stdout">
-          {stdout.body}
-          {stdout.capped > 0 && `\n\n${copy.streamHidden('stdout', stdout.capped)}`}
-        </pre>
+      {!hasOutput && !props.title && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
+      {(hasOutput || props.title) && (
+        <ToolCodeBlock
+          // No language: shell streams stay contiguous under the tokenizer.
+          code={code || props.title || ''}
+          title={code && props.title ? props.title : undefined}
+        />
       )}
-      {props.output.stderr.length > 0 && (
-        <pre className={cn(TOOL_OUTPUT_BODY_CLASS, 'text-[color:var(--destructive)]')} data-stream="stderr">
-          {stderr.body}
-          {stderr.capped > 0 && `\n\n${copy.streamHidden('stderr', stderr.capped)}`}
-        </pre>
+      {!hasOutput && props.title && (
+        <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>
       )}
       {(runtimeTruncated || hiddenLines > 0) && (
         <p className={TOOL_OUTPUT_NOTE_CLASS}>

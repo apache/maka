@@ -6,11 +6,10 @@ import {
   normalizePricingModelKey,
 } from '@maka/core/usage-stats/pricing';
 import type { UsageGroupBy, UsageQuery } from '@maka/core/usage-stats/types';
-import type { createSettingsStore, createTelemetryRepo } from '@maka/storage';
+import type { createSettingsStore, TelemetryRepo } from '@maka/storage';
 import type { createMainWindowController } from './main-window.js';
 
 type SettingsStore = ReturnType<typeof createSettingsStore>;
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
 type MainWindowController = ReturnType<typeof createMainWindowController>;
 
 export interface UsageIpcDeps {

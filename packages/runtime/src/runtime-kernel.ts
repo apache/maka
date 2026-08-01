@@ -57,6 +57,7 @@ import {
   runLegacyProviderRetry,
 } from './runtime-runner.js';
 import type {
+  BackendFactoryContext,
   BackendRegistry,
   CompactSessionInput,
   SessionStore,
@@ -79,6 +80,10 @@ import {
   canReplaceHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import {
+  HistoryCompactCheckpointCoordinator,
+  type HistoryCompactCleanupRequest,
+} from './history-compact-checkpoint-coordinator.js';
 import { shouldAppendContextCompactionFailedOpenNote } from './context-budget.js';
 import {
   buildResumePlanFromRuntimeEvents,
@@ -105,6 +110,7 @@ import {
   type RuntimeInteractionRunBinding,
   type RuntimeInteractionRunClosureReason,
 } from './interaction-authority.js';
+import { DeliveryAckQueue, isDeliveryAckQueueClosed } from './delivery-ack-queue.js';
 
 export interface RuntimeKernelLike {
   claimExecution(sessionId: string): RuntimeExecutionClaim;
@@ -270,11 +276,7 @@ export interface RuntimeKernelDeps {
   interactionAuthority?: RuntimeInteractionAuthority;
 }
 
-export interface HistoryCompactCleanupRequest {
-  sessionId: string;
-  checkpoint: HistoryCompactCheckpoint;
-  runtimeEvents: readonly RuntimeEvent[];
-}
+export type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-coordinator.js';
 
 interface BackendGeneration extends AgentRunActiveSession {
   sessionId: string;
@@ -382,16 +384,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     PendingExecutionClaim
   >();
   private readonly stopIntents = new Map<string, SessionStopIntent>();
-  private readonly historyCompactCheckpoints = new Map<
-    string,
-    HistoryCompactCheckpoint | undefined
-  >();
-  private readonly historyCompactCheckpointLoads = new Map<
-    string,
-    Promise<HistoryCompactCheckpoint | undefined>
-  >();
-  private readonly historyCompactCheckpointWrites = new Map<string, Promise<void>>();
-  private readonly historyCompactCleanupWrites = new Map<string, Promise<void>>();
+  private readonly historyCompactCoordinator: HistoryCompactCheckpointCoordinator;
   private readonly pendingContinuationClaims = new Set<string>();
   private readonly pendingContinuationSessions = new Set<string>();
   private readonly steeringBySession = new Map<string, SessionSteeringState>();
@@ -404,6 +397,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    this.historyCompactCoordinator = new HistoryCompactCheckpointCoordinator(deps);
   }
 
   private async runBackendActivation<T>(operation: () => Promise<T> | T): Promise<T> {
@@ -1389,7 +1383,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     onRunStarted?: (runId: string, initialHeader: SessionHeader) => void | Promise<void>,
     initialHeader?: SessionHeader,
   ): AsyncIterable<SessionEvent> {
-    const sessionEvents = new AsyncEventQueue<SessionEvent>();
+    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
     let flowDone = false;
@@ -1517,7 +1511,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
-        if (!isAsyncEventQueueClosed(error)) {
+        if (!isDeliveryAckQueueClosed(error)) {
           await run.recordFailure(error);
           sessionEvents.fail(error);
         }
@@ -1630,7 +1624,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     bindHostedRoot = false,
     onRunStarted?: () => void | Promise<void>,
   ): AsyncIterable<SessionEvent> {
-    const sessionEvents = new AsyncEventQueue<SessionEvent>();
+    const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
       this.inheritExecutionAbort(execution);
     let flowDone = false;
@@ -1690,7 +1684,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         await sessionEvents.push(sessionEvent);
       },
       onError: async (error) => {
-        if (!isAsyncEventQueueClosed(error)) {
+        if (!isDeliveryAckQueueClosed(error)) {
           await run.recordFailure(error);
           sessionEvents.fail(error);
         }
@@ -1835,7 +1829,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     flow: AiSdkFlow;
     flowDone: boolean;
     abortController: AbortController;
-    sessionEvents: AsyncEventQueue<SessionEvent>;
+    sessionEvents: DeliveryAckQueue<SessionEvent>;
     runnerResult: Promise<InvocationResult>;
     interactionRun: RuntimeInteractionRunBinding | undefined;
     runnerFailure?: unknown;
@@ -2449,8 +2443,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private async disposeBackendNow(sessionId: string): Promise<BackendDisposalOutcome> {
     const generations = this.backendGenerationsFor(sessionId);
     this.steeringBySession.delete(sessionId);
-    this.historyCompactCheckpoints.delete(sessionId);
-    this.historyCompactCheckpointLoads.delete(sessionId);
+    this.historyCompactCoordinator.clear(sessionId);
     let disposalError: unknown;
     for (const active of generations) {
       const outcome = await this.quarantineBackendGeneration(active);
@@ -2615,106 +2608,73 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  private loadHistoryCompactCheckpoint(
-    sessionId: string,
-  ): Promise<HistoryCompactCheckpoint | undefined> {
-    if (this.historyCompactCheckpoints.has(sessionId)) {
-      return Promise.resolve(this.historyCompactCheckpoints.get(sessionId));
-    }
-    const existing = this.historyCompactCheckpointLoads.get(sessionId);
-    if (existing) return existing;
-    if (!this.deps.runStore) return Promise.resolve(undefined);
-
-    let guardedLoad: Promise<HistoryCompactCheckpoint | undefined>;
-    guardedLoad = loadLatestHistoryCompactCheckpointFromRunLedger(this.deps.runStore, sessionId)
-      .then((checkpoint) => {
-        if (checkpoint) this.scheduleHistoryCompactCleanup(sessionId, checkpoint);
-        if (
-          this.historyCompactCheckpointLoads.get(sessionId) === guardedLoad &&
-          !this.historyCompactCheckpoints.has(sessionId)
-        ) {
-          this.historyCompactCheckpoints.set(sessionId, checkpoint);
-        }
-        return this.historyCompactCheckpoints.has(sessionId)
-          ? this.historyCompactCheckpoints.get(sessionId)
-          : checkpoint;
-      })
-      .finally(() => {
-        if (this.historyCompactCheckpointLoads.get(sessionId) === guardedLoad) {
-          this.historyCompactCheckpointLoads.delete(sessionId);
-        }
-      });
-    this.historyCompactCheckpointLoads.set(sessionId, guardedLoad);
-    return guardedLoad;
-  }
-
-  private recordHistoryCompactCheckpoint(
-    sessionId: string,
-    checkpoint: HistoryCompactCheckpoint,
-    run: AgentRun | undefined,
-  ): Promise<void> {
-    if (!run) return Promise.reject(new Error('No active AgentRun for history compact checkpoint'));
-    const previous = this.historyCompactCheckpointWrites.get(sessionId) ?? Promise.resolve();
-    let tracked: Promise<void>;
-    tracked = previous
-      .catch(() => {})
-      .then(async () => {
-        const durableCheckpoint = await this.loadHistoryCompactCheckpoint(sessionId);
-        if (!canReplaceHistoryCompactCheckpoint(durableCheckpoint, checkpoint)) {
-          throw new Error('History compact checkpoint was superseded before persistence');
-        }
-        await run.recordHistoryCompactCheckpoint(checkpoint);
-        this.historyCompactCheckpoints.set(sessionId, checkpoint);
-        this.scheduleHistoryCompactCleanup(sessionId, checkpoint);
-      })
-      .finally(() => {
-        if (this.historyCompactCheckpointWrites.get(sessionId) === tracked) {
-          this.historyCompactCheckpointWrites.delete(sessionId);
-        }
-      });
-    this.historyCompactCheckpointWrites.set(sessionId, tracked);
-    return tracked;
-  }
-
-  private scheduleHistoryCompactCleanup(
-    sessionId: string,
-    checkpoint: HistoryCompactCheckpoint,
-  ): void {
-    if (
-      !this.deps.cleanupHistoryCompactArtifacts ||
-      !this.deps.runStore ||
-      !this.deps.runtimeEventStore
-    )
-      return;
-    const previous = this.historyCompactCleanupWrites.get(sessionId) ?? Promise.resolve();
-    let tracked: Promise<void>;
-    tracked = previous
-      .catch(() => {})
-      .then(async () => {
-        const runs = (await this.deps.runStore!.listSessionRuns(sessionId)).filter(
-          isSessionInlineRun,
-        );
-        const runtimeEvents: RuntimeEvent[] = [];
-        for (const run of runs) {
-          runtimeEvents.push(
-            ...(await this.deps.runtimeEventStore!.readRuntimeEvents(sessionId, run.runId)),
-          );
-        }
-        await this.deps.cleanupHistoryCompactArtifacts!({
-          sessionId,
-          checkpoint,
-          runtimeEvents,
-        });
-      })
-      .catch(() => {
-        // Legacy cleanup is reclaim-only. Runtime replay must remain available on failure.
-      })
-      .finally(() => {
-        if (this.historyCompactCleanupWrites.get(sessionId) === tracked) {
-          this.historyCompactCleanupWrites.delete(sessionId);
-        }
-      });
-    this.historyCompactCleanupWrites.set(sessionId, tracked);
+  /**
+   * Builds the backend recorder hooks shared by `ensureActive` and
+   * `ensureChildActive`. The two paths are structurally identical except for
+   * which active-session map they resolve against — captured here by
+   * `resolveActive`, so each call site binds its own resolver. Callers retain
+   * the intentionally divergent fields (`allowMidTurnHistoryCompaction`,
+   * `shellRunContextSummary`, system prompt/tools source) at their own sites.
+   */
+  private buildBackendRecorderHooks(input: {
+    resolveActive: () => BackendGeneration | undefined;
+    sessionId: string;
+  }): Pick<
+    BackendFactoryContext,
+    | 'recordRunTrace'
+    | 'recordProviderRequestCapture'
+    | 'recordProviderRequestAttempt'
+    | 'loadHistoryCompactCheckpoint'
+    | 'recordHistoryCompactCheckpoint'
+    | 'loadTurnRuntimeEvents'
+    | 'recordActiveFullCompactBlock'
+    | 'recordSemanticCompactBlock'
+  > {
+    const { resolveActive, sessionId } = input;
+    const runFor = (turnId: string): AgentRun | undefined => {
+      const active = resolveActive();
+      const runId = active?.turnToRunId.get(turnId);
+      return runId ? active?.activeRuns.get(runId) : undefined;
+    };
+    return {
+      recordRunTrace: (event) => {
+        runFor(event.turnId)?.recordRunTrace(event);
+      },
+      ...(this.deps.runStore
+        ? {
+            recordProviderRequestCapture: (capture) => {
+              const run = runFor(capture.turnId);
+              if (!run)
+                return Promise.reject(new Error('No active AgentRun for provider request capture'));
+              return run.recordProviderRequestCapture(capture);
+            },
+            recordProviderRequestAttempt: (attempt) => {
+              runFor(attempt.turnId)?.recordProviderRequestAttempt(attempt);
+            },
+            loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
+            recordHistoryCompactCheckpoint: (
+              checkpoint: HistoryCompactCheckpoint,
+              turnId: string,
+            ) => this.historyCompactCoordinator.record(sessionId, checkpoint, runFor(turnId)),
+          }
+        : {}),
+      ...(this.deps.runtimeEventStore
+        ? {
+            loadTurnRuntimeEvents: (turnId: string) => {
+              const run = runFor(turnId);
+              if (!run)
+                return Promise.reject(new Error('No active AgentRun for turn runtime events'));
+              return run.loadTurnRuntimeEvents();
+            },
+          }
+        : {}),
+      recordActiveFullCompactBlock: (block) => {
+        runFor(block.turnId)?.recordActiveFullCompactBlock(block);
+      },
+      recordSemanticCompactBlock: (block) => {
+        runFor(block.turnId)?.recordSemanticCompactBlock(block);
+      },
+    };
   }
 
   private async ensureActive(
@@ -2750,67 +2710,11 @@ export class RuntimeKernel implements RuntimeKernelLike {
               tools: subagent.tools,
             }
           : {}),
-        recordRunTrace: (event) => {
-          const active = this.active.get(sessionId);
-          const runId = active?.turnToRunId.get(event.turnId);
-          const run = runId ? active?.activeRuns.get(runId) : undefined;
-          run?.recordRunTrace(event);
-        },
-        ...(this.deps.runStore
-          ? {
-              recordProviderRequestCapture: (capture) => {
-                const active = this.active.get(sessionId);
-                const runId = active?.turnToRunId.get(capture.turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                if (!run)
-                  return Promise.reject(
-                    new Error('No active AgentRun for provider request capture'),
-                  );
-                return run.recordProviderRequestCapture(capture);
-              },
-              recordProviderRequestAttempt: (attempt) => {
-                const active = this.active.get(sessionId);
-                const runId = active?.turnToRunId.get(attempt.turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                run?.recordProviderRequestAttempt(attempt);
-              },
-              loadHistoryCompactCheckpoint: () => this.loadHistoryCompactCheckpoint(sessionId),
-              recordHistoryCompactCheckpoint: (
-                checkpoint: HistoryCompactCheckpoint,
-                turnId: string,
-              ) => {
-                const active = this.active.get(sessionId);
-                const runId = active?.turnToRunId.get(turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                return this.recordHistoryCompactCheckpoint(sessionId, checkpoint, run);
-              },
-            }
-          : {}),
-        ...(this.deps.runtimeEventStore
-          ? {
-              loadTurnRuntimeEvents: (turnId: string) => {
-                const active = this.active.get(sessionId);
-                const runId = active?.turnToRunId.get(turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                if (!run)
-                  return Promise.reject(new Error('No active AgentRun for turn runtime events'));
-                return run.loadTurnRuntimeEvents();
-              },
-            }
-          : {}),
+        ...this.buildBackendRecorderHooks({
+          resolveActive: () => this.active.get(sessionId),
+          sessionId,
+        }),
         allowMidTurnHistoryCompaction: Boolean(this.deps.runtimeEventStore),
-        recordActiveFullCompactBlock: (block) => {
-          const active = this.active.get(sessionId);
-          const runId = active?.turnToRunId.get(block.turnId);
-          const run = runId ? active?.activeRuns.get(runId) : undefined;
-          run?.recordActiveFullCompactBlock(block);
-        },
-        recordSemanticCompactBlock: (block) => {
-          const active = this.active.get(sessionId);
-          const runId = active?.turnToRunId.get(block.turnId);
-          const run = runId ? active?.activeRuns.get(runId) : undefined;
-          run?.recordSemanticCompactBlock(block);
-        },
         shellRunContextSummary: () =>
           this.deps.shellRuns?.buildContextSummary(sessionId) ?? Promise.resolve(undefined),
       });
@@ -2901,68 +2805,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
         appendMessage: async () => {},
         systemPrompt,
         tools,
-        recordRunTrace: (event) => {
-          const active = this.childActive.get(activeKey);
-          const runId = active?.turnToRunId.get(event.turnId);
-          const run = runId ? active?.activeRuns.get(runId) : undefined;
-          run?.recordRunTrace(event);
-        },
-        ...(this.deps.runStore
-          ? {
-              recordProviderRequestCapture: (capture) => {
-                const active = this.childActive.get(activeKey);
-                const runId = active?.turnToRunId.get(capture.turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                if (!run)
-                  return Promise.reject(
-                    new Error('No active AgentRun for provider request capture'),
-                  );
-                return run.recordProviderRequestCapture(capture);
-              },
-              recordProviderRequestAttempt: (attempt) => {
-                const active = this.childActive.get(activeKey);
-                const runId = active?.turnToRunId.get(attempt.turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                run?.recordProviderRequestAttempt(attempt);
-              },
-              loadHistoryCompactCheckpoint: () => this.loadHistoryCompactCheckpoint(sessionId),
-              recordHistoryCompactCheckpoint: (
-                checkpoint: HistoryCompactCheckpoint,
-                turnId: string,
-              ) => {
-                const active = this.childActive.get(activeKey);
-                const runId = active?.turnToRunId.get(turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                return this.recordHistoryCompactCheckpoint(sessionId, checkpoint, run);
-              },
-            }
-          : {}),
-        ...(this.deps.runtimeEventStore
-          ? {
-              loadTurnRuntimeEvents: (turnId: string) => {
-                const active = this.childActive.get(activeKey);
-                const runId = active?.turnToRunId.get(turnId);
-                const run = runId ? active?.activeRuns.get(runId) : undefined;
-                if (!run)
-                  return Promise.reject(new Error('No active AgentRun for turn runtime events'));
-                return run.loadTurnRuntimeEvents();
-              },
-            }
-          : {}),
+        ...this.buildBackendRecorderHooks({
+          resolveActive: () => this.childActive.get(activeKey),
+          sessionId,
+        }),
         // A child-only ledger cannot claim coverage of the parent session prefix.
         allowMidTurnHistoryCompaction: false,
-        recordActiveFullCompactBlock: (block) => {
-          const active = this.childActive.get(activeKey);
-          const runId = active?.turnToRunId.get(block.turnId);
-          const run = runId ? active?.activeRuns.get(runId) : undefined;
-          run?.recordActiveFullCompactBlock(block);
-        },
-        recordSemanticCompactBlock: (block) => {
-          const active = this.childActive.get(activeKey);
-          const runId = active?.turnToRunId.get(block.turnId);
-          const run = runId ? active?.activeRuns.get(runId) : undefined;
-          run?.recordSemanticCompactBlock(block);
-        },
       });
       await this.rejectCancelledBackendActivation(
         backend,
@@ -3743,17 +3591,6 @@ function effectiveOrchestrationForRun(
   return resolveEffectiveOrchestration(session.orchestrationMode, undefined);
 }
 
-class AsyncEventQueueClosed extends Error {
-  constructor() {
-    super('Async event queue closed');
-    this.name = 'AsyncEventQueueClosed';
-  }
-}
-
-function isAsyncEventQueueClosed(error: unknown): boolean {
-  return error instanceof AsyncEventQueueClosed;
-}
-
 async function interactionResumeAllowed(
   interactionRun: RuntimeInteractionRunBinding | undefined,
   event: SessionEvent,
@@ -3849,79 +3686,6 @@ class FailureCollector {
   throwIfAny(message: string): void {
     if (this.failures.length === 1) throw this.failures[0];
     if (this.failures.length > 1) throw new AggregateError(this.failures, message);
-  }
-}
-
-interface AsyncEventQueueEntry<T> {
-  value: T;
-  delivered: () => void;
-  rejected: (error: unknown) => void;
-}
-
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private readonly values: Array<AsyncEventQueueEntry<T>> = [];
-  private readonly waiters: Array<{
-    resolve: (entry: AsyncEventQueueEntry<T> | undefined) => void;
-    reject: (error: unknown) => void;
-  }> = [];
-  private closed = false;
-  private failure: unknown;
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return this.consume()[Symbol.asyncIterator]();
-  }
-
-  push(value: T): Promise<void> {
-    if (this.failure) return Promise.reject(this.failure);
-    if (this.closed) return Promise.reject(new AsyncEventQueueClosed());
-    return new Promise<void>((resolve, reject) => {
-      const entry = { value, delivered: resolve, rejected: reject };
-      const waiter = this.waiters.shift();
-      if (waiter) {
-        waiter.resolve(entry);
-        return;
-      }
-      this.values.push(entry);
-    });
-  }
-
-  fail(error: unknown): void {
-    if (this.failure) return;
-    this.failure = error;
-    for (const value of this.values.splice(0)) value.rejected(error);
-    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    const closed = new AsyncEventQueueClosed();
-    for (const value of this.values.splice(0)) value.rejected(closed);
-    for (const waiter of this.waiters.splice(0)) waiter.resolve(undefined);
-  }
-
-  private async *consume(): AsyncIterable<T> {
-    while (true) {
-      const entry = await this.nextEntry();
-      if (!entry) return;
-      try {
-        yield entry.value;
-      } finally {
-        entry.delivered();
-      }
-    }
-  }
-
-  private nextEntry(): Promise<AsyncEventQueueEntry<T> | undefined> {
-    if (this.values.length > 0) {
-      const next = this.values.shift()!;
-      return Promise.resolve(next);
-    }
-    if (this.failure) return Promise.reject(this.failure);
-    if (this.closed) return Promise.resolve(undefined);
-    return new Promise<AsyncEventQueueEntry<T> | undefined>((resolve, reject) => {
-      this.waiters.push({ resolve, reject });
-    });
   }
 }
 

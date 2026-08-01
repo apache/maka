@@ -28,6 +28,7 @@ export * from './interaction.js';
 export * from './client-capability.js';
 export * from './message.js';
 export * from './operations.js';
+export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './task-ledger.js';
 

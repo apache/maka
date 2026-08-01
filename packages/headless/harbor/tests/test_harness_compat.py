@@ -36,13 +36,15 @@ import importlib
 import io
 import os
 import sys
+import asyncio
+import tempfile
 from pathlib import Path
 
 _HARBOR_DIR = Path(__file__).resolve().parent.parent
 if str(_HARBOR_DIR) not in sys.path:
     sys.path.insert(0, str(_HARBOR_DIR))
 
-_ADAPTER_MODULES = ("harness_compat", "maka_agent", "kimi_code_agent", "codex_agent")
+_ADAPTER_MODULES = ("harness_compat", "maka_agent", "kimi_code_agent", "codex_agent", "opencode_agent")
 
 # Sentinel returned by tests that cannot run under this interpreter; the
 # __main__ runner counts these as skips, not passes. pytest treats the return
@@ -109,6 +111,7 @@ def _fresh_adapters():
         importlib.import_module("maka_agent"),
         importlib.import_module("kimi_code_agent"),
         importlib.import_module("codex_agent"),
+        importlib.import_module("opencode_agent"),
     )
 
 
@@ -158,8 +161,13 @@ def _restore_modules(saved_pier) -> None:
 def test_pier_tree_selected_and_agent_info_is_pier_type():
     if not _pier_gate():
         return SKIPPED
-    maka_mod, kimi_mod, codex_mod = _fresh_adapters()
-    for cls in (maka_mod.MakaAgent, kimi_mod.MakaKimiCodeAgent, codex_mod.MakaCodexAgent):
+    maka_mod, kimi_mod, codex_mod, opencode_mod = _fresh_adapters()
+    for cls in (
+        maka_mod.MakaAgent,
+        kimi_mod.MakaKimiCodeAgent,
+        codex_mod.MakaCodexAgent,
+        opencode_mod.MakaOpenCodeAgent,
+    ):
         assert issubclass(cls, PierBaseInstalledAgent), cls.__mro__
         agent = cls(logs_dir=Path("/tmp"), model_name="k3")
         # The DeepSWE pilot failed pydantic validation because agent_info was a
@@ -177,7 +185,7 @@ def test_pier_tree_selected_and_agent_info_is_pier_type():
 def test_maka_agent_network_policy_under_pier():
     if not _pier_gate():
         return SKIPPED
-    maka_mod, _, _ = _fresh_adapters()
+    maka_mod, _, _, _ = _fresh_adapters()
 
     # Host-side LLM mode: model calls happen on the host, container is offline.
     host_side = maka_mod.MakaAgent(
@@ -239,7 +247,7 @@ def test_maka_agent_network_policy_under_pier():
 def test_kimi_agent_network_shape_under_pier():
     if not _pier_gate():
         return SKIPPED
-    _, kimi_mod, _ = _fresh_adapters()
+    _, kimi_mod, _, _ = _fresh_adapters()
 
     # Portless HTTPS endpoint (default 443): allowlisted without any warning.
     configured = kimi_mod.MakaKimiCodeAgent(
@@ -291,7 +299,7 @@ def test_kimi_agent_network_shape_under_pier():
 def test_codex_agent_network_shape_under_pier():
     if not _pier_gate():
         return SKIPPED
-    _, _, codex_mod = _fresh_adapters()
+    _, _, codex_mod, _ = _fresh_adapters()
 
     # The container runs the pinned Codex CLI against the maka-http provider
     # config pointed at the host proxy; that proxy host is the single egress
@@ -331,12 +339,93 @@ def test_codex_agent_network_shape_under_pier():
 
 
 @_isolated_maka_env
+def test_opencode_agent_network_shape_under_pier():
+    if not _pier_gate():
+        return SKIPPED
+    _, _, _, opencode_mod = _fresh_adapters()
+
+    # The pinned toolchain is bind-mounted read-only and only verified in
+    # install(); Pier's inherited spec would reinstall OpenCode from the
+    # network, which offline tasks cannot reach and which would break the
+    # fixed-build comparison.
+    agent = opencode_mod.MakaOpenCodeAgent(
+        logs_dir=Path("/tmp"),
+        extra_env={"MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:443"},
+    )
+    assert agent.install_spec() is None
+
+    # The container dials only the host provider proxy (see
+    # _run_with_stop_sentinel); that proxy host is the single egress grant.
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        allow = agent.network_allowlist()
+    assert isinstance(allow, NetworkAllowlist)
+    assert allow.domains == ["host.docker.internal"]
+    assert stderr.getvalue() == ""
+
+    # Squid-unreachable port: warn on stderr, still allowlist the host (same
+    # shared contract as the Kimi and Codex adapters).
+    proxied = opencode_mod.MakaOpenCodeAgent(
+        logs_dir=Path("/tmp"),
+        extra_env={"MAKA_PROVIDER_PROXY_URL": "https://proxy.internal:8443/v1"},
+    )
+    stderr = io.StringIO()
+    with contextlib.redirect_stderr(stderr):
+        proxied_allow = proxied.network_allowlist()
+    assert proxied_allow.domains == ["proxy.internal"]
+    assert "ports 80 and 443" in stderr.getvalue(), stderr.getvalue()
+
+    # No fallback domain: a missing proxy URL fails at allowlist time, same as
+    # the run path, instead of granting spurious egress.
+    unset = opencode_mod.MakaOpenCodeAgent(logs_dir=Path("/tmp"))
+    _raises(
+        unset.network_allowlist,
+        ValueError,
+        "OpenCode requires the host provider proxy",
+    )
+
+@_isolated_maka_env
+def test_opencode_agent_hydrates_container_log_to_host_logs_dir():
+    # Runs under both interpreters: pier replaces the default /logs bind-mount
+    # when the runner passes explicit --mounts-json (pier docker.py), so the
+    # host-side adapter must download the CLI stream before _error_messages()
+    # and populate_context_post_run() parse it; under plain Harbor the file is
+    # already host-side and the download is skipped.
+    _, _, _, opencode_mod = _fresh_adapters()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = opencode_mod.MakaOpenCodeAgent(logs_dir=Path(tmp))
+
+        written = {}
+
+        class _PierEnv:
+            async def download_file(self, remote, local):
+                written[remote] = Path(local)
+                Path(local).write_text('{"type":"step_finish"}\n')
+
+        asyncio.run(agent._download_agent_logs(_PierEnv()))
+        assert written == {"/logs/agent/opencode.txt": Path(tmp) / "opencode.txt"}
+
+        # Idempotent: an existing host-side log (plain-Harbor bind mount, or a
+        # repeated call from run()'s finally) is never overwritten.
+        calls = []
+
+        class _HarborEnv:
+            async def download_file(self, remote, local):
+                calls.append(remote)
+
+        asyncio.run(agent._download_agent_logs(_HarborEnv()))
+        assert calls == []
+        assert (Path(tmp) / "opencode.txt").read_text() == '{"type":"step_finish"}\n'
+
+
+@_isolated_maka_env
 def test_kimi_runtime_env_forwards_ipv6_proxy_url():
     # Runs under BOTH trees (no pier gate): _runtime_env keeps main's plain-
     # Harbor contract and forwards the proxy URL opaquely, IPv6 included; the
     # IPv6 rejection is a Pier NetworkAllowlist constraint and lives only in
     # the network_allowlist() path.
-    _, kimi_mod, _ = _fresh_adapters()
+    _, kimi_mod, _, _ = _fresh_adapters()
     agent = kimi_mod.MakaKimiCodeAgent(
         logs_dir=Path("/tmp"),
         extra_env={
@@ -360,7 +449,7 @@ def test_codex_agent_hydrates_agent_logs_best_effort():
     import asyncio
     import tempfile
 
-    _, _, codex_mod = _fresh_adapters()
+    _, _, codex_mod, _ = _fresh_adapters()
 
     class _RecordingEnvironment:
         def __init__(self) -> None:

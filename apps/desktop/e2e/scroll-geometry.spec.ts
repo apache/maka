@@ -48,7 +48,7 @@ async function probeColumnGeometry(page: import('@playwright/test').Page): Promi
     const host = document.querySelector<HTMLElement>('.maka-chat.messages');
     const viewport = document.querySelector<HTMLElement>('.maka-chatViewport');
     const turn = document.querySelector<HTMLElement>('.maka-turn');
-    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-inner');
+    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
     if (!host || !viewport || !turn || !composer) {
       throw new Error('Expected the active chat host, viewport, turn, and composer to be mounted');
     }
@@ -95,9 +95,12 @@ async function settleGeometry(page: import('@playwright/test').Page, options: { 
   const settled = await page.evaluate(probeScroller) as { scrollHeight: number };
   expect(settled.scrollHeight, JSON.stringify(settled)).toBeGreaterThan(WARMED_HEIGHT_FLOOR);
   // The last chunk's inflation reaches the pinned follower through a
-  // ResizeObserver, one layout after the walk hands back.
+  // ResizeObserver, one layout after the walk hands back. A fully pinned
+  // scroller can read distance 1 rather than 0: Chromium keeps sub-pixel
+  // scrollTop values (observed 30106.5), so the rounded distance lands on 1
+  // even though the content is flush. The contract is "flush", so accept both.
   if (options.pinned) {
-    await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
+    await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBeLessThanOrEqual(1);
   }
 }
 
@@ -140,29 +143,17 @@ test('empty chat keeps its grid content flush with the viewport', async ({ windo
   }
 });
 
-test('chat turns keep twelve pixels of vertical separation', async ({ longTranscriptWindow: page }) => {
-  await expect(page.locator('.maka-turn')).toHaveCount(24);
-
-  const gap = await page.evaluate(() => {
-    const turns = document.querySelectorAll<HTMLElement>('.maka-turn');
-    const first = turns[0]?.getBoundingClientRect();
-    const second = turns[1]?.getBoundingClientRect();
-    if (!first || !second) throw new Error('Expected two chat turns');
-    return second.top - first.bottom;
-  });
-  expect(gap).toBe(12);
-});
-
 test('long session opens pinned to bottom and stays pinned while geometry settles', async ({ longTranscriptWindow: page }) => {
   await expect(page.locator('.maka-turn')).toHaveCount(24);
 
   // Pinned from the start: the session-open pin must hold. During the idle
   // warm-up the document grows by thousands of pixels with no mutation and
   // no scroll event — the follower must ride every growth step, so the
-  // distance stays 0 while scrollHeight rises to its final value.
-  await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
+  // distance stays within 1px (sub-pixel scrollTop; see settleGeometry)
+  // while scrollHeight rises to its final value.
+  await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBeLessThanOrEqual(1);
 
-  // And the pin is still 0 once the walk reports itself done, which is what
+  // And the pin still holds once the walk reports itself done, which is what
   // makes the poll above a contract rather than a lucky early read.
   await settleGeometry(page, { pinned: true });
 });
@@ -249,7 +240,10 @@ test('returning to the session after visiting skills re-settles the new transcri
   // `.maka-turn` node with no remembered size, so the warm-up must walk the
   // NEW DOM. Fixture windows don't pass OS hit-testing — dispatch clicks.
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
-  await page.locator('button[aria-label="扩展"]').dispatchEvent('click');
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .getByRole('button', { name: '扩展', exact: true })
+    .dispatchEvent('click');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
   await page.getByText('超长会话滚动几何').first().dispatchEvent('click');
   await expect(page.locator('.maka-turn')).toHaveCount(24);

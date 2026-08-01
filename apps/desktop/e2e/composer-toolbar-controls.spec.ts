@@ -2,7 +2,7 @@ import { expect, test } from './fixtures';
 
 /**
  * PR-COMPOSER-TOOLBAR-SPLIT: the composer's single ＋ menu became three named
- * controls — upload / modes / skills. The mode menu itself is
+ * controls — upload / modes / skills — placed in their native Astryx slots. The mode menu itself is
  * covered by composer-mode-indicator.spec.ts; this spec pins the two surfaces
  * that menu never had: the standalone upload trigger, and the Skills picker
  * writing into the SAME structured draft the `/` popup owns
@@ -11,12 +11,14 @@ import { expect, test } from './fixtures';
 test('the toolbar exposes upload, modes and skills as separate triggers', async ({
   invocableSkillsWindow: page,
 }) => {
-  const controls = page.locator('.maka-composer-left-controls');
-  await expect(controls.getByRole('button', { name: '添加文件或目录' })).toBeVisible();
-  await expect(controls.getByRole('button', { name: '模式' })).toBeVisible();
-  await expect(controls.getByRole('button', { name: '技能' })).toBeVisible();
+  const composer = page.locator('.maka-composer-astryx');
+  const headerActions = composer.locator('.maka-composer-header-actions');
+  const footerActions = composer.locator('.maka-composer-left-controls');
+  await expect(headerActions.getByRole('button', { name: '添加文件或目录' })).toBeVisible();
+  await expect(footerActions.getByRole('button', { name: '模式' })).toBeVisible();
+  await expect(footerActions.getByRole('button', { name: '技能' })).toBeVisible();
   // The retired ＋ trigger must not linger beside them.
-  await expect(controls.getByRole('button', { name: '添加', exact: true })).toHaveCount(0);
+  await expect(composer.getByRole('button', { name: '添加', exact: true })).toHaveCount(0);
 });
 
 test('the Skills picker writes the same chips the slash popup does', async ({

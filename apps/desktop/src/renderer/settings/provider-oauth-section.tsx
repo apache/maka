@@ -1,16 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight } from '@maka/ui/icons';
+import { Item } from '@astryxdesign/core';
 import {
   type ProviderType,
 } from '@maka/core';
 import {
   Button,
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
   useMountedRef,
   useToast,
   useUiLocale,
@@ -197,21 +192,15 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
               data-status="ready"
               data-oauth-status={card.status}
               data-logged-in={isLoggedIn ? 'true' : undefined}
-              aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}
-              render={<button type="button" onClick={() => openOAuthModal(card.id)} />}
-            >
-              <ItemMedia>
-                <ProviderLogo type={card.providerType} />
-              </ItemMedia>
-              <ItemContent>
-                <ItemTitle className="providerCatalogTitle">{card.name}</ItemTitle>
-                <ItemDescription className="providerCatalogDesc providerOAuthCardDescription">{liveDescription}</ItemDescription>
-              </ItemContent>
-              <ItemActions className="providerCatalogActions">
+              startContent={<ProviderLogo type={card.providerType} />}
+              label={<span className="providerCatalogTitle" aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}>{card.name}</span>}
+              description={<span className="providerCatalogDesc providerOAuthCardDescription">{liveDescription}</span>}
+              endContent={<span className="providerCatalogActions">
                 <span className="providerCatalogBadge providerOAuthCardBadge">{liveBadge}</span>
                 <ChevronRight className="providerCatalogChevron" size={15} aria-hidden="true" />
-              </ItemActions>
-            </Item>
+              </span>}
+              onClick={() => openOAuthModal(card.id)}
+            />
           );
         })}
       </div>

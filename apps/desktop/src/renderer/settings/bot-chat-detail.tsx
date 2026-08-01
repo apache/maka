@@ -10,23 +10,21 @@ import {
 } from '@maka/core';
 import type { BotStatus } from '@maka/runtime';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
   BOT_BRAND,
   Button,
-  Chip,
+  Badge,
   FormLayout,
   TextInput,
   RelativeTime,
-  Segmented,
   Selector,
   Switch,
   TextArea,
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { BotWeChatFields, WechatQrLoginModal } from './bot-wechat-login';
@@ -40,6 +38,7 @@ import {
   type BotPendingActionName,
 } from './bot-chat-shared';
 import { getBotSettingsCopy, type BotSettingsCopy } from '../locales/settings-bot-copy';
+import { statusBadgeVariant } from './settings-status-badge';
 
 function canEnableBotChannel(readiness: BotReadinessState): boolean {
   return readiness === 'credentials_valid' || readiness === 'operational' || readiness === 'degraded';
@@ -179,7 +178,7 @@ export function BotChatChannelDetail(props: {
           <div className="settingsBotDetailHeaderBody">
             <h3>
               {providerPresentation.label}
-              <Chip dot size="sm" variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
+              <Badge variant={statusBadgeVariant(readinessCopy.tone)} label={readinessCopy.label} />
             </h3>
             <p>{providerPresentation.help}</p>
             {enableSwitchHint && (
@@ -250,22 +249,26 @@ export function BotChatChannelDetail(props: {
         </section>
 
         {props.statusLoadError && (
-          <Alert variant="error">
-            <AlertTitle>{detailCopy.statusRefreshFailed}</AlertTitle>
-            <AlertDescription>{props.statusLoadError}</AlertDescription>
-          </Alert>
+          <Banner
+            status="error"
+            title={detailCopy.statusRefreshFailed}
+            description={props.statusLoadError} />
         )}
         {status?.reason && channel.enabled && !viewState.liveOperational && (
-          <Alert variant="warning">
-            <AlertTitle>{botStatusDetail(status, locale)}</AlertTitle>
-            <AlertDescription>{readinessCopy.detail}</AlertDescription>
-          </Alert>
+          <Banner
+            status="warning"
+            title={botStatusDetail(status, locale)}
+            description={readinessCopy.detail} />
         )}
         {viewState.currentError && support !== 'planned' && (
-          <Alert variant="error">
-            <AlertTitle>{detailCopy.latestFailure}</AlertTitle>
-            <AlertDescription>{locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}</AlertDescription>
-          </Alert>
+          <Banner
+            status="error"
+            title={detailCopy.latestFailure}
+            description={(
+              <span className="settingsBotBannerDescription">
+                {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
+              </span>
+            )} />
         )}
 
         <div className="settingsBotConfigurationHeader">
@@ -274,16 +277,15 @@ export function BotChatChannelDetail(props: {
         </div>
 
         {quickOnboarding && !qrOnlyOnboarding && (
-          <Segmented<'quick' | 'manual'>
+          <SegmentedControl
             className="settingsBotSetupModes"
             value={setupMode}
-            ariaLabel={detailCopy.setupAria(providerPresentation.label)}
-            options={[
-              ['quick', detailCopy.quickRecommended],
-              ['manual', detailCopy.manual],
-            ]}
-            onChange={setSetupMode}
-          />
+            label={detailCopy.setupAria(providerPresentation.label)}
+            onChange={(value) => setSetupMode(value as 'quick' | 'manual')}
+          >
+            <SegmentedControlItem value="quick" label={detailCopy.quickRecommended} />
+            <SegmentedControlItem value="manual" label={detailCopy.manual} />
+          </SegmentedControl>
         )}
 
         {quickOnboarding && provider !== 'wechat' && setupMode === 'quick' && (
@@ -305,16 +307,15 @@ export function BotChatChannelDetail(props: {
               </p>
             </div>
             {provider === 'feishu' ? (
-              <Segmented<BotOnboardingBrand>
+              <SegmentedControl
                 className="settingsBotBrandChoice"
                 value={feishuBrand}
-                ariaLabel={detailCopy.feishuRegionAria}
-                options={[
-                  ['feishu', detailCopy.feishu],
-                  ['lark', 'Lark'],
-                ]}
-                onChange={setFeishuBrand}
-              />
+                label={detailCopy.feishuRegionAria}
+                onChange={(value) => setFeishuBrand(value as BotOnboardingBrand)}
+              >
+                <SegmentedControlItem value="feishu" label={detailCopy.feishu} />
+                <SegmentedControlItem value="lark" label="Lark" />
+              </SegmentedControl>
             ) : null}
             <Button variant="primary" onClick={() => setScanLoginPhase('mounting')} label={provider === 'wecom' ? detailCopy.beginQuickBind : detailCopy.scanWith(provider === 'feishu' && feishuBrand === 'lark' ? 'Lark' : providerPresentation.label)} />
           </section>
@@ -345,9 +346,7 @@ export function BotChatChannelDetail(props: {
         )}
 
         {support === 'planned' && (
-          <Alert variant="passive">
-            <AlertDescription>{detailCopy.planned}</AlertDescription>
-          </Alert>
+          <Banner status="info" title={detailCopy.planned} />
         )}
 
         {/* WeChat keeps scan login as a first-class action, separate from
@@ -531,11 +530,7 @@ function BotCredentialFields(props: {
               />
             );
           case 'notice':
-            return (
-              <Alert key={`notice-${index}`} variant="info">
-                <AlertDescription>{field.text}</AlertDescription>
-              </Alert>
-            );
+            return <Banner status="info" key={`notice-${index}`} title={field.text} />;
         }
       })}
     </FormLayout>

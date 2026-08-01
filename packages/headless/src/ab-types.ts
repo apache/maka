@@ -197,6 +197,10 @@ export interface AbAttemptPairSummary {
   evaluatedPairs: number;
   baselinePassed: number;
   candidatePassed: number;
+  nonBudgetEvaluatedPairs: number;
+  baselineNonBudgetPassed: number;
+  candidateNonBudgetPassed: number;
+  budgetExcludedPairIds: string[];
   fullyMeteredPairs: number;
   baselineMeteredPassed: number;
   candidateMeteredPassed: number;

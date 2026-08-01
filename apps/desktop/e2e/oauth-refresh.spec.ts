@@ -7,7 +7,7 @@ test('Codex OAuth completion refreshes the open Settings connection without clos
   const connectionRow = page.locator('[data-connection-slug="codex-subscription"]');
 
   await expect(dialog).toBeVisible();
-  await expect(connectionRow).toHaveAttribute('title', /需要重新登录/);
+  await expect(connectionRow).toContainText('需要重新登录');
   await expect(dialog.getByText('等待 OAuth 登录')).toBeVisible();
 
   await dialog.getByRole('button', { name: '登录', exact: true }).click();
@@ -17,6 +17,6 @@ test('Codex OAuth completion refreshes the open Settings connection without clos
   // notice and the connection row behind it, without a close/reopen cycle.
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText('OAuth 已登录', { exact: true })).toBeVisible();
-  await expect(connectionRow).not.toHaveAttribute('title', /需要重新登录/);
+  await expect(connectionRow).not.toContainText('需要重新登录');
   await expect(connectionRow).not.toHaveAttribute('data-disabled', 'true');
 });

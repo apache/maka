@@ -19,7 +19,7 @@ describe('ToolActivity result preview contract', () => {
           paths: ['packages/ui/src/tool-activity.tsx'],
           diff: ['diff --git a/a b/a', '@@ -1 +1 @@', `-${SECRET}`, '+visible line'].join('\n'),
         },
-        expected: [/data-kind="file_diff"/, /data-line="del"/, /data-line="add"/],
+        expected: [/data-kind="file_diff"/, /astryx-codeblock/, /data-language="diff"/, /\+visible line/],
       },
       {
         kind: 'web_search',
@@ -66,7 +66,7 @@ describe('ToolActivity result preview contract', () => {
             redacted: false,
           },
         },
-        expected: [/data-kind="terminal"/, /失败 · 退出码 1/, /stdout 已隐藏 1 行/, /输出已截断/],
+        expected: [/data-kind="terminal"/, /astryx-codeblock/, /stdout 已隐藏 1 行/, /输出已截断/],
       },
       {
         kind: 'rive_workflow',
@@ -185,7 +185,7 @@ describe('ToolActivity result preview contract', () => {
     assert.match(text, /已隐藏 1 行/);
 
     const json = renderPreview({ kind: 'json', value: { token: SECRET, ok: true } });
-    assert.match(json, /data-slot="tool-output"/);
+    assert.match(json, /astryx-codeblock|data-slot="tool-output"|data-kind="json"/);
     // Quiet panel: plain key:value lines, not pretty-printed JSON quotes.
     assert.match(json, /ok:\s*true/);
     assert.doesNotMatch(json, /&quot;ok&quot;:\s*true/);

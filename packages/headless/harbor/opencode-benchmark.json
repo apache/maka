@@ -1,6 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
+    "deepseek": {
+      "options": {
+        "apiKey": "{env:DEEPSEEK_API_KEY}",
+        "baseURL": "{env:DEEPSEEK_BASE_URL}"
+      }
+    },
     "zai-coding-plan": {
       "options": {
         "apiKey": "{env:ZAI_API_KEY}",

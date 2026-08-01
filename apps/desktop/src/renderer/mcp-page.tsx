@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { McpConfigFile, McpServerConfig, McpServerStatus } from '@maka/core/mcp';
 import { isMcpStdioConfig } from '@maka/core/mcp';
+import { Collapsible, EmptyState, Item, Tab, TabList } from '@astryxdesign/core';
 import {
   Button,
-  Chip,
-  EmptyState,
+  Badge,
   IconButton,
   PageHeader,
   RadioList,
@@ -12,10 +12,6 @@ import {
   Selector,
   type ModuleHubHeader,
   Switch,
-  TabsList,
-  TabsPanel,
-  TabsRoot,
-  TabsTrigger,
   TextArea,
   TextInput,
   useMountedRef,
@@ -353,12 +349,25 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
           </div>
         </div>
 
-        <TabsRoot value={activeTab} onValueChange={(value) => setActiveTab(value as 'market' | 'installed')}>
+        <div>
           <div className="maka-mcp-tabs-bar">
-            <TabsList variant="underline" className="maka-mcp-tabs" aria-label={copy.page.categoriesAria}>
-              <TabsTrigger className="maka-mcp-tab" value="market">{copy.page.market} <span>{catalog.length}</span></TabsTrigger>
-              <TabsTrigger className="maka-mcp-tab" value="installed">{copy.page.installed} <span>{entries.length}</span></TabsTrigger>
-            </TabsList>
+            <TabList
+              value={activeTab}
+              onChange={(value) => setActiveTab(value as typeof activeTab)}
+              hasDivider
+              aria-label={copy.page.categoriesAria}
+            >
+              <Tab
+                value="market"
+                label={copy.page.market}
+                endContent={<span>{catalog.length}</span>}
+              />
+              <Tab
+                value="installed"
+                label={copy.page.installed}
+                endContent={<span>{entries.length}</span>}
+              />
+            </TabList>
             <div className="maka-mcp-search">
               <TextInput
                 value={query}
@@ -372,8 +381,9 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             </div>
           </div>
 
-          <TabsPanel className="maka-mcp-tab-panel" value="market">
-            {marketEntries.length > 0 ? (
+          {activeTab === 'market' ? (
+            <div className="maka-mcp-tab-panel">
+              {marketEntries.length > 0 ? (
               <div className="maka-mcp-market-grid">
                 {marketEntries.map((entry) => (
                   <McpCatalogCard
@@ -393,25 +403,27 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               </div>
             ) : (
               <EmptyState
-                Icon={Search}
+                icon={<Search />}
                 title={copy.page.noMarket}
-                body={copy.page.noMarketDetail(query)}
-                cta={{ label: copy.page.clearSearch, onClick: () => setQuery('') }}
-                extraClassName="maka-mcp-empty"
+                description={copy.page.noMarketDetail(query)}
+                actions={<Button variant="primary" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
+                className="maka-mcp-empty"
               />
-            )}
-          </TabsPanel>
+              )}
+            </div>
+          ) : null}
 
-          <TabsPanel className="maka-mcp-tab-panel" value="installed">
-            {busy === 'load' ? (
+          {activeTab === 'installed' ? (
+            <div className="maka-mcp-tab-panel">
+              {busy === 'load' ? (
               <div className="maka-mcp-loading" role="status">{copy.page.loading}</div>
             ) : entries.length === 0 ? (
               <EmptyState
-                Icon={Plug}
+                icon={<Plug />}
                 title={copy.page.noInstalled}
-                body={copy.page.noInstalledDetail}
-                cta={{ label: copy.page.browseMarket, onClick: () => setActiveTab('market') }}
-                extraClassName="maka-mcp-empty"
+                description={copy.page.noInstalledDetail}
+                actions={<Button variant="primary" label={copy.page.browseMarket} onClick={() => setActiveTab('market')} />}
+                className="maka-mcp-empty"
               />
             ) : installedEntries.length > 0 ? (
               <ul className="maka-mcp-server-list">
@@ -432,15 +444,16 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
               </ul>
             ) : (
               <EmptyState
-                Icon={Search}
+                icon={<Search />}
                 title={copy.page.noInstalledMatch}
-                body={copy.page.noInstalledMatchDetail(query)}
-                cta={{ label: copy.page.clearSearch, onClick: () => setQuery('') }}
-                extraClassName="maka-mcp-empty"
+                description={copy.page.noInstalledMatchDetail(query)}
+                actions={<Button variant="primary" label={copy.page.clearSearch} onClick={() => setQuery('')} />}
+                className="maka-mcp-empty"
               />
-            )}
-          </TabsPanel>
-        </TabsRoot>
+              )}
+            </div>
+          ) : null}
+        </div>
       </section>
 
       {editor && (
@@ -565,49 +578,60 @@ function McpServerRow(props: {
     : props.server.transport ?? 'auto';
   return (
     <li className="maka-mcp-server-row">
-      <div className="maka-mcp-server-summary">
-        <span className="maka-mcp-status-dot" data-tone={state.exception ? state.tone : 'neutral'} aria-hidden="true" />
-        <div className="maka-mcp-server-identity">
-          <div>
-            <strong>{props.serverId}</strong>
+      <Item
+        className="maka-mcp-server-summary"
+        align="start"
+        label={(
+          <span className="maka-mcp-server-heading">
+            <span>{props.serverId}</span>
             {/* Status-color restraint (#651): a healthy / expected server stays
                 neutral — its label rides plain muted text. Only an error /
-                unavailable server raises a toned Chip. */}
-            {state.exception
-              ? <Chip size="sm" variant={state.tone}>{state.label}</Chip>
-              : <span className="maka-mcp-server-state">{state.label}</span>}
+                unavailable server raises a toned Badge. */}
+            {state.exception ? <Badge variant={state.tone} label={state.label} /> : null}
+          </span>
+        )}
+        description={(
+          <span className="maka-mcp-server-description">
+            {!state.exception ? <span>{state.label} · </span> : null}
+            <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
+          </span>
+        )}
+        endContent={(
+          <div className="maka-mcp-server-controls">
+            <Switch
+              value={props.server.enabled !== false}
+              onChange={props.onToggle}
+              isDisabled={props.busy === `toggle:${props.serverId}`}
+              label={props.copy.row.enabledAria(props.serverId)}
+              isLabelHidden
+            />
+            <div className="maka-mcp-server-actions">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={props.onTest}
+                isDisabled={props.busy === `test:${props.serverId}`}
+                icon={<RefreshCcw aria-hidden="true" />}
+                label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
+              />
+              <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
+              <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
+            </div>
           </div>
-          <span>{transportLabel} · <code title={endpoint}>{endpoint}</code></span>
-        </div>
-        <Switch
-          value={props.server.enabled !== false}
-          onChange={props.onToggle}
-          isDisabled={props.busy === `toggle:${props.serverId}`}
-          label={props.copy.row.enabledAria(props.serverId)}
-          isLabelHidden
-        />
-        <div className="maka-mcp-server-actions">
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={props.onTest}
-            isDisabled={props.busy === `test:${props.serverId}`}
-            icon={<RefreshCcw aria-hidden="true" />}
-            label={props.busy === `test:${props.serverId}` ? props.copy.row.testing : props.copy.row.test}
-          />
-          <IconButton size="sm" variant="ghost" label={props.copy.row.editAria(props.serverId)} tooltip={props.copy.row.edit} onClick={props.onEdit} icon={<Pencil aria-hidden="true" />} />
-          <IconButton size="sm" variant="ghost" label={props.copy.row.deleteAria(props.serverId)} tooltip={props.copy.row.delete} onClick={props.onRemove} isDisabled={props.busy === `remove:${props.serverId}`} icon={<Trash2 aria-hidden="true" />} />
-        </div>
-      </div>
+        )}
+      />
       {props.status?.error && <div className="maka-mcp-server-error" role="alert">{props.status.error}</div>}
       {(props.status?.tools.length || props.status?.stderrTail?.length) ? (
-        <details className="maka-mcp-server-details">
-          <summary>{props.status?.tools.length ? props.copy.row.tools(props.status.tools.length) : props.copy.row.diagnostics}</summary>
+        <Collapsible
+          className="maka-mcp-server-details"
+          defaultIsOpen={false}
+          trigger={props.status?.tools.length ? props.copy.row.tools(props.status.tools.length) : props.copy.row.diagnostics}
+        >
           {props.status?.tools.length ? (
             <div className="maka-mcp-tool-list">{props.status.tools.map((tool) => <code key={tool.name}>{tool.name}</code>)}</div>
           ) : null}
           {props.status?.stderrTail?.length ? <pre>{props.status.stderrTail.join('\n')}</pre> : null}
-        </details>
+        </Collapsible>
       ) : null}
     </li>
   );
@@ -721,15 +745,15 @@ function McpEditorDialog(props: {
                 <>
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.command} value={props.state.draft.command} onChange={(value) => updateDraft('command', value)} isRequired placeholder="npx" status={props.errors.command ? { type: 'error', message: props.copy.editor.required } : undefined} />
                   <TextArea label={props.copy.editor.arguments} description={props.copy.editor.argumentsHelp} value={props.state.draft.args} onChange={(value) => updateDraft('args', value)} placeholder={props.copy.editor.argumentsPlaceholder} />
-                  <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
+                  <Collapsible className="maka-mcp-advanced" defaultIsOpen={false} trigger={props.copy.editor.advanced}><div className="maka-mcp-advanced-fields">
                     <TextInput label={props.copy.editor.workingDirectory} value={props.state.draft.cwd} onChange={(value) => updateDraft('cwd', value)} placeholder={props.copy.editor.workingDirectoryPlaceholder} />
                     <TextArea label={props.copy.editor.environment} description={props.copy.editor.environmentHelp} value={props.state.draft.env} onChange={(value) => updateDraft('env', value)} placeholder={'KEY=value\nTOKEN=secret'} />
-                  </div></details>
+                  </div></Collapsible>
                 </>
               ) : (
                 <>
                   <TextInput hasAutoFocus={editing} label={props.copy.editor.url} value={props.state.draft.url} onChange={(value) => updateDraft('url', value)} isRequired placeholder="https://example.com/mcp" status={props.errors.url ? { type: 'error', message: props.errors.url === 'required' ? props.copy.editor.required : props.copy.editor.invalidUrl } : undefined} />
-                  <details className="maka-mcp-advanced"><summary>{props.copy.editor.advanced}</summary><div>
+                  <Collapsible className="maka-mcp-advanced" defaultIsOpen={false} trigger={props.copy.editor.advanced}><div className="maka-mcp-advanced-fields">
                     <Selector
                       value={props.state.draft.transport}
                       options={[
@@ -742,7 +766,7 @@ function McpEditorDialog(props: {
                       width="100%"
                     />
                     <TextArea label={props.copy.editor.headers} description={props.copy.editor.headersHelp} value={props.state.draft.headers} onChange={(value) => updateDraft('headers', value)} placeholder={'Authorization=Bearer …\nX-Workspace=…'} />
-                  </div></details>
+                  </div></Collapsible>
                 </>
               )}
             </div>
@@ -809,15 +833,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-// `exception` marks the states that earn a toned Chip + colored status dot
+// `exception` marks the states that earn a toned Badge
 // (status-color restraint #651). 已停用 / 未连接 / 连接中 / 已连接 are all
 // expected states and stay neutral; only 连接失败 raises the destructive tone.
-function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'destructive'; exception: boolean } {
+function presentStatus(status: McpServerStatus | undefined, enabled: boolean, copy: McpCopy): { label: string; tone: 'neutral' | 'info' | 'success' | 'warning' | 'error'; exception: boolean } {
   if (!enabled || status?.state === 'disabled') return { label: copy.row.disabled, tone: 'neutral', exception: false };
   if (!status || status.state === 'disconnected') return { label: copy.row.disconnected, tone: 'neutral', exception: false };
   if (status.state === 'connecting') return { label: copy.row.connecting, tone: 'info', exception: false };
   if (status.state === 'connected') return { label: copy.row.connected(status.toolCount), tone: 'success', exception: false };
-  return { label: copy.row.failed, tone: 'destructive', exception: true };
+  return { label: copy.row.failed, tone: 'error', exception: true };
 }
 
 function exampleJson(): string {

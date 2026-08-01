@@ -15,10 +15,22 @@ import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } f
 import { ListTodo } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import {
+  SideNav,
+  type SideNavImperativeCollapseHandle,
+} from '@astryxdesign/core/SideNav';
+import type { Ref } from 'react';
 
 export type SessionViewMode = 'conversation' | 'project';
 
 export function SessionListPanel(props: {
+  collapsed?: boolean;
+  onCollapsedChange?(collapsed: boolean): void;
+  collapseHandleRef?: Ref<SideNavImperativeCollapseHandle>;
+  width?: number;
+  onWidthChange?(width: number): void;
+  minWidth?: number;
+  maxWidth?: number;
   selection: NavSelection;
   sessions: SessionSummary[];
   activeId?: string;
@@ -42,24 +54,51 @@ export function SessionListPanel(props: {
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const {
+    collapsed = false,
+    onCollapsedChange = () => {},
+    width = 260,
+    onWidthChange = () => {},
+    minWidth = 180,
+    maxWidth = 480,
     viewMode = 'conversation',
     onViewModeChange,
     groups,
   } = props;
 
   return (
-    <aside
+    <SideNav
+      handleRef={props.collapseHandleRef}
       className="maka-session-panel agents-sidebar"
       aria-label={copy.listAriaLabel}
+      collapsible={{
+        isCollapsed: collapsed,
+        onCollapsedChange,
+        hasButton: false,
+      }}
+      resizable={{
+        defaultWidth: width,
+        minWidth,
+        maxWidth,
+        onWidthChange,
+      }}
+      topContent={
+        <SessionSidebarNav
+          selection={props.selection}
+          planReminders={props.planReminders}
+          moduleMemory={props.moduleMemory}
+          onSelect={props.onSelect}
+          onNew={props.onNew}
+        />
+      }
+      footer={
+        <SessionSidebarFooter
+          updateReminder={props.updateReminder}
+          onOpenSettings={props.onOpenSettings}
+          onOpenUpdate={props.onOpenUpdate}
+        />
+      }
     >
-      <SessionSidebarNav
-        selection={props.selection}
-        planReminders={props.planReminders}
-        moduleMemory={props.moduleMemory}
-        onSelect={props.onSelect}
-        onNew={props.onNew}
-      />
-      {onViewModeChange && (
+      {onViewModeChange && !collapsed && (
         <div className="maka-session-list-toolbar">
           <span className="maka-session-list-heading">{copy.title}</span>
           <DropdownMenu
@@ -83,24 +122,21 @@ export function SessionListPanel(props: {
           </DropdownMenu>
         </div>
       )}
-      <SessionHistoryList
-        sessions={props.sessions}
-        activeId={props.activeId}
-        streamingSessionIds={props.streamingSessionIds}
-        staleSessionIds={props.staleSessionIds}
-        groupVariant={viewMode}
-        groups={groups}
-        worktreeSessionIds={props.worktreeSessionIds}
-        projectActions={props.projectActions}
-        childSessionsByParentId={props.childSessionsByParentId}
-        onSelectSession={props.onSelectSession}
-        rowActions={props.rowActions}
-      />
-      <SessionSidebarFooter
-        updateReminder={props.updateReminder}
-        onOpenSettings={props.onOpenSettings}
-        onOpenUpdate={props.onOpenUpdate}
-      />
-    </aside>
+      {!collapsed && (
+        <SessionHistoryList
+          sessions={props.sessions}
+          activeId={props.activeId}
+          streamingSessionIds={props.streamingSessionIds}
+          staleSessionIds={props.staleSessionIds}
+          groupVariant={viewMode}
+          groups={groups}
+          worktreeSessionIds={props.worktreeSessionIds}
+          projectActions={props.projectActions}
+          childSessionsByParentId={props.childSessionsByParentId}
+          onSelectSession={props.onSelectSession}
+          rowActions={props.rowActions}
+        />
+      )}
+    </SideNav>
   );
 }

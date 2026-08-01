@@ -10953,16 +10953,23 @@ async function runSignalExitProbe(
   });
   let stdout = '';
   let signalSent = false;
+  let killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
     if (!signalSent && stdout.includes('READY')) {
       signalSent = true;
       child.kill(signalToSend);
+      // Time the kill against the signal handling window, not the child's
+      // startup: on a slow CI runner importing the TUI and reaching READY can
+      // itself take seconds, which would otherwise leave the 3s exit grace
+      // (beginMakaCliExit) past the 5s kill timer and the probe would be
+      // SIGKILLed before the graceful exit it is asserting.
+      clearTimeout(killTimer);
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
     }
   });
 
-  const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
   const [code, signal] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
   clearTimeout(killTimer);
   return { code, signal, stdout };
@@ -11052,11 +11059,20 @@ async function runFatalExitProbe(
   });
   let stdout = '';
   let stderr = '';
-  const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+  let childReady = false;
+  let killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
+    // Same reasoning as runSignalExitProbe: the fatal trigger fires right
+    // after READY, and the process needs the 3s exit grace after that; on a
+    // slow CI runner the pre-READY startup must not eat into that budget.
+    if (!childReady && stdout.includes('READY')) {
+      childReady = true;
+      clearTimeout(killTimer);
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+    }
   });
   child.stderr.on('data', (chunk: string) => {
     stderr += chunk;

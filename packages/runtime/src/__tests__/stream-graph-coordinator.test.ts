@@ -6,12 +6,14 @@ import { describe, test } from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
-  createAgentRunStore,
-  createRuntimeEventStore,
   createSessionStore,
   createSqliteSessionMetadataStore,
   SQLITE_SESSION_METADATA_DATABASE_NAME,
 } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import { FakeBackend } from '../fake-backend.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { SessionActivityRegistry } from '../goal-turn-lifecycle.js';
@@ -28,8 +30,8 @@ describe('host-managed agent graph coordinator', () => {
   test('boots an empty graph from agent work and recovers it without duplicate topology', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-graph-coordinator-'));
     const sessionStore = createSessionStore(root);
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     let graphRuntimeHistoryReads = 0;
     const countedRuntimeEventStore = new Proxy(runtimeEventStore, {
       get(target, property) {
@@ -570,8 +572,8 @@ describe('host-managed agent graph coordinator', () => {
 
 function createCoordinator(input: {
   sessionStore: ReturnType<typeof createSessionStore>;
-  runStore: ReturnType<typeof createAgentRunStore>;
-  runtimeEventStore: ReturnType<typeof createRuntimeEventStore>;
+  runStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
+  runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
   controlStore: ReturnType<typeof createSqliteSessionMetadataStore>;
   manager: SessionManager;
   onReconciliation?: AgentGraphCoordinatorInput['onReconciliation'];

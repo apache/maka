@@ -127,17 +127,18 @@ const baseComposerProps: ComposerProps = {
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
+  onModelChange: noop,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
-	  workspacePicker: {
-	    label: 'maka-agent',
-	    branch: 'codex/storybook-chat-surface',
-	    projects: [],
-	    onAdd: noop,
-	    onSelectProject: noop,
-	    onRelink: noop,
-	    onSelectNoProject: noop,
-	  },
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'codex/storybook-chat-surface',
+    projects: [],
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
 };
 
 function SurfaceFrame(props: { children: ReactNode; narrow?: boolean }) {
@@ -589,6 +590,66 @@ export const Processing: Story = {
     <ChatSurface
       chat={{
         messages: processingConversation,
+      }}
+    />
+  ),
+};
+
+// Real path: inspect a persisted reasoning/tool turn with the native Astryx
+// tool group expanded. The tool group owns its disclosure directly; Maka no
+// longer adds a second Processing disclosure around the same timeline.
+export const ProcessingExpanded: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: processingConversation,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    canvasElement
+      .querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"][aria-expanded="false"]')
+      ?.click();
+  },
+};
+
+// Canonical review path for Slice 9: a real long conversation containing
+// reasoning, multiple native Astryx tool calls, long prose, and the complete
+// composer control area with staged context. This is the first story to open
+// for visual acceptance; the focused stories below isolate individual states.
+export const AstryxNativeConversation: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: [...longMessages, ...multiStepConversation],
+        memoryActive: true,
+        onOpenMemorySettings: noop,
+      }}
+      composer={{
+        draftKey: 'composer-astryx-native-conversation',
+        pendingAttachments: [
+          {
+            displayName: 'chat-surface-review.png',
+            kind: 'image',
+            mimeType: 'image/png',
+            size: 284_160,
+          },
+        ],
+        onRemoveAttachment: noop,
+        mentionSkills: [
+          { id: 'review', name: 'Review', description: '检查实现与回归风险' },
+          { id: 'frontend-design', name: 'Frontend Design', description: '检查界面层级与交互' },
+        ],
+        activeThinkingLevels: ['off', 'low', 'medium', 'high'],
+        activeThinkingLevel: 'medium',
+        onThinkingLevelChange: noop,
+        onPlanModeChange: noop,
+        onSwarmModeChange: noop,
+        onGraphModeChange: noop,
+        onToggleVoiceCapture: noop,
+        onToggleRealtimeVoice: noop,
+        voiceProviderLabel: '系统语音',
       }}
     />
   ),

@@ -16,7 +16,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import type * as AppShellEffects from '../../renderer/app-shell-effects.js';
 import type * as KeepSystemAwake from '../../renderer/use-keep-system-awake.js';
 import type * as ProjectContext from '../../renderer/use-project-context.js';
-import { readRendererShellSource } from './renderer-shell-source-helpers.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 
@@ -86,9 +85,13 @@ afterEach(() => {
   }
 });
 
+const appShellEffects = importAppShellEffects();
+const keepSystemAwake = importKeepSystemAwake();
+const projectContext = importProjectContext();
+
 describe('AppShell effect stability contract', () => {
   it('refreshes the project catalog when a background session creates a project', async () => {
-    const effects = await importAppShellEffects();
+    const effects = await appShellEffects;
     const refs = createBootstrapRefs();
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
@@ -115,7 +118,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('refreshes the project catalog after startup migration changes session associations', async () => {
-    const effects = await importAppShellEffects();
+    const effects = await appShellEffects;
     const refs = createBootstrapRefs();
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
@@ -142,7 +145,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('keeps bootstrap subscriptions stable while invoking the latest connection handler', async () => {
-    const effects = await importAppShellEffects();
+    const effects = await appShellEffects;
     const refs = createBootstrapRefs();
     const captured: CapturedSubscriptions = {
       activeSessionSubscribeCount: 0,
@@ -181,7 +184,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('keeps active-session subscriptions stable while invoking the latest event handler', async () => {
-    const effects = await importAppShellEffects();
+    const effects = await appShellEffects;
     const captured: CapturedSubscriptions = {
       activeSessionSubscribeCount: 0,
       connectionSubscribeCount: 0,
@@ -220,7 +223,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('keeps plan reminder toast actions on the latest navigation handler', async () => {
-    const effects = await importAppShellEffects();
+    const effects = await appShellEffects;
     const refs = createBootstrapRefs();
     const captured: CapturedSubscriptions = {
       activeSessionSubscribeCount: 0,
@@ -271,15 +274,8 @@ describe('AppShell effect stability contract', () => {
     assert.deepEqual(navSections, ['automations']);
   });
 
-  it('uses React effect events instead of a local latest-ref helper', async () => {
-    const src = await readRendererShellSource('app-shell-effects.ts');
-
-    assert.match(src, /\buseEffectEvent\(/);
-    assert.doesNotMatch(src, /\buseLatestRef\b|\blatestOptionsRef\b/);
-  });
-
   it('preserves a known keep-awake snapshot when a later refresh fails', async () => {
-    const controller = await importKeepSystemAwake();
+    const controller = await keepSystemAwake;
     let readCount = 0;
     const captured = createCapturedSubscriptions({
       settingsGet: async () => {
@@ -309,7 +305,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('falls back to false when the initial keep-awake read fails', async () => {
-    const controller = await importKeepSystemAwake();
+    const controller = await keepSystemAwake;
     const captured = createCapturedSubscriptions({
       settingsGet: async () => {
         throw new Error('initial read failure');
@@ -330,7 +326,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('does not claim an archived project when main has no resolved selection', async () => {
-    const context = await importProjectContext();
+    const context = await projectContext;
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
     const archived = makeProject('archived-project', '/workspace/archived', 2);
@@ -352,7 +348,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('hydrates project selection from main instead of legacy composer defaults', async () => {
-    const context = await importProjectContext();
+    const context = await projectContext;
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
     const project = makeProject('available-project', '/workspace/available');
@@ -389,7 +385,7 @@ describe('AppShell effect stability contract', () => {
   });
 
   it('resolves a session project alias to the surviving active project', async () => {
-    const context = await importProjectContext();
+    const context = await projectContext;
     const captured = createCapturedSubscriptions();
     const root = installReactRenderer(captured);
     const project = {

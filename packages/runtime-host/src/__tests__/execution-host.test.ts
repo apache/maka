@@ -30,6 +30,7 @@ import {
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
   type MakaTool,
   type MakaToolContext,
 } from '@maka/runtime';
@@ -1489,7 +1490,7 @@ test('steering becomes durable and ordered followups automatically start the nex
     await first.startTurn({
       sessionId: fixture.sessionId,
       turnId: firstTurnId,
-      content: { text: `long-running root ${'x'.repeat(540)}` },
+      content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
     });
     const steeringId = randomUUID();
     const steeringContent = {
@@ -1521,18 +1522,6 @@ test('steering becomes durable and ordered followups automatically start the nex
       },
     ];
 
-    assert.equal(
-      (
-        await second.request('turn.message.submit', {
-          originHostEpoch: host.hostEpoch,
-          sessionId: fixture.sessionId,
-          messageId: steeringId,
-          content: steeringContent,
-          placement: 'current_turn',
-        })
-      ).disposition,
-      'steering',
-    );
     for (const source of followupSources) {
       assert.equal(
         (
@@ -1546,6 +1535,18 @@ test('steering becomes durable and ordered followups automatically start the nex
         'followup',
       );
     }
+    assert.equal(
+      (
+        await second.request('turn.message.submit', {
+          originHostEpoch: host.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId: steeringId,
+          content: steeringContent,
+          placement: 'current_turn',
+        })
+      ).disposition,
+      'steering',
+    );
 
     assert.equal(
       (await waitForTerminalTurn(first, fixture.sessionId, firstTurnId)).status,

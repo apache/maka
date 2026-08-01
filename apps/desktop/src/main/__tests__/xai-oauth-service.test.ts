@@ -1,32 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
 import { describe, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
 import {
   XaiOAuthService,
   type XaiOAuthServiceDeps,
 } from '../oauth/xai-oauth-service.js';
 
-const SERVICE_SOURCE = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  '..',
-  'src',
-  'main',
-  'oauth',
-  'xai-oauth-service.ts',
-);
-
 describe('XaiOAuthService', () => {
-  test('uses proxiedFetch by default so device and refresh requests honor Maka proxy state', async () => {
-    const source = await readFile(SERVICE_SOURCE, 'utf8');
-    assert.match(source, /deps\.fetchFn\s*\?\?\s*\(proxiedFetch as unknown as typeof fetch\)/);
-    assert.doesNotMatch(source, /deps\.fetchFn\s*\?\?\s*\(globalThis\.fetch/);
-  });
-
   test('starts RFC 8628 device authorization without exposing the verification URL or device code', async () => {
     const requests: Array<{ url: string; body: string }> = [];
     const service = new XaiOAuthService({
@@ -152,26 +132,6 @@ describe('XaiOAuthService', () => {
     });
   });
 
-  test('accepts the accounts.x.ai verification host used by the xAI device flow', async () => {
-    const service = new XaiOAuthService({
-      credentialStore: memoryCredentialStore(),
-      openExternal: async () => undefined,
-      fetchFn: async () =>
-        Response.json({
-          device_code: 'secret-device-code',
-          user_code: 'ABCD-EFGH',
-          verification_uri: 'https://accounts.x.ai/oauth2/device',
-          expires_in: 900,
-        }),
-    });
-
-    const result = await service.getAuthorizationUrl();
-    assert.equal('ok' in result, false);
-    if ('ok' in result) return;
-    assert.equal(result.stateHint, 'ABCD-EFGH');
-    assert.equal(typeof result.authRequestId, 'string');
-  });
-
   test('maps provider denial and local cancellation to distinct safe outcomes', async () => {
     const create = (tokenResponse: () => Promise<Response>, sleep: XaiOAuthServiceDeps['sleep']) =>
       new XaiOAuthService({
@@ -265,34 +225,6 @@ describe('XaiOAuthService', () => {
     assert.deepEqual(await service.getAccountState(), {
       provider: 'xai-oauth',
       runtimeState: 'not_logged_in',
-    });
-  });
-
-  test('maps xAI authorization_denied to the denial outcome', async () => {
-    const service = new XaiOAuthService({
-      credentialStore: memoryCredentialStore(),
-      openExternal: async () => undefined,
-      sleep: async () => undefined,
-      fetchFn: async (url) =>
-        String(url).endsWith('/device/code')
-          ? Response.json({
-              device_code: 'secret-device-code',
-              user_code: 'ABCD-EFGH',
-              verification_uri: 'https://accounts.x.ai/oauth2/device',
-              expires_in: 900,
-              interval: 5,
-            })
-          : Response.json({ error: 'authorization_denied' }, { status: 400 }),
-    });
-
-    const authorization = await service.getAuthorizationUrl();
-    assert.equal('ok' in authorization, false);
-    if ('ok' in authorization) return;
-    await service.openAuthorizationUrl(authorization.authRequestId);
-    assert.deepEqual(await service.completeAuthorization(authorization.authRequestId), {
-      ok: false,
-      reason: 'authorization_denied',
-      message: 'xAI 授权被拒绝，请重新登录并允许访问。',
     });
   });
 

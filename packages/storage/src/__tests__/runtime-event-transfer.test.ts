@@ -336,6 +336,7 @@ describe('runtime event JSONL compatibility transfer', () => {
           ),
           ['event-1'],
         );
+        assert.equal('appendRuntimeEvent' in legacyReader.runtimeEventStore, false);
       } finally {
         legacyReader.close();
       }
@@ -361,14 +362,7 @@ describe('runtime event JSONL compatibility transfer', () => {
           ),
           ['event-1', 'event-2'],
         );
-        await assert.rejects(
-          sqliteReader.runtimeEventStore.appendRuntimeEvent(
-            'session-1',
-            'run-1',
-            runtimeEvent('read-only-write', { ts: 3 }),
-          ),
-          /read-?only|readonly/u,
-        );
+        assert.equal('appendRuntimeEvent' in sqliteReader.runtimeEventStore, false);
       } finally {
         sqliteReader.close();
       }

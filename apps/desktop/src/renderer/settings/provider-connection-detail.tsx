@@ -1,10 +1,7 @@
 import { useState } from 'react';
+import { Collapsible } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
   Button,
   RelativeTime,
   Selector,
@@ -12,6 +9,7 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -191,26 +189,22 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             onRelogin={refreshAfterRelogin}
           />
         ) : (
-          <Alert variant="info">
-            <AlertTitle>
-              {hasSecret === true
-                ? copy.oauthLoggedIn
-                : hasSecret === 'loading'
-                  ? copy.oauthLoading
-                  : hasSecret === 'error'
-                    ? copy.oauthUnknown
-                    : copy.oauthWaiting}
-            </AlertTitle>
-            <AlertDescription>
-              {hasSecret === true
-                ? copy.oauthLoggedInDetail
-                : hasSecret === 'loading'
-                  ? copy.oauthLoadingDetail
-                  : hasSecret === 'error'
-                    ? copy.oauthUnknownDetail
-                    : copy.oauthWaitingDetail}
-            </AlertDescription>
-          </Alert>
+          <Banner
+            status="info"
+            title={hasSecret === true
+              ? copy.oauthLoggedIn
+              : hasSecret === 'loading'
+                ? copy.oauthLoading
+                : hasSecret === 'error'
+                  ? copy.oauthUnknown
+                  : copy.oauthWaiting}
+            description={hasSecret === true
+              ? copy.oauthLoggedInDetail
+              : hasSecret === 'loading'
+                ? copy.oauthLoadingDetail
+                : hasSecret === 'error'
+                  ? copy.oauthUnknownDetail
+                  : copy.oauthWaitingDetail} />
         )
       )}
       {credentialProbePending && (
@@ -247,8 +241,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           )}
         </div>
       </section>
-      <details className="providerAdvancedSettings">
-        <summary>{copy.advanced}</summary>
+      <Collapsible
+        className="providerAdvancedSettings"
+        defaultIsOpen={false}
+        trigger={copy.advanced}
+      >
         <div className="providerAdvancedSettingsBody">
           <div className="providerEndpointSettings">
             <ConnectionEndpointField
@@ -269,7 +266,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             )}
           </div>
         </div>
-      </details>
+      </Collapsible>
       <div className="providerConnectionActions">
         {!props.isDefault && connection.enabled && (
           <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
@@ -335,15 +332,13 @@ function GitHubCopilotReloginNotice(props: {
   }
 
   return (
-    <Alert variant="info">
-      <AlertTitle>{loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}</AlertTitle>
-      <AlertDescription>{loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}</AlertDescription>
-      {!loading && (
-        <AlertAction>
+    <Banner
+      status="info"
+      title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
+      description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
+      endContent={!loading ? (
           <Button variant="primary" size="sm" isDisabled={busy} onClick={() => void connect()} label={busy ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
-        </AlertAction>
-      )}
-    </Alert>
+      ) : undefined} />
   );
 }
 
@@ -383,11 +378,11 @@ function OAuthReloginNotice(props: {
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
   return (
-    <Alert variant="info">
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{detail}</AlertDescription>
-      {!loading && (
-        <AlertAction>
+    <Banner
+      status="info"
+      title={title}
+      description={detail}
+      endContent={!loading ? (
           <Button
             variant="primary"
             size="sm"
@@ -395,8 +390,6 @@ function OAuthReloginNotice(props: {
             onClick={() => void flow.startLogin()}
             label={flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
           />
-        </AlertAction>
-      )}
-    </Alert>
+      ) : undefined} />
   );
 }

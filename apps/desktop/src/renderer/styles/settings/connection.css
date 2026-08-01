@@ -99,10 +99,6 @@
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
   }
-/* #520 PR9: .settingsConnectionBadge + data-tone retired onto the Chip
-   primitive (packages/ui/src/primitives/chip.tsx); variants mirror StatusTone
-   directly, so settings callers pass the tone without statusBadgeVariant. The
-   warning tone no longer misuses --info. */
 .settingsConnectionDetail {
     margin: 0;
     color: var(--foreground-secondary);

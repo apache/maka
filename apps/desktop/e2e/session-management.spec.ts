@@ -16,10 +16,16 @@ test('creating a second chat keeps both in the sidebar', async ({ window: page }
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
 
-  const sessions = page.locator('aside[aria-label="对话列表"] [data-session-id]');
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  const sessions = page
+    .getByRole('navigation', { name: '对话列表' })
+    .locator('[data-session-id]');
   await expect(sessions).toHaveCount(1);
 
-  await page.getByRole('button', { name: '新任务' }).click();
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .getByRole('button', { name: '新任务', exact: true })
+    .click();
   await expect(page.getByRole('region', { name: '开始对话' })).toBeVisible();
   await composer.fill('beta-marker');
   await composer.press('Enter');

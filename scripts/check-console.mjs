@@ -116,6 +116,10 @@ const ALLOW = new Map([
     'packages/core/src/shell-run-result.ts',
     'ShellRun reconciliation invariant diagnostics contain only runtime refs and revisions, never command or output data.',
   ],
+  [
+    'packages/runtime-host/src/server/host-kernel.ts',
+    'Host shutdown failure diagnostics print the full nested AggregateError chain (Node truncates it to [errors]: [Array] by default); error metadata only, no secrets (PR1760).',
+  ],
 ]);
 
 async function walk(root) {

@@ -99,7 +99,3 @@ export function readMainProcessCombinedSourceSync(): string {
     .map((sourcePath) => readFileSync(resolve(REPO_ROOT, sourcePath), 'utf8'))
     .join('\n');
 }
-
-export async function readSessionsIpcSource(): Promise<string> {
-  return readFile(resolve(REPO_ROOT, 'apps/desktop/src/main/sessions-ipc-main.ts'), 'utf8');
-}

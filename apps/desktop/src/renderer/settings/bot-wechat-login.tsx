@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
-import { Alert, AlertDescription, Button, FormLayout, TextInput, useUiLocale } from '@maka/ui';
+import { Button, FormLayout, TextInput, useUiLocale, Banner } from '@maka/ui';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Dialog,
   DialogHeader,
@@ -41,16 +41,12 @@ export function BotWeChatFields(props: {
         label={copy.token}
         isRequired
       />
-      <div className="settingsBotAdvanced">
-        <BaseButton
-          type="button"
-          className="settingsBotAdvancedToggle"
-          aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen((current) => !current)}
-        >
-          {advancedOpen ? copy.collapseAdvanced : copy.expandAdvanced}
-        </BaseButton>
-        {advancedOpen && (
+      <Collapsible
+        className="settingsBotAdvanced"
+        trigger={advancedOpen ? copy.collapseAdvanced : copy.expandAdvanced}
+        isOpen={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+      >
           <FormLayout className="settingsBotAdvancedBody">
             <TextInput
               value={channel.webhookUrl ?? ''}
@@ -70,12 +66,9 @@ export function BotWeChatFields(props: {
               placeholder={copy.appSecretPlaceholder}
               label={copy.appSecret}
             />
-            <Alert variant="info">
-              <AlertDescription>{copy.advancedNotice}</AlertDescription>
-            </Alert>
+            <Banner status="info" title={copy.advancedNotice} />
           </FormLayout>
-        )}
-      </div>
+      </Collapsible>
     </FormLayout>
   );
 }

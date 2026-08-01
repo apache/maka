@@ -9,8 +9,9 @@ export type SettingsNavigationCopy = {
 const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
   zh: {
     groups: {
-      general: '通用',
-      'ai-integrations': 'AI 与集成',
+      preferences: '偏好',
+      capabilities: '能力',
+      activity: '活动',
       system: '系统',
     },
     sections: {
@@ -31,8 +32,9 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
   },
   en: {
     groups: {
-      general: 'General',
-      'ai-integrations': 'AI & Integrations',
+      preferences: 'Preferences',
+      capabilities: 'Capabilities',
+      activity: 'Activity',
       system: 'System',
     },
     sections: {

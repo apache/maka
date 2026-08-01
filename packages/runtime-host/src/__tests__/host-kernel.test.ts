@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fork, type ChildProcess } from 'node:child_process';
+import { execFile, fork, type ChildProcess } from 'node:child_process';
 import {
   chmod,
   lstat,
@@ -18,6 +18,7 @@ import { connect, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
+import { promisify } from 'node:util';
 import { connectOrSpawnRuntimeHost, connectRuntimeHost } from '../client/index.js';
 import { connectOrSpawnRuntimeHostWithDependencies } from '../client/connect-or-spawn.js';
 import {
@@ -61,6 +62,7 @@ const CURRENT_PROTOCOL = {
 } as const;
 const LEGACY_PROTOCOL = { min: 1, max: 1 } as const;
 const require = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
 
 describe('non-serving Runtime Host kernel', () => {
   test('elects one owner, serves status, and releases ownership after true-idle shutdown', async () => {
@@ -656,7 +658,7 @@ describe('non-serving Runtime Host kernel', () => {
 
         process.kill(attempt.pid, 'SIGSTOP');
         stopped = true;
-        await sleep(20);
+        await waitForProcessStopped(attempt.pid);
         await assert.rejects(
           () => connected.connection.status(50),
           (error: unknown) =>
@@ -685,7 +687,7 @@ describe('non-serving Runtime Host kernel', () => {
 
         process.kill(attempt.pid, 'SIGSTOP');
         stopped = true;
-        await sleep(20);
+        await waitForProcessStopped(attempt.pid);
         await withTimeout(
           reconnected.connection.close(),
           500,
@@ -795,7 +797,7 @@ describe('non-serving Runtime Host kernel', () => {
 
         process.kill(attempt.pid, 'SIGSTOP');
         stopped = true;
-        await sleep(20);
+        await waitForProcessStopped(attempt.pid);
         let launchCount = 0;
         const result = await withTimeout(
           connectOrSpawnRuntimeHostWithDependencies(
@@ -1783,6 +1785,17 @@ async function waitForProcessExit(pid: number, timeoutMs = 5_000): Promise<void>
   const deadline = Date.now() + timeoutMs;
   while (isProcessAlive(pid) && Date.now() < deadline) await sleep(20);
   if (isProcessAlive(pid)) throw new Error(`process ${pid} did not exit`);
+}
+
+async function waitForProcessStopped(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { stdout } = await execFileAsync('ps', ['-o', 'state=', '-p', String(pid)]);
+    if (/^[Tt]/.test(stdout.trim())) return;
+    if (!isProcessAlive(pid)) throw new Error(`Process ${pid} exited before it stopped`);
+    await sleep(5);
+  }
+  throw new Error(`Process ${pid} did not enter a stopped state`);
 }
 
 function isProcessAlive(pid: number): boolean {

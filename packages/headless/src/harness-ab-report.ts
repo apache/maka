@@ -9,7 +9,20 @@ export interface HarnessAbArmEffectiveness {
   armId: string;
   passed: number;
   evaluated: number;
+  /** passed / evaluated over the arm's OWN valid cells (arm-local denominator):
+   * each arm's rate covers the cells that arm actually executed. Since v4 the
+   * top-level effectiveness fields use this basis; the shared paired-sample
+   * comparison lives in pairedCandidateMinusBaseline and nonBudgetConditional.
+   * Runs with unilateral infra gaps therefore score differently from v3,
+   * where every rate shared the paired denominator. */
   passRate: number | null;
+}
+
+export interface HarnessAbArmBudgetExhaustion {
+  armId: string;
+  exhausted: number;
+  evaluated: number;
+  rate: number | null;
 }
 
 export interface HarnessAbArmEconomy {
@@ -26,7 +39,7 @@ export interface HarnessAbArmEconomy {
 }
 
 export interface HarnessAbReport {
-  schemaVersion: 'maka.harness_ab.report.v3';
+  schemaVersion: 'maka.harness_ab.report.v4';
   runId: string;
   billingMode: 'metered' | 'account-plan';
   runStatus: 'completed' | 'completed_with_gaps' | 'incomplete' | 'stopped';
@@ -41,14 +54,34 @@ export interface HarnessAbReport {
     missingFinalUsageCells: number;
   };
   effectiveness: {
-    metric: 'pass@1';
+    metric: 'end-to-end-pass@1';
     pairedEvaluated: number;
     baseline: HarnessAbArmEffectiveness;
     candidate: HarnessAbArmEffectiveness;
+    /** Delta of the arm-local pass rates (candidate.passRate -
+     * baseline.passRate); denominators may differ between arms. */
     candidateMinusBaseline: number | null;
+    /** Delta over the shared paired sample only (v3's candidateMinusBaseline
+     * basis): both arms are scored on exactly the tasks both evaluated. */
+    pairedCandidateMinusBaseline: number | null;
     candidateWins: number;
     baselineWins: number;
     ties: number;
+    nonBudgetConditional: {
+      /** Diagnostic decomposition over pairs where NEITHER arm exhausted its
+       * budget: a budget-killed cell is the harness's own cap firing, not
+       * model-failure evidence. Disclosure only — never the headline. */
+      pairedEvaluated: number;
+      excludedBudgetPairs: number;
+      baseline: HarnessAbArmEffectiveness;
+      candidate: HarnessAbArmEffectiveness;
+      candidateMinusBaseline: number | null;
+    };
+    budgetExhaustion: {
+      baseline: HarnessAbArmBudgetExhaustion;
+      candidate: HarnessAbArmBudgetExhaustion;
+      candidateMinusBaseline: number | null;
+    };
   };
   economy: {
     basis: 'cache-aware-api-equivalent-usd' | 'account-plan-recorded-usd';
@@ -83,13 +116,13 @@ export function buildHarnessAbReport(
   const coverage = {
     scheduledCells: summary.baseline.attempts + summary.candidate.attempts,
     attemptedCells: summary.baseline.observed + summary.candidate.observed,
-    modelScoredCells: summary.baseline.completed + summary.candidate.completed,
+    modelScoredCells: summary.baseline.valid + summary.candidate.valid,
     infraFailedCells: summary.baseline.infraFailed + summary.candidate.infraFailed,
     unscoredCells:
       summary.baseline.observed +
       summary.candidate.observed -
-      summary.baseline.completed -
-      summary.candidate.completed,
+      summary.baseline.valid -
+      summary.candidate.valid,
     missingFinalUsageCells:
       summary.baseline.missingFinalUsage + summary.candidate.missingFinalUsage,
   };
@@ -102,7 +135,7 @@ export function buildHarnessAbReport(
         : 'completed';
   const execution = manifestExecution(manifest);
   return {
-    schemaVersion: 'maka.harness_ab.report.v3',
+    schemaVersion: 'maka.harness_ab.report.v4',
     runId: summary.runId,
     billingMode,
     runStatus,
@@ -110,22 +143,58 @@ export function buildHarnessAbReport(
     taskCount: summary.taskCount,
     coverage,
     effectiveness: {
-      metric: 'pass@1',
+      metric: 'end-to-end-pass@1',
       pairedEvaluated: summary.pairedAttempts.evaluatedPairs,
       baseline: pairedArmEffectiveness(
         summary.baselineArmId,
-        summary.pairedAttempts.baselinePassed,
-        summary.pairedAttempts.evaluatedPairs,
+        summary.baseline.passed,
+        summary.baseline.valid,
       ),
       candidate: pairedArmEffectiveness(
         summary.candidateArmId,
-        summary.pairedAttempts.candidatePassed,
-        summary.pairedAttempts.evaluatedPairs,
+        summary.candidate.passed,
+        summary.candidate.valid,
       ),
-      candidateMinusBaseline: summary.passRateDelta,
+      candidateMinusBaseline: nullableDelta(summary.candidate.passRate, summary.baseline.passRate),
+      pairedCandidateMinusBaseline: summary.passRateDelta,
       candidateWins: summary.pairedAttempts.wins,
       baselineWins: summary.pairedAttempts.losses,
       ties: summary.pairedAttempts.ties,
+      nonBudgetConditional: {
+        pairedEvaluated: summary.pairedAttempts.nonBudgetEvaluatedPairs,
+        excludedBudgetPairs: summary.pairedAttempts.budgetExcludedPairIds.length,
+        baseline: pairedArmEffectiveness(
+          summary.baselineArmId,
+          summary.pairedAttempts.baselineNonBudgetPassed,
+          summary.pairedAttempts.nonBudgetEvaluatedPairs,
+        ),
+        candidate: pairedArmEffectiveness(
+          summary.candidateArmId,
+          summary.pairedAttempts.candidateNonBudgetPassed,
+          summary.pairedAttempts.nonBudgetEvaluatedPairs,
+        ),
+        candidateMinusBaseline: divide(
+          summary.pairedAttempts.candidateNonBudgetPassed -
+            summary.pairedAttempts.baselineNonBudgetPassed,
+          summary.pairedAttempts.nonBudgetEvaluatedPairs,
+        ),
+      },
+      budgetExhaustion: {
+        baseline: armBudgetExhaustion(
+          summary.baselineArmId,
+          summary.baseline.budgetExhausted,
+          summary.baseline.valid,
+        ),
+        candidate: armBudgetExhaustion(
+          summary.candidateArmId,
+          summary.candidate.budgetExhausted,
+          summary.candidate.valid,
+        ),
+        candidateMinusBaseline: nullableDelta(
+          divide(summary.candidate.budgetExhausted, summary.candidate.valid),
+          divide(summary.baseline.budgetExhausted, summary.baseline.valid),
+        ),
+      },
     },
     economy: {
       basis:
@@ -172,12 +241,30 @@ export function renderHarnessAbReportCsv(report: HarnessAbReport): string {
     [
       [
         'effectiveness',
-        'pass_rate',
+        'end_to_end_pass_at_1',
         baselineEffectiveness.armId,
         baselineEffectiveness.passRate,
         candidateEffectiveness.armId,
         candidateEffectiveness.passRate,
         report.effectiveness.candidateMinusBaseline,
+      ],
+      [
+        'diagnostic',
+        'non_budget_conditional_pass_rate',
+        report.effectiveness.nonBudgetConditional.baseline.armId,
+        report.effectiveness.nonBudgetConditional.baseline.passRate,
+        report.effectiveness.nonBudgetConditional.candidate.armId,
+        report.effectiveness.nonBudgetConditional.candidate.passRate,
+        report.effectiveness.nonBudgetConditional.candidateMinusBaseline,
+      ],
+      [
+        'diagnostic',
+        'budget_exhaustion_rate',
+        report.effectiveness.budgetExhaustion.baseline.armId,
+        report.effectiveness.budgetExhaustion.baseline.rate,
+        report.effectiveness.budgetExhaustion.candidate.armId,
+        report.effectiveness.budgetExhaustion.candidate.rate,
+        report.effectiveness.budgetExhaustion.candidateMinusBaseline,
       ],
       [
         'effectiveness',
@@ -272,7 +359,7 @@ export function renderHarnessAbReportCsv(report: HarnessAbReport): string {
     ];
   return (
     [
-      'run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_metered,missing_usage_pairs,axis,metric,baseline_arm,baseline_value,candidate_arm,candidate_value,candidate_minus_baseline',
+      'run_status,stop_reason,billing_mode,economy_basis,scheduled_cells,attempted_cells,model_scored_cells,infra_failed_cells,unscored_cells,missing_final_usage_cells,paired_evaluated,paired_non_budget_evaluated,budget_excluded_pairs,paired_metered,missing_usage_pairs,axis,metric,baseline_arm,baseline_value,candidate_arm,candidate_value,candidate_minus_baseline',
       ...rows.map((row) =>
         [
           report.runStatus,
@@ -286,6 +373,8 @@ export function renderHarnessAbReportCsv(report: HarnessAbReport): string {
           report.coverage.unscoredCells,
           report.coverage.missingFinalUsageCells,
           report.effectiveness.pairedEvaluated,
+          report.effectiveness.nonBudgetConditional.pairedEvaluated,
+          report.effectiveness.nonBudgetConditional.excludedBudgetPairs,
           report.economy.pairedMetered,
           report.economy.missingUsagePairs,
           ...row,
@@ -320,8 +409,12 @@ export function renderHarnessAbReportMarkdown(report: HarnessAbReport): string {
       candidateEffectiveness.armId +
       ' | Candidate − baseline |',
     '| --- | ---: | ---: | ---: |',
-    `| Pass@1 | ${rate(baselineEffectiveness.passRate)} (${baselineEffectiveness.passed}/${baselineEffectiveness.evaluated}) | ${rate(candidateEffectiveness.passRate)} (${candidateEffectiveness.passed}/${candidateEffectiveness.evaluated}) | ${rate(report.effectiveness.candidateMinusBaseline)} |`,
+    `| End-to-end Pass@1 | ${rate(baselineEffectiveness.passRate)} (${baselineEffectiveness.passed}/${baselineEffectiveness.evaluated}) | ${rate(candidateEffectiveness.passRate)} (${candidateEffectiveness.passed}/${candidateEffectiveness.evaluated}) | ${rate(report.effectiveness.candidateMinusBaseline)} |`,
+    `| Non-budget Conditional Pass Rate | ${rate(report.effectiveness.nonBudgetConditional.baseline.passRate)} (${report.effectiveness.nonBudgetConditional.baseline.passed}/${report.effectiveness.nonBudgetConditional.pairedEvaluated}) | ${rate(report.effectiveness.nonBudgetConditional.candidate.passRate)} (${report.effectiveness.nonBudgetConditional.candidate.passed}/${report.effectiveness.nonBudgetConditional.pairedEvaluated}) | ${rate(report.effectiveness.nonBudgetConditional.candidateMinusBaseline)} |`,
+    `| Budget Exhaustion Rate | ${rate(report.effectiveness.budgetExhaustion.baseline.rate)} (${report.effectiveness.budgetExhaustion.baseline.exhausted}/${report.effectiveness.budgetExhaustion.baseline.evaluated}) | ${rate(report.effectiveness.budgetExhaustion.candidate.rate)} (${report.effectiveness.budgetExhaustion.candidate.exhausted}/${report.effectiveness.budgetExhaustion.candidate.evaluated}) | ${rate(report.effectiveness.budgetExhaustion.candidateMinusBaseline)} |`,
     `| Paired outcomes | — | wins ${report.effectiveness.candidateWins}, losses ${report.effectiveness.baselineWins}, ties ${report.effectiveness.ties} | — |`,
+    '',
+    `The formal paired End-to-end Pass@1 delta is ${rate(report.effectiveness.pairedCandidateMinusBaseline)} across ${report.effectiveness.pairedEvaluated} evaluated pairs; it remains the A/B conclusion input. Non-budget Conditional Pass Rate is diagnostic only and excludes the entire pair when either arm is budget-exhausted (${report.effectiveness.nonBudgetConditional.excludedBudgetPairs} pairs excluded), preserving one shared paired denominator. It helps distinguish solution-quality differences from inference-service speed and Agent turnover efficiency.`,
     '',
     '## Economy',
     '',
@@ -429,6 +522,14 @@ function pairedArmEffectiveness(
   evaluated: number,
 ): HarnessAbArmEffectiveness {
   return { armId, passed, evaluated, passRate: divide(passed, evaluated) };
+}
+
+function armBudgetExhaustion(
+  armId: string,
+  exhausted: number,
+  evaluated: number,
+): HarnessAbArmBudgetExhaustion {
+  return { armId, exhausted, evaluated, rate: divide(exhausted, evaluated) };
 }
 
 function armEconomy(

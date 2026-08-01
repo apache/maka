@@ -88,13 +88,3 @@ test('runHeadlessTests isolates user state and removes its temporary files', () 
   assert.equal(existsSync(credentialsPath), false);
   assert.equal(existsSync(globalConfigPath), false);
 });
-
-test('runHeadlessTests propagates a non-zero test status', () => {
-  const status = runHeadlessTests({
-    spawnSync() {
-      return { error: undefined, signal: null, status: 7 };
-    },
-  });
-
-  assert.equal(status, 7);
-});

@@ -3691,6 +3691,9 @@ class OpenCode:
         self.model_name = kwargs.get("model_name") or "openai/mimo-v2.5-pro"
         self._instruction = None
         self._prompt_template_path = Path(prompt_template_path) if prompt_template_path else None
+        # Real harbor/pier bases set self.logger in __init__; the adapter's
+        # best-effort log hydration logs through it.
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
 
     @staticmethod
     def name():
@@ -3867,6 +3870,26 @@ try:
         assert kimi_env["KIMI_API_KEY"] == "ephemeral-kimi-token", kimi_env
         assert kimi_env["KIMI_BASE_URL"] == "http://host.docker.internal:43210", kimi_env
         assert "ZAI_API_KEY" not in kimi_env, kimi_env
+        deepseek_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-deepseek-token",
+            "MAKA_LLM_CONNECTION_SLUG": "deepseek",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_REASONING_EFFORT": "max",
+            "MAKA_OPENCODE_VARIANT": "max",
+        }, prompt_template_path=template_path, model_name="deepseek/deepseek-v4-flash")
+        deepseek_agent.exec_as_agent = exec_as_agent
+        asyncio.run(deepseek_agent.run("hi", environment, AgentContext()))
+        deepseek_command, deepseek_env = environment.agent_commands[-1]
+        assert "opencode --model=deepseek/deepseek-v4-flash run --format=json" in deepseek_command, deepseek_command
+        assert "--variant=max" in deepseek_command, deepseek_command
+        assert deepseek_env["DEEPSEEK_API_KEY"] == "ephemeral-deepseek-token", deepseek_env
+        assert deepseek_env["DEEPSEEK_BASE_URL"] == "http://host.docker.internal:43210", deepseek_env
+        assert benchmark_config["provider"]["deepseek"]["options"] == {
+            "apiKey": "{env:DEEPSEEK_API_KEY}",
+            "baseURL": "{env:DEEPSEEK_BASE_URL}",
+        }, benchmark_config
+        assert "KIMI_API_KEY" not in deepseek_env, deepseek_env
         assert environment.uploaded_files == [], environment.uploaded_files
         assert 'cat --' not in command, command
         assert "test-zai-key" not in command, command

@@ -7,22 +7,39 @@
   },
   "surfaces": {
     "settings": {
-      "storyId": "product-settings-pages--permission-center-diagnostics-expanded",
+      "storyId": "product-settings-pages--general",
       "productionHost": "SettingsSurface",
-      "state": "Permission Center after expanding diagnostics through its play interaction",
-      "viewports": ["wide", "compact", "floor"]
+      "state": "Dense general preferences form",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
+    "usage": {
+      "storyId": "product-settings-pages--usage-requests-populated",
+      "productionHost": "SettingsSurface > UsageSettingsPage",
+      "state": "Populated usage metrics, filters, tabs, and request table",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
+    "providers": {
+      "storyId": "product-settings-providers--configured-providers",
+      "productionHost": "ProvidersPanel",
+      "state": "Configured provider rows, categories, OAuth status, and actions",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "skills": {
       "storyId": "product-module-hubs--extensions-skills-installed",
       "productionHost": "AppShellDetailPanel > SkillsPage",
       "state": "Installed skills list",
-      "viewports": ["wide", "compact", "floor"]
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "mcp": {
-      "storyId": "product-module-hubs--extensions-mcp",
+      "storyId": "product-module-hubs--extensions-mcp-configured",
       "productionHost": "AppShellDetailPanel > McpPage",
-      "state": "MCP marketplace before a server is installed",
-      "viewports": ["wide", "compact", "floor"]
+      "state": "Healthy and failed installed MCP servers",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "planReminders": {
       "storyId": "product-module-hubs--scheduled-plan-reminders-configured",
@@ -81,7 +98,8 @@
       "storyId": "product-module-hubs--scheduled-daily-review",
       "productionHost": "AppShellDetailPanel > DailyReviewPage",
       "state": "Loaded daily review summary",
-      "viewports": ["wide", "compact", "floor"]
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
     },
     "toastConfirmQueue": {
       "storyId": "primitives-toast--confirm-queued",

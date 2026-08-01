@@ -22,6 +22,12 @@
   font-size: var(--font-size-caption);
 }
 
+.maka-task-ledger-group {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: var(--border-width-hairline);
+}
+
 .maka-task-ledger-row:hover { background: color-mix(in srgb, var(--foreground) 5%, transparent); }
 .maka-task-ledger-row[data-status="in_progress"] > svg { color: var(--status-running); }
 .maka-task-ledger-row[data-status="blocked"] > svg { color: var(--warning); }

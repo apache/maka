@@ -74,7 +74,7 @@ export function PermissionModeSelect(props: {
   const meta = modeMeta[displayMode];
   // A display state with no matching option is expressed as "no value", the
   // supported way to say nothing is selected. Passing an unmatched value
-  // instead would depend on Base UI treating it as stale and trying to reset
+  // instead would depend on the component treating it as stale and trying to reset
   // it to null — behaviour we would only be surviving, not relying on.
   // The trigger reads its label from the display state, so it stays correct
   // whether or not the Select holds a value.
