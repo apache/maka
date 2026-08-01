@@ -163,8 +163,8 @@
    chrome (rest / focus / streaming state) is in one file; see the
    `[data-streaming="true"]` block below the card chrome. */
 
-/* The composer card — a calm parchment surface: hairline border + 1px ring
-   at rest, single accent ring on focus. The shared `.agents-parchment-paper-
+/* The composer card — a calm parchment surface with one rounded frame that
+   stays visually unchanged on focus. The shared `.agents-parchment-paper-
    surface` base (reference-shell.css) resets border/bg/box-shadow; this rule
    re-establishes the composer's own chrome on top of it. */
 .composer .maka-composer-inner {
@@ -191,11 +191,6 @@
     box-shadow var(--duration-emphasized) var(--ease-out-strong);
 }
 
-.composer .maka-composer-inner:focus-within {
-  border-color: oklch(from var(--focus-ring) l c h / 0.45);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.30);
-}
-
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */
@@ -212,13 +207,13 @@
    the card is ~measure-wide and nearly fills the dock, that soft grey drop
    read as a light-grey band with a boundary line beneath the composer —
    the "色差" the maintainer flagged — and it appeared only while the
-   composer was NOT focused (focus swaps in the accent ring below), which is
-   exactly the reported "sometimes". The band is not a separate layer, so
-   there is nothing to converge structurally: the fix is to drop the wash and
+   composer was NOT focused. Keep the same quiet frame while focused so the
+   band cannot return as a focus-state swap. The band is not a separate layer,
+   so there is nothing to converge structurally: the fix is to drop the wash and
    keep AT MOST the card's own hairline ring, so the dock converges cleanly
    onto the white content surface. Dark mode already carries no resting drop
    (the one-step tone lift below is its only cue). */
-.mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner:not(:focus-within) {
+.mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner {
   box-shadow: 0 0 0 1px oklch(from var(--foreground) l c h / var(--composer-ring-alpha, 0.035));
 }
 
@@ -235,11 +230,10 @@
   background-color: oklch(from var(--agents-content-area-bg) calc(l + 0.05) c h);
 }
 
-/* Resting state carries no boundary line at all — the tone step is the only
-   cue. border-color is zeroed (the 1px width stays to avoid a focus layout
-   jump) and the ring is dropped. Scoped off :focus-within so the accent border
-   + focus ring still land on focus. */
-.dark .mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner:not(:focus-within) {
+/* Resting and focused states carry no boundary line at all — the tone step is
+   the only cue. border-color is zeroed (the 1px width stays to avoid a layout
+   jump) and the ring is dropped. */
+.dark .mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner {
   border-color: transparent;
   box-shadow: none;
 }
@@ -292,12 +286,20 @@
   resize: none;
   overflow-y: auto;
   background: transparent;
+  box-shadow: none;
   color: var(--foreground);
   font-family: var(--font-default);
   font-size: var(--font-size-base);
   line-height: var(--leading-normal);
   min-height: var(--h-composer-min);
   max-height: 240px;
+}
+
+.composer .maka-composer-textarea:focus,
+.composer .maka-composer-textarea:focus-visible {
+  border: none;
+  outline: none;
+  box-shadow: none;
 }
 
 .composer .maka-composer-textarea::placeholder {
