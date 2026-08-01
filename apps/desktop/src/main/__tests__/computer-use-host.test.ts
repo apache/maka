@@ -83,6 +83,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDevelopment.selected.backendId, process.platform === 'darwin'
         ? 'cua-driver'
@@ -93,6 +94,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(blockedForDistribution.selected.backendId, 'none');
 
@@ -104,6 +106,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(validForDistribution.selected.backendId, process.platform === 'darwin'
         ? 'cua-driver'
@@ -120,6 +123,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(invalid.selected.backendId, 'none');
 
@@ -130,6 +134,7 @@ describe('Computer Use host health', () => {
         resourcesPath: directory,
         manifestPath,
         binaryPath: linkedBinaryPath,
+        physicalInputRecentlyActive: () => false,
       });
       assert.equal(linked.selected.backendId, 'none');
     } finally {

@@ -24,7 +24,10 @@ import { buildAgentSettingsTools } from './agent-settings-tools.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
-import { createDesktopComputerUseHost } from './computer-use-host.js';
+import {
+  createComputerUseHost,
+  createDesktopPhysicalInputGuard,
+} from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
 import {
   applyComputerUseRealModelPolicy,
@@ -129,7 +132,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   // outside the app (no host) they report the browser as unavailable.
   const browserTools: MakaTool[] = buildBrowserTools();
   const computerUseOverlay = createCursorOverlayController();
-  const computerUseHost = createDesktopComputerUseHost({
+  const computerUseHost = createComputerUseHost({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     compressFrame: (base64) => {
@@ -145,7 +148,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         return { base64, mimeType: 'image/png' };
       }
     },
-    getSystemIdleTime: () => powerMonitor.getSystemIdleTime(),
+    physicalInputRecentlyActive: createDesktopPhysicalInputGuard(
+      () => powerMonitor.getSystemIdleTime(),
+    ),
     ...(isComputerUseRealModelE2e
       ? {
           onTrace: (event) => {
