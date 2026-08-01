@@ -10,13 +10,12 @@ import {
   DEEP_RESEARCH_SESSION_LABEL,
   SIDE_CONVERSATION_SESSION_LABEL,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
-  buildImmutableRuntimePrefix,
-  decodeContinuationClaim,
   deriveTurnRecords,
   isSandboxBoundaryRestartClosure,
   isSessionInlineRun,
   isTerminalRuntimeEvent,
 } from '@maka/core';
+import { buildImmutableRuntimePrefix, decodeContinuationClaim } from '@maka/core/runtime-boundary';
 import type {
   CreateSandboxBoundaryRequest,
   SandboxBoundaryRequest,

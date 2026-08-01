@@ -7,8 +7,6 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   canonicalToolArgsHash,
   buildWorkspaceBaselineAuthorityEvents,
-  buildImmutableRuntimePrefix,
-  decodeContinuationClaim,
   decodeRuntimeEvent,
   encodeCanonicalRuntimeEvent,
   isPartialRuntimeEvent,
@@ -28,10 +26,7 @@ import {
   validateToolLedgerTransition,
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
-  type ContinuationClaimV1,
   type RuntimeEvent,
-  type ImmutableRuntimePrefixV1,
-  type RuntimeBoundaryDigest,
   type RuntimeContinuationAuthorityStore,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
@@ -47,6 +42,13 @@ import {
   type WorkspaceProjectionRebuildResult,
   type WorkspaceVersionRecordV1,
 } from '@maka/core';
+import {
+  buildImmutableRuntimePrefix,
+  decodeContinuationClaim,
+  type ContinuationClaimV1,
+  type ImmutableRuntimePrefixV1,
+  type RuntimeBoundaryDigest,
+} from '@maka/core/runtime-boundary';
 import {
   assertToolRecoveryEventBundle,
   interpretScannedToolRecovery,

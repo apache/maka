@@ -4,17 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
+import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
 import {
   buildImmutableRuntimePrefix,
-  canonicalToolArgsHash,
   createRuntimeBoundaryCursor,
   runtimePrefixSegment,
   ToolLedgerCorruptionError,
   ToolLedgerRejectionError,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
-  type RuntimeEvent,
-} from '@maka/core';
+} from '@maka/core/runtime-boundary';
 import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,

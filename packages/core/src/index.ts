@@ -325,16 +325,10 @@ export type {
   RuntimePrefixSegmentV1,
   RuntimeBoundaryDigest,
 } from './runtime-boundary.js';
-export {
-  buildImmutableRuntimePrefix,
-  createRuntimeBoundaryCursor,
-  decodeContinuationClaim,
-  decodeRuntimeBoundaryCursor,
-  decodeRuntimePrefixSegment,
-  digestRuntimeBoundaryManifest,
-  digestRuntimePrefix,
-  runtimePrefixSegment,
-} from './runtime-boundary.js';
+// runtime-boundary.ts is intentionally type-only in this browser-consumed
+// barrel: its digest implementation depends on node:crypto. Runtime code must
+// import its values from `@maka/core/runtime-boundary` so renderer imports of
+// `@maka/core` do not evaluate Node-only modules before React can mount.
 
 // session.ts
 export type {
