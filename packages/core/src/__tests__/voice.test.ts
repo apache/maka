@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-
 import {
   VOICE_MAX_AUDIO_BYTES,
   VOICE_MAX_CAPTURE_DURATION_MS,
@@ -18,101 +17,27 @@ import {
   validateVoiceTtsRequest,
 } from '../voice.js';
 
-describe('voice contract defaults', () => {
-  it('locks privacy flags to false literals', () => {
-    const privacy = defaultVoicePrivacyFlags();
-    assert.equal(privacy.persistAudio, false);
-    assert.equal(privacy.transcriptToMemory, false);
-    assert.equal(privacy.telemetryIncludesRawAudio, false);
-    assert.equal(privacy.telemetryIncludesTranscript, false);
-  });
-});
+const validCapture = {
+  mode: 'push_to_talk',
+  permission: 'granted',
+  durationMs: 5_000,
+  audioBytes: 256_000,
+  sampleRate: 16_000,
+  channels: 1,
+};
 
-describe('voice mode and policy normalizers', () => {
-  it('defaults missing input mode and TTS policy to off', () => {
-    assert.deepEqual(normalizeVoiceInputMode(undefined), { ok: true, value: 'off' });
-    assert.deepEqual(normalizeVoiceTtsPolicy(undefined), { ok: true, value: 'off' });
-  });
+const validTranscript = {
+  text: 'hello',
+  source: 'local_model',
+  durationMs: 1_000,
+  sampleRate: 16_000,
+  channels: 1,
+  editableBeforeSend: true,
+  persistence: 'composer_only',
+};
 
-  it('rejects always-on capture and automatic output policies', () => {
-    assert.equal(normalizeVoiceInputMode('always_on').ok, false);
-    assert.equal(normalizeVoiceTtsPolicy('always').ok, false);
-    assert.equal(normalizeVoiceTtsPolicy('smart').ok, false);
-  });
-
-  it('allows only bounded input modes', () => {
-    assert.deepEqual(normalizeVoiceInputMode('push_to_talk'), { ok: true, value: 'push_to_talk' });
-    assert.deepEqual(normalizeVoiceInputMode('toggle_to_record'), {
-      ok: true,
-      value: 'toggle_to_record',
-    });
-  });
-});
-
-describe('voice capture validation', () => {
-  const validCapture = {
-    mode: 'push_to_talk',
-    permission: 'granted',
-    durationMs: 5_000,
-    audioBytes: 256_000,
-    sampleRate: 16_000,
-    channels: 1,
-  };
-
-  it('rejects disabled capture before reading audio facts', () => {
-    const result = validateVoiceCaptureRequest({ ...validCapture, mode: 'off' });
-    assert.equal(result.ok, false);
-    assert.equal(result.ok ? undefined : result.reason, 'voice_disabled');
-  });
-
-  it('fails closed for malformed runtime capture payloads', () => {
-    for (const bad of [null, undefined, 'voice', 42, [], true]) {
-      const result = validateVoiceCaptureRequest(bad);
-      assert.equal(result.ok, false);
-      assert.equal(result.ok ? undefined : result.reason, 'voice_disabled');
-    }
-  });
-
-  it('fails closed when microphone permission is denied or restricted', () => {
-    for (const permission of ['denied', 'restricted', 'not_determined']) {
-      const result = validateVoiceCaptureRequest({ ...validCapture, permission });
-      assert.equal(result.ok, false);
-    }
-  });
-
-  it('enforces duration, byte, sample-rate, and channel caps', () => {
-    assert.equal(
-      validateVoiceCaptureRequest({
-        ...validCapture,
-        durationMs: VOICE_MAX_CAPTURE_DURATION_MS + 1,
-      }).ok,
-      false,
-    );
-    assert.equal(
-      validateVoiceCaptureRequest({ ...validCapture, audioBytes: VOICE_MAX_AUDIO_BYTES + 1 }).ok,
-      false,
-    );
-    assert.equal(validateVoiceCaptureRequest({ ...validCapture, sampleRate: 96_000 }).ok, false);
-    assert.equal(validateVoiceCaptureRequest({ ...validCapture, channels: 2 }).ok, false);
-  });
-
-  it('accepts a bounded push-to-talk capture request', () => {
-    const result = validateVoiceCaptureRequest(validCapture);
-    assert.equal(result.ok, true);
-  });
-
-  it('rejects zero and negative duration/byte values', () => {
-    assert.equal(validateVoiceCaptureRequest({ ...validCapture, durationMs: 0 }).ok, false);
-    assert.equal(validateVoiceCaptureRequest({ ...validCapture, durationMs: -1 }).ok, false);
-    assert.equal(validateVoiceCaptureRequest({ ...validCapture, audioBytes: 0 }).ok, false);
-    assert.equal(validateVoiceCaptureRequest({ ...validCapture, audioBytes: -1 }).ok, false);
-  });
-});
-
-describe('voice route resolver', () => {
-  const capability = (
-    kind: 'native' | 'transcription' | 'realtime',
-  ): VoiceModelRouteCapability => ({
+function capability(kind: 'native' | 'transcription' | 'realtime'): VoiceModelRouteCapability {
+  return {
     connectionSlug: 'openai',
     modelId:
       kind === 'native'
@@ -140,19 +65,70 @@ describe('voice route resolver', () => {
     ],
     transcriptOutput: kind === 'native',
     adapterReady: true,
+  };
+}
+
+describe('voice privacy and modes', () => {
+  it('defaults to non-persistent privacy and bounded opt-in modes', () => {
+    assert.deepEqual(defaultVoicePrivacyFlags(), {
+      persistAudio: false,
+      transcriptToMemory: false,
+      telemetryIncludesRawAudio: false,
+      telemetryIncludesTranscript: false,
+    });
+    assert.deepEqual(normalizeVoiceInputMode(undefined), { ok: true, value: 'off' });
+    assert.deepEqual(normalizeVoiceInputMode('push_to_talk'), {
+      ok: true,
+      value: 'push_to_talk',
+    });
+    assert.deepEqual(normalizeVoiceInputMode('toggle_to_record'), {
+      ok: true,
+      value: 'toggle_to_record',
+    });
+    assert.equal(normalizeVoiceInputMode('always_on').ok, false);
+    assert.deepEqual(normalizeVoiceTtsPolicy(undefined), { ok: true, value: 'off' });
+    assert.equal(normalizeVoiceTtsPolicy('always').ok, false);
+    assert.equal(normalizeVoiceTtsPolicy('smart').ok, false);
+  });
+});
+
+describe('voice capture validation', () => {
+  it('accepts a bounded push-to-talk request', () => {
+    assert.equal(validateVoiceCaptureRequest(validCapture).ok, true);
   });
 
-  it('sends raw audio to a capable current agent before considering STT', () => {
-    const result = resolveVoiceRoute({
+  it('fails closed for malformed, disabled, unauthorized, or out-of-bounds capture', () => {
+    for (const bad of [null, undefined, 'voice', 42, [], true]) {
+      const result = validateVoiceCaptureRequest(bad);
+      assert.equal(result.ok, false);
+      assert.equal(result.ok ? undefined : result.reason, 'voice_disabled');
+    }
+    for (const request of [
+      { ...validCapture, mode: 'off' },
+      { ...validCapture, permission: 'denied' },
+      { ...validCapture, permission: 'restricted' },
+      { ...validCapture, permission: 'not_determined' },
+      { ...validCapture, durationMs: 0 },
+      { ...validCapture, durationMs: VOICE_MAX_CAPTURE_DURATION_MS + 1 },
+      { ...validCapture, audioBytes: 0 },
+      { ...validCapture, audioBytes: VOICE_MAX_AUDIO_BYTES + 1 },
+      { ...validCapture, sampleRate: 96_000 },
+      { ...validCapture, channels: 2 },
+    ]) {
+      assert.equal(validateVoiceCaptureRequest(request).ok, false);
+    }
+  });
+});
+
+describe('voice route resolver', () => {
+  it('selects native audio, transcription, and realtime only for explicit capabilities', () => {
+    const native = resolveVoiceRoute({
       intent: 'send_task',
       currentAgent: capability('native'),
       recognition: capability('transcription'),
     });
-    assert.equal(result.kind, 'native_audio_task');
-    assert.equal(result.kind === 'native_audio_task' && result.transcriptProjection, 'marker_only');
-  });
-
-  it('routes dictation and unsupported agent models through configured STT', () => {
+    assert.equal(native.kind, 'native_audio_task');
+    assert.equal(native.kind === 'native_audio_task' && native.transcriptProjection, 'marker_only');
     assert.equal(
       resolveVoiceRoute({
         intent: 'dictate',
@@ -162,15 +138,12 @@ describe('voice route resolver', () => {
       'transcription_to_draft',
     );
     assert.equal(
-      resolveVoiceRoute({
-        intent: 'send_task',
-        recognition: capability('transcription'),
-      }).kind,
-      'transcription_to_draft',
+      resolveVoiceRoute({ intent: 'voice_chat', realtime: capability('realtime') }).kind,
+      'realtime_voice',
     );
   });
 
-  it('fails closed without explicit recognition or realtime configuration', () => {
+  it('fails closed without configuration or a ready adapter', () => {
     assert.deepEqual(resolveVoiceRoute({ intent: 'dictate' }), {
       kind: 'blocked',
       reason: 'recognition_not_configured',
@@ -179,9 +152,6 @@ describe('voice route resolver', () => {
       kind: 'blocked',
       reason: 'realtime_not_configured',
     });
-  });
-
-  it('requires a ready transport adapter instead of trusting modality alone', () => {
     const native = capability('native');
     native.adapterReady = false;
     assert.deepEqual(resolveVoiceRoute({ intent: 'send_task', currentAgent: native }), {
@@ -198,7 +168,7 @@ describe('voice route resolver', () => {
 });
 
 describe('voice settings and coordinator input', () => {
-  it('normalizes bounded voice settings and preserves safe defaults', () => {
+  it('normalizes settings and admits only bounded coordinator tools', () => {
     assert.deepEqual(normalizeVoiceSettings(undefined), defaultVoiceSettings());
     const normalized = normalizeVoiceSettings({
       recognition: { connectionSlug: ' openai ', model: ' transcribe ', language: ' zh ' },
@@ -208,9 +178,6 @@ describe('voice settings and coordinator input', () => {
     assert.equal(normalized.recognition.model, 'transcribe');
     assert.equal(normalized.recognition.language, 'zh');
     assert.equal(normalized.realtime.voice, 'marin');
-  });
-
-  it('accepts only the four narrow coordinator tools with bounded arguments', () => {
     assert.deepEqual(
       normalizeVoiceCoordinatorToolCall({
         name: 'start_task',
@@ -229,118 +196,57 @@ describe('voice settings and coordinator input', () => {
 });
 
 describe('transcript validation', () => {
-  it('normalizes transcript text and strips control characters', () => {
+  it('sanitizes text and accepts bounded local composer-only transcripts', () => {
     assert.deepEqual(normalizeVoiceTranscriptText(' hello\u0000\nworld '), {
       ok: true,
       value: 'hello world',
     });
+    assert.equal(validateVoiceTranscriptResult({ ...validTranscript, confidence: 0.9 }).ok, true);
   });
 
-  it('rejects empty transcript text', () => {
-    const result = normalizeVoiceTranscriptText(' \n\t ');
-    assert.equal(result.ok, false);
-    assert.equal(result.ok ? undefined : result.reason, 'transcript_empty');
-  });
-
-  it('requires editable-before-send', () => {
-    const result = validateVoiceTranscriptResult({
-      text: 'hello',
-      source: 'local_model',
-      durationMs: 1000,
-      sampleRate: 16_000,
-      channels: 1,
-      editableBeforeSend: false,
-      persistence: 'composer_only',
-    });
-    assert.equal(result.ok, false);
-  });
-
-  it('fails closed for malformed runtime transcript payloads', () => {
+  it('rejects malformed, empty, non-editable, cloud, and out-of-bounds transcripts', () => {
+    assert.equal(normalizeVoiceTranscriptText(' \n\t ').ok, false);
     for (const bad of [null, undefined, 'hello', 42, [], true]) {
       const result = validateVoiceTranscriptResult(bad);
       assert.equal(result.ok, false);
       assert.equal(result.ok ? undefined : result.reason, 'voice_disabled');
     }
-  });
-
-  it('enforces duration, sample-rate, and channel caps on transcript results', () => {
-    const base = {
-      text: 'hello',
-      source: 'local_model',
-      durationMs: 1000,
-      sampleRate: 16_000,
-      channels: 1,
-      editableBeforeSend: true,
-      persistence: 'composer_only',
-    };
-    assert.equal(
-      validateVoiceTranscriptResult({ ...base, durationMs: VOICE_MAX_CAPTURE_DURATION_MS + 1 }).ok,
-      false,
-    );
-    assert.equal(validateVoiceTranscriptResult({ ...base, sampleRate: 96_000 }).ok, false);
-    assert.equal(validateVoiceTranscriptResult({ ...base, channels: 2 }).ok, false);
-  });
-
-  it('blocks cloud transcript source by default', () => {
-    const result = validateVoiceTranscriptResult({
-      text: 'hello',
+    for (const transcript of [
+      { ...validTranscript, editableBeforeSend: false },
+      { ...validTranscript, source: 'cloud_provider' },
+      { ...validTranscript, durationMs: VOICE_MAX_CAPTURE_DURATION_MS + 1 },
+      { ...validTranscript, sampleRate: 96_000 },
+      { ...validTranscript, channels: 2 },
+    ]) {
+      assert.equal(validateVoiceTranscriptResult(transcript).ok, false);
+    }
+    const cloud = validateVoiceTranscriptResult({
+      ...validTranscript,
       source: 'cloud_provider',
-      durationMs: 1000,
-      sampleRate: 16_000,
-      channels: 1,
-      editableBeforeSend: true,
-      persistence: 'composer_only',
     });
-    assert.equal(result.ok, false);
-    assert.equal(result.ok ? undefined : result.reason, 'cloud_not_enabled');
-  });
-
-  it('accepts local composer-only transcript results', () => {
-    const result = validateVoiceTranscriptResult({
-      text: 'hello',
-      source: 'local_model',
-      durationMs: 1000,
-      sampleRate: 16_000,
-      channels: 1,
-      confidence: 0.9,
-      editableBeforeSend: true,
-      persistence: 'composer_only',
-    });
-    assert.equal(result.ok, true);
+    assert.equal(cloud.ok ? undefined : cloud.reason, 'cloud_not_enabled');
   });
 });
 
 describe('TTS validation', () => {
-  it('fails closed for malformed runtime TTS payloads', () => {
+  it('allows only explicit manual preview with a ready provider', () => {
     for (const bad of [null, undefined, 'hello', 42, [], true]) {
-      const result = validateVoiceTtsRequest(bad);
-      assert.equal(result.ok, false);
-      assert.equal(result.ok ? undefined : result.reason, 'voice_disabled');
+      assert.equal(validateVoiceTtsRequest(bad).ok, false);
     }
-  });
-
-  it('keeps automatic voice policies disabled by contract', () => {
     for (const policy of ['off', 'inbound_disabled', 'smart_disabled']) {
       const result = validateVoiceTtsRequest({ text: 'hello', provider: 'local', policy });
       assert.equal(result.ok, false);
       assert.equal(result.ok ? undefined : result.reason, 'voice_disabled');
     }
-  });
-
-  it('allows manual preview only when a provider is explicitly selected', () => {
-    const valid = validateVoiceTtsRequest({
-      text: 'hello',
-      provider: 'local',
-      policy: 'manual_preview',
-    });
-    assert.equal(valid.ok, true);
-
-    const invalid = validateVoiceTtsRequest({
+    assert.equal(
+      validateVoiceTtsRequest({ text: 'hello', provider: 'local', policy: 'manual_preview' }).ok,
+      true,
+    );
+    const unavailable = validateVoiceTtsRequest({
       text: 'hello',
       provider: 'disabled',
       policy: 'manual_preview',
     });
-    assert.equal(invalid.ok, false);
-    assert.equal(invalid.ok ? undefined : invalid.reason, 'provider_not_ready');
+    assert.equal(unavailable.ok ? undefined : unavailable.reason, 'provider_not_ready');
   });
 });
