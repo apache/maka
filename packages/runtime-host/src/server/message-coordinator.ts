@@ -281,6 +281,23 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     return this.#project(state);
   }
 
+  hasLiveSessionState(sessionId: string): boolean {
+    const state = this.#sessions.get(sessionId);
+    return state ? hasLiveMessageState(state) : false;
+  }
+
+  retireSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of new Set(sessionIds)) {
+      const state = this.#sessions.get(sessionId);
+      if (state && hasLiveMessageState(state)) {
+        throw new RuntimeMessageAuthorityInvariantError(
+          'Cannot retire a Session with live Message state',
+        );
+      }
+      this.#sessions.delete(sessionId);
+    }
+  }
+
   bindRun(identity: RuntimeMessageRunIdentity): RuntimeMessageRunOwner {
     const state = this.#state(identity.sessionId);
     const exactPreStartStop =

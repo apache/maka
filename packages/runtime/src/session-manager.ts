@@ -905,6 +905,10 @@ export class SessionManager {
     return this.runtimeKernel.invalidateCachedBackends();
   }
 
+  disposeSessionBackend(sessionId: string): Promise<void> {
+    return this.runtimeKernel.disposeBackend(sessionId);
+  }
+
   async transitionSessionConfiguration(
     sessionId: string,
     input: SessionConfigurationTransitionRequest,

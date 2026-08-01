@@ -438,6 +438,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     );
   }
 
+  retireSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of new Set(sessionIds)) this.#sessions.delete(sessionId);
+  }
+
   releaseConnection(connectionId: string): void {
     const provider = this.#providers.get(connectionId);
     if (!provider) return;

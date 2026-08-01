@@ -8,6 +8,7 @@ import {
   buildGoalTools,
   truncateGoalText,
   type GoalEvaluatorResource,
+  type GoalSessionCloseOperation,
   type GoalCheckpoint,
   type GoalControlLease,
   type GoalObservedTurnStart,
@@ -40,6 +41,11 @@ export interface HostGoalCoordinatorOptions {
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly now?: () => number;
   readonly newId?: () => string;
+}
+
+export interface HostGoalSessionRetirement {
+  commit(): void;
+  rollback(): void;
 }
 
 /** In-memory Runtime Host authority for one Goal generation per Session. */
@@ -118,6 +124,47 @@ export class HostGoalCoordinator {
       this.manager.matchesActive(sessionId, checkpoint) &&
       this.manager.matchesControlLease(sessionId, controlLease)
     );
+  }
+
+  hasLiveGoal(sessionId: string): boolean {
+    const goal = this.manager.get(sessionId);
+    return goal !== undefined && !TERMINAL_GOAL_STATUSES.has(goal.status);
+  }
+
+  beginSessionRetirement(
+    sessionIds: readonly string[],
+    kind: 'archive' | 'remove',
+  ): HostGoalSessionRetirement {
+    const unique = [...new Set(sessionIds)];
+    if (unique.some((sessionId) => this.hasLiveGoal(sessionId))) {
+      throw new Error('Session retirement cannot revoke a live Goal');
+    }
+    const operations = new Map<string, GoalSessionCloseOperation>();
+    for (const sessionId of unique) {
+      operations.set(sessionId, this.continuation.beginSessionClose(sessionId, kind));
+    }
+    let settled = false;
+    return Object.freeze({
+      commit: () => {
+        if (settled) return;
+        settled = true;
+        for (const sessionId of unique) {
+          operations.get(sessionId)?.commit();
+          this.manager.remove(sessionId);
+        }
+      },
+      rollback: () => {
+        if (settled) return;
+        settled = true;
+        for (const operation of operations.values()) operation.rollback();
+      },
+    });
+  }
+
+  unarchiveSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of new Set(sessionIds)) {
+      this.continuation.unarchiveSession(sessionId);
+    }
   }
 
   beginDrain(): void {

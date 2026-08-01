@@ -71,7 +71,7 @@ test('two UDS Clients share exact retryable Session branch and revision authorit
     host = undefined;
 
     host = await startHost(root, capability.rootId);
-    await verifySecondRestartRetention(root);
+    await verifySecondRestartRetention(root, sourceSessionId);
     await stopHost(host);
     host = undefined;
 
@@ -319,7 +319,7 @@ async function verifyRestartRecoveryAndAdmission(
   }
 }
 
-async function verifySecondRestartRetention(root: string): Promise<void> {
+async function verifySecondRestartRetention(root: string, sourceSessionId: string): Promise<void> {
   const recovered = await connectClient(root, 'desktop');
   try {
     assert.deepEqual(
@@ -341,6 +341,36 @@ async function verifySecondRestartRetention(root: string): Promise<void> {
       (await querySession(recovered, LINEAGE_BRANCH_TARGET_ID)).parentSessionId,
       LINEAGE_REVISION_TARGET_ID,
     );
+    const archived = requireSessionProjection(
+      await recovered.request('session.lifecycle.set', {
+        sessionId: sourceSessionId,
+        state: 'archived',
+      }),
+    );
+    assert.equal(archived.isArchived, true);
+    await assert.rejects(
+      recovered.request('session.revision.create', {
+        sourceSessionId,
+        targetSessionId: 'archived-revision-target',
+        sourceTurnId: 'turn-2',
+        expectedSourceRevision: archived.revision,
+      }),
+      operationError('operation_conflict'),
+    );
+    assert.deepEqual(
+      await recovered.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'archived-revision-target',
+      }),
+      { kind: 'session', session: null },
+    );
+    const restored = requireSessionProjection(
+      await recovered.request('session.lifecycle.set', {
+        sessionId: sourceSessionId,
+        state: 'active',
+      }),
+    );
+    assert.equal(restored.isArchived, false);
   } finally {
     await recovered.close();
   }

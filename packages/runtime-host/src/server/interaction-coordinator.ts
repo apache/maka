@@ -161,6 +161,14 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     return observed(this.#recoverPendingAfterHostRestart());
   }
 
+  async hasPendingSession(sessionId: string): Promise<boolean> {
+    this.#throwIfPoisoned();
+    for (const entry of this.#live.values()) {
+      if (entry.request.sessionId === sessionId) return true;
+    }
+    return (await this.#readPending({ sessionId })).length > 0;
+  }
+
   assertTerminalFence(
     identity: RuntimeInteractionRunIdentity,
     admission: SessionAdmissionLease,

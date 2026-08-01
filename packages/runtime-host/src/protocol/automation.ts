@@ -34,13 +34,14 @@ const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
   'operation_unavailable',
+  'not_found',
   'invalid_request',
   'internal_failure',
 ] as const;
 const MUTATION_ERRORS = [
   ...QUERY_ERRORS,
-  'not_found',
   'session_archived',
+  'session_busy',
   'operation_conflict',
   'persistence_failed',
 ] as const;

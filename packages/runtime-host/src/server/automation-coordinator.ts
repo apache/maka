@@ -47,6 +47,7 @@ import {
   HostAutomationFireCoordinator,
 } from './automation-fire-coordinator.js';
 import { runtimeHostSessionUnavailableReason } from './host-session-availability.js';
+import { SessionAdmissionGate } from './session-admission-gate.js';
 
 type AutomationSessions = Pick<
   ExecutionSessionWriter,
@@ -64,6 +65,7 @@ export interface HostAutomationCoordinatorInput {
   readonly root: AutomationRoot;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
   readonly isSessionActive: (sessionId: string) => boolean;
+  readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
   readonly newId?: () => string;
@@ -71,6 +73,15 @@ export interface HostAutomationCoordinatorInput {
   readonly random?: () => number;
   readonly setTimeout?: (callback: () => void, delayMs: number) => unknown;
   readonly clearTimeout?: (timer: unknown) => void;
+}
+
+export class HostAutomationSessionBusyError extends Error {
+  readonly name = 'HostAutomationSessionBusyError';
+}
+
+export interface HostAutomationSessionRetirement {
+  commit(): void;
+  rollback(): void;
 }
 
 interface CommittedAutomation {
@@ -99,6 +110,7 @@ class AutomationMutationFailure extends Error {
       | 'limit_reached'
       | 'invalid_schedule'
       | 'session_archived'
+      | 'session_busy'
       | 'session_unavailable'
       | 'host_not_ready'
       | 'host_draining',
@@ -111,8 +123,10 @@ class AutomationMutationFailure extends Error {
 /** Host-owned Automation Store, scheduler, fire admission, and tool authority. */
 export class HostAutomationCoordinator implements AutomationToolAuthority {
   readonly handlers: AutomationOperationHandlerMap = {
-    'automation.query': (input) => this.#query(input),
-    'automation.mutate': (input) => this.#mutate(input),
+    'automation.query': (input) =>
+      this.#sessionAdmission.run(input.sessionId, () => this.#query(input)),
+    'automation.mutate': (input) =>
+      this.#sessionAdmission.run(input.sessionId, () => this.#mutate(input)),
   };
 
   readonly modelTool: MakaTool;
@@ -120,11 +134,13 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   readonly #store: InteractiveAutomationAuthorityWriter;
   readonly #sessions: AutomationSessions;
   readonly #requestDrain: () => void;
+  readonly #sessionAdmission: SessionAdmissionGate;
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #manager: AutomationManager;
   readonly #fireCoordinator: HostAutomationFireCoordinator;
   readonly #pendingFires = new Map<string, AutomationPendingFire>();
+  readonly #retiringSessions = new Set<string>();
 
   #revision = 0;
   #lane: Promise<void> = Promise.resolve();
@@ -135,6 +151,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     this.#store = authenticateInteractiveAutomationAuthorityWriter(input.store);
     this.#sessions = input.sessions;
     this.#requestDrain = input.requestDrain;
+    this.#sessionAdmission = input.sessionAdmission;
     this.#newId = input.newId ?? randomUUID;
     this.#now = input.now ?? Date.now;
     this.#manager = new AutomationManager({
@@ -221,6 +238,32 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     this.#fireCoordinator.beginDrain();
   }
 
+  beginSessionRetirement(sessionIds: readonly string[]): Promise<HostAutomationSessionRetirement> {
+    const unique = [...new Set(sessionIds)];
+    return this.#exclusive(() => {
+      const blocked = unique.some(
+        (sessionId) =>
+          this.#manager
+            .listForSession(sessionId)
+            .some((automation) => automation.durable !== true) ||
+          [...this.#pendingFires.values()].some((fire) => fire.targetSessionId === sessionId),
+      );
+      if (blocked) {
+        throw new HostAutomationSessionBusyError(
+          'Session retirement requires session-bound Automations to be removed first',
+        );
+      }
+      for (const sessionId of unique) this.#retiringSessions.add(sessionId);
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        for (const sessionId of unique) this.#retiringSessions.delete(sessionId);
+      };
+      return Object.freeze({ commit: finish, rollback: finish });
+    });
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     await this.#fireCoordinator.close();
@@ -291,7 +334,16 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     );
   }
 
-  #query(input: AutomationQueryInput): Promise<OperationOutcome<'automation.query'>> {
+  async #query(input: AutomationQueryInput): Promise<OperationOutcome<'automation.query'>> {
+    try {
+      await this.#sessions.readHeaderSnapshot(input.sessionId);
+    } catch (error) {
+      if (isSessionNotFoundError(error) || isMissingRecord(error)) {
+        return queryFailure('not_found', 'Session was not found');
+      }
+      this.#requestDrain();
+      return queryFailure('internal_failure', 'Session state is unavailable');
+    }
     return this.#exclusive(() => {
       if (!this.#prepared)
         return queryFailure('host_not_ready', 'Automation authority is not ready');
@@ -386,6 +438,9 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
         if (failure.kind === 'not_found') return mutationFailure('not_found', failure.message);
         if (failure.kind === 'session_archived') {
           return mutationFailure('session_archived', failure.message);
+        }
+        if (failure.kind === 'session_busy') {
+          return mutationFailure('session_busy', failure.message);
         }
         if (failure.kind === 'session_unavailable') {
           return mutationFailure('operation_unavailable', failure.message);
@@ -507,6 +562,9 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
   }
 
   async #readMutableSession(sessionId: string): Promise<SessionHeader> {
+    if (this.#retiringSessions.has(sessionId)) {
+      throw new AutomationMutationFailure('session_busy', 'Session lifecycle is changing');
+    }
     let header: SessionHeader;
     try {
       header = await this.#sessions.readHeaderSnapshot(sessionId);
@@ -592,6 +650,17 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
     automationId: string,
     expectedSchedule: number | null,
   ): Promise<AutomationPendingFire | undefined> {
+    const sessionId = await this.#exclusive(() => this.#manager.get(automationId)?.sessionId);
+    if (!sessionId) return undefined;
+    return this.#sessionAdmission.run(sessionId, () =>
+      this.#admitFireAdmitted(automationId, expectedSchedule),
+    );
+  }
+
+  #admitFireAdmitted(
+    automationId: string,
+    expectedSchedule: number | null,
+  ): Promise<AutomationPendingFire | undefined> {
     return this.#exclusive(async () => {
       if (this.#fireCoordinator.isDraining || this.#closed || expectedSchedule === null) {
         return undefined;
@@ -599,6 +668,7 @@ export class HostAutomationCoordinator implements AutomationToolAuthority {
       const automation = this.#manager.get(automationId);
       if (
         !automation ||
+        this.#retiringSessions.has(automation.sessionId) ||
         automation.status !== 'active' ||
         automation.nextFireAt !== expectedSchedule ||
         automation.nextFireAt > this.#now() ||
@@ -887,7 +957,7 @@ function querySuccess(result: AutomationQueryResult): OperationOutcome<'automati
 }
 
 function queryFailure(
-  code: 'host_not_ready' | 'host_draining' | 'invalid_request' | 'internal_failure',
+  code: Extract<OperationOutcome<'automation.query'>, { ok: false }>['error']['code'],
   message: string,
 ): OperationOutcome<'automation.query'> {
   return { ok: false, error: { code, message } };
@@ -898,13 +968,7 @@ function mutationSuccess(result: AutomationMutateResult): OperationOutcome<'auto
 }
 
 function mutationFailure(
-  code:
-    | 'host_not_ready'
-    | 'host_draining'
-    | 'operation_unavailable'
-    | 'not_found'
-    | 'session_archived'
-    | 'persistence_failed',
+  code: Extract<OperationOutcome<'automation.mutate'>, { ok: false }>['error']['code'],
   message: string,
 ): OperationOutcome<'automation.mutate'> {
   return { ok: false, error: { code, message } };

@@ -20,6 +20,7 @@ import {
   SQLITE_SESSION_METADATA_DATABASE_NAME,
   type StableSessionCreateInput,
 } from '../session-store.js';
+import { createSessionStoreForTest } from '../session-store-test-support.js';
 import {
   createSqliteSessionMetadataStore,
   SessionMetadataVersionConflictError,
@@ -1029,8 +1030,186 @@ describe('default SQLite session metadata store', () => {
     try {
       assert.deepEqual(await reopened.list(), []);
       await assert.rejects(() => reopened.readHeader(header.id), /not found/);
+      await waitForMissingPath(sessionDir);
     } finally {
       await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('commits family removal before transcript GC and retries failed family work', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-family-gc-'));
+    let releaseFirstAttempt!: () => void;
+    const firstAttemptRelease = new Promise<void>((resolve) => {
+      releaseFirstAttempt = resolve;
+    });
+    let signalGcStarted!: () => void;
+    const gcStarted = new Promise<void>((resolve) => {
+      signalGcStarted = resolve;
+    });
+    let signalFirstPass!: () => void;
+    const firstPass = new Promise<void>((resolve) => {
+      signalFirstPass = resolve;
+    });
+    let signalRetryPass!: () => void;
+    const retryPass = new Promise<void>((resolve) => {
+      signalRetryPass = resolve;
+    });
+    const attempts = new Map<string, number>();
+    let firstPassCount = 0;
+    let retryPassCount = 0;
+    const store = createSessionStoreForTest(root, {
+      beforeTranscriptRemoval: async (sessionId) => {
+        const attempt = (attempts.get(sessionId) ?? 0) + 1;
+        attempts.set(sessionId, attempt);
+        if (attempt === 1) {
+          signalGcStarted();
+          if (firstPassCount === 0) await firstAttemptRelease;
+          firstPassCount += 1;
+          if (firstPassCount === 2) signalFirstPass();
+          throw new Error('injected transcript removal failure');
+        }
+        retryPassCount += 1;
+        if (retryPassCount === 2) signalRetryPass();
+      },
+    });
+    try {
+      const familyRoot = await store.create(makeInput({ name: 'Family root' }));
+      const familyRevision = await store.create(
+        makeInput({
+          name: 'Family revision',
+          revisionRootSessionId: familyRoot.id,
+          revisionParentSessionId: familyRoot.id,
+          revisionOfTurnId: 'turn-1',
+          revisionIndex: 2,
+          revisionState: 'committed',
+        }),
+      );
+      const identities = await Promise.all(
+        [familyRoot.id, familyRevision.id].map(async (sessionId) => {
+          const snapshot = await store.readHeaderRecordSnapshot(sessionId);
+          return { sessionId, expectedVersion: snapshot.revision };
+        }),
+      );
+      let removalSettled = false;
+      const removal = store.removeSessionsVersioned(identities).then((removed) => {
+        removalSettled = true;
+        return removed;
+      });
+      await gcStarted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(removalSettled, true);
+      assert.deepEqual(new Set(await removal), new Set([familyRoot.id, familyRevision.id]));
+
+      releaseFirstAttempt();
+      await firstPass;
+      assert.deepEqual(await store.probeSessionRemoval(familyRevision.id), { kind: 'removed' });
+      await retryPass;
+      assert.equal(attempts.get(familyRoot.id), 2);
+      assert.equal(attempts.get(familyRevision.id), 2);
+    } finally {
+      releaseFirstAttempt();
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('serves startup reads without waiting for pending transcript GC', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-startup-gc-'));
+    let signalSeedAttempt!: () => void;
+    const seedAttempt = new Promise<void>((resolve) => {
+      signalSeedAttempt = resolve;
+    });
+    const seed = createSessionStoreForTest(root, {
+      beforeTranscriptRemoval: async () => {
+        signalSeedAttempt();
+        throw new Error('injected startup GC residue');
+      },
+    });
+    let sessionId = '';
+    try {
+      const session = await seed.create(makeInput({ name: 'Startup GC' }));
+      sessionId = session.id;
+      const snapshot = await seed.readHeaderRecordSnapshot(sessionId);
+      await seed.removeSessionsVersioned([{ sessionId, expectedVersion: snapshot.revision }]);
+      await seedAttempt;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      await seed.close?.();
+    }
+
+    let releaseGc!: () => void;
+    const gcRelease = new Promise<void>((resolve) => {
+      releaseGc = resolve;
+    });
+    let signalGcStarted!: () => void;
+    const gcStarted = new Promise<void>((resolve) => {
+      signalGcStarted = resolve;
+    });
+    const reopened = createSessionStoreForTest(root, {
+      beforeTranscriptRemoval: async (candidate) => {
+        assert.equal(candidate, sessionId);
+        signalGcStarted();
+        await gcRelease;
+      },
+    });
+    try {
+      let listSettled = false;
+      const list = reopened.list().then((sessions) => {
+        listSettled = true;
+        return sessions;
+      });
+      await gcStarted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(listSettled, true);
+      assert.deepEqual(await list, []);
+    } finally {
+      releaseGc();
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('waits for in-flight transcript GC before closing storage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-close-gc-'));
+    let releaseGc!: () => void;
+    const gcRelease = new Promise<void>((resolve) => {
+      releaseGc = resolve;
+    });
+    let signalGcStarted!: () => void;
+    const gcStarted = new Promise<void>((resolve) => {
+      signalGcStarted = resolve;
+    });
+    const store = createSessionStoreForTest(root, {
+      beforeTranscriptRemoval: async () => {
+        signalGcStarted();
+        await gcRelease;
+      },
+    });
+    let closing: Promise<void> | undefined;
+    try {
+      const session = await store.create(makeInput({ name: 'Close during GC' }));
+      const snapshot = await store.readHeaderRecordSnapshot(session.id);
+      await store.removeSessionsVersioned([
+        { sessionId: session.id, expectedVersion: snapshot.revision },
+      ]);
+      await gcStarted;
+
+      let closeSettled = false;
+      closing = store.close?.().then(() => {
+        closeSettled = true;
+      });
+      assert.ok(closing);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false);
+
+      releaseGc();
+      await closing;
+      assert.equal(closeSettled, true);
+      await assert.rejects(stat(join(root, 'sessions', session.id)), { code: 'ENOENT' });
+    } finally {
+      releaseGc();
+      await closing;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -1155,6 +1334,20 @@ function assertCatalogQueryPlan(
       true,
       details.join('\n'),
     );
+  }
+}
+
+async function waitForMissingPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try {
+      await stat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for removal: ${path}`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 

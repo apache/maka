@@ -328,6 +328,46 @@ test('slow subscriber receives a terminal eviction without delaying another subs
   coordinator.close();
 });
 
+test('removal closes every Session subscriber at the admitted sequence boundary', async () => {
+  const admission = new SessionAdmissionGate();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    admission,
+  );
+  const desktopSink = new RecordingSink();
+  const tuiSink = new RecordingSink();
+  const desktop = coordinator.attachConnection('connection-desktop', desktopSink);
+  const tui = coordinator.attachConnection('connection-tui', tuiSink);
+  const desktopSubscription = await open(coordinator, 'connection-desktop');
+  const tuiSubscription = await open(coordinator, 'connection-tui');
+  desktop.activate(desktopSubscription.subscriptionId);
+  tui.activate(tuiSubscription.subscriptionId);
+
+  await admission.run(SESSION_ID, (lease) => coordinator.retireSessions([SESSION_ID], lease));
+  await waitFor(() => desktopSink.frames.length === 1 && tuiSink.frames.length === 1);
+
+  assert.deepEqual(desktopSink.frames, [
+    {
+      kind: 'subscription.closed',
+      hostEpoch: HOST_EPOCH,
+      subscriptionId: desktopSubscription.subscriptionId,
+      sequence: 1,
+      reason: 'session_removed',
+    },
+  ]);
+  assert.deepEqual(tuiSink.frames, [
+    {
+      kind: 'subscription.closed',
+      hostEpoch: HOST_EPOCH,
+      subscriptionId: tuiSubscription.subscriptionId,
+      sequence: 1,
+      reason: 'session_removed',
+    },
+  ]);
+  coordinator.close();
+});
+
 class RecordingSink implements SessionContinuityFrameSink {
   readonly frames: SubscriptionFrame[] = [];
 

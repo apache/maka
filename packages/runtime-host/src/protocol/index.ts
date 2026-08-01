@@ -32,6 +32,7 @@ export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
+export * from './session-retirement.js';
 export * from './task-ledger.js';
 
 export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;

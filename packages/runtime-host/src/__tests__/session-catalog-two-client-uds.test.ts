@@ -109,6 +109,45 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
           },
         },
       );
+      assert.deepEqual(
+        await desktop.request('session.lifecycle.set', {
+          sessionId: oversizedSessionId,
+          state: 'archived',
+        }),
+        {
+          kind: 'unsupported_legacy_record',
+          id: oversizedSessionId,
+          revision: 3,
+          reason: 'not_wire_representable',
+        },
+      );
+      assert.deepEqual(
+        await tui.request('session.lifecycle.set', {
+          sessionId: oversizedSessionId,
+          state: 'active',
+        }),
+        {
+          kind: 'unsupported_legacy_record',
+          id: oversizedSessionId,
+          revision: 4,
+          reason: 'not_wire_representable',
+        },
+      );
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: oversizedSessionId,
+        }),
+        {
+          kind: 'session',
+          session: {
+            kind: 'unsupported_legacy_record',
+            id: oversizedSessionId,
+            revision: 4,
+            reason: 'not_wire_representable',
+          },
+        },
+      );
       await assert.rejects(
         desktop.request('session.create', {
           sessionId: 'relative-session',
@@ -394,6 +433,104 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       );
 
       await subscription.close();
+      const retirementSubscription = await tui.openSessionSubscription({
+        sessionId: created.id,
+      });
+      const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
+      const beforeArchive = await querySession(desktop, created.id);
+      const heartbeat = await desktop.request('automation.mutate', {
+        kind: 'create',
+        sessionId: created.id,
+        automationKind: 'heartbeat',
+        name: 'Retirement blocker',
+        prompt: 'Remain attached to this Session.',
+        schedule: { type: 'interval', seconds: 3_600 },
+      });
+      assert.equal(heartbeat.kind, 'committed');
+      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
+        assert.fail('Heartbeat creation must commit');
+      }
+      await assert.rejects(
+        tui.request('session.lifecycle.set', {
+          sessionId: created.id,
+          state: 'archived',
+        }),
+        operationError('session_busy'),
+      );
+      const deletedHeartbeat = await tui.request('automation.mutate', {
+        kind: 'delete',
+        sessionId: created.id,
+        automationId: heartbeat.automation.id,
+      });
+      assert.equal(deletedHeartbeat.kind, 'committed');
+      const archived = requireSessionProjection(
+        await desktop.request('session.lifecycle.set', {
+          sessionId: created.id,
+          state: 'archived',
+        }),
+      );
+      assert.equal(archived.isArchived, true);
+      assert.equal((await querySession(tui, created.id)).isArchived, true);
+      const archivedContinuity = await nextProjection(retirementIterator);
+      assert.equal(archivedContinuity.snapshot.session.isArchived, true);
+      assert.ok(archived.revision > beforeArchive.revision);
+
+      const restored = requireSessionProjection(
+        await tui.request('session.lifecycle.set', {
+          sessionId: created.id,
+          state: 'active',
+        }),
+      );
+      assert.equal(restored.isArchived, false);
+      const restoredContinuity = await nextProjection(retirementIterator);
+      assert.equal(restoredContinuity.snapshot.session.isArchived, false);
+
+      assert.deepEqual(
+        await desktop.request('session.remove', {
+          sessionId: created.id,
+          expectedRevision: restored.revision,
+        }),
+        { kind: 'removed', sessionId: created.id },
+      );
+      const closed = await withTimeout(
+        retirementIterator.next(),
+        PROCESS_TIMEOUT_MS,
+        'Session removal did not close continuity',
+      );
+      assert.equal(closed.done, false);
+      assert.equal(closed.value?.kind, 'subscription.closed');
+      if (closed.value?.kind !== 'subscription.closed') {
+        assert.fail('Session removal must close its continuity subscription');
+      }
+      assert.equal(closed.value.reason, 'session_removed');
+      assert.deepEqual(
+        await tui.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: created.id,
+        }),
+        { kind: 'session', session: null },
+      );
+      await assert.rejects(
+        desktop.request('runtime.resource.query', {
+          kind: 'list_start',
+          sessionId: created.id,
+        }),
+        operationError('not_found'),
+      );
+      await assert.rejects(
+        tui.request('automation.query', {
+          kind: 'list_start',
+          sessionId: created.id,
+        }),
+        operationError('not_found'),
+      );
+      assert.deepEqual(
+        await tui.request('session.remove', {
+          sessionId: created.id,
+          expectedRevision: restored.revision,
+        }),
+        { kind: 'removed', sessionId: created.id },
+      );
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
     }

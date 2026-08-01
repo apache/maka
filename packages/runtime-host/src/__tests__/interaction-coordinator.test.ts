@@ -60,6 +60,7 @@ describe('HostInteractionCoordinator', () => {
         continuation,
       });
       assert.deepEqual(order, ['preflight', 'refresh:pending']);
+      assert.equal(await coordinator.hasPendingSession(RUN.sessionId), true);
 
       const answer = {
         interactionId: 'question_1',
@@ -72,6 +73,7 @@ describe('HostInteractionCoordinator', () => {
       assert.equal(first.ok, true);
       assert.equal(second.ok, true);
       assert.deepEqual(order, ['preflight', 'refresh:pending', 'refresh:answered', 'apply:Yes']);
+      assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
 
       const conflicting = await coordinator.handlers['interaction.answer'](
         {

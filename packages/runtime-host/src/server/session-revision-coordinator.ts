@@ -178,6 +178,12 @@ export class HostSessionRevisionCoordinator {
     if (sourceHeader.conversationCopy?.state === 'preparing') {
       return copyFailure('not_found', 'Source Session does not exist');
     }
+    if (kind === 'revision' && (sourceHeader.isArchived || sourceHeader.status === 'archived')) {
+      return copyFailure(
+        'operation_conflict',
+        'Archived Session revision families cannot create active revisions',
+      );
+    }
     if (sourceHeader.subagentParent) {
       return copyFailure(
         'operation_conflict',
@@ -217,6 +223,19 @@ export class HostSessionRevisionCoordinator {
       ]);
     } catch {
       return copyFailure('persistence_failed', 'Source conversation lineage is unavailable');
+    }
+    if (
+      kind === 'revision' &&
+      sessionHeaders.some(
+        (candidate) =>
+          revisionFamilyId(candidate) === revisionFamilyId(sourceHeader) &&
+          (candidate.isArchived || candidate.status === 'archived'),
+      )
+    ) {
+      return copyFailure(
+        'operation_conflict',
+        'Archived Session revision families cannot create active revisions',
+      );
     }
     const copyTurnIds = plan.copyTurnIds;
     if (
@@ -574,6 +593,10 @@ export class HostSessionRevisionCoordinator {
     }
     return boundary >= 0 && messages.slice(boundary + 1).some((message) => message.type === 'user');
   }
+}
+
+function revisionFamilyId(session: Pick<SessionHeader, 'id' | 'revisionRootSessionId'>): string {
+  return session.revisionRootSessionId ?? session.id;
 }
 
 function conversationCopyFingerprint(

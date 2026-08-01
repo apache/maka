@@ -14,9 +14,11 @@ import {
   type SessionConfigurationMetadataUpdate,
   type SessionCatalogRevisionState,
   type SessionMetadataRecord,
+  type SessionRemovalProbe,
   SessionMetadataVersionConflictError,
   type SqliteSessionMetadataStore,
   type StableSessionCreateProbe,
+  type VersionedSessionIdentity,
 } from './sqlite-session-metadata-store.js';
 import {
   isDiscardableConversationCopy,
@@ -103,6 +105,11 @@ export interface SessionHeaderSnapshot {
   readonly revision: number;
   readonly committedAt: number;
 }
+
+export type ProbeSessionRemovalResult =
+  | { readonly kind: 'present'; readonly record: SessionHeaderSnapshot }
+  | { readonly kind: 'removed' }
+  | { readonly kind: 'absent' };
 
 export interface SessionCatalogRecord extends SessionHeaderSnapshot {
   readonly summary: SessionSummary;
@@ -243,10 +250,28 @@ export interface SessionAuthorityStore extends SessionStore {
     sessionId: string,
     messageId: string,
   ): Promise<SessionHeaderSnapshot>;
+  probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult>;
+  setSessionsLifecycleVersioned(
+    sessions: readonly VersionedSessionIdentity[],
+    state: 'active' | 'archived',
+  ): Promise<SessionHeaderSnapshot[]>;
+  removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]>;
+}
+
+interface SessionAuthorityStoreTestDependencies {
+  readonly beforeTranscriptRemoval?: (sessionId: string) => Promise<void>;
 }
 
 export function createSessionStore(workspaceRoot: string): SessionAuthorityStore {
-  return new SqliteSessionStore(workspaceRoot);
+  return new SqliteSessionStore(workspaceRoot, {});
+}
+
+/** @internal Test-only dependency injection; not exported from the package root. */
+export function createSessionStoreWithTestDependencies(
+  workspaceRoot: string,
+  dependencies: SessionAuthorityStoreTestDependencies,
+): SessionAuthorityStore {
+  return new SqliteSessionStore(workspaceRoot, dependencies);
 }
 
 /** Legacy JSONL-header store retained only for migration and compatibility tests. */
@@ -264,9 +289,17 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private resolveCatalogProjectionWritesIdle: (() => void) | undefined;
   private catalogProjectionRecovery: Promise<void> | null = null;
   private catalogProjectionFailure: unknown;
+  private readonly removeTranscript: (sessionId: string) => Promise<void>;
+  private readonly transcriptGcQueue = new Set<string>();
+  private transcriptGcWorker: Promise<void> | null = null;
+  private closing = false;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, dependencies: SessionAuthorityStoreTestDependencies) {
     this.files = new FileSessionStore(workspaceRoot, true);
+    this.removeTranscript = async (sessionId) => {
+      await dependencies.beforeTranscriptRemoval?.(sessionId);
+      await this.files.remove(sessionId);
+    };
     const databaseLease = acquireOperationalStateDatabase(workspaceRoot);
     this.metadata = createSqliteSessionMetadataStore(
       join(workspaceRoot, OPERATIONAL_STATE_DATABASE_NAME),
@@ -280,6 +313,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
         await this.metadata.requireCatalogProjectionRecovery();
       }
       await this.recoverCatalogProjections();
+      const [pending, existing] = await Promise.all([
+        this.metadata.listPendingTranscriptGcSessionIds(),
+        this.files.listSessionDirectoryIds(),
+      ]);
+      const resurrected = await this.metadata.listTombstonedSessionIdsAmong(existing);
+      this.scheduleTranscriptGc([...new Set([...pending, ...resurrected])]);
     });
     void this.ready.catch(() => {});
   }
@@ -679,6 +718,30 @@ class SqliteSessionStore implements SessionAuthorityStore {
     throw new Error('Session read marker retry loop did not terminate');
   }
 
+  async probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult> {
+    await this.ensureReady();
+    const probe = projectRemovalProbe(await this.metadata.probeRemoval(sessionId));
+    if (probe.kind === 'removed') {
+      this.scheduleTranscriptGc(await this.metadata.listPendingTranscriptGcSessionIds(sessionId));
+    }
+    return probe;
+  }
+
+  async setSessionsLifecycleVersioned(
+    sessions: readonly VersionedSessionIdentity[],
+    state: 'active' | 'archived',
+  ): Promise<SessionHeaderSnapshot[]> {
+    await this.ensureReady();
+    return (await this.metadata.setLifecycleVersioned(sessions, state)).map(projectHeaderSnapshot);
+  }
+
+  async removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
+    await this.ensureReady();
+    const removed = await this.metadata.removeVersioned(sessions);
+    this.scheduleTranscriptGc(removed);
+    return removed;
+  }
+
   async markSessionReadThrough(sessionId: string, readThroughTs: number): Promise<SessionHeader> {
     const header = await this.readHeaderSnapshot(sessionId);
     const messages = await this.readMessagesSnapshot(sessionId);
@@ -746,10 +809,12 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async remove(sessionId: string): Promise<void> {
     await this.ensureReady();
     await this.metadata.remove(sessionId);
-    await this.files.remove(sessionId);
+    await this.removeTranscript(sessionId);
+    await this.metadata.completeTranscriptGc(sessionId);
   }
 
   close(): Promise<void> {
+    this.closing = true;
     this.closePromise ??= this.closeAfterReady();
     return this.closePromise;
   }
@@ -757,6 +822,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private async closeAfterReady(): Promise<void> {
     await this.ready.catch(() => {});
     await this.catalogProjectionRecovery?.catch(() => {});
+    await this.transcriptGcWorker?.catch(() => {});
     this.metadata.close();
   }
 
@@ -786,6 +852,38 @@ class SqliteSessionStore implements SessionAuthorityStore {
       }
     }
     await this.metadata.recoverCatalogProjections(projections);
+  }
+
+  private scheduleTranscriptGc(sessionIds: readonly string[]): void {
+    if (this.closing) return;
+    for (const sessionId of sessionIds) this.transcriptGcQueue.add(sessionId);
+    if (this.transcriptGcWorker || this.transcriptGcQueue.size === 0) return;
+    const worker = this.drainTranscriptGc();
+    this.transcriptGcWorker = worker;
+    void worker.then(
+      () => this.finishTranscriptGc(worker),
+      () => this.finishTranscriptGc(worker),
+    );
+  }
+
+  private async drainTranscriptGc(): Promise<void> {
+    while (!this.closing) {
+      const sessionId = this.transcriptGcQueue.values().next().value as string | undefined;
+      if (!sessionId) return;
+      this.transcriptGcQueue.delete(sessionId);
+      try {
+        await this.removeTranscript(sessionId);
+        await this.metadata.completeTranscriptGc(sessionId);
+      } catch {
+        // The durable pending bit keeps failed physical deletion retryable.
+      }
+    }
+  }
+
+  private finishTranscriptGc(worker: Promise<void>): void {
+    if (this.transcriptGcWorker !== worker) return;
+    this.transcriptGcWorker = null;
+    if (!this.closing && this.transcriptGcQueue.size > 0) this.scheduleTranscriptGc([]);
   }
 
   private async ensureReady(): Promise<void> {
@@ -1121,6 +1219,20 @@ class FileSessionStore implements SessionStore {
       summaries.push(toSummary(header, messages));
     }
     return summaries;
+  }
+
+  async listSessionDirectoryIds(): Promise<string[]> {
+    let entries;
+    try {
+      entries = await readdir(this.sessionsRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    return entries
+      .filter((entry) => entry.isDirectory() && SESSION_ID_PATTERN.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
   }
 
   async listForRecovery(): Promise<SessionHeader[]> {
@@ -1907,6 +2019,12 @@ function projectHeaderSnapshot(record: SessionMetadataRecord): SessionHeaderSnap
     revision: record.metadataVersion,
     committedAt: record.committedAt,
   };
+}
+
+function projectRemovalProbe(probe: SessionRemovalProbe): ProbeSessionRemovalResult {
+  return probe.kind === 'present'
+    ? { kind: 'present', record: projectHeaderSnapshot(probe.record) }
+    : probe;
 }
 
 function projectCatalogRevision(state: SessionCatalogRevisionState): `sha256:${string}` {

@@ -17,6 +17,7 @@ import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
 import { HostAutomationCoordinator } from '../server/automation-coordinator.js';
 import { RuntimeHostKernel } from '../server/host-kernel.js';
 import { createUnavailableDomainOperationHandlers } from '../server/operation-dispatcher.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -66,6 +67,7 @@ test('two UDS Clients share one revision-pinned Automation authority', {
         },
         runtimePolicy: runtimePolicyStores(),
         isSessionActive: () => false,
+        sessionAdmission: new SessionAdmissionGate(),
         acquireResidency: context.acquireResidency,
         requestDrain: context.requestDrain,
         now: () => 1_000,

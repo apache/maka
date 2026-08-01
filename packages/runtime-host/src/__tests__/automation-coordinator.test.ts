@@ -24,9 +24,13 @@ import type {
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
-import { HostAutomationCoordinator } from '../server/automation-coordinator.js';
+import {
+  HostAutomationCoordinator,
+  HostAutomationSessionBusyError,
+} from '../server/automation-coordinator.js';
 import { HostAutomationFireCoordinator } from '../server/automation-fire-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
+import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'automation-test',
@@ -419,6 +423,45 @@ describe('Host Automation coordinator', () => {
           schedule: { type: 'interval', seconds: 60 },
         }),
         { error: 'Automation authority is unavailable.' },
+      );
+    });
+  });
+
+  test('allows durable definitions but fences pending fires during Session retirement', async () => {
+    await withHarness(async (harness) => {
+      await harness.coordinator.prepareRecovery();
+      await harness.coordinator.recover();
+      harness.coordinator.start();
+      const durable = await harness.coordinator.create({
+        kind: 'cron',
+        name: 'durable summary',
+        prompt: 'Summarize the workspace.',
+        sessionId: 'creator-session',
+        schedule: { type: 'once', delaySeconds: 5 },
+        durable: true,
+      });
+      assert.ok(!('error' in durable));
+      if ('error' in durable) return;
+
+      const idleRetirement = await harness.coordinator.beginSessionRetirement(['creator-session']);
+      idleRetirement.rollback();
+
+      harness.now = durable.nextFireAt ?? assert.fail('Expected a scheduled fire');
+      harness.fireTimer();
+      await waitFor(
+        'durable fire to enter running state',
+        async () => (await harness.store.read()).pendingFires[0]?.status === 'running',
+      );
+      const pending = (await harness.store.read()).pendingFires[0];
+      assert.ok(pending);
+      await assert.rejects(
+        harness.coordinator.beginSessionRetirement([pending.targetSessionId]),
+        HostAutomationSessionBusyError,
+      );
+      harness.finishRun();
+      await waitFor(
+        'durable fire to settle',
+        async () => (await harness.store.read()).pendingFires.length === 0,
       );
     });
   });
@@ -842,6 +885,7 @@ async function withHarness(
     root,
     runtimePolicy: runtimePolicyStores(options.readIncognito),
     isSessionActive: () => false,
+    sessionAdmission: new SessionAdmissionGate(),
     acquireResidency: () => {
       harness.residencyCount += 1;
       let released = false;

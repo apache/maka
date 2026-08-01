@@ -63,6 +63,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
       () => coordinator.manager.create(session.id, 'Finish the whole slice').goal,
     );
     assert.equal(created?.status, 'active');
+    assert.equal(coordinator.hasLiveGoal(session.id), true);
     assert.equal(acquired, 1);
 
     const firstClient = await coordinator.handlers['goal.query'](
@@ -123,6 +124,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
       operationContext('connection-1'),
     );
     assert.equal(cleared.ok && cleared.result.goal.status, 'cleared');
+    assert.equal(coordinator.hasLiveGoal(session.id), false);
     assert.equal(released, 1);
     settleGoalTurn({ kind: 'completed', turnId: 'goal-turn-1' });
     await new Promise((resolve) => setImmediate(resolve));

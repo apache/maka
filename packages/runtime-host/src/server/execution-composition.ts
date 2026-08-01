@@ -53,6 +53,7 @@ import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { HostSessionRetirementCoordinator } from './session-retirement-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
@@ -369,6 +370,7 @@ export async function createExecutionRuntimeHostComposition(
       root: { executeRoot: (input) => coordinator.executeRoot(input) },
       runtimePolicy: runtimePolicyStores,
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
+      sessionAdmission,
       acquireResidency: context.acquireResidency,
       requestDrain: context.requestDrain,
     });
@@ -434,6 +436,20 @@ export async function createExecutionRuntimeHostComposition(
       isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind !== 'idle',
       requestDrain: context.requestDrain,
     });
+    const sessionRetirement = new HostSessionRetirementCoordinator({
+      stores: stores.sessionStore,
+      admission: sessionAdmission,
+      root: coordinator,
+      messages,
+      interactions,
+      goals: requireGoal(goal),
+      automation: automations,
+      resources: runtimeResources,
+      manager,
+      capabilities: clientCapabilities,
+      continuity: continuityCoordinator,
+      requestDrain: context.requestDrain,
+    });
     const artifacts = new HostArtifactCoordinator(
       openedArtifactStore,
       context.requestDrain,
@@ -444,6 +460,7 @@ export async function createExecutionRuntimeHostComposition(
       ...requireGoal(goal).handlers,
       ...sessionCatalog.handlers,
       ...sessionRevisions.handlers,
+      ...sessionRetirement.handlers,
       ...messages.handlers,
       ...interactions.handlers,
       ...runtimePolicy.handlers,
