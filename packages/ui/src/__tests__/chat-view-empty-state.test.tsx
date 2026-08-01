@@ -83,6 +83,7 @@ describe('ChatView session context', () => {
     assert.match(markup, /data-session-context-layer="true"/);
     assert.match(markup, /UI polish review/);
     assert.match(markup, /Chat Surface convergence/);
+    assert.equal(markup.match(/maka-session-context__breadcrumb-label/g)?.length, 2);
     assert.match(markup, /aria-label="Local memory enabled"/);
     assert.match(markup, /aria-label="Deep Research, read-only exploration"/);
     assert.match(markup, /Goal 4 of 12/);

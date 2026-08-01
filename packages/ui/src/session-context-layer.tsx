@@ -233,6 +233,7 @@ export function SessionContextLayer(props: {
             <Breadcrumbs
               label={copy.sessionLineageAriaLabel}
               variant="supporting"
+              className="maka-session-context__breadcrumbs"
               separator={<Icon icon="chevronRight" size="xsm" />}
             >
               <BreadcrumbItem
@@ -242,9 +243,15 @@ export function SessionContextLayer(props: {
                   }
                   : undefined}
               >
-                {props.branch.parentSessionName}
+                <span className="maka-session-context__breadcrumb-label">
+                  {props.branch.parentSessionName}
+                </span>
               </BreadcrumbItem>
-              <BreadcrumbItem isCurrent>{props.sessionName}</BreadcrumbItem>
+              <BreadcrumbItem isCurrent>
+                <span className="maka-session-context__breadcrumb-label">
+                  {props.sessionName}
+                </span>
+              </BreadcrumbItem>
             </Breadcrumbs>
           ) : (
             <Text type="supporting" maxLines={1}>{props.sessionName}</Text>

@@ -695,7 +695,7 @@ export const SessionContextCombined: Story = {
   render: () => {
     const activeSession = session({
       id: 'session-context-combined',
-      name: 'Chat Surface 收敛',
+      name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
       labels: ['mode:deep_research'],
       parentSessionId: 'session-parent',
       branchOfTurnId: 'turn-1',
@@ -716,7 +716,7 @@ export const SessionContextCombined: Story = {
           },
           branchBanner: {
             parentSessionId: 'session-parent',
-            parentSessionName: 'UI polish 主线评审',
+            parentSessionName: 'UI polish 主线评审与跨会话来源追踪的完整上下文',
             fromAbortedTurn: true,
           },
           onBranchBannerClick: noop,

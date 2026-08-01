@@ -69,6 +69,30 @@
   min-width: 0;
 }
 
+.maka-session-context__breadcrumbs {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.maka-session-context__breadcrumbs > ol {
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.maka-session-context__breadcrumbs > ol > li {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.maka-session-context__breadcrumb-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .maka-session-context__cluster {
   width: min(100%, 560px);
   justify-self: end;
