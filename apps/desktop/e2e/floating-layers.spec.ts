@@ -203,7 +203,7 @@ test('model and adjacent thinking Selectors persist one real Electron journey', 
   await expect(modelTrigger).toContainText('claude-e2e-1');
 });
 
-test('keyboard help lets Astryx restore its opener on close', async ({
+test('keyboard help keeps its shortcut grid and lets Astryx restore its opener on close', async ({
   window: page,
 }) => {
   const opener = page.getByRole('button', { name: '搜索对话' });
@@ -212,6 +212,39 @@ test('keyboard help lets Astryx restore its opener on close', async ({
 
   const dialog = page.getByRole('dialog', { name: '键盘快捷键' });
   await expect(dialog).toBeVisible();
+
+  const helpBody = dialog.locator('.maka-help-body');
+  const firstSection = helpBody.locator('.maka-help-section').first();
+  const firstShortcutList = firstSection.locator('dl');
+  await expect(helpBody).toHaveCSS('column-count', '2');
+  await expect(firstShortcutList).toHaveCSS('display', 'grid');
+  await expect(firstShortcutList).toHaveCSS(
+    'grid-template-columns',
+    /\d+(\.\d+)?px \d+(\.\d+)?px/,
+  );
+  await expect(firstSection.locator('dd').first()).toHaveCSS(
+    'justify-self',
+    'end',
+  );
+  await expect(dialog).toHaveCSS('border-radius', '16px');
+  await expect(dialog).not.toHaveCSS('box-shadow', 'none');
+  await expect(firstSection).toHaveCSS('border-radius', '12px');
+  await expect(
+    dialog.getByRole('heading', { name: '键盘快捷键' }),
+  ).toHaveCSS('box-shadow', 'none');
+  await expect(
+    dialog.getByRole('img', { name: /(Command|Control) \+ K/ }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole('img', { name: 'Left arrow' }).first(),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole('img', { name: 'Right arrow' }).first(),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 640, height: 800 });
+  await expect(helpBody).toHaveCSS('column-count', '1');
+  expect((await dialog.boundingBox())?.width).toBeLessThanOrEqual(608);
+
   await page.keyboard.press('Escape');
 
   await expect(dialog).toBeHidden();
