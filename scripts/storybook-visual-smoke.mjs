@@ -331,11 +331,11 @@ async function smokeStory(page, baseUrl, job, options = {}) {
 /**
  * Every story the manifest does NOT name, rendered once at wide/light.
  *
- * The manifest is a curated list — 12 surfaces across viewports and colour
+ * The manifest is a curated list — a dozen surfaces across viewports and colour
  * schemes, because those checks are expensive and only worth paying for where
- * layout actually varies. But that left the other ~130 stories verified by
- * nothing: `build-storybook` bundles a story without mounting it, so a render
- * that throws, a play function that rejects, or a console error ships green.
+ * layout actually varies. But that left every other story verified by nothing:
+ * `build-storybook` bundles a story without mounting it, so a render that
+ * throws, a play function that rejects, or a console error ships green.
  *
  * This pass is deliberately shallow. It answers one question — does the story
  * still mount and finish its play function without errors — and leaves
