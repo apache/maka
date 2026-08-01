@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { discoverMarkedStorageRoot } from '@maka/storage/root-authority';
 import {
   getE2eFixtureState,
+  resetE2eFixtureSandboxBoundaryRetirement,
   resolveE2eFixture,
+  retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from '../e2e-fixture.js';
 import { readE2eFixtureCombinedSource } from './e2e-fixture-source-helpers.js';
@@ -289,7 +291,7 @@ describe('e2e-fixture mode', () => {
     assert.equal(state?.now, Date.UTC(2026, 4, 22, 3, 0, 0));
     assert.equal(state?.activeSessionId, undefined);
     assert.equal(state?.liveTurnBySession, undefined);
-    assert.equal(state?.permissionBySession, undefined);
+    assert.equal(state?.sandboxBoundaryBySession, undefined);
   });
 
   it('all fixture exposes transient streaming and permission state without persistence', () => {
@@ -300,12 +302,38 @@ describe('e2e-fixture mode', () => {
     const liveTurns = state?.liveTurnBySession;
     assert.equal(liveTurns?.['e2e-fixture-streaming']?.turnId, 'turn-streaming');
     assert.equal(liveTurns?.['e2e-fixture-streaming']?.steps[0]?.tools[0]?.status, 'running');
-    assert.equal(liveTurns?.['e2e-fixture-permission']?.turnId, 'turn-permission');
+    assert.equal(liveTurns?.['e2e-fixture-permission']?.turnId, 'turn-sandbox-boundary');
     assert.equal(liveTurns?.['e2e-fixture-permission']?.steps[0]?.tools[0]?.status, 'waiting_permission');
-    const permission = state?.permissionBySession?.['e2e-fixture-permission'];
-    assert.ok(permission);
-    assert.equal((permission.args as { command?: unknown }).command, 'rm -rf ./dist');
-    assert.equal(Object.hasOwn(permission.args as object, 'cmd'), false, 'fixture must match the current Bash input schema');
+    const request = state?.sandboxBoundaryBySession?.['e2e-fixture-permission'];
+    assert.ok(request);
+    assert.deepEqual(request.expansion.filesystem?.entries, [
+      { path: '/outside/dist', access: 'write', scope: 'subtree' },
+    ]);
+  });
+
+  it('retires an answered boundary request from every reader of fixture state', () => {
+    resetE2eFixtureSandboxBoundaryRetirement();
+    try {
+      const fixture = resolveE2eFixture('sandbox-boundary', false);
+      const request = getE2eFixtureState(fixture)?.sandboxBoundaryBySession?.['e2e-fixture-permission'];
+      assert.ok(request);
+
+      retireE2eFixtureSandboxBoundaryRequest(request.requestId);
+
+      // Both exits read this one state: the sessions IPC serves the active
+      // list from it, and the renderer seeds its interaction queue straight
+      // out of `e2eFixture:getState`. Retiring at either exit alone would just
+      // move the resurrection to the other one — after a reload the seed path
+      // would put the prompt back over the composer for good.
+      const after = getE2eFixtureState(fixture);
+      assert.deepEqual(after?.sandboxBoundaryBySession, {});
+      // The rest of the scenario is untouched: retirement settles one request,
+      // it does not disable the fixture.
+      assert.equal(after?.activeSessionId, 'e2e-fixture-permission');
+      assert.ok(after?.liveTurnBySession?.['e2e-fixture-permission']);
+    } finally {
+      resetE2eFixtureSandboxBoundaryRetirement();
+    }
   });
 
   it('task-ledger fixture seeds the hierarchical desktop read model', async () => {
@@ -782,7 +810,7 @@ describe('e2e-fixture mode', () => {
     // `E2eFixtureState.focusActiveRow=true`, which the renderer
     // reads to focus the active row's button after mount. That
     // triggers `:focus-within` and reveals the
-    // `.maka-list-row-menu-trigger` — the fixture then proves
+    // official session item action — the fixture then proves
     // the time meta / unread dot are correctly hidden underneath.
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-row-actions-'));
     try {

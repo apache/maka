@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
+import { Card, Item } from '@astryxdesign/core';
 import type { AppSettings, UpdateAppSettingsResult, WebSearchCredentialStatus } from '@maka/core';
 import { normalizeSearchUrl, webSearchCredentialStatusFromResponse } from '@maka/core';
-import { Button, Chip, Input, RelativeTime, SettingsSwitch as Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Badge, Button, TextInput, RelativeTime, Switch, redactSecrets, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getWebSearchSettingsCopy, type WebSearchSettingsCopy } from '../locales/settings-web-search-copy';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
-import { SettingsRows } from './settings-rows';
+import { statusBadgeVariant } from './settings-status-badge';
 import { useKeyedActionGuard } from './use-action-guard';
 
 /**
@@ -232,17 +233,15 @@ export function WebSearchSettingsPage(props: {
 
   return (
     <div className="settingsStructuredPage">
-      <SettingsRows className="settingsWebSearchCredentialCard">
-        <div className="settingsRow settingsWebSearchEnableRow">
-          <div>
-            <strong>{copy.enabled}</strong>
-            <small>{copy.enabledHelp}</small>
-          </div>
-          <div className="settingsWebSearchControlCluster">
+      <Card padding={0} className="settingsRows settingsWebSearchCredentialCard">
+        <Item
+          className="settingsWebSearchEnableRow"
+          label={copy.enabled}
+          description={copy.enabledHelp}
+          align="start"
+          endContent={<div className="settingsWebSearchControlCluster">
             <div className="settingsWebSearchStatusCluster" role="group" aria-label={copy.statusAria}>
-              <Chip variant={statusCopy.tone}>
-                {statusCopy.label}
-              </Chip>
+              <Badge variant={statusBadgeVariant(statusCopy.tone)} label={statusCopy.label} />
               {hasCheckedAt && (
                 <small>
                   {copy.lastTest}<RelativeTime ts={checkedAtMs} />
@@ -251,113 +250,114 @@ export function WebSearchSettingsPage(props: {
               <small>{presentWebSearchCredentialSource(credentialSource, hasStoredKey, copy)}</small>
             </div>
             <Switch
-              ariaLabel={copy.enabledAria}
-              checked={webSearch.enabled}
-              disabled={!hasUsableKey || pendingWebSearchEnabled}
+              label={copy.enabledAria}
+              isLabelHidden
+              value={webSearch.enabled}
+              isDisabled={!hasUsableKey || pendingWebSearchEnabled}
               onChange={(enabled) => void setEnabled(enabled)}
             />
-          </div>
-        </div>
+          </div>}
+        />
 
-        <div className="settingsRow settingsWebSearchKeyRow">
-          <div>
-            <strong>{copy.key}</strong>
-            <small>
+        <Item
+          className="settingsWebSearchKeyRow"
+          label={copy.key}
+          description={(
+            <>
               {usingEnvKey
                 ? copy.envKeyHelp
                 : <>{copy.savedKeyHelp} <a href="https://tavily.com" target="_blank" rel="noreferrer noopener">tavily.com</a></>}
-            </small>
-          </div>
-          <PasswordInput
-            value={draftKey}
-            onChange={setDraftKey}
-            disabled={usingEnvKey || credentialActionBusy}
-            placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
-            ariaLabel={copy.keyAria}
-          />
-        </div>
+            </>
+          )}
+          endContent={<div className="settingsWebSearchKeyField">
+            <PasswordInput
+              value={draftKey}
+              onChange={setDraftKey}
+              isDisabled={usingEnvKey || credentialActionBusy}
+              placeholder={usingEnvKey ? copy.envPlaceholder : hasStoredKey ? copy.storedPlaceholder : copy.keyPlaceholder}
+              label={copy.keyAria}
+              isLabelHidden
+            />
+          </div>}
+        />
 
-        <div className="settingsRow settingsWebSearchCredentialActionRow">
-          <div>
-            <strong>{copy.actions}</strong>
-            <small>{copy.actionsHelp}</small>
-          </div>
-          <div className="settingsActionRow settingsWebSearchActionButtons">
+        <Item
+          className="settingsWebSearchCredentialActionRow"
+          label={copy.actions}
+          description={copy.actionsHelp}
+          align="start"
+          endContent={<div className="settingsActionRow settingsWebSearchActionButtons">
             <Button
-              type="button"
-              disabled={credentialActionBusy || usingEnvKey || draftKey.length === 0}
+              variant="primary"
+              isDisabled={credentialActionBusy || usingEnvKey || draftKey.length === 0}
               onClick={() => void saveDraftKey()}
-            >
-              {pendingCredentialAction === 'save' ? copy.saving : copy.saveKey}
-            </Button>
+              label={pendingCredentialAction === 'save' ? copy.saving : copy.saveKey}
+            />
             <Button
-              type="button"
               variant="secondary"
-              disabled={credentialActionBusy || (draftKey.length === 0 && !hasUsableKey)}
+              isDisabled={credentialActionBusy || (draftKey.length === 0 && !hasUsableKey)}
               onClick={() => void runTest()}
-            >
-              {testing ? copy.testing : copy.testKey}
-            </Button>
+              label={testing ? copy.testing : copy.testKey}
+            />
             {hasStoredKey && (
               <Button
-                type="button"
                 variant="ghost"
-                disabled={credentialActionBusy}
+                isDisabled={credentialActionBusy}
                 onClick={() => void clearKey()}
-              >
-                {pendingCredentialAction === 'clear' ? copy.clearing : copy.clearKey}
-              </Button>
+                label={pendingCredentialAction === 'clear' ? copy.clearing : copy.clearKey}
+              />
             )}
-          </div>
-        </div>
-      </SettingsRows>
+          </div>}
+        />
+      </Card>
 
-      <SettingsRows className="settingsWebSearchQueryCard">
-        <div className="settingsRow settingsWebSearchQueryIntroRow">
-          <div>
-            <strong>{copy.liveTitle}</strong>
-            <small>{copy.liveHelp}</small>
-          </div>
-        </div>
-        <div className="settingsRow settingsWebSearchQueryInputRow">
-          <div>
-            <strong>{copy.query}</strong>
-            <small>{copy.queryHelp}</small>
-          </div>
-          <Input
-            value={liveQuery}
-            onChange={(event) => updateLiveQuery(event.currentTarget.value)}
-            placeholder={copy.queryPlaceholder}
-            aria-label={copy.queryAria}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !liveQueryRunning) {
-                event.preventDefault();
-                void runLiveQuery();
-              }
-            }}
-          />
-        </div>
-        <div className="settingsRow settingsWebSearchSearchRow">
-          <div>
-            <strong>{copy.execute}</strong>
-            <small>{copy.executeHelp}</small>
-          </div>
-          <div className="settingsWebSearchSearchControls">
+      <Card padding={0} className="settingsRows settingsWebSearchQueryCard">
+        <Item
+          className="settingsWebSearchQueryIntroRow"
+          label={copy.liveTitle}
+          description={copy.liveHelp}
+        />
+        <Item
+          className="settingsWebSearchQueryInputRow"
+          label={copy.query}
+          description={copy.queryHelp}
+          endContent={<div className="settingsWebSearchQueryField">
+            <TextInput
+              value={liveQuery}
+              onChange={(value) => updateLiveQuery(value)}
+              placeholder={copy.queryPlaceholder}
+              label={copy.queryAria}
+              isLabelHidden
+              width="100%"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !liveQueryRunning) {
+                  event.preventDefault();
+                  void runLiveQuery();
+                }
+              }}
+            />
+          </div>}
+        />
+        <Item
+          className="settingsWebSearchSearchRow"
+          label={copy.execute}
+          description={copy.executeHelp}
+          align="start"
+          endContent={<div className="settingsWebSearchSearchControls">
             <Button
-              type="button"
-              disabled={liveQueryRunning || queryDisabledReason !== null}
+              variant="primary"
+              isDisabled={liveQueryRunning || queryDisabledReason !== null}
               onClick={() => void runLiveQuery()}
-            >
-              {liveQueryRunning ? copy.searching : copy.search}
-            </Button>
+              label={liveQueryRunning ? copy.searching : copy.search}
+            />
             {!liveQueryRunning && queryDisabledReason && (
               <small className="settingsWebSearchDisabledReason">
                 {queryDisabledReason}
               </small>
             )}
-          </div>
-        </div>
-      </SettingsRows>
+          </div>}
+        />
+      </Card>
 
       {liveQueryError && (
         <div className="settingsConnectionMeta" role="alert">

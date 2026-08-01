@@ -90,7 +90,9 @@ describe('SQLite recovery persistence authority', () => {
       JSON.stringify(dispatch),
       dispatch.ts,
     );
-    db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
+    db.exec(
+      'DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+    );
     db.close();
 
     try {
@@ -184,7 +186,9 @@ describe('SQLite recovery persistence authority', () => {
       'legacy-completed-response',
       2,
     );
-    db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
+    db.exec(
+      'DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+    );
     db.close();
 
     try {

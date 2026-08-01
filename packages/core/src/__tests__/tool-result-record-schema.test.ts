@@ -102,6 +102,80 @@ describe('sandbox denial tool result metadata', () => {
   });
 });
 
+describe('sandbox boundary failure tool result metadata', () => {
+  test('preserves the machine-readable reason and exact required expansion', () => {
+    const result = {
+      kind: 'text',
+      text: 'Bash requires an approved session sandbox boundary expansion.',
+      sandboxFailure: {
+        reason: 'sandbox_boundary_required',
+        requiredExpansion: { network: { enabled: true } },
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
+    assert.deepEqual(
+      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      result,
+    );
+  });
+
+  test('rejects malformed or widened boundary failure signals', () => {
+    for (const sandboxFailure of [
+      { reason: 'sandbox_denial' },
+      { reason: 'requires_bypass', unexpected: true },
+      { reason: 'sandbox_boundary_required', requiredExpansion: {} },
+    ]) {
+      assert.throws(
+        () =>
+          decodeCanonicalToolResultContent({
+            kind: 'text',
+            text: 'denied',
+            sandboxFailure,
+          }),
+        /Invalid tool result content/,
+      );
+    }
+  });
+});
+
+describe('uncertain tool outcome metadata', () => {
+  test('preserves a non-retryable outcome_unknown signal', () => {
+    const result = {
+      kind: 'text',
+      text: 'outcome_unknown: the provider accepted the action but did not return a result.',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    } as const;
+
+    assert.deepEqual(decodeCanonicalToolResultContent(result), result);
+    assert.deepEqual(
+      toolResultContent(decodeStoredMessageForRecovery(storedToolResult(result))),
+      result,
+    );
+  });
+
+  test('rejects widened or retryable uncertain outcome signals', () => {
+    for (const uncertainOutcome of [
+      { code: 'outcome_unknown', retrySafe: true },
+      { code: 'provider_failed', retrySafe: false },
+      { code: 'outcome_unknown', retrySafe: false, unexpected: true },
+    ]) {
+      assert.throws(
+        () =>
+          decodeCanonicalToolResultContent({
+            kind: 'text',
+            text: 'uncertain',
+            uncertainOutcome,
+          }),
+        /Invalid tool result content/,
+      );
+    }
+  });
+});
+
 function legacySubagentResult(): Record<string, unknown> {
   return {
     kind: 'subagent',

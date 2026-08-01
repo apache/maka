@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useMemo, useRef, type ReactNode } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import {
   AlertTriangle,
   ArrowDown,
@@ -26,10 +25,9 @@ import type {
   StoredMessage,
 } from '@maka/core';
 import { isDeepResearchSession } from '@maka/core';
+import { Button, ChatMessage, ChatMessageList, EmptyState, IconButton } from '@astryxdesign/core';
 import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
-import { Message } from './primitives/chat.js';
-import { EmptyState } from './empty-state.js';
 import {
   ModelContinuingIndicator,
   ModelProviderRetryIndicator,
@@ -367,9 +365,11 @@ export function ChatView(props: {
             permission-mode chips — the picker lives inside the composer's
             left controls so the new-session screen and active-session
             screen share the same "create / pick mode / send" rhythm. */}
-        <header className="maka-chat-header" data-empty="true">
-          <span className="maka-chat-header-spacer" />
-        </header>
+        {/* No status strip on the empty-session screen: it has no session, so
+            none of the chips (memory / deep-research / goal) can apply. The
+            header used to be rendered here anyway, holding a lone spacer, to
+            occupy the window titlebar line — which the shell's titlebar row now
+            owns. */}
         <OverlayScrollArea
           className="maka-chat messages"
           viewportClassName="maka-chatViewport"
@@ -393,21 +393,22 @@ export function ChatView(props: {
           just a thin chrome strip carrying the permission-mode
           switcher and the per-session memory/mode chips. */}
       <header className="maka-chat-header">
-        <span className="maka-chat-header-spacer" />
         {props.memoryActive && (
           /* This status pill is a semantic header control rather than a
              shared Button size or neutral variant. */
-          <BaseButton
+          <Button
             type="button"
+            label={copy.memoryAriaLabel}
+            variant="ghost"
+            size="sm"
             className="maka-chat-header-memory-pill"
             data-active="true"
             onClick={() => props.onOpenMemorySettings?.()}
-            title={copy.memoryTitle}
-            aria-label={copy.memoryAriaLabel}
+            tooltip={copy.memoryTitle}
+            icon={<BookOpen size={12} aria-hidden="true" />}
           >
-            <BookOpen size={12} aria-hidden="true" />
-            <span>{copy.memory}</span>
-          </BaseButton>
+            {copy.memory}
+          </Button>
         )}
         {deepResearchActive && (
           <span
@@ -424,17 +425,19 @@ export function ChatView(props: {
           /* Goal kill-switch pill: an active autonomous loop must be visible and
              stoppable. Reuses the mode-pill styling; clicking it clears the goal
              (the shell confirms), so the user always has a one-click stop. */
-          <BaseButton
+          <Button
             type="button"
+            label={copy.clearGoalAriaLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}
+            variant="ghost"
+            size="sm"
             className="maka-chat-header-mode-pill"
             data-mode="goal"
             onClick={() => props.goalIndicator?.onClear()}
-            title={copy.clearGoal(props.goalIndicator.condition, props.goalIndicator.iterations, props.goalIndicator.maxIterations, props.goalIndicator.status)}
-            aria-label={copy.clearGoalAriaLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}
+            tooltip={copy.clearGoal(props.goalIndicator.condition, props.goalIndicator.iterations, props.goalIndicator.maxIterations, props.goalIndicator.status)}
+            icon={<Target size={12} aria-hidden="true" />}
           >
-            <Target size={12} aria-hidden="true" />
-            <span>{copy.goalLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}</span>
-          </BaseButton>
+            {copy.goalLabel(props.goalIndicator.iterations, props.goalIndicator.maxIterations)}
+          </Button>
         )}
         {/* PR-MOVE-PERMISSION-MODE: switcher relocated into the
             composer left-controls. Header keeps the per-session status
@@ -467,20 +470,27 @@ export function ChatView(props: {
           contentClassName="maka-chatContent"
           onScroll={onScroll}
         >
+          <ChatMessageList
+            className="maka-chat-message-list"
+            density="compact"
+            gap={4}
+            isStreaming={streamingActive}
+          >
           {chat.length === 0 && !streamingActive && (
             props.messageLoading ? null : props.messageLoadError ? (
-              <div role="alert" aria-busy={props.messageLoadRetryPending ? 'true' : undefined}>
-                <EmptyState
-                  Icon={AlertTriangle}
-                  title={copy.loadFailed}
-                  body={props.messageLoadError}
-                  cta={props.onRetryMessages ? {
-                    label: props.messageLoadRetryPending ? copy.loading : copy.retryLoad,
-                    onClick: props.onRetryMessages,
-                    disabled: props.messageLoadRetryPending,
-                  } : undefined}
-                />
-              </div>
+              <EmptyState
+                role="alert"
+                aria-busy={props.messageLoadRetryPending ? 'true' : undefined}
+                icon={<AlertTriangle />}
+                title={copy.loadFailed}
+                description={props.messageLoadError}
+                actions={props.onRetryMessages ? <Button
+                  label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad}
+                  variant="primary"
+                  onClick={props.onRetryMessages}
+                  isDisabled={props.messageLoadRetryPending}
+                /> : undefined}
+              />
             ) : props.emptyOverride ?? (
               deepResearchActive ? (
                 <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
@@ -536,7 +546,7 @@ export function ChatView(props: {
               `tailTurnId` is undefined), so the answer never double-renders. */}
           {streamingActive && !tailTurnId && (
             <section className="maka-turn" data-live-streaming="true">
-              <Message variant="assistant" className="group/answer">
+              <ChatMessage sender="assistant" className="maka-chat-message group/answer">
                 <div className="flex flex-col gap-2">
                   {props.liveTurn?.providerRetry ? (
                     <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
@@ -548,7 +558,7 @@ export function ChatView(props: {
                   )}
                 </div>
                 <div aria-hidden="true" className="mt-0.5 h-8" />
-              </Message>
+              </ChatMessage>
             </section>
           )}
           {props.conversationItems
@@ -559,17 +569,19 @@ export function ChatView(props: {
               still appear instead of vanishing. materializeTurns already
               folds these into the `__loose` turn, so this is normally a
               no-op. */}
+          </ChatMessageList>
         </OverlayScrollArea>
         <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
         {!pinnedToBottom && (
-          <BaseButton
+          <IconButton
             type="button"
+            label={copy.jumpLatest}
+            icon={<ArrowDown size={16} aria-hidden="true" />}
+            variant="secondary"
+            elevation="med"
             className="maka-chat-jump-bottom"
             onClick={scrollToBottom}
-            aria-label={copy.jumpLatest}
-          >
-            <ArrowDown size={16} aria-hidden="true" />
-          </BaseButton>
+          />
         )}
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
           <div
@@ -663,15 +675,16 @@ export function DeepResearchProgressPanel({
             {completedItems}/{run.checklist.length}
           </span>
           {run.status === 'completed' && onContinue && (
-            <BaseButton
+            <Button
               type="button"
+              label={copy.handoffAction}
+              endContent={<ArrowRight size={12} aria-hidden="true" />}
+              variant="secondary"
+              size="sm"
               className="maka-deep-research-handoff-button"
               onClick={() => onContinue(run)}
-              title={copy.handoffTitle}
-            >
-              <span>{copy.handoffAction}</span>
-              <ArrowRight size={12} aria-hidden="true" />
-            </BaseButton>
+              tooltip={copy.handoffTitle}
+            />
           )}
         </div>
       </div>
@@ -743,7 +756,7 @@ export function DeepResearchProgressPanel({
 
 // PR-MOVE-PERMISSION-MODE: the chat-header `PermissionModeSwitcher`
 // radiogroup was deleted. Mode picking now lives inside the composer's
-// left-controls as a Base UI Select (PermissionModeSelect), so the picker
+// left-controls as a shared Select (PermissionModeSelect), so the picker
 // sits where you actually start typing, matching the reference product.
 // Keyboard arrow/Home/End handling is delegated to the Select primitive.
 
@@ -772,28 +785,30 @@ function SessionRevisionNavigator(props: {
     >
       <History size={12} aria-hidden="true" />
       <span>{copy.revisionVersion(navigation.current, navigation.total)}</span>
-      <BaseButton
+      <IconButton
         type="button"
+        label={copy.previousRevision}
+        icon={<ChevronLeft size={13} aria-hidden="true" />}
+        variant="ghost"
+        size="sm"
         className="maka-session-revision-nav-action"
-        disabled={!navigation.previousSessionId}
-        aria-label={copy.previousRevision}
+        isDisabled={!navigation.previousSessionId}
         onClick={() => {
           if (navigation.previousSessionId) props.onNavigate?.(navigation.previousSessionId);
         }}
-      >
-        <ChevronLeft size={13} aria-hidden="true" />
-      </BaseButton>
-      <BaseButton
+      />
+      <IconButton
         type="button"
+        label={copy.nextRevision}
+        icon={<ChevronRight size={13} aria-hidden="true" />}
+        variant="ghost"
+        size="sm"
         className="maka-session-revision-nav-action"
-        disabled={!navigation.nextSessionId}
-        aria-label={copy.nextRevision}
+        isDisabled={!navigation.nextSessionId}
         onClick={() => {
           if (navigation.nextSessionId) props.onNavigate?.(navigation.nextSessionId);
         }}
-      >
-        <ChevronRight size={13} aria-hidden="true" />
-      </BaseButton>
+      />
     </div>
   );
 }
@@ -809,17 +824,19 @@ function SessionBranchBanner(props: {
   const { banner } = props;
   const copy = getConversationCopy(useUiLocale()).chat;
   return (
-    <BaseButton
+    <Button
       type="button"
+      label={copy.branchTitle(banner.parentSessionName, Boolean(banner.fromAbortedTurn))}
+      icon={<GitBranch size={12} aria-hidden="true" />}
+      variant="ghost"
+      size="sm"
       className="maka-session-branch-banner"
       data-from-aborted={banner.fromAbortedTurn || undefined}
       onClick={() => props.onClick?.(banner.parentSessionId)}
-      aria-label={copy.branchTitle(banner.parentSessionName, Boolean(banner.fromAbortedTurn))}
     >
-      <GitBranch size={12} aria-hidden="true" />
       <span>
         {copy.branchLabel(banner.parentSessionName, Boolean(banner.fromAbortedTurn))}
       </span>
-    </BaseButton>
+    </Button>
   );
 }

@@ -14,7 +14,7 @@ import {
   type HistoryCompactWriteInput,
 } from '@maka/runtime';
 import {
-  createArtifactStore,
+  createSqliteArtifactStore,
   type ArtifactStore,
 } from '@maka/storage';
 import {
@@ -113,8 +113,9 @@ describe('desktop history compact artifact lifecycle', () => {
           { code: 'ENOENT' },
         );
       }
-      const metadata = await readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl'), 'utf8');
-      assert.equal(metadata, '');
+      await assert.rejects(() => readFile(join(workspaceRoot, 'artifacts', 'metadata.jsonl')), {
+        code: 'ENOENT',
+      });
     });
   });
 
@@ -474,7 +475,7 @@ async function withStore(
 ): Promise<void> {
   const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-history-compact-artifacts-'));
   try {
-    await fn(createArtifactStore(workspaceRoot), workspaceRoot);
+    await fn(createSqliteArtifactStore(workspaceRoot), workspaceRoot);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

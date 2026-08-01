@@ -948,6 +948,7 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
   return {
     session: {
       sessionId,
+      metadataRevision: 1,
       status: 'running',
       createdAt: 1,
       lastUsedAt: 1,

@@ -1,20 +1,21 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   BackendRegistry,
   FakeBackend,
-  PermissionEngine,
   PiAgentBackend,
   type AgentBackend,
   type PiAgentTransport,
   type SessionStore,
 } from '@maka/runtime';
 import type { BackendKind, SessionEvent, SessionHeader } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore, openRuntimeEventReadPersistence } from '@maka/storage';
 import type { Config, Task } from '../contracts.js';
 import type { HeadlessBackendContext } from '../isolation.js';
 import { runExperiment } from '../runner.js';
@@ -38,7 +39,6 @@ function registerTestPiAgentBackend(
         header: ctx.header,
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        permissionEngine: new PermissionEngine({ newId: () => 'perm-id', now: () => 123 }),
         transport: transportFactory({ header: ctx.header, store: ctx.store }),
       }),
   );
@@ -76,7 +76,7 @@ class TamperBackend implements AgentBackend {
     yield { type: 'complete', id: 'tamper-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -116,7 +116,7 @@ class FailingBackend implements AgentBackend {
     yield { type: 'complete', id: 'fail-c', turnId, ts, stopReason: 'error' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -159,7 +159,7 @@ class IsolatedRealBackend implements AgentBackend {
     yield { type: 'complete', id: 'isolated-real-c', turnId, ts, stopReason: 'end_turn' };
   }
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -203,18 +203,6 @@ const piConfig: Config = {
   model: 'pi-test',
 };
 
-async function fileExistsRecursive(root: string, name: string): Promise<boolean> {
-  for (const entry of await readdir(root, { withFileTypes: true })) {
-    const full = join(root, entry.name);
-    if (entry.isDirectory()) {
-      if (await fileExistsRecursive(full, name)) return true;
-    } else if (entry.name === name) {
-      return true;
-    }
-  }
-  return false;
-}
-
 async function withDirs<T>(
   fn: (fixtureDir: string, storageRoot: string) => Promise<T>,
 ): Promise<T> {
@@ -254,11 +242,24 @@ describe('runExperiment (walking skeleton)', () => {
       assert.equal(result.agentSwarmAuthorization, 'none');
       // The agent run produced a trajectory...
       assert.ok(result.steps > 0, 'expected a non-empty trajectory');
-      // ...persisted as the canonical runtime-events.jsonl.
-      assert.ok(
-        await fileExistsRecursive(storageRoot, 'runtime-events.jsonl'),
-        'expected runtime-events.jsonl under the storage root',
-      );
+      // ...persisted in the canonical SQLite RuntimeEvent ledger.
+      const runtimePersistence = await openRuntimeEventReadPersistence({
+        workspaceRoot: storageRoot,
+      });
+      try {
+        assert.equal(runtimePersistence.kind, 'sqlite');
+        assert.ok(
+          (
+            await runtimePersistence.runtimeEventStore.readRuntimeEvents(
+              result.sessionId,
+              result.runId,
+            )
+          ).length > 0,
+          'expected RuntimeEvents in runtime.sqlite',
+        );
+      } finally {
+        runtimePersistence.close();
+      }
     });
   });
 
@@ -423,6 +424,15 @@ describe('fail-closed (a model-backed backend does not run without isolation)', 
       assert.equal(typeof contexts[0]?.listChildAgents, 'function');
       assert.equal(typeof contexts[0]?.readChildAgentOutput, 'function');
       assert.ok(Array.isArray((await contexts[0]!.listChildAgents!(result.sessionId)).definitions));
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 
@@ -531,7 +541,7 @@ describe('failed runs surface as an error (not a silent ⚠️ + exit 0)', () =>
         yield { type: 'complete', id: 'bare-err-c', turnId, ts, stopReason: 'error' };
       }
       async stop(): Promise<void> {}
-      async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+      async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
       async dispose(): Promise<void> {}
     }
     await withDirs(async (fixtureDir, storageRoot) => {
@@ -793,7 +803,7 @@ describe('Config.systemPrompt (benchmark config variable, not session state)', (
       yield { type: 'complete', id: 'capture-c', turnId, ts, stopReason: 'end_turn' };
     }
     async stop(): Promise<void> {}
-    async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+    async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
     async dispose(): Promise<void> {}
   }
 

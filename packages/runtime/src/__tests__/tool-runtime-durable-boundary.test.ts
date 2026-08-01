@@ -1,7 +1,8 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
-import { PermissionEngine } from '../permission-engine.js';
+import { ToolOutcomeUnknownError } from '@maka/core/events';
 import type {
   RuntimeCommitSink,
   ToolOutcomeCommit,
@@ -205,43 +206,6 @@ describe('ToolRuntime durable boundary', () => {
     });
   });
 
-  it('does not create a prepared journal operation when permission is denied', async () => {
-    let preparedCalls = 0;
-    let implementationCalls = 0;
-    const harness = makeHarness({
-      commitToolPrepared: async () => {
-        preparedCalls += 1;
-        return { created: true, runtimeEventSeq: 1 };
-      },
-      commitToolOutcome: async () => {
-        throw new Error('must not reach T2');
-      },
-    });
-    const execution = harness.execute({
-      ...tool(() => {
-        implementationCalls += 1;
-        return { ok: true };
-      }),
-      name: 'Bash',
-      permissionRequired: true,
-    });
-    while (!harness.events.some((event) => event.type === 'permission_request')) {
-      await Promise.resolve();
-    }
-    const request = harness.events.find((event) => event.type === 'permission_request');
-    if (!request || request.type !== 'permission_request')
-      throw new Error('expected permission request');
-    harness.permissionEngine.recordResponse('turn-1', {
-      requestId: request.requestId,
-      decision: 'deny',
-    });
-
-    await execution;
-
-    assert.equal(preparedCalls, 0);
-    assert.equal(implementationCalls, 0);
-  });
-
   it('does not publish an implementation result when T2 fails', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
@@ -296,6 +260,47 @@ describe('ToolRuntime durable boundary', () => {
       true,
     );
   });
+
+  it('commits outcome_unknown as a structured non-retryable tool failure', async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const uncertain = tool(() => {
+      throw new ToolOutcomeUnknownError('Provider disconnected after accepting the action');
+    });
+    uncertain.recoveryMode = 'never_auto_retry';
+
+    const result = await harness.execute(uncertain);
+
+    assert.deepEqual(result, {
+      error: 'outcome_unknown: Provider disconnected after accepting the action',
+    });
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.equal(response?.kind, 'function_response');
+    assert.equal(response?.kind === 'function_response' && response.isError, true);
+    assert.deepEqual(response?.kind === 'function_response' ? response.result : undefined, {
+      kind: 'text',
+      text: 'outcome_unknown: Provider disconnected after accepting the action',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    });
+    const message = harness.messages.find((candidate) => candidate.type === 'tool_result');
+    assert.deepEqual(message?.type === 'tool_result' ? message.content : undefined, {
+      kind: 'text',
+      text: 'outcome_unknown: Provider disconnected after accepting the action',
+      uncertainOutcome: {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      },
+    });
+  });
 });
 
 function makeHarness(
@@ -305,9 +310,7 @@ function makeHarness(
 ) {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
-  const runtime = new ToolRuntime({
+  const runtime = createTestToolRuntime({
     sessionId: 'session-1',
     header: header(),
     connection: connection(),
@@ -315,7 +318,6 @@ function makeHarness(
     appendMessage: async (message) => {
       messages.push(message);
     },
-    permissionEngine,
     newId: nextId(),
     now: nextNow(),
     getPermissionPauseTarget: () => null,
@@ -325,7 +327,6 @@ function makeHarness(
   return {
     messages,
     events,
-    permissionEngine,
     execute: async (target: MakaTool, abortSignal: AbortSignal = new AbortController().signal) =>
       (
         await runtime.settleToolCall({
@@ -354,7 +355,6 @@ function tool(impl: MakaTool['impl']): MakaTool {
     name: 'Read',
     description: 'read',
     parameters: {},
-    permissionRequired: false,
     recoveryMode: 'replay_safe',
     impl,
   };

@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
 import { CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
-import { SettingsSelect } from './primitives/settings-select.js';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
@@ -20,11 +18,22 @@ import {
   formatDailyReviewMarkdown,
   formatDailyReviewModelLabel,
 } from './daily-review-helpers.js';
-import { Button as UiButton } from './ui.js';
-import { Chip, type ChipProps } from './primitives/chip.js';
-import { Segmented } from './primitives/segmented.js';
-import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
-import { EmptyState } from './empty-state.js';
+import {
+  Badge,
+  Banner,
+  type BadgeProps,
+  Button as UiButton,
+  Collapsible,
+  CollapsibleGroup,
+  EmptyState,
+  IconButton,
+  Item,
+  SegmentedControl,
+  SegmentedControlItem,
+  Selector,
+  type SelectorOptionData,
+  Skeleton,
+} from '@astryxdesign/core';
 import { StatTile } from './primitives/stat-tile.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { PageHeader } from './primitives/page-header.js';
@@ -37,16 +46,16 @@ import { getDailyReviewCopy } from './daily-review-copy.js';
 
 type DailyReviewArchiveSectionKey = keyof DailyReviewArchive['sections'];
 
-const EMPTY_MODEL_OPTIONS: ReadonlyArray<readonly [string, string]> = [];
+const EMPTY_MODEL_OPTIONS: SelectorOptionData[] = [];
 
-// Archive-status Chip tone. ok = generated cleanly (success), failed /
+// Archive-status Badge tone. ok = generated cleanly (success), failed /
 // no_model = the run could not produce a report (destructive). no_data /
 // skipped are expected non-events and stay neutral (exception-only color).
-function dailyReviewArchiveChipTone(status: DailyReviewArchive['status']): ChipProps['variant'] {
+function dailyReviewArchiveBadgeVariant(status: DailyReviewArchive['status']): BadgeProps['variant'] {
   // Status-color restraint (#651 rule): 已生成 is the EXPECTED outcome —
   // neutral ink, matching 健康 正常 and 权限 已授权. Color stays reserved
   // for the failures that need attention.
-  if (status === 'failed' || status === 'no_model') return 'destructive';
+  if (status === 'failed' || status === 'no_model') return 'error';
   return 'neutral';
 }
 
@@ -79,7 +88,7 @@ export function DailyReviewPanel(props: {
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveReloadToken, setArchiveReloadToken] = useState(0);
   const modelOptions = useMemo(() => props.bridge.modelOptions ?? EMPTY_MODEL_OPTIONS, [props.bridge.modelOptions]);
-  const [selectedModelKey, setSelectedModelKey] = useState<string>(modelOptions[0]?.[0] ?? '');
+  const [selectedModelKey, setSelectedModelKey] = useState<string>(modelOptions[0]?.value ?? '');
   const dailyReviewMountedRef = useMountedRef();
   const summaryScopeKeyRef = useRef<string | null>(null);
   const pendingDailyReviewActionRef = useRef<string | null>(null);
@@ -102,7 +111,7 @@ export function DailyReviewPanel(props: {
     };
   }, []);
 
-  function chooseDailyReviewArchive(archiveId: string) {
+  function chooseDailyReviewArchive(archiveId: string | null) {
     archiveLoadRequestRef.current += 1;
     setSelectedArchiveId(archiveId);
     setSelectedArchive(null);
@@ -206,8 +215,8 @@ export function DailyReviewPanel(props: {
       return;
     }
     setSelectedModelKey((current) => {
-      if (modelOptions.some(([value]) => value === current)) return current;
-      return modelOptions[0]?.[0] ?? '';
+      if (modelOptions.some((option) => option.value === current)) return current;
+      return modelOptions[0]?.value ?? '';
     });
   }, [modelOptions]);
 
@@ -284,7 +293,6 @@ export function DailyReviewPanel(props: {
       <div className="maka-daily-review-actions" aria-label={copy.export.ariaLabel}>
         {props.onCopyMarkdown && (
           <UiButton
-            type="button"
             variant="secondary"
             size="sm"
             className="maka-daily-review-copy min-w-[4rem]"
@@ -292,17 +300,15 @@ export function DailyReviewPanel(props: {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onCopyMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
             })}
-            disabled={dailyReviewActionBusy}
+            isDisabled={dailyReviewActionBusy}
             data-pending={pendingDailyReviewAction === 'copy' ? 'true' : undefined}
             aria-busy={pendingDailyReviewAction === 'copy' ? 'true' : undefined}
-            title={copy.export.copyTitle}
-          >
-            {pendingDailyReviewAction === 'copy' ? copy.export.copying : copy.export.copy}
-          </UiButton>
+            tooltip={copy.export.copyTitle}
+            label={pendingDailyReviewAction === 'copy' ? copy.export.copying : copy.export.copy}
+          />
         )}
         {props.onAppendMarkdown && (
           <UiButton
-            type="button"
             variant="secondary"
             size="sm"
             className="maka-daily-review-append min-w-[5rem]"
@@ -310,17 +316,15 @@ export function DailyReviewPanel(props: {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onAppendMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
             })}
-            disabled={dailyReviewActionBusy}
+            isDisabled={dailyReviewActionBusy}
             data-pending={pendingDailyReviewAction === 'append' ? 'true' : undefined}
             aria-busy={pendingDailyReviewAction === 'append' ? 'true' : undefined}
-            title={copy.export.appendTitle}
-          >
-            {pendingDailyReviewAction === 'append' ? copy.export.appending : copy.export.append}
-          </UiButton>
+            tooltip={copy.export.appendTitle}
+            label={pendingDailyReviewAction === 'append' ? copy.export.appending : copy.export.append}
+          />
         )}
         {props.onSaveMarkdown && (
           <UiButton
-            type="button"
             variant="secondary"
             size="sm"
             className="maka-daily-review-save min-w-[4rem]"
@@ -328,13 +332,12 @@ export function DailyReviewPanel(props: {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onSaveMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
             })}
-            disabled={dailyReviewActionBusy}
+            isDisabled={dailyReviewActionBusy}
             data-pending={pendingDailyReviewAction === 'save' ? 'true' : undefined}
             aria-busy={pendingDailyReviewAction === 'save' ? 'true' : undefined}
-            title={copy.export.saveTitle}
-          >
-            {pendingDailyReviewAction === 'save' ? copy.export.saving : copy.export.save}
-          </UiButton>
+            tooltip={copy.export.saveTitle}
+            label={pendingDailyReviewAction === 'save' ? copy.export.saving : copy.export.save}
+          />
         )}
       </div>
     ) : null;
@@ -356,40 +359,36 @@ export function DailyReviewPanel(props: {
         actions={canManualRun ? (
           <div className="maka-daily-review-generate" role="group" aria-label={copy.page.generateAriaLabel}>
             {modelOptions.length > 0 && (
-              <SettingsSelect
+              <Selector
                 value={selectedModelKey}
-                ariaLabel={copy.page.analysisModel}
+                label={copy.page.analysisModel}
+                isLabelHidden
                 options={modelOptions}
                 onChange={setSelectedModelKey}
-                disabled={dailyReviewActionBusy}
-                width="compact"
-                className="maka-daily-review-model-select"
+                isDisabled={dailyReviewActionBusy}
+                width={140}
               />
             )}
             <UiButton
-              type="button"
-              variant="default"
+              variant="primary"
               size="sm"
               className="maka-daily-review-quick-run min-w-[6rem]"
               onClick={() => void triggerManualRun('daily')}
-              disabled={dailyReviewActionBusy}
+              isDisabled={dailyReviewActionBusy}
               data-pending={pendingDailyReviewAction === 'run:daily' ? 'true' : undefined}
               aria-busy={pendingDailyReviewAction === 'run:daily' ? 'true' : undefined}
-            >
-              {pendingDailyReviewAction === 'run:daily' ? copy.page.generating : copy.page.generateDaily}
-            </UiButton>
+              label={pendingDailyReviewAction === 'run:daily' ? copy.page.generating : copy.page.generateDaily}
+            />
             <UiButton
-              type="button"
               variant="secondary"
               size="sm"
               className="maka-daily-review-quick-run min-w-[6rem]"
               onClick={() => void triggerManualRun('deep')}
-              disabled={dailyReviewActionBusy}
+              isDisabled={dailyReviewActionBusy}
               data-pending={pendingDailyReviewAction === 'run:deep' ? 'true' : undefined}
               aria-busy={pendingDailyReviewAction === 'run:deep' ? 'true' : undefined}
-            >
-              {pendingDailyReviewAction === 'run:deep' ? copy.page.generating : copy.page.generateDeep}
-            </UiButton>
+              label={pendingDailyReviewAction === 'run:deep' ? copy.page.generating : copy.page.generateDeep}
+            />
           </div>
         ) : undefined}
       />
@@ -398,39 +397,38 @@ export function DailyReviewPanel(props: {
           segmented + the day-stepper are BOTH time navigation, so they form a
           single visual cluster (was two floating rows at opposite corners). */}
       <div className="maka-daily-review-scope" aria-label={copy.page.timeRange}>
-        <Segmented
+        <SegmentedControl
           value={String(range)}
-          options={copy.page.rangeOptions}
           onChange={(v) => {
             setRange(Number(v) as DailyReviewRange);
             setOffsetDays(0);
           }}
-          ariaLabel={copy.page.rangeSwitch}
+          label={copy.page.rangeSwitch}
           className="maka-daily-review-range-tabs"
-        />
+        >
+          {copy.page.rangeOptions.map(([value, label]) => (
+            <SegmentedControlItem key={value} value={value} label={label} />
+          ))}
+        </SegmentedControl>
         <div className="maka-daily-review-scope-stepper">
-          <UiButton
-            type="button"
+          <IconButton
             variant="ghost"
-            size="icon-sm"
+            size="sm"
             className="maka-daily-review-stepper"
             onClick={() => setOffsetDays((n) => n - range)}
-            aria-label={copy.date.earlier(stepperLabel)}
-          >
-            <ChevronLeft aria-hidden="true" />
-          </UiButton>
+            label={copy.date.earlier(stepperLabel)}
+            icon={<ChevronLeft aria-hidden="true" />}
+          />
           <div className="maka-daily-review-day">{dayLabel}</div>
-          <UiButton
-            type="button"
+          <IconButton
             variant="ghost"
-            size="icon-sm"
+            size="sm"
             className="maka-daily-review-stepper"
             onClick={() => setOffsetDays((n) => Math.min(0, n + range))}
-            disabled={offsetDays >= 0}
-            aria-label={copy.date.later(stepperLabel)}
-          >
-            <ChevronRight aria-hidden="true" />
-          </UiButton>
+            isDisabled={offsetDays >= 0}
+            label={copy.date.later(stepperLabel)}
+            icon={<ChevronRight aria-hidden="true" />}
+          />
         </div>
       </div>
 
@@ -440,36 +438,34 @@ export function DailyReviewPanel(props: {
       <section className="maka-daily-review-overview" aria-label={copy.overview.ariaLabel(dayLabel)}>
         <SectionHeader as="h4" accent title={copy.overview.title} action={overviewActions} />
         {error && visibleSummary ? (
-          <Alert variant="warning" className="maka-daily-review-alert">
-            <AlertDescription>{copy.overview.refreshFailed(error)}</AlertDescription>
-            <AlertAction>
-              <UiButton
-                type="button"
+          <Banner
+            status="warning"
+            className="maka-daily-review-alert"
+            title={copy.overview.refreshFailed(error)}
+            endContent={<UiButton
                 variant="ghost"
                 size="sm"
                 className="maka-daily-review-alert-retry"
                 onClick={() => setReloadToken((n) => n + 1)}
-                disabled={loading}
-              >
-                {copy.overview.retry}
-              </UiButton>
-            </AlertAction>
-          </Alert>
+                isDisabled={loading}
+                label={copy.overview.retry}
+              />}
+          />
         ) : null}
 
         {error && !visibleSummary ? (
           <EmptyState
-            Icon={CalendarDays}
+            icon={<CalendarDays />}
             title={copy.overview.readFailed}
-            body={error}
-            cta={{ label: copy.overview.retry, onClick: () => setReloadToken((n) => n + 1) }}
-            extraClassName="maka-daily-review-summary-empty"
+            description={error}
+            actions={<UiButton variant="primary" label={copy.overview.retry} onClick={() => setReloadToken((n) => n + 1)} />}
+            className="maka-daily-review-summary-empty"
           />
         ) : !visibleSummary ? (
           <div className="maka-daily-review-loading" aria-busy="true">
-            <div className="maka-skeleton maka-skeleton-line" style={{ width: '60%' }} />
-            <div className="maka-skeleton maka-skeleton-line" style={{ width: '90%' }} />
-            <div className="maka-skeleton maka-skeleton-line" style={{ width: '75%' }} />
+            <Skeleton width="60%" height={12} radius="rounded" index={0} />
+            <Skeleton width="90%" height={12} radius="rounded" index={1} />
+            <Skeleton width="75%" height={12} radius="rounded" index={2} />
           </div>
         ) : (
           <>
@@ -477,7 +473,7 @@ export function DailyReviewPanel(props: {
               <DailyReviewTotalsCell label={copy.overview.conversations} value={visibleSummary.totals.sessionCount.toString()} />
               <DailyReviewTotalsCell label={copy.overview.requests} value={visibleSummary.totals.requestCount.toString()} />
               <DailyReviewTotalsCell
-                label="Token"
+                label={copy.overview.tokens}
                 value={visibleSummary.totals.totalTokens.toLocaleString(intlLocale)}
               />
               <DailyReviewTotalsCell
@@ -494,7 +490,7 @@ export function DailyReviewPanel(props: {
             </div>
 
             {visibleSummary.totals.sessionCount === 0 && visibleSummary.totals.requestCount === 0 ? (
-              <EmptyState variant="inline" title={emptyOverviewTitle} body={emptyOverviewBody} />
+              <p className="maka-daily-review-inline-empty">{emptyOverviewTitle} · {emptyOverviewBody}</p>
             ) : (
               <>
                 {visibleSummary.sessions.length > 0 && (
@@ -502,27 +498,22 @@ export function DailyReviewPanel(props: {
                     <SectionHeader as="h4" accent title={copy.overview.activeConversations} />
                     <ul className="maka-daily-review-list" aria-label={copy.overview.activeConversationList}>
                       {visibleSummary.sessions.map((session) => (
-                        <li key={session.id} className="maka-daily-review-list-item">
-                          {/* Active-conversation rows are composite navigation
-                              controls. Their semantic row seam owns layout and state;
-                              they are not a shared Button size or variant. */}
-                          <BaseButton
-                            type="button"
-                            className="maka-daily-review-session-button"
+                        <li key={session.id}>
+                          <Item
+                            density="compact"
                             onClick={() => props.onSelectSession?.(session.id)}
-                            disabled={!props.onSelectSession}
-                          >
-                            <span className="maka-daily-review-session-name">{session.name}</span>
-                            <RelativeTime
+                            isDisabled={!props.onSelectSession}
+                            label={<span className="maka-daily-review-session-name">{session.name}</span>}
+                            description={session.lastMessagePreview ? (
+                              <span className="maka-daily-review-session-preview">
+                                {session.lastMessagePreview}
+                              </span>
+                            ) : undefined}
+                            endContent={<RelativeTime
                               ts={session.lastMessageAt}
                               className="maka-daily-review-session-time"
-                            />
-                          </BaseButton>
-                          {session.lastMessagePreview && (
-                            <span className="maka-daily-review-session-preview">
-                              {session.lastMessagePreview}
-                            </span>
-                          )}
+                            />}
+                          />
                         </li>
                       ))}
                     </ul>
@@ -557,41 +548,42 @@ export function DailyReviewPanel(props: {
             count={<span className="maka-daily-review-archive-count">{copy.reports.count(archives.length)}</span>}
           />
           {archiveError && (
-            <Alert variant="warning" className="maka-daily-review-alert">
-              <AlertDescription>{copy.reports.readFailed(archiveError)}</AlertDescription>
-              <AlertAction>
-                <UiButton
-                  type="button"
+            <Banner
+              status="warning"
+              className="maka-daily-review-alert"
+              title={copy.reports.readFailed(archiveError)}
+              endContent={<UiButton
                   variant="ghost"
                   size="sm"
                   className="maka-daily-review-alert-retry"
                   onClick={() => setArchiveReloadToken((n) => n + 1)}
-                  disabled={archiveLoading}
-                >
-                  {copy.overview.retry}
-                </UiButton>
-              </AlertAction>
-            </Alert>
+                  isDisabled={archiveLoading}
+                  label={copy.overview.retry}
+                />}
+            />
           )}
           {archives.length === 0 && !archiveError ? (
             <EmptyState
-              Icon={CalendarDays}
+              icon={<CalendarDays />}
               title={copy.reports.emptyTitle}
-              body={copy.reports.emptyBody}
-              cta={canManualRun ? {
-                label: copy.page.generateDaily,
-                onClick: () => void triggerManualRun('daily'),
-                disabled: dailyReviewActionBusy,
-              } : undefined}
-              extraClassName="maka-daily-review-summary-empty"
+              description={copy.reports.emptyBody}
+              actions={canManualRun ? <UiButton variant="primary" label={copy.page.generateDaily} onClick={() => void triggerManualRun('daily')} isDisabled={dailyReviewActionBusy} /> : undefined}
+              className="maka-daily-review-summary-empty"
             />
           ) : (
-            <ul className="maka-daily-review-report-list" aria-label={copy.reports.historyAriaLabel}>
+            <CollapsibleGroup
+              type="single"
+              value={selectedArchiveId ?? ''}
+              onChange={(value) => chooseDailyReviewArchive(typeof value === 'string' && value ? value : null)}
+              hasDividers
+              density="balanced"
+              role="list"
+              aria-label={copy.reports.historyAriaLabel}
+            >
               {archives.map((archive) => {
-                const selected = selectedArchiveId === archive.id;
                 // Status color is exception-only (#651): 已生成 / 无数据 / 已跳过
                 // are EXPECTED outcomes and stay as muted prose meta. Only a
-                // failed / no_model run raises a colored Chip that needs eyes.
+                // failed / no_model run raises a colored Badge that needs eyes.
                 const exceptional = archive.status === 'failed' || archive.status === 'no_model';
                 const meta = [
                   copy.archive.sessionCount(archive.totals.sessionCount),
@@ -599,14 +591,12 @@ export function DailyReviewPanel(props: {
                   archive.modelKey ? formatDailyReviewModelLabel(archive.modelKey) : copy.archive.defaultModel,
                 ].join(' · ');
                 return (
-                  <li key={archive.id}>
-                    <article className="maka-daily-review-report" data-selected={selected ? '' : undefined}>
-                      <button
-                        type="button"
-                        className="maka-daily-review-report-head"
-                        onClick={() => chooseDailyReviewArchive(archive.id)}
-                        aria-expanded={selected}
-                      >
+                  <Collapsible
+                    key={archive.id}
+                    value={archive.id}
+                    role="listitem"
+                    trigger={(
+                      <span className="maka-daily-review-report-trigger">
                         <span className="maka-daily-review-report-heading">
                           <span className="maka-daily-review-report-title">
                             {formatDailyReviewArchiveTitle(archive, locale)}
@@ -614,24 +604,21 @@ export function DailyReviewPanel(props: {
                           <span className="maka-daily-review-archive-row-meta">{meta}</span>
                         </span>
                         {exceptional && (
-                          <Chip
-                            size="sm"
-                            variant={dailyReviewArchiveChipTone(archive.status)}
+                          <Badge
+                            variant={dailyReviewArchiveBadgeVariant(archive.status)}
                             className="maka-daily-review-report-status"
                             data-status={archive.status}
-                          >
-                            {copy.archive.status[archive.status]}
-                          </Chip>
+                            label={copy.archive.status[archive.status]}
+                          />
                         )}
-                      </button>
-                      {selected && (
-                        <DailyReviewArchiveBody archive={selectedArchive} loading={archiveLoading} />
-                      )}
-                    </article>
-                  </li>
+                      </span>
+                    )}
+                  >
+                    <DailyReviewArchiveBody archive={selectedArchive} loading={archiveLoading} />
+                  </Collapsible>
                 );
               })}
-            </ul>
+            </CollapsibleGroup>
           )}
         </section>
       )}
@@ -645,9 +632,9 @@ function DailyReviewArchiveBody(props: { archive: DailyReviewArchive | null; loa
   if (props.loading) {
     return (
       <div className="maka-daily-review-report-body" aria-busy="true">
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '58%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '92%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '74%' }} />
+        <Skeleton width="58%" height={12} radius="rounded" index={0} />
+        <Skeleton width="92%" height={12} radius="rounded" index={1} />
+        <Skeleton width="74%" height={12} radius="rounded" index={2} />
       </div>
     );
   }
@@ -681,7 +668,7 @@ function DailyReviewArchiveBody(props: { archive: DailyReviewArchive | null; loa
               {/* Reports are LLM-generated markdown — bullet lists and
                   inline code rendered as flat pre-wrap text read as mush.
                   Reuse the shared Markdown pipeline (same one chat uses). */}
-              <div className="maka-daily-review-archive-section-body maka-prose">
+              <div className="maka-daily-review-archive-section-body">
                 <Markdown text={section.content} />
               </div>
             </section>

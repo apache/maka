@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react';
+import { Card } from '@astryxdesign/core';
 import type { ConfigCategory } from '@maka/storage';
 import {
-  Alert,
-  AlertDescription,
   Button,
   SectionHeader,
-  SettingsSelect,
-  SettingsSwitch as Switch,
+  Selector,
+  Switch,
   clearGlobalInputHistory,
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
-import { SettingsRows, SettingRow } from './settings-rows';
+import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard } from './use-action-guard';
 import { getDataSettingsCopy, type DataSettingsCopy } from '../locales/settings-data-copy';
@@ -183,7 +183,7 @@ export function DataSettingsPage() {
 
   return (
     <div className="settingsStructuredPage">
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <SettingRow
           title={copy.rows.workspace}
           detail={copy.rows.workspaceDetail}
@@ -200,7 +200,7 @@ export function DataSettingsPage() {
           detail={copy.rows.historyDetail}
           value={copy.rows.localStorage}
         />
-      </SettingsRows>
+      </Card>
       {/* Detail audit: was two wrapped rows with 打开文件夹 wearing primary
           (a utility action) and destructive 清空输入历史 dressed neutral.
           One row; utilities are secondary; the destructive action reads
@@ -208,39 +208,28 @@ export function DataSettingsPage() {
           dialog confirm). */}
       <div className="settingsActionRow" role="group" aria-label={copy.actionsAria}>
         <Button
-          type="button"
           variant="secondary"
           onClick={() => void openWorkspace()}
-          disabled={!info || dataActionDisabled}
-        >
-          {isDataActionPending('workspace:open') ? copy.opening : copy.openWorkspace}
-        </Button>
+          isDisabled={!info || dataActionDisabled}
+          label={isDataActionPending('workspace:open') ? copy.opening : copy.openWorkspace}
+        />
         <Button
-          type="button"
           variant="secondary"
           onClick={() => void copyPath()}
-          disabled={!info || dataActionDisabled}
-        >
-          {isDataActionPending('workspace:path:copy') ? copy.copying : copy.copyPath}
-        </Button>
+          isDisabled={!info || dataActionDisabled}
+          label={isDataActionPending('workspace:path:copy') ? copy.copying : copy.copyPath}
+        />
         <Button
-          type="button"
           variant="destructive"
           onClick={() => void clearInputHistory()}
-          disabled={dataActionDisabled}
-        >
-          {isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
-        </Button>
+          isDisabled={dataActionDisabled}
+          label={isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
+        />
       </div>
-      <Alert variant="info">
-        <AlertDescription>{copy.backupNotice}</AlertDescription>
-      </Alert>
+      <Banner status="info" title={copy.backupNotice} />
       {infoError && (
-        <Alert variant="info" role="alert">
-          <AlertDescription>{copy.pathLoadFailed(infoError)}</AlertDescription>
-        </Alert>
+        <Banner status="info" role="alert" title={copy.pathLoadFailed(infoError)} />
       )}
-
       <section className="settingsConfigSection" aria-label={copy.configAria}>
         <SectionHeader as="h3" title={copy.configTitle} subtitle={copy.configHelp} />
         <div role="group" aria-label={copy.categoryAria} className="settingsConfigCategoryList">
@@ -248,46 +237,39 @@ export function DataSettingsPage() {
             const option = copy.categories[id];
             const checked = selectedCategories.has(id);
             return (
-              <div key={id} className="settingsConfigCategoryItem">
-                <Switch
-                  ariaLabel={copy.exportCategory(option.label)}
-                  checked={checked}
-                  onChange={() => toggleCategory(id)}
-                />
-                <span>
-                  <strong>{option.label}</strong>
-                  <small>{option.detail}</small>
-                  {option.sensitive && checked ? (
-                    <small role="alert" data-tone="destructive">
-                      {copy.sensitiveWarning}
-                    </small>
-                  ) : null}
-                </span>
-              </div>
+              <Switch
+                key={id}
+                label={option.label}
+                description={option.detail}
+                value={checked}
+                width="100%"
+                labelPosition="start"
+                labelSpacing="spread"
+                status={
+                  option.sensitive && checked
+                    ? { type: 'warning', message: copy.sensitiveWarning }
+                    : undefined
+                }
+                onChange={() => toggleCategory(id)}
+              />
             );
           })}
         </div>
-        <div className="settingsConfigStrategy">
-          <span className="settingsHelpText">{copy.importConflict}</span>
-          <SettingsSelect
-            value={importStrategy}
-            ariaLabel={copy.conflictAria}
-            options={
-              [
-              ['skip', copy.skip],
-              ['overwrite', copy.overwrite],
-              ] satisfies Array<readonly [typeof importStrategy, string]>
-            }
-            onChange={(strategy) => setImportStrategy(strategy)}
-          />
-        </div>
+        <Selector
+          value={importStrategy}
+          label={copy.conflictAria}
+          options={
+            [
+              { value: 'skip', label: copy.skip },
+              { value: 'overwrite', label: copy.overwrite },
+            ]
+          }
+          width="100%"
+          onChange={(strategy) => setImportStrategy(strategy as typeof importStrategy)}
+        />
         <div className="settingsActionRow">
-          <Button type="button" disabled={configBusy !== null} onClick={() => void exportConfig()}>
-            {configBusy === 'export' ? copy.exporting : copy.exportConfig}
-          </Button>
-          <Button type="button" disabled={configBusy !== null} onClick={() => void importConfig()}>
-            {configBusy === 'import' ? copy.importing : copy.importConfig}
-          </Button>
+          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void exportConfig()} label={configBusy === 'export' ? copy.exporting : copy.exportConfig} />
+          <Button variant="primary" isDisabled={configBusy !== null} onClick={() => void importConfig()} label={configBusy === 'import' ? copy.importing : copy.importConfig} />
         </div>
       </section>
     </div>

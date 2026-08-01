@@ -1,5 +1,10 @@
 import { existsSync, writeSync } from 'node:fs';
-import type { RuntimeEvent, ToolRecoveryFactEnvelope } from '@maka/core';
+import {
+  createRuntimeBoundaryCursor,
+  runtimePrefixSegment,
+  type RuntimeEvent,
+  type ToolRecoveryFactEnvelope,
+} from '@maka/core';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
 
 const mode = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_MODE');
@@ -27,6 +32,94 @@ try {
     await store.commitToolRecoveryBundle(parkedBundle());
   } else if (mode === 'rebuild') {
     await store.rebuildToolProjectionsFromRuntimeEvents();
+  } else if (mode === 'append_source') {
+    await store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', {
+      ...baseEvent('concurrent-source-terminal', 3),
+      status: 'failed',
+      actions: {
+        endInvocation: true,
+        stateDelta: { failureClass: 'runtime_interrupted' },
+      },
+    });
+    writeSync(1, 'APPEND committed\n');
+  } else if (mode === 'append_target') {
+    await store.appendRuntimeEvent('session-1', 'fixed-target-run', {
+      id: `target-event-${process.pid}`,
+      sessionId: 'session-1',
+      invocationId: 'fixed-target-invocation',
+      runId: 'fixed-target-run',
+      turnId: 'fixed-target-turn',
+      ts: process.pid,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text', text: 'racing ordinary target event' },
+    });
+    writeSync(1, 'TARGET_APPEND committed\n');
+  } else if (mode === 'claim' || mode === 'claim_fixed_target' || mode === 'claim_nonterminal') {
+    const sourceRunId = mode === 'claim_nonterminal' ? 'run-1' : 'continuation-source-run';
+    const prefix = await store.readImmutableRuntimePrefix({
+      sessionId: 'session-1',
+      runId: sourceRunId,
+      ...(mode === 'claim_nonterminal' ? { upToEventSeq: 2 } : {}),
+    });
+    const boundary = createRuntimeBoundaryCursor([runtimePrefixSegment(prefix)]);
+    const source = boundary.segments.at(-1)!;
+    const target =
+      mode === 'claim_fixed_target'
+        ? {
+            sessionId: 'session-1',
+            invocationId: 'fixed-target-invocation',
+            runId: 'fixed-target-run',
+            turnId: 'fixed-target-turn',
+          }
+        : {
+            sessionId: 'session-1',
+            invocationId: `invocation-${process.pid}`,
+            runId: `run-${process.pid}`,
+            turnId: `turn-${process.pid}`,
+          };
+    const result = await store.claimContinuation({
+      claim: {
+        protocol: 'continuation_claim_v1',
+        claimId: `claim-${process.pid}`,
+        boundaryDigest: boundary.manifestDigest,
+        boundary,
+        providerProjectionVersion: 1,
+        providerReplayDigest: `sha256:${'a'.repeat(64)}`,
+        target,
+        targetRunHeader: {
+          ...target,
+          status: 'created',
+          backendKind: 'fake',
+          llmConnectionSlug: 'connection-1',
+          modelId: 'model-1',
+          cwd: '/workspace/repo',
+          permissionMode: 'ask',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          agentSwarmAuthorization: 'none',
+          createdAt: process.pid,
+          updatedAt: process.pid,
+          parentRunId: source.identity.runId,
+          parentTurnId: source.identity.turnId,
+          continuationSource: {
+            protocol: 'continuation_source_v2',
+            claimId: `claim-${process.pid}`,
+            boundaryDigest: boundary.manifestDigest,
+            sourceInvocationId: source.identity.invocationId,
+            sourceRunId: source.identity.runId,
+            sourceTurnId: source.identity.turnId,
+            sourceRuntimeEventHighWater: source.position.lastEventSeq,
+            sourcePrefixDigest: source.prefixDigest,
+            replayManifestDigest: boundary.manifestDigest,
+          },
+        },
+        claimedAt: process.pid,
+      },
+    });
+    writeSync(1, `CLAIM ${result.kind}\n`);
   } else {
     throw new Error(`Unknown concurrency mode ${mode}`);
   }

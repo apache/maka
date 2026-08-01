@@ -20,7 +20,6 @@ export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
 type ResearchItem = Readonly<{ title: string; body: string }>;
 type ResearchOption = Readonly<{ label: string; body: string }>;
 type ResearchStarter = Readonly<{ label: string; prompt: string }>;
-type PermissionReasonKind = 'shell_dangerous' | 'file_write' | 'fs_destructive' | 'git_destructive' | 'network' | 'privileged' | 'browser' | 'computer_use' | 'additional_permissions' | 'sandbox_escalation' | 'custom';
 
 export interface ConversationCopy {
   empty: {
@@ -71,13 +70,28 @@ export interface ConversationCopy {
     addContext: string;
     importText: string;
     attachFile: string;
-    expertTeam: string;
     selectModel: string;
     dropToImport: string;
     addingAttachment: string;
-    add: string;
-    addTitle: string;
     addFileOrDirectory: string;
+    /** Standalone upload button in the composer toolbar (PR-COMPOSER-TOOLBAR-SPLIT). */
+    uploadTitle: string;
+    /** Standalone Plan/Swarm/Graph button in the toolbar (PR-COMPOSER-TOOLBAR-SPLIT). */
+    modesLabel: string;
+    modesTitle: string;
+    /** Standalone Skills picker button + its panel (PR-COMPOSER-TOOLBAR-SPLIT). */
+    skillPicker: {
+      label: string;
+      title: string;
+      panelAriaLabel: string;
+      searchPlaceholder: string;
+      autoHint: string;
+      selectAll: string;
+      clearAll: string;
+      empty: string;
+      noMatches: string;
+      selectedCount: (count: number) => string;
+    };
     switchDisabledStreaming: string;
     switchDisabledRunning: string;
     switchDisabledPermission: string;
@@ -99,6 +113,18 @@ export interface ConversationCopy {
     noModelAction: string;
     /** Explanatory title on the disabled Send button in the no-model state. */
     noModelSendTitle: string;
+    voiceStart: string;
+    voiceStopRecording: string;
+    voiceSend: string;
+    voiceRecording: string;
+    voiceRequesting: string;
+    voiceProcessing: string;
+    voiceReady: string;
+    voiceSending: string;
+    voiceRealtimeStart: string;
+    voiceRealtimeStop: string;
+    voiceConnecting: string;
+    voiceConnected: string;
   };
   model: {
     thinkingLevel: string;
@@ -122,43 +148,14 @@ export interface ConversationCopy {
     mode: Record<PermissionMode, { label: string; hint: string }>;
     modeAriaLabel: (label: string) => string;
   };
-  permissionPrompt: {
-    reason: Record<PermissionReasonKind, string>;
-    destructiveContext: string;
-    waited: (label: string) => string;
-    rememberBrowser: string;
-    rememberScoped: string;
-    rememberTurn: string;
-    actionsAriaLabel: string;
-    stop: string;
-    stopping: string;
-    deny: string;
-    submitting: string;
-    allowOnce: string;
-    allow: string;
-    additionalPermission: string;
-    sandboxEscalation: string;
-    editFile: string;
-    disclosure: { changes: string; content: string; input: string; fullArguments: string; details: string };
-    unsupportedValue: string;
-    browser: { navigate: (url: string) => string; click: (ref: string) => string; type: (ref: string) => string; snapshot: string; extract: (selector: string) => string; wait: string; generic: string; urlFallback: string };
-    workingDirectory: string;
-    readWrite: string;
-    readOnly: string;
-    exactPath: string;
-    directoryTree: string;
-    temporaryNetwork: string;
-    outsideWorkspace: string;
-    protectedMetadata: string;
-    outsideSandbox: string;
-    target: string;
-    currentApp: string;
-    inDirectory: (cwd: string) => string;
-    terminalInteraction: string;
-    fullInputBytes: (bytes: number) => string;
-    targetSize: (cols: number, rows: number) => string;
-    byteLineCount: (bytes: number, lines: number) => string;
-    editLineCount: (removed: number, added: number) => string;
+  sandboxBoundary: {
+    title: string;
+    access: Record<'read' | 'write', string>;
+    scope: Record<'exact' | 'subtree', string>;
+    network: string;
+    enabled: string;
+    reject: string;
+    allowSession: string;
   };
   questions: {
     other: string;
@@ -208,15 +205,14 @@ export interface ConversationCopy {
     copying: string;
     copyFailed: string;
     copy: string;
-    copyMessage: string;
     editMessage: string;
     editMessageDisabledRunning: string;
     editMessageDisabledAttachments: string;
     editMessageDisabledQuotes: string;
     editMessageDisabledTransformedText: string;
-    copyThinking: string;
     imageAriaLabel: (name: string) => string;
     userAriaLabel: string;
+    systemAriaLabel: string;
     assistantAriaLabel: string;
     answerActionsAriaLabel: string;
     sourceAriaLabel: string;
@@ -340,8 +336,15 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送', stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
-      interruptHint: '或点停止中断', addContext: '添加上下文', importText: '导入文本文件', attachFile: '附加文件', expertTeam: '专家团',
-      selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', add: '添加', addTitle: '添加文件、专家团…', addFileOrDirectory: '添加文件或目录',
+      interruptHint: '或点停止中断', addContext: '添加上下文', importText: '导入文本文件', attachFile: '附加文件',
+      selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
+      uploadTitle: '上传文件或目录', modesLabel: '模式', modesTitle: '协作模式',
+      skillPicker: {
+        label: '技能', title: '选择技能', panelAriaLabel: '技能选择', searchPlaceholder: '搜索技能…',
+        autoHint: '不选择时，Maka 自动匹配相关技能', selectAll: '全选', clearAll: '清除全部',
+        empty: '当前没有可用技能', noMatches: '没有匹配的技能',
+        selectedCount: (count) => `已选 ${count} 个技能`,
+      },
       switchDisabledStreaming: '当前对话正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前对话正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       planModeLabel: 'Plan', enablePlanMode: '开启 Plan Mode', disablePlanMode: '退出 Plan Mode',
       planModeOnTitle: 'Plan 模式已启用，点击关闭',
@@ -350,6 +353,11 @@ const CONVERSATION_COPY = {
       graphModeLabel: 'Graph', enableGraphMode: '开启 Graph Mode', disableGraphMode: '退出 Graph Mode',
       graphModeOnTitle: 'Graph 模式已启用，点击关闭',
       noModelHint: '还没有可用的模型连接，无法发送。', noModelAction: '前往模型设置', noModelSendTitle: '先添加一个模型连接才能发送。',
+      voiceStart: '语音输入（Shift 点击强制转写）', voiceStopRecording: '停止录音', voiceSend: '发送语音任务',
+      voiceRecording: '正在录音，点击麦克风结束 · Esc 取消', voiceRequesting: '正在准备语音模型…', voiceProcessing: '正在处理语音…',
+      voiceReady: '语音已就绪，再次点击发送', voiceSending: '正在发送语音任务…',
+      voiceRealtimeStart: '开始实时语音协作', voiceRealtimeStop: '结束实时语音协作',
+      voiceConnecting: '正在连接实时语音…', voiceConnected: '实时语音已连接',
     },
     model: {
       thinkingLevel: '思考级别', thinkingUnsupported: '当前模型不支持思考级别切换', changeThinkingLevel: '切换当前模型的思考级别', defaultLevel: '默认',
@@ -362,23 +370,21 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: '只读模式', hint: '读取、列表和搜索直接执行；写入或网络操作仍需明确确认。Deep Research 默认使用此模式。' },
-        ask: { label: '询问权限', hint: '每次工具调用前都让你确认，适合需要逐步监督的任务。' },
+        explore: { label: '只读', hint: '只读取和搜索，不写入文件、不访问网络；需要这些权限时会先来问你。' },
+        ask: { label: '自动', hint: '在 Maka 的保护层内自动执行；需要超出当前权限范围时会先来问你。' },
         execute: { label: '自动执行', hint: '常见工具直接执行；破坏性、特权和浏览器操作仍会请求确认。' },
-        bypass: { label: '跳过确认', hint: '跳过全部工具确认，包括高风险操作。仅在完全信任本轮任务时使用。' },
+        bypass: { label: '完全权限', hint: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。仅用于你完全信任的任务。' },
       },
       modeAriaLabel: (label) => `权限模式：${label}`,
     },
-    permissionPrompt: {
-      reason: { shell_dangerous: '允许执行高风险 shell 命令？', file_write: '允许写入或创建文件？', fs_destructive: '允许执行不可恢复的文件操作？', git_destructive: '允许执行不可恢复的 Git 操作？', network: '允许发起网络请求？', privileged: '允许执行特权操作？', browser: '允许操作已登录的浏览器？', computer_use: '允许读取或操作本机应用？', additional_permissions: '允许本次额外权限？', sandbox_escalation: '允许本次在 sandbox 外执行？', custom: '允许执行此操作？' },
-      destructiveContext: '此操作无法恢复，请确认上面的内容。', waited: (label) => `已等待 ${label}`,
-      rememberBrowser: '勾选后，本轮接下来的浏览、读取页面、导航、点击和输入都不再逐次询问。你会全程看到操作页面并可随时停止；本轮结束后授权失效。',
-      rememberScoped: '只会记住上方显示的目标、动作和授权类别。读取授权不会扩展为截图或输入授权；目标或动作类别变化时仍会再次询问。',
-      rememberTurn: '本轮记住', actionsAriaLabel: '权限操作', stop: '停止', stopping: '停止中…', deny: '拒绝操作', submitting: '正在提交…', allowOnce: '允许这一次', allow: '允许操作',
-      additionalPermission: '允许本次额外权限？', sandboxEscalation: '允许本次在 sandbox 外执行？', editFile: '允许修改文件？',
-      disclosure: { changes: '查看变更', content: '查看内容', input: '查看输入', fullArguments: '完整参数', details: '查看详情' }, unsupportedValue: '不支持的属性值',
-      browser: { navigate: (url) => `即将在浏览器中打开 ${url}`, click: (ref) => `即将在当前页面点击元素 ${ref}`.trim(), type: (ref) => `即将在当前页面输入文本${ref ? ` 到元素 ${ref}` : ''}`, snapshot: '即将读取当前页面的可交互元素列表', extract: (selector) => `即将读取当前页面内容${selector ? `（${selector}）` : ''}`, wait: '即将等待当前页面满足某个条件', generic: '即将操作当前浏览器页面', urlFallback: '一个网址' },
-      workingDirectory: '工作目录', readWrite: '读写', readOnly: '只读', exactPath: '仅此路径', directoryTree: '目录及子目录', temporaryNetwork: '本次调用将临时允许网络访问。', outsideWorkspace: '包含工作区外路径。', protectedMetadata: '包含受保护的 Git/Agent 元数据。', outsideSandbox: '本次命令将不经过平台 sandbox，可访问工作区外文件、网络和受保护元数据。', target: '目标', currentApp: '当前应用', inDirectory: (cwd) => `在 ${cwd}`, terminalInteraction: '即将与后台终端交互', fullInputBytes: (bytes) => `完整输入共 ${bytes} 字节`, targetSize: (cols, rows) => `目标尺寸 ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} 字节 · ${lines} 行`, editLineCount: (removed, added) => `删除 ${removed} 行 · 写入 ${added} 行`,
+    sandboxBoundary: {
+      title: '允许访问工作区以外的内容？',
+      access: { read: '读取', write: '写入' },
+      scope: { exact: '仅此路径', subtree: '目录及子目录' },
+      network: '网络访问',
+      enabled: '已启用',
+      reject: '拒绝',
+      allowSession: '本会话允许',
     },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', loading: '加载中…' },
@@ -389,8 +395,8 @@ const CONVERSATION_COPY = {
       branchTitle: (branch) => branch ? `分支：${branch}` : '选择分支', branchAriaLabel: (branch) => branch ? `切换分支：${branch}` : '选择分支',
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', copyMessage: '复制消息', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发', copyThinking: '复制思考过程',
-      imageAriaLabel: (name) => `查看图片 ${name}`, userAriaLabel: '你发送的消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: '本轮回答操作', sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', automationTriggered: '定时任务触发', automationTitle: (id) => `由定时任务触发 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
+      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发',
+      imageAriaLabel: (name) => `查看图片 ${name}`, userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: '本轮回答操作', sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', automationTriggered: '定时任务触发', automationTitle: (id) => `由定时任务触发 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
       thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的会话日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中断)', abortedByStop: '(已中断 · 由停止按钮触发)',
     },
     chat: {
@@ -478,8 +484,15 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send', stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
-      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', importText: 'Import text file', attachFile: 'Attach file', expertTeam: 'Expert team',
-      selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', add: 'Add', addTitle: 'Add files or an expert team…', addFileOrDirectory: 'Add file or directory',
+      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', importText: 'Import text file', attachFile: 'Attach file',
+      selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
+      uploadTitle: 'Upload a file or directory', modesLabel: 'Modes', modesTitle: 'Collaboration modes',
+      skillPicker: {
+        label: 'Skills', title: 'Choose skills', panelAriaLabel: 'Skill selection', searchPlaceholder: 'Search skills…',
+        autoHint: 'Leave empty and Maka picks the relevant skills', selectAll: 'Select all', clearAll: 'Clear all',
+        empty: 'No skills available', noMatches: 'No matching skills',
+        selectedCount: (count) => `${count} skill${count === 1 ? '' : 's'} selected`,
+      },
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
       planModeOnTitle: 'Plan mode is on — click to turn off',
@@ -488,6 +501,11 @@ const CONVERSATION_COPY = {
       graphModeLabel: 'Graph', enableGraphMode: 'Enable Graph Mode', disableGraphMode: 'Disable Graph Mode',
       graphModeOnTitle: 'Graph mode is on — click to turn off',
       noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
+      voiceStart: 'Voice input (Shift-click to force transcription)', voiceStopRecording: 'Stop recording', voiceSend: 'Send voice task',
+      voiceRecording: 'Recording; click the microphone to stop · Esc to cancel', voiceRequesting: 'Preparing the voice model…', voiceProcessing: 'Processing voice…',
+      voiceReady: 'Voice is ready; click again to send', voiceSending: 'Sending voice task…',
+      voiceRealtimeStart: 'Start realtime voice collaboration', voiceRealtimeStop: 'Stop realtime voice collaboration',
+      voiceConnecting: 'Connecting realtime voice…', voiceConnected: 'Realtime voice connected',
     },
     model: {
       thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Default',
@@ -500,23 +518,21 @@ const CONVERSATION_COPY = {
     },
     permissions: {
       mode: {
-        explore: { label: 'Read only', hint: 'Read, list, and search run directly; writes and network access still require confirmation. Deep Research uses this mode by default.' },
-        ask: { label: 'Ask permission', hint: 'Confirm every tool call. Best when you want to supervise each step.' },
+        explore: { label: 'Read only', hint: 'Reads and searches only — no writing files, no network. Asks you first when it needs either.' },
+        ask: { label: 'Auto', hint: "Runs automatically inside Maka's protection layer; asks you first when something needs to go beyond the current permissions." },
         execute: { label: 'Auto execute', hint: 'Common tools run directly; destructive, privileged, and browser actions still require confirmation.' },
-        bypass: { label: 'Skip confirmations', hint: 'Skip every tool confirmation, including high-risk actions. Use only when you fully trust this task.' },
+        bypass: { label: 'Full access', hint: "Local tools reach your files and your network directly, outside Maka's protection layer. Use only for tasks you fully trust." },
       },
       modeAriaLabel: (label) => `Permission mode: ${label}`,
     },
-    permissionPrompt: {
-      reason: { shell_dangerous: 'Allow a high-risk shell command?', file_write: 'Allow writing or creating files?', fs_destructive: 'Allow an irreversible file operation?', git_destructive: 'Allow an irreversible Git operation?', network: 'Allow network access?', privileged: 'Allow a privileged operation?', browser: 'Allow control of your signed-in browser?', computer_use: 'Allow reading or controlling local apps?', additional_permissions: 'Allow these additional permissions?', sandbox_escalation: 'Allow this command to run outside the sandbox?', custom: 'Allow this operation?' },
-      destructiveContext: 'This operation cannot be undone. Review the details above.', waited: (label) => `Waiting for ${label}`,
-      rememberBrowser: 'For the rest of this turn, do not ask again for browsing, page reading, navigation, clicking, or typing. You can watch the page and stop at any time; access expires when the turn ends.',
-      rememberScoped: 'Remember only the target, action, and permission category shown above. Read access does not expand to screenshots or typing; a different target or action category still requires confirmation.',
-      rememberTurn: 'Remember for this turn', actionsAriaLabel: 'Permission actions', stop: 'Stop', stopping: 'Stopping…', deny: 'Deny', submitting: 'Submitting…', allowOnce: 'Allow once', allow: 'Allow',
-      additionalPermission: 'Allow these additional permissions?', sandboxEscalation: 'Allow this command to run outside the sandbox?', editFile: 'Allow file changes?',
-      disclosure: { changes: 'View changes', content: 'View content', input: 'View input', fullArguments: 'Full arguments', details: 'View details' }, unsupportedValue: 'Unsupported property value',
-      browser: { navigate: (url) => `About to open ${url} in the browser`, click: (ref) => `About to click element ${ref} on the current page`.trim(), type: (ref) => `About to type text${ref ? ` into element ${ref}` : ''} on the current page`, snapshot: 'About to read the interactive elements on the current page', extract: (selector) => `About to read the current page${selector ? ` (${selector})` : ''}`, wait: 'About to wait for a condition on the current page', generic: 'About to control the current browser page', urlFallback: 'a URL' },
-      workingDirectory: 'Working directory', readWrite: 'Read and write', readOnly: 'Read only', exactPath: 'This path only', directoryTree: 'Directory and descendants', temporaryNetwork: 'This call will temporarily allow network access.', outsideWorkspace: 'Includes paths outside the workspace.', protectedMetadata: 'Includes protected Git/agent metadata.', outsideSandbox: 'This command will run outside the platform sandbox and can access files outside the workspace, the network, and protected metadata.', target: 'Target', currentApp: 'Current app', inDirectory: (cwd) => `In ${cwd}`, terminalInteraction: 'About to interact with a background terminal', fullInputBytes: (bytes) => `Full input is ${bytes} bytes`, targetSize: (cols, rows) => `Target size ${cols}x${rows}`, byteLineCount: (bytes, lines) => `${bytes} bytes · ${lines} ${lines === 1 ? 'line' : 'lines'}`, editLineCount: (removed, added) => `Remove ${removed} ${removed === 1 ? 'line' : 'lines'} · Write ${added} ${added === 1 ? 'line' : 'lines'}`,
+    sandboxBoundary: {
+      title: 'Allow access outside the workspace?',
+      access: { read: 'Read', write: 'Write' },
+      scope: { exact: 'Exact path', subtree: 'Directory subtree' },
+      network: 'Network access',
+      enabled: 'Enabled',
+      reject: 'Reject',
+      allowSession: 'Allow for this session',
     },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', loading: 'Loading…' },
@@ -527,8 +543,8 @@ const CONVERSATION_COPY = {
       branchTitle: (branch) => branch ? `Branch: ${branch}` : 'Choose branch', branchAriaLabel: (branch) => branch ? `Switch branch: ${branch}` : 'Choose branch',
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', copyMessage: 'Copy message', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill', copyThinking: 'Copy reasoning',
-      imageAriaLabel: (name) => `View image ${name}`, userAriaLabel: 'Your message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: 'Response actions', sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', automationTriggered: 'Triggered by automation', automationTitle: (id) => `Triggered by automation · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
+      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill',
+      imageAriaLabel: (name) => `View image ${name}`, userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: 'Response actions', sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', automationTriggered: 'Triggered by automation', automationTitle: (id) => `Triggered by automation · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
       thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted session log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: '(Interrupted)', abortedByStop: '(Interrupted · Stop button)',
     },
     chat: {

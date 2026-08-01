@@ -148,28 +148,6 @@ function flowTokenUsageEvent(ctx: InvocationContext, rawFinishReason: string): R
   };
 }
 
-function flowPermissionDeniedEvent(ctx: InvocationContext): RuntimeEvent {
-  return {
-    id: ctx.newId(),
-    invocationId: ctx.invocationId,
-    runId: ctx.runId,
-    sessionId: ctx.sessionId,
-    turnId: ctx.turnId,
-    ts: ctx.now(),
-    ...(ctx.branch ? { branch: ctx.branch } : {}),
-    partial: false,
-    role: 'system',
-    author: 'user',
-    actions: {
-      permissionDecision: {
-        requestId: 'perm-1',
-        decision: 'deny',
-        rememberForTurn: true,
-      },
-    },
-  };
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -430,21 +408,6 @@ describe('RuntimeRunner', () => {
     expect(result.failure?.message).toMatch(/tool-call step cap/);
   });
 
-  test('denied permission decision marks a later completed terminal event failed', async () => {
-    const providers = makeProviders();
-    const flow = new ScriptFlow((ctx) => [
-      flowPermissionDeniedEvent(ctx),
-      flowTerminalEvent(ctx, 'completed'),
-    ]);
-    const runner = new RuntimeRunner({ flow, providers });
-
-    const result = await runner.run(makeRequest());
-
-    expect(result.status).toBe('failed');
-    expect(result.failure?.class).toBe('permission_denied');
-    expect(result.failure?.message).toBe('permission request perm-1 was denied');
-  });
-
   test('a flow that throws maps to a failed result (user event retained)', async () => {
     const providers = makeProviders();
     const flow = new ThrowingFlow(new Error('boom'));
@@ -624,11 +587,11 @@ describe('RuntimeRunner', () => {
     const flow = new ScriptFlow((ctx) => [flowTextEvent(ctx, 'x')]);
     const runner = new RuntimeRunner({ flow, providers });
 
-    await runner.run(makeRequest({ source: 'gateway', text: 'hello' }));
+    await runner.run(makeRequest({ source: 'bot', text: 'hello' }));
 
     expect(flow.seen).toHaveLength(1);
     const ctx = flow.seen[0]!;
-    expect(ctx.source).toBe('gateway');
+    expect(ctx.source).toBe('bot');
     expect(ctx.request.text).toBe('hello');
     expect(ctx.sessionId).toBe('sess-1');
     expect(ctx.turnId).toBe('turn-1');

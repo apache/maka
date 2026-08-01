@@ -44,7 +44,7 @@ Read [Maka Backend Architecture](./ARCHITECTURE.md) for the complete design.
 
 - Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
 - Artifact lists and previews, workspace instructions, model settings, and permission settings;
-- Local memory, web search, an open HTTP/SSE gateway, and bot entry points;
+- Local memory, web search, and bot entry points;
 - Integrations are configured independently, and not every experimental entry is available by default.
 
 ### Durable tasks and evolution
@@ -152,7 +152,7 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 apps/desktop/       Electron main / preload / React renderer
 
 packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
-packages/storage/   File-backed stores and run ledgers
+packages/storage/   SQLite operational state, legacy importers, and payload stores
 packages/runtime/   AgentRun, model adapters, tools, context, and recovery
 packages/headless/  TaskRun, Autonomous Loop, Self-check, eval, and AHE
 packages/cli/       TUI and non-interactive CLI
@@ -184,16 +184,93 @@ Current boundaries that matter:
 
 Read [SECURITY.md](./SECURITY.md) for security reporting and policy, and [docs/README.md](./docs/README.md) for current privacy and sandbox contracts.
 
-## Experimental runtime recovery flags
+## Runtime storage and recovery
 
-Runtime recovery remains opt-in. Both flags below are disabled by default:
+RuntimeEvent persistence is always canonical in `runtime.sqlite`. On the first
+write, Maka batch-idempotently imports legacy RuntimeEvent JSONL without
+rewriting it. Legacy-only workspaces remain available to read-only inspection
+until that first write.
 
-- `MAKA_RUNTIME_SQLITE_CANONICAL=1` migrates the current workspace's canonical
-  RuntimeEvent store to `runtime.sqlite`. This is a **one-way, sticky migration
-  trigger**, not a reversible backend selector: after `runtime.sqlite` exists,
-  disabling the variable does not switch the workspace back to JSONL. Automatic
-  pre-migration backup and populated v2-to-v4 upgrade coverage are not complete,
-  so back up the workspace before enabling this flag.
+Session metadata and Agent Graph control tables now use the same process-local
+operational database owner and the same `runtime.sqlite` transaction authority.
+The first operational open copies a WAL-consistent `sessions.sqlite` source
+into `runtime.sqlite`, validates every source row, and records the source digest
+and result in `cutover_journal`. An interrupted copy resumes without partial
+rows; a legacy database changed after cutover fails closed. The old database is
+retained as migration evidence but is no longer a production writer. Session
+transcript bodies remain append-only JSONL.
+
+Core execution state now shares that authority too: AgentRun headers and event
+ledgers, event projections, root-turn admissions and source proofs,
+Interactions, Host Epoch message receipts, and ShellRun records are canonical
+in `runtime.sqlite` across CLI, Desktop, Runtime Host, and Headless. Each legacy
+file store is fingerprinted and imported through its own durable
+`cutover_journal` entry before the corresponding repository opens. Copy and
+validation are one SQLite transaction, retries are idempotent, and a changed
+legacy source after cutover fails closed. The legacy files are retained only as
+migration evidence; new execution writes do not modify them.
+
+Workflow state is migrating in reviewable slices. Task Ledger events and
+projections, Plan events and projections, Deep Research events, and Plan
+Reminder records are now canonical in `runtime.sqlite`.
+Desktop and Runtime Host production wiring opens these SQLite repositories;
+their JSON/JSONL predecessors are read only during a fingerprinted, crash-safe
+cutover and are never updated by later mutations.
+
+Usage telemetry and pricing authority now use that same operational database.
+Legacy `telemetry.json` and `pricing.json` sources are decoded together and
+fingerprinted before their rows and pricing revision are committed atomically.
+After cutover, Desktop and Runtime Host write only `runtime.sqlite`; the source
+files remain unchanged as migration evidence.
+
+Artifact metadata and lifecycle state now follow the same rule. Payload bytes
+remain files, but their records are canonical in `runtime.sqlite` after a
+fingerprinted `metadata.jsonl` cutover. Payload publication keeps its durable
+staging/link protocol: recovery removes bytes whose metadata transaction did not
+commit and preserves committed bytes while cleaning staging residue. Purge
+intent recovery likewise completes against the SQLite metadata authority.
+
+Selected-session bundle export now reads that SQLite authority through a
+WAL-consistent snapshot, verifies that retained legacy evidence still matches
+its completed cutover, and writes only the selected Artifact rows into the
+bundle's `runtime.sqlite`. Payload bytes are copied under the Artifact writer
+lock, cross-session rows and payloads are excluded, and bundles no longer emit
+`artifacts/metadata.jsonl`.
+
+Full operational backup now uses the shared database owner's online SQLite
+backup API rather than copying `runtime.sqlite` or its WAL sidecars. A strict
+manifest binds the standalone database snapshot to every active session
+transcript and canonical Artifact payload by size and SHA-256. Restore verifies
+SQLite integrity, foreign keys, supported schema versions, relational identity
+sets, transcript decodability, and the exact manifested file tree before
+atomically publishing a new state root. Interrupted backup or restore staging
+is removed and can be retried without changing either source.
+
+Headless trajectory hydration now consumes a frozen selected-session export
+from that SQLite Artifact authority. The cell publishes `trajectory-state`
+only when RuntimeEvents reference image Artifacts; Harbor downloads its
+standalone `runtime.sqlite` first and then only the payloads referenced by the
+validated snapshot. It does not copy a live WAL or fall back to
+`artifacts/metadata.jsonl`. Missing, corrupt, unsupported, or mismatched
+evidence fails closed to a summary trajectory instead of mixing authorities.
+
+The remaining storage work is deliberately classified rather than implied
+complete:
+
+- Artifact metadata no longer exposes a production JSONL writer;
+  `artifacts/metadata.jsonl` is accepted only as fingerprinted, read-only
+  cutover evidence, and can be removed after the migration/cutover matrix is
+  complete;
+- StoredMessage transcript bodies remain append-only JSONL;
+- automation, connections, credentials, settings, MCP configuration, skills,
+  and device identity are configuration state and stay outside this operational
+  migration;
+- Headless TaskRun evaluation ledgers, imported foreign-session caches, Daily
+  Review archives, and quote-cleanup bookkeeping are separate product/evaluation
+  domains and are not part of issue #1649.
+
+Runtime continuation remains opt-in:
+
 - `MAKA_RUNTIME_SAFE_BOUNDARY_RESUME=1` enables the Desktop interrupted-turn
   **Safe resume** action, CLI/TUI `/resume`, and Desktop startup auto-resume.
   These paths may call the configured model provider and consume tokens. Enable

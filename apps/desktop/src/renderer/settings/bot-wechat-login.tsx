@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import type { BotChannelSettings } from '@maka/core';
 import type { WechatBridgeQrCodeResult } from '@maka/runtime';
-import { Alert, AlertDescription, Button, DialogContent, DialogHeader, DialogRoot, Input, useUiLocale } from '@maka/ui';
+import { Button, FormLayout, TextInput, useUiLocale, Banner } from '@maka/ui';
+import { Collapsible } from '@astryxdesign/core/Collapsible';
+import {
+  Dialog,
+  DialogHeader,
+} from '@astryxdesign/core/Dialog';
+import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { PasswordInput } from './password-input';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
@@ -28,66 +33,49 @@ export function BotWeChatFields(props: {
   const hasAdvanced = Boolean(channel.appId || channel.appSecret || channel.webhookUrl);
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(hasAdvanced);
   return (
-    <>
-      <label className="settingsField">
-        <span>Bot Token</span>
-        <PasswordInput
-          value={channel.token}
-          onChange={(next) => updateChannel({ token: next })}
-          placeholder={copy.tokenPlaceholder}
-          ariaLabel={copy.tokenAria}
-        />
-      </label>
-      <div className="settingsBotAdvanced">
-        <BaseButton
-          type="button"
-          className="settingsBotAdvancedToggle"
-          aria-expanded={advancedOpen}
-          onClick={() => setAdvancedOpen((current) => !current)}
-        >
-          {advancedOpen ? copy.collapseAdvanced : copy.expandAdvanced}
-        </BaseButton>
-        {advancedOpen && (
-          <div className="settingsBotAdvancedBody">
-            <label className="settingsField">
-              <span>{copy.bridgeAddress}</span>
-              <Input
-                value={channel.webhookUrl ?? ''}
-                onChange={(event) => updateChannel({ webhookUrl: event.currentTarget.value })}
-                placeholder="http://127.0.0.1:18400"
-                aria-label={copy.bridgeAria}
-              />
-            </label>
-            <label className="settingsField">
-              <span>{copy.appId}</span>
-              <Input
-                value={channel.appId ?? ''}
-                onChange={(event) => updateChannel({ appId: event.currentTarget.value })}
-                placeholder={copy.appIdPlaceholder}
-                aria-label={copy.appIdAria}
-              />
-            </label>
-            <label className="settingsField">
-              <span>{copy.appSecret}</span>
-              <PasswordInput
-                value={channel.appSecret ?? ''}
-                onChange={(next) => updateChannel({ appSecret: next })}
-                placeholder={copy.appSecretPlaceholder}
-                ariaLabel={copy.appSecretAria}
-              />
-            </label>
-            <Alert variant="info">
-              <AlertDescription>{copy.advancedNotice}</AlertDescription>
-            </Alert>
-          </div>
-        )}
-      </div>
-    </>
+    <FormLayout>
+      <PasswordInput
+        value={channel.token}
+        onChange={(next) => updateChannel({ token: next })}
+        placeholder={copy.tokenPlaceholder}
+        label={copy.token}
+        isRequired
+      />
+      <Collapsible
+        className="settingsBotAdvanced"
+        trigger={advancedOpen ? copy.collapseAdvanced : copy.expandAdvanced}
+        isOpen={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+      >
+          <FormLayout className="settingsBotAdvancedBody">
+            <TextInput
+              value={channel.webhookUrl ?? ''}
+              onChange={(value) => updateChannel({ webhookUrl: value })}
+              placeholder="http://127.0.0.1:18400"
+              label={copy.bridgeAddress}
+            />
+            <TextInput
+              value={channel.appId ?? ''}
+              onChange={(value) => updateChannel({ appId: value })}
+              placeholder={copy.appIdPlaceholder}
+              label={copy.appId}
+            />
+            <PasswordInput
+              value={channel.appSecret ?? ''}
+              onChange={(next) => updateChannel({ appSecret: next })}
+              placeholder={copy.appSecretPlaceholder}
+              label={copy.appSecret}
+            />
+            <Banner status="info" title={copy.advancedNotice} />
+          </FormLayout>
+      </Collapsible>
+    </FormLayout>
   );
 }
 
 export function WechatQrLoginModal(props: {
-  onClose(): void;
+  isOpen: boolean;
+  onOpenChange(isOpen: boolean): void;
   onRefreshStatuses(): void | Promise<unknown>;
 }) {
   const locale = useUiLocale();
@@ -160,26 +148,25 @@ export function WechatQrLoginModal(props: {
   const error = result && !result.ok ? result : null;
 
   return (
-    <DialogRoot
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
+    <Dialog
+      isOpen={props.isOpen}
+      onOpenChange={props.onOpenChange}
+      className="settingsWechatQrModal"
+      width={360}
+      padding={0}
+      purpose="info"
     >
-      <DialogContent
-        className="settingsWechatQrModal"
-        aria-labelledby="settingsWechatQrTitle"
-        showClose={false}
-      >
-        <DialogHeader
-          title={copy.title}
-          titleId="settingsWechatQrTitle"
-          subtitle={copy.subtitle}
-          closeLabel={copy.close}
-          onClose={props.onClose}
-        />
-
-        <div className="settingsWechatQrBody">
+      <Layout
+        header={
+          <DialogHeader
+            title={copy.title}
+            subtitle={copy.subtitle}
+            onOpenChange={props.onOpenChange}
+          />
+        }
+        content={
+          <LayoutContent padding={0}>
+            <div className="settingsWechatQrBody">
           {loading ? (
             <div className="settingsWechatQrState" data-tone="loading">
               {copy.generating}
@@ -191,9 +178,7 @@ export function WechatQrLoginModal(props: {
           ) : expired ? (
             <div className="settingsWechatQrState" data-tone="warning">
               {copy.expired}
-              <Button type="button" variant="secondary" size="sm" disabled={loading} onClick={reloadQrCode}>
-                {loading ? copy.refreshing : copy.refresh}
-              </Button>
+              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.refreshing : copy.refresh} />
             </div>
           ) : qrDataUrl ? (
             <>
@@ -206,20 +191,18 @@ export function WechatQrLoginModal(props: {
             <div className="settingsWechatQrState" data-tone="error" role="alert">
               <strong>{error.error}</strong>
               <span>{error.hint}</span>
-              <Button type="button" variant="secondary" size="sm" disabled={loading} onClick={reloadQrCode}>
-                {loading ? copy.retrying : copy.retry}
-              </Button>
+              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.retrying : copy.retry} />
             </div>
           ) : (
             <div className="settingsWechatQrState" data-tone="loading">
               {copy.bridgeGenerating}
-              <Button type="button" variant="secondary" size="sm" disabled={loading} onClick={reloadQrCode}>
-                {loading ? copy.fetching : copy.fetchAgain}
-              </Button>
+              <Button variant="secondary" size="sm" isDisabled={loading} onClick={reloadQrCode} label={loading ? copy.fetching : copy.fetchAgain} />
             </div>
           )}
-        </div>
-      </DialogContent>
-    </DialogRoot>
+            </div>
+          </LayoutContent>
+        }
+      />
+    </Dialog>
   );
 }

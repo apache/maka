@@ -20,6 +20,13 @@
       }
     },
     {
+      "name": "invalid-empty-runtime-identity",
+      "accepted": false,
+      "overrides": {
+        "invocationId": ""
+      }
+    },
+    {
       "name": "invalid-numeric-tool-call-ref",
       "accepted": false,
       "overrides": {
@@ -639,6 +646,25 @@
               "protocol": "tool_reconcile_v1",
               "operationId": "operation-1",
               "observation": "matches_expected_state",
+              "observationSchema": "state_identity_v1",
+              "observationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "invalid-array-tool-recovery-observation",
+      "accepted": false,
+      "overrides": {
+        "actions": {
+          "toolRecovery": {
+            "kind": "maka.tool.reconcile_result",
+            "version": 1,
+            "payload": {
+              "protocol": "tool_reconcile_v1",
+              "operationId": "operation-1",
+              "observation": ["unreadable"],
               "observationSchema": "state_identity_v1",
               "observationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { SettingsRows } from './settings-rows';
+import { Card, Item, SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import type {
   AppSettings,
   PersonalizationSettings,
@@ -8,7 +8,16 @@ import type {
   UiLocalePreference,
   UpdateAppSettingsResult,
 } from '@maka/core';
-import { ChoiceCard, ChoiceCardGroup, Input, Segmented, Textarea, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import {
+  RadioList,
+  RadioListItem,
+  FormLayout,
+  TextArea,
+  TextInput,
+  useMountedRef,
+  useToast,
+  useUiLocale,
+} from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
@@ -157,29 +166,21 @@ export function PersonalizationSettingsPage(props: {
 
   return (
     <div className="settingsStructuredPage">
-      {/* Detail audit round 3: these rows used the borderless
-          .settingsField language while every other 通用 row is a bordered
-          SettingsRows card — two row systems on one page. Unified onto
-          the card language; the full-width tone textarea uses the
-          vertical row variant. */}
-      <SettingsRows>
-        <div className="settingsFormRow">
-          <div>
-            <strong>{copy.displayName}</strong>
-            <small>{copy.displayNameHelp}</small>
-          </div>
-          <Input
+      {/* These editable values stay in the same grouped Settings card as the
+          neighboring preferences; the full-width tone field uses the vertical
+          row variant. */}
+      <Card padding={0} className="settingsRows">
+        <FormLayout className="settingsFormLayout">
+          <TextInput
             type="text"
             value={displayName}
-            onChange={(event) => setDisplayName(event.currentTarget.value)}
-            onBlur={(event) => flushDisplayName(event.currentTarget.value)}
+            onChange={(value) => setDisplayName(value.slice(0, 60))}
+            onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
-            maxLength={60}
-            autoComplete="off"
-            spellCheck={false}
-            aria-label={copy.displayName}
+            label={copy.displayName}
+            description={copy.displayNameHelp}
+            width="100%"
           />
-        </div>
 
         {/*
           PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
@@ -187,40 +188,41 @@ export function PersonalizationSettingsPage(props: {
           choice wins over the temporary auto -> zh fallback;
           e2e-fixture override wins over both (deterministic baselines).
         */}
-        <div className="settingsFormRow">
-          <div>
-            <strong>{copy.interfaceLanguage}</strong>
-            <small>{copy.interfaceLanguageHelp}</small>
-          </div>
-          <Segmented
+        <Item
+          label={copy.interfaceLanguage}
+          description={copy.interfaceLanguageHelp}
+          endContent={<SegmentedControl
             value={uiLocale}
-            options={copy.localeOptions}
             onChange={(next) => persistLocale(next as UiLocalePreference)}
-            ariaLabel={copy.interfaceLanguage}
-          />
-        </div>
+            label={copy.interfaceLanguage}
+          >
+            {copy.localeOptions.map(([value, label]) => (
+              <SegmentedControlItem key={value} value={value} label={label} />
+            ))}
+          </SegmentedControl>}
+        />
 
-        <div className="settingsFormRow" data-orient="vertical">
-          <div>
-            <strong>{copy.assistantTone}</strong>
-            <small>{copy.assistantToneHelp}</small>
-          </div>
-          <Textarea
+          <TextArea
             value={assistantTone}
-            onChange={(event) => {
-              setAssistantTone(event.currentTarget.value);
-              scheduleToneSave(event.currentTarget.value);
+            onChange={(value) => {
+              const next = value.slice(0, 500);
+              setAssistantTone(next);
+              scheduleToneSave(next);
             }}
-            onBlur={(event) => flushTone(event.currentTarget.value)}
+            onBlur={() => flushTone(assistantTone)}
             placeholder={copy.assistantTonePlaceholder}
             rows={4}
-            maxLength={500}
-            spellCheck={false}
-            aria-label={copy.assistantTone}
-            className="min-h-21 w-full"
+            hasSpellCheck={false}
+            label={copy.assistantTone}
+            description={copy.assistantToneHelp}
+            width="100%"
+            style={{
+              boxSizing: 'border-box',
+              height: 'calc(var(--space-16) + var(--space-5))',
+            }}
           />
-        </div>
-      </SettingsRows>
+        </FormLayout>
+      </Card>
     </div>
   );
 }
@@ -335,66 +337,53 @@ function ThemeSettingsPage(props: {
 
   return (
     <div className="settingsStructuredPage">
-      <h3 className="settingsSubheading">{copy.theme}</h3>
-      <ChoiceCardGroup
-        className="settingsThemeOptions settingsThemeOptionsPreview"
-        aria-label={copy.theme}
+      <RadioList
+        label={copy.theme}
         value={props.themePref}
-        onValueChange={(next) => void setTheme(next as typeof props.themePref)}
+        onChange={(value) => void setTheme(value as ThemePreference)}
+        width="100%"
       >
-        {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
-          // Base UI Radio.Root via ChoiceCard primitive (Round C,
-          // PR round-c-choice-card-primitive). Keyboard arrow nav,
-          // focus management, and `data-checked` are owned by the
-          // primitive; the card chrome stays in `.settingsThemeOption*`
-          // CSS so the regression test that catches `<Button>` shrinking
-          // the card to a 36px black pill is no longer needed.
-          <ChoiceCard
-            key={value}
-            value={value}
-            className="settingsThemeOption settingsThemeOptionPreview"
-          >
-            <ThemePreviewMock variant={value} />
-            <span className="settingsThemeLabel">
-              <strong>{option.label}</strong>
-              <small>{option.help}</small>
-            </span>
-          </ChoiceCard>
-        ))}
-      </ChoiceCardGroup>
-
-      <h3 className="settingsSubheading">{copy.palette}</h3>
-      {/* PR-PALETTE-PICKER-GROUPS-0: 11 palettes in a flat grid is
-          cramped. Split into 编辑器主题 (default + 4 community editor
-          themes) and 产品色调 (6 product accents) so the picker is
-          easier to scan. Each subgroup is its own radiogroup so
-          arrow-key navigation stays scoped. */}
-      {PALETTE_GROUPS.map((group) => (
-        <div key={group.id} className="settingsPaletteGroup">
-          <h4 className="settingsPaletteGroupHeading">{copy.paletteGroups[group.id]}</h4>
-          <ChoiceCardGroup
-            className="settingsThemeOptions settingsPaletteOptions"
-            aria-label={copy.paletteGroups[group.id]}
-            value={currentPalette}
-            onValueChange={(next) => void setPalette(next as ThemePalette)}
-          >
-            {group.palettes.map((palette) => (
-              <ChoiceCard
-                key={palette}
-                value={palette}
-                data-palette={palette}
-                className="settingsThemeOption settingsPaletteOption"
-              >
-                <span className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`} aria-hidden="true" />
-                <span className="settingsThemeLabel">
-                  <strong>{copy.paletteLabels[palette]}</strong>
-                  <small>{copy.paletteHelp[palette]}</small>
-                </span>
-              </ChoiceCard>
-            ))}
-          </ChoiceCardGroup>
+        <div className="settingsThemeOptions">
+          {(Object.entries(copy.themeOptions) as Array<[ThemePreference, { label: string; help: string }]>).map(([value, option]) => (
+            <RadioListItem
+              key={value}
+              value={value}
+              label={option.label}
+              description={option.help}
+              startContent={<ThemePreviewMock variant={value} />}
+            />
+          ))}
         </div>
-      ))}
+      </RadioList>
+
+      <RadioList
+        label={copy.palette}
+        value={currentPalette}
+        onChange={(value) => void setPalette(value as ThemePalette)}
+        width="100%"
+      >
+        {PALETTE_GROUPS.map((group) => (
+          <div key={group.id} className="settingsPaletteGroup">
+            <h4 className="settingsPaletteGroupHeading">{copy.paletteGroups[group.id]}</h4>
+            <div className="settingsThemeOptions">
+              {group.palettes.map((palette) => (
+                <RadioListItem
+                  key={palette}
+                  value={palette}
+                  label={copy.paletteLabels[palette]}
+                  description={copy.paletteHelp[palette]}
+                  startContent={(
+                    <span
+                      className={`settingsPaletteSwatch settingsPaletteSwatch-${palette}`}
+                      aria-hidden="true"
+                    />
+                  )}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </RadioList>
 
       <p className="settingsHelpText">
         {copy.persistenceHelp}

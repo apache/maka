@@ -6,6 +6,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const releaseDirectory = join(desktopRoot, 'release');
+const electronDistributionDirectory = join(repoRoot, 'node_modules', 'electron', 'dist');
+const requiredElectronLicensePaths = [
+  join(electronDistributionDirectory, 'LICENSE'),
+  join(electronDistributionDirectory, 'LICENSES.chromium.html'),
+];
 const requiredSigningEnvironment = [
   'CSC_LINK',
   'CSC_KEY_PASSWORD',
@@ -60,6 +65,10 @@ export async function packageMacosArm64({
   const dmgPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.dmg`);
   const zipPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.zip`);
   const updateMetadataPath = join(releaseDirectory, 'latest-mac.yml');
+
+  for (const path of requiredElectronLicensePaths) {
+    await assertFile(path);
+  }
 
   await run('npm', ['run', 'clean']);
   await run('npm', ['run', 'build']);

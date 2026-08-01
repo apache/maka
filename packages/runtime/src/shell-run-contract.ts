@@ -8,7 +8,6 @@ import {
 
 import type { ShellPlan } from './shell-detect.js';
 import type { ChildFdInput } from './child-fd-input.js';
-import type { ToolExecutionPermissionContext } from './additional-permissions.js';
 import type { SandboxType } from './sandbox/types.js';
 
 export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
@@ -23,6 +22,7 @@ export const DEFAULT_MAX_LIVE_SHELL_RUNS = 64;
 export const DEFAULT_MAX_LIVE_PTY_RUNS = 8;
 export const DEFAULT_SHELL_RUN_FLUSH_INTERVAL_MS = 1_000;
 export const DEFAULT_SHELL_RUN_FLUSH_BYTES = 64 * 1024;
+export const DEFAULT_PIPE_OUTPUT_DRAIN_MS = 2_000;
 export const SHELL_RUN_CONTEXT_SUMMARY_LIMIT = 8;
 export const SHELL_RUN_RESOURCE_PREFIX = 'maka://runtime/background-tasks';
 export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
@@ -31,6 +31,13 @@ export const MAX_SHELL_RUN_RESOURCE_REF_CHARS =
 const SHELL_RUN_RESOURCE_PATH_PATTERN = /^\/background-tasks\/([^/]+)$/;
 
 type ShellRunToolResult = Extract<ToolResultContent, { kind: 'shell_run' }>;
+
+export class ShellRunPtyControlClosedError extends Error {
+  constructor() {
+    super('This PTY is stopping and no longer accepts input; use Read to observe its final state');
+    this.name = 'ShellRunPtyControlClosedError';
+  }
+}
 
 export interface ShellRunProcessManagerInput {
   store: ShellRunStore;
@@ -45,6 +52,7 @@ export interface ShellRunProcessManagerInput {
   maxLiveEmitChars?: number;
   killGraceMs?: number;
   exitAcknowledgementMs?: number;
+  pipeOutputDrainMs?: number;
 }
 
 export interface ShellRunBashInput {
@@ -64,8 +72,6 @@ export interface ShellRunBashInput {
   abortSignal?: AbortSignal;
   emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
-  /** One-call grants consumed by ToolRuntime for this exact invocation. */
-  permissionContext?: ToolExecutionPermissionContext;
   /** Effective command sandbox selected before process launch. */
   sandboxType?: SandboxType;
   /** Invoked exactly once after startup failure or terminal process completion. */

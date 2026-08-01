@@ -1,6 +1,11 @@
-import type { AnyPermissionRequestEvent, UserQuestionRequestEvent } from '@maka/core';
+import type {
+  SandboxBoundaryRequestEvent,
+  UserQuestionRequestEvent,
+} from '@maka/core';
 
-export type ComposerInteraction = AnyPermissionRequestEvent | UserQuestionRequestEvent;
+export type ComposerInteraction =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;
 
 export function enqueueInteraction(
@@ -36,6 +41,30 @@ export function dequeueInteractionByToolUseId(
 export function clearInteractions(queues: InteractionQueues, sessionId: string): InteractionQueues {
   if (!queues[sessionId]?.length) return queues;
   return { ...queues, [sessionId]: [] };
+}
+
+export function reconcileSandboxBoundaryInteractions(
+  queues: InteractionQueues,
+  sessionId: string,
+  liveRequests: readonly SandboxBoundaryRequestEvent[],
+): InteractionQueues {
+  const liveById = new Map(liveRequests.map((request) => [request.requestId, request]));
+  const seen = new Set<string>();
+  const reconciled: ComposerInteraction[] = [];
+  for (const interaction of queues[sessionId] ?? []) {
+    if (interaction.type !== 'sandbox_boundary_request') {
+      reconciled.push(interaction);
+      continue;
+    }
+    const live = liveById.get(interaction.requestId);
+    if (!live) continue;
+    seen.add(interaction.requestId);
+    reconciled.push(live);
+  }
+  for (const request of liveRequests) {
+    if (!seen.has(request.requestId)) reconciled.push(request);
+  }
+  return { ...queues, [sessionId]: reconciled };
 }
 
 export function activeInteractionFor(

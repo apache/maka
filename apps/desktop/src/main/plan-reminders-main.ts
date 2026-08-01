@@ -8,11 +8,9 @@ import type {
   PlanReminder,
   WorkspacePrivacyContext,
 } from '@maka/core';
-import type { createPlanReminderStore } from '@maka/storage';
+import type { PlanReminderStore } from '@maka/storage';
 
 const PLAN_REMINDER_DEFAULT_SNOOZE_MS = 10 * 60 * 1000;
-
-type PlanReminderStore = ReturnType<typeof createPlanReminderStore>;
 
 export type PlanReminderChangedReason = 'created' | 'updated' | 'deleted' | 'triggered' | 'blocked';
 

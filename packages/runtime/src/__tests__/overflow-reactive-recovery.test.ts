@@ -10,8 +10,8 @@ import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { PermissionEngine } from '../permission-engine.js';
 import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const ANCHOR_TEXT = 'reactive overflow recovery keep my exact words';
@@ -391,7 +391,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       }
     : {};
 
-  const backend = new AiSdkBackend({
+  const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async () => {
@@ -401,7 +401,6 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     connection: { ...connection(), models: [{ id: 'mock-model-id', contextWindow }] },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
     tools: [
@@ -409,7 +408,6 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
         name: 'Read',
         description: 'Read description',
         parameters: z.object({ path: z.string() }),
-        permissionRequired: false,
         impl: async (args: { path: string }) => {
           toolExecutions.push(args.path);
           return { body: args.path === 'big.md' ? BIG_RESULT : RAW_SPAN_ONE };
@@ -421,7 +419,6 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               name: 'Big',
               description: 'Gated capability behind the big group',
               parameters: z.object({ q: z.string() }),
-              permissionRequired: false,
               impl: async () => {
                 toolExecutions.push('BIG_EXEC');
                 return { ok: true };

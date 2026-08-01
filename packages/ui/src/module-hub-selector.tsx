@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react';
+import { Tab, TabList } from '@astryxdesign/core';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
-import { Blocks, CalendarCheck, ChevronDown, Plug, Sun } from './icons.js';
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from './primitives/menu.js';
+import { Blocks, CalendarCheck, Plug, Sun } from './icons.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
-import { Button } from './ui.js';
 
 export type ModuleHubHeader = {
   title: string;
@@ -32,36 +31,17 @@ function Selector(props: {
   ariaLabel: string;
   onChange(value: string): void;
 }) {
-  const selected = props.options.find(([value]) => value === props.value) ?? props.options[0];
-  if (!selected) return null;
-
   return (
-    <span className="maka-module-hub-selector">
-      <span className="maka-module-hub-separator" aria-hidden="true">/</span>
-      <Menu>
-        <MenuTrigger
-          render={<Button variant="quiet" />}
-          className="maka-module-hub-selector-trigger"
-          aria-label={props.ariaLabel}
-        >
-          {selected[2]}
-          <span>{selected[1]}</span>
-          <ChevronDown className="maka-module-hub-selector-chevron" size={15} aria-hidden="true" />
-        </MenuTrigger>
-        <MenuPopup className="maka-module-hub-selector-menu" align="start" sideOffset={6}>
-          <MenuRadioGroup value={props.value} onValueChange={props.onChange}>
-            {props.options.map(([value, label, icon]) => (
-              <MenuRadioItem key={value} value={value}>
-                <span className="maka-module-hub-selector-option">
-                  {icon}
-                  <span>{label}</span>
-                </span>
-              </MenuRadioItem>
-            ))}
-          </MenuRadioGroup>
-        </MenuPopup>
-      </Menu>
-    </span>
+    <TabList
+      className="maka-module-hub-selector"
+      value={props.value}
+      aria-label={props.ariaLabel}
+      onChange={props.onChange}
+    >
+      {props.options.map(([value, label, icon]) => (
+        <Tab key={value} value={value} label={label} icon={icon} />
+      ))}
+    </TabList>
   );
 }
 

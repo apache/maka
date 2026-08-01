@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
-  PermissionRequestEvent,
+  SandboxBoundaryRequestEvent,
   SessionHeader,
   StoredMessage,
   E2eFixtureState,
@@ -297,6 +297,7 @@ export function streamingSession(now: number): SessionHeader {
     connection: 'zai-live',
     model: 'glm-5',
     now,
+    status: 'running',
     hasUnread: true,
     lastMessageAt: now - 2 * 60_000,
   });
@@ -315,14 +316,21 @@ export function streamingMessages(now: number): StoredMessage[] {
 }
 
 export function permissionSession(now: number): SessionHeader {
-  return header({
-    id: PERMISSION_SESSION_ID,
-    name: '危险权限确认',
-    connection: 'zai-live',
-    model: 'glm-5.1',
-    now,
-    lastMessageAt: now - 4 * 60_000,
-  });
+  return {
+    ...header({
+      id: PERMISSION_SESSION_ID,
+      name: '危险权限确认',
+      connection: 'zai-live',
+      model: 'glm-5.1',
+      now,
+      lastMessageAt: now - 4 * 60_000,
+    }),
+    // A read-only session asking to write outside the workspace — the shape
+    // #1611 is about. Its genesis boundary is therefore read-only, so the
+    // permission label has something real to report both before the request is
+    // answered and after the expansion widens the boundary.
+    permissionMode: 'explore',
+  };
 }
 
 export function permissionMessages(now: number): StoredMessage[] {
@@ -390,6 +398,16 @@ export function streamingLiveTurns(): NonNullable<E2eFixtureState['liveTurnBySes
           intent: '模拟后台 stream 中的 tool activity',
           status: 'running',
           args: { cmd: 'npm run e2e-fixture:fixture' },
+          outputChunks: [{
+            seq: 1,
+            stream: 'stdout',
+            text: Array.from(
+              { length: 160 },
+              (_, index) => `diagnostic line ${String(index + 1).padStart(3, '0')}\n`,
+            ).join(''),
+            redacted: false,
+            createdAt: E2E_FIXTURE_NOW,
+          }],
         }],
       }],
     },
@@ -420,47 +438,45 @@ export function processingLiveTurns(): NonNullable<E2eFixtureState['liveTurnBySe
   };
 }
 
-export function permissionState(): NonNullable<E2eFixtureState['permissionBySession']> {
+export function sandboxBoundaryState(): NonNullable<E2eFixtureState['sandboxBoundaryBySession']> {
   return {
-    [PERMISSION_SESSION_ID]: permissionRequest(E2E_FIXTURE_NOW),
+    [PERMISSION_SESSION_ID]: sandboxBoundaryRequest(E2E_FIXTURE_NOW),
   };
 }
 
-export function permissionLiveTurns(): NonNullable<E2eFixtureState['liveTurnBySession']> {
-  const request = permissionRequest(E2E_FIXTURE_NOW);
+export function sandboxBoundaryLiveTurns(): NonNullable<E2eFixtureState['liveTurnBySession']> {
   return {
     [PERMISSION_SESSION_ID]: {
-      turnId: 'turn-permission',
+      turnId: 'turn-sandbox-boundary',
       phase: 'streamed',
       steps: [{
         stepId: 'tool:permission-tool',
         tools: [{
-          toolUseId: request.toolUseId,
-          toolName: request.toolName,
-          displayName: '模拟删除命令',
-          intent: request.hint,
+          toolUseId: 'permission-tool',
+          toolName: 'request_sandbox_boundary',
+          displayName: '扩展沙箱边界',
+          intent: '写入工作区外的构建产物目录',
           status: 'waiting_permission',
-          args: request.args,
+          args: { path: '/outside/dist', access: 'write', scope: 'subtree' },
         }],
       }],
     },
   };
 }
 
-function permissionRequest(now: number): PermissionRequestEvent {
+function sandboxBoundaryRequest(now: number): SandboxBoundaryRequestEvent {
   return {
-    type: 'permission_request',
-    kind: 'tool_permission',
+    type: 'sandbox_boundary_request',
     id: 'e2e-fixture-permission-event',
-    turnId: 'turn-permission',
+    turnId: 'turn-sandbox-boundary',
     ts: now,
     requestId: 'e2e-fixture-permission-request',
     toolUseId: 'permission-tool',
-    toolName: 'Bash',
-    category: 'fs_destructive',
-    reason: 'fs_destructive',
-    args: { command: 'rm -rf ./dist', cwd: '/workspace/maka' },
-    rememberForTurnAllowed: true,
-    hint: '这会删除构建产物目录；允许前请确认当前工作区。',
+    justification: '写入工作区外的构建产物目录。',
+    expansion: {
+      filesystem: {
+        entries: [{ path: '/outside/dist', access: 'write', scope: 'subtree' }],
+      },
+    },
   };
 }

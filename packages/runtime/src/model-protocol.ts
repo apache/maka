@@ -102,6 +102,21 @@ export interface FilePart {
   providerOptions?: ProviderOptions;
 }
 
+/**
+ * Explicit native-audio intent. ModelAdapter lowers this only for a route that
+ * was admitted by the voice capability router; a generic FilePart is never
+ * promoted into audio by MIME sniffing.
+ */
+export interface AudioPart {
+  type: 'audio';
+  data: DataContent;
+  mediaType: string;
+  format: 'wav' | 'webm' | 'mp3' | 'm4a';
+  durationMs: number;
+  transcript?: string;
+  retention: 'operation_memory';
+}
+
 export interface ReasoningPart {
   type: 'reasoning';
   text: string;
@@ -263,7 +278,7 @@ export type AssistantContent =
       | ToolResultPart
       | ToolApprovalRequest
     >;
-export type UserContent = string | Array<TextPart | ImagePart | FilePart>;
+export type UserContent = string | Array<TextPart | ImagePart | FilePart | AudioPart>;
 export type ToolContent = Array<ToolResultPart | ToolApprovalResponse>;
 
 export interface SystemModelMessage {
@@ -339,11 +354,19 @@ export interface NormalizedUsage {
   cachedInputTokens: number;
 }
 
+export function rawFinishReasonString(reason: unknown): string | undefined {
+  if (typeof reason === 'string') return reason;
+  if (!reason || typeof reason !== 'object') return undefined;
+  const value = reason as { raw?: unknown; unified?: unknown };
+  if (typeof value.raw === 'string') return value.raw;
+  return typeof value.unified === 'string' ? value.unified : undefined;
+}
+
 /**
  * Normalized provider finish reason as a Maka-owned string. The raw AI SDK
- * finish-reason value (string or `{ raw, unified }` object) is reduced to this
- * string only inside `ModelAdapter`; downstream code compares against the
- * string literal (e.g. `'tool-calls'`) or maps it via `ModelAdapter.mapFinishReason`.
+ * finish-reason value (string or `{ raw, unified }` object) is reduced at the
+ * provider boundary; downstream code compares against the string literal
+ * (e.g. `'tool-calls'`) or maps it via `ModelAdapter.mapFinishReason`.
  */
 export type ModelFinishReason = string;
 

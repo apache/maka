@@ -43,8 +43,7 @@ import {
 } from './tool-result-record-schema.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 
-export { isDeepResearchSession } from './explore-agent.js';
-export { isExpertTeamSession } from './expert-team.js';
+export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
 
 export const SESSION_STATUSES = [
   'active',
@@ -111,9 +110,9 @@ export interface SubagentSessionParent {
  * Durable execution snapshot for a linked subagent session.
  *
  * The snapshot prevents a reopened child session from silently inheriting a
- * wider tool surface or permission ceiling from a later parent/default
- * configuration. The concrete SessionHeader continues to own backend/model/
- * cwd and the active permission mode.
+ * wider tool surface from a later parent/default configuration. The concrete
+ * SessionHeader continues to own backend/model/cwd while ExecutionBoundary is
+ * the authoritative local execution authority.
  */
 export interface SubagentSessionRuntime {
   schemaVersion: typeof SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION;
@@ -124,7 +123,8 @@ export interface SubagentSessionRuntime {
   systemPrompt: string;
   toolNames: string[];
   categoryPolicy: Partial<Record<ToolCategory, PolicyDecision>>;
-  permissionCeiling: PermissionMode;
+  /** Legacy decode-only metadata. Current child sessions do not write it. */
+  permissionCeiling?: PermissionMode;
 }
 
 /**
@@ -139,6 +139,20 @@ export interface SubagentSessionSpawn {
   requestFingerprint: string;
   initialTurnId: string;
   initialRunId: string;
+}
+
+/**
+ * Internal publication state for a Host-owned cross-Session conversation copy.
+ *
+ * Preparing copies are not product Sessions yet. The Host publishes them only
+ * after Messages, Runtime Events, Artifacts, and Task Ledger state are durable.
+ */
+export interface SessionConversationCopy {
+  kind: 'branch' | 'revision';
+  sourceSessionId: string;
+  sourceTurnId: string;
+  requestFingerprint: `sha256:${string}`;
+  state: 'preparing' | 'committed';
 }
 
 export type SubagentSessionRuntimeSummary = Omit<
@@ -199,6 +213,8 @@ export interface SessionHeader {
   subagentSpawn?: SubagentSessionSpawn;
   /** Immutable host-managed filesystem isolation for this child Session. */
   subagentWorkspace?: SubagentWorkspaceBinding;
+  /** Immutable Host publication identity for a cross-Session conversation copy. */
+  conversationCopy?: SessionConversationCopy;
   /** Stable root id for an edit-and-resend version family. */
   revisionRootSessionId?: string;
   /** Immediate previous version in the same conversation slot. */
@@ -326,12 +342,15 @@ const SUBAGENT_SESSION_RUNTIME_SHAPE = defineObjectShape<SubagentSessionRuntime>
     'systemPrompt',
     'toolNames',
     'categoryPolicy',
-    'permissionCeiling',
   ],
-  [],
+  ['permissionCeiling'],
 );
 const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionSpawn>()(
   ['schemaVersion', 'requestFingerprint', 'initialTurnId', 'initialRunId'],
+  [],
+);
+const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
+  ['kind', 'sourceSessionId', 'sourceTurnId', 'requestFingerprint', 'state'],
   [],
 );
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
@@ -399,7 +418,7 @@ export function isSubagentSessionRuntime(value: unknown): value is SubagentSessi
   ) {
     return false;
   }
-  return isPermissionMode(value.permissionCeiling);
+  return value.permissionCeiling === undefined || isPermissionMode(value.permissionCeiling);
 }
 
 /** Strict decoder guard for durable child-spawn idempotency metadata. */
@@ -412,6 +431,20 @@ export function isSubagentSessionSpawn(value: unknown): value is SubagentSession
     SUBAGENT_REQUEST_FINGERPRINT_PATTERN.test(value.requestFingerprint) &&
     isSessionLineageId(value.initialTurnId) &&
     isSessionLineageId(value.initialRunId)
+  );
+}
+
+/** Strict decoder guard for Host-owned conversation-copy publication state. */
+export function isSessionConversationCopy(value: unknown): value is SessionConversationCopy {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, SESSION_CONVERSATION_COPY_SHAPE) &&
+    (value.kind === 'branch' || value.kind === 'revision') &&
+    isSessionLineageId(value.sourceSessionId) &&
+    isSessionLineageId(value.sourceTurnId) &&
+    typeof value.requestFingerprint === 'string' &&
+    /^sha256:[0-9a-f]{64}$/.test(value.requestFingerprint) &&
+    (value.state === 'preparing' || value.state === 'committed')
   );
 }
 

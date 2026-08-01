@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type {
   BackendKind,
-  PermissionDecisionMessage,
   SessionEvent,
   SessionHeader,
   ToolCallMessage,
@@ -16,29 +15,17 @@ import {
   decodeCanonicalToolResultContent,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
 } from '@maka/core';
-import type {
-  BackendSendInput,
-  HostedInteractionBridge,
-  PermissionDecision,
-} from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { redactSecrets } from '@maka/core/redaction';
-import { isToolCategory, type ToolCategory } from '@maka/core/permission';
 
 import type { AgentBackend } from '@maka/core/backend-types';
 import type { AppendMessageFn } from './ai-sdk-backend.js';
-import {
-  RuntimeInteractionAdmissionRejectedError,
-  RuntimeInteractionClosedError,
-  RuntimeInteractionFailStopError,
-  RuntimeInteractionInvariantError,
-} from './interaction-authority.js';
-import { PermissionEngine } from './permission-engine.js';
 
 export interface PiAgentBackendInput {
   sessionId: string;
   header: SessionHeader;
   appendMessage: AppendMessageFn;
-  permissionEngine: PermissionEngine;
   transport: PiAgentTransport;
   newId?: () => string;
   now?: () => number;
@@ -86,14 +73,6 @@ export type PiAgentFrame =
       total?: number;
       costUsd?: number;
     }
-  | {
-      type: 'permission_request';
-      toolUseId: string;
-      toolName: string;
-      args?: unknown;
-      categoryHint?: ToolCategory;
-      hint?: string;
-    }
   | { type: 'error'; message: string; code?: string; details?: unknown }
   | { type: 'complete'; stopReason?: 'end_turn' | 'error' | 'max_tokens' };
 
@@ -108,7 +87,6 @@ export class PiAgentBackend implements AgentBackend {
   private currentTurnId: string | null = null;
   private outputSeqByTool = new Map<string, number>();
   private toolCallsByUseId = new Map<string, { toolName: string; args: unknown }>();
-  private suppressedToolUseIds = new Set<string>();
 
   constructor(input: PiAgentBackendInput) {
     this.input = input;
@@ -131,8 +109,6 @@ export class PiAgentBackend implements AgentBackend {
     this.currentTurnId = turnId;
     this.outputSeqByTool = new Map();
     this.toolCallsByUseId = new Map();
-    this.suppressedToolUseIds = new Set();
-    this.input.permissionEngine.beginTurn(turnId);
 
     const beginStep = (preferredMessageId?: string, nextProviderMessageId?: string): void => {
       let nextMessageId = preferredMessageId;
@@ -219,8 +195,7 @@ export class PiAgentBackend implements AgentBackend {
           }
           case 'tool_start': {
             const frameArgs = structuredClone(frame.args);
-            const suppressed = this.suppressedToolUseIds.has(frame.toolUseId);
-            if (!suppressed) await persistAssistant();
+            await persistAssistant();
             const canonicalArgs = await this.ensureToolCall(
               turnId,
               frame.toolUseId,
@@ -232,7 +207,6 @@ export class PiAgentBackend implements AgentBackend {
                 stepId: messageId,
               },
             );
-            if (suppressed) break;
             stepHasTools = true;
             activeToolUseIds.add(frame.toolUseId);
             const projectedArgs = projectPiToolArgs(frame.toolName, canonicalArgs);
@@ -251,7 +225,6 @@ export class PiAgentBackend implements AgentBackend {
             break;
           }
           case 'tool_output_delta': {
-            if (this.suppressedToolUseIds.has(frame.toolUseId)) break;
             const seq = (this.outputSeqByTool.get(frame.toolUseId) ?? 0) + 1;
             this.outputSeqByTool.set(frame.toolUseId, seq);
             const redacted = redactBoundedText(frame.chunk);
@@ -272,7 +245,6 @@ export class PiAgentBackend implements AgentBackend {
             break;
           }
           case 'tool_result': {
-            if (this.suppressedToolUseIds.has(frame.toolUseId)) break;
             const content = normalizeToolResultContent(frame.content);
             await this.appendToolResult(turnId, frame.toolUseId, Boolean(frame.isError), content);
             yield {
@@ -295,10 +267,6 @@ export class PiAgentBackend implements AgentBackend {
             const event = this.tokenUsageEvent(turnId, frame);
             await this.input.appendMessage(event);
             yield event;
-            break;
-          }
-          case 'permission_request': {
-            yield* this.handlePermissionRequest(turnId, frame, input.hostedInteraction);
             break;
           }
           case 'error': {
@@ -332,7 +300,6 @@ export class PiAgentBackend implements AgentBackend {
       if (complete) yield complete;
       yield this.completeEvent(turnId, 'end_turn');
     } catch (error) {
-      if (isInteractionControlError(error)) throw error;
       if (this.stopped) {
         await persistAssistant();
         yield this.abortEvent(turnId);
@@ -351,159 +318,24 @@ export class PiAgentBackend implements AgentBackend {
       };
       yield this.completeEvent(turnId, 'error');
     } finally {
-      this.input.permissionEngine.endTurn(turnId, this.stopped ? 'aborted' : 'completed');
       this.currentTurnId = null;
       this.outputSeqByTool.clear();
       this.toolCallsByUseId.clear();
-      this.suppressedToolUseIds.clear();
       this.stopped = false;
     }
   }
 
   async stop(reason: 'user_stop' | 'redirect'): Promise<void> {
     this.stopped = true;
-    if (this.currentTurnId !== null) {
-      this.input.permissionEngine.endTurn(this.currentTurnId, 'aborted');
-    }
     await this.input.transport.stop?.(reason);
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
-    if (this.currentTurnId === null) return;
-    this.input.permissionEngine.recordResponse(this.currentTurnId, decision);
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
+    throw new Error(`No pending sandbox boundary request ${decision.requestId}`);
   }
 
   async dispose(): Promise<void> {
-    if (this.currentTurnId !== null) {
-      this.input.permissionEngine.endTurn(this.currentTurnId, 'aborted');
-    }
     await this.input.transport.dispose?.();
-  }
-
-  private async *handlePermissionRequest(
-    turnId: string,
-    frame: Extract<PiAgentFrame, { type: 'permission_request' }>,
-    hostedInteraction?: HostedInteractionBridge,
-  ): AsyncIterable<SessionEvent> {
-    const frameArgs = structuredClone(frame.args);
-    const canonicalArgs = await this.ensureToolCall(
-      turnId,
-      frame.toolUseId,
-      frame.toolName,
-      frameArgs,
-      frame.categoryHint ? { categoryHint: frame.categoryHint } : {},
-    );
-    const verdict = this.input.permissionEngine.evaluate({
-      sessionId: this.sessionId,
-      turnId,
-      toolUseId: frame.toolUseId,
-      toolName: frame.toolName,
-      args: structuredClone(canonicalArgs),
-      ...(frame.categoryHint ? { categoryHint: frame.categoryHint } : {}),
-      mode: this.input.header.permissionMode,
-      ...(frame.hint ? { hint: redactBoundedText(frame.hint, 240) } : {}),
-      ...(hostedInteraction ? { runId: hostedInteraction.runId, hostedInteraction } : {}),
-    });
-
-    if (verdict.kind === 'block') {
-      this.suppressedToolUseIds.add(frame.toolUseId);
-      const content: ToolResultContent = { kind: 'text', text: redactBoundedText(verdict.reason) };
-      await this.appendToolResult(turnId, frame.toolUseId, true, content);
-      yield this.toolResultEvent(turnId, frame.toolUseId, true, content);
-      return;
-    }
-
-    if (verdict.kind === 'allow') return;
-
-    let admissionState: 'pending' | 'settled' | undefined;
-    if (hostedInteraction) {
-      void verdict.parked.catch(() => undefined);
-      const settlement = verdict.settlement;
-      if (!settlement) {
-        throw new RuntimeInteractionInvariantError(
-          `Hosted Pi permission ${verdict.event.requestId} has no PermissionEngine settlement`,
-        );
-      }
-      try {
-        const admission = await hostedInteraction.admitPermissionRequest({
-          request: verdict.event,
-          ...(verdict.rememberScopeId ? { rememberScopeId: verdict.rememberScopeId } : {}),
-          settlement,
-        });
-        admissionState = admission.state;
-      } catch (error) {
-        this.input.permissionEngine.rejectRequest(
-          turnId,
-          verdict.event.requestId,
-          error instanceof Error
-            ? error
-            : new RuntimeInteractionInvariantError(
-                `Pi permission admission failed for ${verdict.event.requestId}`,
-              ),
-        );
-        await verdict.parked.catch(() => undefined);
-        throw error;
-      }
-    }
-
-    if (admissionState !== 'settled') yield verdict.event;
-    let response: PermissionDecision;
-    try {
-      response = await verdict.parked;
-    } catch (error) {
-      if (isInteractionControlError(error)) throw error;
-      const content: ToolResultContent = {
-        kind: 'text',
-        text: redactBoundedText(error instanceof Error ? error.message : String(error)),
-      };
-      await this.appendToolResult(turnId, frame.toolUseId, true, content);
-      yield this.toolResultEvent(turnId, frame.toolUseId, true, content);
-      return;
-    }
-
-    if (hostedInteraction) {
-      yield {
-        type: 'permission_answer_ack',
-        id: this.newId(),
-        turnId,
-        ts: this.now(),
-        requestId: response.requestId,
-        toolUseId: frame.toolUseId,
-      };
-    } else {
-      const decisionMsg: PermissionDecisionMessage = {
-        type: 'permission_decision',
-        id: response.requestId,
-        turnId,
-        ts: this.now(),
-        toolUseId: frame.toolUseId,
-        toolName: frame.toolName,
-        decision: response.decision,
-        ...(response.rememberForTurn !== undefined
-          ? { rememberForTurn: response.rememberForTurn }
-          : {}),
-      };
-      await this.input.appendMessage(decisionMsg);
-      yield {
-        type: 'permission_decision_ack',
-        id: this.newId(),
-        turnId,
-        ts: this.now(),
-        requestId: response.requestId,
-        toolUseId: frame.toolUseId,
-        decision: response.decision,
-        ...(response.rememberForTurn !== undefined
-          ? { rememberForTurn: response.rememberForTurn }
-          : {}),
-      };
-    }
-
-    if (response.decision === 'deny') {
-      this.suppressedToolUseIds.add(frame.toolUseId);
-      const content: ToolResultContent = { kind: 'text', text: '用户已拒绝权限请求' };
-      await this.appendToolResult(turnId, frame.toolUseId, true, content);
-      yield this.toolResultEvent(turnId, frame.toolUseId, true, content);
-    }
   }
 
   private async ensureToolCall(
@@ -512,7 +344,6 @@ export class PiAgentBackend implements AgentBackend {
     toolName: string,
     args: unknown,
     metadata: {
-      categoryHint?: ToolCategory;
       displayName?: string;
       intent?: string;
       stepId?: string;
@@ -535,7 +366,7 @@ export class PiAgentBackend implements AgentBackend {
       toolName,
       ...(metadata.displayName ? { displayName: metadata.displayName } : {}),
       ...(metadata.intent ? { intent: redactBoundedText(metadata.intent, 240) } : {}),
-      args: projectPiToolArgs(toolName, snapshot, metadata.categoryHint),
+      args: projectPiToolArgs(toolName, snapshot),
       ...(metadata.stepId ? { stepId: metadata.stepId } : {}),
     } satisfies ToolCallMessage);
     return structuredClone(snapshot);
@@ -622,20 +453,9 @@ export class PiAgentBackend implements AgentBackend {
   }
 }
 
-function isInteractionControlError(error: unknown): boolean {
-  return (
-    error instanceof RuntimeInteractionAdmissionRejectedError ||
-    error instanceof RuntimeInteractionClosedError ||
-    error instanceof RuntimeInteractionInvariantError ||
-    error instanceof RuntimeInteractionFailStopError
-  );
-}
-
-function projectPiToolArgs(toolName: string, args: unknown, categoryHint?: ToolCategory): unknown {
+function projectPiToolArgs(toolName: string, args: unknown): unknown {
   const projected =
-    categoryHint === 'computer_use' || toolName === 'maka_computer'
-      ? computerUseApprovalSummary(args)
-      : redactUnknown(args);
+    toolName === 'maka_computer' ? computerUseApprovalSummary(args) : redactUnknown(args);
   return structuredClone(projected);
 }
 
@@ -701,20 +521,6 @@ export function normalizePiAgentFrame(frame: unknown): PiAgentFrame | null {
       ...numberField('reasoning', value.reasoning),
       ...numberField('total', value.total),
       ...numberField('costUsd', value.costUsd),
-    };
-  }
-  if (
-    type === 'permission_request' &&
-    typeof value.toolUseId === 'string' &&
-    typeof value.toolName === 'string'
-  ) {
-    return {
-      type,
-      toolUseId: value.toolUseId,
-      toolName: value.toolName,
-      args: value.args ?? null,
-      ...(isToolCategory(value.categoryHint) ? { categoryHint: value.categoryHint } : {}),
-      ...(typeof value.hint === 'string' ? { hint: value.hint } : {}),
     };
   }
   if (type === 'error' && typeof value.message === 'string') {

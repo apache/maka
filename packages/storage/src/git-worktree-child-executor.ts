@@ -22,10 +22,11 @@ export interface CreateGitWorktreeChildExecutorInput {
 /**
  * Host-owned Git worktree allocator for linked child Sessions.
  *
- * Lease identity, branch, and path are deterministic. A retry therefore
+ * Lease identity, lease branch, and path are deterministic. A retry therefore
  * adopts the same worktree instead of creating a second filesystem side
- * effect. Worktrees intentionally survive terminal child runs so Session
- * resume/follow-up keeps the exact workspace.
+ * effect. The child may check out its own task branch without changing the
+ * host-owned lease identity. Worktrees intentionally survive terminal child
+ * runs so Session resume/follow-up keeps the exact workspace.
  */
 export function createGitWorktreeChildExecutor(
   input: CreateGitWorktreeChildExecutorInput,
@@ -54,18 +55,18 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
     if (!isSubagentWorkspaceBinding(binding)) {
       throw new Error('Invalid subagent worktree binding');
     }
-    const inspected = await this.inspectOwnedWorktree(binding.worktreePath, binding.branch);
+    const inspected = await this.inspectOwnedWorktree(binding.worktreePath);
     if (!inspected) {
       throw new Error(`Subagent worktree is unavailable: ${binding.worktreePath}`);
     }
-    if (
-      inspected.gitCommonDir !== normalize(binding.gitCommonDir) ||
-      inspected.baseCommit !== binding.baseCommit
-    ) {
+    if (inspected.gitCommonDir !== normalize(binding.gitCommonDir)) {
       throw new Error(`Subagent worktree binding changed: ${binding.worktreePath}`);
     }
-    const lease = await gitConfigGet(inspected.worktreePath, branchLeaseConfigKey(binding.branch));
-    if (lease !== binding.leaseId) {
+    const [lease, baseCommit] = await Promise.all([
+      gitConfigGet(inspected.worktreePath, branchLeaseConfigKey(binding.branch)),
+      gitConfigGet(inspected.worktreePath, branchBaseConfigKey(binding.branch)),
+    ]);
+    if (lease !== binding.leaseId || baseCommit !== binding.baseCommit) {
       throw new Error(`Subagent worktree lease changed: ${binding.worktreePath}`);
     }
   }
@@ -102,12 +103,12 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
     },
   ): Promise<SubagentWorkspaceBinding> {
     const { worktreePath, branch, gitCommonDir } = target;
-    const adopted = await this.inspectOwnedWorktree(worktreePath, branch);
+    const adopted = await this.inspectOwnedWorktree(worktreePath);
     if (adopted) {
       if (adopted.gitCommonDir !== gitCommonDir) {
         throw new Error(`Subagent worktree belongs to another Git repository: ${worktreePath}`);
       }
-      return this.finalizeBinding(leaseId, adopted);
+      return this.finalizeBinding(leaseId, branch, adopted);
     }
 
     const branchCommit = await gitRevParseOptional(sourceWorktreeRoot, branch);
@@ -135,9 +136,13 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
       ]);
     }
 
-    const inspected = await this.inspectOwnedWorktree(worktreePath, branch);
+    const inspected = await this.inspectOwnedWorktree(worktreePath);
     if (!inspected || inspected.gitCommonDir !== gitCommonDir) {
       throw new Error(`Git did not create the expected subagent worktree: ${worktreePath}`);
+    }
+    const checkedOutBranch = await gitCurrentBranch(inspected.worktreePath);
+    if (checkedOutBranch !== branch) {
+      throw new Error(`Git did not check out the expected subagent branch: ${worktreePath}`);
     }
     await setBranchLease(worktreePath, branch, leaseId, baseCommit);
     return {
@@ -175,53 +180,40 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
 
   private async finalizeBinding(
     leaseId: string,
+    leaseBranch: string,
     inspected: InspectedWorktree,
   ): Promise<SubagentWorkspaceBinding> {
-    const lease = await gitConfigGet(
-      inspected.worktreePath,
-      branchLeaseConfigKey(inspected.branch),
-    );
+    const lease = await gitConfigGet(inspected.worktreePath, branchLeaseConfigKey(leaseBranch));
     if (lease && lease !== leaseId) {
       throw new Error(`Subagent worktree lease changed: ${inspected.worktreePath}`);
     }
+    if (!lease && (await gitCurrentBranch(inspected.worktreePath)) !== leaseBranch) {
+      throw new Error(`Subagent worktree lease is unavailable: ${inspected.worktreePath}`);
+    }
     const baseCommit =
-      (await gitConfigGet(inspected.worktreePath, branchBaseConfigKey(inspected.branch))) ??
-      (await gitRevParse(inspected.worktreePath, inspected.branch));
-    await setBranchLease(inspected.worktreePath, inspected.branch, leaseId, baseCommit);
+      (await gitConfigGet(inspected.worktreePath, branchBaseConfigKey(leaseBranch))) ??
+      (await gitRevParse(inspected.worktreePath, leaseBranch));
+    await setBranchLease(inspected.worktreePath, leaseBranch, leaseId, baseCommit);
     return {
       schemaVersion: SUBAGENT_WORKSPACE_BINDING_SCHEMA_VERSION,
       kind: 'git_worktree',
       leaseId,
       gitCommonDir: inspected.gitCommonDir,
       worktreePath: inspected.worktreePath,
-      branch: inspected.branch,
+      branch: leaseBranch,
       baseCommit,
     };
   }
 
-  private async inspectOwnedWorktree(
-    path: string,
-    expectedBranch: string,
-  ): Promise<InspectedWorktree | undefined> {
+  private async inspectOwnedWorktree(path: string): Promise<InspectedWorktree | undefined> {
     if (!(await isDirectory(path))) return undefined;
     const location = await resolveProjectLocation({ path });
     if (location.kind !== 'git' || !location.git?.isWorktree) {
       throw new Error(`Subagent workspace is not a linked Git worktree: ${path}`);
     }
-    const branch = (
-      await runGit(location.git.worktreeRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
-    ).trim();
-    if (branch !== expectedBranch) {
-      throw new Error(`Subagent worktree branch changed from ${expectedBranch} to ${branch}`);
-    }
-    const baseCommit =
-      (await gitConfigGet(location.git.worktreeRoot, branchBaseConfigKey(branch))) ??
-      (await gitRevParse(location.git.worktreeRoot, branch));
     return {
       worktreePath: normalize(await realpath(location.git.worktreeRoot)),
       gitCommonDir: normalize(location.git.commonDir),
-      branch,
-      baseCommit,
     };
   }
 }
@@ -229,8 +221,6 @@ class GitWorktreeChildExecutor implements SubagentWorktreeExecutor {
 interface InspectedWorktree {
   worktreePath: string;
   gitCommonDir: string;
-  branch: string;
-  baseCommit: string;
 }
 
 async function assertCleanGitWorktree(path: string): Promise<void> {
@@ -284,6 +274,16 @@ async function gitRevParseOptional(cwd: string, ref: string): Promise<string | u
     return await gitRevParse(cwd, ref);
   } catch (error) {
     if (gitExitCode(error) === 128) return undefined;
+    throw error;
+  }
+}
+
+async function gitCurrentBranch(cwd: string): Promise<string | undefined> {
+  try {
+    const branch = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    return branch.trim() || undefined;
+  } catch (error) {
+    if (gitExitCode(error) === 1) return undefined;
     throw error;
   }
 }

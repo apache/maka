@@ -159,7 +159,6 @@ export function buildHeavyTaskProgressTools(recorder: HeavyTaskProgressRecorder)
       name: 'inventory_submit',
       description: 'Submit a full structured inventory snapshot for this heavy-task run.',
       parameters: heavyTaskInventorySubmitSchema,
-      permissionRequired: false,
       impl: async (args, ctx) => {
         const inventory = await recorder.recordInventory(
           heavyTaskInventorySubmitSchema.parse(args),
@@ -172,7 +171,6 @@ export function buildHeavyTaskProgressTools(recorder: HeavyTaskProgressRecorder)
       name: 'todo_update',
       description: 'Submit the full current todo/progress snapshot for this heavy-task run.',
       parameters: heavyTaskTodoUpdateSchema,
-      permissionRequired: false,
       impl: async (args, ctx) => {
         const todos = await recorder.recordTodos(heavyTaskTodoUpdateSchema.parse(args), ctx);
         return { accepted: true, todos };

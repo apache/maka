@@ -71,3 +71,21 @@ test('keeps Plan row actions keyboard ordered and destructive confirmation rever
   await expect(reviewRow).toContainText('已生成本周竞品动态摘要');
   await expect(reviewMenu).toBeFocused();
 });
+
+test('closes a reminder menu before opening its edit dialog', async ({
+  planRemindersWindow: page,
+}) => {
+  const row = page.getByRole('article').filter({ hasText: '暂停的发布检查' });
+  const menu = row.getByRole('button', { name: '提醒操作: 暂停的发布检查' });
+  await menu.click();
+  await page.getByRole('menuitem', { name: '编辑' }).click();
+
+  await expect(page.getByRole('menu')).toBeHidden();
+  const dialog = page.getByRole('dialog', { name: '编辑提醒' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('textbox', { name: '标题' })).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(menu).toBeFocused();
+});

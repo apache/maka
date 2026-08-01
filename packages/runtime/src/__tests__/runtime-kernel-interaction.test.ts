@@ -2,12 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type { SessionEvent, SessionHeader, StoredMessage } from '@maka/core';
-import type {
-  AgentBackend,
-  BackendSendInput,
-  BackendStopMode,
-  PermissionDecision,
-} from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { AgentBackend, BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 
 import {
   RuntimeInteractionFailStopError,
@@ -79,12 +75,6 @@ describe('RuntimeKernel Interaction close cleanup', () => {
         stoppedFailure = rejectionOf(stopped);
         return {
           ...identity,
-          acceptPermissionRequest: async () => ({ state: 'pending' }),
-          commitPermissionAnswer: async ({ answer }) => ({
-            kind: 'permission_answer',
-            answer,
-          }),
-          commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
           acceptUserQuestionRequest: async () => {},
           close: async () => {
             closeCalls += 1;
@@ -478,12 +468,6 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
   const interactionAuthority: RuntimeInteractionAuthority = {
     bindRun: (identity) => ({
       ...identity,
-      acceptPermissionRequest: async () => ({ state: 'pending' }),
-      commitPermissionAnswer: async ({ answer }) => ({
-        kind: 'permission_answer',
-        answer,
-      }),
-      commitPermissionTimeout: async () => ({ kind: 'closure', reason: 'timed_out' }),
       acceptUserQuestionRequest: async () => {},
       close: async () => {
         markCloseStarted();
@@ -603,7 +587,7 @@ class BlockingBackend implements AgentBackend {
     this.releaseSend?.();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {
     this.disposeCalls += 1;
@@ -644,6 +628,12 @@ function memoryStore(): SessionStore {
   return {
     create: async () => header,
     createSubagent: async () => ({ header, created: false }),
+    setExecutionBoundaryKind: async () => {
+      throw new Error('not implemented');
+    },
+    readExecutionBoundary: async () => {
+      throw new Error('not implemented');
+    },
     list: async () => [],
     readHeader: async () => header,
     readMessages: async () => [...messages],

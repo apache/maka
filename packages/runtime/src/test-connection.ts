@@ -1,15 +1,32 @@
 import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
+  type ConnectionTestErrorClass,
   type ConnectionTestResult,
   type LlmConnection,
 } from '@maka/core/llm-connections';
 import { openAiAdapterApiProtocol } from '@maka/core/model-metadata';
-import { proxiedFetch } from './bots/proxied-fetch.js';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { resolveModelRuntime } from './model-runtime.js';
 import { claudeSubscriptionHeaders } from './subscription-auth.js';
 import { fetchGitHubCopilotModels } from './model-fetcher.js';
+import {
+  CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES,
+  ConnectionEffectFetchError,
+  fetchForConnectionEffect,
+  type ConnectionEffectFetch,
+  type ConnectionEffectFetchDependency,
+  type ConnectionEffectFetchOptions,
+  type ConnectionEffectResponse,
+} from './connection-effect-fetch.js';
+import {
+  ConnectionEffectHttpError,
+  ConnectionEffectInvalidResponseError,
+  classifyConnectionEffectStatus,
+  type ConnectionEffectConnection,
+  type ConnectionEffectError,
+  type ConnectionTestEffectOutcome,
+} from './connection-effect-outcome.js';
 
 const CONNECTION_TEST_TIMEOUT_MS = 15_000;
 
@@ -19,7 +36,7 @@ const CONNECTION_TEST_TIMEOUT_MS = 15_000;
  * default/fallback order.
  */
 function resolveConnectionTestModel(
-  connection: LlmConnection,
+  connection: ConnectionEffectConnection,
   model: string | undefined,
   fallbackModels: readonly string[],
 ): string | undefined {
@@ -49,8 +66,56 @@ export async function testConnection(
   connection: LlmConnection,
   apiKey: string,
   model?: string,
+  options: ConnectionEffectFetchOptions = {},
 ): Promise<ConnectionTestResult> {
   const t0 = Date.now();
+  try {
+    return await testConnectionStrict(connection, apiKey, model, options.fetch, t0);
+  } catch (error) {
+    return connectionTestFailure(error, t0, true);
+  }
+}
+
+export async function runConnectionTestEffect(
+  connection: ConnectionEffectConnection,
+  apiKey: string,
+  options: ConnectionEffectFetchDependency,
+  model?: string,
+): Promise<ConnectionTestEffectOutcome> {
+  const t0 = Date.now();
+  try {
+    const result = await testConnectionStrict(connection, apiKey, model, options.fetch, t0);
+    if (result.ok) {
+      if (!result.modelTested || result.latencyMs === undefined) {
+        return { ok: false, error: { kind: 'invalid_response' } };
+      }
+      return {
+        ok: true,
+        modelId: result.modelTested,
+        latencyMs: result.latencyMs,
+      };
+    }
+    return {
+      ok: false,
+      error: classifyConnectionTestResult(result),
+      ...connectionTestMeasurements(result),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: classifyConnectionTestError(error),
+      latencyMs: Date.now() - t0,
+    };
+  }
+}
+
+async function testConnectionStrict(
+  connection: ConnectionEffectConnection,
+  apiKey: string,
+  model: string | undefined,
+  fetchFn: ConnectionEffectFetch | undefined,
+  t0: number,
+): Promise<ConnectionTestResult> {
   const defaults = PROVIDER_DEFAULTS[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
   // clear failure rather than crashing. Mirrors `isFakeBackend`.
@@ -66,46 +131,37 @@ export async function testConnection(
   }
   const { adapter, baseUrl, apiProtocol } = resolveModelRuntime(connection, testModel);
 
-  try {
-    switch (adapter.kind) {
-      case 'anthropic':
-      case 'claude-subscription':
-        return await probeAnthropic(connection, baseUrl, secret, testModel, t0);
-      case 'openai': {
-        const resolvedApiProtocol =
-          adapter.apiProtocol ??
-          apiProtocol ??
-          openAiAdapterApiProtocol(testModel, connection.providerType);
-        return resolvedApiProtocol === 'openai-responses'
-          ? await probeOpenAIResponses(baseUrl, secret, testModel, t0)
-          : await probeOpenAI(connection, baseUrl, secret, testModel, t0);
-      }
-      case 'openai-codex':
-      case 'openai-compatible':
-        return await probeOpenAI(connection, baseUrl, secret, testModel, t0);
-      case 'github-copilot':
-        return await probeGitHubCopilot(baseUrl, secret, testModel, t0);
-      case 'google':
-        return await probeGoogle(
-          baseUrl,
-          secret,
-          testModel,
-          t0,
-          adapter.normalizeBaseUrl !== false,
-        );
-      case 'cohere':
-        return await probeCohere(baseUrl, secret, testModel, t0);
-      case 'unavailable':
-        throw new Error(`${connection.providerType} is experimental and not wired yet`);
+  switch (adapter.kind) {
+    case 'anthropic':
+    case 'claude-subscription':
+      return await probeAnthropic(connection, baseUrl, secret, testModel, t0, fetchFn);
+    case 'openai': {
+      const resolvedApiProtocol =
+        adapter.apiProtocol ??
+        apiProtocol ??
+        openAiAdapterApiProtocol(testModel, connection.providerType);
+      return resolvedApiProtocol === 'openai-responses'
+        ? await probeOpenAIResponses(baseUrl, secret, testModel, t0, fetchFn)
+        : await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn);
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      errorMessage: message,
-      errorClass: message.toLowerCase().includes('timeout') ? 'timeout' : 'network',
-      latencyMs: Date.now() - t0,
-    };
+    case 'openai-codex':
+    case 'openai-compatible':
+      return await probeOpenAI(connection, baseUrl, secret, testModel, t0, fetchFn);
+    case 'github-copilot':
+      return await probeGitHubCopilot(baseUrl, secret, testModel, t0, fetchFn);
+    case 'google':
+      return await probeGoogle(
+        baseUrl,
+        secret,
+        testModel,
+        t0,
+        adapter.normalizeBaseUrl !== false,
+        fetchFn,
+      );
+    case 'cohere':
+      return await probeCohere(baseUrl, secret, testModel, t0, fetchFn);
+    case 'unavailable':
+      throw new Error(`${connection.providerType} is experimental and not wired yet`);
   }
 }
 
@@ -114,8 +170,9 @@ async function probeGitHubCopilot(
   apiKey: string,
   model: string,
   t0: number,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const models = await fetchGitHubCopilotModels(baseUrl, apiKey);
+  const models = await fetchGitHubCopilotModels(baseUrl, apiKey, fetchFn);
   if (!models.some(({ id }) => id === model)) {
     return {
       ok: false,
@@ -130,8 +187,9 @@ async function probeOpenAIResponses(
   apiKey: string,
   model: string,
   t0: number,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const r = await proxiedFetch(`${stripTrailing(baseUrl)}/responses`, {
+  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/responses`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -146,6 +204,7 @@ async function probeOpenAIResponses(
     timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
   });
   if (!r.ok) return httpFailure(r, t0);
+  await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
@@ -154,8 +213,9 @@ async function probeCohere(
   apiKey: string,
   model: string,
   t0: number,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
-  const r = await proxiedFetch(`${stripTrailing(baseUrl)}/chat`, {
+  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -169,15 +229,17 @@ async function probeCohere(
     timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
   });
   if (!r.ok) return httpFailure(r, t0);
+  await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
 async function probeAnthropic(
-  connection: LlmConnection,
+  connection: Pick<ConnectionEffectConnection, 'providerType'>,
   baseUrl: string,
   secret: string,
   model: string,
   t0: number,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
   const headers: Record<string, string> =
     connection.providerType === 'claude-subscription'
@@ -203,7 +265,7 @@ async function probeAnthropic(
     return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
   }
 
-  const r = await proxiedFetch(anthropicV1Url(baseUrl, '/messages'), {
+  const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/messages'), {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -214,15 +276,17 @@ async function probeAnthropic(
     timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
   });
   if (!r.ok) return httpFailure(r, t0);
+  await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
 async function probeOpenAI(
-  connection: LlmConnection,
+  connection: Pick<ConnectionEffectConnection, 'providerType'>,
   baseUrl: string,
   apiKey: string,
   model: string,
   t0: number,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
   if (connection.providerType === 'openai-codex') {
     // Codex Subscription credentials are ChatGPT account-scoped OAuth
@@ -234,7 +298,7 @@ async function probeOpenAI(
     // chat with the provider error class.
     return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
   }
-  const r = await proxiedFetch(`${stripTrailing(baseUrl)}/chat/completions`, {
+  const r = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/chat/completions`, {
     method: 'POST',
     headers: {
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
@@ -248,6 +312,7 @@ async function probeOpenAI(
     timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
   });
   if (!r.ok) return httpFailure(r, t0);
+  await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
@@ -257,11 +322,12 @@ async function probeGoogle(
   model: string,
   t0: number,
   normalizeBaseUrl: boolean,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ConnectionTestResult> {
   const url = normalizeBaseUrl
     ? googleApiUrl(baseUrl, `/models/${encodeURIComponent(model)}:generateContent`, apiKey)
     : `${stripTrailing(baseUrl)}/models/${encodeURIComponent(model)}:generateContent`;
-  const r = await proxiedFetch(url, {
+  const r = await fetchForConnectionEffect(fetchFn, url, {
     method: 'POST',
     headers: {
       ...(normalizeBaseUrl ? {} : { 'x-goog-api-key': apiKey }),
@@ -274,12 +340,14 @@ async function probeGoogle(
     timeoutMs: CONNECTION_TEST_TIMEOUT_MS,
   });
   if (!r.ok) return httpFailure(r, t0);
+  await r.cancel();
   return { ok: true, latencyMs: Date.now() - t0, modelTested: model };
 }
 
-async function httpFailure(r: Response, t0: number): Promise<ConnectionTestResult> {
+async function httpFailure(r: ConnectionEffectResponse, t0: number): Promise<ConnectionTestResult> {
   const statusCode = r.status;
   if (statusCode === 429) {
+    await r.cancel();
     return {
       ok: false,
       errorMessage:
@@ -289,9 +357,10 @@ async function httpFailure(r: Response, t0: number): Promise<ConnectionTestResul
       latencyMs: Date.now() - t0,
     };
   }
+  const errorBody = await r.readText(CONNECTION_EFFECT_ERROR_BODY_MAX_BYTES);
   return {
     ok: false,
-    errorMessage: `${statusCode} ${(await r.text()).slice(0, 200)}`,
+    errorMessage: `${statusCode} ${errorBody.slice(0, 200)}`,
     statusCode,
     errorClass: classifyHttpStatus(statusCode),
     latencyMs: Date.now() - t0,
@@ -306,4 +375,68 @@ function classifyHttpStatus(statusCode: number): ConnectionTestResult['errorClas
   if (statusCode === 401 || statusCode === 403) return 'auth';
   if (statusCode >= 500) return 'provider_unavailable';
   return 'unknown';
+}
+
+function connectionTestFailure(
+  error: unknown,
+  t0: number,
+  preserveLegacyTimeoutClassification = false,
+): ConnectionTestResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    ok: false,
+    errorMessage: message,
+    errorClass:
+      (error instanceof ConnectionEffectFetchError && error.kind === 'timeout') ||
+      (preserveLegacyTimeoutClassification && message.toLowerCase().includes('timeout'))
+        ? 'timeout'
+        : 'network',
+    latencyMs: Date.now() - t0,
+  };
+}
+
+function classifyConnectionTestError(error: unknown): ConnectionEffectError {
+  if (error instanceof ConnectionEffectFetchError) return { kind: error.kind };
+  if (error instanceof ConnectionEffectHttpError) {
+    return classifyConnectionEffectStatus(error.status);
+  }
+  if (error instanceof ConnectionEffectInvalidResponseError || error instanceof SyntaxError) {
+    return { kind: 'invalid_response' };
+  }
+  return { kind: 'unknown' };
+}
+
+function classifyConnectionTestResult(result: ConnectionTestResult): ConnectionEffectError {
+  if (result.statusCode !== undefined) {
+    const statusError = classifyConnectionEffectStatus(result.statusCode);
+    if (statusError.kind !== 'unknown') return statusError;
+  }
+  return {
+    kind: connectionTestErrorKind(result.errorClass),
+    ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
+  };
+}
+
+function connectionTestMeasurements(
+  result: ConnectionTestResult,
+): Pick<Extract<ConnectionTestEffectOutcome, { readonly ok: false }>, 'modelId' | 'latencyMs'> {
+  return {
+    ...(result.modelTested === undefined ? {} : { modelId: result.modelTested }),
+    ...(result.latencyMs === undefined ? {} : { latencyMs: result.latencyMs }),
+  };
+}
+
+function connectionTestErrorKind(
+  errorClass: ConnectionTestErrorClass | undefined,
+): ConnectionEffectError['kind'] {
+  switch (errorClass) {
+    case 'auth':
+    case 'timeout':
+    case 'provider_unavailable':
+    case 'network':
+      return errorClass;
+    case 'unknown':
+    case undefined:
+      return 'unknown';
+  }
 }

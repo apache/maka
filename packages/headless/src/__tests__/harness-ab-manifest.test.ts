@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  assertDeepSweFullTaskSet,
+  assertDeepSweFullTaskTreeFingerprint,
   assertTerminalBench21TaskSet,
   assertTerminalBench21TaskTreeFingerprint,
   buildHarnessAbResumeFingerprint,
   buildHarnessAbRunManifest,
+  DEEP_SWE_FULL_TASK_IDS,
+  DEEP_SWE_FULL_TASK_TREE_FINGERPRINT,
+  DEEP_SWE_SUBSET_30_TASK_IDS,
   deterministicHarnessTaskOrder,
   HARNESS_MAKA_CONTEXT_BUDGET,
   TERMINAL_BENCH_2_1_TASK_IDS,
@@ -189,6 +194,35 @@ describe('harness A/B manifest', () => {
     assert.throws(
       () => assertTerminalBench21TaskTreeFingerprint(`sha256:${'0'.repeat(64)}`),
       /Terminal-Bench 2\.1 task tree fingerprint mismatch/,
+    );
+  });
+
+  test('freezes the full DeepSWE leaderboard set as the superset of the discriminative subset', () => {
+    assert.equal(DEEP_SWE_FULL_TASK_IDS.length, 113);
+    assert.equal(new Set(DEEP_SWE_FULL_TASK_IDS).size, 113);
+    for (const taskId of DEEP_SWE_SUBSET_30_TASK_IDS) {
+      assert.ok(
+        DEEP_SWE_FULL_TASK_IDS.includes(taskId),
+        `subset task missing from full: ${taskId}`,
+      );
+    }
+
+    assert.doesNotThrow(() => assertDeepSweFullTaskSet([...DEEP_SWE_FULL_TASK_IDS]));
+    assert.throws(
+      () => assertDeepSweFullTaskSet(DEEP_SWE_FULL_TASK_IDS.slice(1)),
+      /DeepSWE full-113 task set mismatch.*missing: /,
+    );
+    assert.throws(
+      () => assertDeepSweFullTaskSet([...DEEP_SWE_FULL_TASK_IDS, 'task-01']),
+      /DeepSWE full-113 task set mismatch.*unexpected: task-01/,
+    );
+
+    assert.doesNotThrow(() =>
+      assertDeepSweFullTaskTreeFingerprint(DEEP_SWE_FULL_TASK_TREE_FINGERPRINT),
+    );
+    assert.throws(
+      () => assertDeepSweFullTaskTreeFingerprint(`sha256:${'0'.repeat(64)}`),
+      /DeepSWE full-113 task tree fingerprint mismatch/,
     );
   });
 });

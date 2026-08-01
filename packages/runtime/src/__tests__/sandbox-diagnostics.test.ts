@@ -41,7 +41,7 @@ describe('sandbox diagnostics', () => {
       network: 'restricted',
       cwd: '/workspace',
       workspaceRoots: ['/workspace'],
-      protectedMetadata: ['.git', '.agents', '.codex'],
+      protectedMetadata: [],
     });
     assert.deepEqual(snapshot.capabilities.command, {
       status: 'available',
@@ -161,6 +161,56 @@ describe('sandbox error diagnostics', () => {
       reason: 'path_denied',
       recoverable: false,
       requestId: 'request-1',
+    });
+  });
+
+  test('preserves the exact expansion required for a session boundary request', () => {
+    const serialized = serializeSandboxError(
+      new FilesystemWorkerClientError({
+        reason: 'sandbox_boundary_required',
+        stage: 'validation',
+        recoverable: true,
+        requestId: 'request-2',
+        requiredExpansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+        },
+      }),
+    );
+
+    assert.deepEqual(serialized, {
+      domain: 'filesystem',
+      stage: 'validation',
+      reason: 'sandbox_boundary_required',
+      recoverable: true,
+      requestId: 'request-2',
+      requiredExpansion: {
+        filesystem: {
+          entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+        },
+      },
+    });
+  });
+
+  test('rejects malformed required expansions instead of laundering them into diagnostics', () => {
+    const serialized = serializeSandboxError({
+      domain: 'filesystem',
+      stage: 'validation',
+      reason: 'sandbox_boundary_required',
+      recoverable: true,
+      requiredExpansion: {
+        filesystem: {
+          entries: [{ path: 'relative.txt', access: 'read', scope: 'exact' }],
+        },
+      },
+    });
+
+    assert.deepEqual(serialized, {
+      domain: 'filesystem',
+      stage: 'validation',
+      reason: 'sandbox_boundary_required',
+      recoverable: true,
     });
   });
 });

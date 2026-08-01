@@ -8,7 +8,7 @@ import type {
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
 } from '@maka/core';
-import type { SettingsSelectOption } from './primitives/settings-select.js';
+import type { SelectorOptionData } from '@astryxdesign/core/Selector';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -19,8 +19,8 @@ export interface SkillEntry {
   path: string;
   /**
    * Tools the skill *declares* it would like to use. This is a request, not
-   * a grant — PermissionEngine still applies. We surface the list so users
-   * can see what a skill is asking for before they install / enable it.
+   * a grant — the active session sandbox boundary still applies. We surface
+   * the list so users can see what a skill is asking for before installation.
    */
   declaredTools?: string[];
   sourceType?: 'workspace' | 'bundled' | 'managed' | 'unknown';
@@ -164,7 +164,7 @@ export interface DailyReviewBridge {
    * panel still works as the MVP telemetry view.
    */
   runOnce?(opts: { mode: DailyReviewMode; modelKey?: string }): Promise<{ archiveId: string }>;
-  modelOptions?: ReadonlyArray<SettingsSelectOption<string>>;
+  modelOptions?: SelectorOptionData[];
   listArchives?(): Promise<DailyReviewArchiveSummary[]>;
   getArchive?(archiveId: string): Promise<DailyReviewArchive>;
   deleteArchive?(archiveId: string): Promise<void>;

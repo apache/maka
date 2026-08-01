@@ -6,8 +6,7 @@ import {
   healthSignalFromConnectionRuntime,
 } from '@maka/core';
 import type { BotRegistry } from '@maka/runtime';
-import type { ConnectionStore, SettingsStore } from '@maka/storage';
-import type { createTelemetryRepo } from '@maka/storage';
+import type { ConnectionStore, SettingsStore, TelemetryRepo } from '@maka/storage';
 import { buildCapabilitySnapshotCollection, buildPermissionSnapshot } from './capability-snapshot.js';
 import { openSystemPermissionPane, requestPermissionAccess } from './permissions-actions.js';
 import { permissionSnapshotE2eFixture } from './permission-snapshot-e2e-fixture.js';
@@ -22,7 +21,6 @@ function resolvePermissionSnapshot(now = Date.now()) {
   return permissionSnapshotE2eFixture(now) ?? buildPermissionSnapshot(now);
 }
 
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
 type ComputerUseCapabilityInput = NonNullable<
   Parameters<typeof buildCapabilitySnapshotCollection>[0]['computerUse']
 >;
@@ -31,12 +29,20 @@ export interface PermissionsIpcDeps {
   settingsStore: SettingsStore;
   connectionStore: ConnectionStore;
   telemetryRepo: TelemetryRepo;
+  ensureUsageReady: () => Promise<void>;
   botRegistry: BotRegistry;
   getComputerUseCapabilityInput: () => ComputerUseCapabilityInput;
 }
 
 export function registerPermissionsIpc(deps: PermissionsIpcDeps): void {
-  const { settingsStore, connectionStore, telemetryRepo, botRegistry, getComputerUseCapabilityInput } = deps;
+  const {
+    settingsStore,
+    connectionStore,
+    telemetryRepo,
+    ensureUsageReady,
+    botRegistry,
+    getComputerUseCapabilityInput,
+  } = deps;
 
   ipcMain.handle('permissions:getSnapshot', () => resolvePermissionSnapshot());
   ipcMain.handle('permissions:openSystemSettings', async (_event, permId: unknown) => {
@@ -57,6 +63,7 @@ export function registerPermissionsIpc(deps: PermissionsIpcDeps): void {
     });
   });
   ipcMain.handle('health:getSnapshot', async () => {
+    await ensureUsageReady();
     const now = Date.now();
     const permissions = resolvePermissionSnapshot(now);
     const settings = await settingsStore.get();

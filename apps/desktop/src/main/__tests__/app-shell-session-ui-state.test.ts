@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { PermissionRequestEvent, SessionSummary } from '@maka/core';
+import type { SandboxBoundaryRequestEvent, SessionSummary } from '@maka/core';
 import { armLiveTurn } from '@maka/ui';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
 import {
@@ -10,15 +10,21 @@ import {
   type AppShellSessionUiState,
 } from '../../renderer/app-shell-session-ui-state.js';
 
-function permissionRequest(requestId: string): PermissionRequestEvent {
+function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
-    type: 'permission_request',
+    type: 'sandbox_boundary_request',
     id: `event-${requestId}`,
+    turnId: 'turn-1',
     ts: 1,
     requestId,
     toolUseId: `tool-${requestId}`,
-    toolName: 'shell',
-  } as unknown as PermissionRequestEvent;
+    justification: 'Read an external file.',
+    expansion: {
+      filesystem: {
+        entries: [{ path: '/outside/file', access: 'read', scope: 'exact' }],
+      },
+    },
+  };
 }
 
 function seededState(): AppShellSessionUiState {
@@ -29,8 +35,8 @@ function seededState(): AppShellSessionUiState {
     stopPendingBySession: { drop: true, keep: true },
     liveTurnBySession: { drop: armLiveTurn('turn-drop'), keep: armLiveTurn('turn-keep') },
     interactionBySession: {
-      drop: [permissionRequest('drop')],
-      keep: [permissionRequest('keep')],
+      drop: [boundaryRequest('drop')],
+      keep: [boundaryRequest('keep')],
     },
     sessionEventHealthBySession: {
       drop: { sessionId: 'drop', status: 'connected', subscribedAt: 1, checkedAt: 1 },

@@ -1,4 +1,5 @@
-import type { FixedPromptTask, FixedPromptTaskWalEvent } from './fixed-prompt-controller.js';
+import type { FixedPromptTask } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent } from './fixed-prompt-wal-types.js';
 import type { HarborCellContextBudgetPolicySnapshot } from './cell-output.js';
 
 export type AbExperimentKind = 'prompt' | 'tools' | 'provider' | 'runtime' | 'harness';
@@ -196,6 +197,10 @@ export interface AbAttemptPairSummary {
   evaluatedPairs: number;
   baselinePassed: number;
   candidatePassed: number;
+  nonBudgetEvaluatedPairs: number;
+  baselineNonBudgetPassed: number;
+  candidateNonBudgetPassed: number;
+  budgetExcludedPairIds: string[];
   fullyMeteredPairs: number;
   baselineMeteredPassed: number;
   candidateMeteredPassed: number;

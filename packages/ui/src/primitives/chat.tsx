@@ -5,104 +5,6 @@ import { cva, type VariantProps } from "class-variance-authority";
 import type React from "react";
 
 /**
- * Chat conversation-flow primitives (issue #332, PR1).
- *
- * `Message` is the per-turn row container; `Bubble` is the message body
- * surface. They retire the bespoke `.message.{role}` / `.maka-bubble-user`
- * shell CSS, moving the row/bubble *shell* onto the Tailwind substrate while
- * leaving Markdown prose (now the `.maka-prose` layer in prose.css, split
- * off the assistant bubble shell by #546 PR4 / #618 item 3) and the turn machinery
- * (summary / lineage / footer / markers — PR2) untouched.
- *
- * The row keeps the authored `.maka-message-row` base (centered reading column).
- * That base lives in chat-message.css (#546 PR4 relocated it out of
- * maka-tokens.css's @layer components), so the role utilities below
- * (utilities layer) win over its `margin: 0 auto` for the left-anchored
- * assistant/system rows. The neutral `--chat-user-bg` token path is preserved
- * verbatim — the user bubble is never switched to `primary`/`accent`.
- */
-
-const messageVariants = cva("maka-message-row", {
-  variants: {
-    variant: {
-      // `.message.user`: shrink-wrap column, body hugs the right edge. No
-      // margin override — the row stays centered (its `margin: 0 auto`).
-      user: "flex flex-col items-end gap-1.5",
-      // `.message.assistant` / `.message.system`: left-anchor inside the
-      // measure column (override the row's centering).
-      assistant: "ml-0 mr-auto",
-      system: "ml-0 mr-auto",
-    },
-  },
-});
-
-export interface MessageProps
-  extends React.ComponentPropsWithoutRef<"article"> {
-  // The chat role. Named `variant` (not `role`) so it never shadows the native
-  // HTML/ARIA `role` attribute, which still flows through `...props`. Emitted
-  // to the DOM as `data-role` — the hook the turn lineage/footer and system
-  // `pre` rules anchor on.
-  variant: "user" | "assistant" | "system";
-}
-
-export function Message({
-  className,
-  variant,
-  ...props
-}: MessageProps): React.ReactElement {
-  return (
-    // `{...props}` is spread first so the structural `data-*` hooks the
-    // re-anchored selectors depend on always land last and can't be clobbered
-    // by a consumer passing `data-slot` / `data-role`.
-    <article
-      {...props}
-      data-slot="message"
-      data-role={variant}
-      className={cn(messageVariants({ variant }), className)}
-    />
-  );
-}
-
-const bubbleVariants = cva("", {
-  variants: {
-    variant: {
-      // `.maka-bubble-user`: tinted, width-capped, right-anchored block.
-      // Padding stays literal (`px-3 py-2.5`); radius now uses the
-      // `--radius-surface` token (8px) per #406 gap 4 radius governance.
-      // Keeps the neutral `--chat-user-bg` token path (never primary/accent).
-      user: "max-w-[min(100%,640px)] whitespace-pre-wrap break-words rounded-[var(--radius-surface)] bg-[var(--chat-user-bg)] px-3 py-2.5 leading-normal text-[color:var(--chat-user-foreground,var(--foreground))]",
-      // Assistant / system: open prose, no bubble. The shell stays
-      // `.maka-bubble-assistant` (now just surface padding — typography,
-      // edge-margin trims, and line-height/break-word live on the prose
-      // layer, #618 item 2; the reading measure is owned by
-      // `.maka-message-row`, not the prose layer); the Markdown prose layer
-      // `.maka-prose` (p / h / ul / code / ... typography) rides alongside
-      // and stays reusable on its own.
-      assistant: "maka-bubble-assistant maka-prose",
-    },
-  },
-});
-
-export interface BubbleProps extends React.ComponentPropsWithoutRef<"div"> {
-  variant: VariantProps<typeof bubbleVariants>["variant"];
-}
-
-export function Bubble({
-  className,
-  variant,
-  ...props
-}: BubbleProps): React.ReactElement {
-  return (
-    <div
-      {...props}
-      data-slot="bubble"
-      data-variant={variant}
-      className={cn(bubbleVariants({ variant }), className)}
-    />
-  );
-}
-
-/**
  * `Marker` — the per-turn status / lineage / footer chrome (issue #332, PR2).
  *
  * Retires the bespoke `.maka-turn-summary*`, `.maka-turn-aborted-marker`,
@@ -124,7 +26,7 @@ export function Bubble({
  * so the layout is location-independent instead of coupled to a
  * `[data-role="assistant"]` descendant selector.
  *
- * `markerVariants` is exported from THIS module (shadcn `buttonVariants` style)
+ * `markerVariants` is exported from THIS module as a local variant recipe
  * so the lineage badge + footer action — which render as `UiButton` and can't
  * be wrapped — apply the shell via `className`; `Button` runs it through
  * `cn`/tailwind-merge last, so it wins over the button's own variant utilities.
@@ -132,12 +34,6 @@ export function Bubble({
  * the only consumers import it by relative path, so the variant table stays an
  * internal, freely-removable styling detail rather than public API.
  *
- * NOTE: `.maka-turn-thinking` (the committed-turn reasoning `<details>`) is
- * deliberately NOT migrated here. Its chrome lives in `summary::before` /
- * `::-webkit-details-marker` pseudo-elements that don't reduce to leaf
- * utilities (so the source-string == computed-style proof wouldn't hold), and
- * `maka-tokens.css` already documents an intended
- * Base UI Accordion path for it. It stays hand-written for that later effort.
  */
 const markerVariants = cva("", {
   variants: {
@@ -180,7 +76,7 @@ const markerVariants = cva("", {
       footer:
         "flex w-full max-w-[var(--maka-chat-measure,680px)] flex-wrap items-center justify-start gap-0.5 mt-0.5 ml-0 mr-auto p-0 opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/answer:opacity-100 focus-within:opacity-100",
       // `.maka-turn-footer-action` (UiButton) — borderless ghost action. Also
-      // reused by the user-message copy (`MessageCopyButton footerStyle`), so
+      // reused by the user-message copy (`MessageCopyButton`), so
       // it carries only the button look, never the footer's measure column.
       "footer-action":
         "rounded-[var(--radius-surface)] [border:0] text-[color:var(--muted-foreground)]"
@@ -315,23 +211,17 @@ export function TextShimmer({
  * self-evidently-equal translation and is immune to later scale/token re-tuning
  * (the visual refresh, not this governance pass, owns adopting the scale).
  *
- * Two pieces escape the computed-style proof and are NOT in this table — they
- * stay a small named residue keyed on `[data-slot="tool"]` in maka-tokens.css,
- * pinned by the PR3b cascade contract (source strings + keyframe frames) rather
- * than the diff harness:
- *   1. the running status dot's `[animation:maka-tool-pulse …]` breath (the
- *      shorthand rides in the `dot` part here; only the
- *      `@keyframes maka-tool-pulse` stays in CSS — a keyframe is a global rule,
- *      not an element property, and `getComputedStyle` reads a phase-dependent
- *      value). The running dot's box-shadow RING is a leaf rest-state literal, so
- *      it stays here and IS diff-proven.
- *   2. the native `<summary>` marker reset (`::-webkit-details-marker` /
- *      `::marker`) — pseudo-elements with no leaf-utility form. Kept as residue.
+ * The running status dot's `[animation:maka-tool-pulse …]` breath escapes the
+ * computed-style proof and stays as a small named residue keyed on
+ * `[data-slot="tool"]` in maka-tokens.css. The shorthand rides in the `dot`
+ * part here; only the `@keyframes maka-tool-pulse` global rule stays in CSS.
+ * The dot's box-shadow ring is a leaf rest-state literal, so it stays here and
+ * is diff-proven.
  * (The reduced-motion / e2e-fixture suppression both ride GLOBAL `*` rules in
  * maka-tokens.css / base.css, so the dot and card need no per-element motion
  * utilities; the same global rules cover them as before.)
  *
- * The single consumer (`ToolActivity`) renders a Base UI Collapsible and applies
+ * The single consumer (`ToolActivity`) renders an Astryx Collapsible and applies
  * these by `className`. `toolVariants` is kept OFF the package barrel for the
  * same reason as `markerVariants`: the only consumer imports
  * it by relative path, so the part set stays an internal, freely-removable
@@ -339,8 +229,7 @@ export function TextShimmer({
  *
  * NOTE: the args `<pre>` keeps the shared `.maka-code` inline-code base (used by
  * Markdown / artifact previews too — out of scope); the `args` part below is only
- * the `.toolArgs` override. The `ToolErrorBanner` (`Alert` + `.maka-tool-error*`)
- * is a separate concern on a different substrate and migrates in its own pass.
+ * the `.toolArgs` override.
  */
 // `waiting_permission` carries a literal underscore, which Tailwind reads as a
 // SPACE in an arbitrary value (`[data-status="waiting permission"]` — never
@@ -374,10 +263,10 @@ const toolVariants = cva("", {
         + " data-[status=blocked]:[border-color:oklch(from_var(--warning)_l_c_h_/_0.4)] data-[status=blocked]:bg-[oklch(from_var(--warning)_l_c_h_/_0.04)]"
         + " data-[status=errored]:[border-color:oklch(from_var(--destructive)_l_c_h_/_0.4)] data-[status=errored]:bg-[oklch(from_var(--destructive)_l_c_h_/_0.04)]"
         + " data-[status=interrupted]:[border-color:var(--border)] data-[status=interrupted]:bg-[var(--foreground-3)] data-[status=interrupted]:opacity-[0.7]",
-      // The Collapsible trigger/header: 8px · name · meta grid. The open-state
-      // divider reads Base UI's `[data-panel-open]` trigger attribute directly.
+      // The tool header's 8px · name · meta grid. Astryx owns the surrounding
+      // disclosure button, focus ring, chevron, and open-state chrome.
       header:
-        "list-none grid grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-2 text-[color:var(--foreground-secondary)] data-[panel-open]:[border-bottom:1px_solid_var(--border)]",
+        "list-none grid grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2.5 px-3 py-2 text-[color:var(--foreground-secondary)]",
       // `.maka-tool-status-dot` (+ the `[data-status]` color swaps; running adds
       // the box-shadow ring + `maka-tool-pulse` breath — keyframe stays in CSS).
       dot:

@@ -17,7 +17,35 @@ test('send a message and see the fake backend stream a reply', async ({ window: 
   await composer.press('Enter');
 
   await expect(page.getByText(/Fake backend received: hello e2e/)).toBeVisible();
+  await page.getByRole('button', { name: '切换当前会话模型' }).click();
   await expect(
-    page.locator('.maka-model-switcher-trigger .maka-composer-provider-mark[data-provider="anthropic"] svg'),
+    page.getByRole('listbox').locator('.modelPickerProviderMark[data-provider="anthropic"] svg'),
   ).toBeVisible();
+  await page.keyboard.press('Escape');
+});
+
+test('exposes the Astryx Markdown code-copy action', async ({ window: page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const composer = page.locator('.maka-composer-textarea');
+  await composer.fill([
+    'show code',
+    '',
+    '```ts',
+    'const answer = 42;',
+    '',
+    'return answer;',
+    '```',
+  ].join('\n'));
+  await composer.press('Enter');
+
+  const markdown = page.locator('[data-maka-contract="markdown"]').last();
+  await expect(page.getByRole('button', { name: '重新生成' })).toBeVisible();
+  await expect(page.locator('.maka-bubble-streaming')).toHaveCount(0);
+  const copyButton = markdown.getByRole('button', { name: '复制代码' });
+  await expect(copyButton).toBeVisible();
+  await copyButton.click();
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe('const answer = 42;\n\nreturn answer;');
+  await expect(markdown.locator('[data-copy-feedback]')).toHaveCount(0);
 });

@@ -46,6 +46,8 @@ export type {
   ShellRunUpdate,
   SandboxDenialSignal,
   SandboxDenialRecovery,
+  SandboxBoundaryRequestEvent,
+  SandboxBoundaryDecisionAckEvent,
   AdditionalPermissionRequestEvent,
   SandboxEscalationRequestEvent,
   AnyPermissionRequestEvent,
@@ -93,6 +95,7 @@ export {
   isStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
+  ToolOutcomeUnknownError,
   TOOL_ACTIVITY_KINDS,
   TOOL_OUTPUT_DELTA_MAX_CHARS,
   TOOL_OUTPUT_STREAMS,
@@ -133,6 +136,7 @@ export type {
   RuntimeEventPermissionClosureAccepted,
   RuntimeEventUserQuestionAnswerAccepted,
   RuntimeEventProtocolMarker,
+  RuntimeEventContinuationStartV2,
   RuntimeEventToolDispatch,
   RuntimeEventActions,
   RuntimeEventRefs,
@@ -150,6 +154,7 @@ export {
   isRuntimeEventAuthor,
   isRuntimeEventStatus,
   decodeRuntimeEvent,
+  decodePersistedRuntimeEvent,
   isTerminalRuntimeEventStatus,
   isTerminalRuntimeEvent,
   isPartialRuntimeEvent,
@@ -188,10 +193,16 @@ export {
 export type { RuntimeEventStore } from './runtime-event-store.js';
 export { DurableStoreWriteError } from './runtime-event-store.js';
 export type {
+  ContinuationClaimResult,
+  ContinuationClaimStateV1,
+  RuntimeContinuationAuthorityStore,
   RuntimeRecoveryBundleCommit,
   RuntimeRecoveryBundleStore,
 } from './runtime-event-store.js';
-export { TOOL_RECOVERY_BUNDLE_CAPABILITY_V1 } from './runtime-event-store.js';
+export {
+  RUNTIME_CONTINUATION_AUTHORITY_V1,
+  TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
+} from './runtime-event-store.js';
 export type {
   ToolLedgerIssue,
   ToolLedgerIssueCode,
@@ -244,6 +255,26 @@ export {
   encodeCanonicalRuntimeEvent,
   type CanonicalRuntimeEventEncoding,
 } from './canonical-runtime-event.js';
+export type {
+  ContinuationClaimV1,
+  ImmutableRuntimePrefixV1,
+  RuntimeBoundaryCursorV1,
+  RuntimePrefixIdentityV1,
+  RuntimePrefixPositionV1,
+  RuntimePrefixRowV1,
+  RuntimePrefixSegmentV1,
+  RuntimeBoundaryDigest,
+} from './runtime-boundary.js';
+export {
+  buildImmutableRuntimePrefix,
+  createRuntimeBoundaryCursor,
+  decodeContinuationClaim,
+  decodeRuntimeBoundaryCursor,
+  decodeRuntimePrefixSegment,
+  digestRuntimeBoundaryManifest,
+  digestRuntimePrefix,
+  runtimePrefixSegment,
+} from './runtime-boundary.js';
 
 // session.ts
 export type {
@@ -260,6 +291,7 @@ export type {
   SubagentSessionRuntime,
   SubagentSessionRuntimeSummary,
   SubagentSessionSpawn,
+  SessionConversationCopy,
   TurnRecord,
   TurnStateMessage,
   TurnStatus,
@@ -291,6 +323,7 @@ export {
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
+  isSessionConversationCopy,
   subagentSessionRuntimeSummary,
   isTurnStatus,
   decodeStoredMessageForRead,
@@ -327,6 +360,32 @@ export {
   isSessionInlineRun,
 } from './agent-run.js';
 
+// model-call-attempt.ts
+export type {
+  ModelCallAttempt,
+  ModelCallAttemptStatus,
+  ModelCallCostBasis,
+  ModelCallCoverage,
+  ModelCallGroup,
+  ModelCallKind,
+  ModelCallUsageBasis,
+} from './model-call-attempt.js';
+export {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  MODEL_CALL_ATTEMPT_STATUSES,
+  MODEL_CALL_COST_BASES,
+  MODEL_CALL_KINDS,
+  MODEL_CALL_USAGE_BASES,
+  decodeModelCallAttempt,
+  dedupeModelCallAttempts,
+  groupModelCallAttempts,
+  isModelCallAttempt,
+  settledAttempt,
+  sumModelCallCostUsd,
+  summarizeModelCallCoverage,
+} from './model-call-attempt.js';
+
 // shell-run.ts
 export type {
   PipeShellOutput,
@@ -336,6 +395,7 @@ export type {
   ShellRunOperation,
   ShellRunPatch,
   ShellRunRecord,
+  ShellRunActiveStatus,
   ShellRunStatus,
   ShellRunStore,
   ShellRunTerminalStatus,
@@ -389,12 +449,17 @@ export {
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
   isShellOutput,
+  isActiveShellRunStatus,
   isShellRunId,
+  isShellRunSourceToolCallId,
   isShellRunStatus,
   isValidShellRunState,
+  isValidShellRunStatusTransition,
   isTerminalShellRunStatus,
 } from './shell-run.js';
 
@@ -428,7 +493,6 @@ export type {
   PermissionMode,
   ApprovalsReviewer,
   ApprovalRiskLevel,
-  ActiveApprovalRoutingPolicy,
   ToolCategory,
   PolicyDecision,
   ToolExecutionFacts,
@@ -436,23 +500,18 @@ export type {
   ToolExecutionNetwork,
   ToolExecutionSecrets,
   ToolExecutionWriteBack,
-  PreToolUseInput,
-  PreToolUseResult,
   AdditionalPermissionRequest,
   SandboxEscalationRequest,
   SandboxEscalationRiskSummary,
   PermissionRequest,
   PermissionRequestPayload,
   PermissionResponse,
-  ToolPermissionRule,
-  ToolPermissionRuleMatchInput,
 } from './permission.js';
 export {
   PERMISSION_MODES,
   APPROVALS_REVIEWERS,
   APPROVAL_RISK_LEVELS,
   TOOL_CATEGORIES,
-  PERMISSION_POLICY,
   BUILTIN_TOOL_CATEGORY,
   PRIVILEGED_SHELL_PREFIXES,
   PRIVILEGED_SHELL_PATTERNS,
@@ -460,12 +519,9 @@ export {
   DESTRUCTIVE_GIT_PATTERNS,
   categorizeBash,
   classifyToolUse,
-  approvalRoutingPolicyForMode,
   isPermissionMode,
   isPermissionModeWithinCeiling,
   isToolCategory,
-  matchToolPermissionRules,
-  preToolUse,
 } from './permission.js';
 
 // computer-use.ts
@@ -540,7 +596,54 @@ export {
   createWorkspaceWritePermissionProfile,
   isDeniedPath,
   isProtectedMetadataPath,
+  isReadOnlyPermissionProfile,
 } from './permission-profile.js';
+
+// sandbox-boundary.ts
+export type {
+  ExecutionBoundary,
+  CreateSandboxBoundaryRequest,
+  LegacyPermissionMode,
+  SandboxBoundaryAccess,
+  SandboxBoundaryExpansion,
+  SandboxBoundaryExpansionAssessment,
+  SandboxBoundaryExpansionValidationFailureReason,
+  SandboxBoundaryExpansionValidationResult,
+  SandboxBoundaryFilesystemEntry,
+  SandboxBoundaryDecision,
+  SandboxBoundaryResponse,
+  SandboxBoundaryRequest,
+  SandboxBoundaryRequestStatus,
+  SandboxBoundarySettlement,
+  SandboxBoundaryScope,
+  SandboxProfile,
+  SettleSandboxBoundaryRequest,
+} from './sandbox-boundary.js';
+export {
+  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
+  MAX_SANDBOX_BOUNDARY_FILESYSTEM_ENTRIES,
+  MAX_SANDBOX_BOUNDARY_PATH_CHARS,
+  MAX_SANDBOX_BOUNDARY_SERIALIZED_BYTES,
+  SANDBOX_BOUNDARY_ACCESS_MODES,
+  SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
+  SANDBOX_BOUNDARY_REQUEST_STATUSES,
+  SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
+  SANDBOX_BOUNDARY_SCOPES,
+  applySandboxBoundaryExpansion,
+  assertExecutionBoundaryCapacity,
+  assessSandboxBoundaryExpansion,
+  compactSandboxBoundaryFilesystemEntries,
+  createBypassExecutionBoundary,
+  createExternalExecutionBoundary,
+  createGenesisExecutionBoundary,
+  createManagedExecutionBoundary,
+  decodeExecutionBoundary,
+  executionBoundaryContains,
+  executionBoundaryDisplayMode,
+  isSandboxBoundaryRestartClosure,
+  sandboxBoundaryExpansionAllowsPath,
+  validateSandboxBoundaryExpansion,
+} from './sandbox-boundary.js';
 
 // additional-permissions.ts
 export type {
@@ -558,10 +661,6 @@ export {
   MAX_ADDITIONAL_FILESYSTEM_ENTRIES,
   MAX_ADDITIONAL_PERMISSION_PATH_CHARS,
   MAX_ADDITIONAL_PERMISSION_SERIALIZED_BYTES,
-  additionalPermissionAllowsPath,
-  additionalPermissionMatchesPath,
-  additionalPermissionRequiredForPath,
-  applyAdditionalPermissionProfile,
   compactAdditionalFileSystemPermissions,
   serializeAdditionalPermissionProfile,
   validateAdditionalPermissionProfile,
@@ -573,20 +672,6 @@ export type {
   CompiledPermissionProfile,
 } from './permission-profile-compiler.js';
 export { compilePermissionProfile } from './permission-profile-compiler.js';
-
-// permission-request-health.ts
-export type {
-  PermissionRequestHealth,
-  PermissionRequestHealthStatus,
-} from './permission-request-health.js';
-export {
-  PERMISSION_REQUEST_EXPIRED_AFTER_MS,
-  PERMISSION_REQUEST_HEALTH_STATUSES,
-  PERMISSION_REQUEST_STALE_AFTER_MS,
-  derivePermissionRequestHealth,
-  formatPermissionRequestWait,
-  isPermissionRequestHealthStatus,
-} from './permission-request-health.js';
 
 // connections.ts
 export type {
@@ -850,28 +935,6 @@ export {
   normalizePlanReminderTitle,
   normalizeUpdatePlanReminderInput,
 } from './plan-reminders.js';
-// agent-mailbox.ts (durable expert-team communication)
-export type {
-  AgentMailboxListOptions,
-  AgentMailboxMessage,
-  AgentMailboxMessageKind,
-  AgentMailboxNormalizeResult,
-  AgentMailboxParticipantRef,
-  AgentMailboxRole,
-  AgentMailboxSendInput,
-  AgentMailboxStore,
-} from './agent-mailbox.js';
-export {
-  AGENT_MAILBOX_CONTENT_MAX_CHARS,
-  AGENT_MAILBOX_LIST_MAX,
-  AGENT_MAILBOX_MAX_MESSAGES_PER_TEAM_RUN,
-  AGENT_MAILBOX_SCHEMA_VERSION,
-  isAgentMailboxMessage,
-  isAgentMailboxParticipantRef,
-  isAgentTeamId,
-  isSafeAgentMailboxToken,
-  normalizeAgentMailboxContent,
-} from './agent-mailbox.js';
 // foreign-session.ts (#1057) — untrusted Claude Code / Codex session
 // contracts + defensive parsing. Subpath @maka/core/foreign-session preferred.
 export type {
@@ -1108,6 +1171,7 @@ export type {
   LocalMemoryBackupInfo,
   LocalMemoryOrigin,
   LocalMemoryParseResult,
+  LocalMemoryPromptContext,
   LocalMemorySettings,
   LocalMemoryScope,
   LocalMemorySource,
@@ -1164,6 +1228,22 @@ export type {
   VoiceTtsPolicy,
   VoiceTtsProvider,
   VoiceTtsRequest,
+  VoiceIntent,
+  VoiceAudioFormat,
+  EphemeralVoiceAudio,
+  VoiceModelRouteCapability,
+  VoiceRecognitionConfig,
+  VoiceRealtimeConfig,
+  VoiceSettings,
+  VoiceRoutePlan,
+  ResolveVoiceRouteInput,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
+  VoiceCoordinatorToolName,
+  VoiceCoordinatorToolCall,
 } from './voice.js';
 export {
   VOICE_MAX_AUDIO_BYTES,
@@ -1175,6 +1255,10 @@ export {
   defaultVoiceCapabilitySnapshot,
   defaultVoiceCaptureCaps,
   defaultVoicePrivacyFlags,
+  defaultVoiceSettings,
+  normalizeVoiceSettings,
+  resolveVoiceRoute,
+  normalizeVoiceCoordinatorToolCall,
   normalizeVoiceInputMode,
   normalizeVoiceTranscriptText,
   normalizeVoiceTtsPolicy,
@@ -1187,7 +1271,6 @@ export {
 export type {
   BackendSendInput,
   RuntimeContinuationMetadata,
-  PermissionDecision,
   AgentBackend,
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
@@ -1209,6 +1292,7 @@ export type {
   ProviderDefaults,
   ProviderRuntimeAdapter,
   ProviderType,
+  RuntimeExecutionConnection,
   UpdateConnectionInput,
 } from './llm-connections.js';
 export {
@@ -1220,6 +1304,7 @@ export {
   READY_PROVIDER_TYPES,
   backendKindOf,
   connectionEnabledModelIds,
+  deriveConnectionSlug,
   isWiredOAuthProvider,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
@@ -1333,6 +1418,13 @@ export {
   sanitizeOnboardingMilestones,
 } from './onboarding.js';
 
+// bootstrap-connections.ts
+export type {
+  BootstrapConnectionSeed,
+  BootstrapEnv,
+} from './bootstrap-connections.js';
+export { resolveBootstrapConnections } from './bootstrap-connections.js';
+
 // model-catalog.ts
 export type {
   BuildModelCatalogInput,
@@ -1356,7 +1448,7 @@ export {
 } from './model-catalog.js';
 
 // model-metadata.ts
-export { resolveModelVisionSupport } from './model-metadata.js';
+export { resolveModelVisionSupport, resolveModelVoiceMetadata } from './model-metadata.js';
 
 // settings.ts
 export type {
@@ -1368,8 +1460,6 @@ export type {
   NetworkProxySettings,
   NetworkSettings,
   NotificationSettings,
-  OpenGatewaySettings,
-  OpenGatewayRuntimeStatus,
   PrivacySettings,
   ProxyProtocol,
   SettingsSection,
@@ -1619,14 +1709,6 @@ export {
   buildDeepResearchImplementationPrompt,
   isDeepResearchSession,
 } from './explore-agent.js';
-
-// expert-team.ts — expert-team session labels.
-export {
-  EXPERT_TEAM_LABEL_PREFIX,
-  expertTeamIdFromLabels,
-  expertTeamLabel,
-  isExpertTeamSession,
-} from './expert-team.js';
 
 // tool-catalog.ts — shared product tool vocabulary (#1099).
 export type {

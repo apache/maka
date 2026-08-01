@@ -1,8 +1,8 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionHeader } from '@maka/core';
 import { ChildAgentRunLimiter } from '../child-agent-run-limiter.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
   ToolRuntime,
@@ -210,7 +210,6 @@ describe('ToolRuntime child-agent run permits', () => {
       name: 'capture_child_spawn',
       description: 'test-only spawn capability capture',
       parameters: {},
-      permissionRequired: false,
       impl: async (_args, ctx) => {
         capturedSpawn = ctx.spawnChildAgent;
         return { kind: 'json', value: { captured: true } };
@@ -241,7 +240,6 @@ function childBatchProbeTool(
     name,
     description: 'test-only child batch probe',
     parameters: {},
-    permissionRequired: false,
     categoryHint: 'subagent',
     impl: async (_args, ctx) => {
       if (!ctx.spawnChildAgent) throw new Error('missing spawn capability');
@@ -269,7 +267,6 @@ function sequentialFailureProbeTool(count: number): MakaTool {
     name: 'sequential_child_failure_probe',
     description: 'test-only sequential child failure probe',
     parameters: {},
-    permissionRequired: false,
     categoryHint: 'subagent',
     impl: async (_args, ctx) => {
       if (!ctx.spawnChildAgent) throw new Error('missing spawn capability');
@@ -300,15 +297,12 @@ function childSpec(index: number) {
 function buildRuntime(
   spawnChildAgent: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildAgent']>,
 ): ToolRuntime {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('turn-1');
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: testHeader(),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

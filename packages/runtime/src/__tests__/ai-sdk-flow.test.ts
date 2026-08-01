@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import { decodeStoredMessageForRecovery, type BackendKind } from '@maka/core/session';
+import type { AgentRunHeader } from '@maka/core';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { SessionEvent } from '@maka/core/events';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput, BackendSessionEvent } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   decodeRuntimeEvent,
@@ -21,7 +23,11 @@ import { flowSupportsControl } from '../agent-flow.js';
 import type { AgentBackend } from '@maka/core/backend-types';
 import { RuntimeRunner } from '../runtime-runner.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
+import {
+  isUnclaimedRuntimeEventDiagnostic,
+  projectRuntimeEventsToStoredMessages,
+} from '../runtime-event-read-model.js';
+import { isNonTerminalErrorRuntimeEvent } from '../agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 
 // ============================================================================
@@ -41,7 +47,7 @@ class ScriptedBackend implements AgentBackend {
   readonly kind: BackendKind;
   readonly sessionId: string;
   readonly stopCalls: Array<'user_stop' | 'redirect'> = [];
-  readonly permissionCalls: PermissionDecision[] = [];
+  readonly permissionCalls: SandboxBoundaryResponse[] = [];
   readonly sendInputs: BackendSendInput[] = [];
   disposeCalls = 0;
   sendCalls = 0;
@@ -73,7 +79,7 @@ class ScriptedBackend implements AgentBackend {
     if (this.stopFailure) throw this.stopFailure;
   }
 
-  async respondToPermission(decision: PermissionDecision): Promise<void> {
+  async respondToSandboxBoundary(decision: SandboxBoundaryResponse): Promise<void> {
     this.permissionCalls.push(decision);
   }
 
@@ -349,29 +355,29 @@ describe('AiSdkFlow seam', () => {
     assert.deepEqual(result.actions?.stateDelta, { durationMs: 42 });
   });
 
-  test('maps permission request/decision as first-class runtime actions', async () => {
+  test('maps sandbox boundary requests and decisions as first-class runtime actions', async () => {
     const backend = new ScriptedBackend({
       events: [
         ev({
-          type: 'permission_request',
-          kind: 'tool_permission',
-          requestId: 'req-1',
-          toolUseId: 'tu-2',
-          toolName: 'bash',
-          category: 'shell_unsafe',
-          reason: 'shell_dangerous',
-          args: { cmd: 'rm -rf /' },
-          rememberForTurnAllowed: true,
-          hint: 'destructive',
+          type: 'sandbox_boundary_request',
+          requestId: 'boundary-1',
+          toolUseId: 'tu-boundary',
+          justification: 'Write the requested export.',
+          expansion: {
+            filesystem: {
+              entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+            },
+          },
         }),
         ev({
-          type: 'permission_decision_ack',
-          requestId: 'req-1',
-          toolUseId: 'tu-2',
-          decision: 'deny',
-          rememberForTurn: true,
+          type: 'sandbox_boundary_decision_ack',
+          requestId: 'boundary-1',
+          toolUseId: 'tu-boundary',
+          decision: 'allow',
+          status: 'approved',
+          revision: 2,
         }),
-        ev({ type: 'complete', stopReason: 'permission_handoff' }),
+        ev({ type: 'complete', stopReason: 'end_turn' }),
       ],
     });
     const flow = new AiSdkFlow({ backend });
@@ -379,177 +385,80 @@ describe('AiSdkFlow seam', () => {
 
     const req = out[0];
     assert.equal(req.author, 'system');
-    assert.equal(req.actions?.permissionRequest?.requestId, 'req-1');
-    assert.equal(req.actions?.permissionRequest?.toolName, 'bash');
-    assert.equal(req.actions?.permissionRequest?.hint, 'destructive');
-    assert.equal(req.actions?.permissionRequest?.kind, 'tool_permission');
-    if (req.actions?.permissionRequest?.kind !== 'tool_permission') {
-      assert.fail('expected a tool permission request');
-    }
-    assert.equal(req.actions.permissionRequest.rememberForTurnAllowed, true);
-
-    const ack = out[1];
-    assert.equal(ack.author, 'user', 'permission decision is authored by the user');
-    assert.deepEqual(ack.actions?.permissionDecision, {
-      requestId: 'req-1',
-      decision: 'deny',
-      rememberForTurn: true,
+    assert.deepEqual(req.actions?.stateDelta?.sandboxBoundaryRequest, {
+      requestId: 'boundary-1',
+      toolUseId: 'tu-boundary',
+      justification: 'Write the requested export.',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+        },
+      },
     });
 
-    // permission_handoff stopReason maps to completed (run streamed to a halt).
+    const ack = out[1];
+    assert.equal(ack.author, 'user');
+    assert.deepEqual(ack.actions?.stateDelta?.sandboxBoundaryDecision, {
+      requestId: 'boundary-1',
+      decision: 'allow',
+      status: 'approved',
+      revision: 2,
+    });
     assert.equal(out[2].status, 'completed');
   });
 
-  test('maps hosted permission answer acknowledgement without decision fields', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'permission_answer_ack',
-        requestId: 'req-hosted-1',
-        toolUseId: 'tool-hosted-1',
-      }),
-      ctx,
-    );
-
-    assert.deepEqual(mapped.actions, {
-      permissionAnswerAccepted: { requestId: 'req-hosted-1' },
-    });
-    assert.deepEqual(mapped.refs, { toolCallId: 'tool-hosted-1' });
-    const actions = mapped.actions;
-    assert.ok(actions);
-    assert.equal(Object.hasOwn(actions, 'permissionDecision'), false);
-    assert.ok(actions.permissionAnswerAccepted);
-    assert.equal(Object.hasOwn(actions.permissionAnswerAccepted, 'decision'), false);
-    assert.doesNotThrow(() => decodeRuntimeEvent(JSON.parse(JSON.stringify(mapped))));
-  });
-
-  test('maps hosted permission closure acknowledgement as a strict system action', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'permission_closure_ack',
-        requestId: 'req-hosted-timeout-1',
-        toolUseId: 'tool-hosted-timeout-1',
-        reason: 'timed_out',
-      }),
-      ctx,
-    );
-
-    assert.equal(mapped.role, 'system');
-    assert.equal(mapped.author, 'system');
-    assert.deepEqual(mapped.actions, {
-      permissionClosureAccepted: {
-        requestId: 'req-hosted-timeout-1',
-        reason: 'timed_out',
-      },
-    });
-    assert.deepEqual(mapped.refs, { toolCallId: 'tool-hosted-timeout-1' });
-    assert.deepEqual(decodeRuntimeEvent(JSON.parse(JSON.stringify(mapped))), mapped);
-  });
-
-  test('maps additional permission requests without exposing raw tool args', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
+  test('drops legacy permission events at backend ingress and rejects direct mapping', async () => {
+    const legacyEvents = [
       ev({
         type: 'permission_request',
-        kind: 'additional_permissions',
-        requestId: 'req-additional-1',
-        toolUseId: 'tu-additional-1',
+        kind: 'tool_permission',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
         toolName: 'Write',
         category: 'file_write',
-        reason: 'additional_permissions',
-        args: undefined,
-        additionalPermissions: {
-          fileSystem: {
-            entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
-          },
-        },
-        cwd: '/workspace',
-        justification: 'Write the requested export outside the workspace.',
-        intentHash: 'intent-hash',
-        permissionsHash: 'permissions-hash',
-        risk: {
-          outsideWorkspace: true,
-          protectedMetadata: false,
-          networkEnabled: false,
-        },
-        alsoApprovesToolExecution: true,
-        availableDecisions: ['allow_once', 'deny'],
+        reason: 'file_write',
+        args: { path: '/tmp/example' },
+        rememberForTurnAllowed: true,
       }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    const request = mapped.actions?.permissionRequest;
-    assert.equal(request?.kind, 'additional_permissions');
-    if (request?.kind !== 'additional_permissions') {
-      assert.fail('expected an additional permission request');
-    }
-    assert.deepEqual(request.additionalPermissions, {
-      fileSystem: {
-        entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+      ev({
+        type: 'permission_answer_ack',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
+      }),
+      ev({
+        type: 'permission_closure_ack',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
+        reason: 'timed_out',
+      }),
+      ev({
+        type: 'permission_decision_ack',
+        requestId: 'legacy-request',
+        toolUseId: 'legacy-tool',
+        decision: 'deny',
+      }),
+    ];
+    const observed: string[] = [];
+    const backend = new ScriptedBackend({
+      events: [...legacyEvents, ev({ type: 'complete', stopReason: 'end_turn' })],
+    });
+    const flow = new AiSdkFlow({
+      backend,
+      onSessionEvent: (event) => {
+        observed.push(event.type);
       },
     });
-    assert.deepEqual(request.availableDecisions, ['allow_once', 'deny']);
-    assert.equal(request.alsoApprovesToolExecution, true);
-    assert.equal('args' in request, false);
-  });
 
-  test('maps sandbox escalation as a bounded one-shot permission action', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'permission_request',
-        kind: 'sandbox_escalation',
-        requestId: 'req-escalation-1',
-        toolUseId: 'tu-escalation-1',
-        toolName: 'Bash',
-        category: 'shell_unsafe',
-        reason: 'sandbox_escalation',
-        args: undefined,
-        command: 'printf ok > /outside/result.txt',
-        cwd: '/workspace',
-        justification: 'Write the exact requested output.',
-        intentHash: 'intent-hash',
-        commandHash: 'command-hash',
-        trigger: 'sandbox_denial',
-        risk: {
-          unsandboxedExecution: true,
-          unrestrictedFileSystem: true,
-          unrestrictedNetwork: true,
-          protectedMetadataExposed: true,
-        },
-        alsoApprovesToolExecution: false,
-        availableDecisions: ['allow_once', 'deny'],
-        rememberForTurnAllowed: false,
-      }),
-      ctx,
-      createSessionEventMapMemory(),
+    const out = await collect(flow.run(ctx, { text: 'do it', context: [] }));
+    assert.deepEqual(
+      out.map((event) => event.status),
+      ['completed'],
     );
-
-    const request = mapped.actions?.permissionRequest;
-    assert.equal(request?.kind, 'sandbox_escalation');
-    if (request?.kind !== 'sandbox_escalation') assert.fail('expected sandbox escalation');
-    assert.equal(request.command, 'printf ok > /outside/result.txt');
-    assert.equal(request.trigger, 'sandbox_denial');
-    assert.deepEqual(request.availableDecisions, ['allow_once', 'deny']);
-    assert.equal('args' in request, false);
-  });
-
-  test('rejects permission requests without an explicit valid kind', () => {
-    const valid = ev({
-      type: 'permission_request',
-      kind: 'tool_permission',
-      requestId: 'req-kind',
-      toolUseId: 'tu-kind',
-      toolName: 'Write',
-      category: 'file_write',
-      reason: 'file_write',
-      args: { path: '/tmp/example' },
-      rememberForTurnAllowed: true,
-    });
-
-    for (const kind of [undefined, 'unknown']) {
-      const malformed = { ...valid, kind } as unknown as SessionEvent;
+    assert.deepEqual(observed, ['complete']);
+    for (const legacyEvent of legacyEvents) {
       assert.throws(
-        () => mapSessionEventToRuntimeEvent(malformed, ctx, createSessionEventMapMemory()),
-        /invalid or missing kind/,
+        () => mapSessionEventToRuntimeEvent(legacyEvent, ctx, createSessionEventMapMemory()),
+        /legacy permission event/,
       );
     }
   });
@@ -745,12 +654,12 @@ describe('AiSdkFlow seam', () => {
     assert.equal(result.events.filter(isTerminalRuntimeEvent).length, 1);
   });
 
-  test('delegates stop / respondToPermission / dispose to the wrapped backend', async () => {
+  test('delegates stop / respondToSandboxBoundary / dispose to the wrapped backend', async () => {
     const backend = new ScriptedBackend({ events: [] });
     const flow = new AiSdkFlow({ backend });
 
     await flow.stop('redirect');
-    await flow.respondToPermission({ requestId: 'r', decision: 'allow' });
+    await flow.respondToSandboxBoundary({ requestId: 'r', decision: 'allow' });
     await flow.dispose();
 
     assert.deepEqual(backend.stopCalls, ['redirect']);
@@ -1020,53 +929,25 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(event.actions?.stateDelta?.activityKind, 'command');
   });
 
-  test('owns independent args across SessionEvent to RuntimeEvent mappings', () => {
-    const cases = [
-      {
-        event: (args: unknown) =>
-          ev({
-            type: 'tool_start',
-            toolUseId: 'tu-owned',
-            toolName: 'Write',
-            args,
-          }),
-        mappedArgs: (event: RuntimeEvent) =>
-          event.content?.kind === 'function_call' ? event.content.args : undefined,
-      },
-      {
-        event: (args: unknown) =>
-          ev({
-            type: 'permission_request',
-            kind: 'tool_permission',
-            requestId: 'permission-owned',
-            toolUseId: 'tu-owned',
-            toolName: 'Write',
-            category: 'file_write',
-            reason: 'file_write',
-            args,
-            rememberForTurnAllowed: true,
-          }),
-        mappedArgs: (event: RuntimeEvent) => {
-          const request = event.actions?.permissionRequest;
-          return request?.kind === 'tool_permission' ? request.args : undefined;
-        },
-      },
-    ];
+  test('owns independent tool args across SessionEvent to RuntimeEvent mappings', () => {
+    const sourceArgs = { content: 'approved', layout: { cols: 120 } };
+    const sourceEvent = ev({
+      type: 'tool_start',
+      toolUseId: 'tu-owned',
+      toolName: 'Write',
+      args: sourceArgs,
+    });
+    const mapped = mapSessionEventToRuntimeEvent(sourceEvent, ctx, createSessionEventMapMemory());
+    const mappedArgs = (
+      mapped.content?.kind === 'function_call' ? mapped.content.args : undefined
+    ) as typeof sourceArgs;
 
-    for (const scenario of cases) {
-      const sourceArgs = { content: 'approved', layout: { cols: 120 } };
-      const sourceEvent = scenario.event(sourceArgs);
-      const mappedArgs = scenario.mappedArgs(
-        mapSessionEventToRuntimeEvent(sourceEvent, ctx, createSessionEventMapMemory()),
-      ) as typeof sourceArgs;
-
-      assert.notStrictEqual(mappedArgs, sourceArgs);
-      assert.notStrictEqual(mappedArgs.layout, sourceArgs.layout);
-      sourceArgs.layout.cols = 80;
-      assert.equal(mappedArgs.layout.cols, 120);
-      mappedArgs.content = 'runtime';
-      assert.equal(sourceArgs.content, 'approved');
-    }
+    assert.notStrictEqual(mappedArgs, sourceArgs);
+    assert.notStrictEqual(mappedArgs.layout, sourceArgs.layout);
+    sourceArgs.layout.cols = 80;
+    assert.equal(mappedArgs.layout.cols, 120);
+    mappedArgs.content = 'runtime';
+    assert.equal(sourceArgs.content, 'approved');
   });
 
   test('plan_submitted maps to an agent-authored state delta', () => {
@@ -1154,5 +1035,310 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
       branch: 'agent-b',
     });
     assert.equal(a.branch, 'agent-b');
+  });
+});
+
+// ============================================================================
+// Projection coverage contract
+// ============================================================================
+
+/**
+ * One sample per backend-mappable SessionEvent variant. `subject` is typed to
+ * its own key, so a new variant cannot be satisfied by an empty list or by
+ * some other event that happens to project cleanly; `before` and `after` carry
+ * only the companions that variant's projection needs.
+ */
+type ProjectionSamples = {
+  [K in BackendSessionEvent['type']]: {
+    subject: Extract<BackendSessionEvent, { type: K }>;
+    before?: SessionEvent[];
+    after?: SessionEvent[];
+  };
+};
+
+const PROJECTION_SAMPLES: ProjectionSamples = {
+  text_delta: {
+    subject: { type: 'text_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
+  },
+  text_complete: {
+    subject: {
+      type: 'text_complete',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'm1',
+      text: 'hi',
+    },
+  },
+  thinking_delta: {
+    subject: {
+      type: 'thinking_delta',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'm1',
+      text: 'h',
+    },
+  },
+  thinking_complete: {
+    subject: {
+      type: 'thinking_complete',
+      id: 'e1',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'm1',
+      text: 'why',
+    },
+    // Thinking is held until the assistant text row that shares its message id.
+    after: [
+      { type: 'text_complete', id: 'e2', turnId: 'turn-1', ts: 2, messageId: 'm1', text: 'hi' },
+    ],
+  },
+  tool_start: {
+    subject: {
+      type: 'tool_start',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Read',
+      args: { path: '/tmp/a' },
+    },
+  },
+  tool_output_delta: {
+    subject: {
+      type: 'tool_output_delta',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      sessionId: 'session-1',
+      toolCallId: 'tool-1',
+      toolUseId: 'tool-1',
+      seq: 1,
+      stream: 'stdout',
+      chunk: 'out',
+      redacted: false,
+      createdAt: 1,
+    },
+  },
+  tool_progress: {
+    subject: {
+      type: 'tool_progress',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      chunk: 'x',
+    },
+  },
+  tool_result: {
+    subject: {
+      type: 'tool_result',
+      id: 'e2',
+      turnId: 'turn-1',
+      ts: 2,
+      toolUseId: 'tool-1',
+      isError: false,
+      content: { kind: 'text', text: 'ok' },
+    },
+    // A result carries no tool name of its own; the mapper reads it from the call.
+    before: [
+      {
+        type: 'tool_start',
+        id: 'e1',
+        turnId: 'turn-1',
+        ts: 1,
+        toolUseId: 'tool-1',
+        toolName: 'Read',
+        args: { path: '/tmp/a' },
+      },
+    ],
+  },
+  sandbox_boundary_request: {
+    subject: {
+      type: 'sandbox_boundary_request',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      justification: 'read a file outside the workspace',
+      expansion: {
+        filesystem: { entries: [{ path: '/tmp/outside.txt', access: 'read', scope: 'exact' }] },
+      },
+    },
+  },
+  sandbox_boundary_decision_ack: {
+    subject: {
+      type: 'sandbox_boundary_decision_ack',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'boundary-1',
+      toolUseId: 'tool-1',
+      decision: 'allow',
+      status: 'approved',
+      revision: 2,
+    },
+  },
+  user_question_request: {
+    subject: {
+      type: 'user_question_request',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'q-1',
+      toolUseId: 'tool-1',
+      questions: [{ question: 'Which one?', options: [{ label: 'A', description: 'a' }] }],
+    },
+  },
+  user_question_answer_ack: {
+    subject: {
+      type: 'user_question_answer_ack',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'q-1',
+      toolUseId: 'tool-1',
+    },
+  },
+  plan_submitted: {
+    subject: {
+      type: 'plan_submitted',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      planId: 'plan-1',
+      title: 'Plan',
+    },
+  },
+  token_usage: {
+    subject: {
+      type: 'token_usage',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      input: 10,
+      output: 5,
+      total: 15,
+    },
+  },
+  steering_message: {
+    subject: {
+      type: 'steering_message',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'm2',
+      content: { text: 'steer' },
+    },
+  },
+  provider_retry: {
+    subject: {
+      type: 'provider_retry',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      phase: 'started',
+      attempt: 2,
+      maxAttempts: 3,
+      reason: 'rate_limit',
+    },
+  },
+  error: {
+    subject: {
+      type: 'error',
+      id: 'e1',
+      turnId: 'turn-1',
+      ts: 1,
+      recoverable: false,
+      message: 'boom',
+    },
+    // An error is always followed by a terminal complete carrying the failure.
+    after: [{ type: 'complete', id: 'e2', turnId: 'turn-1', ts: 2, stopReason: 'error' }],
+  },
+  complete: {
+    subject: { type: 'complete', id: 'e', turnId: 'turn-1', ts: 1, stopReason: 'end_turn' },
+  },
+  abort: { subject: { type: 'abort', id: 'e', turnId: 'turn-1', ts: 1, reason: 'user_stop' } },
+};
+
+const projectionRunHeader: AgentRunHeader = {
+  runId: 'run-1',
+  sessionId: 'session-1',
+  turnId: 'turn-1',
+  status: 'completed',
+  backendKind: 'ai-sdk',
+  llmConnectionSlug: 'anthropic',
+  modelId: 'model-1',
+  cwd: '/tmp',
+  permissionMode: 'ask',
+  createdAt: 1,
+  updatedAt: 2,
+  completedAt: 2,
+};
+
+describe('SessionEvent projection coverage', () => {
+  // The contract is over what a reader can actually meet: every mapped event
+  // AgentRun admits to the ledger has to project. It asserts on the unclaimed
+  // codes at either severity, not on the hard one alone — a control fact whose
+  // gap only degrades the view is still a gap, and must be found here rather
+  // than by a user opening the session.
+  for (const [type, sample] of Object.entries(PROJECTION_SAMPLES)) {
+    test(`${type} projects without an unclaimed-event diagnostic`, () => {
+      let seq = 0;
+      const memory = createSessionEventMapMemory();
+      const runtimeEvents = [...(sample.before ?? []), sample.subject, ...(sample.after ?? [])]
+        .map((event) =>
+          mapSessionEventToRuntimeEvent(
+            event,
+            {
+              ...ctx,
+              newId: () => {
+                seq += 1;
+                return `rt-${seq}`;
+              },
+            },
+            memory,
+          ),
+        )
+        .filter((event) => !isNonTerminalErrorRuntimeEvent(event));
+
+      const projected = projectRuntimeEventsToStoredMessages(runtimeEvents, {
+        runHeaders: [projectionRunHeader],
+      });
+
+      assert.deepEqual(projected.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic), []);
+    });
+  }
+
+  // The guard's fallback is what a variant added without a claim actually
+  // becomes. It has to stay on the degradable side of the line: control-only,
+  // so the session it lands in still opens, and still reported so the gap the
+  // coverage contract would have caught is not invisible at runtime.
+  test('an unmapped SessionEvent maps to a reported control-only fact', () => {
+    const unmapped = { type: 'not_yet_mapped', id: 'e', turnId: 'turn-1', ts: 1 };
+    const memory = createSessionEventMapMemory();
+    const runtimeEvent = mapSessionEventToRuntimeEvent(
+      unmapped as unknown as SessionEvent,
+      ctx,
+      memory,
+    );
+
+    assert.equal(runtimeEvent.content, undefined);
+    assert.equal(runtimeEvent.actions?.stateDelta?.unmappedSessionEventType, 'not_yet_mapped');
+
+    const projected = projectRuntimeEventsToStoredMessages([runtimeEvent], {
+      runHeaders: [projectionRunHeader],
+    });
+    assert.deepEqual(projected.messages, []);
+    // Filtered through the predicate the contract above uses, not just compared
+    // to the code string: dropping the soft code from the predicate would
+    // otherwise loosen the contract to `unsupported_event` only, silently.
+    assert.deepEqual(
+      projected.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic).map((d) => d.code),
+      ['unclaimed_control_fact'],
+    );
+    assert.equal(projected.diagnostics.length, 1);
   });
 });

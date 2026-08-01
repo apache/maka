@@ -5,39 +5,12 @@
   gap: var(--space-2);
 }
 
-.settingsThemeOption {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  height: auto;
-  min-height: 48px;
-  justify-content: stretch;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  color: var(--foreground);
-  overflow: hidden;
-  padding: var(--space-2);
-  text-align: left;
-  white-space: normal;
-}
-
-.settingsThemeOptionPreview {
-  grid-template-columns: 1fr;
-  grid-template-rows: auto auto;
-  align-items: stretch;
-  gap: var(--space-2);
-  min-height: 116px;
-}
-
 /* Mini chat-surface mock rendered inside each theme tile. Hardcodes colors
  * per variant so the preview doesn't track the active theme — comparing
  * tiles is the whole point. */
 .settingsThemePreview {
-  width: 100%;
-  max-height: 70px;
+  width: 88px;
+  height: 44px;
   aspect-ratio: 16 / 8;
   border-radius: var(--radius-surface);
   overflow: hidden;
@@ -128,16 +101,6 @@
   .settingsThemePreview { transition: none; }
 }
 
-.settingsThemeOption:hover {
-  border-color: var(--border-strong);
-  background: var(--state-hover-bg);
-}
-
-.settingsThemeOption[data-checked] {
-  border-color: var(--border-strong);
-  background: var(--state-selected-bg);
-}
-
 /* PR-THEME-PRODUCT-PALETTES-0: palette picker. Each option shows a
    round swatch whose color is the palette's accent token. The swatch
    colors are hard-coded here (not pulled from --accent) so a non-
@@ -175,10 +138,7 @@
 .settingsPaletteSwatch-sand             { background: oklch(0.62 0.14 55); }
 .settingsPaletteSwatch-mono             { background: oklch(0.30 0 0); }
 
-/* PR-PALETTE-PICKER-GROUPS-0: subgroup container that gathers a small
-   heading (编辑器主题 / 产品色调) above its own grid. Spacing matches
-   the existing settingsSubheading rhythm so the page reads as one
-   continuous picker, just structured. */
+/* Product grouping only; RadioList owns the control layout and chrome. */
 .settingsPaletteGroup {
   display: flex;
   flex-direction: column;
@@ -193,32 +153,6 @@
   font-weight: var(--font-weight-medium);
   color: var(--muted-foreground);
   letter-spacing: var(--tracking-normal);
-}
-
-.settingsThemeLabel {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-1);
-}
-
-.settingsThemeLabel strong {
-  min-width: 0;
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  /* #1362: palette names wrap instead of truncating — at the 480px window
-     floor the single-column tiles are ~74px of label and the old nowrap +
-     ellipsis cut "Catppuccin Mocha" to "Catppucc…" with no way to recover
-     the name. Every label fits one line on the wide 3-column grid, so this
-     only changes the squeezed state. */
-  overflow-wrap: anywhere;
-}
-
-.settingsThemeLabel small {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
-  overflow-wrap: anywhere;
 }
 
 @media (max-width: 820px) {

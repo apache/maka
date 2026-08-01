@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { ensureAbRunManifest, readAbRunManifest } from '#ab-manifest';
+import { buildRunManifestFingerprint, ensureAbRunManifest, readAbRunManifest } from '#ab-manifest';
 import {
   discoverCachedHarborTasks,
   fingerprintFixedPromptTaskTree,
@@ -47,11 +47,14 @@ import {
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT, prepareMakaNodeToolchain } from '#maka-node-toolchain';
 import { createCodexOAuthHarnessCredentialBinding } from '#codex-oauth-harness';
 import {
+  assertDeepSweFullTaskSet,
+  assertDeepSweFullTaskTreeFingerprint,
   assertDeepSweSubset30TaskTreeFingerprint,
   assertTerminalBench21TaskSet,
   assertTerminalBench21TaskTreeFingerprint,
   buildHarnessAbResumeFingerprint,
   buildHarnessAbRunManifest,
+  DEEP_SWE_FULL_TASK_IDS,
   DEEP_SWE_REVISION,
   DEEP_SWE_SUBSET_30_TASK_IDS,
   HARNESS_MAKA_CONTEXT_BUDGET,
@@ -70,6 +73,7 @@ import {
 import { envPath as parseEnvPath } from '#headless-run-env';
 import { buildSubjectFingerprint, buildToolchainFingerprint } from '#experiment-fingerprint';
 import { runExperiment } from '#experiment-engine';
+import { DEEPSEEK_V4_FLASH_PRICING } from '#deepseek-pricing';
 
 const execFileAsync = promisify(execFile);
 
@@ -93,6 +97,15 @@ const ZAI_CODING_PLAN_PRICING = Object.freeze({
   cachedInput: 0,
   output: 0,
   source: 'zai-coding-plan-account-plan',
+});
+const DEEPSEEK_V4_FLASH_HARNESS_PRICING = Object.freeze({
+  currency: 'USD',
+  unit: 'per_1m_tokens',
+  input: DEEPSEEK_V4_FLASH_PRICING.inputUsdPer1M,
+  cachedInput: DEEPSEEK_V4_FLASH_PRICING.cacheReadUsdPer1M,
+  cacheWrite: DEEPSEEK_V4_FLASH_PRICING.cacheWriteUsdPer1M,
+  output: DEEPSEEK_V4_FLASH_PRICING.outputUsdPer1M,
+  source: DEEPSEEK_V4_FLASH_PRICING.source,
 });
 const HARBOR_SETUP_TEARDOWN_GRACE_SEC = 15 * 60;
 const ORACLE_EVIDENCE_RESOLUTION_TIMEOUT_MS = 15_000;
@@ -131,6 +144,17 @@ export const HARNESS_BENCHMARK_PROFILES = Object.freeze({
     runIdSlug: 'deepswe-subset30',
     oracle: false,
   }),
+  'deep-swe-1.1-full': Object.freeze({
+    id: 'deep-swe-1.1-full',
+    label: 'DeepSWE full-113',
+    dataset: 'deep-swe',
+    version: '1.1',
+    revision: DEEP_SWE_REVISION,
+    taskIds: DEEP_SWE_FULL_TASK_IDS,
+    executor: 'pier',
+    runIdSlug: 'deepswe-full',
+    oracle: false,
+  }),
 });
 
 export function resolveHarnessBenchmarkProfile(
@@ -157,6 +181,14 @@ export function defaultHarnessBenchmarkTasksRoot(benchmarkProfile) {
 export async function resolveFrozenBenchmarkTasks(benchmarkProfile, tasksRoot) {
   const discovered = await discoverCachedHarborTasks(tasksRoot);
   if (benchmarkProfile.dataset === 'deep-swe') {
+    if (benchmarkProfile.id === 'deep-swe-1.1-full') {
+      // The full profile compares the whole pinned tree: assert the exact
+      // 113-task leaderboard set and fingerprint every discovered task dir.
+      assertDeepSweFullTaskSet(discovered.map((task) => task.id));
+      const fullTreeFingerprint = await fingerprintFixedPromptTaskTree(discovered);
+      assertDeepSweFullTaskTreeFingerprint(fullTreeFingerprint);
+      return { tasks: discovered, taskSourceFingerprint: fullTreeFingerprint };
+    }
     // The DeepSWE repo tree carries more tasks than the frozen subset; pick
     // the subset (loud on any missing id) instead of asserting the whole tree.
     const tasks = selectTasksByIds(discovered, benchmarkProfile.taskIds, {
@@ -274,6 +306,20 @@ export const HARNESS_RUNTIME_PROFILES = Object.freeze({
       keyFileEnv: 'MAKA_HARNESS_AB_ZAI_KEY_FILE',
     }),
   }),
+  'deepseek-v4-flash-max': Object.freeze({
+    id: 'deepseek-v4-flash-max',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    reasoningEffort: 'max',
+    baseUrl: 'https://api.deepseek.com',
+    billingMode: 'metered',
+    pricing: DEEPSEEK_V4_FLASH_HARNESS_PRICING,
+    auth: Object.freeze({
+      kind: 'api-key-file',
+      keyFileEnv: 'MAKA_HARNESS_AB_DEEPSEEK_KEY_FILE',
+      defaultPath: join(homedir(), '.maka/secrets/deepseek.key'),
+    }),
+  }),
   'openai-codex-gpt-5.6-sol-xhigh': Object.freeze({
     id: 'openai-codex-gpt-5.6-sol-xhigh',
     provider: 'openai-codex',
@@ -306,11 +352,26 @@ const SUPPORTED_HARNESS_COMPOSITIONS = new Set([
   'terminal-bench-2.1|kimi-coding-plan-k3-max|kimi-code',
   'terminal-bench-2.1|kimi-coding-plan-k3-max|opencode',
   'terminal-bench-2.1|zai-coding-plan-glm-5.2-max|opencode',
+  'terminal-bench-2.1|deepseek-v4-flash-max|opencode',
   'terminal-bench-2.1|openai-codex-gpt-5.6-sol-xhigh|codex',
   'deep-swe-1.1|kimi-coding-plan-k3-max|kimi-code',
   'deep-swe-1.1|openai-codex-gpt-5.6-sol-xhigh|codex',
+  'deep-swe-1.1-full|kimi-coding-plan-k3-max|kimi-code',
+  'deep-swe-1.1-full|openai-codex-gpt-5.6-sol-xhigh|codex',
+  'deep-swe-1.1-full|deepseek-v4-flash-max|opencode',
 ]);
 const RESOLVED_HARNESS_COMPOSITIONS = new WeakSet();
+
+/** Resolve host-proxy hub options from the harness environment. Pier's
+ * in-container agents dial the host credential proxy at an advertised host;
+ * the default (host.docker.internal) only exists on Docker Desktop, so a
+ * native-Linux VM must name a docker-bridge-reachable address explicitly. */
+export function resolveHarnessProviderProxyHubOptions(
+  raw = process.env.MAKA_HARNESS_AB_PROVIDER_PROXY_ADVERTISED_HOST,
+) {
+  const advertisedHost = raw?.trim();
+  return advertisedHost ? { providerProxyAdvertisedHost: advertisedHost } : {};
+}
 
 export function resolveHarnessCompetitorProfile(raw = 'kimi-code') {
   const profile = HARNESS_COMPETITOR_PROFILES[raw];
@@ -382,6 +443,9 @@ export function buildHarnessExecutionProfile(runtimeProfile) {
     pricing: {
       inputUsdPer1M: runtimeProfile.pricing.input,
       cacheReadUsdPer1M: runtimeProfile.pricing.cachedInput,
+      ...(runtimeProfile.pricing.cacheWrite === undefined
+        ? {}
+        : { cacheWriteUsdPer1M: runtimeProfile.pricing.cacheWrite }),
       outputUsdPer1M: runtimeProfile.pricing.output,
       source: runtimeProfile.pricing.source,
     },
@@ -591,6 +655,23 @@ export function resolveHarnessAbTaskSelection(
   return { taskIds: [taskId], limit: 1 };
 }
 
+export function resolveHarnessAdjudicatedInfraRetryRoundIds(raw) {
+  if (raw === undefined) return [];
+  const roundIds = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (roundIds.length === 0) {
+    throw new Error('MAKA_HARNESS_AB_RETRY_ADJUDICATED_INFRA_ROUND_IDS_ONCE must not be empty');
+  }
+  if (new Set(roundIds).size !== roundIds.length) {
+    throw new Error(
+      'MAKA_HARNESS_AB_RETRY_ADJUDICATED_INFRA_ROUND_IDS_ONCE must not contain duplicates',
+    );
+  }
+  return roundIds;
+}
+
 export function harnessMakaContextBudgetEnv() {
   return {
     MAKA_CONTEXT_ACTIVE_TOOL_RESULT_PRUNE: 'on',
@@ -713,6 +794,57 @@ export function buildHarnessAbManifest({
   });
 }
 
+export async function resolveHarnessAbManifestForRun({
+  manifestPath,
+  proposedManifest,
+  retryRoundIds,
+  expectedExistingFingerprint,
+}) {
+  if (!expectedExistingFingerprint) {
+    return ensureAbRunManifest(manifestPath, proposedManifest);
+  }
+  if (retryRoundIds.length === 0) {
+    throw new Error(
+      'MAKA_HARNESS_AB_EXPECTED_EXISTING_MANIFEST_FINGERPRINT requires an explicit adjudicated infra retry',
+    );
+  }
+  const existing = await readAbRunManifest(manifestPath);
+  if (!existing) {
+    throw new Error('explicit adjudicated infra retry requires an existing run manifest');
+  }
+  if (existing.fingerprint !== expectedExistingFingerprint) {
+    throw new Error(
+      `existing run manifest fingerprint does not match MAKA_HARNESS_AB_EXPECTED_EXISTING_MANIFEST_FINGERPRINT: expected ${expectedExistingFingerprint}, found ${existing.fingerprint}`,
+    );
+  }
+  const frozenMakaArm = existing.arms.find((arm) => arm.id === 'maka');
+  if (!frozenMakaArm) throw new Error('existing run manifest is missing the Maka arm');
+  const { fingerprint: _proposedFingerprint, ...proposedBody } = proposedManifest;
+  const normalizedBody = {
+    ...proposedBody,
+    subjectFingerprint: existing.subjectFingerprint,
+    toolchainFingerprint: existing.toolchainFingerprint,
+    arms: proposedBody.arms.map((arm) =>
+      arm.id === 'maka'
+        ? {
+            ...arm,
+            fingerprint: frozenMakaArm.fingerprint,
+            metadata: {
+              ...arm.metadata,
+              version: frozenMakaArm.metadata.version,
+            },
+          }
+        : arm,
+    ),
+  };
+  if (buildRunManifestFingerprint(normalizedBody) !== existing.fingerprint) {
+    throw new Error(
+      'adjudicated infra retry manifest differs beyond the frozen subject and toolchain identity',
+    );
+  }
+  return existing;
+}
+
 export async function main() {
   const repoRoot = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
   const makaRepoPath = process.env.MAKA_HARNESS_AB_MAKA_REPO
@@ -744,6 +876,9 @@ export async function main() {
     process.env.MAKA_HARNESS_AB_ARM_EXECUTION,
     selection.taskIds.length,
   );
+  const retryAdjudicatedInfraRoundIdsOnce = resolveHarnessAdjudicatedInfraRetryRoundIds(
+    process.env.MAKA_HARNESS_AB_RETRY_ADJUDICATED_INFRA_ROUND_IDS_ONCE,
+  );
   const runRoot = resolveFixedPromptRunRoot(outDir, runId, 'MAKA_HARNESS_AB_RUN_ID');
   await withHarnessAbRunLock(runRoot, async () => {
     const journal = backgroundJournal(runRoot);
@@ -759,6 +894,7 @@ export async function main() {
         executionPolicy,
         runRoot,
         composition,
+        retryAdjudicatedInfraRoundIdsOnce,
       });
     } catch (error) {
       exitCode = 1;
@@ -785,6 +921,7 @@ async function runLocked({
   executionPolicy,
   runRoot,
   composition,
+  retryAdjudicatedInfraRoundIdsOnce,
 }) {
   const { benchmarkProfile, runtimeProfile, competitorProfile } = composition;
   const { tasks: allTasks, taskSourceFingerprint } = await resolveFrozenBenchmarkTasks(
@@ -848,7 +985,7 @@ async function runLocked({
     makaNodeToolchainFingerprint:
       benchmarkProfile.executor === 'pier' ? MAKA_NODE_TOOLCHAIN_FINGERPRINT : null,
   });
-  const manifest = buildHarnessAbManifest({
+  const proposedManifest = buildHarnessAbManifest({
     subjectFingerprint,
     taskSourceFingerprint,
     toolchainFingerprint,
@@ -860,7 +997,12 @@ async function runLocked({
     credentialIdentity: credentials.credentialIdentity,
     pierVersion,
   });
-  await ensureAbRunManifest(manifestPath, manifest);
+  const manifest = await resolveHarnessAbManifestForRun({
+    manifestPath,
+    proposedManifest,
+    retryRoundIds: retryAdjudicatedInfraRoundIdsOnce,
+    expectedExistingFingerprint: process.env.MAKA_HARNESS_AB_EXPECTED_EXISTING_MANIFEST_FINGERPRINT,
+  });
   const evaluationTasks = manifest.evaluationTaskIds
     .slice(0, selection.limit)
     .map((taskId) => tasksById.get(taskId));
@@ -884,7 +1026,9 @@ async function runLocked({
   const systemPromptPath = join(runRoot, 'prompts', 'default-system-prompt.txt');
   const evaluatedTaskIds = new Set(evaluationTasks.map((task) => task.id));
   const providerProxyHub =
-    benchmarkProfile.executor === 'pier' ? await createPierProviderProxyHub() : undefined;
+    benchmarkProfile.executor === 'pier'
+      ? await createPierProviderProxyHub(resolveHarnessProviderProxyHubOptions())
+      : undefined;
 
   const report = await runExperiment({
     runRoot,
@@ -961,6 +1105,7 @@ async function runLocked({
         ],
         pairConcurrency: manifest.maxConcurrency,
         armExecution: manifest.metadata.execution.armExecution,
+        retryAdjudicatedInfraRoundIdsOnce,
       });
       return buildHarnessAbReport(
         summary,

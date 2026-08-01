@@ -5,6 +5,7 @@ import {
   decodeCanonicalConnectionCatalogEntry,
   decodeCanonicalRuntimePolicy,
   normalizeCreateCatalogConnectionInput,
+  normalizeConnectionModelDiscoveryResult,
   normalizeRuntimePolicyMutation,
   normalizeSetCredentialInput,
   RuntimePolicyDomainDecodeError,
@@ -63,6 +64,35 @@ test('normalizes catalog inputs while canonical entries reject noncanonical endp
       }),
     RuntimePolicyDomainDecodeError,
   );
+});
+
+test('normalizes exact bounded model discovery results', () => {
+  assert.deepEqual(
+    normalizeConnectionModelDiscoveryResult({
+      models: [{ id: 'gpt-5', capabilities: { chat: true } }],
+      source: 'fetched',
+      fetchedAt: 42,
+    }),
+    {
+      models: [{ id: 'gpt-5', capabilities: { chat: true } }],
+      source: 'fetched',
+      fetchedAt: 42,
+    },
+  );
+  for (const invalid of [
+    {
+      models: [{ id: 'duplicate' }, { id: 'duplicate' }],
+      source: 'fetched',
+      fetchedAt: 42,
+    },
+    { models: [{ id: 'gpt-5' }], source: 'unknown', fetchedAt: 42 },
+    { models: [{ id: 'gpt-5' }], source: 'fetched', fetchedAt: 42, rawBody: 'secret' },
+  ]) {
+    assert.throws(
+      () => normalizeConnectionModelDiscoveryResult(invalid),
+      RuntimePolicyDomainDecodeError,
+    );
+  }
 });
 
 test('credential domain validation requires material but leaves capacity to callers', () => {

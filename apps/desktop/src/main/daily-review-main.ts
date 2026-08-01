@@ -21,14 +21,13 @@ import type {
 } from '@maka/core';
 import { providerAuthRequiresSecret, type LlmConnection } from '@maka/core/llm-connections';
 import { buildProviderOptions, getAIModel } from '@maka/runtime';
-import type { createConnectionStore, createTelemetryRepo } from '@maka/storage';
+import type { createConnectionStore, TelemetryRepo } from '@maka/storage';
 import type { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
 
 const DAILY_REVIEW_ARCHIVE_LIMIT = 180;
 
 type ConnectionStore = ReturnType<typeof createConnectionStore>;
 type DailyReviewArchiveStore = ReturnType<typeof createDailyReviewArchiveStore>;
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
 
 export interface DailyReviewMainService {
   buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary>;
@@ -46,6 +45,7 @@ interface DailyReviewMainServiceDeps {
   archiveStore: DailyReviewArchiveStore;
   connectionStore: ConnectionStore;
   telemetryRepo: TelemetryRepo;
+  ensureUsageReady(): Promise<void>;
   listSessions(): Promise<readonly SessionSummary[]>;
   resolveConnectionSecret(slug: string): Promise<string | null>;
   buildSubscriptionModelFetch(
@@ -60,6 +60,7 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
   let schedulerLastMinuteKey: string | null = null;
 
   async function buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary> {
+    await deps.ensureUsageReady();
     const offset = Number.isFinite(offsetDays) ? Math.trunc(offsetDays) : 0;
     const rawSpan = Number.isFinite(daySpan) ? Math.trunc(daySpan) : 1;
     const span = Math.max(1, Math.min(30, rawSpan));

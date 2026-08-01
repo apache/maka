@@ -1,0 +1,29 @@
+{
+  "slice": "pr3-atoms",
+  "scopes": [
+    {
+      "name": "astryx-markdown-theme",
+      "selectors": ["[data-maka-contract=\"markdown\"]"]
+    },
+    {
+      "name": "composer-atoms",
+      "selectors": ["[data-maka-contract=\"composer-inner\"]"]
+    },
+    {
+      "name": "settings-row-atoms",
+      "selectors": ["[data-maka-contract=\"settings-rows\"]"]
+    },
+    {
+      "name": "module-action-atoms",
+      "selectors": ["[data-maka-contract=\"module-actions\"]"]
+    },
+    {
+      "name": "mcp-market-card-atoms",
+      "selectors": ["[data-maka-contract=\"mcp-market-card\"]"]
+    },
+    {
+      "name": "onboarding-action-atoms",
+      "selectors": ["[data-maka-contract=\"onboarding-actions\"]"]
+    }
+  ]
+}

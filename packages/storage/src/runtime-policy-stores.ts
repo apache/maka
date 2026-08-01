@@ -31,12 +31,22 @@ export {
   type RuntimePolicyStoreErrorCode,
 } from './runtime-policy/errors.js';
 export type {
+  BeginConnectionTestResult,
+  BeginModelFetchResult,
+  CompareAndSetOAuthCredentialInput,
+  CompareAndSetOAuthCredentialResult,
+  ConnectionEffectChangedDomain,
+  ConnectionEffectCompletionResult,
+  ConnectionEffectPreparationFailure,
+  ConnectionTestTicket,
   CredentialStatusQueryResult,
+  ModelFetchTicket,
   ProviderAuthKind,
   RuntimePolicyCredentialMaterial,
   RuntimePolicyOperationCoordinator,
   RuntimePolicyOperationSecretMaterial,
   ResolveExecutionConnectionResult,
+  UnavailableProviderActionAvailability,
 } from './runtime-policy/operations.js';
 
 const readerBrand: unique symbol = Symbol('RuntimePolicyStoresReader');
@@ -188,6 +198,13 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     operations: {
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
+      compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
+      beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
+      completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
+      beginConnectionTest: (connectionId, modelId) =>
+        coordinator.beginConnectionTest(connectionId, modelId),
+      completeConnectionTest: (ticket, result) =>
+        coordinator.completeConnectionTest(ticket, result),
     },
   };
   freezeFacade(stores);

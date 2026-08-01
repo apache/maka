@@ -16,12 +16,12 @@ import {
   mapSessionEventToRuntimeEvent,
 } from '../ai-sdk-flow.js';
 import type { InvocationContext } from '../invocation-context.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
 import { evaluateHistoryCompactCheckpointReplay } from '../history-compact.js';
 import type { HistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
@@ -242,7 +242,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ledger.push(mapped);
   };
 
-  const backend = new AiSdkBackend({
+  const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async (message) => {
@@ -254,14 +254,12 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     modelFactory: () => model,
     tools: [
       {
         name: 'Read',
         description: 'Read description',
         parameters: z.object({ path: z.string() }),
-        permissionRequired: false,
         impl: async (args: { path: string }) => {
           toolExecutions.push(args.path);
           if (args.path === 'one.md')
@@ -278,7 +276,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
               // request; the trigger must count it (finding D).
               description: `BIG_SCHEMA ${'D'.repeat(12_000)}`,
               parameters: z.object({ q: z.string() }),
-              permissionRequired: false,
               impl: async () => ({ ok: true }),
             },
           ]
@@ -1135,7 +1132,7 @@ describe('mid-turn capacity compaction flow plumbing', () => {
         };
       },
       stop: async () => {},
-      respondToPermission: async () => {},
+      respondToSandboxBoundary: async () => {},
       dispose: async () => {},
     };
     const flow = new AiSdkFlow({ backend: fakeBackend });

@@ -4,6 +4,8 @@
  *
  * Default: parallel batch, then serial-only workspaces.
  * `--serial`: every workspace in package.json workspaces order (CI).
+ * `--concurrency N`: cap the parallel batch to avoid overloading small runners.
+ * `--workspaces a,b`: run only the selected workspace paths.
  *
  * Each workspace owns how its dist tests run via package.json `test:dist`.
  * This script only owns scheduling (parallel vs serial) and failure reporting.
@@ -77,11 +79,23 @@ async function runSerial(dirs, options) {
   }
 }
 
-async function runParallel(dirs, options) {
-  const results = await Promise.allSettled(dirs.map((dir) => runWorkspace(dir, options)));
-  const failures = results.filter((r) => r.status === 'rejected');
+async function runParallel(dirs, options, concurrency) {
+  const failures = [];
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < dirs.length) {
+      const dir = dirs[nextIndex++];
+      try {
+        await runWorkspace(dir, options);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  }
+  const workerCount = Math.min(dirs.length, concurrency);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   if (failures.length > 0) {
-    const messages = failures.map((r) => r.reason?.message ?? String(r.reason));
+    const messages = failures.map((error) => error?.message ?? String(error));
     throw new Error(messages.join('\n'));
   }
 }
@@ -89,6 +103,8 @@ async function runParallel(dirs, options) {
 export async function runWorkspaceTests(options = {}) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const serialFlag = options.serial ?? false;
+  const concurrency = options.concurrency ?? Number.POSITIVE_INFINITY;
+  if (!(concurrency > 0)) throw new Error('concurrency must be greater than zero');
   const spawn = options.spawn ?? defaultSpawn;
   const workspaceDirs = options.workspaceDirs ?? loadWorkspaceDirs(repoRoot);
   const serialDirs = options.serialWorkspaceDirs ?? SERIAL_WORKSPACE_DIRS;
@@ -98,14 +114,47 @@ export async function runWorkspaceTests(options = {}) {
     await runSerial(workspaceDirs, runOptions);
   } else {
     const { parallel, serial } = partitionWorkspaces(workspaceDirs, serialDirs);
-    await runParallel(parallel, runOptions);
+    await runParallel(parallel, runOptions, concurrency);
     await runSerial(serial, runOptions);
   }
 }
 
+export function parseCliArgs(args, availableDirs) {
+  let concurrency = Number.POSITIVE_INFINITY;
+  let serial = false;
+  const requestedDirs = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--serial') serial = true;
+    else if (arg === '--concurrency') concurrency = Number(args[++index]);
+    else if (arg.startsWith('--concurrency=')) concurrency = Number(arg.slice(14));
+    else if (arg === '--workspaces') requestedDirs.push(...(args[++index] ?? '').split(','));
+    else if (arg.startsWith('--workspaces=')) requestedDirs.push(...arg.slice(13).split(','));
+    else if (arg === '--workspace') requestedDirs.push(args[++index] ?? '');
+    else if (arg.startsWith('--workspace=')) requestedDirs.push(arg.slice(12));
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (
+    concurrency !== Number.POSITIVE_INFINITY &&
+    (!Number.isInteger(concurrency) || concurrency <= 0)
+  ) {
+    throw new Error('--concurrency must be a positive integer');
+  }
+  const selected = [...new Set(requestedDirs.filter(Boolean))];
+  const unknown = selected.filter((dir) => !availableDirs.includes(dir));
+  if (unknown.length > 0) throw new Error(`Unknown workspace: ${unknown.join(', ')}`);
+  return {
+    concurrency,
+    serial,
+    workspaceDirs:
+      selected.length > 0 ? availableDirs.filter((dir) => selected.includes(dir)) : availableDirs,
+  };
+}
+
 async function main(args) {
-  const serial = args.includes('--serial');
-  await runWorkspaceTests({ serial });
+  const availableDirs = loadWorkspaceDirs(defaultRepoRoot);
+  const options = parseCliArgs(args, availableDirs);
+  await runWorkspaceTests(options);
   console.log('\nAll workspace tests passed.');
 }
 

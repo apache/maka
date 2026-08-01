@@ -1,5 +1,8 @@
 import { StrictMode, useEffect } from 'react';
+import { Theme } from '@astryxdesign/core/theme';
+import { makaTheme } from './astryx-theme/maka';
 import { AppShell } from './app-shell';
+import { useAstryxThemeMode } from './astryx-theme-mode';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 
 export function App({
@@ -32,9 +35,15 @@ export function App({
       if (secondFrame) cancelAnimationFrame(secondFrame);
     };
   }, []);
+  // Astryx owns the component/design system (issue #1565). It sits inside
+  // StrictMode and follows our already-resolved color mode; see
+  // astryx-theme-mode.ts for why we don't hand it `mode="system"`.
+  const astryxMode = useAstryxThemeMode();
   return (
     <StrictMode>
-      <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+      <Theme theme={makaTheme} mode={astryxMode}>
+        <AppShell initialOnboardingSnapshot={initialOnboardingSnapshot} />
+      </Theme>
     </StrictMode>
   );
 }

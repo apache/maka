@@ -11,7 +11,37 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.plan.outputs.code }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      headless: ${{ steps.plan.outputs.headless }}
+      runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
+      script_mode: ${{ steps.plan.outputs.script_mode }}
+      storage_stress: ${{ steps.plan.outputs.storage_stress }}
+      unit: ${{ steps.plan.outputs.unit }}
+      workspaces: ${{ steps.plan.outputs.workspaces }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        name: Select affected test surfaces
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
+          else
+            node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
   typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +62,8 @@ jobs:
         run: npx knip --workspace packages/ui
 
   test:
+    needs: changes
+    if: needs.changes.outputs.unit == 'true' || needs.changes.outputs.script_mode != 'none'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,15 +72,19 @@ jobs:
           node-version: '24'
           cache: npm
       - uses: astral-sh/setup-uv@v6
+        if: needs.changes.outputs.headless == 'true'
       - name: Install pinned Harbor contract runtime
+        if: needs.changes.outputs.headless == 'true'
         run: |
           uv tool install "harbor==0.13.2"
           uv tool dir --bin >> "$GITHUB_PATH"
       - name: Install Linux runtime dependencies
+        if: needs.changes.outputs.headless == 'true' || needs.changes.outputs.runtime_sandbox == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
+        if: needs.changes.outputs.runtime_sandbox == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -61,19 +97,39 @@ jobs:
       # tsc outputs (dist/main + dist/renderer side-files), never the vite
       # bundle. e2e builds its own renderer in a separate job.
       - run: npm run build:test
+        if: needs.changes.outputs.unit == 'true' || needs.changes.outputs.script_mode != 'none'
       - name: Linux sandbox smoke
+        if: needs.changes.outputs.runtime_sandbox == 'true'
         env:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
-      # test:dist runs the suites against the dist just built above. The
-      # workspace `test` scripts each do `clean && build` first, which would
-      # throw away this dist and rebuild every package a second time.
-      - name: Run required test suite
+      - name: Run fast script tests
+        if: needs.changes.outputs.script_mode == 'fast' || needs.changes.outputs.script_mode == 'full'
+        run: npm run test:scripts
+      - name: Run extended script tests
+        if: needs.changes.outputs.script_mode == 'extended' || needs.changes.outputs.script_mode == 'full'
+        run: npm run test:scripts:extended
+      # Workspaces consume the dist built above. Selection includes reverse
+      # dependencies, while bounded concurrency avoids both the old serial
+      # critical path and an unbounded process stampede on two-core runners.
+      - name: Run affected workspace tests
+        if: needs.changes.outputs.unit == 'true'
         env:
-          MAKA_REQUIRE_HARBOR_CONTRACT: '1'
-        run: npm run test:dist
+          HEADLESS_AFFECTED: ${{ needs.changes.outputs.headless }}
+          STORAGE_STRESS: ${{ needs.changes.outputs.storage_stress }}
+          WORKSPACES: ${{ needs.changes.outputs.workspaces }}
+        run: |
+          if [[ "$HEADLESS_AFFECTED" == "true" ]]; then
+            export MAKA_REQUIRE_HARBOR_CONTRACT=1
+          fi
+          if [[ "$STORAGE_STRESS" == "true" ]]; then
+            export MAKA_STORAGE_STRESS=1
+          fi
+          node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
 
   e2e:
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

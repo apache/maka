@@ -127,6 +127,7 @@ export function useOAuthLoginFlow(params: {
       const message = subscriptionActionErrorMessage(error, locale);
       toast.error(copy.refreshFailed, message);
       setErrorMessage(message);
+      return false;
     }
     return true;
   }

@@ -245,7 +245,6 @@ export class ToolAvailabilityRuntime {
     return {
       name: LOAD_TOOLS_NAME,
       description: renderCatalog(this.groups),
-      permissionRequired: false,
       parameters: z.object({
         group: groupSchema.describe('The capability group to load.'),
       }),

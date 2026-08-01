@@ -64,11 +64,26 @@ describe('Git worktree child executor', () => {
     };
     const first = await createGitWorktreeChildExecutor({ storageRoot }).provision(request);
     await writeFile(join(first.worktreePath, 'work.txt'), 'work\n', 'utf8');
+    await git(first.worktreePath, 'switch', '-c', 'maka/issue-3-a-contract');
 
     const restarted = createGitWorktreeChildExecutor({ storageRoot });
     const second = await restarted.provision(request);
     assert.deepEqual(second, first);
     await restarted.ensure(first);
+    assert.equal(
+      await git(first.worktreePath, 'branch', '--show-current'),
+      'maka/issue-3-a-contract',
+    );
+    assert.match(await git(first.worktreePath, 'status', '--short'), /work\.txt/);
+
+    await git(
+      first.worktreePath,
+      'config',
+      '--local',
+      `branch.${first.branch}.maka-worktree-lease`,
+      `subagent_worktree_${'f'.repeat(32)}`,
+    );
+    await assert.rejects(restarted.ensure(first), /worktree lease changed/);
   });
 
   test('fails closed when a fresh lease would omit uncommitted parent work', async () => {

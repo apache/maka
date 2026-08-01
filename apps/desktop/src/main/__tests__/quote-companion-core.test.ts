@@ -15,6 +15,7 @@ import { describe, it } from 'node:test';
 import type { SessionEvent, SessionSummary, StoredMessage, TurnRecord, TurnStatus } from '@maka/core';
 import {
   applyCompanionInteractionEvent,
+  deriveCompanionComposerState,
   isCompanionTurnTerminal,
   latestSettledTurnId,
   performCompanionTurn,
@@ -45,6 +46,7 @@ interface FakeControl {
   /** permissionMode `setPermissionMode` returns (default = the requested mode). */
   afterSetMode?: string;
   setModeThrows?: boolean;
+  cleanupThrows?: boolean;
   sendThrows?: boolean;
   sendResult?: { ok: true } | { ok: false; reason?: string };
   /** Runs right after the fork is created (e.g. to flip `disposed`). */
@@ -85,8 +87,9 @@ function makeApi(control: FakeControl = {}) {
       if (control.setModeThrows) throw new Error('setPermissionMode failed');
       return summary(id, control.afterSetMode ?? mode);
     },
-    remove: async (id) => {
+    cleanupQuoteCompanion: async (id) => {
       calls.removed.push(id);
+      if (control.cleanupThrows) throw new Error('cleanup failed');
     },
     send: async (id, cmd) => {
       calls.sent.push({ id, cmd });
@@ -125,6 +128,46 @@ describe('latestSettledTurnId', () => {
     );
     assert.equal(latestSettledTurnId([turn('a', 'running')]), undefined);
     assert.equal(latestSettledTurnId([]), undefined);
+  });
+});
+
+describe('deriveCompanionComposerState', () => {
+  it('keeps Stop and Escape available before the first token', () => {
+    assert.deepEqual(
+      deriveCompanionComposerState(true, {
+        turnId: 'waiting-turn',
+        phase: 'waiting',
+        steps: [],
+      }),
+      { streaming: true, processing: true },
+    );
+  });
+
+  it('keeps the turn interruptible after streaming starts without the wait presentation', () => {
+    assert.deepEqual(
+      deriveCompanionComposerState(true, {
+        turnId: 'streaming-turn',
+        phase: 'streamed',
+        steps: [],
+      }),
+      { streaming: true, processing: false },
+    );
+  });
+
+  it('leaves the Composer idle once the turn is terminal or no longer in flight', () => {
+    assert.deepEqual(
+      deriveCompanionComposerState(true, {
+        turnId: 'terminal-turn',
+        phase: 'streamed',
+        terminal: true,
+        steps: [],
+      }),
+      { streaming: false, processing: false },
+    );
+    assert.deepEqual(deriveCompanionComposerState(false, undefined), {
+      streaming: false,
+      processing: false,
+    });
   });
 });
 
@@ -217,6 +260,26 @@ describe('performCompanionTurn', () => {
     assert.deepEqual(rec.events, ['created:fork-1']);
   });
 
+  it('does not release a hidden fork when authoritative cleanup fails', async () => {
+    const { api } = makeApi({ setModeThrows: true, cleanupThrows: true });
+    const events: string[] = [];
+
+    const result = await performCompanionTurn({
+      api,
+      isDisposed: () => false,
+      ...base,
+      onForkCreated: (session) => events.push(`created:${session.id}`),
+      onForkCleanupSucceeded: (sessionId) => events.push(`cleaned:${sessionId}`),
+      onForkCommitted: () => {},
+      onBeforeSend: () => {},
+      onQuotesConsumed: () => {},
+    });
+    await Promise.resolve();
+
+    assert.deepEqual(result, { status: 'error', code: 'permission_pin_failed' });
+    assert.deepEqual(events, ['created:fork-1']);
+  });
+
   it('fail-closed: a fork not confirmed `explore` is removed and never sends', async () => {
     const { api, calls } = makeApi({ afterSetMode: 'execute' }); // stayed elevated
     const rec = recorder();
@@ -280,7 +343,7 @@ describe('performCompanionTurn', () => {
 });
 
 describe('isCompanionTurnTerminal', () => {
-  it('error / abort / plain complete are terminal; permission_handoff is not', () => {
+  it('error, abort, and every complete event are terminal', () => {
     assert.equal(isCompanionTurnTerminal({ type: 'error' } as SessionEvent), true);
     assert.equal(isCompanionTurnTerminal({ type: 'abort' } as SessionEvent), true);
     assert.equal(
@@ -289,14 +352,18 @@ describe('isCompanionTurnTerminal', () => {
     );
     assert.equal(
       isCompanionTurnTerminal({ type: 'complete', stopReason: 'permission_handoff' } as SessionEvent),
-      false,
+      true,
     );
     assert.equal(isCompanionTurnTerminal({ type: 'text_delta' } as SessionEvent), false);
   });
 });
 
 describe('applyCompanionInteractionEvent', () => {
-  const req = { type: 'permission_request', requestId: 'r1', toolUseId: 'tu1' } as unknown as SessionEvent;
+  const req = {
+    type: 'sandbox_boundary_request',
+    requestId: 'r1',
+    toolUseId: 'tu1',
+  } as unknown as SessionEvent;
 
   it('enqueues a request and ignores a duplicate requestId', () => {
     let queues = applyCompanionInteractionEvent({}, 'S', req);
@@ -305,20 +372,14 @@ describe('applyCompanionInteractionEvent', () => {
     assert.equal(queues.S.length, 1);
   });
 
-  it('a permission_handoff complete keeps the pending prompt; an ack clears it', () => {
+  it('a legacy permission_handoff complete clears the pending prompt', () => {
     const withPrompt = applyCompanionInteractionEvent({}, 'S', req);
     const afterHandoff = applyCompanionInteractionEvent(
       withPrompt,
       'S',
       { type: 'complete', stopReason: 'permission_handoff' } as SessionEvent,
     );
-    assert.equal(afterHandoff.S.length, 1); // survives the handoff
-    const afterAck = applyCompanionInteractionEvent(
-      afterHandoff,
-      'S',
-      { type: 'permission_decision_ack', requestId: 'r1' } as SessionEvent,
-    );
-    assert.equal(afterAck.S.length, 0);
+    assert.deepEqual(afterHandoff.S, []);
   });
 
   it('a terminal complete clears the queue', () => {

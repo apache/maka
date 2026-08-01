@@ -49,6 +49,12 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'is-untested',
   'is-verified',
   'is-warn',
+  // Astryx renders these stable component classes through themeProps at
+  // runtime. Responsive page CSS targets them for layout overrides, but they
+  // do not appear as className literals in Maka source.
+  'astryx-button',
+  'astryx-badge',
+  'astryx-resize-handle-pill',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in
@@ -64,44 +70,6 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'settingsPaletteSwatch-dusk',
   'settingsPaletteSwatch-sand',
   'settingsPaletteSwatch-mono',
-  // highlight.js token classes — emitted at runtime by rehype-highlight
-  // (highlight.js v11 via lowlight) inside markdown code blocks, styled in
-  // chat-message.css (#546 PR4). Verified emitted by the installed
-  // highlight.js 11.11.1 against the lowlight `common` grammar set.
-  // `class_` / `function_` are the v11 sub-scope classes of `hljs-title`
-  // (rendered as class="hljs-title class_"); `hljs-class` is the v10-era
-  // scope still emitted by php/perl/c grammars in the common set.
-  'hljs-addition',
-  'hljs-attr',
-  'hljs-attribute',
-  'hljs-built_in',
-  'hljs-bullet',
-  'hljs-class',
-  'hljs-comment',
-  'hljs-deletion',
-  'hljs-doctag',
-  'hljs-emphasis',
-  'hljs-keyword',
-  'hljs-literal',
-  'hljs-meta',
-  'hljs-name',
-  'hljs-number',
-  'hljs-quote',
-  'hljs-regexp',
-  'hljs-selector-tag',
-  'hljs-string',
-  'hljs-strong',
-  'hljs-symbol',
-  'hljs-tag',
-  'hljs-title',
-  'hljs-type',
-  'hljs-variable',
-  'class_',
-  'function_',
-  // GFM task-list classes — emitted at runtime by remark-gfm + remark-rehype
-  // on `- [ ]` / `- [x]` list items, styled in chat-message.css (#546 PR4).
-  'contains-task-list',
-  'task-list-item',
 ]);
 
 async function readCssFiles(dir) {

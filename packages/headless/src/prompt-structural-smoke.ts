@@ -1,4 +1,4 @@
-import type { FixedPromptTaskWalEvent, FixedPromptWalEvent } from './fixed-prompt-controller.js';
+import type { FixedPromptTaskWalEvent, FixedPromptWalEvent } from './fixed-prompt-wal-types.js';
 import { PROMPT_REWARD_HACK_QUARANTINE_REASON } from './prompt-acceptance-policy.js';
 import { validateRsiControllerAttribution } from './rsi-controller-attribution.js';
 

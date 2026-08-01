@@ -13,7 +13,7 @@ import {
   type SelectItem,
   type Terminal,
 } from '@earendil-works/pi-tui';
-import { PERMISSION_MODES, isPermissionMode, type PermissionMode } from '@maka/core/permission';
+import type { PermissionMode } from '@maka/core/permission';
 import {
   isThinkingLevel,
   thinkingVariantsForModel,
@@ -33,7 +33,7 @@ import {
   type ForeignSessionSummary,
 } from '@maka/core/foreign-session';
 import type { ForeignSessionStore } from '@maka/storage';
-import type { GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
+import type { ContextDiagnostics, GoalTurnOutcome, SessionActivityLease } from '@maka/runtime';
 import type { ModelChoice } from './connection-target.js';
 import {
   listApiKeyOnboardableProviders,
@@ -66,15 +66,15 @@ import {
   appendUserPrompt,
   applyMakaSessionEventToTranscript,
   createMakaPiTranscriptState,
-  activePermissionRequest,
+  activeSandboxBoundaryRequest,
   activeUserQuestionRequest,
   completePendingInteraction,
   applyShellRunViewUpdateToTranscript,
+  permissionModeLabel,
   replaceTranscriptWithStoredMessages,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
-  togglePendingPermissionDetails,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
 import {
@@ -573,21 +573,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   process.once('uncaughtException', handleUncaughtException);
   process.once('unhandledRejection', handleUnhandledRejection);
 
-  const respondToPendingPermission = (
-    decision: 'allow' | 'deny',
-    rememberForTurn = false,
-  ): boolean => {
-    const request = activePermissionRequest(state);
+  const respondToPendingSandboxBoundary = (decision: 'allow' | 'deny'): boolean => {
+    const request = activeSandboxBoundaryRequest(state);
     if (!request || permissionResponseInFlightRequestId !== null) return false;
     permissionResponseInFlightRequestId = request.requestId;
     // Keep the prompt visible until the driver accepts the response. If it
     // rejects, the user can retry with y/n instead of being stuck. A resolved
     // call only means the response was submitted; the event stream owns dequeue.
     void input.driver
-      .respondToPermission({
+      .respondToSandboxBoundary({
         requestId: request.requestId,
         decision,
-        ...(decision === 'allow' && request.rememberForTurnAllowed ? { rememberForTurn } : {}),
       })
       .catch((error) => {
         if (permissionResponseInFlightRequestId === request.requestId) {
@@ -951,7 +947,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
-          activePermissionRequest(state)?.requestId !== permissionResponseInFlightRequestId
+          activeSandboxBoundaryRequest(state)?.requestId !== permissionResponseInFlightRequestId
         ) {
           permissionResponseInFlightRequestId = null;
         }
@@ -1152,7 +1148,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     ) {
       modelContextWindow = undefined;
     }
-    permissionMode = summary.permissionMode;
+    // #1611: the driver derives this from the resumed session's execution
+    // boundary; `summary.permissionMode` is only what the header was last set
+    // to and goes stale as soon as an approved expansion widens the boundary.
+    permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
     thinkingLevels = providerType ? thinkingVariantsForModel(providerType, summary.model) : [];
@@ -1776,6 +1775,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const newSession = () => {
     input.driver.startNewSession();
+    // A fresh session is not bound by the previous one's boundary; re-read the
+    // mode the next session will actually be created with.
+    permissionMode = input.driver.getPermissionMode?.() ?? permissionMode;
     attention.setBaseTitle(input.title);
     shellRunHydration.reset();
     // Fresh transcript for the fresh session; the next prompt creates it on disk.
@@ -1935,13 +1937,49 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const setPermissionMode = async (mode: PermissionMode) => {
     await input.driver.setPermissionMode(mode);
-    permissionMode = mode;
+    // Report the boundary that resulted, not the one that was requested.
+    permissionMode = input.driver.getPermissionMode?.() ?? mode;
     state.entries.push({
       kind: 'notice',
       level: 'info',
-      text: `Permission mode: ${mode}`,
+      text: `Permissions: ${permissionModeLabel(permissionMode)}`,
     });
     requestRender();
+  };
+
+  const requestSandboxBoundaryMode = (mode: 'auto' | 'bypass') => {
+    if (mode === 'auto' || permissionMode === 'bypass') {
+      void runControl(() => setPermissionMode(mode === 'auto' ? 'ask' : 'bypass'));
+      return;
+    }
+    const confirmation = [
+      {
+        value: 'keep',
+        label: 'Keep Auto',
+        description: 'Stay inside the protected environment',
+      },
+      {
+        value: 'bypass',
+        label: 'Turn on full access',
+        description:
+          'Reach your files and your network directly; use only for trusted or externally isolated tasks',
+      },
+    ];
+    showSelectPicker(
+      'Switch to full access?',
+      'keep',
+      confirmation,
+      (choice) => {
+        if (choice.value === 'bypass') {
+          void runControl(() => setPermissionMode('bypass'));
+        }
+      },
+      {
+        minPrimaryColumnWidth: 18,
+        maxPrimaryColumnWidth: 28,
+        selectedIndex: 0,
+      },
+    );
   };
 
   const showSwarmStatus = () => {
@@ -2111,24 +2149,55 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const showPermissionModeList = () => {
     const items = permissionModePickerItems(permissionMode);
+    // Where the cursor opens. It is NOT a claim about the current state —
+    // `permissionModePickerItems` marks `current` only on an option that is
+    // genuinely in force, so a read-only session marks neither and choosing
+    // Auto reads as the permission change it is.
+    const cursorValue = permissionMode === 'bypass' ? 'bypass' : 'auto';
     showSelectPicker(
-      'Select Permission Mode',
-      permissionMode,
+      'Permissions',
+      permissionModeLabel(permissionMode),
       items,
       (item) => {
-        if (!isPermissionMode(item.value)) return;
-        const mode = item.value;
-        void runControl(() => setPermissionMode(mode));
+        if (item.value === 'auto' || item.value === 'bypass') {
+          requestSandboxBoundaryMode(item.value);
+        }
       },
       {
         minPrimaryColumnWidth: 16,
         maxPrimaryColumnWidth: 24,
-        selectedIndex: items.findIndex((item) => item.value === permissionMode),
+        selectedIndex: items.findIndex((item) => item.value === cursorValue),
       },
     );
   };
 
   const slashCommands: MakaSlashCommand[] = [
+    {
+      name: 'context',
+      description: 'Show latest request context usage',
+      run: (parts: string[]) => {
+        if (parts.length !== 1) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /context',
+          });
+          requestRender();
+          return;
+        }
+        void runControl(async () => {
+          const diagnostics: ContextDiagnostics = input.driver.getContextDiagnostics
+            ? await input.driver.getContextDiagnostics()
+            : { status: 'unavailable', reason: 'trace_unavailable' };
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: formatContextDiagnostics(diagnostics),
+          });
+          requestRender();
+        });
+      },
+    },
     {
       name: 'compact',
       description: 'Compact session context',
@@ -2273,23 +2342,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     },
     {
       name: 'permissions',
-      description: 'Set permission mode',
+      description: 'Set session permissions',
       run: (parts: string[]) => {
         if (parts.length === 1) {
           showPermissionModeList();
           return;
         }
         const mode = parts.length === 2 ? parts[1] : undefined;
-        if (!isPermissionMode(mode)) {
+        if (mode !== 'auto' && mode !== 'bypass') {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: `Usage: /permissions ${PERMISSION_MODES.join('|')}`,
+            text: 'Usage: /permissions auto|bypass',
           });
           requestRender();
           return;
         }
-        void runControl(() => setPermissionMode(mode));
+        requestSandboxBoundaryMode(mode);
       },
     },
     {
@@ -2440,6 +2509,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (tui.hasOverlay()) return undefined;
+    const pendingSandboxBoundary = activeSandboxBoundaryRequest(state);
+    if (pendingSandboxBoundary && !matchesKey(data, Key.ctrl('c'))) {
+      if (
+        !isKeyRepeat(data) &&
+        (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return))
+      ) {
+        respondToPendingSandboxBoundary('allow');
+      } else if (!isKeyRepeat(data) && (matchesKey(data, 'n') || matchesKey(data, Key.escape))) {
+        respondToPendingSandboxBoundary('deny');
+      }
+      return { consume: true };
+    }
     // Alt+Enter: queue a followup (during a turn) or submit (when idle). Alt+↑:
     // take back the queued messages to re-edit. Neither is an editor binding
     // (newline is shift+enter/ctrl+j; history is plain up), so intercepting
@@ -2464,10 +2545,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // one (e.g. `Esc`, type, `Esc`).
     if (!matchesKey(data, Key.escape)) lastIdleEscapeAt = 0;
     if (matchesKey(data, Key.ctrl('o')) && !isKeyRepeat(data)) {
-      if (togglePendingPermissionDetails(state)) {
-        requestRender();
-        return { consume: true };
-      }
       if (toggleAllToolExpansion(state)) {
         requestRender();
         return { consume: true };
@@ -2479,28 +2556,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return { consume: true };
       }
     }
-    const pendingPermission = activePermissionRequest(state);
-    if (pendingPermission) {
-      if (matchesKey(data, 'y') || matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-        respondToPendingPermission('allow', false);
-        return { consume: true };
-      }
-      if (matchesKey(data, 'a') && pendingPermission.rememberForTurnAllowed) {
-        respondToPendingPermission('allow', true);
-        return { consume: true };
-      }
-      if (matchesKey(data, 'n') || matchesKey(data, Key.escape)) {
-        respondToPendingPermission('deny');
-        return { consume: true };
-      }
-    }
     if (turnRunning && matchesKey(data, Key.ctrl('c'))) {
       if (interruptRequested) handleProcessExit(0);
       else requestTurnInterrupt();
       return { consume: true };
     }
     // Double Escape interrupts the running turn. This must sit below the
-    // permission branch so Escape keeps meaning "deny" while a prompt is
+    // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
     if (turnRunning && matchesKey(data, Key.escape)) {
       // Once an interrupt is issued, swallow further Escapes until the turn
@@ -2622,6 +2684,85 @@ const BOTTOM_PICKER_MARGIN_ROWS = 4;
 // full slash-command menu, so a bare `/` shows every command rather than
 // silently clipping the last command.
 const EDITOR_AUTOCOMPLETE_MAX_VISIBLE = 24;
+
+function formatContextDiagnostics(diagnostics: ContextDiagnostics): string {
+  if (diagnostics.status === 'unavailable') {
+    return diagnostics.reason === 'no_completed_request'
+      ? 'Context unavailable\nNo completed provider request exists for this session.'
+      : 'Context unavailable\nProvider request trace data could not be read.';
+  }
+
+  const lines = [
+    'Context',
+    'Latest completed request',
+    `${diagnostics.providerId} · ${diagnostics.modelId}`,
+    '',
+    'Usage',
+  ];
+  const pushMetric = (label: string, value: string, source: string): void => {
+    lines.push(`  ${label}: ${value}`, `    ${source}`);
+  };
+  pushMetric(
+    'Used',
+    diagnostics.inputTokens === undefined
+      ? 'unavailable'
+      : `${formatContextCount(diagnostics.inputTokens)} tokens`,
+    diagnostics.inputTokens === undefined ? 'provider report missing' : 'provider-reported',
+  );
+  pushMetric(
+    'Total',
+    diagnostics.contextWindow === undefined
+      ? 'unavailable'
+      : `${formatContextCount(diagnostics.contextWindow)} tokens`,
+    diagnostics.contextWindow === undefined
+      ? 'request-model snapshot missing'
+      : 'request-model snapshot',
+  );
+
+  if (diagnostics.inputTokens !== undefined && diagnostics.contextWindow !== undefined) {
+    const free = Math.max(0, diagnostics.contextWindow - diagnostics.inputTokens);
+    const percent = Math.round((diagnostics.inputTokens / diagnostics.contextWindow) * 100);
+    pushMetric('Free', `${formatContextCount(free)} tokens`, 'calculated');
+    pushMetric('Share', `${percent}%`, 'calculated');
+  } else {
+    pushMetric('Free', 'unavailable', 'requires Used and Total');
+    pushMetric('Share', 'unavailable', 'requires Used and Total');
+  }
+
+  lines.push('', 'Estimated breakdown');
+  if (diagnostics.segments.length === 0) {
+    lines.push('  Unavailable', '    no captured request segments');
+  } else {
+    const labels: Record<(typeof diagnostics.segments)[number]['kind'], string> = {
+      system_instructions: 'System instructions',
+      tool_definitions: 'Tool definitions',
+      messages: 'Messages',
+      other: 'Other options',
+    };
+    for (const segment of diagnostics.segments) {
+      lines.push(
+        `  ${labels[segment.kind]}: ≈${formatContextCount(segment.estimatedTokens)} tokens`,
+      );
+    }
+  }
+
+  if (diagnostics.compaction) {
+    const compaction = diagnostics.compaction;
+    lines.push(
+      '',
+      'History compaction',
+      `  ${compaction.phase.replace('_', '-')} · ${formatContextCount(compaction.eventCount)} events / ${formatContextCount(compaction.turnCount)} turns`,
+      `  ≈${formatContextCount(compaction.estimatedTokens)} tokens · local estimate`,
+    );
+  } else {
+    lines.push('', 'History compaction', '  Unavailable for this request');
+  }
+  return lines.join('\n');
+}
+
+function formatContextCount(value: number): string {
+  return value.toLocaleString('en-US');
+}
 
 function flattenLinkedSessionTree(
   roots: readonly SessionSummary[],

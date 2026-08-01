@@ -91,7 +91,6 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
         preference,
       );
     }
-
     const capability = this.capability(platform);
     if (!capability.available) {
       return failure(
@@ -133,7 +132,14 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
       );
     }
 
-    const pinnedFdInputs = command.pathContext.pinnedWritableFiles?.map(
+    const pinnedFdInputs = command.pathContext.pinnedProfilePaths?.map(
+      ({ fd, sourceFd, releaseSource }) => ({
+        fd,
+        sourceFd,
+        ...(releaseSource ? { releaseSource } : {}),
+      }),
+    );
+    const pinnedRuntimeWritableFdInputs = command.pathContext.pinnedRuntimeWritableRoots?.map(
       ({ fd, sourceFd, releaseSource }) => ({
         fd,
         sourceFd,
@@ -143,6 +149,7 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
     const fdInputs = [
       ...(seccompFilter ? [{ fd: 3, data: seccompFilter }] : []),
       ...(pinnedFdInputs ?? []),
+      ...(pinnedRuntimeWritableFdInputs ?? []),
     ];
     return {
       ok: true,
@@ -173,6 +180,20 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
     });
     return this.detectedCapability;
   }
+}
+
+function exactProfileRoots(
+  profile: PermissionProfile,
+  access: 'read' | 'write',
+): ReadonlySet<string> {
+  if (profile.type !== 'managed' || profile.fileSystem.kind !== 'restricted') return new Set();
+  return new Set(
+    profile.fileSystem.entries.flatMap((entry) =>
+      entry.kind === 'path' && entry.access === access && (entry.match ?? 'subtree') === 'exact'
+        ? [entry.path]
+        : [],
+    ),
+  );
 }
 
 export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly string[] {
@@ -208,14 +229,31 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
   const runtimeWritableRoots = removeNestedRoots(
     (command.pathContext.runtimeWritableRoots ?? []).filter(isUsableRuntimeRoot),
   );
-  const profileReadableRoots = removeRootsCoveredBy(roots.readableRoots, runtimeWritableRoots);
-  const profileWritableRoots = removeRootsCoveredBy(roots.writableRoots, runtimeWritableRoots);
-  const pinnedWritableFiles = new Map(
-    (command.pathContext.pinnedWritableFiles ?? []).map((entry) => [entry.path, entry] as const),
+  const unavailableProfilePaths = new Set(command.pathContext.unavailableProfilePaths ?? []);
+  const pinnedRuntimeWritableRoots = new Map(
+    (command.pathContext.pinnedRuntimeWritableRoots ?? []).map(
+      (entry) => [entry.path, entry] as const,
+    ),
   );
-  for (const entry of pinnedWritableFiles.values()) {
-    if (!profileWritableRoots.includes(entry.path)) {
-      throw new Error(`Pinned writable file is not an effective writable root: ${entry.path}`);
+  const profileReadableRoots = removeRootsCoveredBy(
+    roots.readableRoots,
+    runtimeWritableRoots,
+  ).filter((root) => !unavailableProfilePaths.has(root));
+  const profileWritableRoots = removeRootsCoveredBy(
+    roots.writableRoots,
+    runtimeWritableRoots,
+  ).filter((root) => !unavailableProfilePaths.has(root));
+  const exactReadableRoots = exactProfileRoots(command.profile, 'read');
+  const exactWritableRoots = exactProfileRoots(command.profile, 'write');
+  const pinnedProfilePaths = new Map(
+    (command.pathContext.pinnedProfilePaths ?? []).map((entry) => [entry.path, entry] as const),
+  );
+  for (const entry of pinnedProfilePaths.values()) {
+    const effectiveRoots = entry.access === 'write' ? profileWritableRoots : profileReadableRoots;
+    if (!effectiveRoots.includes(entry.path)) {
+      throw new Error(
+        `Pinned profile path is not an effective ${entry.access} root: ${entry.path}`,
+      );
     }
     if (
       !Number.isInteger(entry.fd) ||
@@ -276,7 +314,10 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     argv.push('--ro-bind-try', directory, directory);
   }
   for (const root of requiredRuntimeMounts) argv.push('--ro-bind', root, root);
-  for (const root of runtimeWritableRoots) argv.push('--bind', root, root);
+  for (const root of runtimeWritableRoots) {
+    const pinned = pinnedRuntimeWritableRoots.get(root);
+    argv.push('--bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
+  }
   for (const root of roots.tempRoots) argv.push('--tmpfs', root);
   if (needsSyntheticCwd) {
     for (const directory of requiredParentDirectories([command.cwd])) {
@@ -284,9 +325,14 @@ export function buildBubblewrapArgv(input: BuildBubblewrapArgvInput): readonly s
     }
     argv.push('--dir', command.cwd);
   }
-  for (const root of profileReadableRoots) argv.push('--ro-bind', root, root);
+  for (const root of profileReadableRoots) {
+    const pinned = pinnedProfilePaths.get(root);
+    if (exactReadableRoots.has(root) && !pinned) continue;
+    argv.push('--ro-bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
+  }
   for (const root of profileWritableRoots) {
-    const pinned = pinnedWritableFiles.get(root);
+    const pinned = pinnedProfilePaths.get(root);
+    if (exactWritableRoots.has(root) && !pinned) continue;
     argv.push('--bind', pinned ? `/proc/self/fd/${pinned.fd}` : root, root);
   }
 

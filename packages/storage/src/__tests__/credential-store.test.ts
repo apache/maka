@@ -344,7 +344,6 @@ describe('FileCredentialStore secret-kind + slug contract', () => {
     ['bot_token', 'botToken'],
     ['app_secret', 'botAppSecret'],
     ['proxy_password', 'proxyPassword'],
-    ['gateway_token', 'gatewayToken'],
     ['tavily_api_key', 'tavilyApiKey'],
   ];
 

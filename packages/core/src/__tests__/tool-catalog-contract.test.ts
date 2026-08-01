@@ -1,7 +1,7 @@
 /**
  * Tool catalog contract — structural invariants over the shared product vocabulary (#1099 S1).
  *
- * The catalog is the name authority for Desktop, CLI, and headless product tools.
+ * The catalog is the name authority for every product tool host.
  * Host wiring (S2) and /tools (S3) consume it; this file only asserts catalog shape.
  */
 
@@ -83,7 +83,6 @@ describe('tool catalog contract', () => {
   it('reports bound names missing from the catalog', () => {
     assert.deepEqual(unknownBoundToolNames(['Read', 'NotARealTool', 'Bash']), ['NotARealTool']);
     assert.deepEqual(unknownBoundToolNames(['Read', 'Bash']), []);
-    assert.deepEqual(unknownBoundToolNames(['expert_dispatch']), []);
   });
 
   it('freezes catalog tables and isolates surface host affinity', () => {
@@ -124,6 +123,7 @@ describe('tool catalog contract', () => {
         'StopBackgroundTask',
         'WriteStdin',
         'AskUserQuestion',
+        'request_sandbox_boundary',
         'Skill',
         'WebSearch',
         'ExploreAgent',
@@ -149,11 +149,6 @@ describe('tool catalog contract', () => {
         'agent_swarm',
         'agent_list',
         'agent_output',
-        'team_message',
-        'team_inbox',
-        'team_task_list',
-        'team_task_claim',
-        'expert_dispatch',
       ],
       cli: [
         'Bash',
@@ -166,6 +161,7 @@ describe('tool catalog contract', () => {
         'StopBackgroundTask',
         'WriteStdin',
         'AskUserQuestion',
+        'request_sandbox_boundary',
         'Skill',
         'Automation',
         'GoalSet',
@@ -189,6 +185,15 @@ describe('tool catalog contract', () => {
         'agent_swarm',
         'agent_list',
         'agent_output',
+      ],
+      'runtime-host': [
+        'AskUserQuestion',
+        'Skill',
+        'SkillSearch',
+        'task_create',
+        'task_update',
+        'task_list',
+        'task_get',
       ],
     };
 

@@ -2,49 +2,106 @@ import { randomUUID } from 'node:crypto';
 import {
   AgentGraphCoordinator,
   BackendRegistry,
+  createBuiltinSandboxManager,
+  createFilesystemWorkerLaunchSpecProvider,
   FakeBackend,
+  FilesystemWorkerClient,
+  isBuiltinFilesystemWorkerSandboxAvailable,
   SessionManager,
+  ShellRunProcessManager,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
-import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import {
+  createReadImageSnapshotter,
+  openInteractiveArtifactStoreForWrite,
+} from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { openInteractiveMemoryBundleStoreForWrite } from '@maka/storage/memory-bundle-store';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
+import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js';
+import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
+import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
+import { createHostAiSdkBackend } from './execution-model-composition.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
+import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
+import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
+import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
+import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
+import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
 import { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
+import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
 ): Promise<RuntimeHostComposition> {
   const stores = await openInteractiveExecutionStoresForWrite(context.owner.lease);
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  let taskLedgerStore:
+    | Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>
+    | undefined;
+  let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
+  let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
+  let shellRunStore: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
-    const taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
+    const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
+    const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
+    taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
+    artifactStore = openedArtifactStore;
+    const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
+    usageStores = openedUsageStores;
+    const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
+    shellRunStore = openedShellRunStore;
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
+    let runtimeResources: HostRuntimeResourceCoordinator | undefined;
+    const shellRuns = new ShellRunProcessManager({
+      store: openedShellRunStore,
+      newId: randomUUID,
+      now: Date.now,
+      onShellRunUpdate: (update) => runtimeResources?.observeShellRunUpdate(update),
+    });
+    const sandboxManager = createBuiltinSandboxManager();
+    const filesystemWorkerLaunchSpecProvider =
+      sandboxManager && isBuiltinFilesystemWorkerSandboxAvailable()
+        ? createFilesystemWorkerLaunchSpecProvider({
+            runtime: 'node',
+            platform: process.platform,
+            resourceLocation: { kind: 'runtime' },
+          })
+        : undefined;
+    const filesystemWorker =
+      sandboxManager && filesystemWorkerLaunchSpecProvider
+        ? new FilesystemWorkerClient({
+            sandboxManager,
+            getLaunchSpec: filesystemWorkerLaunchSpecProvider,
+          })
+        : undefined;
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
@@ -59,6 +116,8 @@ export async function createExecutionRuntimeHostComposition(
     let rootCoordinator: RootTurnCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let canonicalProjection: CanonicalSessionProjectionReader | undefined;
+    let memory: HostMemoryCoordinator | undefined;
+    let clientCapabilities: HostClientCapabilityCoordinator | undefined;
     const rootPort: HostMessageRootPort = {
       readSessionHeader: (sessionId) =>
         requireRootCoordinator(rootCoordinator).readSessionHeader(sessionId),
@@ -108,12 +167,17 @@ export async function createExecutionRuntimeHostComposition(
     let recoveryTask: Promise<void> | undefined;
     let rootCloseTask: Promise<void> | undefined;
     let closeTask: Promise<void> | undefined;
+    let backendInvalidationPoisoned = false;
     const beginDrain = () => {
       if (draining) return;
       draining = true;
+      runtimeResources?.beginDrain();
       messages.beginDrain();
       interactions.beginDrain();
+      connectionEffects.beginDrain();
       skills.beginDrain();
+      memory?.beginDrain();
+      clientCapabilities?.beginDrain();
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
@@ -135,6 +199,37 @@ export async function createExecutionRuntimeHostComposition(
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
       store: stores.interactionStore,
     });
+    memory = new HostMemoryCoordinator({
+      store: memoryStore,
+      runtimePolicyStores,
+      activation: runtimePolicyActivation,
+      requestDrain: context.requestDrain,
+    });
+    backends.register('ai-sdk', (backendContext) =>
+      createHostAiSdkBackend({
+        context: backendContext,
+        runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
+        skills,
+        memory: requireMemory(memory),
+        taskLedger,
+        artifacts: openedArtifactStore,
+        usage: openedUsageStores,
+        clientCapabilities: requireClientCapabilities(clientCapabilities),
+        builtinTools: {
+          shellRuns: requireRuntimeResources(runtimeResources),
+          runtimeResources: requireRuntimeResources(runtimeResources),
+          backgroundTasks: requireRuntimeResources(runtimeResources),
+          ptyControls: requireRuntimeResources(runtimeResources),
+          snapshotImage: createReadImageSnapshotter(openedArtifactStore),
+          ...(sandboxManager ? { sandboxManager } : {}),
+          ...(filesystemWorker ? { filesystemWorker } : {}),
+        },
+        runtimeCommitSink: stores.runtimeEventStore,
+        requestDrain: context.requestDrain,
+      }),
+    );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),
       executeRoot: (input) => requireRootCoordinator(rootCoordinator).executeRoot(input),
@@ -147,6 +242,7 @@ export async function createExecutionRuntimeHostComposition(
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
+      toolBoundaryProtocol: stores.runtimeEventStore.toolBoundaryProtocol,
       backends,
       newId: randomUUID,
       now: Date.now,
@@ -164,6 +260,15 @@ export async function createExecutionRuntimeHostComposition(
       },
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
+      shellRuns,
+    });
+    runtimeResources = new HostRuntimeResourceCoordinator({
+      manager: shellRuns,
+      sessions: manager,
+      sessionHeaders: stores.sessionStore,
+      sessionAdmission,
+      acquireResidency: context.acquireResidency,
+      requestDrain: context.requestDrain,
     });
     const graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
@@ -173,6 +278,26 @@ export async function createExecutionRuntimeHostComposition(
       runtime: manager,
       newId: randomUUID,
     });
+    const observeBackendInvalidation = (completion: Promise<void>) => {
+      void completion.catch(() => {
+        backendInvalidationPoisoned = true;
+        runtimePolicyActivation.poison();
+        context.requestDrain();
+      });
+    };
+    const registerBackendInvalidation = (): void => {
+      observeBackendInvalidation(manager.refreshIdleBackends());
+    };
+    clientCapabilities = new HostClientCapabilityCoordinator({
+      activation: runtimePolicyActivation,
+      onRegistryChanged: registerBackendInvalidation,
+    });
+    const usagePricing = new HostUsagePricingCoordinator(
+      openedUsageStores,
+      context.requestDrain,
+      runtimePolicyActivation,
+      registerBackendInvalidation,
+    );
     rootCoordinator = new RootTurnCoordinator(
       manager,
       stores,
@@ -183,6 +308,7 @@ export async function createExecutionRuntimeHostComposition(
       continuityCoordinator,
       context.acquireResidency,
       context.requestDrain,
+      clientCapabilities,
     );
     const coordinator = rootCoordinator;
     const runtimePolicy = new HostRuntimePolicyCoordinator(
@@ -190,35 +316,76 @@ export async function createExecutionRuntimeHostComposition(
       runtimePolicyActivation,
       async () => {
         try {
-          await manager.refreshIdleBackends();
+          await requireMemory(memory).refreshAfterPolicyMutation();
         } catch (error) {
           context.requestDrain();
           throw error;
         }
+        registerBackendInvalidation();
       },
     );
-    const artifacts = new HostArtifactCoordinator(openedArtifactStore, context.requestDrain);
+    const connectionEffects = new HostConnectionEffectCoordinator({
+      stores: runtimePolicyStores,
+      activation: runtimePolicyActivation,
+      onCommittedMutation: registerBackendInvalidation,
+    });
+    const sessionCatalog = new HostSessionCatalogCoordinator({
+      stores: stores.sessionStore,
+      runtimePolicy: runtimePolicyStores,
+      manager,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      requestDrain: context.requestDrain,
+    });
+    const sessionRevisions = new HostSessionRevisionCoordinator({
+      stores,
+      artifacts: openedArtifactStore,
+      taskLedger: taskLedgerStore,
+      manager,
+      admission: sessionAdmission,
+      continuity: continuityCoordinator,
+      isSessionActive: (sessionId) => coordinator.readRootState(sessionId).kind === 'active',
+      requestDrain: context.requestDrain,
+    });
+    const artifacts = new HostArtifactCoordinator(
+      openedArtifactStore,
+      context.requestDrain,
+      sessionAdmission,
+    );
     const handlers = {
       ...coordinator.handlers,
+      ...sessionCatalog.handlers,
+      ...sessionRevisions.handlers,
       ...messages.handlers,
       ...interactions.handlers,
       ...runtimePolicy.handlers,
+      ...connectionEffects.handlers,
       ...continuityCoordinator.handlers,
       ...taskLedger.handlers,
       ...artifacts.handlers,
       ...skills.handlers,
+      ...usagePricing.handlers,
+      ...requireMemory(memory).handlers,
+      ...clientCapabilities.handlers,
+      ...runtimeResources.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
+        await requireMemory(memory).recover();
         await skills.recover();
+        await openedArtifactStore.recover();
+        await sessionRevisions.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
             session.id,
           );
         }
+        await recoverClientCapabilityOutcomes(
+          stores.runtimeEventStore,
+          sessions.map((session) => session.id),
+        );
         await coordinator.prepareRecovery();
-        await openedArtifactStore.recover();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
         await graphCoordinator.recover();
@@ -238,6 +405,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          await connectionEffects.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await graphCoordinator.close();
         } catch (error) {
           errors.push(error);
@@ -246,6 +418,18 @@ export async function createExecutionRuntimeHostComposition(
           try {
             rootCloseTask ??= coordinator.close();
             await rootCloseTask;
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        try {
+          await runtimeResources?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        if (!backendInvalidationPoisoned) {
+          try {
+            await manager.refreshIdleBackends();
           } catch (error) {
             errors.push(error);
           }
@@ -276,6 +460,36 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          await memory?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          clientCapabilities?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await openedUsageStores.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          openedArtifactStore.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          taskLedgerStore?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          shellRunStore?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -290,6 +504,12 @@ export async function createExecutionRuntimeHostComposition(
     return {
       handlers,
       continuity: continuityCoordinator,
+      clientCapabilities,
+      releaseConnection: (connectionId: string) => {
+        requireMemory(memory).releaseConnection(connectionId);
+        clientCapabilities?.releaseConnection(connectionId);
+        runtimeResources?.releaseConnection(connectionId);
+      },
       beginDrain,
       recover,
       close,
@@ -298,6 +518,26 @@ export async function createExecutionRuntimeHostComposition(
     const errors: unknown[] = [error];
     try {
       graphControlStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      await usageStores?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      artifactStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      taskLedgerStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      shellRunStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -328,4 +568,23 @@ function requireCanonicalProjection(
 ): CanonicalSessionProjectionReader {
   if (!projection) throw new Error('Runtime Host canonical projection is not composed');
   return projection;
+}
+
+function requireMemory(memory: HostMemoryCoordinator | undefined): HostMemoryCoordinator {
+  if (!memory) throw new Error('Runtime Host Memory coordinator is not composed');
+  return memory;
+}
+
+function requireClientCapabilities(
+  coordinator: HostClientCapabilityCoordinator | undefined,
+): HostClientCapabilityCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Client Capability coordinator is not composed');
+  return coordinator;
+}
+
+function requireRuntimeResources(
+  coordinator: HostRuntimeResourceCoordinator | undefined,
+): HostRuntimeResourceCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Runtime Resource coordinator is not composed');
+  return coordinator;
 }

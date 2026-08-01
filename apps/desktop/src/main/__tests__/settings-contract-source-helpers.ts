@@ -25,7 +25,6 @@ const sourcePaths = [
   'memory-settings-labels.ts',
   'settings-error-copy.ts',
   'general-settings-page.tsx',
-  'open-gateway-settings-page.tsx',
   'bot-chat-settings-page.tsx',
   'bot-chat-shared.tsx',
   'bot-chat-overview.tsx',
@@ -53,8 +52,3 @@ export async function readSettingsCombinedSource(): Promise<string> {
   return sources.join('\n');
 }
 
-export function readSettingsCombinedSourceSync(): string {
-  return sourcePaths
-    .map((sourcePath) => readFileSync(resolve(SETTINGS_ROOT, sourcePath), 'utf8'))
-    .join('\n');
-}

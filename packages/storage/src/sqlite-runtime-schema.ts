@@ -1,8 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 5;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 6;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
+export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
+export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION = 1;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -112,6 +114,45 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     INSERT INTO runtime_capabilities(capability, version)
       VALUES ('runtime_recovery_authority', 1);
+  `,
+  ],
+  [
+    6,
+    `
+    CREATE TABLE runtime_continuation_claims (
+      claim_id TEXT PRIMARY KEY,
+      source_session_id TEXT NOT NULL,
+      source_invocation_id TEXT NOT NULL,
+      source_run_id TEXT NOT NULL,
+      source_turn_id TEXT NOT NULL,
+      source_event_high_water INTEGER NOT NULL CHECK (source_event_high_water > 0),
+      source_prefix_digest TEXT NOT NULL,
+      boundary_digest TEXT NOT NULL UNIQUE,
+      boundary_json TEXT NOT NULL,
+      provider_projection_version INTEGER NOT NULL CHECK (provider_projection_version = 1),
+      provider_replay_digest TEXT NOT NULL,
+      target_session_id TEXT NOT NULL,
+      target_invocation_id TEXT NOT NULL UNIQUE,
+      target_run_id TEXT NOT NULL UNIQUE,
+      target_turn_id TEXT NOT NULL,
+      target_run_header_json TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL,
+      start_event_id TEXT UNIQUE REFERENCES runtime_events(event_id),
+      start_kind TEXT CHECK (
+        start_kind IS NULL OR start_kind IN ('runtime_admission', 'claim_repair')
+      ),
+      protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+      UNIQUE (
+        source_session_id,
+        source_run_id,
+        source_event_high_water,
+        source_prefix_digest
+      ),
+      UNIQUE (target_session_id, target_turn_id)
+    );
+
+    INSERT INTO runtime_capabilities(capability, version)
+      VALUES ('runtime_continuation_authority', 1);
   `,
   ],
 ]);

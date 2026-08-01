@@ -90,31 +90,13 @@
   gap: var(--space-3);
 }
 
-.providerConnectionDialog {
-  width: min(520px, calc(100vw - 32px));
-  /* The shared modal popup is `grid max-h-[85dvh] overflow-hidden` with no row
-     constraint, so header/body rows size to content: when the detail content
-     outgrows 85dvh the body row overflows the popup box and is clipped, and
-     the body's own overflow-y:auto never engages (clientHeight==scrollHeight)
-     — bottom actions become unreachable. Pin the rows to header + shrinkable
-     body so the body takes over scrolling at max height. The close button is
-     absolutely positioned and stays out of grid flow. */
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.providerConnectionDialog [data-slot="dialog-header"] {
-  align-items: center;
-  border-bottom: 0;
-  padding-bottom: var(--space-2);
-}
-
-.providerConnectionDialog [data-slot="dialog-header-icon"],
 .providerConnectionDialog .providerLogo[data-compact="true"] {
   width: 24px;
   height: 24px;
 }
 
 .providerConnectionDialogBody {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-2) var(--space-4) var(--space-4);
@@ -153,16 +135,33 @@
   padding-top: var(--space-3);
 }
 
-.providerAdvancedSettings summary {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
 .providerAdvancedSettingsBody {
   display: grid;
-  gap: var(--space-5);
+  gap: var(--space-3);
+}
+
+.providerModelSettings {
+  display: grid;
+  gap: var(--space-4);
+  border-top: var(--border-width-hairline) solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.providerModelActions,
+.providerConnectionActions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.providerConnectionActions {
+  border-top: var(--border-width-hairline) solid var(--border);
   padding-top: var(--space-3);
+}
+
+.providerConnectionActions > :last-child {
+  margin-left: auto;
 }
 
 .providerKeyDialogForm {
@@ -201,40 +200,6 @@
   align-items: start;
   justify-content: space-between;
   gap: var(--space-3);
-}
-
-.providerEditor label {
-  display: grid;
-  gap: var(--space-1-5);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.providerEditor input,
-.providerEditor select {
-  min-width: 0;
-  min-height: 36px;
-  border: var(--border-width-hairline) solid var(--border);
-  /* PR-UI-LAYOUT-22: provider editor inputs (used in the
-   * ConfigureProvider sheet) brought up to the LAYOUT-11/21 focus
-   * ring family. Was: radius 6 + border-only focus.
-   * Now: radius 8 + min-height 36 + 3px halo + smoother transition.
-   * Matches connectionForm inputs visually so users see the same
-   * "this is a focused input" signal everywhere. */
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  color: var(--foreground);
-  padding: 0 var(--space-3);
-  outline: none;
-  font-size: var(--font-size-ui);
-  transition: border-color var(--duration-base) var(--ease-out-strong), box-shadow var(--duration-base) var(--ease-out-strong), background var(--duration-base) var(--ease-out-strong);
-}
-
-.providerEditor select:focus {
-  border-color: oklch(from var(--focus-ring) l c h / 0.42);
-  background: var(--background);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.10);
 }
 
 .providerActions {
@@ -281,8 +246,7 @@
   gap: var(--space-2);
 }
 
-.providerCredentialActions,
-.providerAdvancedActions {
+.providerCredentialActions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -291,83 +255,6 @@
 .providerCredentialActions {
   justify-content: space-between;
 }
-
-.providerAdvancedActions {
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.providerAdvancedDanger {
-  margin-left: auto;
-  color: var(--destructive-text);
-}
-
-.providerEnabledModels {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.providerEnabledModelsHeader {
-  display: grid;
-  gap: var(--space-0-5);
-}
-
-.providerEnabledModelsHeader strong {
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  font-variant-numeric: tabular-nums;
-}
-
-.providerEnabledModelsHeader span,
-.providerEnabledModelMeta,
-.providerModelChoiceEmpty {
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-}
-
-/* Fixed-height scroll region: the full candidate list scrolls internally, so
-   neither the provider's model count nor an active search filter changes the
-   dialog height. */
-.providerModelChoiceScroll {
-  height: 280px;
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-}
-
-.providerModelChoiceList {
-  display: grid;
-  gap: var(--space-0-5);
-  margin: 0;
-  padding: var(--space-1);
-  list-style: none;
-}
-
-.providerModelChoiceRow {
-  min-height: 32px;
-}
-
-/* Fixed check column so enabled (checkmark) and disabled (empty) rows keep
-   their labels aligned. The checkmark itself signals the enabled state and
-   inherits the crisp foreground tint (matching the model-picker selected mark). */
-.providerModelChoiceCheck {
-  width: 16px;
-  color: var(--foreground);
-}
-
-.providerModelChoiceLabel {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.providerModelChoiceEmpty {
-  display: block;
-  padding: var(--space-3);
-}
-
 
 .providerError {
   color: var(--destructive-text);
@@ -434,7 +321,6 @@
 
 .providerCatalogSearch {
   width: min(100%, 360px);
-  min-height: var(--h-control-lg);
   margin-top: var(--space-3);
 }
 
@@ -485,7 +371,7 @@
   gap: var(--space-2-5);
 }
 
-/* Empty / load-error CTA shown when there are no connections yet.
+/* Empty state shown when there are no connections yet.
    Despite the name this is a full-width two-line card (16px padding,
    <strong> heading + <small> body), not a chip — surface tier, matching
    its structural twin .settingsWechatQrState. The control tier here came
@@ -503,11 +389,6 @@
   text-align: left;
 }
 
-.enabledEmptyAction:hover {
-  border-color: var(--border-strong);
-  background: var(--background-elevated);
-}
-
 .enabledEmptyChip strong {
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-bold);
@@ -518,28 +399,4 @@
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   line-height: var(--leading-normal);
-}
-
-/* Round 11: SettingRow optional per-row action (gateway endpoint copy-curl).
-   Value + action share the right rail; the action never wraps the value. */
-.settingsRowValueGroup {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.settingsRowValueGroup > span {
-  min-width: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-  text-align: right;
-}
-
-.settingsRowCurlButton {
-  flex-shrink: 0;
-  white-space: nowrap;
 }

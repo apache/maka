@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
 
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
 import { executeFilesystemWorkerRequest } from '../filesystem-worker/operations.js';
 import {
   FILESYSTEM_WORKER_PROTOCOL_VERSION,
@@ -231,22 +230,6 @@ describe('filesystem worker operations', () => {
     assert.equal(response.ok, false);
     if (!response.ok) assert.equal(response.error.code, 'path_changed');
   });
-
-  test('rejects a request whose operation permission hash was changed', async () => {
-    const root = await temporaryDirectory('maka-worker-hash-');
-    const target = join(root, 'file.txt');
-    await writeFile(target, 'content', 'utf8');
-    const request = requestFor(
-      { kind: 'read', cwd: root, path: target },
-      { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
-    );
-    const response = await executeFilesystemWorkerRequest({
-      ...request,
-      permissionsHash: `sha256:${'0'.repeat(64)}`,
-    });
-    assert.equal(response.ok, false);
-    if (!response.ok) assert.equal(response.error.code, 'invalid_request');
-  });
 });
 
 function requestFor(
@@ -254,8 +237,8 @@ function requestFor(
   expectedTarget: FilesystemWorkerTarget,
   permissionPath = operation.path,
 ): FilesystemWorkerRequest {
-  const operationPermission: FilesystemWorkerRequest['operationPermission'] = {
-    fileSystem: {
+  const operationBoundary: FilesystemWorkerRequest['operationBoundary'] = {
+    filesystem: {
       entries: [
         {
           path: permissionPath,
@@ -269,8 +252,7 @@ function requestFor(
     version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
     requestId: 'request-1',
     operation,
-    operationPermission,
-    permissionsHash: hashAdditionalPermissionProfile(operationPermission),
+    operationBoundary,
     expectedTarget,
   };
 }

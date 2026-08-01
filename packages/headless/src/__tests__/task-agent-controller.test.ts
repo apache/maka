@@ -19,19 +19,23 @@ import {
   type SessionEvent,
   type SessionHeader,
 } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import {
+  createSessionStore,
+  createSqliteAgentRunStore,
+  openRuntimeEventReadPersistence,
+} from '@maka/storage';
 import { StorageRootAuthorityError } from '@maka/storage/root-authority';
 import type { Config, Task } from '../contracts.js';
 import { openHeadlessStorageForWrite } from '../headless-storage.js';
 import type { HeadlessBackendContext } from '../isolation.js';
-import { commandResourceScope, hashNormalizedArgs } from '../permission-grants.js';
 import {
   runTaskOnce,
   runTaskOnceWithStorage,
   TaskAgentController,
   type RunTaskOnceResult,
 } from '../task-agent-controller.js';
-import type { TaskPermissionGrant } from '../task-contracts.js';
 import { buildIsolatedHeadlessTools } from '../tools.js';
 
 const fakeConfig: Config = {
@@ -136,7 +140,7 @@ class ReportingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -167,7 +171,7 @@ class DeadlineBackend implements AgentBackend {
     this.release();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -235,7 +239,7 @@ class ChildCapabilityBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -287,7 +291,7 @@ class ChildAdmissionProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -326,7 +330,7 @@ class BackgroundChildBackend implements AgentBackend {
     this.release();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -387,7 +391,7 @@ class ParentWithBackgroundChildBackend implements AgentBackend {
     if (this.stopError) throw this.stopError;
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -429,7 +433,7 @@ class FailingStopBackgroundChildBackend implements AgentBackend {
     this.finish();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -453,7 +457,7 @@ class ResettingDeadlineBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -478,7 +482,7 @@ class DeadlineRepairBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -529,7 +533,7 @@ class ProtectedTamperBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -568,7 +572,7 @@ class FailingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -605,67 +609,13 @@ class IncompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
 const registerIncompleteBackend = (registry: BackendRegistry): void => {
   registry.register('fake', (ctx) => new IncompleteBackend(ctx.sessionId));
 };
-
-class PermissionRequestBackend implements AgentBackend {
-  readonly kind: BackendKind = 'fake';
-  readonly sessionId: string;
-
-  constructor(
-    sessionId: string,
-    private readonly onRespond: () => void,
-    private readonly command: string,
-  ) {
-    this.sessionId = sessionId;
-  }
-
-  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
-    const ts = Date.now();
-    yield {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'permission-request-event',
-      turnId: input.turnId,
-      ts,
-      requestId: 'permission-request-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: this.command },
-      rememberForTurnAllowed: true,
-    };
-    yield {
-      type: 'complete',
-      id: 'permission-complete',
-      turnId: input.turnId,
-      ts,
-      stopReason: 'permission_handoff',
-    };
-  }
-
-  async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {
-    this.onRespond();
-    throw new Error('headless task facade must not answer interactive permission requests');
-  }
-  async dispose(): Promise<void> {}
-}
-
-const registerPermissionRequestBackend =
-  (onRespond: () => void, command = 'rm -rf /tmp/example') =>
-  (registry: BackendRegistry): void => {
-    registry.register(
-      'fake',
-      (ctx) => new PermissionRequestBackend(ctx.sessionId, onRespond, command),
-    );
-  };
 
 class ProgressToolBackend implements AgentBackend {
   readonly kind: BackendKind = 'ai-sdk';
@@ -694,15 +644,17 @@ class ProgressToolBackend implements AgentBackend {
     assert.ok(todoUpdate);
     assert.ok(selfCheckPlanSubmit);
     assert.ok(selfCheckSubmit);
+    const bashToolCallId = `bash-tool-call-${input.turnId}`;
+    const progressToolCallId = `progress-tool-call-${input.turnId}`;
     const toolCtx = {
       sessionId: this.sessionId,
       turnId: input.turnId,
       cwd: this.ctx.header.cwd,
-      toolCallId: 'progress-tool-call',
+      toolCallId: progressToolCallId,
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
     };
-    await bash.impl({ command: 'npm test' }, { ...toolCtx, toolCallId: 'bash-tool-call' });
+    await bash.impl({ command: 'npm test' }, { ...toolCtx, toolCallId: bashToolCallId });
     await inventorySubmit.impl(
       {
         summary: 'Inspected public files.',
@@ -769,43 +721,43 @@ class ProgressToolBackend implements AgentBackend {
     const ts = Date.now();
     yield {
       type: 'tool_start',
-      id: 'progress-bash-start',
+      id: `progress-bash-start-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'bash-tool-call',
+      toolUseId: bashToolCallId,
       toolName: 'Bash',
       args: { command: 'npm test' },
     };
     yield {
       type: 'tool_result',
-      id: 'progress-bash-result',
+      id: `progress-bash-result-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'bash-tool-call',
+      toolUseId: bashToolCallId,
       isError: false,
       content: { kind: 'text', text: 'tests passed' },
     };
     yield {
       type: 'tool_start',
-      id: 'progress-self-check-start',
+      id: `progress-self-check-start-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'progress-tool-call',
+      toolUseId: progressToolCallId,
       toolName: 'self_check_submit',
       args: { status: 'pass' },
     };
     yield {
       type: 'tool_result',
-      id: 'progress-self-check-result',
+      id: `progress-self-check-result-${input.turnId}`,
       turnId: input.turnId,
       ts,
-      toolUseId: 'progress-tool-call',
+      toolUseId: progressToolCallId,
       isError: false,
       content: { kind: 'text', text: 'self-check accepted' },
     };
     yield {
       type: 'complete',
-      id: 'progress-complete',
+      id: `progress-complete-${input.turnId}`,
       turnId: input.turnId,
       ts,
       stopReason: 'end_turn',
@@ -813,7 +765,7 @@ class ProgressToolBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1007,7 +959,7 @@ class GateRepairBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1152,7 +1104,7 @@ class GateLaunderBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -1196,20 +1148,15 @@ async function readRuntimeEventLedger(
   sessionId: string,
   runId: string,
 ): Promise<RuntimeEvent[]> {
-  const runtimeEventsPath = join(
-    storageRoot,
-    'sessions',
-    sessionId,
-    'runs',
-    runId,
-    'runtime-events.jsonl',
-  );
-  const content = await readFile(runtimeEventsPath, 'utf8');
-  return content
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as RuntimeEvent);
+  const runtimePersistence = await openRuntimeEventReadPersistence({
+    workspaceRoot: storageRoot,
+  });
+  try {
+    assert.equal(runtimePersistence.kind, 'sqlite');
+    return await runtimePersistence.runtimeEventStore.readRuntimeEvents(sessionId, runId);
+  } finally {
+    runtimePersistence.close();
+  }
 }
 
 async function readAgentRunHeader(
@@ -1217,8 +1164,13 @@ async function readAgentRunHeader(
   sessionId: string,
   runId: string,
 ): Promise<AgentRunHeader> {
-  const runPath = join(storageRoot, 'sessions', sessionId, 'runs', runId, 'run.json');
-  return JSON.parse(await readFile(runPath, 'utf8')) as AgentRunHeader;
+  const store = createSqliteAgentRunStore(storageRoot);
+  try {
+    await store.ready?.();
+    return await store.readRun(sessionId, runId);
+  } finally {
+    store.close?.();
+  }
 }
 
 describe('runTaskOnce', () => {
@@ -1303,6 +1255,15 @@ describe('runTaskOnce', () => {
         ),
       );
       assert.ok(events.some((event) => event.status === 'completed'));
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.resultRecord.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 
@@ -2732,185 +2693,6 @@ describe('runTaskOnce', () => {
     });
   });
 
-  test('fails closed on permission requests without answering the interactive permission API', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      let respondCalls = 0;
-      const task: Task = {
-        id: 'permission-handoff',
-        instruction: 'run a dangerous command',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'true', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        registerBackends: registerPermissionRequestBackend(() => {
-          respondCalls += 1;
-        }),
-      });
-
-      assert.equal(respondCalls, 0);
-      assert.equal(result.resultRecord.status, 'failed');
-      assert.equal(result.resultRecord.passed, false);
-      assert.equal(result.resultRecord.errorClass, 'policy_denied');
-      assert.equal(result.projection.status, 'policy_denied');
-      assert.equal(result.projection.latestVerifierResult?.exitCode, 0);
-      assert.equal(result.projection.latestScoreResult?.passed, false);
-      assert.equal(result.projection.latestScoreResult?.taxonomy, 'policy_denied');
-      assert.ok(
-        result.projection.events.some((event) => event.type === 'task_run_policy_denied'),
-        'expected a policy-denied terminal task event',
-      );
-      assert.equal(result.projection.permissionRequests.length, 1);
-      assert.equal(result.projection.permissionRequests[0]?.toolName, 'Bash');
-      assert.equal(result.projection.permissionRequests[0]?.resourceScope.kind, 'command');
-      const runtimeEvents = await readRuntimeEventLedger(
-        storageRoot,
-        latestInvocation(result).sessionId,
-        latestInvocation(result).runId,
-      );
-      assert.equal(runtimeEvents.some(isTerminalRuntimeEvent), false);
-      assert.ok(
-        runtimeEvents.some(
-          (event) => event.actions?.permissionRequest?.requestId === 'permission-request-1',
-        ),
-        'expected the permission request fact to stay in the runtime ledger',
-      );
-      assert.equal(result.projection.inboxItems[0]?.kind, 'approval_request');
-      assert.equal(result.projection.inboxItems[0]?.status, 'resolved');
-      assert.ok(
-        result.projection.events.some(
-          (event) => event.type === 'permission_decision_recorded' && event.decision === 'deny',
-        ),
-        'expected a fail-closed permission denial event',
-      );
-    });
-  });
-
-  test('does not treat post-hoc matching permission grants as runtime authorization', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      let respondCalls = 0;
-      const taskRunId = 'grant-run';
-      const command = 'rm -rf /tmp/example';
-      const grant: TaskPermissionGrant = {
-        schemaVersion: 1,
-        grantId: 'grant-posthoc',
-        requestId: 'permission-request-1',
-        taskRunId,
-        attemptId: `${taskRunId}-attempt-1`,
-        toolCallId: 'tool-1',
-        toolName: 'Bash',
-        normalizedArgsHash: hashNormalizedArgs({ command }),
-        resourceScope: commandResourceScope(command),
-        decision: 'allow',
-        actor: { kind: 'test', id: 'unit' },
-        source: 'test_fixture',
-        decidedAt: 10,
-        expiresAt: Number.MAX_SAFE_INTEGER,
-      };
-      const task: Task = {
-        id: 'permission-grant-posthoc',
-        instruction: 'run a dangerous command',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'true', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        taskRunId,
-        registerBackends: registerPermissionRequestBackend(() => {
-          respondCalls += 1;
-        }, command),
-        permissionGrants: [grant],
-      });
-
-      assert.equal(respondCalls, 0);
-      assert.equal(result.resultRecord.status, 'failed');
-      assert.equal(result.resultRecord.errorClass, 'policy_denied');
-      assert.equal(result.projection.status, 'policy_denied');
-      assert.equal(result.projection.permissionGrants.length, 1);
-      assert.equal(result.projection.permissionGrants[0]?.grantId, 'grant-posthoc');
-      assert.equal(
-        result.projection.events.some(
-          (event) => event.type === 'permission_decision_recorded' && event.decision === 'allow',
-        ),
-        false,
-      );
-      const denyDecision = result.projection.events.find(
-        (event) => event.type === 'permission_decision_recorded',
-      );
-      assert.ok(denyDecision);
-      if (denyDecision.type !== 'permission_decision_recorded') {
-        throw new Error('expected permission_decision_recorded event');
-      }
-      assert.equal(denyDecision.decision, 'deny');
-      assert.match(denyDecision.reason ?? '', /post-hoc permission requests/);
-    });
-  });
-
-  test('redacts bash permission scopes and inbox previews while preserving args hash', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      const secret = 'SECRET_TOKEN_123456';
-      const command = `printf ${secret} > /tmp/secret-output`;
-      const task: Task = {
-        id: 'permission-redaction',
-        instruction: 'request permission',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'true', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        registerBackends: registerPermissionRequestBackend(() => {}, command),
-      });
-
-      const request = result.projection.permissionRequests[0];
-      assert.ok(request);
-      assert.equal(request.normalizedArgsHash, hashNormalizedArgs({ command }));
-      assert.deepEqual(request.resourceScope, commandResourceScope(command));
-      const serializedPermissionFacts = JSON.stringify({
-        permissionRequests: result.projection.permissionRequests,
-        inboxItems: result.projection.inboxItems,
-        permissionEvents: result.projection.events.filter(
-          (event) =>
-            event.type === 'permission_request_recorded' ||
-            event.type === 'task_inbox_item_recorded' ||
-            event.type === 'task_inbox_item_resolved',
-        ),
-      });
-      assert.equal(serializedPermissionFacts.includes(secret), false);
-      assert.equal(serializedPermissionFacts.includes(command), false);
-      assert.match(serializedPermissionFacts, new RegExp(request.normalizedArgsHash));
-    });
-  });
-
-  test('parks permission requests in desktop intervention mode without verifying', async () => {
-    await withDirs(async (_fixtureDir, storageRoot) => {
-      const task: Task = {
-        id: 'permission-park',
-        instruction: 'run a dangerous command',
-        workspaceDir: _fixtureDir,
-        verification: { command: 'false', protectedPaths: [] },
-      };
-
-      const result = await runTaskOnce(fakeConfig, task, {
-        storageRoot,
-        registerBackends: registerPermissionRequestBackend(() => {}),
-        interventionPolicy: { mode: 'park' },
-      });
-
-      assert.equal(result.resultRecord.status, 'failed');
-      assert.equal(result.resultRecord.errorClass, 'needs_approval');
-      assert.equal(result.projection.status, 'needs_approval');
-      assert.equal(result.projection.parked?.reason, 'approval');
-      assert.equal(result.projection.latestVerifierResult, undefined);
-      assert.equal(result.projection.latestScoreResult, undefined);
-      assert.equal(result.projection.attempts[0]?.status, 'needs_approval');
-      assert.equal(result.projection.inboxItems[0]?.kind, 'approval_request');
-      assert.equal(result.projection.inboxItems[0]?.status, 'open');
-    });
-  });
-
   test('persists runtime refs, isolation, budget, and artifact metadata', async () => {
     await withDirs(async (fixtureDir, storageRoot) => {
       await writeFile(join(fixtureDir, 'marker.txt'), 'present', 'utf8');
@@ -2954,17 +2736,13 @@ describe('runTaskOnce', () => {
         feedback.details.artifactRefs,
       );
 
-      const runtimeEventsPath = join(
+      const runtimeEvents = await readRuntimeEventLedger(
         storageRoot,
-        'sessions',
         latestInvocation(result).sessionId,
-        'runs',
         latestInvocation(result).runId,
-        'runtime-events.jsonl',
       );
-      const runtimeEvents = await readFile(runtimeEventsPath, 'utf8');
-      assert.match(runtimeEvents, /report-usage/);
-      assert.match(runtimeEvents, /report-artifact/);
+      assert.ok(runtimeEvents.some((event) => event.id === 'report-usage'));
+      assert.ok(runtimeEvents.some((event) => event.id === 'report-artifact'));
     });
   });
 

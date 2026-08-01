@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type {
   BackendKind,
@@ -12,14 +13,11 @@ import type {
   SessionEvent,
   SessionHeader,
 } from '@maka/core';
-import type {
-  BackendSendInput,
-  BackendStopMode,
-  PermissionDecision,
-} from '@maka/core/backend-types';
+import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import { createSessionStore } from '@maka/storage';
 import {
   BackendRegistry,
-  PermissionEngine,
   PiAgentBackend,
   type AgentBackend,
   type AiSdkBackendInput,
@@ -54,6 +52,7 @@ import {
   HARBOR_CELL_CONTEXT_ENV_KEYS,
   HARBOR_CELL_OUTPUT_FILENAME,
   HARBOR_CELL_RUNTIME_EVENTS_FILENAME,
+  HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY,
   HARBOR_CELL_USAGE_CHECKPOINT_FILENAME,
   resolveHarborCellAiSdkEnv,
   runHarborCellFromEnv,
@@ -97,7 +96,6 @@ function registerTestPiAgentBackend(
         header: ctx.header,
         appendMessage:
           ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
-        permissionEngine: new PermissionEngine({ newId: () => 'perm-id', now: () => 123 }),
         transport: transportFactory({ header: ctx.header, store: ctx.store }),
       }),
   );
@@ -145,7 +143,7 @@ class CellReportingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -189,7 +187,7 @@ class CellChildAdmissionProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -218,7 +216,7 @@ class RunStartOrderingProbeBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -243,7 +241,7 @@ class ThrowingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -296,7 +294,7 @@ class DeadlineSettlingBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -357,7 +355,7 @@ class NonCooperativeDeadlineBackend implements AgentBackend {
     this.releaseStop();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -423,7 +421,7 @@ class ActiveIsolatedToolDeadlineBackend implements AgentBackend {
     if (mode === 'immediate') this.controller.abort();
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -461,7 +459,7 @@ class TerminalClaimBeforeDeadlineBackend implements AgentBackend {
     this.stopCalls += 1;
   }
 
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -539,7 +537,7 @@ class StepCapThenCompleteBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -944,6 +942,96 @@ describe('runHarborCell', () => {
     });
   });
 
+  test('publishes image trajectory evidence from a frozen SQLite session export', async () => {
+    await withDirs(async ({ outputDir, storageRoot, workspaceDir, artifactStore }) => {
+      const sessions = createSessionStore(storageRoot);
+      const session = await sessions.create({
+        cwd: workspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'execute',
+        name: 'trajectory-session',
+      });
+      await sessions.close?.();
+      await mkdir(join(storageRoot, 'task-runs'));
+      await writeFile(join(storageRoot, 'task-runs', 'headless-ledger.jsonl'), 'excluded\n');
+      const image = await artifactStore.create({
+        id: 'trajectory-image',
+        sessionId: session.id,
+        turnId: 'turn-1',
+        name: 'screen.png',
+        kind: 'image',
+        content: Buffer.from('\x89PNG\r\n\x1a\nfixture'),
+        mimeType: 'image/png',
+        source: 'tool_result',
+        now: 100,
+      });
+      const imageEvent: RuntimeEvent = {
+        id: 'image-result',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        sessionId: session.id,
+        turnId: 'turn-1',
+        ts: 100,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'read-image',
+          name: 'Read',
+          result: {
+            kind: 'image',
+            mimeType: 'image/png',
+            ref: { kind: 'session_file', sessionId: session.id, relativePath: image.id },
+          },
+        },
+      };
+      const invocation: InvocationResult = {
+        invocationId: 'invocation-1',
+        sessionId: session.id,
+        runId: 'run-1',
+        turnId: 'turn-1',
+        status: 'completed',
+        events: [imageEvent],
+        startedAt: 100,
+        finishedAt: 200,
+      };
+
+      await writeHarborCellArtifacts({ invocation, outputDir, storageRoot });
+
+      const trajectoryRoot = join(outputDir, HARBOR_CELL_TRAJECTORY_STATE_DIRECTORY);
+      await assert.rejects(lstat(join(trajectoryRoot, 'artifacts', 'metadata.jsonl')), {
+        code: 'ENOENT',
+      });
+      await assert.rejects(lstat(join(trajectoryRoot, 'runtime.sqlite-wal')), { code: 'ENOENT' });
+      await assert.rejects(lstat(join(trajectoryRoot, 'task-runs')), { code: 'ENOENT' });
+      const database = new DatabaseSync(join(trajectoryRoot, 'runtime.sqlite'), {
+        readOnly: true,
+      });
+      try {
+        const row = database
+          .prepare('SELECT record_json FROM artifact_records WHERE artifact_id = ?')
+          .get(image.id) as { record_json?: unknown } | undefined;
+        assert.equal(row?.record_json, JSON.stringify(image));
+      } finally {
+        database.close();
+      }
+      assert.deepEqual(
+        await readFile(join(trajectoryRoot, 'artifacts', image.relativePath)),
+        Buffer.from('\x89PNG\r\n\x1a\nfixture'),
+      );
+
+      await writeHarborCellArtifacts({
+        invocation: { ...invocation, events: [] },
+        outputDir,
+        storageRoot,
+      });
+      await assert.rejects(lstat(trajectoryRoot), { code: 'ENOENT' });
+    });
+  });
+
   test('a new cell run does not inherit a stale checkpoint from the same output directory', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
       await writeHarborCellUsageCheckpoint(outputDir, {
@@ -1013,6 +1101,15 @@ describe('runHarborCell', () => {
       );
       assert.match(runtimeEvents, /"id":"cell-usage"/);
       assert.match(runtimeEvents, /"systemPromptHash":"sha256:cell-prompt"/);
+      const sessions = createSessionStore(storageRoot);
+      try {
+        assert.deepEqual(await sessions.readExecutionBoundary(result.invocation.sessionId), {
+          kind: 'external',
+          revision: 0,
+        });
+      } finally {
+        await sessions.close?.();
+      }
     });
   });
 
@@ -1095,6 +1192,53 @@ describe('runHarborCell', () => {
           resumeSessionId: first.invocation.sessionId,
         }),
         /resume session model.*different-model.*fake-model/i,
+      );
+    });
+  });
+
+  test('uses the external boundary instead of a legacy Execute mode authority', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const result = await runHarborCell({
+        config,
+        instruction: 'run under harness isolation',
+        cwd: workspaceDir,
+        outputDir,
+        storageRoot,
+      });
+      const sessions = createSessionStore(storageRoot);
+
+      const header = await sessions.readHeaderSnapshot(result.invocation.sessionId);
+      const boundary = await sessions.readExecutionBoundary(result.invocation.sessionId);
+      await sessions.close?.();
+
+      assert.equal(header?.permissionMode, 'ask');
+      assert.equal(boundary.kind, 'external');
+    });
+  });
+
+  test('rejects resuming a session that is not externally isolated', async () => {
+    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+      const sessions = createSessionStore(storageRoot);
+      const managed = await sessions.create({
+        cwd: workspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'execute',
+        name: 'managed-session',
+      });
+      await sessions.close?.();
+
+      await assert.rejects(
+        runHarborCell({
+          config,
+          instruction: 'resume without external isolation',
+          cwd: workspaceDir,
+          outputDir,
+          storageRoot,
+          resumeSessionId: managed.id,
+        }),
+        /external execution boundary/i,
       );
     });
   });
@@ -1305,7 +1449,7 @@ describe('runHarborCell', () => {
         }
 
         async stop(): Promise<void> {}
-        async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+        async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
         async dispose(): Promise<void> {}
       }
 
@@ -2306,14 +2450,6 @@ describe('runHarborCell', () => {
       for (const unexpected of ['agent_spawn', 'agent_swarm', 'agent_list', 'agent_output']) {
         assert.ok(!toolNames.includes(unexpected), `unexpected default Agent tool ${unexpected}`);
       }
-      assert.equal(
-        backendInput.tools.find((tool) => tool.name === 'Bash')?.permissionRequired,
-        false,
-      );
-      assert.equal(
-        backendInput.tools.find((tool) => tool.name === 'Write')?.permissionRequired,
-        false,
-      );
       assert.match(
         typeof backendInput.systemPrompt === 'string' ? backendInput.systemPrompt : '',
         /Prefer Read, Glob, and Grep/,
@@ -4153,13 +4289,12 @@ describe('runHarborCell', () => {
     assert.equal(snapshot.synthesisCache?.schemaVersion, 1);
   });
 
-  test('Harbor tool builder keeps the six container-native tools non-interactive', () => {
+  test('Harbor tool builder exposes the six container-native tools', () => {
     const tools = buildHarborCellAiSdkTools(fakeToolExecutor());
     const names = tools.map((tool) => tool.name);
 
     for (const expected of ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']) {
       assert.ok(names.includes(expected), `expected Harbor tool ${expected}`);
-      assert.equal(tools.find((tool) => tool.name === expected)?.permissionRequired, false);
     }
   });
 

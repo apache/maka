@@ -1,27 +1,15 @@
-import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { ModelCatalogEntry } from '@maka/core';
 import {
-  Input,
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemMedia,
-  ItemTitle,
-  OverlayScrollArea,
+  CheckboxList,
+  CheckboxListItem,
   useUiLocale,
 } from '@maka/ui';
-import { Check } from '@maka/ui/icons';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 /**
- * Enabled-model editor. The full candidate catalog (live-fetched merged with
- * the static fallback, via buildCatalogModelChoices) is shown persistently
- * inside a fixed-height scroll region; enabled models read as checked. Clicking
- * a row toggles it through the shared `enabledModelIds` path, so a newly
- * enabled model reaches the chat model picker with no side state. The default
- * model stays checked and locked (`connectionEnabledModelIds` always keeps it
- * enabled). Search filters the same list in place, so neither the provider's
- * model count nor an active filter changes the dialog height.
+ * Adapts Maka's model catalog data to Astryx's canonical checkbox field.
+ * `enabledModelIds` remains the only product state; Astryx owns labels,
+ * checkbox semantics, disabled state, and focus.
  */
 export function EnabledModelManager(props: {
   modelChoices: ModelCatalogEntry[];
@@ -31,17 +19,7 @@ export function EnabledModelManager(props: {
   onChange(ids: string[]): void;
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
-  const [query, setQuery] = useState('');
-  // Roving tabindex (composite-widget keyboard pattern): the whole list is ONE
-  // Tab stop. Without this every row button is a Tab stop, and a large catalog
-  // (OpenRouter's fallback list is 260+ rows) walls off everything below the
-  // list for keyboard users. Only the active row has tabIndex=0; ArrowUp/Down
-  // + Home/End move activity (focus scrolls the row into view), Space/Enter
-  // toggle via the button's native activation.
-  const [activeRowId, setActiveRowId] = useState<string | null>(null);
-  const modelListRef = useRef<HTMLUListElement>(null);
-  const enabled = useMemo(() => new Set(props.enabledModelIds), [props.enabledModelIds]);
-  const rows = useMemo(() => {
+  const rows = (() => {
     const byId = new Map(props.modelChoices.map((model) => [model.id, model] as const));
     const seen = new Set<string>();
     const list: Array<{ id: string; label: string }> = [];
@@ -60,128 +38,31 @@ export function EnabledModelManager(props: {
       list.push({ id, label: model ? modelDisplayLabel(model) : id });
     }
     return list;
-  }, [props.modelChoices, props.enabledModelIds]);
-
-  const visibleRows = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) return rows;
-    return rows.filter(
-      (row) => row.id.toLowerCase().includes(normalizedQuery) || row.label.toLowerCase().includes(normalizedQuery),
-    );
-  }, [rows, query]);
-
-  function toggle(id: string) {
-    if (props.disabled || id === props.defaultModel) return;
-    const next = enabled.has(id)
-      ? props.enabledModelIds.filter((candidate) => candidate !== id)
-      : [...props.enabledModelIds, id];
-    props.onChange(next);
-  }
-
-  // The default-model row is disabled (natively unfocusable), so arrow-key
-  // traversal skips it — consistent with Tab behavior.
-  const focusableRows = visibleRows.filter((row) => row.id !== props.defaultModel);
-  const resolvedActiveRowId = activeRowId !== null && focusableRows.some((row) => row.id === activeRowId)
-    ? activeRowId
-    : focusableRows[0]?.id ?? null;
-
-  function onModelListKeyDown(event: KeyboardEvent<HTMLUListElement>) {
-    if (focusableRows.length === 0) return;
-    const currentIndex = Math.max(0, focusableRows.findIndex((row) => row.id === resolvedActiveRowId));
-    let nextIndex: number;
-    switch (event.key) {
-      case 'ArrowDown':
-        nextIndex = Math.min(currentIndex + 1, focusableRows.length - 1);
-        break;
-      case 'ArrowUp':
-        nextIndex = Math.max(currentIndex - 1, 0);
-        break;
-      case 'Home':
-        nextIndex = 0;
-        break;
-      case 'End':
-        nextIndex = focusableRows.length - 1;
-        break;
-      default:
-        return;
-    }
-    event.preventDefault();
-    const next = focusableRows[nextIndex];
-    setActiveRowId(next.id);
-    // Focus scrolls the row into view inside the fixed-height scroll region.
-    modelListRef.current
-      ?.querySelector<HTMLElement>(`[data-model-id="${CSS.escape(next.id)}"]`)
-      ?.focus();
-  }
+  })();
 
   return (
-    <section className="providerEnabledModels" aria-labelledby="provider-enabled-models-title">
-      <div className="providerEnabledModelsHeader">
-        <strong id="provider-enabled-models-title">{copy.enabledModelsTitle(props.enabledModelIds.length)}</strong>
-        <span>{copy.enabledModelsHelp}</span>
-      </div>
-      <Input
-        type="search"
-        value={query}
-        onChange={(event) => setQuery(event.currentTarget.value)}
-        placeholder={copy.searchModels}
-        autoComplete="off"
-        spellCheck={false}
-        disabled={props.disabled}
-        aria-label={copy.searchModels}
-      />
-      <OverlayScrollArea className="providerModelChoiceScroll">
-        <ul
-          ref={modelListRef}
-          className="providerModelChoiceList"
-          aria-label={copy.modelListAria}
-          onKeyDown={onModelListKeyDown}
-        >
-          {visibleRows.length === 0 ? (
-            <li className="providerModelChoiceEmpty">
-              {rows.length === 0 ? copy.noModels : copy.noMatchingModels}
-            </li>
-          ) : (
-            visibleRows.map((row) => {
-              const isEnabled = enabled.has(row.id);
-              const isDefault = row.id === props.defaultModel;
-              return (
-                <li key={row.id}>
-                  <Item
-                    className="providerModelChoiceRow"
-                    size="sm"
-                    render={
-                      <button
-                        type="button"
-                        role="checkbox"
-                        aria-checked={isEnabled}
-                        data-model-id={row.id}
-                        tabIndex={row.id === resolvedActiveRowId ? 0 : -1}
-                        disabled={props.disabled || isDefault}
-                        onClick={() => toggle(row.id)}
-                        onFocus={() => setActiveRowId(row.id)}
-                      />
-                    }
-                  >
-                    <ItemMedia className="providerModelChoiceCheck" aria-hidden="true">
-                      {isEnabled ? <Check size={14} /> : null}
-                    </ItemMedia>
-                    <ItemContent>
-                      <ItemTitle className="providerModelChoiceLabel">{row.label}</ItemTitle>
-                    </ItemContent>
-                    {isDefault && (
-                      <ItemActions>
-                      <span className="providerEnabledModelMeta">{copy.defaultModel}</span>
-                      </ItemActions>
-                    )}
-                  </Item>
-                </li>
-              );
-            })
-          )}
-        </ul>
-      </OverlayScrollArea>
-    </section>
+    <CheckboxList
+      label={copy.enabledModelsTitle(props.enabledModelIds.length)}
+      description={copy.enabledModelsHelp}
+      value={props.enabledModelIds}
+      onChange={props.onChange}
+      isDisabled={props.disabled}
+      width="100%"
+      density="compact"
+    >
+      {rows.map((row) => (
+        <CheckboxListItem
+          key={row.id}
+          value={row.id}
+          label={
+            row.id === props.defaultModel
+              ? `${row.label} · ${copy.defaultModel}`
+              : row.label
+          }
+          isDisabled={row.id === props.defaultModel}
+        />
+      ))}
+    </CheckboxList>
   );
 }
 

@@ -292,7 +292,6 @@ export function buildHeavyTaskSelfCheckTools(recorder: HeavyTaskSelfCheckRecorde
       description:
         'Submit the public final-artifact, scratch, and workspace-guard plan required before final heavy-task self_check_submit.',
       parameters: heavyTaskSelfCheckPlanSubmitSchema,
-      permissionRequired: false,
       impl: async (args, ctx) =>
         recorder.recordSelfCheckPlan(heavyTaskSelfCheckPlanSubmitSchema.parse(args), ctx),
     },
@@ -301,7 +300,6 @@ export function buildHeavyTaskSelfCheckTools(recorder: HeavyTaskSelfCheckRecorde
       description:
         'Submit public, task-derived advisory semantic self-check evidence for this heavy-task run, including scratch/cleanup hygiene for any local check side effects.',
       parameters: heavyTaskSelfCheckSubmitSchema,
-      permissionRequired: false,
       impl: async (args, ctx) =>
         recorder.recordSelfCheck(heavyTaskSelfCheckSubmitSchema.parse(args), ctx),
     },

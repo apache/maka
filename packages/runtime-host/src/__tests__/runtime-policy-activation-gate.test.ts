@@ -48,6 +48,42 @@ test('backend activations run concurrently while a mutation waits and blocks a l
   await Promise.all([firstStart, secondStart, mutation, laterStart]);
 });
 
+test('policy-dependent reads share the same mutation barrier as backend activation', async () => {
+  const gate = new RuntimePolicyActivationGate();
+  const readEntered = deferred();
+  const releaseRead = deferred();
+  const mutationEntered = deferred();
+  const releaseMutation = deferred();
+  const laterReadEntered = deferred();
+
+  const read = gate.runReadActivation(async () => {
+    readEntered.resolve();
+    await releaseRead.promise;
+  });
+  await readEntered.promise;
+
+  const mutation = gate.runMutation(async () => {
+    mutationEntered.resolve();
+    await releaseMutation.promise;
+  });
+  const laterRead = gate.runReadActivation(() => {
+    laterReadEntered.resolve();
+  });
+
+  releaseRead.resolve();
+  await mutationEntered.promise;
+  let laterReadFinished = false;
+  void laterReadEntered.promise.then(() => {
+    laterReadFinished = true;
+  });
+  await Promise.resolve();
+  assert.equal(laterReadFinished, false);
+
+  releaseMutation.resolve();
+  await laterReadEntered.promise;
+  await Promise.all([read, mutation, laterRead]);
+});
+
 test('a failed mutation releases backend activations and the next mutation', async () => {
   const gate = new RuntimePolicyActivationGate();
   const expected = new Error('injected mutation failure');

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   loadSkillInstructions,
+  loadSkillInstructionsFromScan,
   rankSkillSearchCandidates,
   skillSearchResult,
   SKILL_SEARCH_RESULT_LIMIT,
@@ -11,6 +12,7 @@ import {
 } from './skills-context.js';
 import {
   scanSkillsWithDiagnostics,
+  type ScannedSkill,
   type SkillSource,
   type SkillSourceResolver,
 } from './skills-discovery.js';
@@ -42,6 +44,10 @@ export const SKILL_SEARCH_TOOL_NAME = 'SkillSearch';
 export interface SkillToolOptions {
   shadowTracker?: SkillShadowSelectionTracker;
 }
+
+export type SkillInventoryResolver = (
+  context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'cwd'>,
+) => readonly ScannedSkill[] | Promise<readonly ScannedSkill[]>;
 
 // ── Shadow selection tracker ──────────────────────────────────────────────
 
@@ -90,6 +96,40 @@ export function buildSkillAgentTool(
   host?: HostCapabilities | HostCapabilitiesResolver,
   options: SkillToolOptions = {},
 ): MakaTool<{ name: string }, LoadSkillInstructionsResult> {
+  return buildSkillAgentToolWithLoader(
+    (name, ctx, resolvedHost) =>
+      loadSkillInstructions(
+        typeof source === 'function' ? source(ctx) : source,
+        name,
+        resolvedHost,
+      ),
+    host,
+    options,
+  );
+}
+
+export function buildSkillAgentToolFromInventory(
+  resolveInventory: SkillInventoryResolver,
+  host?: HostCapabilities | HostCapabilitiesResolver,
+  options: SkillToolOptions = {},
+): MakaTool<{ name: string }, LoadSkillInstructionsResult> {
+  return buildSkillAgentToolWithLoader(
+    async (name, ctx, resolvedHost) =>
+      loadSkillInstructionsFromScan([...(await resolveInventory(ctx))], name, resolvedHost),
+    host,
+    options,
+  );
+}
+
+function buildSkillAgentToolWithLoader(
+  load: (
+    name: string,
+    context: MakaToolContext,
+    host?: HostCapabilities,
+  ) => LoadSkillInstructionsResult | Promise<LoadSkillInstructionsResult>,
+  host?: HostCapabilities | HostCapabilitiesResolver,
+  options: SkillToolOptions = {},
+): MakaTool<{ name: string }, LoadSkillInstructionsResult> {
   return {
     name: SKILL_TOOL_NAME,
     description:
@@ -97,14 +137,9 @@ export function buildSkillAgentTool(
     parameters: z.object({
       name: z.string().describe('The exact skill ref, id, or name from the local skill catalog.'),
     }),
-    permissionRequired: false,
     displayName: SKILL_TOOL_NAME,
     impl: async ({ name }, ctx) => {
-      const result = await loadSkillInstructions(
-        typeof source === 'function' ? source(ctx) : source,
-        name,
-        typeof host === 'function' ? host(ctx) : host,
-      );
+      const result = await load(name, ctx, typeof host === 'function' ? host(ctx) : host);
       if (result.ok) {
         const shadow = options.shadowTracker?.observe(ctx, result.skill.ref);
         const receipt = loadedSkillInvocationReceipt('model_tool', name, result.skill);
@@ -137,6 +172,29 @@ export function buildSkillSearchAgentTool(
   host?: HostCapabilities | HostCapabilitiesResolver,
   options: SkillToolOptions = {},
 ): MakaTool<{ query: string; limit?: number }, SkillSearchResult> {
+  return buildSkillSearchAgentToolWithResolver(
+    async (ctx) => {
+      const resolvedSource = typeof source === 'function' ? source(ctx) : source;
+      return (await scanSkillsWithDiagnostics(resolvedSource)).inventory;
+    },
+    host,
+    options,
+  );
+}
+
+export function buildSkillSearchAgentToolFromInventory(
+  resolveInventory: SkillInventoryResolver,
+  host?: HostCapabilities | HostCapabilitiesResolver,
+  options: SkillToolOptions = {},
+): MakaTool<{ query: string; limit?: number }, SkillSearchResult> {
+  return buildSkillSearchAgentToolWithResolver(resolveInventory, host, options);
+}
+
+function buildSkillSearchAgentToolWithResolver(
+  resolveInventory: SkillInventoryResolver,
+  host?: HostCapabilities | HostCapabilitiesResolver,
+  options: SkillToolOptions = {},
+): MakaTool<{ query: string; limit?: number }, SkillSearchResult> {
   return {
     name: SKILL_SEARCH_TOOL_NAME,
     description:
@@ -145,14 +203,11 @@ export function buildSkillSearchAgentTool(
       query: z.string().min(1).max(SKILL_SEARCH_INPUT_MAX_CHARS),
       limit: z.number().int().min(1).max(SKILL_SEARCH_RESULT_LIMIT).optional(),
     }),
-    permissionRequired: false,
     displayName: SKILL_SEARCH_TOOL_NAME,
     impl: async ({ query, limit }, ctx) => {
       const startedAt = performance.now();
-      const resolvedSource = typeof source === 'function' ? source(ctx) : source;
       const resolvedHost = typeof host === 'function' ? host(ctx) : host;
-      const scan = await scanSkillsWithDiagnostics(resolvedSource);
-      const ranking = rankSkillSearchCandidates(scan.inventory, query, resolvedHost);
+      const ranking = rankSkillSearchCandidates(await resolveInventory(ctx), query, resolvedHost);
       const result = skillSearchResult(ranking, limit ?? SKILL_SEARCH_RESULT_LIMIT);
       options.shadowTracker?.record(
         ctx,

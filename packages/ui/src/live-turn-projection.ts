@@ -5,7 +5,7 @@ import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import { applyToolOutputChunk } from './tool-output-stream.js';
 
-type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result' | 'permission_request' | 'permission_decision_ack' }>;
+type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_result' }>;
 
 export interface LiveThinkingProjection {
   text: string;
@@ -99,7 +99,7 @@ export function applyLiveTurnEvent(
     return { ...withoutRetry, terminal: true, steps };
   }
   if (event.type === 'complete') {
-    if (event.stopReason === 'permission_handoff' || !current || current.turnId !== event.turnId) return current;
+    if (!current || current.turnId !== event.turnId) return current;
     if (current.steps.length === 0) return undefined;
     const { providerRetry: _providerRetry, ...withoutRetry } = current;
     return {
@@ -116,8 +116,6 @@ export function applyLiveTurnEvent(
     && event.type !== 'tool_start'
     && event.type !== 'tool_output_delta'
     && event.type !== 'tool_result'
-    && event.type !== 'permission_request'
-    && event.type !== 'permission_decision_ack'
   ) {
     return current;
   }
@@ -132,8 +130,6 @@ export function applyLiveTurnEvent(
   const existingToolStep = event.type === 'tool_start'
     || event.type === 'tool_output_delta'
     || event.type === 'tool_result'
-    || event.type === 'permission_request'
-    || event.type === 'permission_decision_ack'
     ? prior.steps.find((candidate) => candidate.tools.some((tool) => tool.toolUseId === event.toolUseId))
     : undefined;
   const stepId = messageEvent
@@ -230,7 +226,7 @@ export function applyLiveTurnEvent(
         ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
         : [...step.tools, tool],
     };
-  } else if (event.type === 'tool_result') {
+  } else {
     const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
     const base: ToolActivityItem = toolIndex >= 0
       ? step.tools[toolIndex]!
@@ -240,30 +236,6 @@ export function applyLiveTurnEvent(
       status: toolResultActivityStatus(event.isError, event.content),
       result: event.content,
       ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
-    };
-    nextStep = {
-      ...step,
-      tools: toolIndex >= 0
-        ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
-        : [...step.tools, tool],
-    };
-  } else {
-    const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === event.toolUseId);
-    const base: ToolActivityItem = toolIndex >= 0
-      ? step.tools[toolIndex]!
-      : {
-          toolUseId: event.toolUseId,
-          toolName: event.type === 'permission_request' ? event.toolName : 'Tool',
-          status: 'pending',
-          args: event.type === 'permission_request'
-            ? projectToolActivityArgs(event.toolName, event.args)
-            : undefined,
-        };
-    const tool: ToolActivityItem = {
-      ...base,
-      status: event.type === 'permission_request'
-        ? 'waiting_permission'
-        : event.decision === 'allow' ? 'running' : 'errored',
     };
     nextStep = {
       ...step,

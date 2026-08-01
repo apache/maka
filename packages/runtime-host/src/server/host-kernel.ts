@@ -33,6 +33,7 @@ import {
   type OperationHandlerMap,
 } from './operation-dispatcher.js';
 import type { SessionContinuityService } from './session-continuity-service.js';
+import type { ClientCapabilityService } from './client-capability-service.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -67,6 +68,8 @@ export interface RuntimeHostCompositionContext {
 export interface RuntimeHostComposition {
   readonly handlers: DomainOperationHandlerMap;
   readonly continuity?: SessionContinuityService;
+  readonly clientCapabilities?: ClientCapabilityService;
+  releaseConnection?(connectionId: string): void;
   beginDrain(): void;
   recover(): Promise<void>;
   close(): Promise<void>;
@@ -250,11 +253,11 @@ export class RuntimeHostKernel {
   }
 
   async #serveConnection(transport: FramedTransport): Promise<void> {
-    let connectionAccepted = false;
-    let connectionReleased = false;
-    const releaseConnection = () => {
-      if (!connectionAccepted || connectionReleased) return;
-      connectionReleased = true;
+    let transportReleased = false;
+    let connectionId: string | undefined;
+    const releaseTransport = () => {
+      if (!connectionId || transportReleased) return;
+      transportReleased = true;
       this.#releaseConnection(transport);
     };
     try {
@@ -263,7 +266,7 @@ export class RuntimeHostKernel {
         throw new Error('First Runtime Host frame must be a hello');
       }
       const result = await this.#admitHandshake(frame, transport);
-      connectionAccepted = result.kind === 'accepted';
+      connectionId = result.kind === 'accepted' ? result.connectionId : undefined;
       await transport.write(result);
       if (result.kind !== 'accepted') {
         transport.destroyAfterFlush();
@@ -279,14 +282,19 @@ export class RuntimeHostKernel {
         },
         resolveHandlers: () => this.#operationHandlers,
         resolveContinuity: () => this.#composition?.continuity,
+        resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         beginOperation: (request) => this.#beginOperation(request),
-        onTeardown: releaseConnection,
+        onTeardown: releaseTransport,
       });
       await session.run();
     } catch {
       transport.destroy();
     } finally {
-      releaseConnection();
+      try {
+        if (connectionId) this.#composition?.releaseConnection?.(connectionId);
+      } finally {
+        releaseTransport();
+      }
     }
   }
 
@@ -584,11 +592,12 @@ export class RuntimeHostKernel {
     this.#assertShutdownCanContinue();
     await this.#options.owner.close().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
-    if (errors.length > 0)
+    if (errors.length > 0) {
       throw new AggregateError(
         errors,
         'Runtime Host shutdown did not cleanly close every resource',
       );
+    }
   }
 
   async #abortStartup(): Promise<void> {

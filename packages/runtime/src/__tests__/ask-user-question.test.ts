@@ -1,10 +1,10 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
 import { buildAskUserQuestionTool } from '../ask-user-question-tool.js';
-import { PermissionEngine } from '../permission-engine.js';
 import { ToolRuntime } from '../tool-runtime.js';
 
 function header(): SessionHeader {
@@ -36,7 +36,7 @@ describe('AskUserQuestion runtime round trip', () => {
     const appended: StoredMessage[] = [];
     const events: SessionEvent[] = [];
     let id = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createTestToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'c' } as never,
@@ -44,7 +44,6 @@ describe('AskUserQuestion runtime round trip', () => {
       appendMessage: async (message) => {
         appended.push(message);
       },
-      permissionEngine: new PermissionEngine({ newId: () => `permission-${++id}`, now: () => 1 }),
       newId: () => `id-${++id}`,
       now: () => 1,
       getPermissionPauseTarget: () => null,
@@ -116,13 +115,12 @@ describe('AskUserQuestion runtime round trip', () => {
   test('turn abort rejects the parked tool and ignores a late response', async () => {
     const events: SessionEvent[] = [];
     let id = 0;
-    const runtime = new ToolRuntime({
+    const runtime = createTestToolRuntime({
       sessionId: 'session-1',
       header: header(),
       connection: { providerType: 'openai', slug: 'c' } as never,
       modelId: 'm',
       appendMessage: async () => {},
-      permissionEngine: new PermissionEngine({ newId: () => `permission-${++id}`, now: () => 1 }),
       newId: () => `id-${++id}`,
       now: () => 1,
       getPermissionPauseTarget: () => null,

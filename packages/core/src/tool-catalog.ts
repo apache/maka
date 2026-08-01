@@ -10,7 +10,7 @@
  * each surface owns an independent hosts record so affinity edits cannot bleed.
  */
 
-export const TOOL_HOST_IDS = ['desktop', 'cli', 'headless'] as const;
+export const TOOL_HOST_IDS = ['desktop', 'cli', 'headless', 'runtime-host'] as const;
 export type ToolHostId = (typeof TOOL_HOST_IDS)[number];
 
 /** Whether a host product surface may bind the pack. Not a runtime enable flag. */
@@ -45,6 +45,7 @@ function desktopOnlyHosts(): Readonly<Record<ToolHostId, ToolHostSupport>> {
     desktop: 'supported',
     cli: 'unsupported',
     headless: 'unsupported',
+    'runtime-host': 'unsupported',
   } satisfies Record<ToolHostId, ToolHostSupport>);
 }
 
@@ -53,6 +54,7 @@ function allHosts(): Readonly<Record<ToolHostId, ToolHostSupport>> {
     desktop: 'supported',
     cli: 'supported',
     headless: 'supported',
+    'runtime-host': 'supported',
   } satisfies Record<ToolHostId, ToolHostSupport>);
 }
 
@@ -91,6 +93,7 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     { name: 'WriteStdin' },
     // Host product always-on
     { name: 'AskUserQuestion' },
+    { name: 'request_sandbox_boundary' },
     { name: 'Skill' },
     { name: 'SkillSearch' },
     { name: 'WebSearch' },
@@ -108,12 +111,6 @@ export const MAKA_CATALOG_TOOLS: readonly CatalogToolDef[] = Object.freeze(
     // Legacy task-ledger aliases still registered on some hosts
     { name: 'TaskCreate' },
     { name: 'TaskUpdate' },
-    // Agent team / expert-team lead
-    { name: 'team_message' },
-    { name: 'team_inbox' },
-    { name: 'team_task_list' },
-    { name: 'team_task_claim' },
-    { name: 'expert_dispatch' },
     // browser surface
     { name: 'browser_navigate' },
     { name: 'browser_snapshot' },

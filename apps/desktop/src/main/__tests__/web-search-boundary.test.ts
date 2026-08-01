@@ -221,13 +221,14 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
       'Live query verification must have a guard-backed duplicate-submit guard.',
     );
     assert.match(page![0], /const credentialActionBusy = pendingCredentialAction !== null \|\| testing/);
-    assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
-    assert.match(page![0], /disabled=\{credentialActionBusy \|\| usingEnvKey \|\| draftKey\.length === 0\}/);
+    assert.match(page![0], /isDisabled=\{usingEnvKey \|\| credentialActionBusy\}/, 'Credential input should freeze while save, clear, or test is pending.');
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| usingEnvKey \|\| draftKey\.length === 0\}/);
     assert.match(page![0], /pendingCredentialAction === 'save' \? copy\.saving : copy\.saveKey/);
-    assert.match(page![0], /disabled=\{credentialActionBusy \|\| \(draftKey\.length === 0 && !hasUsableKey\)\}/);
-    assert.match(page![0], /disabled=\{credentialActionBusy\}[\s\S]*pendingCredentialAction === 'clear' \? copy\.clearing : copy\.clearKey/);
-    assert.match(page![0], /onChange=\{\(event\) => updateLiveQuery\(event\.currentTarget\.value\)\}/);
-    assert.match(page![0], /disabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
+    assert.match(page![0], /isDisabled=\{credentialActionBusy \|\| \(draftKey\.length === 0 && !hasUsableKey\)\}/);
+    assert.match(page![0], /isDisabled=\{credentialActionBusy\}[\s\S]*pendingCredentialAction === 'clear' \? copy\.clearing : copy\.clearKey/);
+    assert.match(page![0], /onChange=\{\(value\) => updateLiveQuery\(value\)\}/);
+    assert.match(page![0], /isDisabled=\{!hasUsableKey \|\| pendingWebSearchEnabled\}/);
   });
 
   it('Settings web-search async actions stop writing component state after unmount', async () => {
@@ -321,7 +322,8 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.match(zhCopy.disabledReasons.noKey, /TAVILY_API_KEY/);
     assert.match(zhCopy.disabledReasons.disabled, /启用联网搜索/);
     assert.match(zhCopy.disabledReasons.noQuery, /输入查询/);
-    assert.match(settings, /disabled=\{liveQueryRunning \|\| queryDisabledReason !== null\}/);
+    // #1565 PR 3: Astryx Button takes `isDisabled` instead of `disabled`.
+    assert.match(settings, /isDisabled=\{liveQueryRunning \|\| queryDisabledReason !== null\}/);
     assert.match(settings, /\{queryDisabledReason\}/);
     assert.doesNotMatch(
       settings,
@@ -338,32 +340,32 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.ok(page, 'Web search settings page block must exist');
     assert.match(
       page![0],
-      /<SettingsRows className="settingsWebSearchCredentialCard">/,
-      'Web search credential controls should sit in the shared grouped Settings card primitive',
+      /<Card padding=\{0\} className="settingsRows settingsWebSearchCredentialCard">/,
+      'Web search credential controls should sit in an Astryx Card',
     );
     assert.match(
       page![0],
-      /<SettingsRows className="settingsWebSearchQueryCard">/,
-      'Web search live-query controls should sit in the shared grouped Settings card primitive',
+      /<Card padding=\{0\} className="settingsRows settingsWebSearchQueryCard">/,
+      'Web search live-query controls should sit in an Astryx Card',
     );
     for (const rowClass of [
-      'settingsRow settingsWebSearchEnableRow',
-      'settingsRow settingsWebSearchKeyRow',
-      'settingsRow settingsWebSearchCredentialActionRow',
-      'settingsRow settingsWebSearchQueryIntroRow',
-      'settingsRow settingsWebSearchQueryInputRow',
-      'settingsRow settingsWebSearchSearchRow',
+      'settingsWebSearchEnableRow',
+      'settingsWebSearchKeyRow',
+      'settingsWebSearchCredentialActionRow',
+      'settingsWebSearchQueryIntroRow',
+      'settingsWebSearchQueryInputRow',
+      'settingsWebSearchSearchRow',
     ]) {
-      assert.match(page![0], new RegExp(`className="${rowClass}"`), `Web search Settings must keep ${rowClass} inside grouped rows`);
+      assert.match(page![0], new RegExp(`<Item[\\s\\S]*?className="${rowClass}"`), `Web search Settings must use Astryx Item for ${rowClass}`);
     }
     assert.match(page![0], /className="settingsWebSearchDisabledReason"/);
     assert.match(page![0], /<ul className="settingsWebSearchResults" aria-label=\{copy\.resultsAria\}>/);
     assert.doesNotMatch(
       page![0],
-      /settingsFormRow|settingsFormGrid|style=\{\{/,
+      /className="settingsRow\b|settingsFormRow|settingsFormGrid|style=\{\{/,
       'Web search Settings must not regress to naked form rows/grids or inline layout styles',
     );
-    assert.match(styles, /\.settingsWebSearchKeyRow > \.settingsPasswordField/);
+    assert.match(styles, /\.settingsWebSearchKeyField/);
     assert.match(styles, /\.settingsWebSearchQueryIntroRow\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
     assert.match(styles, /\.settingsWebSearchDisabledReason\s*\{[\s\S]*?color:\s*var\(--muted-foreground\);/);
   });
@@ -404,7 +406,7 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.match(page![0], /copy\.envPlaceholder/);
     assert.match(page![0], /copy\.envKeyHelp/);
     assert.match(getWebSearchSettingsCopy('zh').envKeyHelp, /TAVILY_API_KEY \/ MAKA_TAVILY_API_KEY/);
-    assert.match(page![0], /disabled=\{usingEnvKey \|\| credentialActionBusy\}/);
+    assert.match(page![0], /isDisabled=\{usingEnvKey \|\| credentialActionBusy\}/);
     assert.doesNotMatch(page![0], /process\.env|TAVILY_API_KEY[\s\S]{0,40}apiKey/);
   });
 

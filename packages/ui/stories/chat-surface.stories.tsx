@@ -121,27 +121,24 @@ const baseComposerProps: ComposerProps = {
   onStop: noop,
   onPickAttachments: noop,
   onAttachFilePaths: noop,
-  expertTeams: [
-    { id: 'code-review', name: 'Code Review Team', description: 'Correctness, simplification, and test-coverage reviewers.' },
-  ],
-  onStartExpertTeam: noop,
   modelLabel: 'Claude Sonnet 4.5',
   activeSession: session(),
   activeConnectionLabel: 'Anthropic',
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
+  onModelChange: noop,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
-	  workspacePicker: {
-	    label: 'maka-agent',
-	    branch: 'codex/storybook-chat-surface',
-	    projects: [],
-	    onAdd: noop,
-	    onSelectProject: noop,
-	    onRelink: noop,
-	    onSelectNoProject: noop,
-	  },
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'codex/storybook-chat-surface',
+    projects: [],
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
 };
 
 function SurfaceFrame(props: { children: ReactNode; narrow?: boolean }) {
@@ -598,6 +595,66 @@ export const Processing: Story = {
   ),
 };
 
+// Real path: inspect a persisted reasoning/tool turn with the native Astryx
+// tool group expanded. The tool group owns its disclosure directly; Maka no
+// longer adds a second Processing disclosure around the same timeline.
+export const ProcessingExpanded: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: processingConversation,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    canvasElement
+      .querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"][aria-expanded="false"]')
+      ?.click();
+  },
+};
+
+// Canonical review path for Slice 9: a real long conversation containing
+// reasoning, multiple native Astryx tool calls, long prose, and the complete
+// composer control area with staged context. This is the first story to open
+// for visual acceptance; the focused stories below isolate individual states.
+export const AstryxNativeConversation: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: [...longMessages, ...multiStepConversation],
+        memoryActive: true,
+        onOpenMemorySettings: noop,
+      }}
+      composer={{
+        draftKey: 'composer-astryx-native-conversation',
+        pendingAttachments: [
+          {
+            displayName: 'chat-surface-review.png',
+            kind: 'image',
+            mimeType: 'image/png',
+            size: 284_160,
+          },
+        ],
+        onRemoveAttachment: noop,
+        mentionSkills: [
+          { id: 'review', name: 'Review', description: '检查实现与回归风险' },
+          { id: 'frontend-design', name: 'Frontend Design', description: '检查界面层级与交互' },
+        ],
+        activeThinkingLevels: ['off', 'low', 'medium', 'high'],
+        activeThinkingLevel: 'medium',
+        onThinkingLevelChange: noop,
+        onPlanModeChange: noop,
+        onSwarmModeChange: noop,
+        onGraphModeChange: noop,
+        onToggleVoiceCapture: noop,
+        onToggleRealtimeVoice: noop,
+        voiceProviderLabel: '系统语音',
+      }}
+    />
+  ),
+};
+
 // Real path: hover a turn → 从这里分支 → the new session opens with the parent banner above
 // the transcript.
 export const BranchedConversation: Story = {
@@ -651,6 +708,26 @@ export const ComposerPendingAndDisabled: Story = {
         })}
         permissionModeDisabledReason="当前有工具调用正在等待确认，处理后再切换权限模式。"
       />
+    </ComposerTray>
+  ),
+};
+
+// Real path: the three states the permission control can display (#1611 / #1616).
+// `explore` is what a session running under a managed read-only boundary shows —
+// it is never an option in the popup, only a state, so this is the one place the
+// trigger can be reviewed against Auto and full access side by side.
+export const ComposerPermissionModes: Story = {
+  render: () => (
+    <ComposerTray>
+      {(['explore', 'ask', 'bypass'] as const).map((mode) => (
+        <Composer
+          key={mode}
+          {...baseComposerProps}
+          draftKey={`composer-permission-${mode}`}
+          permissionMode={mode}
+          activeSession={session({ permissionMode: mode })}
+        />
+      ))}
     </ComposerTray>
   ),
 };

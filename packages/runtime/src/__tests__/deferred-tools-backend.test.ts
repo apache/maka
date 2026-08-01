@@ -9,7 +9,6 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import type { MakaTool } from '../tool-runtime.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   ToolAvailabilityRuntime,
   LOAD_TOOLS_NAME,
@@ -31,6 +30,7 @@ import {
 } from '../subagent-tools.js';
 import { buildDeferredToolGroupsFromCatalog } from '../tool-catalog-derive.js';
 import { createDurableTurnHarness, drainWithDurableTurn } from './durable-turn-harness.js';
+import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
 // End-to-end through the live AiSdkBackend: the availability config drives the
 // between-request activation, the durable seed reconstructs prior-turn
@@ -57,14 +57,12 @@ function tools(implCalls: string[]): MakaTool[] {
       name: 'Read',
       description: 'Read',
       parameters: z.object({ path: z.string().optional() }),
-      permissionRequired: false,
       impl: () => ({ ok: true }),
     },
     {
       name: 'browser_click',
       description: 'Click in the browser',
       parameters: z.object({}),
-      permissionRequired: false,
       impl: () => {
         implCalls.push('browser_click');
         return { ok: true };
@@ -88,14 +86,13 @@ function backend(
 ): AiSdkBackend {
   let n = 0;
   const resolved = opts.toolAvailability === null ? undefined : (opts.toolAvailability ?? config);
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(),
     appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'perm', now: () => 1 }),
     modelFactory: () => model,
     tools: tools(implCalls),
     ...(opts.durable ? { loadTurnRuntimeEvents: opts.durable.loadTurnRuntimeEvents } : {}),
@@ -114,14 +111,13 @@ function agentBackend(
   let n = 0;
   const resolved =
     opts.toolAvailability === null ? undefined : (opts.toolAvailability ?? agentConfig);
-  return new AiSdkBackend({
+  return createTestAiSdkBackend({
     sessionId: 'session-1',
     header: header(opts.permissionMode),
     appendMessage: async () => {},
     connection: connection(),
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
-    permissionEngine: new PermissionEngine({ newId: () => 'perm', now: () => 1 }),
     modelFactory: () => model,
     tools: [...buildParentAgentTools(), ...(opts.extraTools ?? [])],
     ...(opts.durable ? { loadTurnRuntimeEvents: opts.durable.loadTurnRuntimeEvents } : {}),
@@ -391,14 +387,12 @@ describe('AiSdkBackend deferred agent tools', () => {
         name: 'view_agent_graph',
         description: 'View graph',
         parameters: z.object({}),
-        permissionRequired: false,
         impl: () => ({ ok: true }),
       },
       {
         name: 'update_agent_graph',
         description: 'Update graph',
         parameters: z.object({}),
-        permissionRequired: false,
         impl: () => ({ ok: true }),
       },
     ];

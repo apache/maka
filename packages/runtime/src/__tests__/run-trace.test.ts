@@ -102,4 +102,33 @@ describe('RunTrace error diagnostics', () => {
     assert.equal(data.redactedErrorMessageTruncated, true);
     assert.match(String(data.redactedErrorMessageSha256), /^sha256:[a-f0-9]{64}$/);
   });
+
+  test('model stream failure diagnostics preserve redacted structured error fields', () => {
+    const events: RunTraceEvent[] = [];
+    const trace = new RunTrace({
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      connectionSlug: 'sub2api',
+      providerId: 'openai',
+      modelId: 'gpt-test',
+      newId: () => `trace-${events.length + 1}`,
+      now: () => 123,
+      record: (event) => events.push(event),
+    });
+
+    trace.modelStreamFailed('Other', {
+      status: 502,
+      code: 'upstream_reset',
+      message: 'upstream stream reset',
+      apiKey: 'sk-live-secret-token-value',
+    });
+
+    const data = events[0]?.data ?? {};
+    assert.equal(data.rawErrorName, 'object');
+    assert.equal(data.rawErrorType, 'object');
+    assert.match(String(data.redactedErrorMessage), /upstream stream reset/);
+    assert.match(String(data.redactedErrorMessage), /upstream_reset/);
+    assert.match(String(data.redactedErrorMessage), /"apiKey":"\[redacted\]"/);
+    assert.equal(String(data.redactedErrorMessage).includes('sk-live-secret-token-value'), false);
+  });
 });

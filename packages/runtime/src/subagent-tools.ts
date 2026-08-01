@@ -16,7 +16,6 @@ import {
   buildToolsForAgentDefinition,
   requireBuiltinAgentDefinitionByProfile,
 } from './agent-catalog.js';
-import { AGENT_TEAM_CHILD_TOOL_NAMES } from './agent-team-tool-names.js';
 import { AGENT_SWARM_TOOL_NAME, buildAgentSwarmTool } from './agent-swarm-tools.js';
 import { ChildAgentProgressProjector } from './child-agent-progress.js';
 
@@ -57,12 +56,6 @@ export function buildChildAgentTools(tools: readonly MakaTool[]): MakaTool[] {
   // whenever the host provides them. Otherwise a child can receive an archive
   // placeholder that explicitly names ArchiveRead without having that tool.
   for (const name of CHILD_RECOVERY_TOOL_NAMES) {
-    const tool = tools.find((candidate) => candidate.name === name);
-    if (!tool || seen.has(name)) continue;
-    seen.add(name);
-    out.push(tool);
-  }
-  for (const name of AGENT_TEAM_CHILD_TOOL_NAMES) {
     const tool = tools.find((candidate) => candidate.name === name);
     if (!tool || seen.has(name)) continue;
     seen.add(name);
@@ -134,7 +127,6 @@ export function buildSubagentSpawnTool(deps: { taskLedger?: TaskLedgerStore } = 
           });
         }
       }),
-    permissionRequired: true,
     categoryHint: 'subagent',
     impl: async (input, ctx) => {
       const definition = requireBuiltinAgentDefinitionByProfile(input.profile);
@@ -271,7 +263,6 @@ export function buildSubagentListTool(): MakaTool<Record<string, never>, unknown
     description:
       'List available agent catalog definitions and child agent runs for the current session.',
     parameters: z.object({}),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (_input, ctx) => {
       if (!ctx.listChildAgents) {
@@ -289,6 +280,8 @@ export function buildSubagentOutputTool(): MakaTool<
     run_id?: string;
     turn_id?: string;
     max_events?: number;
+    max_bytes?: number;
+    view?: 'result' | 'events' | 'runtime_events' | 'all';
   },
   unknown
 > {
@@ -296,7 +289,7 @@ export function buildSubagentOutputTool(): MakaTool<
     name: AGENT_OUTPUT_TOOL_NAME,
     displayName: 'Agent Output',
     description:
-      'Inspect child output. Always set locator: child_session_run for a graph childSessionId/currentRunId, child_session_latest for its latest run, or a legacy locator. Unrelated provider-filled optional fields are ignored.',
+      'Inspect bounded child output. Use view=result for the final committed model text plus its Graph result record id; runtime_events is the default compatibility view. Always set locator: child_session_run for a graph childSessionId/currentRunId, child_session_latest for its latest run, or a legacy locator. Use view=all only for targeted diagnostics.',
     parameters: z
       .object({
         locator: z
@@ -313,6 +306,13 @@ export function buildSubagentOutputTool(): MakaTool<
         run_id: z.string().min(1).optional(),
         turn_id: z.string().min(1).optional(),
         max_events: z.number().int().min(1).max(100).optional(),
+        max_bytes: z
+          .number()
+          .int()
+          .min(1024)
+          .max(128 * 1024)
+          .optional(),
+        view: z.enum(['result', 'events', 'runtime_events', 'all']).optional(),
       })
       .superRefine((input, ctx) => {
         if (input.locator) {
@@ -348,7 +348,6 @@ export function buildSubagentOutputTool(): MakaTool<
           });
         }
       }),
-    permissionRequired: false,
     categoryHint: 'read',
     impl: async (input, ctx) => {
       if (!ctx.readChildAgentOutput) {
@@ -402,6 +401,8 @@ export function buildSubagentOutputTool(): MakaTool<
               : {})),
         ...(input.locator === undefined && input.turn_id ? { turnId: input.turn_id } : {}),
         ...(input.max_events !== undefined ? { maxEvents: input.max_events } : {}),
+        ...(input.max_bytes !== undefined ? { maxBytes: input.max_bytes } : {}),
+        ...(input.view !== undefined ? { view: input.view } : {}),
       });
     },
   };

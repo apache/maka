@@ -47,7 +47,9 @@ _TREE = "pier" if IS_PIER else "harbor"
 _SYMBOL_MODULES = {
     "BaseInstalledAgent": "agents.installed.base",
     "Codex": "agents.installed.codex",
+    "OpenCode": "agents.installed.opencode",
     "CliFlag": "agents.installed.base",
+    "NonZeroAgentExitCodeError": "agents.installed.base",
     "with_prompt_template": "agents.installed.base",
     "BaseEnvironment": "environments.base",
     "AgentContext": "models.agent.context",

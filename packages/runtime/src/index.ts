@@ -8,6 +8,8 @@
 export {
   SessionManager,
   BackendRegistry,
+  SessionConfigurationRevisionConflictError,
+  SessionConfigurationTransitionError,
   headerToSummary,
   changesBackendConfig,
 } from './session-manager.js';
@@ -17,6 +19,9 @@ export type {
   PlanSafeBoundaryContinuationInput,
   SessionManagerDeps,
   RuntimeContinuationLifecycleEvent,
+  SessionConfigurationStoreUpdate,
+  SessionConfigurationTransitionRequest,
+  SessionConfigurationTransitionErrorCode,
   SessionStore,
   StrictRecoveryAgentRunStore,
   StrictRecoverySessionStore,
@@ -35,10 +40,24 @@ export type {
   AgentListItem,
   AgentListResult,
   SubagentExecutionListItem,
+  AgentOutputCommittedResult,
   AgentOutputInput,
   AgentOutputResult,
   StopSessionInput,
 } from './session-manager.js';
+export {
+  archivedToolResultContainsConversationOwnedReferences,
+  cloneConversationRuntimeLedger,
+  createConversationCopySlice,
+  prepareConversationRuntimeLedgerCopy,
+} from './conversation-copy.js';
+export type {
+  CloneConversationRuntimeLedgerInput,
+  CloneConversationRuntimeLedgerResult,
+  ConversationCopyArtifactReferenceMap,
+  ConversationCopySlice,
+  ConversationRuntimeLedgerCopyPlan,
+} from './conversation-copy.js';
 export type { SubagentExecutionRef } from './subagent-execution.js';
 export {
   AGENT_GRAPH_RECORD_FACETS,
@@ -131,8 +150,16 @@ export type {
   ReconcileAgentGraphScheduleInput,
   RenderAgentGraphScheduledWorkPromptInput,
 } from './stream-graph-schedule-reconcile.js';
-export { AgentGraphSupervisorWakeCoordinator } from './agent-graph-supervisor-wake.js';
-export type { AgentGraphSupervisorWakeInput } from './agent-graph-supervisor-wake.js';
+export {
+  AgentGraphSupervisorContextOverflowError,
+  AgentGraphSupervisorWakeCoordinator,
+} from './agent-graph-supervisor-wake.js';
+export type {
+  AgentGraphSupervisorContextRecoveryDiagnostic,
+  AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorWakeDiagnostic,
+  AgentGraphSupervisorWakeInput,
+} from './agent-graph-supervisor-wake.js';
 export {
   AGENT_GRAPH_SUPERVISOR_TOOL_NAMES,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
@@ -218,8 +245,6 @@ export type {
   BuildAgentGraphReadinessSnapshotInput,
 } from './stream-graph-readiness.js';
 
-export { PermissionEngine, createDefaultPermissionEngineDeps } from './permission-engine.js';
-export type { EvaluateResult, EvaluateInput, PermissionEngineDeps } from './permission-engine.js';
 export { renderSwarmModePrompt } from './swarm-mode.js';
 export { renderGraphModePrompt } from './graph-mode.js';
 export {
@@ -253,72 +278,12 @@ export type {
   RuntimeInteractionRunFacet,
   RuntimeInteractionRunIdentity,
   RuntimeInteractionRunOwner,
-  RuntimePermissionAnswer,
-  RuntimePermissionContinuation,
-  RuntimePermissionOutcome,
   RuntimeUserQuestionAnswer,
   RuntimeUserQuestionClosureReason,
   RuntimeUserQuestionContinuation,
   RuntimeUserQuestionOutcome,
 } from './interaction-authority.js';
 
-export {
-  MAX_ADDITIONAL_PERMISSION_JUSTIFICATION_CHARS,
-  DEFAULT_ADDITIONAL_PERMISSION_GRANT_TTL_MS,
-  AdditionalPermissionError,
-  assertAdditionalPermissionProposal,
-  buildAdditionalPermissionProposal,
-  freezeAdditionalPermissionProposal,
-  freezeAdditionalPermissionGrant,
-  normalizeAdditionalPermissionPath,
-  normalizeAdditionalPermissionProfile,
-  planDeclaredBashAdditionalPermission,
-  planFileToolAdditionalPermission,
-  revalidateAdditionalPermissionGrant,
-  revalidateAdditionalPermissionProposal,
-} from './additional-permissions.js';
-export type {
-  AdditionalPermissionErrorReason,
-  AdditionalPermissionGrant,
-  AdditionalPermissionPlanResult,
-  AdditionalPermissionPlannerContext,
-  AdditionalPermissionPlanningContext,
-  AdditionalPermissionProposal,
-  NormalizedAdditionalPermissionPath,
-  ToolExecutionPermissionContext,
-} from './additional-permissions.js';
-export { hashAdditionalPermissionProfile } from './additional-permission-hash.js';
-export {
-  DEFAULT_SANDBOX_ESCALATION_GRANT_TTL_MS,
-  MAX_SANDBOX_ESCALATION_JUSTIFICATION_CHARS,
-  SandboxEscalationError,
-  assertSandboxEscalationGrantForExecution,
-  assertSandboxEscalationProposal,
-  freezeSandboxEscalationGrant,
-  freezeSandboxEscalationProposal,
-  planDeclaredBashSandboxEscalation,
-  sandboxEscalationCommandHash,
-} from './sandbox-escalation.js';
-export type {
-  SandboxEscalationErrorReason,
-  SandboxEscalationGrant,
-  SandboxEscalationPlanResult,
-  SandboxEscalationPlannerContext,
-  SandboxEscalationProposal,
-} from './sandbox-escalation.js';
-export {
-  AiSdkAutoApprovalReviewer,
-  ApprovalCoordinator,
-  DEFAULT_AUTO_APPROVAL_REVIEW_TIMEOUT_MS,
-  MAX_AUTO_APPROVAL_RATIONALE_CHARS,
-} from './approval-reviewer.js';
-export type {
-  AiSdkAutoApprovalReviewerInput,
-  ApprovalCoordinatorObserver,
-  AutoApprovalReviewContext,
-  AutoApprovalReviewDecision,
-  AutoApprovalReviewer,
-} from './approval-reviewer.js';
 export {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
@@ -340,6 +305,13 @@ export { AiSdkBackend } from './ai-sdk-backend.js';
 export { isSupportedImagePath, validateImageBytes } from './image-file.js';
 export { findFirstChangedCacheableSegment } from './request-shape.js';
 export { createProviderRequestCaptureRecorder } from './provider-request-telemetry.js';
+export { readLatestContextDiagnostics } from './context-diagnostics.js';
+export type {
+  ContextDiagnostics,
+  ContextDiagnosticsCompaction,
+  ContextDiagnosticsSegment,
+  ContextDiagnosticsUnavailableReason,
+} from './context-diagnostics.js';
 export type {
   PreparedProviderRequestCapture,
   PreparedRequestSegment,
@@ -354,8 +326,13 @@ export type {
 } from './provider-request-telemetry.js';
 export type { MakaTool, MakaToolContext } from './tool-runtime.js';
 export { buildMcpTools, mcpProxyToolName } from './mcp-tools.js';
-export type { McpToolProvider, BuildMcpToolsOptions } from './mcp-tools.js';
+export type {
+  McpToolProvider,
+  McpToolInvocationContext,
+  BuildMcpToolsOptions,
+} from './mcp-tools.js';
 export { buildAskUserQuestionTool } from './ask-user-question-tool.js';
+export { buildRequestSandboxBoundaryTool } from './sandbox-boundary-tool.js';
 export { buildSubmitPlanTool, buildUpdatePlanTool, buildCancelPlanTool } from './plan-tools.js';
 export type { PlanToolResult } from './plan-tools.js';
 export {
@@ -518,14 +495,11 @@ export {
   buildStopBackgroundTaskTool,
   buildWriteStdinTool,
   shapeTerminalResult,
-  bashSandboxPermissionsSchema,
 } from './shell-tools.js';
 export type {
-  BashSandboxPermissionsDeclaration,
   BuildForegroundBashToolOptions,
   ForegroundBashExecuteInput,
   ForegroundBashResult,
-  ManagedBashPermissionArgs,
   ShellRunLauncher,
 } from './shell-tools.js';
 export {
@@ -544,6 +518,7 @@ export {
   MIN_PTY_ROWS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
   SHELL_RUN_RESOURCE_PREFIX,
+  ShellRunPtyControlClosedError,
   isWellFormedTerminalInput,
   isShellRunResourceRef,
   shellRunResourceRef,
@@ -754,42 +729,6 @@ export {
   buildSubagentProjectionTools,
   buildSubagentSpawnTool,
 } from './subagent-tools.js';
-export {
-  BUILTIN_EXPERT_TEAMS,
-  EXPERT_AGENT_ID_PREFIX,
-  buildExpertAgentId,
-  buildExpertTeamLeadSystemPromptFragment,
-  buildExpertTeamMemberRoster,
-  getExpertAgentDefinition,
-  getExpertTeam,
-  isExpertAgentId,
-  listExpertTeams,
-  materializeExpertAgentDefinition,
-  parseExpertAgentId,
-  requireResolvedAgentDefinition,
-  resolveAgentDefinition,
-} from './expert-catalog.js';
-export type { ExpertDefinition, ExpertTeamDefinition, ExpertTeamLead } from './expert-catalog.js';
-export {
-  EXPERT_DISPATCH_TOOL_NAME,
-  buildExpertDispatchTool,
-  buildExpertDispatchToolForTeamId,
-} from './expert-tools.js';
-export type { ExpertDispatchToolDeps } from './expert-tools.js';
-export {
-  AGENT_TEAM_CHILD_TOOL_NAMES,
-  AGENT_TEAM_LEAD_TOOL_NAMES,
-  TEAM_INBOX_TOOL_NAME,
-  TEAM_MESSAGE_TOOL_NAME,
-  TEAM_TASK_CLAIM_TOOL_NAME,
-  TEAM_TASK_LIST_TOOL_NAME,
-} from './agent-team-tool-names.js';
-export {
-  buildAgentTeamChildTools,
-  buildAgentTeamLeadTools,
-  buildAgentTeamTools,
-} from './agent-team-tools.js';
-export type { AgentTeamToolDeps } from './agent-team-tools.js';
 export {
   LEGACY_TASK_CREATE_TOOL_NAME,
   LEGACY_TASK_UPDATE_TOOL_NAME,
@@ -1080,20 +1019,47 @@ export type {
   SemanticCompactSummarizer,
   SemanticCompactSummaryRequest,
 } from './semantic-compact.js';
-export { testConnection } from './test-connection.js';
+export { runConnectionTestEffect, testConnection } from './test-connection.js';
 export {
   fetchGitHubCopilotModels,
   fetchOpenAiCodexModels,
   fetchProviderModels,
   OpenAiCodexDiscoveryError,
   ProviderModelDiscoveryHttpError,
+  runConnectionModelDiscoveryEffect,
 } from './model-fetcher.js';
+export type {
+  ConnectionEffectFetch,
+  ConnectionEffectFetchDependency,
+  ConnectionEffectFetchOptions,
+} from './connection-effect-fetch.js';
+export type {
+  ConnectionEffectConnection,
+  ConnectionEffectError,
+  ConnectionEffectErrorKind,
+  ConnectionModelDiscoveryEffectOutcome,
+  ConnectionTestEffectOutcome,
+} from './connection-effect-outcome.js';
+export {
+  createConnectionEffectFetchTransport,
+  createProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
+export type {
+  ConnectionEffectFetchTransport,
+  ConnectionEffectProxySnapshot,
+  ProxiedFetchProxy,
+  ProxiedFetchTransport,
+} from './network/scoped-fetch-transport.js';
 
 export { materializeSession, applyAppendedMessage, setToolStatus } from './materializer.js';
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
 
 export { AsyncEventQueue } from './async-queue.js';
-export { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from './fake-backend.js';
+export {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
+  FakeBackend,
+} from './fake-backend.js';
 
 export {
   BUILTIN_PRICING,
@@ -1140,10 +1106,11 @@ export type {
 // ───────────────────────────────────────────────────────────────────────────
 // Runtime event and recovery public seam.
 //
-// Subpath imports (e.g. `@maka/runtime/runtime-runner`) remain canonical;
-// the barrel re-exports below are for convenience. `InvocationContext` is the
-// canonical runner/flow spine exported from `./invocation-context.js` and used
-// by the formal `AgentFlow` seam.
+// `InvocationContext` is the canonical runner/flow spine exported from
+// `./invocation-context.js` and used by the formal `AgentFlow` seam.
+// RuntimeRunner's normal-invocation API remains public through this barrel;
+// its admitted-continuation capability is package-internal and intentionally
+// has no package subpath or barrel export.
 // ───────────────────────────────────────────────────────────────────────────
 
 // invocation-context.ts — runner spine types + providers.
@@ -1306,6 +1273,13 @@ export type {
   ToolOperation,
   ToolOperationStatus,
 } from './runtime-resume.js';
+export { buildContinuationReplaySegment } from './continuation-replay.js';
+export type {
+  ContinuationReplayBlockReason,
+  ContinuationReplaySegmentPlanV1,
+  ContinuationReplaySegmentResult,
+  ContinuationReplaySegmentV1,
+} from './continuation-replay.js';
 
 export { resolveRuntimeRecovery } from './recovery-resolver.js';
 export type {
@@ -1530,6 +1504,7 @@ export {
   SKILLS_PROMPT_CONTEXT_RATIO,
   resolveSkillsPromptCharBudget,
   buildSkillsPromptFragment,
+  buildSkillsPromptFragmentFromInventoryWithReport,
   buildSkillsPromptFragmentWithReport,
   selectSkillsForContext,
   selectSkillScanForContext,
@@ -1538,7 +1513,9 @@ export {
   gateSkillsByHostCapabilities,
   // skills-agent-tools
   buildSkillAgentTool,
+  buildSkillAgentToolFromInventory,
   buildSkillSearchAgentTool,
+  buildSkillSearchAgentToolFromInventory,
   SkillShadowSelectionTracker,
   SKILL_TOOL_NAME,
   SKILL_SEARCH_TOOL_NAME,
@@ -1633,5 +1610,6 @@ export type {
   LoadedSkillInstructions,
   LoadSkillInstructionsResult,
   // skills-agent-tools
+  SkillInventoryResolver,
   SkillToolOptions,
 } from './skills.js';

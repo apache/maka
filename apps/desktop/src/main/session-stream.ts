@@ -22,7 +22,6 @@ import type {
   BackendFactory,
   GoalTurnOutcome,
   HostCapabilities,
-  PermissionEngine,
   SessionActivityLease,
   SessionActivityRegistry,
   SessionManager,
@@ -32,11 +31,11 @@ import type {
   buildPricingLookup,
 } from '@maka/runtime';
 import {
-  createArtifactStore,
+  type ArtifactStore,
   createAttachmentByteReader,
-  createTelemetryRepo,
   openRuntimeEventPersistence,
   persistProviderRequestCaptureArtifact,
+  type TelemetryRepo,
 } from '@maka/storage';
 import { WEB_SEARCH_TOOL_NAME } from './web-search/agent-tool.js';
 import { errorCode, errorMessage, errorReason } from './chat-readiness.js';
@@ -45,7 +44,6 @@ import type { ToolArtifactPersistence } from './tool-artifact-persistence.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createSubscriptionModelFetch } from './subscription-model-fetch.js';
 import type { createSystemPromptMainService } from './system-prompt-main.js';
-import type { OpenGatewayService } from './open-gateway.js';
 import { startDesktopSessionTurn, type SessionGoalBoundary } from './session-turn-stream.js';
 import {
   resolveDesktopBackendToolSurface,
@@ -56,8 +54,6 @@ type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
-type ArtifactStore = ReturnType<typeof createArtifactStore>;
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];
 const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
@@ -65,8 +61,8 @@ const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
 export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
-  permissionEngine: PermissionEngine;
   telemetryRepo: TelemetryRepo;
+  ensureUsageReady: () => Promise<void>;
   artifactStore: ArtifactStore;
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
   sandboxDiagnosticsProvider: AssembledTools['sandboxDiagnosticsProvider'];
@@ -75,7 +71,6 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   readArchivedToolResult: ToolArtifactPersistence['readArchivedToolResult'];
   runtimeCommitStore: RuntimeCommitStore;
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  openGateway: OpenGatewayService;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   getRuntime: () => SessionManager;
   getLookupPricing: () => PricingLookup;
@@ -94,8 +89,8 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
   const {
     buildSubscriptionModelFetch,
     systemPromptService,
-    permissionEngine,
     telemetryRepo,
+    ensureUsageReady,
     artifactStore,
     desktopSessionSkillHosts,
     sandboxDiagnosticsProvider,
@@ -104,13 +99,13 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
     readArchivedToolResult,
     runtimeCommitStore,
     safeSendToRenderer,
-    openGateway,
     emitSessionsChanged,
     getRuntime,
     getLookupPricing,
   } = deps;
 
   return async (ctx) => {
+    await ensureUsageReady();
     const toolSurface = await resolveDesktopBackendToolSurface(deps, ctx);
     const {
       connection,
@@ -121,14 +116,13 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       planState,
       activeExecution,
       interruptedExecution,
-      agentTeam,
       selectedTools,
       toolAvailability: backendToolAvailability,
       skillHost: backendSkillHost,
       admitsAgentChildren,
     } = toolSurface;
     const modelFetch = buildSubscriptionModelFetch(connection, ctx.sessionId, model);
-    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment();
+    const memoryPromptSnapshot = await systemPromptService.buildLocalMemoryPromptFragment(ctx.sessionId);
     // Legacy child-run backends share the parent sessionId; linked child
     // sessions have their own id. Both receive a narrower tool surface without
     // the Desktop Skill tool, so only a session's full backend owns this entry.
@@ -143,10 +137,14 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       sessionId: ctx.sessionId,
       header: { ...ctx.header, model, permissionMode: effectivePermissionMode },
       appendMessage: ctx.appendMessage ?? ((message) => ctx.store.appendMessage(ctx.sessionId, message)),
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary!(ctx.sessionId),
+      createSandboxBoundaryRequest: (request) =>
+        ctx.store.createSandboxBoundaryRequest!(request),
+      settleSandboxBoundaryRequest: (request) =>
+        ctx.store.settleSandboxBoundaryRequest!(request),
       connection,
       apiKey: apiKey ?? '',
       modelId: model,
-      permissionEngine,
       modelFactory: (input) => getAIModel({ ...input, fetch: modelFetch }),
       tools: selectedTools,
       sandboxDiagnosticsSnapshot,
@@ -161,7 +159,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
             }
           : {}),
       },
-      agentTeam,
       toolAvailability: backendToolAvailability,
       ...(admitsAgentChildren
         ? {
@@ -170,7 +167,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'created',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -195,7 +191,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'continued',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -210,7 +205,6 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
               const observation = createLinkedChildEventProjection({
                 lifecycle: 'continued',
                 safeSendToRenderer,
-                openGateway,
                 emitSessionsChanged,
                 onReady: input.onReady,
                 onEvent: input.onEvent,
@@ -363,8 +357,8 @@ interface LinkedChildReady {
 }
 
 /**
- * Bridge linked-child events onto the child Session's normal Desktop and Open
- * Gateway channels while the parent tool call remains the stream consumer.
+ * Bridge linked-child events onto the child Session's normal Desktop channel
+ * while the parent tool call remains the stream consumer.
  * Direct user follow-ups already use createSessionStreamer; this closes the
  * nested spawn/resume/retry observation gap without inventing a subagent-only
  * event protocol.
@@ -374,7 +368,6 @@ export function createLinkedChildEventProjection<
 >(input: {
   lifecycle: 'created' | 'continued';
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
-  openGateway: Pick<OpenGatewayService, 'publishSessionEvent'>;
   emitSessionsChanged: (reason: SessionChangedReason, sessionId?: string) => void;
   onReady?: (ready: Ready) => void | Promise<void>;
   onEvent?: (event: SessionEvent) => void;
@@ -399,7 +392,6 @@ export function createLinkedChildEventProjection<
     onEvent(event) {
       if (childSessionId) {
         input.safeSendToRenderer(`sessions:event:${childSessionId}`, event);
-        input.openGateway.publishSessionEvent(childSessionId, event);
         if (!messageAppendBroadcasted) {
           input.emitSessionsChanged('message-appended', childSessionId);
           messageAppendBroadcasted = true;
@@ -439,7 +431,6 @@ export type StreamEvents = (
 export interface SessionStreamerDeps {
   sessionActivities: SessionActivityRegistry;
   goalWiring: GoalWiring;
-  openGateway: OpenGatewayService;
   computerUseOverlay: AssembledTools['computerUseOverlay'];
   computerUseTools: AssembledTools['computerUseTools'];
   safeSendToRenderer: (channel: string, ...args: unknown[]) => void;
@@ -448,8 +439,8 @@ export interface SessionStreamerDeps {
 }
 
 function isStatusChangingSessionEvent(event: SessionEvent): boolean {
-  return event.type === 'permission_request' ||
-    event.type === 'permission_decision_ack' ||
+  return event.type === 'sandbox_boundary_request' ||
+    event.type === 'sandbox_boundary_decision_ack' ||
     event.type === 'complete' ||
     event.type === 'abort' ||
     event.type === 'error';
@@ -469,7 +460,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
   const {
     sessionActivities,
     goalWiring,
-    openGateway,
     computerUseOverlay,
     computerUseTools,
     safeSendToRenderer,
@@ -499,7 +489,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           userAppendBroadcasted = true;
         }
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        openGateway.publishSessionEvent(sessionId, event);
         if (isStatusChangingSessionEvent(event)) {
           emitSessionsChanged('status-change', sessionId);
         }
@@ -522,7 +511,6 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
           message: errorMessage(error),
         } satisfies SessionEvent;
         safeSendToRenderer(`sessions:event:${sessionId}`, event);
-        openGateway.publishSessionEvent(sessionId, event);
         emitSessionsChanged('status-change', sessionId);
         emitSessionsChanged('turn-status-change', sessionId);
         computerUseOverlay.clearForSession(sessionId);

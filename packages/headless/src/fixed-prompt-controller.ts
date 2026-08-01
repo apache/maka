@@ -3,28 +3,56 @@ import { appendFile, mkdir, readFile, truncate, writeFile } from 'node:fs/promis
 import { dirname, resolve } from 'node:path';
 import {
   validateHarborCellOutput,
-  type HarborCellContextBudgetPolicySnapshot,
-  type HarborCellContextBudgetSummary,
-  type HarborCellContinuationSummary,
-  type HarborCellDeadlineSettlement,
   type HarborCellExecutionIdentity,
   type HarborCellOutput,
-  type HarborCellRuntimeRefs,
-  type HarborCellTaskToolSummary,
   type HarborCellTokenSummary,
 } from './cell-output.js';
 import type { Config } from './contracts.js';
+import {
+  FIXED_PROMPT_WAL_SCHEMA_VERSION,
+  type FixedPromptTaskAttemptStartedEvent,
+  type FixedPromptTaskBudgetExhaustedEvent,
+  type FixedPromptTaskCompletedEvent,
+  type FixedPromptTaskInfraFailedEvent,
+  type FixedPromptTaskPlumbingFailedEvent,
+  type FixedPromptTaskWalEvent,
+  type FixedPromptWalEvent,
+  type HarborVerifierOutcome,
+  type UnscoredCellFailureClass,
+} from './fixed-prompt-wal-types.js';
 import { syncParentDirectory } from './immutable-file.js';
-import type { MakaChangeAuditRecord } from './change-audit.js';
 import type { HarborBillingMode } from './harbor-task-runner.js';
 import { assertFinitePositive, assertPositiveInt, assertRatio } from './numeric-guards.js';
 import { hashHeadlessSystemPrompt } from './system-prompts.js';
 
-export const FIXED_PROMPT_WAL_SCHEMA_VERSION = 1;
+export {
+  FIXED_PROMPT_WAL_SCHEMA_VERSION,
+  PROMPT_CANDIDATE_FAILURE_PATTERNS,
+} from './fixed-prompt-wal-types.js';
+export type {
+  FixedPromptTaskAttemptStartedEvent,
+  FixedPromptTaskBudgetExhaustedEvent,
+  FixedPromptTaskCompletedEvent,
+  FixedPromptTaskInfraFailedEvent,
+  FixedPromptTaskPlumbingFailedEvent,
+  FixedPromptTaskWalEvent,
+  FixedPromptWalEvent,
+  HarborVerifierAttempt,
+  HarborVerifierOutcome,
+  PromptCandidateCommittedEvent,
+  PromptCandidateDecisionEvent,
+  PromptCandidateFailurePattern,
+  PromptCandidateRationale,
+  PromptCandidateRewardHackScan,
+  RsiControllerAttributionEvent,
+  RsiPredictedFixOutcome,
+  RsiRiskTaskOutcome,
+  RsiRootCauseSignalMatch,
+} from './fixed-prompt-wal-types.js';
+
 export const BUDGET_EXHAUSTED_RUNTIME_UNAVAILABLE_REASON = 'budget_exhausted_before_cell_output';
 const LEGACY_TIMEOUT_MISSING_EXECUTION_IDENTITY_ERROR =
   'Timed-out Harbor attempt did not produce execution identity attestation';
-type UnscoredCellFailureClass = 'infra_failed' | 'setup_failed' | 'verification_error';
 const walWriteTails = new Map<string, Promise<void>>();
 
 export interface FixedPromptTask {
@@ -47,18 +75,6 @@ export type HarborTaskRunCellOutput = HarborCellOutput & {
   traceEventsPath?: string;
   providerTelemetryPath?: string;
 };
-
-export interface HarborVerifierAttempt {
-  attempt: number;
-  classification: 'passed' | 'failed' | 'timeout' | 'infra_setup_failed' | 'infra_failed';
-  durationMs: number;
-  reward?: number;
-}
-
-export interface HarborVerifierOutcome {
-  outcome: 'passed' | 'failed' | 'candidate_timeout';
-  attempts: HarborVerifierAttempt[];
-}
 
 /**
  * The provider-neutral seam the fixed-prompt controller and A/B schedulers
@@ -116,265 +132,6 @@ export interface ReadHarborTaskRunOutputInput {
   cellOutputPath: string;
 }
 
-export interface FixedPromptTaskCompletedEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'task_completed';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  resumeFingerprint?: string;
-  taskId: string;
-  status: HarborCellOutput['status'];
-  passed: boolean;
-  scored: boolean;
-  eligible: boolean;
-  errorClass?: string;
-  promptHash?: string;
-  executionIdentity?: HarborCellExecutionIdentity;
-  runtimeRefs?: HarborCellRuntimeRefs;
-  deadlineSettlement?: HarborCellDeadlineSettlement;
-  tokenSummary?: HarborCellTokenSummary;
-  contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
-  contextBudgetSummary?: HarborCellContextBudgetSummary;
-  continuationSummary?: HarborCellContinuationSummary;
-  taskToolSummary?: HarborCellTaskToolSummary;
-  steps: number;
-  durationMs: number;
-  runtimeEventsPath: string;
-  traceEventsPath?: string;
-  providerTelemetryPath?: string;
-  harbor: {
-    reward: number;
-    verifierFailureSummary?: string;
-    verifier?: HarborVerifierOutcome;
-  };
-}
-
-export interface FixedPromptTaskAttemptStartedEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'task_attempt_started';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  resumeFingerprint?: string;
-  taskId: string;
-  promptHash: string;
-}
-
-export interface FixedPromptTaskInfraFailedEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'task_infra_failed';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  resumeFingerprint?: string;
-  taskId: string;
-  status: 'infra_failed';
-  passed: false;
-  scored: false;
-  eligible: false;
-  errorClass:
-    | 'infra_error'
-    | 'provider_billing'
-    | 'auth'
-    | 'rate_limit'
-    | 'provider_unavailable'
-    | 'network';
-  error: string;
-  providerTelemetryPath?: string;
-}
-
-export interface FixedPromptTaskBudgetExhaustedEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'task_budget_exhausted';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  resumeFingerprint?: string;
-  taskId: string;
-  status: 'budget_exhausted';
-  passed: false;
-  scored: false;
-  eligible: boolean;
-  errorClass: 'budget_exhausted';
-  error: string;
-  evidenceErrorClass?:
-    | FixedPromptTaskPlumbingFailedEvent['errorClass']
-    | UnscoredCellFailureClass
-    | FixedPromptTaskInfraFailedEvent['errorClass'];
-  evidenceError?: string;
-  expectedPromptHash: string;
-  runtimeEventsPath?: string;
-  traceEventsPath?: string;
-  providerTelemetryPath?: string;
-  runtimeEventsUnavailableReason?: string;
-  tokenSummary?: HarborCellTokenSummary;
-  tokenSummarySource?: 'final' | 'checkpoint';
-  executionIdentity?: HarborCellExecutionIdentity;
-  runtimeRefs?: HarborCellRuntimeRefs;
-  contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
-  contextBudgetSummary?: HarborCellContextBudgetSummary;
-  continuationSummary?: HarborCellContinuationSummary;
-  taskToolSummary?: HarborCellTaskToolSummary;
-  steps?: number;
-  durationMs?: number;
-}
-
-export interface FixedPromptTaskPlumbingFailedEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'task_plumbing_failed';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  resumeFingerprint?: string;
-  taskId: string;
-  status: 'plumbing_failed';
-  passed: false;
-  scored: false;
-  eligible: false;
-  errorClass:
-    | 'missing_token_usage'
-    | 'zero_cost_with_tokens'
-    | 'prompt_hash_mismatch'
-    | 'missing_prompt_hash'
-    | 'missing_execution_identity'
-    | 'execution_identity_mismatch'
-    | 'missing_provider_request_trace'
-    | 'invalid_provider_request_trace'
-    | 'orphaned_sampled_attempt';
-  error: string;
-  promptHash?: string;
-  expectedPromptHash?: string;
-  runtimeRefs?: HarborCellRuntimeRefs;
-  tokenSummary?: HarborCellTokenSummary;
-  contextBudgetPolicy?: HarborCellContextBudgetPolicySnapshot;
-  contextBudgetSummary?: HarborCellContextBudgetSummary;
-  continuationSummary?: HarborCellContinuationSummary;
-  taskToolSummary?: HarborCellTaskToolSummary;
-  steps?: number;
-  durationMs?: number;
-  runtimeEventsPath?: string;
-  traceEventsPath?: string;
-  providerTelemetryPath?: string;
-  harbor?: {
-    reward: number;
-  };
-}
-
-export interface PromptCandidateCommittedEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'prompt_candidate_committed';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  commitSha: string;
-  summary: string;
-  promptHash: string;
-  heldInTaskSetHash: string;
-  heldInTaskIds: readonly string[];
-  candidateRationaleHash: string;
-  candidateRationale: PromptCandidateRationale;
-}
-
-export const PROMPT_CANDIDATE_FAILURE_PATTERNS = [
-  'coverage_regression',
-  'tool_failed',
-  'max_tokens',
-  'runtime_error',
-  'verification_failed',
-  'other',
-] as const;
-
-export type PromptCandidateFailurePattern = (typeof PROMPT_CANDIDATE_FAILURE_PATTERNS)[number];
-
-export interface PromptCandidateRationale
-  extends MakaChangeAuditRecord<
-    'system_prompt',
-    string,
-    string,
-    string,
-    PromptCandidateFailurePattern
-  > {}
-
-export type PromptCandidateRewardHackScan =
-  | { decision: 'clean' }
-  | { decision: 'quarantine'; reason: string; matchedPatterns?: readonly string[] };
-
-export interface PromptCandidateDecisionEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'prompt_candidate_decided';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  decision: 'keep' | 'discard';
-  reason: string;
-  candidateCommitSha: string;
-  previousLastKeptCommitSha: string;
-  lastKeptCommitSha: string;
-  previousHeldInReferencePassEligibleRate: number | null;
-  heldInReferencePassEligibleRate: number | null;
-  originalCommitSha: string;
-  originalHeldOutPassEligibleRate: number | null;
-  heldInPassRateNoiseBand: number;
-  heldOutPassRateNoiseBand: number;
-  rewardHackScan?: PromptCandidateRewardHackScan;
-  samplingPromptHash?: string;
-  metrics: unknown;
-}
-
-export type RsiPredictedFixOutcome =
-  | 'improved'
-  | 'unchanged'
-  | 'regressed'
-  | 'unscored'
-  | 'missing';
-export type RsiRiskTaskOutcome = 'safe' | 'regressed' | 'unscored' | 'missing';
-export type RsiRootCauseSignalMatch = 'matched' | 'contradicted' | 'unknown';
-
-export interface RsiControllerAttributionEvent {
-  schemaVersion: typeof FIXED_PROMPT_WAL_SCHEMA_VERSION;
-  type: 'rsi_controller_attribution';
-  id: string;
-  ts: number;
-  runId: string;
-  roundId: string;
-  candidateCommitSha: string;
-  heldInTaskSetHash: string;
-  candidateRationaleHash: string;
-  evidenceRefs: readonly string[];
-  predictedFixes: Array<{ taskId: string; outcome: RsiPredictedFixOutcome }>;
-  riskTasks: Array<{ taskId: string; outcome: RsiRiskTaskOutcome }>;
-  unexpectedHeldInFlips: Array<{ taskId: string; from: string; to: string }>;
-  decision: {
-    decision: 'keep' | 'discard';
-    reason: string;
-  };
-  rootCauseSignalMatch: RsiRootCauseSignalMatch;
-}
-
-export type FixedPromptWalEvent =
-  | FixedPromptTaskAttemptStartedEvent
-  | FixedPromptTaskCompletedEvent
-  | FixedPromptTaskInfraFailedEvent
-  | FixedPromptTaskBudgetExhaustedEvent
-  | FixedPromptTaskPlumbingFailedEvent
-  | PromptCandidateCommittedEvent
-  | PromptCandidateDecisionEvent
-  | RsiControllerAttributionEvent;
-
-export type FixedPromptTaskWalEvent =
-  | FixedPromptTaskCompletedEvent
-  | FixedPromptTaskInfraFailedEvent
-  | FixedPromptTaskBudgetExhaustedEvent
-  | FixedPromptTaskPlumbingFailedEvent;
-
 export interface RunFixedPromptControllerInput {
   runId: string;
   roundId: string;
@@ -395,6 +152,9 @@ export interface RunFixedPromptControllerInput {
   /** Refuse resume when a model attempt was durably admitted but no terminal
    * event exists, preserving single-sample benchmark semantics. */
   protectPassAtOne?: boolean;
+  /** Permit exactly one additional attempt for explicitly adjudicated terminal
+   * infra failures. The durable attempt WAL prevents a third attempt. */
+  retryAdjudicatedInfraTaskIdsOnce?: readonly string[];
   taskRunner: TaskRunner;
   now?: () => number;
   newId?: () => string;
@@ -446,6 +206,16 @@ export async function runFixedPromptController(
     input.resumeFingerprint,
     terminalInfraFailures,
   );
+  permitAdjudicatedInfraRetries({
+    taskIds: input.retryAdjudicatedInfraTaskIdsOnce ?? [],
+    tasks: input.tasks,
+    completed,
+    attemptEvents,
+    runId: input.runId,
+    roundId: input.roundId,
+    expectedPromptHash,
+    resumeFingerprint: input.resumeFingerprint,
+  });
   const orphanedAttempts = orphanedTaskAttempts(
     [...attemptEvents, ...events],
     input.runId,
@@ -569,6 +339,39 @@ export async function runFixedPromptController(
   };
 }
 
+function permitAdjudicatedInfraRetries(input: {
+  taskIds: readonly string[];
+  tasks: readonly FixedPromptTask[];
+  completed: Map<string, FixedPromptTaskWalEvent>;
+  attemptEvents: readonly FixedPromptWalEvent[];
+  runId: string;
+  roundId: string;
+  expectedPromptHash: string;
+  resumeFingerprint?: string;
+}): void {
+  assertUniqueTaskIds(input.taskIds);
+  const configuredTaskIds = new Set(input.tasks.map((task) => task.id));
+  for (const taskId of input.taskIds) {
+    if (!configuredTaskIds.has(taskId)) {
+      throw new Error(`adjudicated infra retry names unknown task ${taskId}`);
+    }
+    const terminal = input.completed.get(taskId);
+    if (terminal?.type !== 'task_infra_failed') {
+      throw new Error(`adjudicated infra retry requires a terminal infra failure for ${taskId}`);
+    }
+    const admittedAttempts = input.attemptEvents.filter(
+      (event) =>
+        event.type === 'task_attempt_started' &&
+        event.runId === input.runId &&
+        event.roundId === input.roundId &&
+        event.taskId === taskId &&
+        event.promptHash === input.expectedPromptHash &&
+        event.resumeFingerprint === input.resumeFingerprint,
+    ).length;
+    if (admittedAttempts === 1) input.completed.delete(taskId);
+  }
+}
+
 function assertUniqueTaskIds(taskIds: readonly string[]): void {
   const seen = new Set<string>();
   const duplicates = new Set<string>();
@@ -601,7 +404,7 @@ export async function readFixedPromptWal(path: string): Promise<FixedPromptWalEv
       throw error;
     }
   }
-  return events.map(projectLegacyTimeoutOutcome).map(projectStructuredVerifierPassOutcome);
+  return events.map(projectLegacyTimeoutOutcome).map(projectStructuredVerifierOutcome);
 }
 
 export async function readHarborTaskRunOutput(
@@ -823,8 +626,7 @@ function taskEventFromOutput(input: {
   | FixedPromptTaskCompletedEvent
   | FixedPromptTaskPlumbingFailedEvent
   | FixedPromptTaskInfraFailedEvent {
-  const structuredVerifierPassed =
-    input.output.harbor.reward > 0 && input.output.harbor.verifier?.outcome === 'passed';
+  const verifierGrade = structuredVerifierGrade(input.output.harbor);
   const identityMismatch = classifyExplicitIdentityMismatch(
     input.output.cell.executionIdentity,
     input.expectedPromptHash,
@@ -838,7 +640,17 @@ function taskEventFromOutput(input: {
       error: identityMismatch.error,
     });
   }
-  if (isProviderInfraFailure(input.output.cell.errorClass) && !structuredVerifierPassed) {
+  if (isPreExecutionAgentFailure(input.output) && verifierGrade !== 'passed') {
+    const errorClass = isProviderInfraFailure(input.output.cell.errorClass)
+      ? input.output.cell.errorClass
+      : 'infra_error';
+    return taskInfraFailedEvent({
+      ...input,
+      errorClass,
+      error: `Harbor cell failed with ${errorClass} before completing a model step or reporting token usage`,
+    });
+  }
+  if (isProviderInfraFailure(input.output.cell.errorClass) && verifierGrade === undefined) {
     return taskInfraFailedEvent({
       ...input,
       errorClass: input.output.cell.errorClass,
@@ -864,6 +676,19 @@ function taskEventFromOutput(input: {
   return taskCompletedEvent(input);
 }
 
+function isPreExecutionAgentFailure(output: TaskRunOutput): boolean {
+  if (output.cell.status !== 'failed') return false;
+  const completedProviderStep = output.cell.steps > 0 || output.cell.tokenSummary !== undefined;
+  const executedWorkspaceTool = output.cell.toolSummary.actualToolCalls > 0;
+  if (completedProviderStep || executedWorkspaceTool) return false;
+  return (
+    output.cell.deadlineSettlement?.source === 'benchmark.deadline' ||
+    output.cell.errorClass === 'runtime_error' ||
+    output.cell.errorClass === 'aborted' ||
+    isProviderInfraFailure(output.cell.errorClass)
+  );
+}
+
 function taskCompletedEvent(input: {
   output: TaskRunOutput;
   taskId: string;
@@ -874,25 +699,28 @@ function taskCompletedEvent(input: {
   ts: number;
 }): FixedPromptTaskCompletedEvent {
   const { output } = input;
-  const promptHash = output.cell.promptHash ?? output.cell.executionIdentity?.systemPromptHash;
+  const promptHash = attestedPromptHash(output.cell);
   const deadlineSettled = output.cell.deadlineSettlement?.source === 'benchmark.deadline';
-  const structuredVerifierPassed =
-    output.harbor.reward > 0 && output.harbor.verifier?.outcome === 'passed';
+  const verifierGrade = structuredVerifierGrade(output.harbor);
   const verifierGraded =
     output.cell.status === 'completed' ||
     deadlineSettled ||
-    structuredVerifierPassed ||
+    verifierGrade !== undefined ||
     ((output.cell.errorClass === 'max_tokens' ||
       output.cell.errorClass === 'tool_step_cap_reached' ||
       output.cell.errorClass === 'policy_denied') &&
       output.harbor.verifier !== undefined);
   const passed = verifierGraded && output.harbor.reward > 0;
+  const rawErrorClass = output.cell.errorClass ?? 'verification_failed';
   const errorClass = passed
     ? undefined
     : deadlineSettled
       ? 'budget_exhausted'
-      : (output.cell.errorClass ?? 'verification_failed');
-  const scored = verifierGraded && !isUnscoredCellFailure(errorClass);
+      : verifierGrade === 'failed' && isUnscoredCellFailure(rawErrorClass)
+        ? 'runtime_error'
+        : rawErrorClass;
+  const scored =
+    verifierGraded && (verifierGrade !== undefined || !isUnscoredCellFailure(errorClass));
   const agentFailure = output.cell.status === 'failed' && errorClass === 'tool_step_cap_reached';
   return {
     schemaVersion: FIXED_PROMPT_WAL_SCHEMA_VERSION,
@@ -1032,24 +860,20 @@ function classifyPlumbingFailure(
     expectedPricingProfile,
   );
   if (identityFailure) return identityFailure;
-  if (output.cell.status === 'completed' && output.cell.promptHash === undefined) {
+  const promptHash = attestedPromptHash(output.cell);
+  if (output.cell.status === 'completed' && promptHash === undefined) {
     return {
       errorClass: 'missing_prompt_hash',
       error: `Harbor cell did not report prompt hash ${expectedPromptHash}`,
     };
   }
-  if (output.cell.promptHash !== undefined && output.cell.promptHash !== expectedPromptHash) {
+  if (promptHash !== undefined && promptHash !== expectedPromptHash) {
     return {
       errorClass: 'prompt_hash_mismatch',
-      error: `Harbor cell prompt hash ${output.cell.promptHash} did not match ${expectedPromptHash}`,
+      error: `Harbor cell prompt hash ${promptHash} did not match ${expectedPromptHash}`,
     };
   }
-  if (
-    requireFinalUsage &&
-    (output.cell.status === 'completed' ||
-      output.cell.deadlineSettlement?.source === 'benchmark.deadline') &&
-    output.cell.tokenSummary === undefined
-  ) {
+  if (requireFinalUsage && output.cell.tokenSummary === undefined) {
     return {
       errorClass: 'missing_token_usage',
       error: 'Harbor cell did not report final token usage',
@@ -1067,6 +891,10 @@ function classifyPlumbingFailure(
     };
   }
   return undefined;
+}
+
+function attestedPromptHash(cell: TaskRunOutput['cell']): string | undefined {
+  return cell.promptHash ?? cell.executionIdentity?.systemPromptHash;
 }
 
 function classifyExecutionIdentityFailure(
@@ -1345,13 +1173,18 @@ function projectLegacyTimeoutOutcome(event: FixedPromptWalEvent): FixedPromptWal
   };
 }
 
-function projectStructuredVerifierPassOutcome(event: FixedPromptWalEvent): FixedPromptWalEvent {
-  if (
-    event.type !== 'task_completed' ||
-    event.harbor.reward <= 0 ||
-    event.harbor.verifier?.outcome !== 'passed'
-  )
-    return event;
+function projectStructuredVerifierOutcome(event: FixedPromptWalEvent): FixedPromptWalEvent {
+  if (event.type !== 'task_completed') return event;
+  const verifierGrade = structuredVerifierGrade(event.harbor);
+  if (verifierGrade === undefined) return event;
+  if (verifierGrade === 'failed') {
+    return {
+      ...event,
+      passed: false,
+      scored: true,
+      eligible: true,
+    };
+  }
   const { errorClass: _legacyFailureClass, ...rest } = event;
   return {
     ...rest,
@@ -1359,6 +1192,68 @@ function projectStructuredVerifierPassOutcome(event: FixedPromptWalEvent): Fixed
     scored: true,
     eligible: true,
   };
+}
+
+/**
+ * Grants scoring authority only when the structured outcome, reward, and final
+ * verifier attempt agree. Harbor validates this contract while reading its
+ * artifact; this boundary check also protects alternate runners and stored WAL
+ * events from treating malformed or infrastructure-only attempts as grades.
+ */
+function structuredVerifierGrade(harbor: unknown): 'passed' | 'failed' | undefined {
+  if (!isRecord(harbor) || typeof harbor.reward !== 'number' || !Number.isFinite(harbor.reward))
+    return undefined;
+  const reward = harbor.reward;
+  const verifier = harbor.verifier;
+  if (
+    !isRecord(verifier) ||
+    !Array.isArray(verifier.attempts) ||
+    verifier.attempts.length < 1 ||
+    verifier.attempts.length > 3
+  )
+    return undefined;
+  if (
+    verifier.attempts.some(
+      (attempt, index) =>
+        !isRecord(attempt) ||
+        attempt.attempt !== index + 1 ||
+        typeof attempt.durationMs !== 'number' ||
+        !Number.isFinite(attempt.durationMs) ||
+        attempt.durationMs < 0 ||
+        (attempt.reward !== undefined &&
+          (typeof attempt.reward !== 'number' || !Number.isFinite(attempt.reward))),
+    )
+  )
+    return undefined;
+  if (
+    verifier.attempts
+      .slice(0, -1)
+      .some(
+        (attempt) =>
+          attempt.classification !== 'infra_setup_failed' &&
+          attempt.classification !== 'infra_failed',
+      )
+  )
+    return undefined;
+
+  const finalAttempt = verifier.attempts.at(-1)!;
+  if (!isRecord(finalAttempt)) return undefined;
+  const finalReward = typeof finalAttempt.reward === 'number' ? finalAttempt.reward : undefined;
+  if (
+    verifier.outcome === 'passed' &&
+    reward > 0 &&
+    finalAttempt.classification === 'passed' &&
+    (finalReward ?? 0) > 0
+  )
+    return 'passed';
+  if (
+    verifier.outcome === 'failed' &&
+    reward === 0 &&
+    finalAttempt.classification === 'failed' &&
+    finalReward === 0
+  )
+    return 'failed';
+  return undefined;
 }
 
 function budgetExhaustedArtifactRefs(error: unknown): FixedPromptBudgetExhaustedArtifactRefs {

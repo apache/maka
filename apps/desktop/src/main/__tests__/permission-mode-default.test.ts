@@ -7,7 +7,7 @@
  *
  * The two guarantees pinned here (and previously only asserted as a source-grep
  * contract on main.ts):
- *   1. The configured default is returned verbatim (ask / execute / bypass).
+ *   1. The configured default is returned verbatim (Auto / Bypass).
  *   2. Session creation never fails because settings.json is unreadable — the
  *      store's get() rethrows anything but ENOENT, so a corrupted file must
  *      fall back to the safest mode, not reject the create path.
@@ -22,9 +22,9 @@ import { resolveDefaultPermissionMode } from '../permission-mode-default.js';
 describe('resolveDefaultPermissionMode', () => {
   it('returns the configured chatDefaults.permissionMode', async () => {
     const settings = createDefaultSettings();
-    settings.chatDefaults.permissionMode = 'execute';
+    settings.chatDefaults.permissionMode = 'ask';
     const mode = await resolveDefaultPermissionMode(async () => settings);
-    assert.equal(mode, 'execute');
+    assert.equal(mode, 'ask');
   });
 
   it('returns bypass when that is the configured default (no special-casing)', async () => {

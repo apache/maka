@@ -174,7 +174,6 @@ describe('task ledger tools', () => {
       [TASK_CREATE_TOOL_NAME, TASK_UPDATE_TOOL_NAME, TASK_LIST_TOOL_NAME, TASK_GET_TOOL_NAME],
     );
     for (const tool of tools) {
-      assert.equal(tool.permissionRequired, false, `${tool.name} must not require permission`);
     }
   });
 

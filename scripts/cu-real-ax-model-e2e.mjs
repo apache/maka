@@ -4,12 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
-import {
-  AiSdkBackend,
-  PermissionEngine,
-  buildComputerUseTools,
-  getAIModel,
-} from '../packages/runtime/dist/index.js';
+import { AiSdkBackend, buildComputerUseTools, getAIModel } from '../packages/runtime/dist/index.js';
 import { createCuaDriverBackend } from '../packages/computer-use/dist/index.js';
 import { createDirectRuntimeTurnLedger } from './cu-direct-runtime-ledger.mjs';
 import { sanitizeCuDirectReport } from './cu-report-sanitize.mjs';
@@ -535,10 +530,7 @@ const runtime = new AiSdkBackend({
   connection,
   apiKey,
   modelId,
-  permissionEngine: new PermissionEngine({
-    newId: () => `permission-${++nextId}`,
-    now: () => ++now,
-  }),
+  readExecutionBoundary: async () => ({ kind: 'bypass', revision: 0 }),
   modelFactory: (input) => getAIModel(input),
   tools: [computerTool],
   maxSteps: 8,

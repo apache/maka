@@ -1,19 +1,15 @@
 import { useState } from 'react';
+import { Collapsible } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
   Button,
-  FieldDescription,
-  FieldRoot,
-  Input,
-  Label,
   RelativeTime,
+  Selector,
+  TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -75,9 +71,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
       <p>
         {copy.unknownDescription(connection.providerType)}
       </p>
-      <Button variant="destructive" type="button" onClick={remove} disabled={deleting}>
-        {deleting ? copy.deleting : copy.deleteUnused}
-      </Button>
+      <Button variant="destructive" onClick={remove} isDisabled={deleting} label={deleting ? copy.deleting : copy.deleteUnused} />
     </div>
   );
 }
@@ -99,6 +93,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
+    settingDefaultModel,
     settingDefault,
     deleting,
     detailActionBusy,
@@ -118,28 +113,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
+    updateDefaultModel,
     runTest,
     refreshModels,
     setAsDefault,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
+  const defaultModelOptions = modelChoices
+    .filter((entry) => entry.canUseAsChatDefault)
+    .map((entry) => ({
+      value: entry.id,
+      label: entry.displayName?.trim() || entry.id,
+    }));
+  if (
+    connection.defaultModel &&
+    !defaultModelOptions.some((option) => option.value === connection.defaultModel)
+  ) {
+    defaultModelOptions.push({
+      value: connection.defaultModel,
+      label: connection.defaultModel,
+    });
+  }
 
   return (
     <div className="providerEditor providerConnectionManager">
       {supportsApiKey && (
         <div className="providerCredentialTask">
-          <FieldRoot className="grid gap-1.5">
-            <Label className="text-xs text-foreground-secondary">{copy.modelKey}</Label>
-            <FieldDescription>{apiKeyStatusHint}</FieldDescription>
-            <PasswordInput
-              value={apiKey}
-              onChange={setApiKey}
-              placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-              ariaLabel={copy.modelKeyAria(display.name)}
-              disabled={detailActionBusy}
-            />
-          </FieldRoot>
+          <PasswordInput
+            value={apiKey}
+            onChange={setApiKey}
+            placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
+            label={copy.modelKeyAria(display.name)}
+            description={apiKeyStatusHint}
+            isDisabled={detailActionBusy}
+          />
           <div className="providerCredentialActions">
             {defaults.signupUrl && (
               <a
@@ -155,9 +163,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             {/* Persistent button (disabled until a new key is typed) so the
                 credential actions row keeps a fixed height — no jitter when the
                 user starts pasting a key. */}
-            <Button type="button" disabled={detailActionBusy || !hasApiKeyChange} onClick={save}>
-              {busy ? copy.saving : copy.updateKey}
-            </Button>
+            <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
           </div>
         </div>
       )}
@@ -183,26 +189,22 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             onRelogin={refreshAfterRelogin}
           />
         ) : (
-          <Alert variant="info">
-            <AlertTitle>
-              {hasSecret === true
-                ? copy.oauthLoggedIn
-                : hasSecret === 'loading'
-                  ? copy.oauthLoading
-                  : hasSecret === 'error'
-                    ? copy.oauthUnknown
-                    : copy.oauthWaiting}
-            </AlertTitle>
-            <AlertDescription>
-              {hasSecret === true
-                ? copy.oauthLoggedInDetail
-                : hasSecret === 'loading'
-                  ? copy.oauthLoadingDetail
-                  : hasSecret === 'error'
-                    ? copy.oauthUnknownDetail
-                    : copy.oauthWaitingDetail}
-            </AlertDescription>
-          </Alert>
+          <Banner
+            status="info"
+            title={hasSecret === true
+              ? copy.oauthLoggedIn
+              : hasSecret === 'loading'
+                ? copy.oauthLoading
+                : hasSecret === 'error'
+                  ? copy.oauthUnknown
+                  : copy.oauthWaiting}
+            description={hasSecret === true
+              ? copy.oauthLoggedInDetail
+              : hasSecret === 'loading'
+                ? copy.oauthLoadingDetail
+                : hasSecret === 'error'
+                  ? copy.oauthUnknownDetail
+                  : copy.oauthWaitingDetail} />
         )
       )}
       {credentialProbePending && (
@@ -212,16 +214,39 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             : copy.credentialUnknownDetail}
         </p>
       )}
-      <details className="providerAdvancedSettings">
-        <summary>{copy.advanced}</summary>
+      <section className="providerModelSettings" aria-label={copy.modelManagement}>
+        <Selector
+          label={copy.connectionDefaultModel}
+          description={copy.connectionDefaultModelHelp}
+          options={defaultModelOptions}
+          value={connection.defaultModel}
+          onChange={(model) => void updateDefaultModel(model)}
+          isDisabled={detailActionBusy || defaultModelOptions.length === 0}
+          disabledMessage={defaultModelOptions.length === 0 ? copy.noModels : undefined}
+          isLoading={settingDefaultModel}
+          placeholder={copy.noModels}
+          width="100%"
+        />
+        <EnabledModelManager
+          modelChoices={modelChoices}
+          enabledModelIds={enabledModelIds}
+          defaultModel={connection.defaultModel}
+          disabled={detailActionBusy}
+          onChange={(next) => void updateEnabledModels(next)}
+        />
+        <div className="providerModelActions">
+          <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
+          {supportsRemoteDiscovery && (
+            <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
+          )}
+        </div>
+      </section>
+      <Collapsible
+        className="providerAdvancedSettings"
+        defaultIsOpen={false}
+        trigger={copy.advanced}
+      >
         <div className="providerAdvancedSettingsBody">
-          <EnabledModelManager
-            modelChoices={modelChoices}
-            enabledModelIds={enabledModelIds}
-            defaultModel={connection.defaultModel}
-            disabled={detailActionBusy}
-            onChange={(next) => void updateEnabledModels(next)}
-          />
           <div className="providerEndpointSettings">
             <ConnectionEndpointField
               baseUrl={baseUrl}
@@ -236,32 +261,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 risk — so it renders no permanently-disabled Save at all. */}
             {!hasFixedOAuthBaseUrl && (
               <div className="providerEndpointActions">
-                <Button type="button" disabled={detailActionBusy || !hasBaseUrlChange} onClick={save}>
-                  {busy ? copy.saving : copy.saveEndpoint}
-                </Button>
+                <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
               </div>
             )}
           </div>
-          <div className="providerAdvancedActions">
-            <Button variant="secondary" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={runTest}>
-              {testing ? copy.testing : copy.testConnection}
-            </Button>
-            {supportsRemoteDiscovery && (
-              <Button variant="quiet" type="button" disabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()}>
-                {fetchingModels ? copy.updating : copy.updateModels}
-              </Button>
-            )}
-            {!props.isDefault && connection.enabled && (
-              <Button variant="quiet" type="button" disabled={detailActionBusy} onClick={setAsDefault}>
-                {settingDefault ? copy.setting : copy.setDefault}
-              </Button>
-            )}
-            <Button className="providerAdvancedDanger" variant="quiet" type="button" disabled={detailActionBusy} onClick={remove}>
-              {deleting ? copy.deleting : copy.deleteConnection}
-            </Button>
-          </div>
         </div>
-      </details>
+      </Collapsible>
+      <div className="providerConnectionActions">
+        {!props.isDefault && connection.enabled && (
+          <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
+        )}
+        <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
+      </div>
     </div>
   );
 }
@@ -275,19 +286,15 @@ function ConnectionEndpointField(props: {
 }) {
   const copy = getProviderSettingsCopy(useUiLocale()).detail;
   return (
-    <FieldRoot className="grid gap-1.5">
-      <Label className="text-xs text-foreground-secondary">{copy.endpoint}</Label>
-      {props.fixedOAuth && <FieldDescription>{copy.oauthFixed}</FieldDescription>}
-      <Input
-        value={props.baseUrl}
-        onChange={(event) => props.onChange(event.currentTarget.value)}
-        placeholder={props.defaultsBaseUrl}
-        readOnly={props.fixedOAuth}
-        disabled={props.disabled}
-        aria-readonly={props.fixedOAuth ? 'true' : undefined}
-        aria-label={props.fixedOAuth ? copy.endpointFixedAria : copy.endpointAria}
-      />
-    </FieldRoot>
+    <TextInput
+      label={copy.endpoint}
+      description={props.fixedOAuth ? copy.oauthFixed : undefined}
+      value={props.baseUrl}
+      onChange={(value) => props.onChange(value)}
+      placeholder={props.defaultsBaseUrl}
+      isDisabled={props.disabled || props.fixedOAuth}
+      disabledMessage={props.fixedOAuth ? copy.oauthFixed : undefined}
+    />
   );
 }
 
@@ -325,17 +332,13 @@ function GitHubCopilotReloginNotice(props: {
   }
 
   return (
-    <Alert variant="info">
-      <AlertTitle>{loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}</AlertTitle>
-      <AlertDescription>{loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}</AlertDescription>
-      {!loading && (
-        <AlertAction>
-          <Button type="button" size="sm" disabled={busy} onClick={() => void connect()}>
-            {busy ? copy.importing : loggedIn ? copy.reimport : copy.importCredential}
-          </Button>
-        </AlertAction>
-      )}
-    </Alert>
+    <Banner
+      status="info"
+      title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
+      description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
+      endContent={!loading ? (
+          <Button variant="primary" size="sm" isDisabled={busy} onClick={() => void connect()} label={busy ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
+      ) : undefined} />
   );
 }
 
@@ -375,21 +378,18 @@ function OAuthReloginNotice(props: {
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
   return (
-    <Alert variant="info">
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{detail}</AlertDescription>
-      {!loading && (
-        <AlertAction>
+    <Banner
+      status="info"
+      title={title}
+      description={detail}
+      endContent={!loading ? (
           <Button
-            type="button"
+            variant="primary"
             size="sm"
-            disabled={flow.actionBusy}
+            isDisabled={flow.actionBusy}
             onClick={() => void flow.startLogin()}
-          >
-            {flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
-          </Button>
-        </AlertAction>
-      )}
-    </Alert>
+            label={flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
+          />
+      ) : undefined} />
   );
 }

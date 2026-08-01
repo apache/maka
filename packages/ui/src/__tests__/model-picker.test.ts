@@ -1,60 +1,111 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildModelPickerGroups,
-  filterModelPickerOption,
-  modelPickerHasCatalogMatches,
-  type ModelPickerOption,
+  buildModelPickerOptions,
+  buildModelPickerProviderTypes,
 } from '../model-picker-internals.js';
 import type { ModelMenuGroup } from '../chat-model-helpers.js';
 
 const groups: ModelMenuGroup[] = [
   {
-    connectionSlug: 'openai-main',
-    providerType: 'openai',
-    heading: 'OpenAI main',
+    connectionSlug: 'anthropic-team',
+    providerType: 'anthropic',
+    heading: 'Anthropic Team',
     choices: [
-      { connectionSlug: 'openai-main', providerType: 'openai', model: 'gpt-5', label: 'GPT-5' },
-      { connectionSlug: 'openai-main', providerType: 'openai', model: 'o3-mini', label: 'o3 mini' },
+      {
+        connectionSlug: 'anthropic-team',
+        providerType: 'anthropic',
+        model: 'claude-sonnet-4',
+        label: 'Claude Sonnet 4',
+      },
     ],
   },
   {
-    connectionSlug: 'anthropic-team',
-    providerType: 'anthropic',
-    heading: 'Claude Team',
+    connectionSlug: 'openai-main',
+    providerType: 'openai',
+    heading: 'OpenAI',
     choices: [
-      { connectionSlug: 'anthropic-team', providerType: 'anthropic', model: 'claude-sonnet-4', label: 'Claude Sonnet 4' },
+      {
+        connectionSlug: 'openai-main',
+        providerType: 'openai',
+        model: 'gpt-5',
+        label: 'GPT-5',
+      },
+      {
+        connectionSlug: 'openai-main',
+        providerType: 'openai',
+        model: 'o3-mini',
+        label: 'o3-mini',
+      },
     ],
   },
 ];
 
-describe('ModelPicker filtering', () => {
-  it('matches model labels and group headings with the same Base UI item data', () => {
-    const pickerGroups = buildModelPickerGroups(groups);
-    const options = pickerGroups.flatMap((group) => group.items);
+describe('ModelPicker option shaping', () => {
+  it('leaves a catalog with no choices empty', () => {
+    assert.deepEqual(buildModelPickerOptions([]), []);
+  });
 
+  it('maps each provider group to public Astryx sections', () => {
+    assert.deepEqual(buildModelPickerOptions(groups), [
+      {
+        type: 'section',
+        title: 'Anthropic Team',
+        options: [
+          {
+            value: 'anthropic-team:claude-sonnet-4',
+            label: 'Claude Sonnet 4',
+          },
+        ],
+      },
+      {
+        type: 'section',
+        title: 'OpenAI',
+        options: [
+          { value: 'openai-main:gpt-5', label: 'GPT-5' },
+          { value: 'openai-main:o3-mini', label: 'o3-mini' },
+        ],
+      },
+    ]);
+  });
+
+  it('models an unknown current value as an ordinary option before the catalog', () => {
     assert.deepEqual(
-      options.filter((option) => filterModelPickerOption(option, 'sonnet')).map((option) => option.value),
-      ['anthropic-team:claude-sonnet-4'],
-    );
-    assert.deepEqual(
-      options.filter((option) => filterModelPickerOption(option, 'openai')).map((option) => option.value),
-      ['openai-main:gpt-5', 'openai-main:o3-mini'],
+      buildModelPickerOptions(groups, {
+        value: 'legacy:model-that-is-no-longer-listed',
+        label: 'model-that-is-no-longer-listed',
+        providerType: 'openai-compatible',
+      }),
+      [
+        {
+          value: 'legacy:model-that-is-no-longer-listed',
+          label: 'model-that-is-no-longer-listed',
+        },
+        { type: 'divider' },
+        ...buildModelPickerOptions(groups),
+      ],
     );
   });
 
-  it('keeps a pinned item visible without counting it as a catalog match', () => {
-    const pickerGroups = buildModelPickerGroups(groups, { value: '', label: '未设置' });
-    const pinned = pickerGroups.flatMap((group) => group.items).find((option) => option.pinned) as ModelPickerOption;
-
-    assert.equal(filterModelPickerOption(pinned, 'no-such-model'), true);
-    assert.equal(modelPickerHasCatalogMatches([pinned]), false);
+  it('keeps an empty-value choice as an ordinary searchable option', () => {
+    assert.deepEqual(buildModelPickerOptions([], { value: '', label: '未设置' }), [
+      { value: '', label: '未设置' },
+    ]);
   });
 
-  it('reports an empty state when no option matches', () => {
-    const options = buildModelPickerGroups(groups).flatMap((group) => group.items);
-    const visible = options.filter((option) => filterModelPickerOption(option, 'no-such-model'));
-
-    assert.equal(modelPickerHasCatalogMatches(visible), false);
+  it('maps provider marks by public option value without adding private Selector fields', () => {
+    assert.deepEqual(
+      [...buildModelPickerProviderTypes(groups, {
+        value: 'legacy:model',
+        label: 'Legacy model',
+        providerType: 'openai-compatible',
+      })],
+      [
+        ['legacy:model', 'openai-compatible'],
+        ['anthropic-team:claude-sonnet-4', 'anthropic'],
+        ['openai-main:gpt-5', 'openai'],
+        ['openai-main:o3-mini', 'openai'],
+      ],
+    );
   });
 });

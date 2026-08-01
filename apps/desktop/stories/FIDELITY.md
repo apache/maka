@@ -33,10 +33,6 @@ When a component has two hosts, one frame is not both. `capability-audit-strip.s
 
 If the runtime computes a field, ask the runtime for it. A story that hardcodes what a classifier would have returned is asserting a fact rather than showing one, and nothing fails when the classifier moves.
 
-`permission-dialog.stories.tsx` spelled out `category` and `reason` for each request. Four of the combinations could not occur: `rm -rf …` classifies as `fs_destructive`, not `shell_unsafe`; `git clean -fdx` is the reverse; WebFetch's reason falls through to `custom`. The stories rendered fine the whole time. They now call `preToolUse`, which also throws when the mode does not prompt at all — an impossible fixture fails where you can see it instead of quietly showing you a screen that does not exist.
-
-Running the classifier does not clear the arguments. A typed tool can still receive an invalid enum value that its Zod schema rejects before the permission engine is asked, even though the dialog fixture renders it. `preToolUse` has nothing to say about that because classification is not validation. So the rule covers both halves: derive what the runtime computes, and check the args against the schema that would have received them. Naming the authority in the annotation — the enum, the file — is what makes the next person able to check it.
-
 ## A story that renders nothing is not a story
 
 Components that report by exception return `null` in their healthy state. Three `capability-audit-strip` stories passed all-zero counts and rendered blank panels under confident annotations. "This element is absent from the page" needs no story; delete it and say so where the remaining story explains when the element appears.
@@ -48,3 +44,6 @@ Fix the story or delete it. Never keep both "the app" and "the story version" of
 ## Side-by-side stories are scaffolds
 
 Where a story deliberately puts several states next to each other for review, say so in the annotation. The arrangement is a review aid; each panel is the reachable state, and the row itself is not a screen anyone sees.
+# Sandbox boundary prompt
+
+`Product/Sandbox Boundary Prompt` mounts the same shared `SandboxBoundaryPrompt` used by the desktop composer slot. `FilesystemAndNetwork` covers the widest mixed expansion; `NetworkOnly` covers the compact single-capability state.

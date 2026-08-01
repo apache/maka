@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
+import { rmSync } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, test } from 'node:test';
-import { MAX_READ_IMAGE_BYTES } from '@maka/core';
+import {
+  createManagedExecutionBoundary,
+  createWorkspaceWritePermissionProfile,
+  MAX_READ_IMAGE_BYTES,
+} from '@maka/core';
 import {
   canWritePath,
   createReadOnlyPermissionProfile,
   type PermissionProfile,
 } from '@maka/core/permission-profile';
 
-import { hashAdditionalPermissionProfile } from '../additional-permission-hash.js';
-import {
-  normalizeAdditionalPermissionProfile,
-  type AdditionalPermissionGrant,
-} from '../additional-permissions.js';
 import {
   FilesystemWorkerClient,
   FilesystemWorkerClientError,
@@ -31,9 +31,14 @@ import {
   type FilesystemWorkerRequest,
   type FilesystemWorkerResult,
 } from '../filesystem-worker/protocol.js';
+import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
 import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
-import type { SandboxTransformRequest, SandboxTransformResult } from '../sandbox/types.js';
+import type {
+  SandboxPlatform,
+  SandboxTransformRequest,
+  SandboxTransformResult,
+} from '../sandbox/types.js';
 
 const cleanup: string[] = [];
 
@@ -47,6 +52,60 @@ test('Read image payloads fit within the filesystem worker response limit', () =
 });
 
 describe('filesystem worker client permission snapshots', () => {
+  for (const kind of ['bypass', 'external'] as const) {
+    test(`rejects an authoritative ${kind} boundary instead of falling back to legacy mode`, async () => {
+      const workspace = await temporaryDirectory(`maka-worker-client-${kind}-`);
+      const { client, requests } = fakeClient();
+
+      await assert.rejects(
+        client.execute({
+          operation: { kind: 'write', path: 'allowed-by-legacy-mode.txt', content: kind },
+          cwd: workspace,
+          executionBoundary: { kind, revision: 1 },
+          mode: 'execute',
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof FilesystemWorkerClientError);
+          assert.equal(error.reason, 'invalid_request');
+          assert.equal(error.stage, 'validation');
+          return true;
+        },
+      );
+      assert.equal(requests.length, 0);
+    });
+  }
+
+  test('returns the smallest session boundary expansion for an external path', async () => {
+    const workspace = await temporaryDirectory('maka-worker-client-boundary-workspace-');
+    const outside = await mkdtemp(join(homedir(), '.maka-worker-client-boundary-outside-'));
+    cleanup.push(outside);
+    const target = join(outside, 'blocked.txt');
+    await writeFile(target, 'blocked', 'utf8');
+    const { client, requests } = fakeClient();
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'read', path: target },
+        cwd: workspace,
+        executionBoundary: createManagedExecutionBoundary(
+          createWorkspaceWritePermissionProfile(),
+          0,
+        ),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'sandbox_boundary_required');
+        assert.deepEqual(error.requiredExpansion, {
+          filesystem: {
+            entries: [{ path: target, access: 'read', scope: 'exact' }],
+          },
+        });
+        return true;
+      },
+    );
+    assert.equal(requests.length, 0);
+  });
+
   test('rejects a workspace write under an explicit read-only profile', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-read-only-');
     const { client, requests } = fakeClient();
@@ -125,7 +184,7 @@ describe('filesystem worker client permission snapshots', () => {
 
     assert.deepEqual(result, { kind: 'read', content: 'worker-content' });
     assert.equal(requests.length, 1);
-    assert.deepEqual(requests[0]?.operationPermission.fileSystem?.entries, [
+    assert.deepEqual(requests[0]?.operationBoundary.filesystem?.entries, [
       {
         path: target,
         access: 'read',
@@ -152,32 +211,6 @@ describe('filesystem worker client Grep target scope', () => {
     assert.equal(requests[0]?.expectedTarget.scope, 'exact');
   });
 
-  test('uses an exact one-call grant for an external file', async () => {
-    const workspace = await temporaryDirectory('maka-worker-client-grep-workspace-');
-    const outside = await temporaryDirectory('maka-worker-client-grep-outside-');
-    const target = join(outside, 'file.ts');
-    await writeFile(target, 'const value = 1;', 'utf8');
-    const grant = await readGrantFor(target, workspace);
-    const { client, requests } = fakeClient();
-
-    await client.execute({
-      operation: grepOperation(target),
-      cwd: workspace,
-      mode: 'ask',
-      permissionProfile: createReadOnlyPermissionProfile(),
-      additionalGrant: grant,
-    });
-
-    assert.equal(requests[0]?.expectedTarget.scope, 'exact');
-    assert.deepEqual(requests[0]?.operationPermission.fileSystem?.entries, [
-      {
-        path: target,
-        access: 'read',
-        scope: 'exact',
-      },
-    ]);
-  });
-
   test('uses subtree scope for a directory search', async () => {
     const workspace = await temporaryDirectory('maka-worker-client-grep-directory-');
     const directory = join(workspace, 'src');
@@ -191,7 +224,7 @@ describe('filesystem worker client Grep target scope', () => {
     });
 
     assert.equal(requests[0]?.expectedTarget.scope, 'subtree');
-    assert.deepEqual(requests[0]?.operationPermission.fileSystem?.entries, [
+    assert.deepEqual(requests[0]?.operationBoundary.filesystem?.entries, [
       {
         path: directory,
         access: 'read',
@@ -224,12 +257,12 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
       canWritePath(transform.command.profile, sibling, transform.command.pathContext),
       false,
     );
-    assert.deepEqual(
+    assert.equal(
       transform.command.profile.type === 'managed' &&
         transform.command.profile.fileSystem.kind === 'restricted'
         ? transform.command.profile.fileSystem.protectedMetadata?.names
         : undefined,
-      ['.git', '.agents', '.codex'],
+      undefined,
     );
   });
 
@@ -280,6 +313,74 @@ describe('filesystem worker operation-scoped Seatbelt profile', () => {
 });
 
 describe('filesystem worker Linux path context', () => {
+  test('rejects an existing subtree that disappears before it can be pinned', async () => {
+    const workspace = await temporaryDirectory('maka-linux-worker-vanished-');
+    const target = join(workspace, 'src');
+    await mkdir(target);
+    const { client, requests } = fakeClient({
+      platform: 'linux',
+      beforeLaunchSpecReturn: () => rmSync(target, { recursive: true }),
+    });
+
+    await assert.rejects(
+      client.execute({
+        operation: { kind: 'glob', path: target, pattern: '*.ts', limit: 20 },
+        cwd: workspace,
+        mode: 'ask',
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof FilesystemWorkerClientError);
+        assert.equal(error.reason, 'path_changed');
+        return true;
+      },
+    );
+    assert.equal(requests.length, 0);
+  });
+
+  test('pins an existing operation target through an inherited descriptor', async () => {
+    const workspace = await temporaryDirectory('maka-linux-worker-pin-');
+    const target = join(workspace, 'existing.txt');
+    await writeFile(target, 'existing', 'utf8');
+    const { client, processInputs } = fakeClient({ platform: 'linux' });
+
+    await client.execute({
+      operation: { kind: 'read', path: target },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    const processInput = processInputs[0];
+    assert.ok(processInput);
+    const pinned = processInput.fdInputs?.find(
+      (input): input is Extract<typeof input, { sourceFd: number }> => 'sourceFd' in input,
+    );
+    assert.ok(pinned);
+    assert.ok(hasArgTriple(processInput.argv, '--ro-bind', `/proc/self/fd/${pinned.fd}`, target));
+  });
+
+  test('pins the writable parent of a missing exact target', async () => {
+    const workspace = await temporaryDirectory('maka-linux-worker-parent-pin-');
+    const parent = join(workspace, 'output');
+    const target = join(parent, 'new.txt');
+    await mkdir(parent);
+    const { client, processInputs } = fakeClient({ platform: 'linux' });
+
+    await client.execute({
+      operation: { kind: 'write', path: target, content: 'new' },
+      cwd: workspace,
+      mode: 'ask',
+    });
+
+    const processInput = processInputs[0];
+    assert.ok(processInput);
+    const pinned = processInput.fdInputs?.find(
+      (input): input is Extract<typeof input, { sourceFd: number }> => 'sourceFd' in input,
+    );
+    assert.ok(pinned);
+    assert.ok(hasArgTriple(processInput.argv, '--bind', `/proc/self/fd/${pinned.fd}`, parent));
+    assert.equal(hasArgTriple(processInput.argv, '--bind', parent, parent), false);
+  });
+
   test('requests a trusted parent mount only for a missing write target', () => {
     const target = join(tmpdir(), 'maka-linux-worker-parent', 'new.txt');
     assert.deepEqual(
@@ -312,7 +413,13 @@ describe('filesystem worker Linux path context', () => {
   });
 });
 
-function fakeClient(options: { operationErrorCode?: FilesystemWorkerErrorCode } = {}): {
+function fakeClient(
+  options: {
+    operationErrorCode?: FilesystemWorkerErrorCode;
+    platform?: SandboxPlatform;
+    beforeLaunchSpecReturn?: () => void;
+  } = {},
+): {
   client: FilesystemWorkerClient;
   requests: FilesystemWorkerRequest[];
   transforms: SandboxTransformRequest[];
@@ -320,7 +427,15 @@ function fakeClient(options: { operationErrorCode?: FilesystemWorkerErrorCode } 
 } {
   const requests: FilesystemWorkerRequest[] = [];
   const transforms: SandboxTransformRequest[] = [];
-  const sandboxManager = new SandboxManager([new MacosSeatbeltBackend()]);
+  const platform = options.platform ?? 'darwin';
+  const sandboxManager =
+    platform === 'linux'
+      ? new SandboxManager([
+          new LinuxBubblewrapBackend({
+            capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
+          }),
+        ])
+      : new SandboxManager([new MacosSeatbeltBackend()]);
   const processInputs: FilesystemWorkerProcessRunInput[] = [];
   const client = new FilesystemWorkerClient({
     sandboxManager: Object.assign(Object.create(sandboxManager), {
@@ -329,18 +444,21 @@ function fakeClient(options: { operationErrorCode?: FilesystemWorkerErrorCode } 
         return sandboxManager.transform(request);
       },
     }) as SandboxManager,
-    platform: 'darwin',
+    platform,
     newId: () => `request-${requests.length + 1}`,
-    getLaunchSpec: async () => ({
-      ok: true,
-      spec: {
-        program: '/usr/bin/node',
-        args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
-        env: {},
-        runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
-        executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
-      },
-    }),
+    getLaunchSpec: async () => {
+      options.beforeLaunchSpecReturn?.();
+      return {
+        ok: true,
+        spec: {
+          program: '/usr/bin/node',
+          args: ['/runtime/filesystem-worker.js', '--grep-executable', '/usr/bin/rg'],
+          env: {},
+          runtimeReadableRoots: ['/runtime/filesystem-worker.js'],
+          executableRoots: ['/usr/bin/node', '/usr/bin/rg'],
+        },
+      };
+    },
     runProcess: async (input) => {
       processInputs.push(input);
       const request = FilesystemWorkerRequestSchema.parse(JSON.parse(input.stdin));
@@ -390,6 +508,8 @@ function fakeResult(request: FilesystemWorkerRequest): FilesystemWorkerResult {
       };
     case 'grep':
       return { kind: 'grep', matches: ['file.ts:1:value'] };
+    case 'glob':
+      return { kind: 'glob', files: [] };
     default:
       throw new Error(`Unexpected fake worker operation: ${request.operation.kind}`);
   }
@@ -406,25 +526,15 @@ function grepOperation(path: string) {
   };
 }
 
-async function readGrantFor(path: string, cwd: string): Promise<AdditionalPermissionGrant> {
-  const normalized = await normalizeAdditionalPermissionProfile({
-    profile: { fileSystem: { entries: [{ path, access: 'read', scope: 'exact' }] } },
-    cwd,
-  });
-  return {
-    grantId: 'grant-read',
-    sessionId: 'session-1',
-    turnId: 'turn-1',
-    toolUseId: 'tool-1',
-    toolName: 'Grep',
-    intentHash: `sha256:${'1'.repeat(64)}`,
-    permissionsHash: hashAdditionalPermissionProfile(normalized.profile),
-    profile: normalized.profile,
-    normalizedPaths: normalized.normalizedPaths,
-    risk: { outsideWorkspace: true, protectedMetadata: false, networkEnabled: false },
-    issuedAt: Date.now(),
-    expiresAt: Date.now() + 60_000,
-  };
+function hasArgTriple(
+  argv: readonly string[],
+  first: string,
+  second: string,
+  third: string,
+): boolean {
+  return argv.some(
+    (value, index) => value === first && argv[index + 1] === second && argv[index + 2] === third,
+  );
 }
 
 function isPathDenied(error: unknown): boolean {

@@ -7,6 +7,7 @@ import type {
   AgentGraphIntentClaim,
   AgentGraphIntentClaimRequest,
 } from '@maka/core/agent-graph-control';
+import type { ShellRunRecord } from '@maka/core/shell-run';
 import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   LOCAL_READ_AGENT_DEFINITION,
@@ -21,7 +22,74 @@ import {
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+
+test('composition drain preserves usage admission until active Runtime work settles', async () => {
+  await withCompositionRoot(async ({ owner }) => {
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    composition.beginDrain();
+
+    await usage.telemetry.recordLlmCall(lifecycleUsageRecord());
+    const persisted = await usage.telemetry.logs({ range: 'all' }, 0, 10);
+    assert.deepEqual(
+      persisted.rows.map((row) => row.id),
+      ['usage_after_composition_drain'],
+    );
+
+    await composition.close();
+  });
+});
+
+test('production composition orphans ownerless ShellRuns before serving Resource queries', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const shellRuns = await openInteractiveShellRunStoreForWrite(owner.lease);
+    await shellRuns.createShellRun(shellRunRecord(session.id, 'starting-shell', 'starting'));
+    await shellRuns.createShellRun(shellRunRecord(session.id, 'running-shell', 'running'));
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    try {
+      await composition.recover();
+      const outcome = await composition.handlers['runtime.resource.query'](
+        { kind: 'list_start', sessionId: session.id },
+        {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'recovery-client',
+          surface: 'tui',
+          principal: 'local_os_user',
+          acquireResidency: () => ({ release() {} }),
+        },
+      );
+      assert.equal(outcome.ok, true);
+      if (!outcome.ok || outcome.result.kind !== 'page') return;
+      assert.equal(outcome.result.resources.length, 2);
+      assert.deepEqual(
+        outcome.result.resources.map((resource) => resource.result.status),
+        ['orphaned', 'orphaned'],
+      );
+      assert.equal(
+        outcome.result.resources.every(
+          (resource) =>
+            resource.result.failureMessage ===
+            'Runtime restarted without a live shell process handle',
+        ),
+        true,
+      );
+    } finally {
+      await composition.close();
+    }
+  });
+});
 
 test('production execution composition owns claimed graph activation retry and exact abort', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
@@ -179,6 +247,33 @@ function compositionContext(owner: InteractiveRootOwner) {
   };
 }
 
+function shellRunRecord(
+  sessionId: string,
+  shellRunId: string,
+  status: 'starting' | 'running',
+): ShellRunRecord {
+  return {
+    shellRunId,
+    sessionId,
+    sourceTurnId: `turn-${shellRunId}`,
+    sourceToolCallId: `tool-${shellRunId}`,
+    cwd: '/workspace',
+    command: 'sleep 60',
+    status,
+    startedAt: 1,
+    updatedAt: 1,
+    revision: 1,
+    output: {
+      mode: 'pipes',
+      stdout: '',
+      stderr: '',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      redacted: false,
+    },
+  };
+}
+
 async function createCapturedExecutionComposition(owner: InteractiveRootOwner): Promise<{
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>;
   manager: SessionManager;
@@ -286,6 +381,30 @@ function graphExecutionDescriptor(claim: AgentGraphIntentClaim) {
     agentId: LOCAL_READ_AGENT_DEFINITION.id,
     agentName: LOCAL_READ_AGENT_DEFINITION.name,
   };
+}
+
+function lifecycleUsageRecord() {
+  return {
+    id: 'usage_after_composition_drain',
+    providerId: 'openai',
+    modelId: 'gpt-5',
+    inputTokens: 10,
+    outputTokens: 20,
+    cacheHitInputTokens: 0,
+    cacheMissInputTokens: 10,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 30,
+    costUsd: 0.001,
+    latencyMs: 100,
+    status: 'success',
+    date: '2026-07-30',
+    ts: Date.UTC(2026, 6, 30),
+    startedAt: Date.UTC(2026, 6, 30) - 100,
+  } as Parameters<
+    Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>['telemetry']['recordLlmCall']
+  >[0];
 }
 
 async function assertUniqueGraphExecutionFacts(

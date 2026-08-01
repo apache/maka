@@ -64,6 +64,7 @@ export interface DailyReviewCopy {
     readFailed: string;
     conversations: string;
     requests: string;
+    tokens: string;
     cost: string;
     errors: string;
     activeConversations: string;
@@ -127,7 +128,7 @@ const DAILY_REVIEW_COPY = {
       title: '每日回顾', subtitle: '自动汇总本机对话，生成摘要、遗漏提醒与深度分析；可在设置中开启定时执行。', generateAriaLabel: '生成回顾', analysisModel: '分析模型', generating: '生成中…', generateDaily: '生成每日回顾', generateDeep: '生成深度分析', timeRange: '时间范围', rangeOptions: [['1', '今日'], ['7', '本周'], ['30', '本月']], rangeSwitch: '时间范围切换',
     },
     overview: {
-      ariaLabel: (label) => `${label}概览`, title: '概览', refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', readFailed: '读取失败', conversations: '对话', requests: '请求', cost: '费用', errors: '错误', activeConversations: '活跃对话', activeConversationList: '活跃对话列表', modelUsage: '模型使用', toolCalls: '工具调用',
+      ariaLabel: (label) => `${label}概览`, title: '概览', refreshFailed: (error) => `每日回顾刷新失败：${error}`, retry: '重试', readFailed: '读取失败', conversations: '对话', requests: '请求', tokens: 'Token', cost: '费用', errors: '错误', activeConversations: '活跃对话', activeConversationList: '活跃对话列表', modelUsage: '模型使用', toolCalls: '工具调用',
     },
     reports: {
       title: '报告', count: (count) => `${count} 份`, readFailed: (error) => `回顾报告读取失败：${error}`, emptyTitle: '还没有生成报告', emptyBody: '点击「生成每日回顾」后，报告会保存到本机并显示在这里。', historyAriaLabel: '回顾报告历史',
@@ -165,7 +166,7 @@ const DAILY_REVIEW_COPY = {
       title: 'Daily review', subtitle: 'Summarize local conversations into highlights, missed items, and deeper analysis. Scheduled runs can be enabled in Settings.', generateAriaLabel: 'Generate review', analysisModel: 'Analysis model', generating: 'Generating…', generateDaily: 'Generate daily review', generateDeep: 'Generate deep analysis', timeRange: 'Time range', rangeOptions: [['1', 'Today'], ['7', 'This week'], ['30', 'This month']], rangeSwitch: 'Change time range',
     },
     overview: {
-      ariaLabel: (label) => `${label} overview`, title: 'Overview', refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', readFailed: 'Failed to load', conversations: 'Conversations', requests: 'Requests', cost: 'Cost', errors: 'Errors', activeConversations: 'Active conversations', activeConversationList: 'Active conversation list', modelUsage: 'Model usage', toolCalls: 'Tool calls',
+      ariaLabel: (label) => `${label} overview`, title: 'Overview', refreshFailed: (error) => `Failed to refresh daily review: ${error}`, retry: 'Retry', readFailed: 'Failed to load', conversations: 'Conversations', requests: 'Requests', tokens: 'Tokens', cost: 'Cost', errors: 'Errors', activeConversations: 'Active conversations', activeConversationList: 'Active conversation list', modelUsage: 'Model usage', toolCalls: 'Tool calls',
     },
     reports: {
       title: 'Reports', count: (count) => `${count} ${count === 1 ? 'report' : 'reports'}`, readFailed: (error) => `Failed to load review reports: ${error}`, emptyTitle: 'No reports yet', emptyBody: 'Generate a daily review to save a local report and show it here.', historyAriaLabel: 'Review report history',

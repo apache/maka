@@ -1,5 +1,7 @@
 import {
   decodeClientFrame,
+  isClientCapabilityClientFrameKind,
+  type ClientCapabilityClientFrame,
   type HostOperationErrorCode,
   type RequestFrame,
 } from '../protocol/index.js';
@@ -17,6 +19,10 @@ import type {
   SessionContinuityConnection,
   SessionContinuityService,
 } from './session-continuity-service.js';
+import type {
+  ClientCapabilityConnection,
+  ClientCapabilityService,
+} from './client-capability-service.js';
 
 const MAX_IN_FLIGHT_REQUESTS = 64;
 
@@ -33,6 +39,7 @@ export interface RuntimeHostConnectionSessionOptions {
   connection: AcceptedConnectionContext;
   resolveHandlers(): OperationHandlerMap;
   resolveContinuity(): SessionContinuityService | undefined;
+  resolveClientCapabilities?(): ClientCapabilityService | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -43,6 +50,8 @@ export class RuntimeHostConnectionSession {
   readonly #requests = new Map<string, Promise<void>>();
   #continuityService: SessionContinuityService | undefined;
   #continuity: SessionContinuityConnection | undefined;
+  #clientCapabilityService: ClientCapabilityService | undefined;
+  #clientCapabilities: ClientCapabilityConnection | undefined;
   #inputClosed = false;
   #closed = false;
 
@@ -71,6 +80,7 @@ export class RuntimeHostConnectionSession {
   async #closeAfterDispatchedReplies(): Promise<void> {
     this.#inputClosed = true;
     this.#detachContinuity();
+    this.#detachClientCapabilities();
     const outcome = await Promise.race([
       Promise.allSettled([...this.#requests.values()]).then(() => 'drained' as const),
       this.#options.transport.closed.then(() => 'closed' as const),
@@ -91,7 +101,13 @@ export class RuntimeHostConnectionSession {
   async #pumpInbound(): Promise<void> {
     while (!this.#closed) {
       const frame = decodeClientFrame(await this.#options.transport.read(0));
-      if ('kind' in frame) throw new Error('Unexpected handshake frame after acceptance');
+      if ('kind' in frame) {
+        if (isClientCapabilityClientFrameKind(frame.kind)) {
+          this.#ensureClientCapabilities()?.accept(frame as ClientCapabilityClientFrame);
+          continue;
+        }
+        throw new Error('Unexpected handshake frame after acceptance');
+      }
       if (this.#requests.has(frame.requestId) || this.#requests.size >= MAX_IN_FLIGHT_REQUESTS) {
         this.#teardown();
         return;
@@ -131,6 +147,12 @@ export class RuntimeHostConnectionSession {
         frame.operation === 'subscription.open' || frame.operation === 'subscription.close'
           ? this.#ensureContinuity()
           : undefined;
+      if (
+        frame.operation === 'client.capability.replace' ||
+        frame.operation === 'client.capability.unregister'
+      ) {
+        this.#ensureClientCapabilities();
+      }
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         acquireResidency: () => admission.acquireResidency(),
@@ -181,11 +203,40 @@ export class RuntimeHostConnectionSession {
     this.#continuityService = undefined;
   }
 
+  #ensureClientCapabilities(): ClientCapabilityConnection | undefined {
+    if (this.#closed || this.#inputClosed) return;
+    const service = this.#options.resolveClientCapabilities?.();
+    if (!service) return;
+    if (this.#clientCapabilityService && this.#clientCapabilityService !== service) {
+      throw new Error('Runtime Host Client Capability service changed within one connection');
+    }
+    if (!this.#clientCapabilities) {
+      this.#clientCapabilityService = service;
+      this.#clientCapabilities = service.attachConnection(this.#options.connection.connectionId, {
+        send: (frame) => {
+          try {
+            return this.#writer.enqueue(frame).flushed;
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+      });
+    }
+    return this.#clientCapabilities;
+  }
+
+  #detachClientCapabilities(): void {
+    this.#clientCapabilities?.close();
+    this.#clientCapabilities = undefined;
+    this.#clientCapabilityService = undefined;
+  }
+
   #teardown(): void {
     if (this.#closed) return;
     this.#closed = true;
     this.#inputClosed = true;
     this.#detachContinuity();
+    this.#detachClientCapabilities();
     this.#writer.close();
     this.#options.transport.destroy();
     this.#options.onTeardown();

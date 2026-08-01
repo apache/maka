@@ -623,6 +623,59 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
+  test('rejects an OpenCode cell whose terminal provider stream is incomplete', async () => {
+    await withRun(async ({ jobsDir, repo, keyFile }) => {
+      const upstream = createServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n');
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      const address = upstream.address();
+      assert.ok(address && typeof address !== 'string');
+      try {
+        const runner = createHarborTaskRunner({
+          makaRepoPath: repo,
+          jobsDir,
+          agent: 'opencode',
+          opencodeToolchainPath: '/toolchain',
+          agentVersion: '1.17.18',
+          model: 'deepseek/deepseek-v4-flash',
+          provider: 'deepseek',
+          reasoningEffort: 'max',
+          apiKeyFile: keyFile,
+          agentEnv: { DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}` },
+          runHarbor: async (request) => {
+            const proxyUrl = request.env?.MAKA_PROVIDER_PROXY_URL?.replace(
+              'host.docker.internal',
+              '127.0.0.1',
+            );
+            const proxyToken = request.env?.MAKA_PROVIDER_PROXY_TOKEN;
+            assert.ok(proxyUrl && proxyToken);
+            const response = await fetch(`${proxyUrl}/chat/completions`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${proxyToken}` },
+              body: '{}',
+            });
+            assert.equal(response.status, 200);
+            await response.text();
+            return fakeRunner({ reward: '0\n' })(request);
+          },
+        });
+
+        await assert.rejects(runner(runInput()), (error: unknown) => {
+          assert.ok(error instanceof HarborInfraError);
+          assert.match(error.message, /terminal provider request did not complete/);
+          assert.ok(error.artifactRefs?.providerTelemetryPath);
+          return true;
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          upstream.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+  });
+
   test('gives Codex an ephemeral OpenAI proxy without exposing the provider key file', async () => {
     await withRun(async ({ jobsDir, repo, keyFile }) => {
       const captured: { config?: Record<string, unknown> } = {};
@@ -785,6 +838,9 @@ describe('createHarborTaskRunner', () => {
             '',
             'event: message_delta',
             'data: {"type":"message_delta","usage":{"output_tokens":25}}',
+            '',
+            'event: message_stop',
+            'data: {"type":"message_stop"}',
             '',
           ].join('\n'),
         );
@@ -1432,8 +1488,62 @@ describe('createHarborTaskRunner', () => {
       const output = await runner(runInput());
       assert.equal(output.harbor.reward, 1);
       assert.equal(output.harbor.verifier?.outcome, 'passed');
+      assert.equal(output.cell.status, 'failed');
+      assert.equal(output.cell.errorClass, 'budget_exhausted');
+      assert.deepEqual(output.cell.deadlineSettlement, {
+        source: 'benchmark.deadline',
+        mode: 'immediate',
+      });
       assert.deepEqual(output.cell.tokenSummary, timedCell.tokenSummary);
       assert.deepEqual(output.cell.executionIdentity, timedCell.executionIdentity);
+    });
+  });
+
+  test('propagates an authoritative Harbor agent timeout into a failed graded cell', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '0\n',
+          cell: cellOutput({ status: 'completed', errorClass: undefined }),
+          trialResult: {
+            exception_info: {
+              exception_type: 'AgentTimeoutError',
+              exception_message: 'Agent execution timed out after 900.0 seconds',
+            },
+          },
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.equal(output.harbor.reward, 0);
+      assert.equal(output.cell.status, 'failed');
+      assert.equal(output.cell.errorClass, 'budget_exhausted');
+      assert.deepEqual(output.cell.deadlineSettlement, {
+        source: 'benchmark.deadline',
+        mode: 'immediate',
+      });
+    });
+  });
+
+  test('does not infer a benchmark deadline from an ordinary verifier failure', async () => {
+    await withRun(async ({ jobsDir, repo }) => {
+      const runner = createHarborTaskRunner({
+        makaRepoPath: repo,
+        jobsDir,
+        model: 'deepseek/deepseek-v4-flash',
+        runHarbor: fakeRunner({
+          reward: '0\n',
+          cell: cellOutput({ status: 'completed', errorClass: undefined }),
+        }),
+      });
+
+      const output = await runner(runInput());
+      assert.equal(output.cell.status, 'completed');
+      assert.equal(output.cell.errorClass, undefined);
+      assert.equal(output.cell.deadlineSettlement, undefined);
     });
   });
 
@@ -1801,32 +1911,39 @@ describe('createHarborTaskRunner', () => {
     });
   });
 
-  test('accepts a passing verifier outcome recovered after an infrastructure attempt', async () => {
+  test('accepts recovery after multiple verifier infra attempts without rerunning the Agent', async () => {
     await withRun(async ({ jobsDir, repo }) => {
+      let agentRuns = 0;
+      const runTrial = fakeRunner({
+        reward: '1\n',
+        verifierOutcome: {
+          schemaVersion: 1,
+          outcome: 'passed',
+          attempts: [
+            { attempt: 1, classification: 'infra_setup_failed', durationMs: 15, reward: 0 },
+            { attempt: 2, classification: 'infra_setup_failed', durationMs: 25, reward: 0 },
+            { attempt: 3, classification: 'passed', durationMs: 12, reward: 1 },
+          ],
+        },
+      });
       const runner = createHarborTaskRunner({
         makaRepoPath: repo,
         jobsDir,
         model: 'deepseek/deepseek-v4-flash',
-        runHarbor: fakeRunner({
-          reward: '1\n',
-          verifierOutcome: {
-            schemaVersion: 1,
-            outcome: 'passed',
-            attempts: [
-              { attempt: 1, classification: 'infra_setup_failed', durationMs: 15, reward: 0 },
-              { attempt: 2, classification: 'passed', durationMs: 12, reward: 1 },
-            ],
-          },
-        }),
+        runHarbor: async (request) => {
+          agentRuns += 1;
+          return runTrial(request);
+        },
       });
 
       const output = await runner(runInput());
 
       assert.equal(output.harbor.reward, 1);
+      assert.equal(agentRuns, 1);
       assert.equal(output.harbor.verifier?.outcome, 'passed');
       assert.deepEqual(
         output.harbor.verifier?.attempts.map((attempt) => attempt.classification),
-        ['infra_setup_failed', 'passed'],
+        ['infra_setup_failed', 'infra_setup_failed', 'passed'],
       );
     });
   });
@@ -2107,7 +2224,12 @@ describe('buildHarborJobConfig', () => {
       '/repo/packages/headless/harbor/docker-compose-linux-amd64.yaml',
     ]);
     assert.equal(verifier.import_path, 'maka_verifier:MakaVerifier');
-    assert.deepEqual(verifier.kwargs, { attempt_timeout_sec: 600, max_attempts: 2 });
+    assert.deepEqual(verifier.kwargs, {
+      attempt_timeout_sec: 600,
+      max_attempts: 3,
+      retry_backoff_sec: 2,
+      total_timeout_sec: 1_200,
+    });
     assert.equal(verifier.override_timeout_sec, 1_320);
     assert.equal(env.ZAI_API_KEY, undefined);
     assert.equal(env.ZAI_API_KEY_FILE, undefined);

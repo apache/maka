@@ -15,12 +15,12 @@ import {
 } from './web-search.js';
 import { defaultLocalMemorySettings, normalizeLocalMemorySettings } from './local-memory.js';
 import type { PermissionMode } from './permission.js';
-import { PERMISSION_MODES } from './permission.js';
 import {
   UI_LOCALE_PREFERENCES,
   isUiLocalePreference,
   type UiLocalePreference,
 } from './ui-locale.js';
+import { defaultVoiceSettings, normalizeVoiceSettings, type VoiceSettings } from './voice.js';
 
 export { UI_LOCALE_PREFERENCES, isUiLocalePreference } from './ui-locale.js';
 export type { UiLocalePreference } from './ui-locale.js';
@@ -50,15 +50,10 @@ export {
  * split back out. Other merges (network→general, personalization+
  * theme→appearance) held.
  *
- * PR-VOICE-GATEWAY-SPLIT-0 (WAWQAQ msg `d3ea9a33` 2026-06-26): voice
- * and open-gateway were re-split — they're two independent surfaces
- * (local mic / transcription pipeline vs. remote SSE/HTTP gateway)
- * and the merged page read as crowded.
- *
  * Final mapping:
  *   - `network`                       → `general`
  *   - `personalization` + `theme`     → `appearance`
- *   - `voice` and `open-gateway` are independent sections
+ *   - `voice` is an independent section
  *   - `daily-review` is its own section again
  *   - `memory` is its own section again
  *
@@ -72,7 +67,6 @@ export const SETTINGS_SECTIONS = [
   'models',
   'usage',
   'voice',
-  'open-gateway',
   'bot-chat',
   'search',
   'data',
@@ -203,25 +197,6 @@ export interface OnboardingSettings {
   milestones: OnboardingMilestone[];
 }
 
-export interface OpenGatewaySettings {
-  enabled: boolean;
-  host: '127.0.0.1' | '0.0.0.0';
-  port: number;
-  token: string;
-}
-
-export interface OpenGatewayRuntimeStatus {
-  enabled: boolean;
-  running: boolean;
-  host: OpenGatewaySettings['host'];
-  port: number;
-  baseUrl: string | null;
-  startedAt?: number;
-  lastError?: string;
-  tokenConfigured: boolean;
-  activeEventStreams: number;
-}
-
 export interface WorkspaceInstructionsSettings {
   enabled: boolean;
 }
@@ -239,10 +214,12 @@ export interface PrivacySettings {
  * list as PERMISSION_MODE_ORDER), and the settings validation — in one
  * place.
  */
-export type ChatDefaultPermissionMode = Exclude<PermissionMode, 'explore'>;
+export type ChatDefaultPermissionMode = Extract<PermissionMode, 'ask' | 'bypass'>;
 
-export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] =
-  PERMISSION_MODES.filter((mode): mode is ChatDefaultPermissionMode => mode !== 'explore');
+export const CHAT_DEFAULT_PERMISSION_MODES: readonly ChatDefaultPermissionMode[] = [
+  'ask',
+  'bypass',
+];
 
 export function isChatDefaultPermissionMode(value: unknown): value is ChatDefaultPermissionMode {
   return (
@@ -294,7 +271,6 @@ export interface AppSettings {
   appearance: AppearanceSettings;
   personalization: PersonalizationSettings;
   onboarding: OnboardingSettings;
-  openGateway: OpenGatewaySettings;
   webSearch: WebSearchSettings;
   localMemory: LocalMemorySettings;
   workspaceInstructions: WorkspaceInstructionsSettings;
@@ -302,6 +278,7 @@ export interface AppSettings {
   chatDefaults: ChatDefaultsSettings;
   notifications: NotificationSettings;
   system: SystemSettings;
+  voice: VoiceSettings;
 }
 
 export interface UsageRequestLog {
@@ -372,13 +349,16 @@ export type UpdateAppSettingsInput = Partial<{
   usage: Partial<UsageSettings>;
   appearance: Partial<AppearanceSettings>;
   personalization: Partial<PersonalizationSettings>;
-  openGateway: Partial<OpenGatewaySettings>;
   localMemory: Partial<LocalMemorySettings>;
   workspaceInstructions: Partial<WorkspaceInstructionsSettings>;
   privacy: Partial<PrivacySettings>;
   chatDefaults: Partial<ChatDefaultsSettings>;
   notifications: Partial<NotificationSettings>;
   system: Partial<SystemSettings>;
+  voice: Partial<{
+    recognition: Partial<VoiceSettings['recognition']>;
+    realtime: Partial<VoiceSettings['realtime']>;
+  }>;
   webSearch: WebSearchSettingsPatch;
 }>;
 
@@ -441,12 +421,6 @@ export function createDefaultSettings(): AppSettings {
     onboarding: {
       milestones: [],
     },
-    openGateway: {
-      enabled: false,
-      host: '127.0.0.1',
-      port: 3939,
-      token: '',
-    },
     webSearch: defaultWebSearchSettings(),
     localMemory: defaultLocalMemorySettings(),
     workspaceInstructions: {
@@ -462,6 +436,7 @@ export function createDefaultSettings(): AppSettings {
       // battery-affecting opt-in, not a silent default.
       keepSystemAwake: false,
     },
+    voice: defaultVoiceSettings(),
   };
 }
 
@@ -495,10 +470,6 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       // rather than the generic UpdateAppSettingsInput patch surface.
       // Keep the existing list intact when callers patch other sections.
     },
-    openGateway: {
-      ...current.openGateway,
-      ...(patch.openGateway ?? {}),
-    },
     localMemory: patch.localMemory
       ? normalizeLocalMemorySettings({ ...current.localMemory, ...patch.localMemory })
       : current.localMemory,
@@ -522,6 +493,16 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
       ...current.system,
       ...(patch.system ?? {}),
     },
+    voice: normalizeVoiceSettings({
+      recognition: {
+        ...current.voice.recognition,
+        ...(patch.voice?.recognition ?? {}),
+      },
+      realtime: {
+        ...current.voice.realtime,
+        ...(patch.voice?.realtime ?? {}),
+      },
+    }),
     webSearch: mergeWebSearchSettings(current.webSearch, patch.webSearch),
   };
 }
@@ -536,7 +517,6 @@ export function normalizeSettings(input: unknown): AppSettings {
     usage: value.usage,
     appearance: value.appearance,
     personalization: value.personalization,
-    openGateway: value.openGateway,
     webSearch: value.webSearch,
     localMemory: value.localMemory,
     workspaceInstructions: value.workspaceInstructions,
@@ -544,6 +524,7 @@ export function normalizeSettings(input: unknown): AppSettings {
     chatDefaults: value.chatDefaults,
     notifications: value.notifications,
     system: value.system,
+    voice: value.voice,
   });
   // PR110b: milestones bypass the generic patch surface so we can
   // sanitize them with the closed-enum + at-most-one validator on
@@ -595,7 +576,6 @@ export function normalizeSettings(input: unknown): AppSettings {
     onboarding: {
       milestones: sanitizeOnboardingMilestones(rawMilestones),
     },
-    openGateway: normalizeOpenGatewaySettings(base.openGateway),
     webSearch: normalizeWebSearchSettings(base.webSearch),
     localMemory: normalizeLocalMemorySettings(base.localMemory),
     workspaceInstructions: normalizeWorkspaceInstructionsSettings(base.workspaceInstructions),
@@ -620,6 +600,7 @@ export function normalizeSettings(input: unknown): AppSettings {
       keepSystemAwake:
         typeof base.system.keepSystemAwake === 'boolean' ? base.system.keepSystemAwake : false,
     },
+    voice: normalizeVoiceSettings(base.voice),
   };
 }
 
@@ -646,30 +627,17 @@ function defaultChatDefaultsSettings(): ChatDefaultsSettings {
 // doesn't recognize -- fall back to the safest default instead.
 function normalizeChatDefaultsSettings(settings: ChatDefaultsSettings): ChatDefaultsSettings {
   return {
-    permissionMode: isChatDefaultPermissionMode(settings.permissionMode)
-      ? settings.permissionMode
-      : 'ask',
+    permissionMode:
+      (settings.permissionMode as unknown) === 'execute'
+        ? 'ask'
+        : isChatDefaultPermissionMode(settings.permissionMode)
+          ? settings.permissionMode
+          : 'ask',
   };
 }
 
 function normalizePrivacySettings(settings: PrivacySettings): PrivacySettings {
   return {
     incognitoActive: settings.incognitoActive === true,
-  };
-}
-
-function normalizeOpenGatewaySettings(settings: OpenGatewaySettings): OpenGatewaySettings {
-  const port =
-    Number.isInteger(settings.port) && settings.port >= 1024 && settings.port <= 65535
-      ? settings.port
-      : 3939;
-  const host = settings.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
-  const token =
-    typeof settings.token === 'string' && settings.token.length <= 256 ? settings.token : '';
-  return {
-    enabled: settings.enabled === true,
-    host,
-    port,
-    token,
   };
 }

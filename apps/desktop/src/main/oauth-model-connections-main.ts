@@ -1,6 +1,7 @@
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
+  isWiredOAuthProvider,
   type LlmConnection,
   type ModelDiscoverySource,
 } from '@maka/core/llm-connections';
@@ -539,6 +540,29 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     }
   }
 
+  async function disconnectManagedOAuthConnection(
+    connection: Pick<LlmConnection, 'providerType'>,
+  ): Promise<void> {
+    if (!isWiredOAuthProvider(connection.providerType)) return;
+    const result = await (async () => {
+      switch (connection.providerType) {
+        case 'claude-subscription':
+          return deps.claudeSubscription.logout();
+        case 'openai-codex':
+          return deps.openAiCodex.logout();
+        case 'github-copilot':
+          return deps.githubCopilotSubscription.logout();
+        case 'xai-oauth':
+          return deps.xaiOAuth.logout();
+        default:
+          throw new Error(`No OAuth disconnect handler for provider: ${connection.providerType}`);
+      }
+    })();
+    if (!result.ok) {
+      throw new Error(result.message || 'OAuth account logout failed');
+    }
+  }
+
   async function resolveConnectionSecret(slug: string): Promise<string | null> {
     const connection = await deps.connectionStore.get(slug);
     if (connection?.providerType === 'claude-subscription') {
@@ -601,6 +625,7 @@ export function createOAuthModelConnectionsMainService(deps: OAuthModelConnectio
     activateXaiOAuthConnection,
     syncXaiOAuthConnection,
     syncOAuthModelConnections,
+    disconnectManagedOAuthConnection,
   };
 }
 

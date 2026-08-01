@@ -17,7 +17,7 @@ import type {
   UiLocale,
 } from '@maka/core';
 import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core';
-import { Button, Badge, Chip, EmptyState, RelativeTime, SectionHeader, StatTile, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, Badge, RelativeTime, SectionHeader, StatTile, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { statusBadgeVariant } from './settings-status-badge';
@@ -89,6 +89,20 @@ export function PermissionCenterPage() {
     };
   }, [locale, refreshTick]);
 
+  useEffect(() => {
+    const refreshAfterSystemSettings = () => {
+      if (document.visibilityState === 'visible') {
+        setRefreshTick((tick) => tick + 1);
+      }
+    };
+    window.addEventListener('focus', refreshAfterSystemSettings);
+    document.addEventListener('visibilitychange', refreshAfterSystemSettings);
+    return () => {
+      window.removeEventListener('focus', refreshAfterSystemSettings);
+      document.removeEventListener('visibilitychange', refreshAfterSystemSettings);
+    };
+  }, []);
+
   async function runPermissionAction(
     permId: OsPermissionId,
     kind: 'request' | 'openSettings' | 'dragGrant',
@@ -104,9 +118,12 @@ export function PermissionCenterPage() {
             ? await window.maka.permissions.startDragOnboarding(permId)
             : await window.maka.permissions.openSystemSettings(permId);
       if (result.ok) {
-        // Refresh snapshot so the user sees the new state when they
-        // return from System Settings.
-        if (mountedRef.current) setRefreshTick((tick) => tick + 1);
+        // A direct request resolves after the user has answered, so refresh
+        // now. Deep links and the drag guide resolve as soon as System
+        // Settings opens; those refresh when Maka regains focus instead.
+        if (kind === 'request' && mountedRef.current) {
+          setRefreshTick((tick) => tick + 1);
+        }
       } else if (mountedRef.current) {
         toast.error(copy.actionFailed, permissionActionFailureCopy(result.reason, result.message, copy));
       }
@@ -132,9 +149,7 @@ export function PermissionCenterPage() {
         <div className="settingsPermissionError" role="alert">
           <strong>{copy.readFailed}</strong>
           <small>{error ?? copy.noData}</small>
-          <Button type="button" onClick={() => setRefreshTick((tick) => tick + 1)}>
-            {copy.readAgain}
-          </Button>
+          <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
         </div>
       </div>
     );
@@ -159,13 +174,11 @@ export function PermissionCenterPage() {
               {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setRefreshTick((tick) => tick + 1)}
-            >
-              {copy.detectAgain}
-            </Button>
+              label={copy.detectAgain}
+            />
           </>
         }
       />
@@ -190,7 +203,15 @@ export function PermissionCenterPage() {
               copy={copy}
               locale={locale}
               busy={pendingPermAction !== null}
-              pendingKey={pendingPermAction === `${id}:request` ? 'request' : pendingPermAction === `${id}:openSettings` ? 'openSettings' : null}
+              pendingKey={
+                pendingPermAction === `${id}:request`
+                  ? 'request'
+                  : pendingPermAction === `${id}:openSettings`
+                    ? 'openSettings'
+                    : pendingPermAction === `${id}:dragGrant`
+                      ? 'dragGrant'
+                      : null
+              }
               onRequest={() => void runPermissionAction(id, 'request')}
               onOpenSettings={() => void runPermissionAction(id, 'openSettings')}
               onDragGrant={() => void runPermissionAction(id, 'dragGrant')}
@@ -207,14 +228,12 @@ export function PermissionCenterPage() {
           subtitle={copy.capabilitiesHelp}
           action={
             <Button
-              type="button"
               variant="secondary"
               size="sm"
               onClick={() => setDiagnosticsOpen((open) => !open)}
               aria-expanded={diagnosticsOpen}
-            >
-              {diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
-            </Button>
+              label={diagnosticsOpen ? copy.collapseDetails : copy.expandDetails}
+            />
           }
         />
         <ul className="settingsCapabilityList" aria-label={copy.capabilityListAria} data-diagnostics-open={diagnosticsOpen ? 'true' : undefined}>
@@ -285,6 +304,12 @@ function permissionActionFailureCopy(reason: string, message: string | undefined
       return copy.actionFailures.unsupported_platform;
     case 'unsupported_permission':
       return copy.actionFailures.unsupported_permission;
+    case 'denied':
+      return copy.actionFailures.denied;
+    case 'already_open':
+      return copy.actionFailures.already_open;
+    case 'open_settings_failed':
+      return copy.actionFailures.open_settings_failed;
     case 'failed':
       return message ?? copy.actionFailures.failed;
     default:
@@ -309,7 +334,7 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
           <strong>{capabilityLabel}</strong>
           <small className="settingsCapabilityId">{prettyCapabilityId(capability.id)}</small>
         </div>
-        <Chip variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
+        <Badge variant={statusBadgeVariant(readinessCopy.tone)} label={readinessCopy.label} />
       </div>
       <p className="settingsCapabilityDetail">{readinessCopy.detail}</p>
       <dl className="settingsCapabilityLayers" aria-label={copy.layers.aria(capabilityLabel)}>
@@ -381,7 +406,7 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
       */}
       <div className="settingsCapabilityAuditSlot" aria-hidden={capability.auditEvents.length === 0}>
         {capability.auditEvents.length === 0 ? (
-          <EmptyState variant="inline" title={copy.noAudit} body="" />
+          <p className="settingsCapabilityAuditEmpty">{copy.noAudit}</p>
         ) : (
           <ul aria-label={copy.auditAria(capabilityLabel)}>
             {capability.auditEvents.slice(-3).map((event, index) => (
@@ -432,7 +457,7 @@ function OsPermissionRow(props: {
       <div className="settingsOsPermissionBody">
         <div className="settingsOsPermissionHeading">
           <strong>{label}</strong>
-          <Badge variant={statusBadgeVariant(stateCopy.tone)}>{stateCopy.label}</Badge>
+          <Badge variant={statusBadgeVariant(stateCopy.tone)} label={stateCopy.label} />
         </div>
         <small className="settingsOsPermissionPurpose">{purpose}</small>
         {impact ? (
@@ -460,40 +485,36 @@ function OsPermissionRow(props: {
             请求授权 without hiding that it's a button. */}
         {showOpenSettings && (
           <Button
-            type="button"
-            variant={showRequest || showDragGrant ? 'secondary' : 'default'}
+            variant={showRequest || showDragGrant ? 'secondary' : 'primary'}
             size="sm"
             onClick={props.onOpenSettings}
-            disabled={busy}
+            isDisabled={busy}
             aria-busy={pendingKey === 'openSettings' ? 'true' : undefined}
-          >
-            {pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
-          </Button>
+            label={pendingKey === 'openSettings' ? props.copy.opening : props.copy.openSettings}
+          />
         )}
         {/* The guided flow is the primary action where it exists: it does
             what 前往系统设置 does and then stays to help. The plain link
             keeps its place beside it so the manual route is never removed. */}
         {showDragGrant && (
           <Button
-            type="button"
+            variant="primary"
             size="sm"
             onClick={props.onDragGrant}
-            disabled={busy}
+            isDisabled={busy}
             aria-busy={pendingKey === 'dragGrant' ? 'true' : undefined}
-          >
-            {pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
-          </Button>
+            label={pendingKey === 'dragGrant' ? props.copy.dragGranting : props.copy.dragGrant}
+          />
         )}
         {showRequest && (
           <Button
-            type="button"
+            variant="primary"
             size="sm"
             onClick={props.onRequest}
-            disabled={busy}
+            isDisabled={busy}
             aria-busy={pendingKey === 'request' ? 'true' : undefined}
-          >
-            {pendingKey === 'request' ? props.copy.requesting : props.copy.request}
-          </Button>
+            label={pendingKey === 'request' ? props.copy.requesting : props.copy.request}
+          />
         )}
       </div>
     </li>

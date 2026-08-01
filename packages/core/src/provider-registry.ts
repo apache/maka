@@ -549,6 +549,28 @@ const opencodeGoModelIds = toolCallingModelIds(
   GENERATED_MODELS_DEV_METADATA['opencode-go'],
   ['minimax-m3'],
 ).filter((id) => GENERATED_MODELS_DEV_METADATA['opencode-go'][id]?.lifecycle !== 'deprecated');
+// opencode-free is Maka's first-class free anonymous default. It shares the
+// OpenCode Zen endpoint and model ids, but exposes only the active free
+// (cost.input === 0) models from the models.dev opencode snapshot. The
+// snapshot carries no cost field, so the free set is pinned here; each id is
+// validated against the opencode snapshot for active + tool-capable, mirroring
+// the bootstrap validation every other opencode plan entry performs.
+const opencodeFreeModelIds = [
+  'big-pickle',
+  'mimo-v2.5-free',
+  'nemotron-3-ultra-free',
+  'deepseek-v4-flash-free',
+  'north-mini-code-free',
+  'hy3-free',
+] as const;
+for (const id of opencodeFreeModelIds) {
+  const model = GENERATED_MODELS_DEV_METADATA.opencode[id];
+  if (!model?.capabilities?.functionCalling || model.lifecycle === 'deprecated') {
+    throw new Error(
+      `models.dev opencode snapshot is missing an active tool-capable free model ${id} for opencode-free`,
+    );
+  }
+}
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
   throw new Error('models.dev GitHub Copilot provider facts are missing stable id github-copilot');
@@ -1177,6 +1199,30 @@ const providerRegistry = {
     modelsDevId: opencodeGo.id,
     readyOrder: 38,
     catalogOrder: 38,
+  },
+  'opencode-free': {
+    label: 'OpenCode Free',
+    description: 'Free anonymous OpenCode Zen models — no API key required, usage limited by IP.',
+    baseUrl: opencode.api,
+    authKind: 'none',
+    backendKind: 'ai-sdk',
+    fallbackModels: [...opencodeFreeModelIds],
+    status: 'ready',
+    protocol: 'openai',
+    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    modelDiscovery: {
+      kind: 'fallback',
+      reason:
+        'OpenCode Free anonymous access serves a fixed set of free models; the inference endpoint has no anonymous model-list contract.',
+    },
+    category: 'overseas',
+    catalogGroup: 'plans',
+    catalogBadge: 'Free',
+    signupUrl: 'https://opencode.ai/zen',
+    modelsDevId: opencode.id,
+    readyOrder: 0,
+    catalogOrder: 0,
+    recommendedOrder: 0,
   },
   togetherai: {
     label: together.name,

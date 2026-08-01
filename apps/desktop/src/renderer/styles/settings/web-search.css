@@ -31,8 +31,8 @@
   white-space: nowrap;
 }
 
-.settingsWebSearchKeyRow > .settingsPasswordField,
-.settingsWebSearchQueryInputRow > input {
+.settingsWebSearchKeyField,
+.settingsWebSearchQueryField {
   width: min(100%, 360px);
   /* #1364: a text input never shrinks below its intrinsic `size` width on its
      own (~180px) — at the 480px window floor that overflowed the row. */
@@ -131,8 +131,8 @@
     white-space: normal;
   }
 
-  .settingsWebSearchKeyRow > .settingsPasswordField,
-  .settingsWebSearchQueryInputRow > input {
+  .settingsWebSearchKeyField,
+  .settingsWebSearchQueryField {
     width: 100%;
     justify-self: stretch;
   }

@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { LlmConnection, SessionHeader, TaskLedgerStore } from '@maka/core';
+import type { LlmConnection, SessionHeader } from '@maka/core';
 import { emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { McpClientManager } from '@maka/mcp';
 import {
-  PermissionEngine,
   type AiSdkBackendInput,
   type BackendFactoryContext,
   type MakaTool,
@@ -33,6 +32,22 @@ const availability: ToolAvailabilityConfig = {
 };
 
 describe('Desktop backend tool surface', () => {
+  it('builds the Memory prompt for the backend session identity', async () => {
+    const deps = makeFactoryDeps();
+    let memorySessionId: string | undefined;
+    deps.systemPromptService = {
+      ...deps.systemPromptService,
+      buildLocalMemoryPromptFragment: async (sessionId) => {
+        memorySessionId = sessionId;
+        return '';
+      },
+    };
+
+    await backendInput(createAiSdkBackendFactory(deps), undefined);
+
+    assert.equal(memorySessionId, 'session-1');
+  });
+
   it('uses the effective Agent surface as the complete child-runtime capability boundary', async () => {
     const agentTools = [
       tool('agent_spawn', 'subagent'),
@@ -120,34 +135,6 @@ describe('Desktop backend tool surface', () => {
     assert.equal(surface.skillHost.toolNames.has('Write'), true);
   });
 
-  it('keeps expert-team tools on the parent surface and scoped child tools isolated', async () => {
-    const deps = makeDeps({
-      agentTeamLeadTools: [tool('team_message', 'custom_tool')],
-    });
-    const parentInput = inputFor('claude-sonnet-4-5-20250929');
-    parentInput.header.labels = ['mode:expert-team:code-review'];
-    const parent = await resolveDesktopBackendToolSurface(deps, parentInput);
-    assert.equal(parent.skillHost.toolNames.has('expert_dispatch'), true);
-    assert.equal(parent.skillHost.toolNames.has('team_message'), true);
-
-    const child = await resolveDesktopBackendToolSurface(deps, {
-      ...parentInput,
-      tools: [readTool],
-      agentTeam: {
-        role: 'member',
-        teamId: 'code-review',
-        agentId: 'correctness-reviewer',
-        parentRunId: 'run-1',
-      },
-    });
-    assert.deepEqual([...child.skillHost.toolNames], ['Read']);
-    assert.deepEqual(
-      child.selectedTools.map((candidate) => candidate.name),
-      ['Read'],
-    );
-    assert.deepEqual(child.toolAvailability.groups, []);
-  });
-
   it('keeps scoped child tools ahead of root-only computer-use and Plan controls', async () => {
     const deps = makeDeps({ isComputerUseRealModelE2e: true });
     const input = inputFor('claude-sonnet-4-5-20250929', 'plan');
@@ -155,12 +142,6 @@ describe('Desktop backend tool surface', () => {
     const child = await resolveDesktopBackendToolSurface(deps, {
       ...input,
       tools: [readTool],
-      agentTeam: {
-        role: 'member',
-        teamId: 'plan-team',
-        agentId: 'researcher',
-        parentRunId: 'run-1',
-      },
     });
 
     assert.deepEqual([...child.skillHost.toolNames], ['Read']);
@@ -228,6 +209,31 @@ describe('Desktop backend tool surface', () => {
     assert.equal(host.toolNames.has('Write'), false);
   });
 
+  it('does not use the legacy permission ceiling as child admission authority', async () => {
+    const header = inputFor('claude-sonnet-4-5-20250929').header;
+    header.permissionMode = 'execute';
+    header.subagentParent = {} as SessionHeader['subagentParent'];
+    header.subagentRuntime = {
+      schemaVersion: 1,
+      definitionVersion: 1,
+      agentId: 'implementation-child',
+      agentName: 'Implementation child',
+      profile: 'implementation',
+      systemPrompt: 'Implement.',
+      toolNames: ['Write'],
+      categoryPolicy: {},
+      permissionCeiling: 'ask',
+    };
+
+    const host = await resolveDesktopSessionSkillHost(makeDeps(), {
+      sessionId: header.id,
+      header,
+      childTools: [readTool, writeTool],
+    });
+
+    assert.deepEqual([...host.toolNames], ['Write']);
+  });
+
   it('never previews Deep Research tools — the preview stands in for a plain chat', async () => {
     // #1433: this used to branch on a `mode` the Quick Chat panel passed in
     // before its session existed. That panel is gone; the only entry point
@@ -249,6 +255,26 @@ describe('Desktop backend tool surface', () => {
     });
 
     assert.equal(preview.toolNames.has('deep_research_status'), false);
+  });
+
+  it('keeps Deep Research on a read-only local tool surface without boundary expansion', async () => {
+    const requestBoundary = tool('request_sandbox_boundary', 'custom_tool');
+    const bash = tool('Bash', 'shell_unsafe');
+    const webSearch = tool('WebSearch', 'web_read');
+    const deepResearchStatus = tool('deep_research_status', 'read');
+    const deps = makeDeps({
+      builtinTools: [readTool, writeTool, requestBoundary, bash, webSearch],
+      deepResearchTools: [deepResearchStatus],
+    });
+    const input = inputFor('claude-sonnet-4-5-20250929');
+    input.header.labels = ['mode:deep_research'];
+
+    const surface = await resolveDesktopBackendToolSurface(deps, input);
+
+    assert.deepEqual(
+      surface.selectedTools.map((candidate) => candidate.name),
+      ['Read', 'WebSearch', 'deep_research_status'],
+    );
   });
 
   it('uses explicit preview inputs without reading a nonexistent session plan', async () => {
@@ -299,10 +325,8 @@ function makeDeps(
       model: model ?? 'claude-sonnet-4-5-20250929',
     }),
     mcpManager: { tools: () => [] } as unknown as McpClientManager,
-    taskLedgerStore: {} as TaskLedgerStore,
     deepResearchTools: [],
     computerUseTools: [computerTool],
-    agentTeamLeadTools: [],
     builtinTools: [readTool, writeTool, computerTool],
     toolEconomy: availability.economy,
     planStore,
@@ -377,8 +401,8 @@ function makeFactoryDeps(
     systemPromptService: {
       buildLocalMemoryPromptFragment: async () => '',
     },
-    permissionEngine: new PermissionEngine({ newId: () => 'permission-id', now: () => 1 }),
     telemetryRepo: {},
+    ensureUsageReady: async () => {},
     artifactStore: {},
     desktopSessionSkillHosts: new Map(),
     sandboxDiagnosticsProvider: { resolve: async () => undefined },
@@ -387,7 +411,6 @@ function makeFactoryDeps(
     readArchivedToolResult: async () => undefined,
     runtimeCommitStore: undefined,
     safeSendToRenderer: () => {},
-    openGateway: {},
     emitSessionsChanged: () => {},
     getRuntime: () => runtime,
     getLookupPricing: () => () => null,

@@ -2,22 +2,55 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { RetryError } from 'ai';
 
-import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
+import { ModelAdapter, lowerNativeAudioMessages, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('lowers explicit audio only at the provider boundary without copying bytes', () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const [message] = lowerNativeAudioMessages([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'follow the voice request' },
+          {
+            type: 'audio',
+            data: bytes,
+            mediaType: 'audio/wav',
+            format: 'wav',
+            durationMs: 500,
+            retention: 'operation_memory',
+          },
+        ],
+      },
+    ]);
+    assert.equal(message?.role, 'user');
+    assert.notEqual(typeof message?.content, 'string');
+    if (!message || message.role !== 'user' || typeof message.content === 'string') return;
+    const file = message.content.find((part) => part.type === 'file');
+    assert.equal(file?.type, 'file');
+    if (
+      file?.type !== 'file' ||
+      typeof file.data !== 'object' ||
+      file.data === null ||
+      !('type' in file.data) ||
+      file.data.type !== 'data'
+    ) {
+      return;
+    }
+    assert.equal(file.data.data, bytes);
+    assert.equal(file.mediaType, 'audio/wav');
+    assert.equal(file.filename, 'voice-input.wav');
+  });
+
   test('resolves optional-key LocalAI without fabricating a credential', () => {
     const model = {};
     let observedApiKey: string | undefined;
     const adapter = new ModelAdapter({
       connection: {
         slug: 'localai',
-        name: 'LocalAI',
         providerType: 'localai',
         defaultModel: 'qwen3-8b',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: '',
       modelId: 'qwen3-8b',
@@ -37,13 +70,9 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'github-copilot',
-        name: 'GitHub Copilot',
         providerType: 'github-copilot',
         defaultModel: 'claude-sonnet',
         models: [{ id: 'claude-sonnet', apiProtocol: 'anthropic-messages' }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'github-token',
       modelId: 'claude-sonnet',
@@ -59,13 +88,9 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'kimi-coding-plan',
-        name: 'Kimi Coding Plan',
         providerType: 'kimi-coding-plan',
         defaultModel: 'k3',
         models: [{ id: 'k3', apiProtocol: 'openai-chat' }],
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'kimi-token',
       modelId: 'k3',
@@ -87,12 +112,8 @@ describe('ModelAdapter stream and error normalization', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'volcengine-agent-plan',
-        name: 'Volcengine Ark Agent Plan (China)',
         providerType: 'volcengine-agent-plan',
         defaultModel: 'ark-code-latest',
-        enabled: true,
-        createdAt: 1,
-        updatedAt: 1,
       },
       apiKey: 'ark-plan-token',
       modelId: 'ark-code-latest',
@@ -702,12 +723,8 @@ function newAdapter(): ModelAdapter {
   return new ModelAdapter({
     connection: {
       slug: 'anthropic-main',
-      name: 'Anthropic',
       providerType: 'anthropic',
       defaultModel: 'claude-sonnet-4-5-20250929',
-      enabled: true,
-      createdAt: 1,
-      updatedAt: 1,
     },
     apiKey: 'sk-test',
     modelId: 'claude-sonnet-4-5-20250929',

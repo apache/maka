@@ -97,7 +97,7 @@ Three separate concurrency boundaries remain observable:
    open in one turn.
 2. **Local Swarm concurrency** limits workers claimed inside one batch.
 3. **Shared child-run permits** cap real child executions across
-   `agent_spawn`, `expert_dispatch`, and `agent_swarm`.
+   `agent_spawn` and `agent_swarm`.
 
 Partial child failure does not erase successful siblings. Parent cancellation
 signals active children, prevents locally queued items from starting, joins

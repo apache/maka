@@ -373,7 +373,7 @@ function legacyPipeOutput(value: Record<string, unknown>): Extract<ShellOutput, 
 
 function isLegacyTerminalStatus(
   value: unknown,
-): value is Exclude<ShellRunStatus, 'running' | 'orphaned'> {
+): value is Exclude<ShellRunStatus, 'starting' | 'running' | 'orphaned'> {
   return (
     value === 'completed' || value === 'failed' || value === 'timed_out' || value === 'cancelled'
   );
@@ -501,6 +501,7 @@ export function isSandboxDenialSignal(value: unknown): value is SandboxDenialSig
 function isOptionalSandboxDenial(value: unknown): boolean {
   return (
     value === undefined ||
+    isSandboxDenialSignal(value) ||
     (isRecord(value) &&
       hasExactShape(value, SANDBOX_DENIAL_RECOVERY_SHAPE) &&
       value.likely === true &&

@@ -29,15 +29,10 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { RECOMMENDED_PROVIDER_TYPES, type LlmConnection, type OnboardingState, type ProviderType, type SettingsSection } from '@maka/core';
 import {
   Button,
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemMedia,
-  ItemTitle,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
+import { Item } from '@astryxdesign/core/Item';
 import { ProviderLogo, providerDisplay } from './settings/provider-display';
 import { getOnboardingHeroCopy, getOnboardingSetupSteps, type OnboardingSetupStep } from './onboarding-hero-copy';
 import { getOnboardingCopy } from './locales/onboarding-copy';
@@ -224,24 +219,12 @@ function NeedsConnectionHero(props: {
               <li key={type}>
                 <Item
                   className="maka-firstrun-row px-3.5 py-2"
-                  render={
-                    <button
-                      type="button"
-                      onClick={() => props.onAddProvider(type)}
-                    />
-                  }
-                >
-                  <ItemMedia>
-                    <ProviderLogo type={type} compact />
-                  </ItemMedia>
-                  <ItemContent>
-                    <ItemTitle>{display.name}</ItemTitle>
-                    <ItemDescription>{display.description}</ItemDescription>
-                  </ItemContent>
-                  <ItemActions>
-                    <ChevronRight size={16} aria-hidden="true" />
-                  </ItemActions>
-                </Item>
+                  startContent={<ProviderLogo type={type} compact />}
+                  label={display.name}
+                  description={display.description}
+                  endContent={<ChevronRight size={16} aria-hidden="true" />}
+                  onClick={() => props.onAddProvider(type)}
+                />
               </li>
             );
           })}
@@ -252,20 +235,19 @@ function NeedsConnectionHero(props: {
           duplicated what clicking any provider row above already does (the
           list header even says 点一个进入设置). One affordance per action —
           the footer keeps only genuinely distinct paths. */}
-      <footer className="maka-onboarding-footer">
-        <Button type="button" variant="secondary" onClick={props.onBrowseProviders}>
-          {copy.needsConnection.browseProviders}
-        </Button>
+      <footer
+        className="maka-onboarding-footer"
+        data-maka-contract="onboarding-actions"
+      >
+        <Button variant="secondary" onClick={props.onBrowseProviders} label={copy.needsConnection.browseProviders} />
         {props.onRefreshConnections && (
           <Button
-            type="button"
             variant="secondary"
             onClick={props.onRefreshConnections}
-            disabled={props.refreshConnectionsPending === true}
+            isDisabled={props.refreshConnectionsPending === true}
             aria-busy={props.refreshConnectionsPending === true ? 'true' : undefined}
-          >
-            {props.refreshConnectionsPending === true ? copy.refresh.pending : copy.refresh.connection}
-          </Button>
+            label={props.refreshConnectionsPending === true ? copy.refresh.pending : copy.refresh.connection}
+          />
         )}
         {props.onSkip && <SkipButton onSkip={props.onSkip} />}
       </footer>
@@ -474,14 +456,12 @@ function SkipButton(props: { onSkip: () => Promise<void> | void; label?: string 
   }, [pending, props]);
   return (
     <Button
-      type="button"
       variant="secondary"
       onClick={onClick}
-      disabled={pending}
+      isDisabled={pending}
       aria-busy={pending ? 'true' : undefined}
-    >
-      {pending ? copy.skipping : (props.label ?? copy.skip)}
-    </Button>
+      label={pending ? copy.skipping : (props.label ?? copy.skip)}
+    />
   );
 }
 
@@ -534,23 +514,23 @@ function SetupHero(props: SetupHeroProps) {
         <p>{props.body}</p>
       </header>
       {props.setupSteps && <SetupProgress steps={props.setupSteps} />}
-      <footer className="maka-onboarding-footer">
+      <footer
+        className="maka-onboarding-footer"
+        data-maka-contract="onboarding-actions"
+      >
         <Button
-          type="button"
+          variant="primary"
           onClick={props.primaryCta.onClick}
-        >
-          {props.primaryCta.label}
-        </Button>
+          label={props.primaryCta.label}
+        />
         {props.secondaryCta && (
           <Button
-            type="button"
             variant="secondary"
             onClick={props.secondaryCta.onClick}
-            disabled={props.secondaryCta.disabled === true}
+            isDisabled={props.secondaryCta.disabled === true}
             aria-busy={props.secondaryCta.busy === true ? 'true' : undefined}
-          >
-            {props.secondaryCta.label}
-          </Button>
+            label={props.secondaryCta.label}
+          />
         )}
         {props.onSkip && <SkipButton onSkip={props.onSkip} />}
       </footer>

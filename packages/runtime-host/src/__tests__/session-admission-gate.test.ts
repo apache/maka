@@ -41,6 +41,35 @@ test('does not serialize operations for different Sessions', async () => {
   await first;
 });
 
+test('serializes overlapping multi-Session admissions without lock-order deadlocks', async () => {
+  const gate = new SessionAdmissionGate();
+  const entered = deferred();
+  const release = deferred();
+  const order: string[] = [];
+
+  const first = gate.runMany(['second', 'first'], async (lease) => {
+    order.push('first:start');
+    assert.equal(await gate.runAdmitted('first', lease, () => 'first-owned'), 'first-owned');
+    assert.equal(await gate.runAdmitted('second', lease, () => 'second-owned'), 'second-owned');
+    entered.resolve();
+    await release.promise;
+    order.push('first:end');
+  });
+  await entered.promise;
+  const second = gate.runMany(['first', 'second'], () => {
+    order.push('second');
+  });
+  const independent = gate.run('third', () => {
+    order.push('third');
+  });
+
+  await independent;
+  assert.deepEqual(order, ['first:start', 'third']);
+  release.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['first:start', 'third', 'first:end', 'second']);
+});
+
 test('keeps the admission open until admitted child work settles', async () => {
   const gate = new SessionAdmissionGate();
   const childEntered = deferred();

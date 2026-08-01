@@ -83,6 +83,10 @@ export function entityIdValue(value: unknown, context: string): EntityId {
   return parsed;
 }
 
+export function decodeRuntimePolicyEntityId(value: unknown): EntityId {
+  return entityIdValue(value, 'runtime policy entity id');
+}
+
 export function assertCanonicalValue(original: unknown, canonical: unknown, context: string): void {
   if (!sameValue(original, canonical)) throw domainError(`${context} must be canonical`);
 }

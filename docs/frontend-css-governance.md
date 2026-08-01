@@ -24,9 +24,9 @@ Maka's frontend styling combines Tailwind v4 with handwritten renderer CSS. Some
 - Do not place `@import` inside an `@layer` block.
 - A selector that must override a shared primitive's Tailwind utility must remain outside `@layer components` until the primitive seam is fixed.
 
-## 3. Required unlayered rules
+## 3. Rules that must outrank Tailwind utilities
 
-These selectors currently depend on appearing after Tailwind utilities and must remain unlayered:
+These selectors depend on beating Tailwind utilities on the same element. Since #1565 PR 1 they do so by living in the `maka.legacy` layer, which `cascade-layers.css` declares after `utilities` (before that they relied on being unlayered). The declaration in `cascade-layers.css` is append-only: later migration PRs may add layers but must never reorder the existing five.
 
 - `.maka-nav-row`
 - `html[data-os="darwin"] .maka-nav-row`
@@ -34,12 +34,12 @@ These selectors currently depend on appearing after Tailwind utilities and must 
 - `.settingsPermissionRefresh`
 - `.settingsBotList button`
 
-The guard lives in `apps/desktop/src/main/__tests__/renderer-style-layer-cascade-contract.test.ts`. Update that contract in the same PR if the underlying primitive changes.
+This is a convention, not a test-enforced guard: the static cascade contract was removed with the rest of the source-scanning suite. A change here is verified by looking at the rendered surface (Storybook or the app), not by a regex over the CSS.
 
 ## 4. `!important`
 
 - `!important` is allowed by default only for accessibility helpers such as `.maka-visually-hidden`, and for reduced-motion or e2e-fixture overrides.
-- Every other use requires an adjacent `Justified:` comment and an entry in `renderer-important-audit-contract.test.ts`.
+- Every other use requires an adjacent `Justified:` comment.
 - Prefer a JSX utility-class reset when the primitive can express the behavior directly.
 
 ## 5. Tokens
@@ -54,25 +54,31 @@ The guard lives in `apps/desktop/src/main/__tests__/renderer-style-layer-cascade
 - Runtime-generated class names that static search cannot find must be explicitly allowlisted.
 - Change `scripts/check-dead-css-baseline.json` only after review confirms the class-count change.
 
-## 7. Contract tests
+## 7. How these rules are checked
 
-- Tests that inspect effective renderer CSS must read it through `css-test-helpers.ts` or `contract-css-helpers.ts`.
-- Do not inspect only `styles.css` when the assertion concerns effective rules.
-- Directly inspect `styles.css` only to enforce its entry-file contract.
+The rules above are conventions enforced in review, plus the fast scripts that
+survive as their own commands — `check-dead-css`, `check-a11y`, `check-copy`,
+`check-console`. The source-scanning contract suite that used to re-assert them
+as tests is gone: it charged every refactor a rewrite of its own guards while
+catching only what a linter should.
+
+- Renderer CSS behavior is verified where it renders: Storybook, the app, or an
+  e2e assertion on the real surface.
+- A rule worth machine-enforcing belongs in a `scripts/check-*.mjs` (fast,
+  one job, no build) rather than a test that regexes the source tree.
 
 ## 8. Change order
 
 When changing renderer CSS:
 
-1. Point contract tests at the effective CSS source.
-2. Move real rule blocks out of `styles.css` into surface files.
-3. Layer only rules that do not override shared utilities.
-4. Remove dead selectors.
-5. Remove remaining `!important` only after primitive and layer ownership is stable.
+1. Move real rule blocks out of `styles.css` into surface files.
+2. Layer only rules that do not override shared utilities.
+3. Remove dead selectors.
+4. Remove remaining `!important` only after primitive and layer ownership is stable.
 
 ## 9. Governing principles
 
 - Make CI guards trustworthy before structural convergence.
 - Delete dead CSS before aesthetic refactoring.
 - Resolve shared `Button`, `Textarea`, and `EmptyState` overrides at the component API seam instead of accumulating renderer specificity.
-- Every change to Tailwind cascade order requires a contract test and the narrowest relevant regression check.
+- Every change to Tailwind cascade order requires the narrowest relevant regression check on the rendered surface.

@@ -1,11 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
+import type { FixedPromptControllerResult } from './fixed-prompt-controller.js';
 import type {
-  FixedPromptControllerResult,
   FixedPromptWalEvent,
   PromptCandidateCommittedEvent,
   PromptCandidateDecisionEvent,
   RsiControllerAttributionEvent,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 import type { PromptAcceptanceResult } from './prompt-acceptance-policy.js';
 import {
   assertCandidateMatchesStableTaskSet,

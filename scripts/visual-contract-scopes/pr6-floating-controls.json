@@ -1,0 +1,75 @@
+{
+  "slice": "pr6-floating-controls",
+  "scopes": [
+    {
+      "name": "shell-menu",
+      "selectors": [
+        ":is([data-maka-contract=\"shell-topbar-rail\"] ~ [role=\"toolbar\"] [aria-haspopup=\"menu\"], [data-maka-contract=\"shell-topbar-rail\"] ~ [role=\"toolbar\"] [aria-haspopup=\"menu\"] *)"
+      ]
+    },
+    {
+      "name": "composer-controls",
+      "selectors": [
+        ":is([data-maka-contract=\"composer-inner\"] [aria-haspopup=\"menu\"], [data-maka-contract=\"composer-inner\"] [aria-haspopup=\"menu\"] *, [data-maka-contract=\"composer-inner\"] ~ div [aria-haspopup=\"menu\"], [data-maka-contract=\"composer-inner\"] ~ div [aria-haspopup=\"menu\"] *, [data-maka-contract=\"composer-inner\"] div:has(> [aria-haspopup=\"listbox\"]), [data-maka-contract=\"composer-inner\"] div:has(> [aria-haspopup=\"listbox\"]) *, [data-maka-contract=\"composer-inner\"] div:has(> [role=\"combobox\"]), [data-maka-contract=\"composer-inner\"] div:has(> [role=\"combobox\"]) *, [data-maka-contract=\"composer-inner\"] div:has(> label):has([aria-haspopup=\"listbox\"]), [data-maka-contract=\"composer-inner\"] div:has(> label):has([aria-haspopup=\"listbox\"]) *, [data-maka-contract=\"composer-inner\"] div:has(> div [aria-haspopup=\"listbox\"]))"
+      ]
+    },
+    {
+      "name": "session-workbar-tabs",
+      "selectors": [
+        ":is([data-maka-contract=\"session-workbar\"] [data-slot=\"tabs\"], [data-maka-contract=\"session-workbar\"] [data-slot=\"tabs\"] *)"
+      ]
+    },
+    {
+      "name": "session-group-menu",
+      "selectors": [
+        ":is(aside:has([data-maka-contract=\"list-row\"]) > div [aria-haspopup=\"menu\"], aside:has([data-maka-contract=\"list-row\"]) > div [aria-haspopup=\"menu\"] *)"
+      ]
+    },
+    {
+      "name": "settings-selectors",
+      "selectors": [
+        ":is([data-maka-contract=\"settings-rows\"] > div:has([aria-haspopup=\"listbox\"]), [data-maka-contract=\"settings-rows\"] > div:has([aria-haspopup=\"listbox\"]) *, [data-maka-contract=\"settings-rows\"] > div:has([role=\"combobox\"]), [data-maka-contract=\"settings-rows\"] > div:has([role=\"combobox\"]) *)"
+      ]
+    },
+    {
+      "name": "provider-tab-ancestors",
+      "selectors": [
+        ":is([data-maka-contract=\"providers-panel\"]:has([data-slot=\"tabs\"]), [data-maka-contract=\"providers-panel\"] :has(> [data-slot=\"tabs\"]), [data-overlayscrollbars-content]:has([data-maka-contract=\"providers-panel\"]), [data-overlayscrollbars-content] > div:has(> [data-maka-contract=\"providers-panel\"]))"
+      ]
+    },
+    {
+      "name": "provider-tab-list",
+      "selectors": [
+        ":is([data-maka-contract=\"providers-panel\"] [data-slot=\"tabs-list\"], [data-maka-contract=\"providers-panel\"] [data-slot=\"tabs-list\"] *)"
+      ]
+    },
+    {
+      "name": "provider-tab-panel",
+      "selectors": [
+        ":is([data-maka-contract=\"providers-panel\"] [data-slot=\"tabs-content\"], [data-maka-contract=\"providers-panel\"] [data-slot=\"tabs-content\"] *)"
+      ]
+    },
+    {
+      "name": "module-menu",
+      "selectors": [
+        ":is([data-maka-contract=\"module-main\"] header :has(> [aria-haspopup=\"menu\"]), [data-maka-contract=\"module-main\"] header [aria-haspopup=\"menu\"], [data-maka-contract=\"module-main\"] header [aria-haspopup=\"menu\"] *)"
+      ]
+    },
+    {
+      "name": "mcp-tab-ancestors",
+      "selectors": [":is([data-maka-contract=\"module-main\"] :has(> [data-slot=\"tabs\"]))"]
+    },
+    {
+      "name": "mcp-tab-list",
+      "selectors": [
+        ":is([data-maka-contract=\"module-main\"] [data-slot=\"tabs-list\"], [data-maka-contract=\"module-main\"] [data-slot=\"tabs-list\"] *)"
+      ]
+    },
+    {
+      "name": "mcp-tab-panel",
+      "selectors": [
+        ":is([data-maka-contract=\"module-main\"] [data-slot=\"tabs-content\"], [data-maka-contract=\"module-main\"] [data-slot=\"tabs-content\"] *)"
+      ]
+    }
+  ]
+}

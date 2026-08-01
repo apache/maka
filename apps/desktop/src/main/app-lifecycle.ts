@@ -1,7 +1,8 @@
 import { app, nativeImage, safeStorage } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildPricingLookup, setActiveProxy } from '@maka/runtime';
+import { setActiveProxy } from '@maka/runtime';
+import { resolveBootstrapConnections } from '@maka/core';
 import type {
   AgentGraphCoordinator,
   AgentGraphSupervisorWakeCoordinator,
@@ -15,7 +16,8 @@ import type {
   createProjectCatalog,
   createSessionStore,
   createSettingsStore,
-  createTelemetryRepo,
+  createSqliteArtifactStore,
+  createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
 import type { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -25,24 +27,30 @@ import { startConfigFileWatcher, type ConfigFileWatcher } from './config-file-wa
 import { toContractNetworkSettings } from './network-settings-main.js';
 import { importLegacyOAuthTokenFiles } from './oauth/shared-credential-bridge.js';
 import type { resolveE2eFixture } from './e2e-fixture.js';
-import type { OpenGatewayService } from './open-gateway.js';
 import type { KeepSystemAwakeController } from './keep-system-awake.js';
 import type { createPlanReminderMainService } from './plan-reminders-main.js';
 import type { createDailyReviewMainService } from './daily-review-main.js';
 import type { createMainAutomationWiring } from './automation-wiring.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createMainWindowController } from './main-window.js';
+import type { DesktopExecutionStoreWiring } from './execution-store-wiring.js';
 import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
 import { runProjectStartupMigration } from './project-startup-migration.js';
 import { createAppQuitCoordinator } from './app-quit-coordinator.js';
+import { resolveDockPresentation } from './dock-presentation.js';
+import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundary-resume.js';
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
-type PricingLookup = ReturnType<typeof buildPricingLookup>;
-
 export interface AppLifecycleDeps {
-  isIsolatedE2e: boolean;
+  // Whether this run stays out of the developer's way. main.ts owns the
+  // condition; the dock icon follows it so window visibility and dock
+  // presence can never drift apart. A fixture window someone asked to see
+  // (MAKA_E2E_SHOW_WINDOW) opts out of both together: as an accessory app it
+  // has no dock tile and no Cmd+Tab entry, so switching away during a manual
+  // review would leave no way back.
+  startHidden: boolean;
   e2eFixture: ReturnType<typeof resolveE2eFixture>;
   workspaceRoot: string;
   sessionStore: ReturnType<typeof createSessionStore>;
@@ -50,10 +58,11 @@ export interface AppLifecycleDeps {
   credentialStore: ReturnType<typeof createFileCredentialStore>;
   connectionStore: ReturnType<typeof createConnectionStore>;
   settingsStore: ReturnType<typeof createSettingsStore>;
-  telemetryRepo: ReturnType<typeof createTelemetryRepo>;
+  telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
+  artifactStore: ReturnType<typeof createSqliteArtifactStore>;
+  ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
-  openGateway: OpenGatewayService;
   planReminders: ReturnType<typeof createPlanReminderMainService>;
   dailyReview: ReturnType<typeof createDailyReviewMainService>;
   automationWiring: ReturnType<typeof createMainAutomationWiring>;
@@ -63,6 +72,8 @@ export interface AppLifecycleDeps {
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
+  executionStoreWiring: DesktopExecutionStoreWiring;
+  closeWorkflowStores: () => Promise<void>;
   mainWindowController: ReturnType<typeof createMainWindowController>;
   runtime: SessionManager;
   agentGraphCoordinator: AgentGraphCoordinator;
@@ -78,9 +89,6 @@ export interface AppLifecycleDeps {
   /** Accessor for the settings IPC handle, which is assigned inside
    *  main.ts's `registerIpc()`; teardown disposes it if present. */
   getSettingsIpc: () => SettingsIpcHandle | undefined;
-  /** Reassigns the module-scoped pricing lookup in main.ts, which is read
-   *  live by the session streamer and the usage IPC handler. */
-  setLookupPricing: (value: PricingLookup) => void;
 }
 
 /**
@@ -97,7 +105,7 @@ export interface AppLifecycleDeps {
  */
 export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
-    isIsolatedE2e,
+    startHidden,
     e2eFixture,
     workspaceRoot,
     sessionStore,
@@ -106,9 +114,10 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     connectionStore,
     settingsStore,
     telemetryRepo,
+    artifactStore,
+    ensureUsageReady,
     keepSystemAwake,
     botRegistry,
-    openGateway,
     planReminders,
     dailyReview,
     automationWiring,
@@ -118,6 +127,8 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     shellRuns,
     mcpManager,
     runtimePersistence,
+    executionStoreWiring,
+    closeWorkflowStores,
     mainWindowController,
     runtime,
     agentGraphCoordinator,
@@ -129,7 +140,6 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     emitSessionsChanged,
     handleExternalSettingsChange,
     getSettingsIpc,
-    setLookupPricing,
   } = deps;
 
   let backgroundStartup: Promise<void> | undefined;
@@ -147,15 +157,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       await agentGraphSupervisorWakeCoordinator.recover();
       await agentGraphCoordinator.recover();
       if (process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME !== '1') return;
-      for (const session of await runtime.listSessions()) {
-        const plan = await runtime.planLatestAuthoritativeSafeBoundaryContinuation(session.id);
-        if (!plan.continuation) continue;
-        const iterator = runtime.resumeSafeBoundaryContinuation(plan.continuation);
-        void streamEvents(session.id, iterator, {
-          turnId: plan.continuation.turnId,
-          goalBoundary: 'none',
-        });
-      }
+      await resumeSafeBoundaryContinuationsOnStartup(runtime, streamEvents, console.error);
     } catch {
       // Best-effort: startup should still reach the renderer so users can inspect
       // and repair any remaining local session state.
@@ -175,52 +177,44 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     await mkdir(workspaceRoot, { recursive: true });
     if ((await connectionStore.list()).length > 0) return;
 
-    if (process.env.ANTHROPIC_API_KEY) {
-      const slug = 'env-anthropic';
+    // opencode-free is seeded unconditionally so a fresh install is usable with
+    // zero credentials; env-keyed providers layer on top and take the default
+    // when present (Anthropic before OpenAI). See resolveBootstrapConnections.
+    const seeds = resolveBootstrapConnections({
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+    });
+    for (const seed of seeds) {
       await connectionStore.create({
-        slug,
-        name: 'Anthropic (env)',
-        providerType: 'anthropic',
-        defaultModel: 'claude-sonnet-4-5-20250929',
+        slug: seed.slug,
+        name: seed.name,
+        providerType: seed.providerType,
+        defaultModel: seed.defaultModel,
       });
-      await credentialStore.setSecret(slug, 'api_key', process.env.ANTHROPIC_API_KEY);
-      await connectionStore.setDefault(slug);
-      // Bootstrap runs in BACKGROUND startup (#456): the renderer may have
-      // already seeded its connection list from the onboarding snapshot,
-      // so push the change or the model picker stays empty until an
-      // unrelated action refreshes it.
-      emitConnectionListChanged();
-      return;
+      const envApiKey =
+        seed.providerType === 'anthropic'
+          ? process.env.ANTHROPIC_API_KEY
+          : seed.providerType === 'openai'
+            ? process.env.OPENAI_API_KEY
+            : undefined;
+      if (envApiKey) await credentialStore.setSecret(seed.slug, 'api_key', envApiKey);
+      if (seed.isDefault) await connectionStore.setDefault(seed.slug);
     }
-
-    if (process.env.OPENAI_API_KEY) {
-      const slug = 'env-openai';
-      await connectionStore.create({
-        slug,
-        name: 'OpenAI (env)',
-        providerType: 'openai',
-        defaultModel: 'gpt-4o-mini',
-      });
-      await credentialStore.setSecret(slug, 'api_key', process.env.OPENAI_API_KEY);
-      await connectionStore.setDefault(slug);
-      emitConnectionListChanged();
-    }
+    // Bootstrap runs in BACKGROUND startup (#456): the renderer may have
+    // already seeded its connection list from the onboarding snapshot,
+    // so push the change or the model picker stays empty until an
+    // unrelated action refreshes it.
+    if (seeds.length > 0) emitConnectionListChanged();
   }
 
   app.whenReady().then(async () => {
-    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20): set the
-    // app's dock icon (macOS) so the dev `npm start` run shows Maka's
-    // brand mark instead of the generic Electron icon. Packaged
-    // builds get the icon via .app bundle Info.plist; this covers the
-    // dev path.
-    if (process.platform === 'darwin' && app.dock) {
-      if (process.env.MAKA_E2E_FIXTURE || isIsolatedE2e) {
-        // PR-VISUAL-SMOKE-HEADLESS: hide the dock icon so the spawned
-        // Electron runs as an accessory app — no dock bounce, and it
-        // never becomes frontmost / steals focus from the developer's
-        // active window during a capture run or an E2E run.
+    // PR-GRAY-CARD-LIFT-0 (WAWQAQ msg `0eb99429` 2026-06-20) and
+    // PR-VISUAL-SMOKE-HEADLESS: see resolveDockPresentation for the rule.
+    const dockPresentation = resolveDockPresentation(process.platform, startHidden);
+    if (app.dock) {
+      if (dockPresentation === 'hide') {
         app.dock.hide();
-      } else {
+      } else if (dockPresentation === 'icon') {
         try {
           const iconPath = join(import.meta.dirname, '..', '..', 'assets', 'icon.png');
           app.dock.setIcon(nativeImage.createFromPath(iconPath));
@@ -295,35 +289,76 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
    * Non-critical startup work that must NOT block the first window paint.
    *
    * `setActiveProxy` must be applied before any network-bearing step
-   * (`botRegistry.applySettings`, `openGateway.sync`); pricing depends on
-   * `telemetryRepo.load()`. Everything here is best-effort and logged on
+   * (`botRegistry.applySettings`); usage readiness loads
+   * the embedded telemetry compatibility repo. Everything here is best-effort and logged on
    * failure — none of it should prevent the user from seeing and interacting
    * with the app shell.
    */
   async function runBackgroundStartup(): Promise<void> {
+    // Each step stands alone, because the doc comment above is a promise the
+    // old shape could not keep: this was a run of bare `await`s, so the first
+    // rejection skipped every step after it, silently.
+    //
+    // Seen for real: one telemetry record written by an older build failed
+    // `decodePersistedLlmCallRecord`, `ensureUsageReady()` rejected, and
+    // session recovery, plan reminders, the daily review scheduler, the config
+    // watcher and the automation scheduler all
+    // never ran. Nothing said so — the only trace was an unhandled rejection
+    // warning about `contextBudget`, which names the record and not one of the
+    // things that stopped working because of it.
+    const step = async (name: string, run: () => unknown): Promise<boolean> => {
+      try {
+        await run();
+        return true;
+      } catch (error) {
+        console.error(`[startup] ${name} failed; continuing:`, error);
+        return false;
+      }
+    };
+
     // E2e-fixture seeding happens synchronously in `whenReady` before the
     // window opens (see there for why); only the real bootstrap runs here.
     if (!e2eFixture) {
-      await ensureBootstrapConnection();
+      await step('bootstrap connection', () => ensureBootstrapConnection());
     }
-    const settings = await settingsStore.get();
-    setActiveProxy(toContractNetworkSettings(settings.network).proxy);
-    // Re-hold the power-save blocker at launch if the user left it enabled, so
-    // scheduled tasks survive machine sleep across restarts.
-    keepSystemAwake.apply(settings.system.keepSystemAwake);
-    await telemetryRepo.load();
-    setLookupPricing(buildPricingLookup(telemetryRepo.listPricingOverrides()));
-    await migrateSessionProjectsOnStartup();
-    await recoverInterruptedSessionsOnStartup();
-    await botRegistry.applySettings(settings.botChat);
-    await openGateway.sync(settings.openGateway);
-    await planReminders.refreshTimers();
-    dailyReview.startScheduler();
-    configWatcher = startConfigFileWatcher(workspaceRoot, {
-      onConnectionsChanged: () => emitConnectionListChanged(),
-      onSettingsChanged: () => void handleExternalSettingsChange(),
+    // The settings read is the one genuine dependency: three steps below take
+    // their argument from it, and guessing a default for any of them would be
+    // worse than not running them.
+    let settings: Awaited<ReturnType<typeof settingsStore.get>> | undefined;
+    await step('settings read', async () => {
+      settings = await settingsStore.get();
     });
-    automationWiring.scheduler.start();
+    if (settings) {
+      const resolved = settings;
+      await step('proxy', () => setActiveProxy(toContractNetworkSettings(resolved.network).proxy));
+      // Re-hold the power-save blocker at launch if the user left it enabled, so
+      // scheduled tasks survive machine sleep across restarts.
+      await step('keep-awake', () => keepSystemAwake.apply(resolved.system.keepSystemAwake));
+    }
+    await step('usage readiness', () => ensureUsageReady());
+    await step('project migration', () => migrateSessionProjectsOnStartup());
+    await step('session recovery', () => recoverInterruptedSessionsOnStartup());
+    let botRegistryReady = false;
+    if (settings) {
+      const resolved = settings;
+      botRegistryReady = await step(
+        'bot registry',
+        () => botRegistry.applySettings(resolved.botChat),
+      );
+    }
+    if (botRegistryReady) {
+      await step('plan reminders', () => planReminders.refreshTimers());
+    } else {
+      console.error('[startup] plan reminders not started; bot registry is not ready');
+    }
+    await step('daily review scheduler', () => dailyReview.startScheduler());
+    await step('config watcher', () => {
+      configWatcher = startConfigFileWatcher(workspaceRoot, {
+        onConnectionsChanged: () => emitConnectionListChanged(),
+        onSettingsChanged: () => void handleExternalSettingsChange(),
+      });
+    });
+    await step('automation scheduler', () => automationWiring.scheduler.start());
   }
 
   app.on('window-all-closed', () => {
@@ -350,17 +385,24 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       Promise.resolve().then(() => computerUseOverlay.destroyAll()),
       Promise.resolve().then(() => computerUse.backend?.dispose?.()),
       botRegistry.stopAll(),
-      openGateway.stop(),
       Promise.resolve(mainWindowController.disposeBrowserViews()),
       shellRuns.terminateAll(),
       mcpManager.close(),
       agentGraphCoordinator.close(),
       agentGraphSupervisorWakeCoordinator.close(),
+      telemetryRepo.close(),
+      Promise.resolve().then(() => artifactStore.close?.()),
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);
     }
+    try {
+      await closeWorkflowStores();
+    } catch (error) {
+      console.error('[shutdown] cleanup failed:', error);
+    }
     runtimePersistence.close();
+    executionStoreWiring.close();
     agentGraphControlStore.close();
     await sessionStore.close?.();
   }

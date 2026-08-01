@@ -29,8 +29,8 @@ test('tool catalogs are complete and independently selectable', () => {
 
   assert.equal(zh.status.running, '运行中');
   assert.equal(en.status.running, 'Running');
-  assert.equal(zh.error.title, '工具调用失败');
-  assert.equal(en.error.title, 'Tool call failed');
+  assert.equal(zh.sandboxBlocked.title, '操作可能被沙箱阻止');
+  assert.equal(en.sandboxBlocked.title, 'Operation may have been blocked by sandbox');
 });
 
 test('selectors accept only resolved UI locales', () => {

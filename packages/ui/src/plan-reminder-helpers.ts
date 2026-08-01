@@ -38,10 +38,10 @@ export type PlanReminderDisplayRow =
   | { kind: 'group'; key: string; label: string; count: number }
   | { kind: 'reminder'; reminder: PlanReminder };
 
-export function toPlanReminderDateTimeInputValue(ts: number): string {
+export function toPlanReminderLocalDateTimeValue(ts: number): string {
   const date = new Date(ts);
   const pad = (value: number) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export function planReminderPresetRunAt(preset: 'ten-minutes' | 'one-hour' | 'tomorrow-morning' | 'next-monday', now: number = Date.now()): number {
@@ -74,23 +74,31 @@ export function planReminderTemplateNextRunAt(template: PlanReminderExampleTempl
   return nextRun.getTime();
 }
 
-export function planReminderFormValidationMessage(input: {
+export type PlanReminderValidationField = 'title' | 'time' | 'cron' | 'chatId';
+
+export function planReminderFormValidation(input: {
   title: string;
   parsedRunAt: number;
   recurrence: PlanReminderRecurrence;
   cronExpression: string;
   delivery: PlanReminderDeliveryTarget;
   now: number;
-}, locale: UiLocale): string | null {
+}, locale: UiLocale): { field: PlanReminderValidationField; message: string } | null {
   const copy = getPlanReminderCopy(locale).validation;
-  if (input.title.trim().length === 0) return copy.title;
-  if (!Number.isFinite(input.parsedRunAt)) return copy.timeInvalid;
-  if (input.parsedRunAt < input.now) return copy.timePast;
+  if (input.title.trim().length === 0) {
+    return { field: 'title', message: copy.title };
+  }
+  if (!Number.isFinite(input.parsedRunAt)) {
+    return { field: 'time', message: copy.timeInvalid };
+  }
+  if (input.parsedRunAt < input.now) {
+    return { field: 'time', message: copy.timePast };
+  }
   if (input.recurrence === 'cron' && input.cronExpression.trim().split(/\s+/).length !== 5) {
-    return copy.cron;
+    return { field: 'cron', message: copy.cron };
   }
   if (input.delivery.channel === 'bot' && input.delivery.chatId.length === 0) {
-    return copy.chatId;
+    return { field: 'chatId', message: copy.chatId };
   }
   return null;
 }
@@ -283,7 +291,7 @@ export function createPlanReminderFormSeed(now: number = Date.now()): PlanRemind
     editingId: null,
     title: '',
     note: '',
-    runAtLocal: toPlanReminderDateTimeInputValue(now + 60 * 60 * 1000),
+    runAtLocal: toPlanReminderLocalDateTimeValue(now + 60 * 60 * 1000),
     recurrence: 'none',
     cronExpression: '0 9 * * 1-5',
     deliveryChannel: 'local',
@@ -300,7 +308,7 @@ export function planReminderTemplateSeed(template: PlanReminderExampleTemplate, 
     note: template.note,
     recurrence: template.recurrence,
     cronExpression: template.cronExpression,
-    runAtLocal: toPlanReminderDateTimeInputValue(planReminderTemplateNextRunAt(template, now)),
+    runAtLocal: toPlanReminderLocalDateTimeValue(planReminderTemplateNextRunAt(template, now)),
   };
 }
 
@@ -309,7 +317,7 @@ function planReminderReminderSeed(reminder: PlanReminder): PlanReminderFormSeed 
     editingId: reminder.id,
     title: reminder.title,
     note: reminder.note,
-    runAtLocal: toPlanReminderDateTimeInputValue(planReminderEditableRunAt(reminder)),
+    runAtLocal: toPlanReminderLocalDateTimeValue(planReminderEditableRunAt(reminder)),
     recurrence: planReminderRecurrenceValue(reminder),
     cronExpression: reminder.schedule.kind === 'cron' ? reminder.schedule.expression : '0 9 * * 1-5',
     deliveryChannel: reminder.delivery.channel,

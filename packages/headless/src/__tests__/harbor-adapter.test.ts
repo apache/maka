@@ -1059,6 +1059,33 @@ describe('Harbor adapter contract', () => {
     ]);
   });
 
+  test('process scope isolates transport descriptors from background descendants', (t) => {
+    const result = spawnSync('python3', ['-c', pythonBackgroundDescriptorSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
+    assert.equal(result.stdout, 'foreground\n');
+  });
+
+  test('process scope cleanup settles buffered transport wrappers', (t) => {
+    const result = spawnSync('python3', ['-c', pythonBufferedWrapperCleanupSmokeScript(repoRoot)], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    if (result.error && 'code' in result.error && result.error.code === 'ENOENT') {
+      t.skip('python3 is not available');
+      return;
+    }
+    assert.equal(result.status, 0, result.stderr || String(result.error ?? ''));
+  });
+
   test('opencode_agent.py bridges credentials and estimates trial cost without Harbor installed', (t: TestContext) => {
     const result = spawnSync('python3', ['-c', pythonOpenCodeAdapterSmokeScript(repoRoot)], {
       cwd: repoRoot,
@@ -1671,6 +1698,97 @@ finally:
         scope_dir.rmdir()
 
 print(json.dumps(results))
+`;
+}
+
+function pythonBackgroundDescriptorSmokeScript(root: string): string {
+  return String.raw`
+import contextlib
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cleanup_command
+
+scope = f"background-descriptor-test-{os.getpid()}"
+scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+with tempfile.TemporaryDirectory() as tmp:
+    child_pid_path = Path(tmp) / "child.pid"
+    command = (
+        f"printf 'foreground\\n'; sleep 30 & "
+        f"printf '%s\\n' $! > {child_pid_path}"
+    )
+    process = subprocess.Popen(
+        ["bash", "-lc", scoped_command(command, scope, "command")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=1)
+        assert process.returncode == 0, (process.returncode, stderr)
+        child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+        os.kill(child_pid, 0)
+        assert stdout == "foreground" + chr(10), repr(stdout)
+        assert stderr == "", stderr
+        print("foreground")
+    finally:
+        subprocess.run(
+            ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if process.poll() is None:
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=1)
+`;
+}
+
+function pythonBufferedWrapperCleanupSmokeScript(root: string): string {
+  return String.raw`
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+root = Path(${JSON.stringify(root)})
+sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
+
+from process_scope import COMMAND_SCOPE_ROOT, scoped_command, scoped_process_cleanup_command
+
+scope = f"buffered-wrapper-cleanup-{os.getpid()}"
+scope_dir = Path(COMMAND_SCOPE_ROOT) / scope
+process = subprocess.Popen(
+    ["bash", "-lc", scoped_command("head -c 1048576 /dev/zero; sleep 30", scope, "command")],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+try:
+    stdout_path = scope_dir / "command.stdout"
+    deadline = time.time() + 2
+    while (not stdout_path.exists() or stdout_path.stat().st_size < 1048576) and time.time() < deadline:
+        time.sleep(0.01)
+    assert stdout_path.exists() and stdout_path.stat().st_size == 1048576
+    subprocess.run(
+        ["bash", "-lc", scoped_process_cleanup_command(scope, "KILL")],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    process.wait(timeout=1)
+finally:
+    if process.poll() is None:
+        process.kill()
+        process.wait()
 `;
 }
 
@@ -2623,10 +2741,11 @@ with tempfile.TemporaryDirectory() as tmp:
         relative_task_run_env = captured_host_process["kwargs"]["env"]
         expected_task_run_out = host_repo_root / "relative-task-run"
         expected_storage_root = expected_task_run_out / "runs"
+        expected_trajectory_root = expected_task_run_out / "trajectory-state"
         assert relative_task_run_env["MAKA_TASK_RUN_OUT_DIR"] == str(expected_task_run_out), relative_task_run_env
         assert relative_task_run_env["MAKA_OUTPUT_DIR"] == str(expected_task_run_out), relative_task_run_env
         assert relative_task_run_env["MAKA_STORAGE_ROOT"] == str(expected_storage_root), relative_task_run_env
-        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_storage_root
+        assert relative_task_run_agent._trajectory_artifact_store_root() == expected_trajectory_root
         assert captured_host_process["kwargs"]["cwd"] == str(host_repo_root)
 
         runner_env_path = Path(tmp) / "task-run.env"
@@ -3171,6 +3290,7 @@ function pythonTrajectoryHarborContractScript(root: string): string {
   return String.raw`
 import asyncio
 import json
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -3204,6 +3324,65 @@ def event(event_id, ts, role, author, content=None, refs=None, status=None, acti
     if actions is not None:
         value["actions"] = actions
     return value
+
+
+def write_artifact_database(store_root, records, artifact_schema_version=1):
+    store_root.mkdir(parents=True, exist_ok=True)
+    database_path = store_root / "runtime.sqlite"
+    database_path.unlink(missing_ok=True)
+    connection = sqlite3.connect(database_path)
+    connection.executescript("""
+        CREATE TABLE operational_schema_migrations (
+            scope TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at INTEGER NOT NULL
+        );
+        CREATE TABLE cutover_journal (
+            store_name TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            state TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            validation_json TEXT
+        );
+        CREATE TABLE artifact_records (
+            storage_key TEXT PRIMARY KEY,
+            artifact_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            record_json TEXT NOT NULL
+        );
+    """)
+    connection.execute(
+        "INSERT INTO operational_schema_migrations(scope, version, applied_at) VALUES ('artifact', ?, 1)",
+        (artifact_schema_version,),
+    )
+    connection.execute(
+        "INSERT INTO cutover_journal(store_name, source_path, source_fingerprint, state, started_at, completed_at, validation_json) VALUES ('artifact_metadata', 'artifacts/metadata.jsonl', 'none', 'completed', 1, 1, '{}')"
+    )
+    for record in records:
+        connection.execute(
+            """
+            INSERT INTO artifact_records(
+                storage_key, artifact_id, session_id, created_at, status, relative_path, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["id"],
+                record["id"],
+                record["sessionId"],
+                record["createdAt"],
+                record["status"],
+                record["relativePath"],
+                json.dumps(record),
+            ),
+        )
+    connection.commit()
+    connection.close()
+    return database_path
 
 
 events = [
@@ -3251,8 +3430,7 @@ with tempfile.TemporaryDirectory() as tmp:
     image_path = artifact_root / "session-1" / "artifact-image-shot.png"
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-    metadata_path = artifact_root / "metadata.jsonl"
-    metadata_path.write_text(json.dumps({
+    image_record = {
         "id": "artifact-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3264,7 +3442,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n", encoding="utf-8")
+    }
+    database_path = write_artifact_database(artifact_root.parent, [image_record])
     agent._apply_cell_output(context, {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3280,6 +3459,30 @@ with tempfile.TemporaryDirectory() as tmp:
     assert image_content[0].source.path.endswith(".png"), image_content
     assert (logs_dir / image_content[0].source.path).is_file(), image_content
 
+    database_path.unlink()
+    metadata_path = artifact_root / "metadata.jsonl"
+    metadata_path.write_text(json.dumps(image_record) + "\n", encoding="utf-8")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    legacy_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert legacy_payload["extra"]["maka_artifact_kind"] == "summary", legacy_payload
+    assert legacy_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_missing", legacy_payload
+    metadata_path.unlink()
+
+    write_artifact_database(artifact_root.parent, [image_record], artifact_schema_version=2)
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    newer_schema_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert newer_schema_payload["extra"]["maka_artifact_kind"] == "summary", newer_schema_payload
+    assert newer_schema_payload["extra"]["maka_summary_reason"] == "image_artifact_metadata_invalid", newer_schema_payload
+    database_path = write_artifact_database(artifact_root.parent, [image_record])
+
     materialized_path = logs_dir / image_content[0].source.path
     protected_path = logs_dir / "protected-image-target"
     materialized_path.unlink()
@@ -3293,6 +3496,16 @@ with tempfile.TemporaryDirectory() as tmp:
     assert not materialized_path.is_symlink(), materialized_path
     assert protected_path.read_bytes() == b"protected", protected_path
 
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture-tampered")
+    agent._apply_cell_output(context, {
+        "status": "completed",
+        "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
+        "runtimeRefs": {"invocationId": "inv-1", "runId": "run-1", "sessionId": "session-1", "turnId": "turn-1"},
+    })
+    mismatched_image_payload = json.loads((logs_dir / "trajectory.json").read_text(encoding="utf-8"))
+    assert mismatched_image_payload["extra"]["maka_artifact_kind"] == "summary", mismatched_image_payload
+    assert mismatched_image_payload["extra"]["maka_summary_reason"] == "image_artifact_content_mismatch", mismatched_image_payload
+
     image_path.unlink()
     agent._apply_cell_output(context, {
         "status": "completed",
@@ -3303,9 +3516,15 @@ with tempfile.TemporaryDirectory() as tmp:
     assert missing_image_payload["extra"]["maka_artifact_kind"] == "summary", missing_image_payload
     assert missing_image_payload["extra"]["maka_summary_reason"] == "image_artifact_unavailable", missing_image_payload
 
-    escaping_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    escaping_metadata = dict(image_record)
     escaping_metadata["relativePath"] = "../outside.png"
-    metadata_path.write_text(json.dumps(escaping_metadata) + "\n", encoding="utf-8")
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "UPDATE artifact_records SET relative_path = ?, record_json = ? WHERE artifact_id = ?",
+        (escaping_metadata["relativePath"], json.dumps(escaping_metadata), escaping_metadata["id"]),
+    )
+    connection.commit()
+    connection.close()
     agent._apply_cell_output(context, {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3366,7 +3585,7 @@ with tempfile.TemporaryDirectory() as tmp:
         encoding="utf-8",
     )
     downloaded_relative_path = "session-1/downloaded-image-shot.png"
-    downloaded_metadata = json.dumps({
+    downloaded_record = {
         "id": "downloaded-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3378,14 +3597,14 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n"
+    }
 
     class ArtifactDownloadEnvironment:
         async def download_file(self, remote, local):
-            if remote == "/logs/agent/maka-storage/artifacts/metadata.jsonl":
-                Path(local).write_text(downloaded_metadata, encoding="utf-8")
+            if remote == "/logs/agent/trajectory-state/runtime.sqlite":
+                write_artifact_database(Path(local).parent, [downloaded_record])
                 return
-            assert remote == f"/logs/agent/maka-storage/artifacts/{downloaded_relative_path}", remote
+            assert remote == f"/logs/agent/trajectory-state/artifacts/{downloaded_relative_path}", remote
             Path(local).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
 
     asyncio.run(download_agent._download_runtime_artifacts(ArtifactDownloadEnvironment()))
@@ -3398,12 +3617,12 @@ with tempfile.TemporaryDirectory() as tmp:
     task_run_runtime_path.write_text(
         "\n".join(json.dumps(event) for event in image_events) + "\n", encoding="utf-8"
     )
-    task_run_artifact_root = task_run_logs / "maka-task-run" / "runs" / "artifacts"
+    task_run_store_root = task_run_logs / "maka-task-run" / "trajectory-state"
+    task_run_artifact_root = task_run_store_root / "artifacts"
     task_run_image_path = task_run_artifact_root / "session-1" / "task-run-shot.png"
     task_run_image_path.parent.mkdir(parents=True)
     task_run_image_path.write_bytes(b"\x89PNG\r\n\x1a\nfixture")
-    (task_run_artifact_root / "metadata.jsonl").parent.mkdir(parents=True, exist_ok=True)
-    (task_run_artifact_root / "metadata.jsonl").write_text(json.dumps({
+    task_run_record = {
         "id": "artifact-image",
         "sessionId": "session-1",
         "turnId": "turn-1",
@@ -3415,7 +3634,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "mimeType": "image/png",
         "source": "tool_result",
         "status": "live",
-    }) + "\n", encoding="utf-8")
+    }
+    write_artifact_database(task_run_store_root, [task_run_record])
     task_run_agent._apply_cell_output(AgentContext(), {
         "status": "completed",
         "runtimeEventsPath": "/logs/agent/runtime-events.jsonl",
@@ -3471,6 +3691,9 @@ class OpenCode:
         self.model_name = kwargs.get("model_name") or "openai/mimo-v2.5-pro"
         self._instruction = None
         self._prompt_template_path = Path(prompt_template_path) if prompt_template_path else None
+        # Real harbor/pier bases set self.logger in __init__; the adapter's
+        # best-effort log hydration logs through it.
+        self.logger = types.SimpleNamespace(debug=lambda *args, **kwargs: None)
 
     @staticmethod
     def name():
@@ -3647,6 +3870,26 @@ try:
         assert kimi_env["KIMI_API_KEY"] == "ephemeral-kimi-token", kimi_env
         assert kimi_env["KIMI_BASE_URL"] == "http://host.docker.internal:43210", kimi_env
         assert "ZAI_API_KEY" not in kimi_env, kimi_env
+        deepseek_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-deepseek-token",
+            "MAKA_LLM_CONNECTION_SLUG": "deepseek",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_REASONING_EFFORT": "max",
+            "MAKA_OPENCODE_VARIANT": "max",
+        }, prompt_template_path=template_path, model_name="deepseek/deepseek-v4-flash")
+        deepseek_agent.exec_as_agent = exec_as_agent
+        asyncio.run(deepseek_agent.run("hi", environment, AgentContext()))
+        deepseek_command, deepseek_env = environment.agent_commands[-1]
+        assert "opencode --model=deepseek/deepseek-v4-flash run --format=json" in deepseek_command, deepseek_command
+        assert "--variant=max" in deepseek_command, deepseek_command
+        assert deepseek_env["DEEPSEEK_API_KEY"] == "ephemeral-deepseek-token", deepseek_env
+        assert deepseek_env["DEEPSEEK_BASE_URL"] == "http://host.docker.internal:43210", deepseek_env
+        assert benchmark_config["provider"]["deepseek"]["options"] == {
+            "apiKey": "{env:DEEPSEEK_API_KEY}",
+            "baseURL": "{env:DEEPSEEK_BASE_URL}",
+        }, benchmark_config
+        assert "KIMI_API_KEY" not in deepseek_env, deepseek_env
         assert environment.uploaded_files == [], environment.uploaded_files
         assert 'cat --' not in command, command
         assert "test-zai-key" not in command, command
@@ -4595,17 +4838,19 @@ verifier_mod.Verifier = Verifier
 verifier_mod.RewardFileNotFoundError = RewardFileNotFoundError
 
 sys.path.insert(0, str(root / "packages" / "headless" / "harbor"))
-from maka_verifier import MakaVerifier
+import maka_verifier as verifier_impl
+from maka_verifier import MakaVerifier, MakaVerifierInfrastructureError
 
 class FakeEnvironment:
     os = "linux"
     capabilities = types.SimpleNamespace(mounted=True)
     default_user = None
 
-    def __init__(self, trial_paths, outcomes):
+    def __init__(self, trial_paths, outcomes, clock=None):
         self.trial_paths = trial_paths
         self.outcomes = list(outcomes)
         self.commands = []
+        self.clock = clock
 
     async def exec(self, command, **kwargs):
         self.commands.append(command)
@@ -4615,6 +4860,9 @@ class FakeEnvironment:
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
         assert "timeout --signal=KILL" in command, command
         outcome = self.outcomes.pop(0)
+        if isinstance(outcome, tuple):
+            outcome, duration = outcome
+            self.clock[0] += duration
         if outcome == "infra":
             self.trial_paths.test_stdout_path.write_text("E: Failed to fetch https://deb.example.invalid/pkg.deb 502 Bad Gateway", encoding="utf-8")
             return types.SimpleNamespace(return_code=0, stdout="", stderr="")
@@ -4670,7 +4918,7 @@ class FakeEnvironment:
         self.trial_paths.reward_text_path.write_text("1\n", encoding="utf-8")
         return types.SimpleNamespace(return_code=0, stdout="", stderr="")
 
-async def run_case(outcomes):
+async def run_case(outcomes, retry_backoff_sec=0, total_timeout_sec=2, clock=None):
     temp = tempfile.TemporaryDirectory()
     trial = Path(temp.name)
     verifier_dir = trial / "verifier"
@@ -4681,15 +4929,20 @@ async def run_case(outcomes):
         reward_json_path=verifier_dir / "reward.json",
         test_stdout_path=verifier_dir / "test-stdout.txt",
     )
-    environment = FakeEnvironment(paths, outcomes)
+    environment = FakeEnvironment(paths, outcomes, clock)
     verifier = MakaVerifier(
         task=types.SimpleNamespace(config=types.SimpleNamespace(verifier=types.SimpleNamespace(env={})), paths=None),
         trial_paths=paths,
         environment=environment,
         attempt_timeout_sec=1,
-        max_attempts=2,
+        max_attempts=3,
+        retry_backoff_sec=retry_backoff_sec,
+        total_timeout_sec=total_timeout_sec,
     )
-    result = await verifier.verify()
+    try:
+        result = await verifier.verify()
+    except MakaVerifierInfrastructureError as error:
+        result = error
     outcome = json.loads((verifier_dir / "maka-verifier-outcome.json").read_text(encoding="utf-8"))
     temp.cleanup()
     return result, outcome, environment.commands
@@ -4700,6 +4953,57 @@ assert outcome["outcome"] == "passed", outcome
 assert [item["classification"] for item in outcome["attempts"]] == ["infra_setup_failed", "passed"], outcome
 assert len([command for command in commands if "timeout --signal=KILL" in command]) == 2, commands
 assert all("bash -lc" in command for command in commands if "timeout --signal=KILL" in command), commands
+
+result, outcome, commands = asyncio.run(run_case(["infra", "infra", "pass"]))
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert outcome["outcome"] == "passed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "passed",
+], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 3, commands
+
+delays = []
+original_sleep = verifier_impl.asyncio.sleep
+async def record_sleep(delay):
+    delays.append(delay)
+verifier_impl.asyncio.sleep = record_sleep
+try:
+    result, outcome, commands = asyncio.run(
+        run_case(["infra", "infra", "pass"], retry_backoff_sec=2, total_timeout_sec=10)
+    )
+finally:
+    verifier_impl.asyncio.sleep = original_sleep
+assert result.rewards == {"reward": 1.0}, result.rewards
+assert delays == [2, 4], delays
+
+result, outcome, commands = asyncio.run(run_case(["infra", "infra", "infra"]))
+assert isinstance(result, MakaVerifierInfrastructureError), result
+assert outcome["outcome"] == "infra_failed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "infra_setup_failed",
+], outcome
+assert len([command for command in commands if "timeout --signal=KILL" in command]) == 3, commands
+
+clock = [0.0]
+original_monotonic = verifier_impl.time.monotonic
+verifier_impl.time.monotonic = lambda: clock[0]
+try:
+    result, outcome, commands = asyncio.run(
+        run_case([("infra", 0.6), ("infra", 0.6), "timeout"], clock=clock)
+    )
+finally:
+    verifier_impl.time.monotonic = original_monotonic
+assert isinstance(result, MakaVerifierInfrastructureError), result
+assert outcome["outcome"] == "infra_failed", outcome
+assert [item["classification"] for item in outcome["attempts"]] == [
+    "infra_setup_failed",
+    "infra_setup_failed",
+    "infra_failed",
+], outcome
 
 result, outcome, commands = asyncio.run(run_case(["infra_with_fail_reward", "pass"]))
 assert result.rewards == {"reward": 1.0}, result.rewards

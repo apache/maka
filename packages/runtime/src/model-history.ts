@@ -47,6 +47,8 @@ import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';
 
+export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
+
 // ============================================================================
 // Output type
 // ============================================================================
@@ -843,7 +845,7 @@ export function stripSteeringMessages(
   });
 }
 
-const LEGACY_SUBAGENT_RESULT_TOOL_NAMES = new Set(['Task', 'agent_spawn', 'expert_dispatch']);
+const LEGACY_SUBAGENT_RESULT_TOOL_NAMES = new Set(['Task', 'agent_spawn']);
 
 function isLegacySubagentToolResultCandidate(toolName: string, value: unknown): boolean {
   if (!LEGACY_SUBAGENT_RESULT_TOOL_NAMES.has(toolName)) return false;

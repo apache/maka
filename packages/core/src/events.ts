@@ -14,6 +14,7 @@ import type {
   PermissionResponse,
   SandboxEscalationRequest,
 } from './permission.js';
+import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
   PipeShellOutput,
@@ -23,6 +24,7 @@ import type {
   ShellRunStatus,
   ShellRunTerminalStatus,
 } from './shell-run.js';
+export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
 import type {
   CacheMissInputSource,
   ContextBudgetDiagnostic,
@@ -324,6 +326,8 @@ export type SessionEvent =
   | ToolProgressEvent
   | ToolResultEvent
   | AnyPermissionRequestEvent
+  | SandboxBoundaryRequestEvent
+  | SandboxBoundaryDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
@@ -441,7 +445,7 @@ type ShellRunResultMetadata = {
   failureMessage?: string;
   revision: number;
   timeoutMs?: number;
-  sandboxDenial?: SandboxDenialRecovery;
+  sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
 };
 
 export interface SandboxDenialSignal {
@@ -451,6 +455,25 @@ export interface SandboxDenialSignal {
 
 export interface SandboxDenialRecovery extends SandboxDenialSignal {
   recovery: 'require_escalated';
+}
+
+export interface SandboxBoundaryFailureSignal {
+  reason: 'sandbox_boundary_required' | 'requires_bypass';
+  requiredExpansion?: SandboxBoundaryExpansion;
+}
+
+export interface ToolUncertainOutcomeSignal {
+  code: 'outcome_unknown';
+  retrySafe: false;
+}
+
+export class ToolOutcomeUnknownError extends Error {
+  readonly code = 'outcome_unknown';
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ToolOutcomeUnknownError';
+  }
 }
 
 export type ShellRunCompactResult = ShellRunResultMetadata &
@@ -473,7 +496,13 @@ type ShellRunToolResultContent =
       ));
 
 export type ToolResultContent =
-  | { kind: 'text'; text: string; sandboxDenial?: SandboxDenialSignal }
+  | {
+      kind: 'text';
+      text: string;
+      sandboxDenial?: SandboxDenialSignal;
+      sandboxFailure?: SandboxBoundaryFailureSignal;
+      uncertainOutcome?: ToolUncertainOutcomeSignal;
+    }
   | { kind: 'json'; value: unknown }
   | { kind: 'file_diff'; paths: string[]; diff: string }
   | { kind: 'file_write'; path: string; bytes: number }
@@ -498,7 +527,7 @@ export type ToolResultContent =
       exitCode?: number;
       failureMessage?: string;
       output: ShellOutput;
-      sandboxDenial?: SandboxDenialRecovery;
+      sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
     }
   | ShellRunToolResultContent
   | { kind: 'image'; mimeType: string; ref: StorageRef }
@@ -698,6 +727,23 @@ export type AnyPermissionRequestEvent =
 
 export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest {
   type: 'user_question_request';
+}
+
+export interface SandboxBoundaryRequestEvent extends BaseEvent {
+  type: 'sandbox_boundary_request';
+  requestId: string;
+  toolUseId: string;
+  justification: string;
+  expansion: SandboxBoundaryExpansion;
+}
+
+export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
+  type: 'sandbox_boundary_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
+  status: Exclude<SandboxBoundaryRequestStatus, 'pending'>;
+  revision: number;
 }
 
 /**

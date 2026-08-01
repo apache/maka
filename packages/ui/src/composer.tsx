@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ArrowUp, Blocks, Paperclip, Pencil, Plus, X } from './icons.js';
+import { ArrowUp, Mic, Pencil, Upload, Volume2, Workflow, X } from './icons.js';
 import { ChatModelSwitcher, ModelChipStatic, NewChatModelPicker } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -34,13 +34,21 @@ import { ComposerMentionPopup, mentionOptionId } from './composer-mention-popup.
 import { useMentionPopup } from './use-mention-popup.js';
 import { ComposerWorkspaceRow, type ComposerBranchPicker, type ComposerWorkspacePicker } from './composer-workspace-row.js';
 import type { AttachmentRef, PermissionMode, ProviderType, QuoteRef, SessionSummary } from '@maka/core';
-import { Button as UiButton } from './ui.js';
-import { Textarea as UiTextarea } from './primitives/textarea.js';
+import {
+  Button as UiButton,
+  ChatComposer as AstryxChatComposer,
+  ChatComposerDrawer,
+  IconButton,
+} from '@astryxdesign/core';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+} from '@astryxdesign/core/DropdownMenu';
 import { AttachmentFileCard } from './attachment-file-card.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
-import { Kbd } from './primitives/kbd.js';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import { PermissionModeSelect } from './permission-mode-menu.js';
-import { Menu, MenuCheckboxItem, MenuItem, MenuPopup, MenuSeparator, MenuSub, MenuSubPopup, MenuSubTrigger, MenuTrigger } from './primitives/menu.js';
+import { ComposerSkillPicker, type ComposerSkillOption } from './composer-skill-picker.js';
 
 const COMPOSER_MAX_HEIGHT = 240;
 
@@ -65,6 +73,8 @@ export interface ComposerHandle {
   clearDraft(draftKey: string): void;
   /** Write a specific session draft before navigation changes the active key. */
   setDraft(draftKey: string, text: string): void;
+  /** Append to a specific session draft without replacing newer text. */
+  appendDraft?(draftKey: string, text: string): void;
   /** Replace structured Skills under an explicit session draft key. */
   setSkillDraft(
     draftKey: string,
@@ -86,8 +96,9 @@ export const Composer = forwardRef<
     /**
      * When true, a turn is in flight — live output OR (with `processing`) the
      * pre-first-token wait. Toolbar swaps to a working hint ("Maka 正在回答…" or
-     * "正在处理…") and Send becomes Stop. The ＋ menu stays reachable (#1444);
-     * import actions remain blocked mid-turn until the runtime accepts them.
+     * "正在处理…") and Send becomes Stop. The modes menu and Skills picker stay
+     * reachable (#1444); import stays blocked mid-turn, so the upload button is
+     * disabled until the runtime accepts it again.
      */
     streaming?: boolean;
     /**
@@ -126,10 +137,6 @@ export const Composer = forwardRef<
      * case a large paste behaves like any other paste.
      */
     onPasteAsQuote?(input: { text: string; label?: string }): void;
-    /** Built-in expert teams offered under 专家团 in the "+" menu. */
-    expertTeams?: readonly { id: string; name: string; description?: string }[];
-    /** Start a new expert-team session from the "+" menu. */
-    onStartExpertTeam?(teamId: string): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
     activeConnectionLabel?: string;
@@ -137,7 +144,7 @@ export const Composer = forwardRef<
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
-    /** Renders the provider brand mark on each group heading of the model menus;
+    /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
     modelChangePending?: boolean;
@@ -197,11 +204,10 @@ export const Composer = forwardRef<
      * PR-MOVE-PERMISSION-MODE (WAWQAQ 47fe0d0e + a667cf6c): the
      * permission mode picker lives inside the composer left-controls
      * instead of the chat header. Composer renders a dropdown labelled
-     * by the current mode (询问权限 / 自动执行 / 跳过确认);
-     * selecting an option fires `onPermissionModeChange`. When the
-     * active session is in the legacy `explore` mode the picker
-     * collapses to display 询问权限 — explore is internal-only now and
-     * won't surface here.
+     * by the mode the session's boundary is actually in (只读 / 自动 /
+     * 完全权限); selecting an option fires `onPermissionModeChange`.
+     * A read-only session displays 只读 without it becoming a third
+     * option (#1611).
      */
     permissionMode?: PermissionMode;
     permissionModePending?: boolean;
@@ -224,12 +230,19 @@ export const Composer = forwardRef<
     graphModePending?: boolean;
     graphModeDisabledReason?: string;
     onGraphModeChange?(active: boolean): void | Promise<void>;
+    voiceCaptureState?: 'idle' | 'requesting' | 'recording' | 'processing' | 'native_ready' | 'sending';
+    realtimeVoiceState?: 'idle' | 'connecting' | 'connected';
+    voiceProviderLabel?: string;
+    onToggleVoiceCapture?(input?: { dictate?: boolean }): void | Promise<void>;
+    onCancelVoiceCapture?(): void;
+    onToggleRealtimeVoice?(): void | Promise<void>;
     /**
      * Composer mention popups. Both are optional and the whole feature no-ops
      * when absent (SSR contracts render Composer with minimal props):
-     *   - `mentionSkills` powers the `/` popup — pass only ENABLED skills; the
-     *     composer filters them client-side by id/name and creates a structured
-     *     Skill Chip (human-in-the-loop, never auto-send).
+     *   - `mentionSkills` powers the `/` popup AND the toolbar Skills picker
+     *     (PR-COMPOSER-TOOLBAR-SPLIT) — pass only ENABLED skills; the composer
+     *     filters them client-side by id/name and creates a structured Skill
+     *     Chip (human-in-the-loop, never auto-send).
      *   - `onSearchMentionFiles` powers the `@` popup — the composer debounces
      *     the query, and selecting a file inserts `@<relativePath> `.
      */
@@ -255,7 +268,14 @@ export const Composer = forwardRef<
   // (issue #1044). `resetPromptHistoryNavigation` is a hoisted wrapper so the
   // draft hook's swap effect can reset history navigation even though the
   // history hook is created one line below it.
-  const { hasDraftText, saveCurrentDraft, clearDraft, setDraft, activeDraftKey } = useComposerDraft({
+  const {
+    hasDraftText,
+    saveCurrentDraft,
+    clearDraft,
+    setDraft,
+    appendDraft,
+    activeDraftKey,
+  } = useComposerDraft({
     textareaRef,
     draftKey: props.draftKey,
     autoResize,
@@ -294,6 +314,14 @@ export const Composer = forwardRef<
   // PR-UI-15: locale-aware copy for placeholder + toolbar states. We
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).composer;
+  const voiceCaptureLabel = props.voiceCaptureState === 'recording'
+    ? copy.voiceStopRecording
+    : props.voiceCaptureState === 'native_ready'
+      ? copy.voiceSend
+      : copy.voiceStart;
+  const realtimeVoiceLabel = props.realtimeVoiceState !== 'idle'
+    ? copy.voiceRealtimeStop
+    : copy.voiceRealtimeStart;
 
   useEffect(() => {
     return () => {
@@ -361,6 +389,16 @@ export const Composer = forwardRef<
         if (!el) return;
         resetPromptHistoryNavigation();
         el.value = text;
+        autoResize();
+        focusTextInputAtEnd(el);
+      },
+      appendDraft(draftKey: string, text: string) {
+        const next = appendDraft(draftKey, text);
+        if (activeDraftKey() !== draftKey) return;
+        const el = textareaRef.current;
+        if (!el) return;
+        resetPromptHistoryNavigation();
+        el.value = next;
         autoResize();
         focusTextInputAtEnd(el);
       },
@@ -470,6 +508,15 @@ export const Composer = forwardRef<
         closeMention();
         return;
       }
+    }
+    if (
+      event.key === 'Escape' &&
+      props.voiceCaptureState &&
+      props.voiceCaptureState !== 'idle'
+    ) {
+      event.preventDefault();
+      props.onCancelVoiceCapture?.();
+      return;
     }
     if (
       event.key === 'Backspace' &&
@@ -663,270 +710,286 @@ export const Composer = forwardRef<
         </div>
       )}
       <form
-      ref={formRef}
-      className="maka-composer composer"
-      hidden={props.hidden}
-      data-drag-active={dragActive ? 'true' : undefined}
-      data-maka-file-drop-target={canAcceptDroppedFiles() ? 'true' : undefined}
-      onDragOver={onComposerDragOver}
-      onDragLeave={onComposerDragLeave}
-      onDrop={onComposerDrop}
-      onSubmit={submit}
-    >
-      <div
-        className="maka-composer-inner composerInner agents-parchment-paper-surface"
-        data-streaming={props.streaming ? 'true' : undefined}
+        ref={formRef}
+        className="maka-composer composer"
+        hidden={props.hidden}
+        data-drag-active={dragActive ? 'true' : undefined}
+        data-maka-file-drop-target={canAcceptDroppedFiles() ? 'true' : undefined}
+        onDragOver={onComposerDragOver}
+        onDragLeave={onComposerDragLeave}
+        onDrop={onComposerDrop}
+        onSubmit={submit}
       >
-        {/* No px on the chip row: `.maka-composer-inner` already pads the card,
-            so an extra px-3 would sit the chips 12px right of the textarea. */}
-        {props.pendingQuotes && props.pendingQuotes.length > 0 ? (
-          <div className="flex flex-wrap items-start gap-1 pb-1">
-            {props.pendingQuotes.map((quote, index) => (
-              <QuoteRefChip
-                key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
-                quote={quote}
-                onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
-              />
-            ))}
-          </div>
-        ) : null}
-        {props.pendingAttachments && props.pendingAttachments.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5 px-3 pt-2">
-            {props.pendingAttachments.map((attachment, index) => (
-              <AttachmentFileCard
-                key={`${attachment.displayName}-${index}`}
-                name={attachment.displayName}
-                kind={attachment.kind}
-                size={attachment.size}
-                onRemove={props.onRemoveAttachment ? () => props.onRemoveAttachment?.(index) : undefined}
-              />
-            ))}
-          </div>
-        ) : null}
-        {skillDraft.skills.length > 0 ? (
-          <ul
-            className="maka-composer-skill-chips"
-            aria-label={copy.selectedSkillsAriaLabel}
-          >
-            {skillDraft.skills.map((skill) => (
-              <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
-                <span>{skill.name}</span>
-                <UiButton
+        <AstryxChatComposer
+          className="maka-composer-astryx"
+          data-maka-contract="composer-inner"
+          data-streaming={props.streaming ? 'true' : undefined}
+          onSubmit={() => void sendCurrent()}
+          isDisabled={props.disabled}
+          drawer={(
+            (props.pendingQuotes?.length ?? 0) > 0
+            || (props.pendingAttachments?.length ?? 0) > 0
+            || skillDraft.skills.length > 0
+          ) ? (
+            <ChatComposerDrawer
+              count={
+                (props.pendingQuotes?.length ?? 0)
+                + (props.pendingAttachments?.length ?? 0)
+                + skillDraft.skills.length
+              }
+              label={copy.addContext}
+            >
+              <div className="maka-composer-context-drawer">
+                {props.pendingQuotes && props.pendingQuotes.length > 0 ? (
+                  <div className="maka-composer-context-items">
+                    {props.pendingQuotes.map((quote, index) => (
+                      <QuoteRefChip
+                        key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
+                        quote={quote}
+                        onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {props.pendingAttachments && props.pendingAttachments.length > 0 ? (
+                  <div className="maka-composer-context-items">
+                    {props.pendingAttachments.map((attachment, index) => (
+                      <AttachmentFileCard
+                        key={`${attachment.displayName}-${index}`}
+                        name={attachment.displayName}
+                        kind={attachment.kind}
+                        size={attachment.size}
+                        onRemove={props.onRemoveAttachment ? () => props.onRemoveAttachment?.(index) : undefined}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+                {skillDraft.skills.length > 0 ? (
+                  <ul
+                    className="maka-composer-skill-chips"
+                    aria-label={copy.selectedSkillsAriaLabel}
+                  >
+                    {skillDraft.skills.map((skill) => (
+                      <li className="maka-composer-skill-chip" key={skill.ref ?? skill.id}>
+                        <span>{skill.name}</span>
+                        <IconButton
+                          variant="ghost"
+                          className="maka-composer-skill-chip-remove"
+                          label={copy.removeSkillAriaLabel(skill.name)}
+                          icon={<X size={12} aria-hidden="true" />}
+                          onClick={() => {
+                            skillDraft.remove(skill.ref ?? skill.id);
+                            window.requestAnimationFrame(() => textareaRef.current?.focus());
+                          }}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            </ChatComposerDrawer>
+          ) : undefined}
+          headerActions={(
+            props.onPickAttachments
+            || (!props.streaming && (props.onToggleVoiceCapture || props.onToggleRealtimeVoice))
+          ) ? (
+            <div className="maka-composer-header-actions">
+              {props.onPickAttachments ? (
+                <IconButton
+                  variant="ghost"
                   type="button"
-                  variant="quiet"
-                  size="icon"
-                  shape="pill"
-                  className="maka-composer-skill-chip-remove"
-                  aria-label={copy.removeSkillAriaLabel(skill.name)}
-                  onClick={() => {
-                    skillDraft.remove(skill.ref ?? skill.id);
-                    window.requestAnimationFrame(() => textareaRef.current?.focus());
-                  }}
-                >
-                  <X size={12} aria-hidden="true" />
-                </UiButton>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <UiTextarea
-          ref={textareaRef}
-          unstyled
-          name="text"
-          className="maka-composer-textarea resize-none"
-          placeholder={copy.placeholder}
-          aria-label={copy.textareaAriaLabel}
-          aria-controls={mentionPopupOpen ? mentionListboxId : undefined}
-          aria-expanded={mentionPopupOpen ? true : undefined}
-          aria-activedescendant={
-            mentionPopupOpen && mentionItems.length > 0
-              ? mentionOptionId(mentionListboxId, mentionActiveIndex)
-              : undefined
-          }
-          disabled={props.disabled}
-          onKeyDown={onTextareaKeyDown}
-          onKeyUp={recomputeMention}
-          onClick={recomputeMention}
-          onPaste={onTextareaPaste}
-          onCompositionStart={() => { compositionActiveRef.current = true; }}
-          onCompositionEnd={() => { compositionActiveRef.current = false; recomputeMention(); }}
-          onInput={onTextareaInput}
-          rows={1}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        {mention ? (
-          <ComposerMentionPopup
-            trigger={mention.trigger}
-            items={mentionItems}
-            activeIndex={mentionActiveIndex}
-            loading={mentionLoading}
-            listboxId={mentionListboxId}
-            onSelect={selectMention}
-            onHover={setMentionActiveIndex}
-          />
-        ) : null}
-        {dragActive && (
-          <span className="maka-visually-hidden" role="status" aria-live="polite">
-            {copy.dropToImport}
-          </span>
-        )}
-        <div className="maka-composer-toolbar composerActions" data-streaming={props.streaming ? 'true' : undefined}>
-          <div className="maka-composer-left-controls">
-            {/* #1444: keep the ＋ menu reachable while streaming. Import
-                actions still no-op mid-turn (`runImportAction` / drop
-                target), so the attach item is disabled rather than
-                vanishing the whole menu (and Plan/Swarm / expert teams). */}
-            {(props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 || props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange) ? (
-              <Menu>
-                <MenuTrigger
-                  render={({ onClick: menuToggleClick, ...triggerRest }) => (
-                    <UiButton
-                      {...triggerRest}
-                      variant="quiet"
-                      size="icon-sm"
-                      shape="pill"
-                      type="button"
-                      disabled={props.disabled || importActionBusy}
-                      onClick={(e) => { menuToggleClick?.(e); }}
-                      aria-label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.add}
-                      aria-busy={importActionBusy ? 'true' : undefined}
-                      data-pending={importActionBusy ? 'true' : undefined}
-                      title={copy.addTitle}
-                    >
-                      <Plus size={15} aria-hidden="true" />
-                    </UiButton>
-                  )}
+                  size="sm"
+                  className="maka-composer-upload-button"
+                  isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                  aria-busy={pendingImportAction === 'pick' ? 'true' : undefined}
+                  data-pending={pendingImportAction === 'pick' ? 'true' : undefined}
+                  label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory}
+                  tooltip={pendingImportAction === 'pick' ? copy.addingAttachment : copy.uploadTitle}
+                  onClick={() => void runImportAction('pick', props.onPickAttachments)}
+                  icon={<Upload size={15} aria-hidden="true" />}
                 />
-                <MenuPopup className="maka-composer-context-menu" align="start" side="top" sideOffset={6}>
-                  {props.onPickAttachments ? (
-                    <MenuItem
-                      disabled={props.disabled || props.streaming === true || importActionBusy}
-                      onClick={() => void runImportAction('pick', props.onPickAttachments)}
-                    >
-                      <Paperclip size={13} aria-hidden="true" />
-                      <span>{copy.addFileOrDirectory}</span>
-                    </MenuItem>
-                  ) : null}
-                  {(props.expertTeams?.length ?? 0) > 0 ? (
-                    <MenuSub>
-                      <MenuSubTrigger disabled={props.disabled}>
-                        <Blocks size={13} aria-hidden="true" />
-                        <span>{copy.expertTeam}</span>
-                      </MenuSubTrigger>
-                      <MenuSubPopup>
-                        {props.expertTeams?.map((team) => (
-                          <MenuItem
-                            key={team.id}
-                            disabled={props.disabled}
-                            onClick={() => props.onStartExpertTeam?.(team.id)}
-                            {...(team.description ? { title: team.description } : {})}
-                          >
-                            <span>{team.name}</span>
-                          </MenuItem>
-                        ))}
-                      </MenuSubPopup>
-                    </MenuSub>
-                  ) : null}
-                  {/* #1433 subtraction: Plan/Swarm live here as switch
-                      items instead of standalone toolbar switches — the
-                      toolbar keeps only add / permission / model / send. */}
-                  {props.onPlanModeChange || props.onSwarmModeChange || props.onGraphModeChange ? (
-                    <>
-                      {/* Separator only when an attachment/expert-team group
-                          precedes it — a modes-only menu must not lead with
-                          a divider (review P3). */}
-                      {props.onPickAttachments || (props.expertTeams?.length ?? 0) > 0 ? (
-                        <MenuSeparator />
-                      ) : null}
-                      {props.onPlanModeChange ? (
-                        <MenuCheckboxItem
-                          variant="switch"
-                          checked={props.planModeActive === true}
-                          disabled={
-                            props.disabled
-                            || props.planModePending === true
-                            || Boolean(props.planModeDisabledReason)
-                          }
-                          onCheckedChange={(checked) => {
-                            void props.onPlanModeChange?.(checked);
-                          }}
-                          title={
-                            props.planModeDisabledReason
-                            ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)
-                          }
-                        >
-                          {copy.planModeLabel}
-                        </MenuCheckboxItem>
-                      ) : null}
-                      {props.onSwarmModeChange ? (
-                        <MenuCheckboxItem
-                          variant="switch"
-                          checked={props.swarmModeActive === true}
-                          disabled={
-                            props.disabled
-                            || props.swarmModePending === true
-                            || Boolean(props.swarmModeDisabledReason)
-                          }
-                          onCheckedChange={(checked) => {
-                            void props.onSwarmModeChange?.(checked);
-                          }}
-                          title={
-                            props.swarmModeDisabledReason
-                            ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)
-                          }
-                        >
-                          {copy.swarmModeLabel}
-                        </MenuCheckboxItem>
-                      ) : null}
-                      {props.onGraphModeChange ? (
-                        <MenuCheckboxItem
-                          variant="switch"
-                          checked={props.graphModeActive === true}
-                          disabled={
-                            props.disabled
-                            || props.graphModePending === true
-                            || Boolean(props.graphModeDisabledReason)
-                          }
-                          onCheckedChange={(checked) => {
-                            void props.onGraphModeChange?.(checked);
-                          }}
-                          title={
-                            props.graphModeDisabledReason
-                            ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)
-                          }
-                        >
-                          {copy.graphModeLabel}
-                        </MenuCheckboxItem>
-                      ) : null}
-                    </>
-                  ) : null}
-                </MenuPopup>
-              </Menu>
-            ) : null}
-            {/* PR-MOVE-PERMISSION-MODE: the static "通用" role chip
-                was replaced by the permission-mode dropdown — that
-                spot is where the reference Settings expects users to
-                pick "Ask permissions" / "Auto mode" / "Bypass
-                permissions". Maka exposes the user-facing modes
-                `ask` / `execute` / `bypass`; `explore` collapses to `ask` in the
-                display because Deep Research sessions use it
-                internally but it's not a useful runtime toggle for
-                normal chat. */}
-            {props.onPermissionModeChange ? (
-              <PermissionModeSelect
-                appearance="quiet"
-                activeMode={props.permissionMode ?? 'ask'}
-                onSelect={(mode) => {
-                  void props.onPermissionModeChange?.(mode);
+              ) : null}
+              {!props.streaming && props.onToggleVoiceCapture ? (
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  size="sm"
+                  className="maka-composer-voice-button"
+                  data-state={props.voiceCaptureState ?? 'idle'}
+                  isDisabled={
+                    props.disabled
+                    || props.voiceCaptureState === 'requesting'
+                    || props.voiceCaptureState === 'processing'
+                    || props.voiceCaptureState === 'sending'
+                  }
+                  label={voiceCaptureLabel}
+                  tooltip={`${voiceCaptureLabel}${props.voiceProviderLabel ? ` · ${props.voiceProviderLabel}` : ''}`}
+                  onClick={(event) => {
+                    void props.onToggleVoiceCapture?.({ dictate: event.shiftKey });
+                  }}
+                  icon={<Mic size={15} aria-hidden="true" />}
+                />
+              ) : null}
+              {!props.streaming && props.onToggleRealtimeVoice ? (
+                <IconButton
+                  variant="ghost"
+                  type="button"
+                  size="sm"
+                  className="maka-composer-realtime-voice-button"
+                  data-state={props.realtimeVoiceState ?? 'idle'}
+                  isDisabled={props.disabled}
+                  label={realtimeVoiceLabel}
+                  tooltip={realtimeVoiceLabel}
+                  onClick={() => {
+                    void props.onToggleRealtimeVoice?.();
+                  }}
+                  icon={<Volume2 size={15} aria-hidden="true" />}
+                />
+              ) : null}
+            </div>
+          ) : undefined}
+          input={(
+            <div className="maka-composer-input">
+              <textarea
+                ref={textareaRef}
+                data-maka-contract="composer-input"
+                name="text"
+                className="maka-composer-textarea resize-none"
+                placeholder={copy.placeholder}
+                aria-label={copy.textareaAriaLabel}
+                aria-controls={mentionPopupOpen ? mentionListboxId : undefined}
+                aria-expanded={mentionPopupOpen ? true : undefined}
+                aria-activedescendant={
+                  mentionPopupOpen && mentionItems.length > 0
+                    ? mentionOptionId(mentionListboxId, mentionActiveIndex)
+                    : undefined
+                }
+                disabled={props.disabled}
+                onKeyDown={onTextareaKeyDown}
+                onKeyUp={recomputeMention}
+                onClick={recomputeMention}
+                onPaste={onTextareaPaste}
+                onCompositionStart={() => { compositionActiveRef.current = true; }}
+                onCompositionEnd={() => { compositionActiveRef.current = false; recomputeMention(); }}
+                onInput={onTextareaInput}
+                rows={1}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {mention ? (
+                <ComposerMentionPopup
+                  trigger={mention.trigger}
+                  items={mentionItems}
+                  activeIndex={mentionActiveIndex}
+                  loading={mentionLoading}
+                  listboxId={mentionListboxId}
+                  onSelect={selectMention}
+                  onHover={setMentionActiveIndex}
+                />
+              ) : null}
+              {dragActive && (
+                <span className="maka-visually-hidden" role="status" aria-live="polite">
+                  {copy.dropToImport}
+                </span>
+              )}
+            </div>
+          )}
+          footerActions={(
+            <div className="maka-composer-left-controls" data-streaming={props.streaming ? 'true' : undefined}>
+            {/* #1444 still holds for the modes menu: it stays reachable
+                mid-turn so Plan/Swarm/Graph never disappear while a turn is
+                in flight. */}
+            {(props.onPlanModeChange
+              || props.onSwarmModeChange
+              || props.onGraphModeChange) ? (
+              <DropdownMenu
+                placement="above"
+                button={{
+                  label: copy.modesLabel,
+                  icon: <Workflow size={15} aria-hidden="true" />,
+                  isIconOnly: true,
+                  variant: 'ghost',
+                  size: 'sm',
+                  isDisabled: props.disabled,
+                  tooltip: copy.modesTitle,
                 }}
-                align="start"
-                disabled={props.disabled || props.permissionModePending === true || Boolean(props.permissionModeDisabledReason)}
-                disabledReason={props.permissionModeDisabledReason}
+                className="maka-composer-modes-menu"
+              >
+                  {/* #1433 subtraction still applies: Plan/Swarm/Graph are
+                      switch items, not standalone toolbar switches — the
+                      toolbar keeps one named trigger per capability. */}
+                  {props.onPlanModeChange ? (
+                    <DropdownMenuCheckboxItem
+                      label={copy.planModeLabel}
+                      value={props.planModeActive === true}
+                      isDisabled={
+                        props.disabled
+                        || props.planModePending === true
+                        || Boolean(props.planModeDisabledReason)
+                      }
+                      onChange={(checked) => {
+                        void props.onPlanModeChange?.(checked);
+                      }}
+                      aria-description={props.planModeDisabledReason
+                        ?? (props.planModeActive ? copy.disablePlanMode : copy.enablePlanMode)}
+                    />
+                  ) : null}
+                  {props.onSwarmModeChange ? (
+                    <DropdownMenuCheckboxItem
+                      label={copy.swarmModeLabel}
+                      value={props.swarmModeActive === true}
+                      isDisabled={
+                        props.disabled
+                        || props.swarmModePending === true
+                        || Boolean(props.swarmModeDisabledReason)
+                      }
+                      onChange={(checked) => {
+                        void props.onSwarmModeChange?.(checked);
+                      }}
+                      aria-description={props.swarmModeDisabledReason
+                        ?? (props.swarmModeActive ? copy.disableSwarmMode : copy.enableSwarmMode)}
+                    />
+                  ) : null}
+                  {props.onGraphModeChange ? (
+                    <DropdownMenuCheckboxItem
+                      label={copy.graphModeLabel}
+                      value={props.graphModeActive === true}
+                      isDisabled={
+                        props.disabled
+                        || props.graphModePending === true
+                        || Boolean(props.graphModeDisabledReason)
+                      }
+                      onChange={(checked) => {
+                        void props.onGraphModeChange?.(checked);
+                      }}
+                      aria-description={props.graphModeDisabledReason
+                        ?? (props.graphModeActive ? copy.disableGraphMode : copy.enableGraphMode)}
+                    />
+                  ) : null}
+              </DropdownMenu>
+            ) : null}
+            {/* PR-COMPOSER-TOOLBAR-SPLIT: Skills used to be reachable only by
+                typing `/`. The picker writes the same structured chips, so the
+                two paths share one draft instead of a second selection model.
+                Focus stays in the panel across toggles — unlike the `/` popup,
+                which returns to the textarea because it splices text there. */}
+            {props.mentionSkills ? (
+              <ComposerSkillPicker
+                skills={props.mentionSkills}
+                selected={skillDraft.skills}
+                disabled={props.disabled}
+                onToggle={(skill, selected) => {
+                  if (selected) skillDraft.add(skill);
+                  else skillDraft.remove(skill.ref ?? skill.id);
+                }}
+                onSelectAll={(skills: readonly ComposerSkillOption[]) => {
+                  for (const skill of skills) skillDraft.add(skill);
+                }}
+                onClearAll={() => skillDraft.clear(skillDraft.activeDraftKey())}
               />
             ) : null}
             {/* #1433: active-mode indicators. The Plan/Swarm toggles live in
-                the ＋ menu (subtraction), so an ON mode would otherwise be
+                the modes menu (subtraction), so an ON mode would otherwise be
                 easy to miss without opening the menu. The indicator uses the
                 same quiet-text-button language as the permission select next
                 to it, WITHOUT a chevron: it cannot drop down. Clicking turns
@@ -996,40 +1059,73 @@ export const Composer = forwardRef<
                 <X size={12} aria-hidden="true" />
               </button>
             ) : null}
-          </div>
-          <span className="maka-composer-status-slot">
-            {props.disabled ? (
-              // PR-COMPOSER-PERMISSION-PULSE-0 (WAWQAQ msg `ed67a267`,
-              // skills round task #116): wrap the "等待权限确认" text
-              // in a styled hint with a pulsing accent dot. Plain text
-              // was easy to miss — the dot signals "system is waiting
-              // on YOU" with the same visual weight as the streaming
-              // 3-dot bounce on the other side of the disabled/active
-              // boundary.
-              <span className="maka-composer-permission-hint">
-                <span className="maka-composer-permission-dot" aria-hidden="true" />
-                {copy.awaitingPermission}
+            </div>
+          )}
+          headerContext={(
+            <div className="maka-composer-header-context">
+              <span className="maka-composer-status-slot">
+                {props.disabled ? (
+                  // PR-COMPOSER-PERMISSION-PULSE-0 (WAWQAQ msg `ed67a267`,
+                  // skills round task #116): wrap the "等待权限确认" text
+                  // in a styled hint with a pulsing accent dot. Plain text
+                  // was easy to miss — the dot signals "system is waiting
+                  // on YOU" with the same visual weight as the streaming
+                  // 3-dot bounce on the other side of the disabled/active
+                  // boundary.
+                  <span className="maka-composer-permission-hint">
+                    <span className="maka-composer-permission-dot" aria-hidden="true" />
+                    {copy.awaitingPermission}
+                  </span>
+                ) : props.voiceCaptureState === 'recording' ? (
+                  copy.voiceRecording
+                ) : props.voiceCaptureState === 'requesting' ? (
+                  copy.voiceRequesting
+                ) : props.voiceCaptureState === 'processing' ? (
+                  copy.voiceProcessing
+                ) : props.voiceCaptureState === 'native_ready' ? (
+                  copy.voiceReady
+                ) : props.voiceCaptureState === 'sending' ? (
+                  copy.voiceSending
+                ) : props.realtimeVoiceState === 'connecting' ? (
+                  copy.voiceConnecting
+                ) : props.realtimeVoiceState === 'connected' ? (
+                  copy.voiceConnected
+                ) : sendPending ? (
+                  copy.sending
+                ) : importActionBusy ? (
+                  copy.importing
+                ) : props.streaming ? (
+                  <span className="maka-composer-streaming-hint">
+                    <span className="maka-composer-streaming-dot" aria-hidden="true" />
+                    {props.processing
+                      ? copy.processing
+                      : props.continuing
+                        ? copy.continuing
+                        : copy.streaming} <Kbd keys="escape" /> {copy.interruptHint}
+                  </span>
+                ) : null}
               </span>
-            ) : sendPending ? (
-              copy.sending
-            ) : importActionBusy ? (
-              copy.importing
-            ) : props.streaming ? (
-              <span className="maka-composer-streaming-hint">
-                <span className="maka-composer-streaming-dot" aria-hidden="true" />
-                {props.processing
-                  ? copy.processing
-                  : props.continuing
-                    ? copy.continuing
-                    : copy.streaming} <Kbd>Esc</Kbd> {copy.interruptHint}
-              </span>
-            ) : (
-              null
-            )}
-          </span>
-          <div className="maka-composer-right-controls">
-            {!props.streaming && (
-              <>
+              {/* Permission describes the execution context for the next send,
+                  so it belongs in Astryx's right-aligned header context rather
+                  than competing with model/thinking controls in the footer. */}
+              {props.onPermissionModeChange ? (
+                <PermissionModeSelect
+                  appearance="quiet"
+                  activeMode={props.permissionMode ?? 'ask'}
+                  onSelect={(mode) => {
+                    void props.onPermissionModeChange?.(mode);
+                  }}
+                  align="end"
+                  disabled={props.disabled || props.permissionModePending === true || Boolean(props.permissionModeDisabledReason)}
+                  disabledReason={props.permissionModeDisabledReason}
+                />
+              ) : null}
+            </div>
+          )}
+          sendActions={(
+            <div className="maka-composer-right-controls">
+              {!props.streaming && (
+                <>
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
@@ -1065,45 +1161,39 @@ export const Composer = forwardRef<
                 ) : (
                   <ModelChipStatic label={modelChipLabel} onOpenSettings={props.onOpenModelSettings} />
                 )}
-              </>
-            )}
-            {props.streaming ? (
-              <UiButton
-                variant="default"
-                size="md"
-                type="button"
-                disabled={props.stopPending}
-                onClick={() => {
-                  if (props.stopPending) return;
-                  void props.onStop();
-                }}
-                aria-busy={props.stopPending ? 'true' : undefined}
-                data-pending={props.stopPending ? 'true' : undefined}
-              >
-                {props.stopPending ? copy.stopping : copy.stopLabel}
-              </UiButton>
-            ) : (
-              <UiButton
-                variant="default"
-                size="icon"
-                shape="pill"
-                type="submit"
-                disabled={sendDisabled}
-                aria-label={copy.sendLabel}
-                aria-busy={sendPending ? 'true' : undefined}
-                data-pending={sendPending ? 'true' : undefined}
-                title={sendTitle}
-              >
-                <ArrowUp size={16} aria-hidden="true" />
-              </UiButton>
-            )}
-          </div>
-        </div>
-      </div>
-      {props.workspacePicker ? (
-        <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />
-      ) : null}
-    </form>
+                </>
+              )}
+            </div>
+          )}
+          sendButton={props.streaming ? (
+            <UiButton
+              variant="primary"
+              isDisabled={props.stopPending}
+              onClick={() => {
+                if (props.stopPending) return;
+                void props.onStop();
+              }}
+              aria-busy={props.stopPending ? 'true' : undefined}
+              data-pending={props.stopPending ? 'true' : undefined}
+              label={props.stopPending ? copy.stopping : copy.stopLabel}
+            />
+          ) : (
+            <IconButton
+              variant="primary"
+              type="submit"
+              isDisabled={sendDisabled}
+              label={copy.sendLabel}
+              aria-busy={sendPending ? 'true' : undefined}
+              data-pending={sendPending ? 'true' : undefined}
+              tooltip={sendTitle}
+              icon={<ArrowUp size={16} aria-hidden="true" />}
+            />
+          )}
+        />
+        {props.workspacePicker ? (
+          <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />
+        ) : null}
+      </form>
     </>
   );
 });

@@ -118,9 +118,9 @@ const connectionsBridge: ConnectionsBridge = {
 /**
  * #1364: request logs with deliberately hostile content — a dated preview
  * model id, a namespaced MCP tool name, and full-length UUIDs — so the
- * requests DataTable (8 columns, most `whitespace-nowrap` by primitive
- * recipe) is exercised at its real intrinsic width. `logs` used to be `[]`,
- * which meant no story ever rendered a DataTable at all.
+ * requests Astryx Table (8 explicitly sized columns) is exercised at its real
+ * intrinsic width. `logs` used to be `[]`, which meant no story ever rendered
+ * a table at all.
  */
 function makeUsageLog(input: {
   id: string;
@@ -629,18 +629,6 @@ const makaBridge = {
   health: {
     getSnapshot: async () => healthSnapshot,
   },
-  gateway: {
-    status: async () => ({
-      enabled: false,
-      running: false,
-      host: '127.0.0.1',
-      port: 0,
-      baseUrl: null,
-      tokenConfigured: false,
-      activeEventStreams: 0,
-    }),
-    subscribeStatusChanges: () => () => undefined,
-  },
   permissions: {
     getSnapshot: async () => permissionSnapshot,
     openSystemSettings: async () => ({ ok: true }),
@@ -699,7 +687,7 @@ const withUsagePopulatedBridge = withScopedMakaBridge({
 
 /** #1364 review follow-up: empty stats alone are not the empty BASELINE —
  *  with default settings (`showDetails: false`) the first render is the
- *  summary-only Alert and the EmptyState never mounts. Reuse the details-on
+ *  summary-only Banner and the EmptyState never mounts. Reuse the details-on
  *  requests-tab settings so the story opens on the actual empty state. */
 const withUsageEmptyBridge = withScopedMakaBridge({
   ...makaBridge,
@@ -781,9 +769,9 @@ const withWebSearchConfiguredBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-/** #1362: the proxy form (protocol/host/port grid, auth grid, bypass field)
+/** #1362: the proxy form (protocol/host/port layout, auth layout, bypass field)
  *  only renders behind two enabled switches — without this fixture no story
- *  ever exercised `.settingsFormGridProxy` or the auth `.settingsFormGrid`.
+ *  exercises either horizontal Astryx FormLayout.
  *  Hostile widths: a long internal proxy hostname, a service-account
  *  username, and identity fields with long CJK content. */
 const generalProxySettings = mergeSettings(createDefaultSettings(), {
@@ -978,7 +966,11 @@ function withVoiceCaptureOutcome(outcome: VoiceStoryOutcome): Decorator {
   };
 }
 
-function SettingsStory(props: { section: SettingsSection }) {
+function SettingsStory(props: {
+  section: SettingsSection;
+  connections?: LlmConnection[];
+  defaultSlug?: string | null;
+}) {
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const [uiLocaleUpdateGate] = useState(createUiLocaleUpdateGate);
 
@@ -993,8 +985,8 @@ function SettingsStory(props: { section: SettingsSection }) {
         }}
       >
         <SettingsSurface
-          connections={connections}
-          defaultSlug="zai-live"
+          connections={props.connections ?? connections}
+          defaultSlug={props.defaultSlug === undefined ? 'zai-live' : props.defaultSlug}
           onRefresh={async () => undefined}
           onClose={noop}
           themePref={'auto' as ThemePreference}
@@ -1090,6 +1082,11 @@ export const General: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="general" />,
 };
+// Real path: 设置 → 通用 on a fresh workspace with no model connections.
+export const GeneralEmptyModelCatalog: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="general" connections={[]} defaultSlug={null} />,
+};
 // Real path: 设置 → 外观.
 export const Appearance: Story = {
   decorators: [withSettingsBridge],
@@ -1107,10 +1104,10 @@ export const Usage: Story = {
   render: () => <SettingsStory section="usage" />,
 };
 /**
- * #1364: the requests DataTable with hostile-width content (dated preview
- * model ids, namespaced MCP tool names). No story rendered a DataTable at
+ * #1364: the requests Astryx Table with hostile-width content (dated preview
+ * model ids, namespaced MCP tool names). No story rendered a table at
  * all before this — `logs` was `[]` and the requests tab defaulted to its
- * summary-only Alert.
+ * summary-only Banner.
  */
 // Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with recorded traffic.
 export const UsageRequestsPopulated: Story = {
@@ -1191,11 +1188,6 @@ export const VoicePermissionDenied: Story = {
   play: async ({ canvasElement }) => {
     await runVoiceStoryCapture(canvasElement, '麦克风权限被拒绝', '已拒绝');
   },
-};
-// Real path: 设置 → 开放网关.
-export const OpenGateway: Story = {
-  decorators: [withSettingsBridge],
-  render: () => <SettingsStory section="open-gateway" />,
 };
 // Real path: 设置 → 远程接入.
 export const BotChat: Story = {

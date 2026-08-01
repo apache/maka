@@ -9,7 +9,6 @@ import { defaultShellPlan, runShellWithBoundedTail, type MakaTool } from '@maka/
 import { Agent, fetch as undiciFetch } from 'undici';
 import { numericEnv, type RunHarborCellEnv } from './headless-run-env.js';
 import type { IsolatedCommandResult, IsolatedToolExecutor } from './isolation.js';
-import { ISOLATED_HEADLESS_TOOL_NAMES } from './isolation.js';
 import { isSensitiveEnvName } from './provider-env.js';
 import {
   buildIsolatedHeadlessTools,
@@ -29,14 +28,7 @@ export function buildHarborCellAiSdkTools(
   executor: IsolatedToolExecutor,
   options: BuildIsolatedHeadlessToolsOptions = {},
 ): MakaTool[] {
-  return prepareHarborCellAiSdkTools(buildIsolatedHeadlessTools(executor, options));
-}
-
-export function prepareHarborCellAiSdkTools(tools: readonly MakaTool[]): MakaTool[] {
-  const nonInteractiveToolNames = new Set<string>(ISOLATED_HEADLESS_TOOL_NAMES);
-  return tools.map((tool) =>
-    nonInteractiveToolNames.has(tool.name) ? { ...tool, permissionRequired: false } : tool,
-  );
+  return buildIsolatedHeadlessTools(executor, options);
 }
 
 export function createHarborHttpToolExecutor(

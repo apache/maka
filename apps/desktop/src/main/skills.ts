@@ -226,7 +226,7 @@ const BUNDLED_CATALOG_CATEGORY_DEFAULT: ManagedSkillCategory = '效率工具';
  * the listing.
  *
  * `allowed-tools` is intentionally surfaced as "declared/requested" - never
- * granted. PermissionEngine remains the only authority over tool calls.
+ * granted. The active session ExecutionBoundary remains authoritative.
  */
 export async function listInstalledSkills(root: string, options: SkillReadOptions = {}): Promise<InstalledSkill[]> {
   const definitions = await readInstalledSkillDefinitions(root, options);

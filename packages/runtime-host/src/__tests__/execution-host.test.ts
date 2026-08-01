@@ -1,13 +1,25 @@
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFile, chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { canonicalToolArgsHash, TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -18,6 +30,7 @@ import {
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
   type MakaTool,
   type MakaToolContext,
 } from '@maka/runtime';
@@ -25,6 +38,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -44,6 +58,7 @@ import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
   TASK_LEDGER_PAGE_MAX_ITEMS,
+  type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
   type TaskLedgerQueryResult,
@@ -60,6 +75,39 @@ const CURRENT_PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 const PROCESS_TIMEOUT_MS = 10_000;
+const CONNECTION_EFFECT_MODEL_IDS = Array.from(
+  { length: 129 },
+  (_, index) => `connection-effect-model-${String(index + 1).padStart(3, '0')}`,
+);
+
+test('production Host settles dispatched Client Capabilities before publishing Ready', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const prepared = await seedDispatchedClientCapability(fixture);
+    const host = await fixture.startHost({
+      sessionId: fixture.sessionId,
+      runId: prepared.runId,
+    });
+    try {
+      const outcome = host.recoveryOutcome;
+      assert.equal(outcome?.content?.kind, 'function_response');
+      if (outcome?.content?.kind !== 'function_response') return;
+      assert.equal(outcome.content.name, prepared.toolName);
+      assert.equal(outcome.content.isError, true);
+      assert.ok(outcome.content.result && typeof outcome.content.result === 'object');
+      const recovered = outcome.content.result as {
+        kind?: unknown;
+        uncertainOutcome?: unknown;
+      };
+      assert.equal(recovered.kind, 'text');
+      assert.deepEqual(recovered.uncertainOutcome, {
+        code: 'outcome_unknown',
+        retrySafe: false,
+      });
+    } finally {
+      await fixture.stopHost(host);
+    }
+  });
+});
 
 test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
@@ -199,6 +247,79 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
   });
 });
 
+async function seedDispatchedClientCapability(
+  fixture: ExecutionFixture,
+): Promise<{ runId: string; toolName: string }> {
+  const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire execution root for Client Capability setup');
+  try {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const operationId = 'client-capability-before-ready';
+    const invocationId = `${operationId}-invocation`;
+    const runId = `${operationId}-run`;
+    const turnId = `${operationId}-turn`;
+    const providerToolCallId = `${operationId}-call`;
+    const toolName = 'mcp__client_fixture__navigate';
+    const args = { url: 'https://example.test/recovery' };
+    const canonicalArgsHash = canonicalToolArgsHash(toolName, args);
+    const call: RuntimeEvent = {
+      id: `${operationId}_call`,
+      invocationId,
+      runId,
+      sessionId: fixture.sessionId,
+      turnId,
+      ts: 10,
+      partial: false,
+      role: 'model',
+      author: 'agent',
+      content: {
+        kind: 'function_call',
+        id: providerToolCallId,
+        name: toolName,
+        args,
+      },
+      refs: { operationId, toolCallId: providerToolCallId },
+    };
+    const dispatch: RuntimeEvent = {
+      id: `${operationId}_dispatch`,
+      invocationId,
+      runId,
+      sessionId: fixture.sessionId,
+      turnId,
+      ts: 10,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      actions: {
+        toolDispatch: {
+          protocol: TOOL_BOUNDARY_PROTOCOL_V1,
+          operationId,
+          providerToolCallId,
+          toolName,
+          canonicalArgsHash,
+          recoveryMode: 'outcome_unknown',
+        },
+      },
+      refs: { operationId, toolCallId: providerToolCallId },
+    };
+    await stores.runtimeEventStore.commitToolPrepared({
+      operationId,
+      journalEventId: `${operationId}_prepared`,
+      runtimeEvent: call,
+      dispatchRuntimeEvent: dispatch,
+      providerToolCallId,
+      toolName,
+      canonicalArgsHash,
+      recoveryMode: 'outcome_unknown',
+      committedAt: 10,
+    });
+    return { runId, toolName };
+  } finally {
+    await owner.close();
+  }
+}
+
 test('two UDS Clients share one Runtime Policy authority and CAS winner', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();
@@ -236,6 +357,116 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
       await fixture.stopHost(host);
     }
   });
+});
+
+test('two UDS Clients await slow connection effects against one canonical catalog', async () => {
+  const provider = await startConnectionEffectProvider({ responseDelayMs: 2_100 });
+  try {
+    await withExecutionRoot(async (fixture) => {
+      const secret = 'connection-effect-secret';
+      const connection = await fixture.seedConnectionEffect(provider.baseUrl, secret);
+      const host = await fixture.startHost();
+      const desktop = await connectClient(fixture.root, 'desktop');
+      const tui = await connectClient(fixture.root, 'tui');
+      try {
+        assert.equal(desktop.hostEpoch, tui.hostEpoch);
+        assert.notEqual(desktop.connectionId, tui.connectionId);
+        const fetchInput = { connectionId: connection.connectionId };
+        const fetched = await desktop.request('connection.models.fetch', {
+          ...fetchInput,
+        });
+        assert.equal(fetched.kind, 'committed');
+        if (fetched.kind !== 'committed') return;
+        assert.equal(fetched.modelCount, CONNECTION_EFFECT_MODEL_IDS.length);
+        assert.equal(fetched.source, 'fetched');
+
+        const firstPage = await tui.request('connection.catalog.query', { kind: 'start' });
+        assert.equal(firstPage.kind, 'page');
+        if (firstPage.kind !== 'page') return;
+        type CatalogPage = Extract<ConnectionCatalogQueryResult, { readonly kind: 'page' }>;
+        const pages: CatalogPage[] = [firstPage];
+        let observed: CatalogPage = firstPage;
+        while (observed.nextCursor) {
+          const nextResult: ConnectionCatalogQueryResult = await tui.request(
+            'connection.catalog.query',
+            {
+              kind: 'continue',
+              revision: observed.revision,
+              cursor: observed.nextCursor,
+            },
+          );
+          assert.equal(nextResult.kind, 'page');
+          if (nextResult.kind !== 'page') return;
+          pages.push(nextResult);
+          observed = nextResult;
+        }
+        assert.ok(pages.length > 1);
+        assert.ok(pages.every((page) => page.revision === fetched.catalogRevision));
+        assert.deepEqual(
+          pages.flatMap((page) =>
+            page.items.flatMap((item) => (item.kind === 'model' ? [item.model.id] : [])),
+          ),
+          CONNECTION_EFFECT_MODEL_IDS,
+        );
+
+        const testInput = {
+          connectionId: connection.connectionId,
+          modelId: CONNECTION_EFFECT_MODEL_IDS[0]!,
+        };
+        const tested = await tui.request('connection.test.run', {
+          ...testInput,
+        });
+        assert.equal(tested.kind, 'committed');
+        if (tested.kind !== 'committed') return;
+        assert.equal(tested.test.kind, 'verified');
+
+        const canonical = await desktop.request('connection.catalog.query', { kind: 'start' });
+        assert.equal(canonical.kind, 'page');
+        if (canonical.kind !== 'page') return;
+        const header = canonical.items.find(
+          (item) => item.kind === 'connection' && item.connectionId === connection.connectionId,
+        );
+        assert.equal(header?.kind, 'connection');
+        if (header?.kind === 'connection') {
+          assert.deepEqual(header.lastTest, {
+            status: 'verified',
+            checkedAt: tested.test.checkedAt,
+          });
+        }
+        assert.equal(
+          JSON.stringify([fetchInput, fetched, pages, testInput, tested, canonical]).includes(
+            secret,
+          ),
+          false,
+        );
+        assert.equal(provider.requests.length, 2);
+        assert.ok(
+          provider.requests.every(({ authorization }) => authorization === `Bearer ${secret}`),
+        );
+        assert.deepEqual(
+          provider.requests.map(({ method, url }) => ({
+            method,
+            url,
+          })),
+          [
+            {
+              method: 'GET',
+              url: '/v1/models',
+            },
+            {
+              method: 'POST',
+              url: '/v1/chat/completions',
+            },
+          ],
+        );
+      } finally {
+        await Promise.allSettled([desktop.close(), tui.close()]);
+        await fixture.stopHost(host);
+      }
+    });
+  } finally {
+    await provider.close();
+  }
 });
 
 test('two Clients share one execution after the starting Client disconnects', async () => {
@@ -945,7 +1176,7 @@ test('startup recovery rejects claimed graph Run lineage drift', async () => {
   });
 });
 
-test('startup recovery repairs a truncated RuntimeEvent tail before terminalizing the Run', async () => {
+test('startup recovery imports past a truncated legacy RuntimeEvent tail without rewriting it', async () => {
   await withExecutionRoot(async (fixture) => {
     const turnId = randomUUID();
     const { runId } = await fixture.seedRunWithoutUserMessage(
@@ -953,6 +1184,7 @@ test('startup recovery repairs a truncated RuntimeEvent tail before terminalizin
       'recover after a partial RuntimeEvent write',
     );
     const runtimeEventsPath = fixture.runtimeEventsPath(runId);
+    await mkdir(dirname(runtimeEventsPath), { recursive: true });
     await writeFile(runtimeEventsPath, '{"id":"truncated"', 'utf8');
 
     const host = await fixture.startHost();
@@ -968,9 +1200,7 @@ test('startup recovery repairs a truncated RuntimeEvent tail before terminalizin
     await client.close();
     await fixture.stopHost(host);
 
-    const bytes = await readFile(runtimeEventsPath, 'utf8');
-    assert.doesNotMatch(bytes, /truncated/);
-    assertJsonLines(bytes);
+    assert.equal(await readFile(runtimeEventsPath, 'utf8'), '{"id":"truncated"');
     const ledger = await fixture.readTurn(turnId);
     assert.equal(ledger.terminalEvents.length, 1);
   });
@@ -985,6 +1215,7 @@ test('startup recovery fails closed on a complete malformed RuntimeEvent record'
     );
     const runtimeEventsPath = fixture.runtimeEventsPath(runId);
     const malformed = '{"id":"malformed"\n';
+    await mkdir(dirname(runtimeEventsPath), { recursive: true });
     await writeFile(runtimeEventsPath, malformed, 'utf8');
 
     await fixture.expectHostStartupFailure();
@@ -1018,6 +1249,7 @@ test('startup recovery fails closed on a complete malformed AgentRun record', as
     );
     const eventsPath = fixture.eventsPath(runId);
     const malformed = '{"type":"run_started"\n';
+    await mkdir(dirname(eventsPath), { recursive: true });
     await writeFile(eventsPath, malformed, 'utf8');
 
     await fixture.expectHostStartupFailure();
@@ -1258,7 +1490,7 @@ test('steering becomes durable and ordered followups automatically start the nex
     await first.startTurn({
       sessionId: fixture.sessionId,
       turnId: firstTurnId,
-      content: { text: `long-running root ${'x'.repeat(540)}` },
+      content: { text: FAKE_WAIT_FOR_STEERING_PROMPT },
     });
     const steeringId = randomUUID();
     const steeringContent = {
@@ -1290,18 +1522,6 @@ test('steering becomes durable and ordered followups automatically start the nex
       },
     ];
 
-    assert.equal(
-      (
-        await second.request('turn.message.submit', {
-          originHostEpoch: host.hostEpoch,
-          sessionId: fixture.sessionId,
-          messageId: steeringId,
-          content: steeringContent,
-          placement: 'current_turn',
-        })
-      ).disposition,
-      'steering',
-    );
     for (const source of followupSources) {
       assert.equal(
         (
@@ -1315,6 +1535,18 @@ test('steering becomes durable and ordered followups automatically start the nex
         'followup',
       );
     }
+    assert.equal(
+      (
+        await second.request('turn.message.submit', {
+          originHostEpoch: host.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId: steeringId,
+          content: steeringContent,
+          placement: 'current_turn',
+        })
+      ).disposition,
+      'steering',
+    );
 
     assert.equal(
       (await waitForTerminalTurn(first, fixture.sessionId, firstTurnId)).status,
@@ -1661,6 +1893,7 @@ interface ExecutionHostHandle {
   child: ChildProcess;
   hostEpoch: string;
   endpoint: string;
+  recoveryOutcome?: RuntimeEvent;
 }
 
 interface TurnLedger {
@@ -1921,6 +2154,49 @@ class ExecutionFixture {
     }
   }
 
+  async seedConnectionEffect(baseUrl: string, secret: string): Promise<ConnectionCatalogEntry> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for connection effect setup');
+    try {
+      const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+      const current = await stores.connectionCatalog.getSnapshot();
+      const created = await stores.connectionCatalog.create({
+        expectedCatalogRevision: current.revision,
+        connection: {
+          slug: 'connection-effect-provider',
+          name: 'Connection effect provider',
+          providerType: 'moonshot',
+          baseUrl,
+          enabled: true,
+          enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
+        },
+      });
+      assert.equal(created.kind, 'committed');
+      if (created.kind !== 'committed') {
+        throw new Error('Connection effect setup did not create a connection');
+      }
+      const connection = created.snapshot.connections.find(
+        ({ slug }) => slug === 'connection-effect-provider',
+      );
+      assert.ok(connection);
+      if (!connection) throw new Error('Connection effect setup omitted its connection');
+      const credential = await stores.credentialVault.set({
+        locator: {
+          scope: 'connection',
+          connectionId: connection.connectionId,
+          kind: 'api_key',
+        },
+        expected: null,
+        secret,
+      });
+      assert.equal(credential.kind, 'committed');
+      return connection;
+    } finally {
+      await owner.close();
+    }
+  }
+
   seedRunWithoutUserMessage(
     turnId: string,
     content: string | MessageContent,
@@ -1995,8 +2271,11 @@ class ExecutionFixture {
     }
   }
 
-  async startHost(): Promise<ExecutionHostHandle> {
-    const child = this.spawnHost('inherit');
+  async startHost(recoveryProbe?: {
+    sessionId: string;
+    runId: string;
+  }): Promise<ExecutionHostHandle> {
+    const child = this.spawnHost('inherit', recoveryProbe);
     const ready = await waitForHostReady(child);
     return { child, ...ready };
   }
@@ -2135,10 +2414,18 @@ class ExecutionFixture {
     await rm(this.base, { recursive: true, force: true });
   }
 
-  private spawnHost(stderr: 'inherit' | 'ignore'): ChildProcess {
+  private spawnHost(
+    stderr: 'inherit' | 'ignore',
+    recoveryProbe?: { sessionId: string; runId: string },
+  ): ChildProcess {
     const child = fork(
       new URL('./fixtures/execution-host.js', import.meta.url),
-      [this.root, this.capability.rootId, '60000'],
+      [
+        this.root,
+        this.capability.rootId,
+        '60000',
+        ...(recoveryProbe ? [recoveryProbe.sessionId, recoveryProbe.runId] : []),
+      ],
       { stdio: ['ignore', 'ignore', stderr, 'ipc'] },
     );
     this.#children.add(child);
@@ -2188,6 +2475,67 @@ async function connectClient(
   });
   assert.equal(result.kind, 'connected');
   return result.connection;
+}
+
+async function startConnectionEffectProvider(options: { responseDelayMs?: number } = {}): Promise<{
+  readonly baseUrl: string;
+  readonly requests: Array<{
+    readonly method: string;
+    readonly url: string;
+    readonly authorization: string | undefined;
+  }>;
+  close(): Promise<void>;
+}> {
+  const requests: Array<{
+    method: string;
+    url: string;
+    authorization: string | undefined;
+  }> = [];
+  const server = createServer((request, response) => {
+    requests.push({
+      method: request.method ?? '',
+      url: request.url ?? '',
+      authorization: request.headers.authorization,
+    });
+    const respond = () => {
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        request.method === 'GET'
+          ? JSON.stringify({ data: CONNECTION_EFFECT_MODEL_IDS.map((id) => ({ id })) })
+          : JSON.stringify({ choices: [] }),
+      );
+    };
+    const responseDelayMs = options.responseDelayMs ?? 0;
+    if (responseDelayMs > 0) {
+      setTimeout(respond, responseDelayMs);
+    } else {
+      respond();
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    await closeHttpServer(server);
+    throw new Error('Connection effect provider did not bind a TCP address');
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    close: () => closeHttpServer(server),
+  };
+}
+
+function closeHttpServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
 }
 
 async function sendStartWithoutReadingResponse(
@@ -2422,7 +2770,9 @@ function userRuntimeContent(
   return undefined;
 }
 
-function waitForHostReady(child: ChildProcess): Promise<{ hostEpoch: string; endpoint: string }> {
+function waitForHostReady(
+  child: ChildProcess,
+): Promise<{ hostEpoch: string; endpoint: string; recoveryOutcome?: RuntimeEvent }> {
   return withTimeout(
     new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -2441,7 +2791,11 @@ function waitForHostReady(child: ChildProcess): Promise<{ hostEpoch: string; end
       const onMessage = (message: unknown) => {
         if (!isHostReadyMessage(message)) return;
         cleanup();
-        resolve({ hostEpoch: message.hostEpoch, endpoint: message.endpoint });
+        resolve({
+          hostEpoch: message.hostEpoch,
+          endpoint: message.endpoint,
+          ...(message.recoveryOutcome ? { recoveryOutcome: message.recoveryOutcome } : {}),
+        });
       };
       child.once('error', onError);
       child.once('exit', onExit);
@@ -2452,15 +2806,20 @@ function waitForHostReady(child: ChildProcess): Promise<{ hostEpoch: string; end
   );
 }
 
-function isHostReadyMessage(
-  value: unknown,
-): value is { type: 'ready'; hostEpoch: string; endpoint: string } {
+function isHostReadyMessage(value: unknown): value is {
+  type: 'ready';
+  hostEpoch: string;
+  endpoint: string;
+  recoveryOutcome?: RuntimeEvent;
+} {
   if (!value || typeof value !== 'object') return false;
   const message = value as Record<string, unknown>;
   return (
     message.type === 'ready' &&
     typeof message.hostEpoch === 'string' &&
-    typeof message.endpoint === 'string'
+    typeof message.endpoint === 'string' &&
+    (message.recoveryOutcome === undefined ||
+      (typeof message.recoveryOutcome === 'object' && message.recoveryOutcome !== null))
   );
 }
 

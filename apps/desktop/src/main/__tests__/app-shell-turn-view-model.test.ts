@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core';
 import type { StoredMessage } from '@maka/core';
 import { deriveAppShellTurnViewModel } from '../../renderer/app-shell-turn-view-model.js';
 import { latestInterruptedResumeTurnId } from '../../renderer/interrupted-resume.js';
@@ -81,6 +82,27 @@ describe('deriveAppShellTurnViewModel interrupted recovery', () => {
     ]);
 
     assert.equal(turnId, undefined);
+  });
+
+  it('explains a turn whose sandbox boundary request the restart closed (#1612)', () => {
+    const viewModel = derive([
+      { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 1, text: 'build it' },
+      {
+        type: 'turn_state',
+        id: 'state-1',
+        turnId: 'turn-1',
+        ts: 2,
+        status: 'failed',
+        errorClass: SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS,
+        partialOutputRetained: false,
+      },
+    ]);
+
+    assert.match(viewModel.turnFailedReasonLabels['turn-1'] ?? '', /「允许访问工作区以外的内容」请求已按拒绝关闭/);
+    assert.match(viewModel.turnFailedRecoveryLabels['turn-1'] ?? '', /重试本轮/);
+    // Answering is impossible after the restart, so this turn must not be
+    // offered as a safe-resume candidate the way a plain restart is.
+    assert.equal(viewModel.resumeCandidateTurnId, undefined);
   });
 });
 

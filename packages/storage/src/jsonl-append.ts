@@ -7,6 +7,10 @@ import { syncDirectoryChain } from './stable-storage.js';
 
 const REVERSE_SCAN_CHUNK_BYTES = 64 * 1024;
 
+class JsonlAppendPreconditionError extends Error {
+  readonly name = 'JsonlAppendPreconditionError';
+}
+
 export interface AppendJsonlOptions {
   durable?: boolean;
   durabilityRoot?: string;
@@ -21,7 +25,13 @@ export async function appendJsonl(
   try {
     await appendJsonlUnchecked(path, payload, options);
   } catch (error) {
-    if (!options.durable || error instanceof DurableStoreWriteError) throw error;
+    if (
+      !options.durable ||
+      error instanceof DurableStoreWriteError ||
+      error instanceof JsonlAppendPreconditionError
+    ) {
+      throw error;
+    }
     throw new DurableStoreWriteError(
       `Durable JSONL append did not reach stable storage: ${path}`,
       error,
@@ -35,7 +45,7 @@ async function appendJsonlUnchecked(
   options: AppendJsonlOptions,
 ): Promise<void> {
   if (payload.length === 0 || !payload.endsWith('\n')) {
-    throw new Error('JSONL append payload must end with a newline');
+    throw new JsonlAppendPreconditionError('JSONL append payload must end with a newline');
   }
 
   const flags =
@@ -44,7 +54,7 @@ async function appendJsonlUnchecked(
   try {
     const size = (await handle.stat()).size;
     if (size === 0 && options.requireExistingRecord) {
-      throw new Error('Cannot append to an empty JSONL document');
+      throw new JsonlAppendPreconditionError('Cannot append to an empty JSONL document');
     }
 
     let separator = '';
@@ -56,12 +66,12 @@ async function appendJsonlUnchecked(
         separator = '\n';
       } else if (classification === 'incomplete-prefix') {
         if (tailStart === 0 && options.requireExistingRecord) {
-          throw new Error('Cannot repair a truncated JSONL document header');
+          throw new JsonlAppendPreconditionError('Cannot repair a truncated JSONL document header');
         }
         await handle.truncate(tailStart);
         await handle.sync();
       } else {
-        throw new Error('Cannot append after an invalid JSONL tail record');
+        throw new JsonlAppendPreconditionError('Cannot append after an invalid JSONL tail record');
       }
     }
 

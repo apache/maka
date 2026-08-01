@@ -79,38 +79,32 @@ export function MemoryEntryList(props: {
                   <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entry.title)}>
                     {props.onCopyReference && (
                       <Button
-                        type="button"
                         variant="secondary"
                         size="sm"
                         className="min-w-[4rem]"
-                        disabled={copyPending}
+                        isDisabled={copyPending}
                         onClick={() => void props.onCopyReference?.(entry)}
-                      >
-                        {copyPending ? props.copy.text.copying : props.copy.text.copyReference}
-                      </Button>
+                        label={copyPending ? props.copy.text.copying : props.copy.text.copyReference}
+                      />
                     )}
                     {props.onFocusDraft && (
                       <Button
-                        type="button"
                         variant="secondary"
                         size="sm"
                         onClick={() => void props.onFocusDraft?.(entry)}
-                      >
-                        {props.copy.text.locateDraft}
-                      </Button>
+                        label={props.copy.text.locateDraft}
+                      />
                     )}
                     {props.onStatusChange && (
                       <Button
-                        type="button"
                         variant="secondary"
                         size="sm"
                         className="min-w-[5rem]"
                         aria-label={statusActionAriaLabel}
-                        disabled={props.busy}
+                        isDisabled={props.busy}
                         onClick={() => void props.onStatusChange?.(entry, props.archived ? 'active' : 'archived')}
-                      >
-                        {statusActionLabel}
-                      </Button>
+                        label={statusActionLabel}
+                      />
                     )}
                   </div>
                 )}

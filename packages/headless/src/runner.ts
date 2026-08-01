@@ -178,15 +178,18 @@ export async function runExperimentWithStorage(
         invocation = result;
       },
     });
-    const session = await manager.createSession({
-      cwd: agentWorkspaceDir,
-      backend: config.backend,
-      llmConnectionSlug: config.llmConnectionSlug,
-      model: config.model,
-      permissionMode: 'execute',
-      ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
-      name: `lab:${config.id}:${task.id}`,
-    });
+    const session = await manager.createSession(
+      {
+        cwd: agentWorkspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: config.llmConnectionSlug,
+        model: config.model,
+        permissionMode: 'ask',
+        ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
+        name: `lab:${config.id}:${task.id}`,
+      },
+      { initialBoundary: { kind: 'external', revision: 0 } },
+    );
     graphControlStore = createAgentGraphControlStore(deps.storageRoot);
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore: storage.executionStores.sessionStore,
@@ -201,23 +204,14 @@ export async function runExperimentWithStorage(
 
     const turnId = newId();
     // Drain the turn to completion. The trajectory + status come from the
-    // captured InvocationResult, not the streamed SessionEvents. If a backend
-    // still asks this generic runner for an interactive permission decision,
-    // fail safe and deny it; isolated eval backends should run with explicit
-    // non-interactive policy/tooling.
-    for await (const event of manager.sendMessage(session.id, {
+    // captured InvocationResult, not the streamed SessionEvents. Headless
+    // execution is already enclosed by its explicit external isolation boundary.
+    for await (const _event of manager.sendMessage(session.id, {
       turnId,
       text: task.instruction,
       ...(deps.turnOrchestration ? { turnOrchestration: deps.turnOrchestration } : {}),
     })) {
-      if ((event as { type?: string }).type === 'permission_request') {
-        const { requestId } = event as { requestId: string };
-        await manager.respondToPermission(session.id, {
-          requestId,
-          decision: 'deny',
-          rememberForTurn: true,
-        });
-      }
+      // Event consumption drives the runtime to its terminal invocation.
     }
     await sessionCapabilities.settle(session.id);
 

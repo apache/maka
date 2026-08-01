@@ -26,7 +26,8 @@
 
 import { useEffect, useState } from 'react';
 import type { ArtifactRecord } from '@maka/core';
-import { Button, Spinner, useUiLocale } from '@maka/ui';
+import { Button, useUiLocale } from '@maka/ui';
+import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   type ArtifactPreviewInput,
   type PreviewResolution,
@@ -131,13 +132,11 @@ export function UnsupportedArtifactPreview(props: {
           that have no path-open IPC. */}
       {props.onShowInFolder && (
         <Button
-          type="button"
           variant="secondary"
           className="maka-artifact-preview-unsupported-cta"
           onClick={props.onShowInFolder}
-        >
-          {catalog.registry.openInFinder}
-        </Button>
+          label={catalog.registry.openInFinder}
+        />
       )}
     </div>
   );
@@ -169,7 +168,12 @@ function ImageArtifactPreview(props: {
   if (result.state === 'loading') {
     return (
       <div className="maka-artifact-preview-loading" role="status" aria-live="polite">
-        <Spinner className="maka-artifact-preview-spinner" aria-hidden="true" role="presentation" />
+        <Spinner
+          className="maka-artifact-preview-spinner"
+          size="sm"
+          aria-hidden="true"
+          role="presentation"
+        />
         <span>{copy.registry.loadingImage}</span>
       </div>
     );

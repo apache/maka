@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
-import { open, readFile, readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import {
+  assertExecutionBoundaryCapacity,
+  decodeExecutionBoundary,
+  MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES,
+  type ExecutionBoundary,
+} from '@maka/core';
 import { decodeSessionHeader, isSafeSessionId } from './session-store.js';
 import {
   createSessionTranscriptMarker,
@@ -14,6 +20,18 @@ import type {
 
 const LEGACY_SESSION_HEADER_MAX_BYTES = 1024 * 1024;
 const LEGACY_SESSION_HEADER_READ_BYTES = 8192;
+// A transfer contains the cumulative session boundary, not one 64 KiB expansion request.
+export const EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES = MAX_EXECUTION_BOUNDARY_SERIALIZED_BYTES + 64;
+export const EXECUTION_BOUNDARY_TRANSFER_FILE = 'execution-boundary.json';
+
+export function encodeExecutionBoundaryTransfer(boundary: ExecutionBoundary): string {
+  assertExecutionBoundaryCapacity(boundary);
+  const raw = `${JSON.stringify({ schemaVersion: 1, boundary })}\n`;
+  if (Buffer.byteLength(raw, 'utf8') > EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES) {
+    throw new Error('Execution boundary transfer exceeds the serialized size limit');
+  }
+  return raw;
+}
 
 class MalformedLegacySessionHeaderError extends Error {
   constructor(sourcePath: string, cause?: unknown) {
@@ -31,6 +49,10 @@ export interface LegacySessionMetadataImportReport {
   sourcesTombstoned: number;
 }
 
+export interface LegacySessionMetadataEntry extends SessionMetadataImportEntry {
+  boundaryTransferPath?: string;
+}
+
 /**
  * Import every legacy line-1 SessionHeader in one SQLite transaction.
  *
@@ -44,7 +66,7 @@ export async function importLegacySessionMetadataTree(input: {
   destination: SqliteSessionMetadataStore;
 }): Promise<LegacySessionMetadataImportReport> {
   const sessionsRoot = join(input.workspaceRoot, 'sessions');
-  const entries: SessionMetadataImportEntry[] = [];
+  const entries: LegacySessionMetadataEntry[] = [];
   const transcriptMarkerSessionIds: string[] = [];
   const directories = await sessionDirectoryNames(sessionsRoot);
   for (const directory of directories) {
@@ -86,6 +108,13 @@ export async function importLegacySessionMetadataTree(input: {
     }
   }
   const result = await input.destination.importEntries(entries);
+  await Promise.all(
+    entries.map((entry) =>
+      entry.boundaryTransferPath
+        ? rm(entry.boundaryTransferPath, { force: true })
+        : Promise.resolve(),
+    ),
+  );
   const headersImported = result.created.filter(Boolean).length;
   return {
     filesScanned: directories.length,
@@ -124,7 +153,7 @@ async function removeRecoverableOrphanTranscriptMarker(
 export async function readLegacySessionMetadataEntry(
   sourcePath: string,
   sessionId: string,
-): Promise<SessionMetadataImportEntry | null> {
+): Promise<LegacySessionMetadataEntry | null> {
   const headerLine = await readFirstJsonlRecord(sourcePath);
   let value: unknown;
   try {
@@ -142,13 +171,67 @@ export async function readLegacySessionMetadataEntry(
   } catch (error) {
     throw new MalformedLegacySessionHeaderError(sourcePath, error);
   }
+  const boundaryTransfer = await readExecutionBoundaryTransfer(sourcePath);
+  const fingerprintSource = boundaryTransfer
+    ? `${headerLine}\n${boundaryTransfer.raw}`
+    : headerLine;
   return {
     header,
+    ...(boundaryTransfer
+      ? {
+          initialBoundary: boundaryTransfer.boundary,
+          boundaryTransferPath: boundaryTransfer.path,
+        }
+      : {}),
     source: {
       path: sourcePath,
-      fingerprint: createHash('sha256').update(headerLine).digest('hex'),
+      fingerprint: createHash('sha256').update(fingerprintSource).digest('hex'),
     },
   };
+}
+
+async function readExecutionBoundaryTransfer(sourcePath: string): Promise<
+  | {
+      boundary: ExecutionBoundary;
+      path: string;
+      raw: string;
+    }
+  | undefined
+> {
+  const path = join(dirname(sourcePath), EXECUTION_BOUNDARY_TRANSFER_FILE);
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (isNotFound(error)) return undefined;
+    throw error;
+  }
+  if (!info.isFile() || info.size > EXECUTION_BOUNDARY_TRANSFER_MAX_BYTES) {
+    throw new MalformedLegacySessionHeaderError(
+      sourcePath,
+      new Error(`Invalid execution boundary transfer at ${path}`),
+    );
+  }
+  const raw = await readFile(path, 'utf8');
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('schemaVersion' in value) ||
+      value.schemaVersion !== 1 ||
+      !('boundary' in value)
+    ) {
+      throw new Error('Invalid execution boundary transfer envelope');
+    }
+    return {
+      boundary: decodeExecutionBoundary(value.boundary),
+      path,
+      raw,
+    };
+  } catch (error) {
+    throw new MalformedLegacySessionHeaderError(sourcePath, error);
+  }
 }
 
 function isNotFound(error: unknown): boolean {

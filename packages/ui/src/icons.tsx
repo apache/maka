@@ -108,8 +108,10 @@ export {
   TextQuote,
   Timer,
   Trash2,
+  Upload,
   User,
   Volume2,
   Wifi,
+  Workflow,
   X,
 } from 'lucide-react';

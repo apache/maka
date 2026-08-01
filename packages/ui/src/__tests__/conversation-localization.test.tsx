@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type {
-  AnyPermissionRequestEvent,
+  SandboxBoundaryRequestEvent,
   SessionSummary,
   UiLocale,
   UserQuestionRequestEvent,
@@ -11,31 +11,16 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { EmptyChatHero } from '../chat-empty-hero.js';
 import { Composer } from '../composer.js';
 import { LocaleProvider } from '../locale-context.js';
-import { PermissionPrompt } from '../permission-dialog.js';
 import { SessionHistoryList } from '../session-history-list.js';
+import { SandboxBoundaryPrompt } from '../sandbox-boundary-prompt.js';
 import { ToolTrow } from '../tool-activity.js';
 import { summarizeTrowTools } from '../tool-activity/trow-summary.js';
 import { UserQuestionPrompt } from '../user-question-prompt.js';
-import { ModelProviderRetryIndicator } from '../chat-turn.js';
+import { ModelProviderRetryIndicator, TurnView } from '../chat-turn.js';
 
 function render(locale: UiLocale, children: ReactNode): string {
   return renderToStaticMarkup(<LocaleProvider locale={locale}>{children}</LocaleProvider>);
 }
-
-const permissionRequest = {
-  id: 'event-permission',
-  turnId: 'turn-1',
-  ts: 1,
-  type: 'permission_request',
-  kind: 'tool_permission',
-  requestId: 'request-1',
-  toolUseId: 'tool-1',
-  toolName: 'RawShellTool',
-  category: 'shell_unsafe',
-  reason: 'shell_dangerous',
-  args: { command: 'echo RAW_COMMAND_中文' },
-  rememberForTurnAllowed: true,
-} satisfies AnyPermissionRequestEvent;
 
 const questionRequest = {
   id: 'event-question',
@@ -46,6 +31,25 @@ const questionRequest = {
   toolUseId: 'tool-question',
   questions: [{ question: 'RAW_QUESTION_中文', options: [{ label: 'RAW_OPTION_中文' }] }],
 } satisfies UserQuestionRequestEvent;
+
+const sandboxBoundaryRequest = {
+  id: 'event-boundary',
+  turnId: 'turn-1',
+  ts: 1,
+  type: 'sandbox_boundary_request',
+  requestId: 'boundary-1',
+  toolUseId: 'tool-boundary',
+  justification: 'RAW_JUSTIFICATION_中文',
+  expansion: {
+    filesystem: {
+      entries: [
+        { path: '/RAW/exact', access: 'read', scope: 'exact' },
+        { path: '/RAW/subtree', access: 'write', scope: 'subtree' },
+      ],
+    },
+    network: { enabled: true },
+  },
+} satisfies SandboxBoundaryRequestEvent;
 
 const archivedSession = {
   id: 'session-archived',
@@ -63,6 +67,34 @@ const archivedSession = {
 } satisfies SessionSummary;
 
 describe('localized conversation journey', () => {
+  it('keeps Astryx message semantics in the active locale', () => {
+    const surface = (
+      <TurnView
+        turn={{
+          turnId: 'turn-localized',
+          status: 'completed',
+          partialOutputRetained: false,
+          user: { id: 'user-1', role: 'user', text: 'hello' },
+          assistant: { id: 'assistant-1', role: 'assistant', text: 'hi' },
+          tools: [],
+          timeline: [{ kind: 'text', text: 'hi', messageId: 'assistant-1' }],
+          notes: [{ id: 'system-1', role: 'system', text: 'notice' }],
+          startedAt: 1,
+        }}
+      />
+    );
+    const zh = render('zh', surface);
+    const en = render('en', surface);
+
+    for (const label of ['你发送的消息', '系统消息', 'Maka 的回答']) {
+      assert.match(zh, new RegExp(`aria-label="${label}"`));
+    }
+    for (const label of ['Your message', 'System message', "Maka's response"]) {
+      assert.match(en, new RegExp(`aria-label="${label.replace("'", '&#x27;')}"`));
+    }
+    assert.doesNotMatch(zh, /Message from (?:user|assistant|system)/);
+  });
+
   it('renders provider retry attempts without exposing provider error details', () => {
     const retry = {
       type: 'provider_retry',
@@ -110,8 +142,12 @@ describe('localized conversation journey', () => {
     assert.match(withHint, /maka-composer-no-model-hint/);
     assert.match(withHint, /还没有可用的模型连接，无法发送。/);
     assert.match(withHint, /maka-composer-no-model-hint-action[^>]*>前往模型设置</);
-    // Disabled Send carries the explanatory title (not the neutral 发送 label).
-    assert.match(withHint, /type="submit"[^>]*disabled[^>]*title="先添加一个模型连接才能发送。"/);
+    // Disabled Send carries the explanatory tooltip (not the neutral 发送
+    // label). #1565 PR 3: the Astryx Button renders the tooltip as a popover
+    // element and keeps a tooltip'd disabled button focusable via
+    // aria-disabled, so the hint stays reachable for keyboard users.
+    assert.match(withHint, /type="submit"[^>]*aria-disabled="true"/);
+    assert.match(withHint, /role="tooltip"[^>]*>[^]*?先添加一个模型连接才能发送。/);
     // Default (a model connection exists) shows neither the hint nor the title.
     const noHint = render('zh', <Composer onSend={() => {}} onStop={() => {}} />);
     assert.doesNotMatch(noHint, /maka-composer-no-model-hint/);
@@ -125,21 +161,79 @@ describe('localized conversation journey', () => {
     assert.match(en, /Go to model settings/);
   });
 
-  it('keeps Plan Mode out of the toolbar and reachable from the ＋ menu (#1433)', () => {
+  it('keeps Plan Mode out of the toolbar and reachable from the modes menu (#1433)', () => {
     const markup = render(
       'zh',
       <Composer onSend={() => {}} onStop={() => {}} onPickAttachments={() => {}} onPlanModeChange={() => {}} />,
     );
     // The toolbar no longer carries a standalone Plan switch…
     assert.doesNotMatch(markup, /maka-composer-plan-mode-control/);
-    // …but the ＋ trigger is present so the mode stays reachable from the menu.
-    assert.match(markup, /aria-label="添加"/);
+    // …but the modes trigger is present so the mode stays reachable.
+    assert.match(markup, /aria-label="模式"/);
   });
 
-  it('keeps the ＋ menu available when only mode switches are wired', () => {
+  it('keeps the modes menu available when only mode switches are wired', () => {
     const markup = render('zh', <Composer onSend={() => {}} onStop={() => {}} onPlanModeChange={() => {}} />);
-    assert.match(markup, /aria-label="添加"/);
+    assert.match(markup, /aria-label="模式"/);
     assert.doesNotMatch(markup, /maka-composer-plan-mode-control/);
+  });
+
+  it('splits upload, modes and skills into three named toolbar buttons (PR-COMPOSER-TOOLBAR-SPLIT)', () => {
+    const markup = render(
+      'zh',
+      <Composer
+        onSend={() => {}}
+        onStop={() => {}}
+        onPickAttachments={() => {}}
+        onPlanModeChange={() => {}}
+        mentionSkills={[{ id: 'skill-a', name: '技能 A', description: '描述 A' }]}
+      />,
+    );
+    // Upload is its own control with an upload mark — no longer an item
+    // buried in a generic ＋ menu.
+    assert.match(markup, /maka-composer-upload-button/);
+    assert.match(markup, /aria-label="添加文件或目录"/);
+    assert.match(markup, /class="lucide lucide-upload"/);
+    // Collaboration modes keep one menu of their own.
+    assert.match(markup, /aria-label="模式"/);
+    assert.match(markup, /class="lucide lucide-workflow"/);
+    // Skills get a dedicated trigger; the panel itself opens on click.
+    assert.match(markup, /maka-composer-skill-trigger/);
+    assert.match(markup, /aria-label="技能"/);
+    assert.doesNotMatch(markup, /maka-composer-skill-panel/);
+    // The retired ＋ trigger is gone.
+    assert.doesNotMatch(markup, /aria-label="添加"[^>]*>/);
+
+    const en = render(
+      'en',
+      <Composer
+        onSend={() => {}}
+        onStop={() => {}}
+        onPickAttachments={() => {}}
+        onPlanModeChange={() => {}}
+        mentionSkills={[]}
+      />,
+    );
+    assert.match(en, /aria-label="Add file or directory"/);
+    assert.match(en, /aria-label="Modes"/);
+    assert.match(en, /aria-label="Skills"/);
+  });
+
+  it('hides the upload button while a turn is streaming but keeps modes reachable', () => {
+    const markup = render(
+      'zh',
+      <Composer
+        onSend={() => {}}
+        onStop={() => {}}
+        streaming
+        onPickAttachments={() => {}}
+        onPlanModeChange={() => {}}
+      />,
+    );
+    // Import no-ops mid-turn, so upload is disabled rather than removed…
+    assert.match(markup, /maka-composer-upload-button[^>]*aria-disabled="true"|aria-disabled="true"[^>]*maka-composer-upload-button/);
+    // …while the modes menu stays usable (#1444).
+    assert.match(markup, /aria-label="模式"/);
   });
 
   it('shows a quiet Plan indicator next to permission mode only while Plan is active', () => {
@@ -207,7 +301,7 @@ describe('localized conversation journey', () => {
     assert.match(en, /Graph mode is on/);
   });
 
-  it('keeps the ＋ menu reachable while streaming (#1444)', () => {
+  it('keeps the modes menu reachable while streaming (#1444)', () => {
     const markup = render(
       'zh',
       <Composer
@@ -215,16 +309,14 @@ describe('localized conversation journey', () => {
         onStop={() => {}}
         streaming
         onPickAttachments={() => {}}
-        expertTeams={[{ id: 'team-a', name: '专家团 A' }]}
-        onStartExpertTeam={() => {}}
         onPlanModeChange={() => {}}
         onSwarmModeChange={() => {}}
       />,
     );
-    // Menu trigger must stay mounted mid-turn so attachments, expert teams,
-    // and Plan/Swarm remain reachable from the ＋ menu (import itself stays
-    // blocked mid-stream by runImportAction / the disabled attach item).
-    assert.match(markup, /aria-label="添加"/);
+    // The modes trigger must stay mounted mid-turn so Plan/Swarm remain
+    // reachable (import itself stays blocked mid-stream by runImportAction /
+    // the disabled upload button).
+    assert.match(markup, /aria-label="模式"/);
   });
 
   it('keeps Swarm Mode out of the toolbar (#1433)', () => {
@@ -233,23 +325,16 @@ describe('localized conversation journey', () => {
       <Composer onSend={() => {}} onStop={() => {}} onPickAttachments={() => {}} onSwarmModeChange={() => {}} />,
     );
     assert.doesNotMatch(markup, /maka-composer-swarm-mode-control/);
-    assert.match(markup, /aria-label="添加"/);
+    assert.match(markup, /aria-label="模式"/);
   });
 
-  it('localizes permission and question chrome while preserving raw values', () => {
+  it('localizes question chrome while preserving raw values', () => {
     const surface = (
-      <>
-        <PermissionPrompt request={permissionRequest} onRespond={() => {}} onStop={() => {}} />
-        <UserQuestionPrompt request={questionRequest} onRespond={() => {}} onStop={() => {}} />
-      </>
+      <UserQuestionPrompt request={questionRequest} onRespond={() => {}} onStop={() => {}} />
     );
     const zh = render('zh', surface);
     const en = render('en', surface);
 
-    assert.match(zh, /允许执行高风险 shell 命令？/);
-    assert.match(zh, /允许操作/);
-    assert.match(en, /Allow a high-risk shell command\?/);
-    assert.match(en, />Allow</);
     assert.match(en, /Other/);
     for (const raw of ['RAW_QUESTION_中文', 'RAW_OPTION_中文']) {
       assert.match(zh, new RegExp(raw));
@@ -257,23 +342,25 @@ describe('localized conversation journey', () => {
     }
   });
 
-  it('localizes stale permission wait durations without mixing unit languages', () => {
-    const staleRequest = {
-      ...permissionRequest,
-      ts: Date.now() - 6 * 60_000,
-    } satisfies AnyPermissionRequestEvent;
-    const zh = render(
-      'zh',
-      <PermissionPrompt request={staleRequest} onRespond={() => {}} onStop={() => {}} />,
-    );
-    const en = render(
-      'en',
-      <PermissionPrompt request={staleRequest} onRespond={() => {}} onStop={() => {}} />,
-    );
+  it('localizes sandbox boundary chrome while preserving exact requested scopes', () => {
+    const surface = <SandboxBoundaryPrompt request={sandboxBoundaryRequest} onRespond={() => {}} />;
+    const zh = render('zh', surface);
+    const en = render('en', surface);
 
-    assert.match(zh, /已等待 6 分钟/);
-    assert.match(en, /Waiting for 6 minutes/);
-    assert.doesNotMatch(en, /分钟|小时/);
+    assert.match(zh, /允许访问工作区以外的内容？/);
+    assert.match(zh, /读取 · 仅此路径/);
+    assert.match(zh, /写入 · 目录及子目录/);
+    assert.match(zh, /网络访问/);
+    assert.match(zh, /本会话允许/);
+    assert.match(en, /Allow access outside the workspace\?/);
+    assert.match(en, /Read · Exact path/);
+    assert.match(en, /Write · Directory subtree/);
+    assert.match(en, /Network access/);
+    assert.match(en, /Allow for this session/);
+    for (const raw of ['RAW_JUSTIFICATION_中文', '/RAW/exact', '/RAW/subtree']) {
+      assert.match(zh, new RegExp(raw));
+      assert.match(en, new RegExp(raw));
+    }
   });
 
   it('keeps the default conversation list flat without a redundant time heading', () => {

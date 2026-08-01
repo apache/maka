@@ -74,15 +74,14 @@ describe('single live-turn handoff', () => {
       }],
     });
 
-    // #1307: the render-layer fold (foldTimeline) keeps answer text as the
-    // grouping boundary and leaves a pure-thinking run bare, so the reasoning
-    // renders as the 深度思考 disclosure above the answer while the tool folds
-    // into one collapsed "Processing" block below it (its body is not in the
-    // static markup; the summary line carries the tool roll-up).
-    assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 1);
+    // The render-layer fold keeps answer text as the grouping boundary, but
+    // adds no second Processing disclosure around the native reasoning and
+    // Astryx tool-call disclosures.
+    assert.equal((markup.match(/data-processing="block"/g) ?? []).length, 0);
+    assert.equal((markup.match(/astryx-chat-tool-calls/g) ?? []).length, 1);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
-    assert.ok(markup.indexOf('最终答案') < markup.indexOf('运行 1 条命令'));
+    assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));
     assert.equal((markup.match(/data-turn-id=/g) ?? []).length, 1);
   });
 
@@ -192,7 +191,7 @@ describe('single live-turn handoff', () => {
     assert.ok(refreshes.some((call) => call.required === 'assistant-1'));
   });
 
-  it('keeps permission handoff in the same live tool and does not end the turn', () => {
+  it('queues a sandbox boundary request without ending the live turn', () => {
     const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
       'session-1': armLiveTurn('turn-1'),
     });
@@ -215,17 +214,21 @@ describe('single live-turn handoff', () => {
     });
 
     handlers.handleEvent('session-1', {
-      type: 'permission_request', kind: 'tool_permission', id: 'e1', turnId: 'turn-1', ts: 1,
-      requestId: 'request-1', toolUseId: 'tool-1', toolName: 'Bash',
-      category: 'shell_unsafe', reason: 'shell_dangerous', args: {},
-      rememberForTurnAllowed: true,
-    });
-    handlers.handleEvent('session-1', {
-      type: 'complete', id: 'e2', turnId: 'turn-1', ts: 2, stopReason: 'permission_handoff',
+      type: 'sandbox_boundary_request',
+      id: 'e1',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'request-1',
+      toolUseId: 'tool-1',
+      justification: 'Write the requested export.',
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/tmp/export.txt', access: 'write', scope: 'exact' }],
+        },
+      },
     });
 
     assert.equal(liveTurns.get()['session-1']?.terminal, undefined);
-    assert.equal(liveTurns.get()['session-1']?.steps[0]?.tools[0]?.status, 'waiting_permission');
     assert.equal(interactions.get()['session-1']?.[0]?.requestId, 'request-1');
   });
 

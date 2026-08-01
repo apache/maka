@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
   LOCAL_MEMORY_MAX_BYTES,
+  LOCAL_MEMORY_PROMPT_TRUNCATION_MARKER,
   appendApprovedLocalMemoryEntryDraft,
   appendLocalMemoryProposalDraft,
   appendManualLocalMemoryEntryDraft,
@@ -63,6 +64,29 @@ describe('local MEMORY.md contract', () => {
     assert.match(parsed.entries[1]?.content ?? '', /metadata/);
   });
 
+  it('treats only the first metadata comment in a section as authoritative', () => {
+    const parsed = parseLocalMemoryMarkdown(
+      [
+        '# Maka Memory',
+        '',
+        '## Canonical preference',
+        '<!-- maka-memory: id=canonical status=active scope=workspace -->',
+        'Keep this entry active.',
+        '<!-- maka-memory: id=shadow status=archived scope=session sessionId=other-session -->',
+        'Keep parsing content after the ignored metadata comment.',
+      ].join('\n'),
+    );
+
+    assert.equal(parsed.entries.length, 1);
+    assert.equal(parsed.entries[0]?.id, 'canonical');
+    assert.equal(parsed.entries[0]?.status, 'active');
+    assert.equal(parsed.entries[0]?.scope, 'workspace');
+    assert.equal(parsed.entries[0]?.sessionId, undefined);
+    assert.match(parsed.entries[0]?.content ?? '', /Keep this entry active/);
+    assert.match(parsed.entries[0]?.content ?? '', /Keep parsing content/);
+    assert.doesNotMatch(parsed.entries[0]?.content ?? '', /maka-memory|shadow/);
+  });
+
   it('parses V0.2 metadata fail-open and splits archived entries', () => {
     const parsed = parseLocalMemoryMarkdown(
       [
@@ -112,6 +136,42 @@ describe('local MEMORY.md contract', () => {
     assert.doesNotMatch(body, /maka-memory|Archived|should not enter/);
   });
 
+  it('projects session-scoped entries only into their owning session', () => {
+    const source = [
+      '# Maka Memory',
+      '',
+      '## Workspace preference',
+      '<!-- maka-memory: id=workspace status=active scope=workspace -->',
+      'Visible in every session.',
+      '',
+      '## Session A preference',
+      '<!-- maka-memory: id=session-a status=active scope=session sessionId=session-a -->',
+      'Visible only in session A.',
+      '',
+      '## Session B preference',
+      '<!-- maka-memory: id=session-b status=active scope=session sessionId=session-b -->',
+      'Visible only in session B.',
+      '',
+      '## Legacy unowned session preference',
+      '<!-- maka-memory: id=session-legacy status=active scope=session -->',
+      'Must fail closed.',
+    ].join('\n');
+
+    const withoutSession = buildLocalMemoryPromptBody(source);
+    assert.match(withoutSession ?? '', /Visible in every session/);
+    assert.doesNotMatch(withoutSession ?? '', /Visible only|fail closed/);
+
+    const sessionA = buildLocalMemoryPromptBody(source, { sessionId: 'session-a' });
+    assert.match(sessionA ?? '', /Visible in every session/);
+    assert.match(sessionA ?? '', /Visible only in session A/);
+    assert.doesNotMatch(sessionA ?? '', /session B|fail closed/);
+
+    const sessionB = buildLocalMemoryPromptBody(source, { sessionId: 'session-b' });
+    assert.match(sessionB ?? '', /Visible in every session/);
+    assert.match(sessionB ?? '', /Visible only in session B/);
+    assert.doesNotMatch(sessionB ?? '', /session A|fail closed/);
+  });
+
   it('excludes pending, rejected, and unknown statuses from prompt injection', () => {
     const source = [
       '# Maka Memory',
@@ -148,7 +208,7 @@ describe('local MEMORY.md contract', () => {
       [
         '# Maka Memory',
         '',
-        '## Legacy pasted credential',
+        '## Legacy pasted credential sk-ant-api03-title123456789abcdef',
         '<!-- maka-memory: id=legacy-secret origin=manual status=active -->',
         'Authorization: Bearer sk-ant-api03-abc123def456ghi789jkl0mn1opq',
         'Endpoint: https://api.example.test/models?api_key=raw-secret-value&timeout=30',
@@ -156,7 +216,7 @@ describe('local MEMORY.md contract', () => {
     );
 
     assert.ok(body);
-    assert.doesNotMatch(body, /sk-ant-api03|raw-secret-value/);
+    assert.doesNotMatch(body, /sk-ant-api03|raw-secret-value|title123456789abcdef/);
     assert.match(body, /Authorization: Bearer \[redacted\]/);
     assert.match(body, /api_key=\[redacted\]/);
   });
@@ -175,6 +235,31 @@ describe('local MEMORY.md contract', () => {
 
     assert.ok(body);
     assert.match(body, /tail-marker/);
+  });
+
+  it('does not split a Unicode scalar at the prompt budget boundary', () => {
+    const boundaryPrefix = 'word '.repeat(2_400).slice(0, 11_987);
+    const body = buildLocalMemoryPromptBody(
+      [
+        '# Maka Memory',
+        '',
+        '## Boundary',
+        '<!-- maka-memory: id=boundary origin=manual status=active -->',
+        `${boundaryPrefix}\u{1f600}tail`,
+      ].join('\n'),
+    );
+
+    assert.ok(body);
+    assert.equal(
+      Array.from(body).some(
+        (character) =>
+          character.length === 1 &&
+          character.charCodeAt(0) >= 0xd800 &&
+          character.charCodeAt(0) <= 0xdfff,
+      ),
+      false,
+    );
+    assert.equal(body.endsWith(LOCAL_MEMORY_PROMPT_TRUNCATION_MARKER), true);
   });
 
   it('appends a manual entry draft with visible metadata and preserves existing content', () => {
@@ -238,6 +323,58 @@ describe('local MEMORY.md contract', () => {
       buildLocalMemoryPromptBody(approved.memoryDraft) ?? '',
       /Remember dark mode preference/,
     );
+  });
+
+  it('preserves the owning session when approving a session-scoped proposal', () => {
+    const pending = appendLocalMemoryProposalDraft('# Maka Pending Memory\n', {
+      proposalId: 'proposal-session123',
+      title: 'Session preference',
+      content: 'Use the session-specific toolchain.',
+      scope: 'session',
+      sessionId: 'session-123',
+      proposedAt: 1700000000000,
+    });
+
+    assert.equal(pending.ok, true);
+    if (!pending.ok) return;
+    const proposal = findLocalMemoryEntryDraft(pending.draft, 'proposal-session123');
+    assert.equal(proposal?.sessionId, 'session-123');
+
+    const approved = approveLocalMemoryProposalDraft('# Maka Memory\n', pending.draft, {
+      proposalId: 'proposal-session123',
+      entryId: 'mem-session123',
+      confirmedAt: 1700000001000,
+    });
+
+    assert.equal(approved.ok, true);
+    if (!approved.ok) return;
+    assert.equal(approved.entry.sessionId, 'session-123');
+    assert.equal(buildLocalMemoryPromptBody(approved.memoryDraft), undefined);
+    assert.match(
+      buildLocalMemoryPromptBody(approved.memoryDraft, { sessionId: 'session-123' }) ?? '',
+      /session-specific toolchain/,
+    );
+  });
+
+  it('rejects new session-scoped entries without a canonical session identity', () => {
+    const approved = appendApprovedLocalMemoryEntryDraft('# Maka Memory\n', {
+      id: 'mem-unowned123',
+      title: 'Unowned memory',
+      content: 'Do not create an unowned session entry.',
+      source: 'user_authored',
+      scope: 'session',
+      confirmedAt: 1700000000000,
+    });
+    const proposal = appendLocalMemoryProposalDraft('# Maka Pending Memory\n', {
+      proposalId: 'proposal-unowned123',
+      title: 'Unowned proposal',
+      content: 'Do not create an unowned session proposal.',
+      scope: 'session',
+      proposedAt: 1700000000000,
+    });
+
+    assert.deepEqual(approved, { ok: false, reason: 'invalid_session_id' });
+    assert.deepEqual(proposal, { ok: false, reason: 'invalid_session_id' });
   });
 
   it('rejects pending proposals without creating active memory', () => {

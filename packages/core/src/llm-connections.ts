@@ -57,6 +57,23 @@ export interface ModelInfo {
     functionCalling?: boolean;
     imageGeneration?: boolean;
   };
+  /**
+   * Voice is transport-sensitive: an `audio` modality alone does not prove
+   * that the configured provider wire can carry it. These fields are kept
+   * separate from the legacy chat capability booleans so routing can require
+   * metadata, endpoint role, and an implemented adapter at the same time.
+   */
+  modalities?: {
+    input: Array<'text' | 'image' | 'audio'>;
+    output: Array<'text' | 'image' | 'audio'>;
+  };
+  endpointRoles?: Array<
+    'agent_chat' | 'audio_chat' | 'transcription' | 'realtime_voice' | 'speech_generation'
+  >;
+  transports?: Array<
+    'openai_chat_audio' | 'openai_audio_transcriptions' | 'openai_realtime' | 'provider_native'
+  >;
+  transcriptOutput?: boolean;
 }
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';
@@ -70,16 +87,20 @@ export interface ModelDiscoveryResult {
 
 export type ConnectionLastTestStatus = 'verified' | 'needs_reauth' | 'error';
 
-export interface LlmConnection {
+/** Non-secret provider/model configuration required by runtime execution. */
+export interface RuntimeExecutionConnection {
   slug: string;
-  name: string;
   providerType: ProviderType;
   baseUrl?: string;
   defaultModel: string;
+  models?: ModelInfo[];
+}
+
+export interface LlmConnection extends RuntimeExecutionConnection {
+  name: string;
   enabled: boolean;
   /** Model ids shown in model pickers. Legacy connections omit this and enable only their default model. */
   enabledModelIds?: string[];
-  models?: ModelInfo[];
   modelSource?: ModelDiscoverySource;
   /** Unix ms timestamp for the last successful model discovery result. */
   modelsFetchedAt?: number;
@@ -252,6 +273,20 @@ export function validateSlug(slug: string): string | null {
   }
   if (slug.length > 64) return 'Slug must be 64 characters or fewer';
   return null;
+}
+
+/** Derive an unused connection slug from a catalog provider type. */
+export function deriveConnectionSlug(
+  providerType: ProviderType,
+  existingSlugs: readonly string[] = [],
+): string {
+  const base = providerType.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  if (!existingSlugs.includes(base)) return base;
+
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!existingSlugs.includes(candidate)) return candidate;
+  }
 }
 
 /**

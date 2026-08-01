@@ -29,17 +29,30 @@ const allowedServerExternalImports = new Set([
   '@maka/core/backend-types',
   '@maka/core/events',
   '@maka/core/interaction',
+  '@maka/core/llm-connections',
+  '@maka/core/local-memory',
+  '@maka/core/model-catalog',
+  '@maka/core/model-metadata',
+  '@maka/core/model-thinking',
+  '@maka/core/redaction',
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
+  '@maka/core/runtime-inputs',
   '@maka/core/session',
+  '@maka/core/session-name',
+  '@maka/core/shell-run',
   '@maka/core/task-ledger',
+  '@maka/core/usage-stats/types',
   '@maka/runtime',
   '@maka/storage/agent-graph-control-store',
   '@maka/storage/artifact-stores',
   '@maka/storage/execution-stores',
   '@maka/storage/interaction-store',
+  '@maka/storage/memory-bundle-store',
   '@maka/storage/runtime-policy-stores',
+  '@maka/storage/shell-run-authority',
   '@maka/storage/task-ledger-authority',
+  '@maka/storage/usage-stores',
   'node:async_hooks',
 ]);
 const allowedExternalImports = {
@@ -47,10 +60,19 @@ const allowedExternalImports = {
   protocol: new Set([
     '@maka/core/attachments',
     '@maka/core/artifacts',
+    '@maka/core/collaboration',
     '@maka/core/events',
     '@maka/core/interaction',
+    '@maka/core/local-memory',
+    '@maka/core/model-thinking',
+    '@maka/core/orchestration',
+    '@maka/core/permission',
     '@maka/core/runtime-policy',
+    '@maka/core/session',
+    '@maka/core/shell-run-result',
     '@maka/core/task-ledger',
+    '@maka/core/usage-stats/pricing',
+    '@maka/core/usage-stats/types',
     'node:util',
   ]),
 } as const;
@@ -142,6 +164,8 @@ test('the production Candidate dependency graph remains non-serving', () => {
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
     'server/root-turn-coordinator.ts',
+    'server/memory-coordinator.ts',
+    'server/memory-projection.ts',
     'server/runtime-policy-coordinator.ts',
     'server/session-continuity-coordinator.ts',
     'server/task-ledger-coordinator.ts',
@@ -155,6 +179,7 @@ test('the production Candidate dependency graph remains non-serving', () => {
         specifier === '@maka/runtime' ||
         specifier === '@maka/storage/agent-graph-control-store' ||
         specifier === '@maka/storage/execution-stores' ||
+        specifier === '@maka/storage/memory-bundle-store' ||
         specifier === '@maka/storage/runtime-policy-stores' ||
         specifier === '@maka/storage/task-ledger-authority'
       ) {
@@ -172,6 +197,8 @@ test('the public server entrypoint does not expose the test execution compositio
   const forbidden = new Set([
     'server/execution-candidate.ts',
     'server/execution-composition.ts',
+    'server/memory-coordinator.ts',
+    'server/memory-projection.ts',
     'server/root-turn-coordinator.ts',
     'server/session-continuity-coordinator.ts',
   ]);

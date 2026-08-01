@@ -3,6 +3,7 @@ import {
   type PreparedProviderRequestCapture,
   type PreparedRequestSegment,
 } from './request-shape.js';
+import { rawFinishReasonString } from './model-protocol.js';
 
 export type ProviderRequestCacheValueSource = 'provider' | 'derived';
 
@@ -59,6 +60,7 @@ export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
   captureArtifactId: string;
   providerId: string;
   modelId: string;
+  contextWindow?: number;
   requestHash: string;
   requestBytes: number;
   segments: PreparedRequestSegment[];
@@ -73,6 +75,7 @@ export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
 export interface ProviderRequestTrackerInput {
   traceId: string;
   turnId: string;
+  contextWindow?: number;
   now: () => number;
   newId: () => string;
   persistCapture: (
@@ -96,6 +99,14 @@ export interface TrackProviderStreamInput {
   doStream: () => PromiseLike<ProviderStreamResult>;
 }
 
+export interface TrackProviderGenerateInput {
+  providerId: string;
+  modelId: string;
+  params: Record<string, unknown>;
+  abortSignal?: AbortSignal;
+  doGenerate: () => PromiseLike<ProviderGenerateResult>;
+}
+
 export function createProviderRequestCaptureRecorder(
   input: ProviderRequestCaptureRecorderInput,
 ): (
@@ -113,6 +124,14 @@ export interface ProviderStreamResult {
   stream: ReadableStream<unknown>;
   request?: unknown;
   response?: unknown;
+}
+
+export interface ProviderGenerateResult {
+  finishReason?: unknown;
+  usage?: ProviderRequestUsageLike;
+  request?: unknown;
+  response?: unknown;
+  [key: string]: unknown;
 }
 
 interface StoredCapture {
@@ -140,15 +159,105 @@ export class ProviderRequestTracker {
     const step = this.step;
     const capture = await this.capture(step, input);
     throwIfAbortedBeforeDispatch(input.abortSignal);
+    let sawOutput = false;
+    const attempt = this.beginAttempt(step, capture, input);
+
+    let result: ProviderStreamResult;
+    try {
+      result = await input.doStream();
+    } catch (error) {
+      await attempt.finalize(abortStatus(input.abortSignal, error));
+      throw error;
+    }
+
+    const reader = result.stream.getReader();
+    const stream = new ReadableStream<unknown>({
+      pull: async (controller) => {
+        try {
+          const next = await reader.read();
+          if (next.done) {
+            await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
+            controller.close();
+            return;
+          }
+          const part = asRecord(next.value);
+          if (part && isOutputPart(part.type)) {
+            sawOutput = true;
+            attempt.observeOutput();
+          }
+          if (part?.type === 'finish') {
+            await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
+              reason: rawFinishReasonString(part.finishReason),
+              usage: asUsage(part.usage),
+            });
+          } else if (part?.type === 'error') {
+            await attempt.finalize(
+              input.abortSignal?.aborted ? 'aborted' : sawOutput ? 'interrupted' : 'failed',
+            );
+          }
+          controller.enqueue(next.value);
+        } catch (error) {
+          await attempt.finalize(
+            input.abortSignal?.aborted
+              ? 'aborted'
+              : sawOutput
+                ? 'interrupted'
+                : abortStatus(input.abortSignal, error),
+          );
+          controller.error(error);
+        }
+      },
+      cancel: async (reason) => {
+        try {
+          await reader.cancel(reason);
+        } finally {
+          await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
+        }
+      },
+    });
+    return { ...result, stream };
+  }
+
+  async trackGenerate(input: TrackProviderGenerateInput): Promise<ProviderGenerateResult> {
+    throwIfAbortedBeforeDispatch(input.abortSignal);
+    const step = this.step;
+    const capture = await this.capture(step, input);
+    throwIfAbortedBeforeDispatch(input.abortSignal);
+    const attempt = this.beginAttempt(step, capture, input);
+    try {
+      const result = await input.doGenerate();
+      await attempt.finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
+        reason: rawFinishReasonString(result.finishReason),
+        usage: result.usage,
+      });
+      return result;
+    } catch (error) {
+      await attempt.finalize(abortStatus(input.abortSignal, error));
+      throw error;
+    }
+  }
+
+  private beginAttempt(
+    step: number,
+    capture: StoredCapture,
+    input: Pick<
+      TrackProviderStreamInput | TrackProviderGenerateInput,
+      'providerId' | 'modelId' | 'abortSignal'
+    >,
+  ): {
+    observeOutput(): void;
+    finalize(
+      status: ProviderRequestAttemptStatus,
+      finish?: { reason?: string; usage?: ProviderRequestUsageLike },
+    ): Promise<void>;
+  } {
     const attempt = (this.attemptsByStep.get(step) ?? 0) + 1;
     this.attemptsByStep.set(step, attempt);
     const attemptId = this.input.newId();
     const startedAt = this.input.now();
-    let sawOutput = false;
     let timeToFirstTokenMs: number | undefined;
     let finished = false;
     let abortListener: (() => void) | undefined;
-
     const finalize = async (
       status: ProviderRequestAttemptStatus,
       finish?: { reason?: string; usage?: ProviderRequestUsageLike },
@@ -158,6 +267,7 @@ export class ProviderRequestTracker {
       if (abortListener) input.abortSignal?.removeEventListener('abort', abortListener);
       const completedAt = this.input.now();
       const usage = strictProviderRequestUsage(finish?.usage);
+      const contextWindow = positiveInteger(this.input.contextWindow);
       const record: ProviderRequestAttemptRecord = {
         traceId: this.input.traceId,
         attemptId,
@@ -168,6 +278,7 @@ export class ProviderRequestTracker {
         captureArtifactId: capture.ref.artifactId,
         providerId: input.providerId,
         modelId: input.modelId,
+        ...(contextWindow !== undefined ? { contextWindow } : {}),
         requestHash: capture.capture.requestHash,
         requestBytes: capture.capture.requestBytes,
         segments: capture.capture.segments,
@@ -185,74 +296,25 @@ export class ProviderRequestTracker {
         // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
       }
     };
-
+    const observeOutput = () => {
+      if (timeToFirstTokenMs === undefined) {
+        timeToFirstTokenMs = Math.max(0, this.input.now() - startedAt);
+      }
+    };
     if (input.abortSignal) {
       abortListener = () => {
         void finalize('aborted');
       };
-      if (input.abortSignal.aborted) await finalize('aborted');
+      if (input.abortSignal.aborted) void finalize('aborted');
       else input.abortSignal.addEventListener('abort', abortListener, { once: true });
     }
-
-    let result: ProviderStreamResult;
-    try {
-      result = await input.doStream();
-    } catch (error) {
-      await finalize(abortStatus(input.abortSignal, error));
-      throw error;
-    }
-
-    const reader = result.stream.getReader();
-    const stream = new ReadableStream<unknown>({
-      pull: async (controller) => {
-        try {
-          const next = await reader.read();
-          if (next.done) {
-            await finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
-            controller.close();
-            return;
-          }
-          const part = asRecord(next.value);
-          if (part && isOutputPart(part.type)) {
-            sawOutput = true;
-            if (timeToFirstTokenMs === undefined) {
-              timeToFirstTokenMs = Math.max(0, this.input.now() - startedAt);
-            }
-          }
-          if (part?.type === 'finish') {
-            await finalize(input.abortSignal?.aborted ? 'aborted' : 'completed', {
-              reason: finishReason(part.finishReason),
-              usage: asUsage(part.usage),
-            });
-          } else if (part?.type === 'error') {
-            await finalize(
-              input.abortSignal?.aborted ? 'aborted' : sawOutput ? 'interrupted' : 'failed',
-            );
-          }
-          controller.enqueue(next.value);
-        } catch (error) {
-          await finalize(
-            input.abortSignal?.aborted
-              ? 'aborted'
-              : sawOutput
-                ? 'interrupted'
-                : abortStatus(input.abortSignal, error),
-          );
-          controller.error(error);
-        }
-      },
-      cancel: async (reason) => {
-        try {
-          await reader.cancel(reason);
-        } finally {
-          await finalize(input.abortSignal?.aborted ? 'aborted' : 'interrupted');
-        }
-      },
-    });
-    return { ...result, stream };
+    return { observeOutput, finalize };
   }
 
-  private async capture(step: number, input: TrackProviderStreamInput): Promise<StoredCapture> {
+  private async capture(
+    step: number,
+    input: TrackProviderStreamInput | TrackProviderGenerateInput,
+  ): Promise<StoredCapture> {
     const prepared = preparedCapture(input.providerId, input.modelId, input.params);
     const key = `${step}:${prepared.requestHash}`;
     const existing = this.captures.get(key);
@@ -293,7 +355,8 @@ function preparedCapture(
   modelId: string,
   params: Record<string, unknown>,
 ): PreparedProviderRequestCapture {
-  const prompt = Array.isArray(params.prompt) ? params.prompt : [];
+  const safeParams = secretFreeParams(params);
+  const prompt = Array.isArray(safeParams.prompt) ? safeParams.prompt : [];
   const instructions: unknown[] = [];
   const messages: unknown[] = [];
   for (const item of prompt) {
@@ -301,8 +364,8 @@ function preparedCapture(
     if (record?.role === 'system') instructions.push(record.content);
     else messages.push(item);
   }
-  const tools = Array.isArray(params.tools) ? params.tools : [];
-  const providerOptions = asRecord(params.providerOptions);
+  const tools = Array.isArray(safeParams.tools) ? safeParams.tools : [];
+  const providerOptions = asRecord(safeParams.providerOptions);
   return capturePreparedProviderRequest({
     providerId,
     modelId,
@@ -310,25 +373,39 @@ function preparedCapture(
     messages,
     tools,
     ...(providerOptions ? { providerOptions } : {}),
-    requestPayload: secretFreeParams(params),
+    requestPayload: safeParams,
   });
 }
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {
   const { abortSignal: _abortSignal, headers: _headers, ...safe } = params;
-  return safe;
+  return redactOperationMemoryAudio(safe) as Record<string, unknown>;
+}
+
+const OPERATION_MEMORY_AUDIO_REDACTION = '[redacted:operation-memory-audio]';
+
+function redactOperationMemoryAudio(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactOperationMemoryAudio);
+  const record = asRecord(value);
+  if (!record) return value;
+  if (
+    typeof record.filename === 'string' &&
+    record.filename.startsWith('voice-input.') &&
+    typeof record.mediaType === 'string' &&
+    record.mediaType.startsWith('audio/') &&
+    'data' in record
+  ) {
+    return { ...record, data: OPERATION_MEMORY_AUDIO_REDACTION };
+  }
+  if (ArrayBuffer.isView(value)) return value;
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, redactOperationMemoryAudio(entry)]),
+  );
 }
 
 function abortStatus(signal: AbortSignal | undefined, error: unknown): 'failed' | 'aborted' {
   if (signal?.aborted) return 'aborted';
   return error instanceof Error && error.name === 'AbortError' ? 'aborted' : 'failed';
-}
-
-function finishReason(value: unknown): string | undefined {
-  if (typeof value === 'string') return value;
-  const reason = asRecord(value);
-  if (typeof reason?.raw === 'string') return reason.raw;
-  return typeof reason?.unified === 'string' ? reason.unified : undefined;
 }
 
 function isOutputPart(type: unknown): boolean {
@@ -513,4 +590,8 @@ function firstToken(...values: Array<number | undefined>): number | undefined {
 
 function finiteToken(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }

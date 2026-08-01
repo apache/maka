@@ -1,12 +1,8 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { HostedPermissionAdmission } from '@maka/core/backend-types';
-import type { AnyPermissionRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
+import type { UserQuestionRequestEvent } from '@maka/core/events';
 import {
-  InteractionPermissionProjectionError,
   isInteractionAnswerValidForRequest,
-  projectInteractionPermissionRequest,
   projectInteractionQuestionRequest,
-  type InteractionAnswer,
   type InteractionCanonicalOutcome,
 } from '@maka/core/interaction';
 import {
@@ -18,8 +14,6 @@ import {
   type RuntimeInteractionRunClosureReason,
   type RuntimeInteractionRunIdentity,
   type RuntimeInteractionRunOwner,
-  type RuntimePermissionContinuation,
-  type RuntimePermissionOutcome,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime';
 import {
@@ -39,13 +33,10 @@ import {
 import {
   answerOutcome,
   compareStoredInteractionRequests,
-  permissionCanonicalOutcome,
-  permissionInteractionAnswer,
   projectInteractionRecord,
   projectSessionInteractions,
-  runtimePermissionOutcome,
+  questionCanonicalOutcome,
   runtimeQuestionOutcome,
-  wireCanonicalOutcome,
 } from './interaction-projection.js';
 import type { InteractionOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
@@ -76,15 +67,9 @@ interface RunClosure {
 
 interface BoundRun extends RuntimeInteractionRunIdentity {
   closure?: RunClosure;
-  readonly rememberedPermissionOutcomes: Map<string, RememberedPermissionOutcome>;
   bound: boolean;
   released: boolean;
 }
-
-type RememberedPermissionOutcome = Extract<
-  InteractionCanonicalOutcome,
-  { kind: 'permission_answer' }
->;
 
 interface LiveEntryBase {
   readonly run: BoundRun;
@@ -92,17 +77,11 @@ interface LiveEntryBase {
   phase: 'admitting' | 'live';
 }
 
-interface LivePermissionEntry extends LiveEntryBase {
-  readonly kind: 'permission';
-  readonly continuation: RuntimePermissionContinuation;
-}
-
 interface LiveQuestionEntry extends LiveEntryBase {
-  readonly kind: 'question';
   readonly continuation: RuntimeUserQuestionContinuation;
 }
 
-type LiveEntry = LivePermissionEntry | LiveQuestionEntry;
+type LiveEntry = LiveQuestionEntry;
 
 interface CommittedEntry {
   readonly entry: LiveEntry;
@@ -155,7 +134,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       existing ??
       ({
         ...identity,
-        rememberedPermissionOutcomes: new Map(),
         bound: false,
         released: false,
       } satisfies BoundRun);
@@ -163,15 +141,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     if (!existing) this.#runs.set(key, run);
     return Object.freeze({
       ...identity,
-      acceptPermissionRequest: (
-        input: Parameters<RuntimeInteractionRunOwner['acceptPermissionRequest']>[0],
-      ) => this.#acceptPermissionRequest(run, input),
-      commitPermissionAnswer: (
-        input: Parameters<RuntimeInteractionRunOwner['commitPermissionAnswer']>[0],
-      ) => this.#commitPermissionAnswer(run, input),
-      commitPermissionTimeout: (
-        input: Parameters<RuntimeInteractionRunOwner['commitPermissionTimeout']>[0],
-      ) => this.#commitPermissionTimeout(run, input),
       acceptUserQuestionRequest: (
         input: Parameters<RuntimeInteractionRunOwner['acceptUserQuestionRequest']>[0],
       ) => this.#acceptUserQuestionRequest(run, input),
@@ -238,7 +207,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       if (!run) {
         run = {
           ...identity,
-          rememberedPermissionOutcomes: new Map(),
           bound: false,
           released: false,
         };
@@ -292,53 +260,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     this.#releaseRun(run);
   }
 
-  #acceptPermissionRequest(
-    run: BoundRun,
-    input: Parameters<RuntimeInteractionRunOwner['acceptPermissionRequest']>[0],
-  ): Promise<HostedPermissionAdmission> {
-    try {
-      this.#assertAcceptable(run, input.request, input.continuation);
-      let request: ReturnType<typeof projectInteractionPermissionRequest>;
-      try {
-        request = projectInteractionPermissionRequest(input.request);
-      } catch (error) {
-        if (!(error instanceof InteractionPermissionProjectionError)) throw error;
-        return rejected(
-          new RuntimeInteractionAdmissionRejectedError(
-            input.continuation.requestId,
-            'invalid_request',
-          ),
-        );
-      }
-      if (
-        input.rememberScopeId !== undefined &&
-        (request.prompt.kind !== 'tool_permission' || !request.prompt.rememberForTurnAllowed)
-      ) {
-        return rejected(
-          new RuntimeInteractionAdmissionRejectedError(
-            input.continuation.requestId,
-            'invalid_request',
-          ),
-        );
-      }
-      return this.#accept(run, {
-        kind: 'permission',
-        request: {
-          ...runIdentity(run),
-          requestId: input.continuation.requestId,
-          createdAt: input.request.ts,
-          request,
-          ...(input.rememberScopeId === undefined
-            ? {}
-            : { rememberScopeId: input.rememberScopeId }),
-        },
-        continuation: input.continuation,
-      });
-    } catch (error) {
-      return rejected(error);
-    }
-  }
-
   #acceptUserQuestionRequest(
     run: BoundRun,
     input: Parameters<RuntimeInteractionRunOwner['acceptUserQuestionRequest']>[0],
@@ -361,7 +282,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       }
       return observed(
         this.#accept(run, {
-          kind: 'question',
           request: {
             ...runIdentity(run),
             requestId: input.continuation.requestId,
@@ -376,12 +296,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     }
   }
 
-  #accept(
-    run: BoundRun,
-    candidate:
-      | Omit<LivePermissionEntry, 'run' | 'phase'>
-      | Omit<LiveQuestionEntry, 'run' | 'phase'>,
-  ): Promise<HostedPermissionAdmission> {
+  #accept(run: BoundRun, candidate: Omit<LiveQuestionEntry, 'run' | 'phase'>): Promise<void> {
     this.#throwIfPoisoned();
     this.#assertRunOpen(run, candidate.request.requestId);
     if (!this.#accepting) {
@@ -411,10 +326,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     );
   }
 
-  async #establishAdmitted(
-    entry: LiveEntry,
-    admission: SessionAdmissionLease,
-  ): Promise<HostedPermissionAdmission> {
+  async #establishAdmitted(entry: LiveEntry, admission: SessionAdmissionLease): Promise<void> {
     this.#throwIfPoisoned();
     if (!this.#accepting) {
       this.#discardAdmitting(entry);
@@ -430,30 +342,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         'run_closed',
         entry.run.closure.reason,
       );
-    }
-    if (entry.kind === 'permission' && entry.request.rememberScopeId !== undefined) {
-      const remembered = entry.run.rememberedPermissionOutcomes.get(entry.request.rememberScopeId);
-      if (remembered) {
-        const established = await this.#establishRequest(entry.request);
-        if (established.kind === 'not_published') {
-          this.#discardAdmitting(entry);
-          throw new RuntimeInteractionAdmissionRejectedError(
-            entry.request.requestId,
-            'not_published',
-            established.failure,
-          );
-        }
-        if (established.record.outcome) {
-          this.#discardAdmitting(entry);
-          throw new RuntimeInteractionAdmissionRejectedError(
-            entry.request.requestId,
-            'request_settled',
-          );
-        }
-        entry.phase = 'live';
-        await this.#commitSingle(entry, remembered, admission);
-        return { state: 'settled' };
-      }
     }
     const pending = await this.#readPending({ sessionId: entry.request.sessionId });
     if (pending.length > INTERACTION_MAX_PENDING_PER_SESSION) {
@@ -503,57 +391,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     entry.phase = 'live';
     await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
     this.#throwIfPoisoned();
-    return { state: 'pending' };
-  }
-
-  #commitPermissionAnswer(
-    run: BoundRun,
-    input: Parameters<RuntimeInteractionRunOwner['commitPermissionAnswer']>[0],
-  ): Promise<RuntimePermissionOutcome> {
-    return observed(
-      this.#sessionAdmission
-        .run(run.sessionId, async (admission) => {
-          const record = await this.#readContinuationRecord(run, input.continuation);
-          const answer = permissionInteractionAnswer(input.answer);
-          this.#assertRuntimeAnswer(record.request, answer);
-          if (record.outcome) return runtimePermissionOutcome(record.outcome.outcome);
-          const entry = this.#requirePermissionEntry(run, input.continuation, record.request);
-          const outcome = await this.#commitAnswer(
-            entry,
-            permissionCanonicalOutcome(input.answer, this.#now()),
-            admission,
-          );
-          return runtimePermissionOutcome(outcome.outcome);
-        })
-        .catch((error: unknown) => {
-          if (isExpectedRuntimeError(error)) throw error;
-          throw this.#poison(error);
-        }),
-    );
-  }
-
-  #commitPermissionTimeout(
-    run: BoundRun,
-    input: Parameters<RuntimeInteractionRunOwner['commitPermissionTimeout']>[0],
-  ): Promise<RuntimePermissionOutcome> {
-    return observed(
-      this.#sessionAdmission
-        .run(run.sessionId, async (admission) => {
-          const record = await this.#readContinuationRecord(run, input.continuation);
-          if (record.outcome) return runtimePermissionOutcome(record.outcome.outcome);
-          const entry = this.#requirePermissionEntry(run, input.continuation, record.request);
-          const outcome = await this.#commitSingle(
-            entry,
-            { kind: 'closure', reason: 'timed_out', committedAt: this.#now() },
-            admission,
-          );
-          return runtimePermissionOutcome(outcome.outcome);
-        })
-        .catch((error: unknown) => {
-          if (isExpectedRuntimeError(error)) throw error;
-          throw this.#poison(error);
-        }),
-    );
+    return;
   }
 
   #query(
@@ -598,6 +436,15 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
           }
           this.#assertExactRequest(routed.request, record.request);
           if (record.outcome) return answerOutcome(recordWithOutcome(record), input.answer);
+          if (record.request.request.kind !== 'question' || input.answer.kind !== 'question') {
+            return {
+              ok: false,
+              error: {
+                code: 'operation_conflict',
+                message: 'Legacy permission requests cannot be answered by this host',
+              },
+            } as const;
+          }
           if (!isInteractionAnswerValidForRequest(record.request.request, input.answer)) {
             return {
               ok: false,
@@ -610,7 +457,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
           const entry = this.#requireLiveEntry(record.request);
           const outcome = await this.#commitAnswer(
             entry,
-            wireCanonicalOutcome(input.answer, this.#now()),
+            questionCanonicalOutcome(input.answer, this.#now()),
             admission,
           );
           return answerOutcome({ request: record.request, outcome }, input.answer);
@@ -624,73 +471,14 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   async #commitAnswer(
     entry: LiveEntry,
-    candidate: Exclude<InteractionCanonicalOutcome, { kind: 'closure' }>,
+    candidate: Extract<InteractionCanonicalOutcome, { kind: 'question_answer' }>,
     admission: SessionAdmissionLease,
   ): Promise<StoredInteractionOutcome> {
-    if (
-      candidate.kind === 'permission_answer' &&
-      candidate.rememberForTurn &&
-      entry.request.rememberScopeId === undefined
-    ) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Remembered permission ${entry.request.requestId} has no remember scope`,
-        ),
-      );
-    }
-
     const target = await this.#commitOutcome(entry.request, candidate);
-    const committed: CommittedEntry[] = [{ entry, outcome: target }];
-    if (
-      candidate.kind === 'permission_answer' &&
-      candidate.rememberForTurn &&
-      target.outcome.kind === 'permission_answer' &&
-      target.outcome.rememberForTurn
-    ) {
-      const pending = await this.#readPending({
-        sessionId: entry.request.sessionId,
-        turnId: entry.request.turnId,
-        runId: entry.request.runId,
-        kind: 'permission',
-      });
-      const siblings = pending
-        .filter(
-          (request) =>
-            request.rememberScopeId !== undefined &&
-            request.rememberScopeId === entry.request.rememberScopeId,
-        )
-        .sort(compareStoredInteractionRequests);
-      for (const request of siblings) {
-        const sibling = this.#requireLiveEntry(request);
-        committed.push({
-          entry: sibling,
-          outcome: await this.#commitOutcome(request, target.outcome),
-        });
-      }
-      if (target.outcome.decision === 'allow' && entry.request.rememberScopeId !== undefined) {
-        entry.run.rememberedPermissionOutcomes.set(entry.request.rememberScopeId, target.outcome);
-      }
-    }
     await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
     this.#throwIfPoisoned();
-    for (const item of committed.sort((left, right) =>
-      compareStoredInteractionRequests(left.entry.request, right.entry.request),
-    )) {
-      await this.#applyAndDelete(item.entry, item.outcome);
-    }
+    await this.#applyAndDelete(entry, target);
     return target;
-  }
-
-  async #commitSingle(
-    entry: LiveEntry,
-    candidate: InteractionCanonicalOutcome,
-    admission: SessionAdmissionLease,
-  ): Promise<StoredInteractionOutcome> {
-    const outcome = await this.#commitOutcome(entry.request, candidate);
-    await this.#refreshCanonicalContinuity(entry.request.sessionId, admission);
-    this.#throwIfPoisoned();
-    await this.#applyAndDelete(entry, outcome);
-    return outcome;
   }
 
   #closeRun(run: BoundRun, reason: RuntimeInteractionRunClosureReason): Promise<void> {
@@ -822,7 +610,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       }
     }
     run.released = true;
-    run.rememberedPermissionOutcomes.clear();
     this.#runs.delete(runKey(run));
   }
 
@@ -913,29 +700,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     return result.record.outcome;
   }
 
-  async #readContinuationRecord(
-    run: BoundRun,
-    continuation: RuntimeInteractionContinuationIdentity,
-  ): Promise<InteractionRecord> {
-    this.#assertRunOpen(run, continuation.requestId);
-    if (continuation.turnId !== run.turnId || continuation.runId !== run.runId) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Interaction continuation does not match Run ${run.runId}`,
-        ),
-      );
-    }
-    const record = await this.#readInteraction(continuation.requestId);
-    if (!record || !continuationMatches(record.request, run, continuation)) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Interaction continuation identity changed for ${continuation.requestId}`,
-        ),
-      );
-    }
-    return record;
-  }
-
   async #readInteraction(requestId: string): Promise<InteractionRecord | undefined> {
     this.#throwIfPoisoned();
     try {
@@ -966,20 +730,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       );
     }
     try {
-      if (entry.kind === 'permission') {
-        const projected = runtimePermissionOutcome(outcome.outcome);
-        if (projected.kind === 'closure') {
-          await entry.continuation.applyClosure(projected.reason);
-        } else {
-          await entry.continuation.applyAnswer(projected.answer);
-        }
+      const projected = runtimeQuestionOutcome(outcome.outcome);
+      if (projected.kind === 'closure') {
+        await entry.continuation.applyClosure(projected.reason);
       } else {
-        const projected = runtimeQuestionOutcome(outcome.outcome);
-        if (projected.kind === 'closure') {
-          await entry.continuation.applyClosure(projected.reason);
-        } else {
-          await entry.continuation.applyAnswer(projected.answer);
-        }
+        await entry.continuation.applyAnswer(projected.answer);
       }
     } catch (error) {
       throw this.#poison(error);
@@ -999,25 +754,9 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     return entry;
   }
 
-  #requirePermissionEntry(
-    run: BoundRun,
-    continuation: RuntimePermissionContinuation,
-    request: StoredInteractionRequest,
-  ): LivePermissionEntry {
-    const entry = this.#requireLiveEntry(request);
-    if (entry.kind !== 'permission' || entry.run !== run || entry.continuation !== continuation) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Interaction ${request.requestId} is not the owned permission continuation`,
-        ),
-      );
-    }
-    return entry;
-  }
-
   #assertAcceptable(
     run: BoundRun,
-    request: Pick<AnyPermissionRequestEvent | UserQuestionRequestEvent, 'requestId' | 'turnId'>,
+    request: Pick<UserQuestionRequestEvent, 'requestId' | 'turnId'>,
     continuation: RuntimeInteractionContinuationIdentity,
   ): void {
     this.#assertRunOpen(run, continuation.requestId);
@@ -1030,27 +769,6 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       throw this.#poison(
         new RuntimeInteractionInvariantError(
           `Interaction continuation does not match Run ${run.runId}`,
-        ),
-      );
-    }
-  }
-
-  #assertRuntimeAnswer(request: StoredInteractionRequest, answer: InteractionAnswer): void {
-    if (!isInteractionAnswerValidForRequest(request.request, answer)) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Runtime answer does not match Interaction ${request.requestId}`,
-        ),
-      );
-    }
-    if (
-      answer.kind === 'permission' &&
-      answer.rememberForTurn &&
-      request.rememberScopeId === undefined
-    ) {
-      throw this.#poison(
-        new RuntimeInteractionInvariantError(
-          `Remembered permission ${request.requestId} has no remember scope`,
         ),
       );
     }

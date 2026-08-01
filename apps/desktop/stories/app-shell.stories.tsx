@@ -1,10 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import { ChatView, Composer, SessionListPanel } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -12,7 +14,7 @@ const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
-  title: 'Product/Shell Child Composition',
+  title: 'Product/Shell Official AppShell',
   parameters: {
     layout: 'fullscreen',
   },
@@ -134,7 +136,36 @@ const conversation: StoredMessage[] = [
   user('msg-1', 'turn-1', 14, '帮我把这轮 Storybook 覆盖的风险列出来，只保留真正会影响 review 的部分。'),
   assistant('msg-2', 'turn-1', 12, '现在最值得先固定的是几个高频但还没有 story 的页面：权限弹窗、顶层布局、首次启动引导。把它们的可见状态摆出来，reviewer 就能在 Storybook 里逐个看，不用手动把 app 驱动到这些路径。'),
   user('msg-3', 'turn-2', 6, '顶层布局怎么处理？它依赖很多 IPC。'),
-  assistant('msg-4', 'turn-2', 4, '不整体挂载 AppShell，改为用真实的子组件（侧栏、聊天区、顶栏）拼出布局。能稳定反映页面长什么样，又不被 IPC 耦合拖住。'),
+  assistant('msg-4', 'turn-2', 4, '直接挂载 Astryx AppShell，并通过官方 topNav、sideNav 和 content 插槽组合真实侧栏、聊天区与标题栏。Story 只隔离 IPC，布局 authority 与产品保持一致。'),
+];
+
+const markdownCoreConversation: StoredMessage[] = [
+  user('msg-md-1', 'turn-md', 6, '把 Markdown 核心能力放在一条回答里，方便视觉检查。'),
+  assistant(
+    'msg-md-2',
+    'turn-md',
+    5,
+    [
+      '# Markdown core',
+      '',
+      '正文支持 **粗体**、*斜体*、`inlineCode()`，以及 [安全外链](https://github.com/maka-agent/maka-agent)。',
+      '',
+      '- [x] Astryx 解析与排版',
+      '- [ ] 明暗主题视觉检查',
+      '',
+      '| 能力 | 状态 |',
+      '| --- | --- |',
+      '| 安全链接 | 已接管 |',
+      '| 代码高亮 | 已接管 |',
+      '',
+      '```typescript',
+      'const renderer = "Astryx";',
+      'return renderer;',
+      '```',
+      '',
+      '> 非白名单协议保持不可点击，原始 HTML 保持为文本。',
+    ].join('\n'),
+  ),
 ];
 
 const baseChatProps: ChatViewProps = {
@@ -162,16 +193,19 @@ const baseComposerProps: ComposerProps = {
   permissionMode: 'ask',
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
-  // ~1851-1960), so the daily composer renders the ＋ menu, the Plan
-  // switch, and the Swarm switch. Omitting them here understated the
-  // persistent element count in every shell story. expertTeams stays
-  // empty — most users have none configured; the ＋ menu shows just the
-  // attachment item then, as it does for them.
+  // ~1851-1960), so the daily composer renders the upload button, the
+  // modes menu (Plan / Swarm), and the Skills picker. Omitting them here
+  // understated the persistent element count in every shell story.
   onPickAttachments: noop,
   planModeActive: false,
   onPlanModeChange: noop,
   swarmModeActive: false,
   onSwarmModeChange: noop,
+  mentionSkills: [
+    { ref: 'user:pdf', id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
+    { ref: 'user:commit', id: 'commit', name: 'Commit', description: '生成提交信息' },
+    { ref: 'project:review', id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
+  ],
   workspacePicker: {
     label: 'maka-agent',
     branch: 'opencode/storybook-surface-coverage',
@@ -195,10 +229,9 @@ function ShellFrame(props: { children: ReactNode; motionEnabled?: boolean }) {
   );
 }
 
-// Composition smoke: mounts the real SessionListPanel + ChatView + Composer
-// + topbar chrome pieces side-by-side. Does NOT mount the monolithic
-// AppShell (1442 lines, heavy IPC coupling). When AppShell's internal
-// layout shifts, this story may drift — it owns its own 2-col scaffold.
+// Production-faithful shell composition: Astryx AppShell owns the frame,
+// SideNav owns sidebar geometry, and Maka supplies only Electron chrome and
+// product content through their public slots.
 function ComposedShell(props: {
   sidebarCollapsed?: boolean;
   initialViewMode?: SessionViewMode;
@@ -221,6 +254,7 @@ function ComposedShell(props: {
   motionEnabled?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
+  const sidebarHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
   const sidebarWidth = 260;
   const sessions = sidebarSessions.map((s) =>
@@ -241,33 +275,41 @@ function ComposedShell(props: {
 
   return (
     <ShellFrame motionEnabled={props.motionEnabled}>
-      <div
-        className="app maka-shell-2col agents-layout-body"
+      <AstryxAppShell
+        className="app maka-shell-astryx agents-layout-body"
+        variant="surface"
+        height="fill"
+        contentPadding={0}
+        mobileNav={{ breakpoint: 'none', hasToggle: false }}
         data-sidebar-state={collapsed ? 'collapsed' : 'expanded'}
-        style={{
-          ['--maka-session-list-expanded-width' as string]: `${sidebarWidth}px`,
-          ['--maka-resize-handle-width' as string]: '0px',
-          height: '100%',
-        }}
-      >
-        <AppShellTopbarActions
-          sidebarCollapsed={collapsed}
-          onOpenSearchModal={noop}
-          onCollapseSidebar={() => setCollapsed(true)}
-          onExpandSidebar={() => setCollapsed(false)}
-          onCreateSession={noop}
-        />
-        {/* Grid is 3 columns (sidebar / handle / detail): the handle must
-            always render or the detail panel falls into the 0px handle
-            column. When collapsed, keep the sidebar mounted (production
-            hides it via the data-sidebar-state CSS) so auto-placement
-            stays aligned. */}
-        <div
-          className="maka-panel maka-panel-list maka-floating-panel"
-          aria-hidden={collapsed ? 'true' : undefined}
-          inert={collapsed ? true : undefined}
-        >
+        topNav={
+          <header className="maka-window-titlebar">
+            <AppShellTopbarActions
+              sidebarCollapsed={collapsed}
+              sidebarHandleRef={sidebarHandleRef}
+              onOpenSearchModal={noop}
+              onCreateSession={noop}
+            />
+            <AppShellWorkspaceTopActions
+              workbarAvailable
+              workbarCollapsed={false}
+              onToggleWorkbar={noop}
+              onOpenFeedback={noop}
+              onOpenPalette={noop}
+              onOpenHelp={noop}
+              onOpenHealth={noop}
+            />
+          </header>
+        }
+        sideNav={
           <SessionListPanel
+            collapseHandleRef={sidebarHandleRef}
+            collapsed={collapsed}
+            onCollapsedChange={setCollapsed}
+            width={sidebarWidth}
+            onWidthChange={noop}
+            minWidth={180}
+            maxWidth={480}
             selection={{ section: 'sessions', filter: 'chats' }}
             sessions={sessions}
             activeId={active.id}
@@ -283,23 +325,14 @@ function ComposedShell(props: {
             projectActions={projectRowActions}
             worktreeSessionIds={new Set(['session-active'])}
           />
-        </div>
-        <div className="maka-resize-handle" aria-hidden="true" />
+        }
+      >
         <div
-          className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
+          className="maka-panel maka-panel-detail agents-parchment-paper-surface"
           data-sidebar-state={collapsed ? 'collapsed' : 'expanded'}
           data-agents-view="im_hub"
           style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}
         >
-          <AppShellWorkspaceTopActions
-            workbarAvailable
-            workbarCollapsed={false}
-            onToggleWorkbar={noop}
-            onOpenFeedback={noop}
-            onOpenPalette={noop}
-            onOpenHelp={noop}
-            onOpenHealth={noop}
-          />
           {props.detailChildren ?? (
             <div style={{ display: 'flex', minHeight: 0, width: '100%', flexDirection: 'column', flex: 1 }}>
               <ChatView {...baseChatProps} activeSession={active} {...props.chat} />
@@ -314,7 +347,7 @@ function ComposedShell(props: {
             </div>
           )}
         </div>
-      </div>
+      </AstryxAppShell>
     </ShellFrame>
   );
 }
@@ -375,13 +408,20 @@ export const StreamingTurn: Story = {
         liveTurn: {
           turnId: 'turn-s', phase: 'streamed', steps: [{
             stepId: 'msg-assistant-s',
-            text: { text: '用真实的子组件拼出 2 栏布局，不整体挂载 AppShell，避开 IPC 耦合。', truncated: false, complete: false },
+            text: { text: '直接挂载 Astryx AppShell，通过官方插槽组合真实产品子组件，只隔离 IPC。', truncated: false, complete: false },
             tools: [],
           }],
         },
       }}
     />
   ),
+};
+
+// Real path: open an assistant answer containing rich Markdown. This keeps the
+// PR 7-owned typography, task-list, table, link, and highlighted-code states in
+// one stable light/dark review surface.
+export const MarkdownCore: Story = {
+  render: () => <ComposedShell chat={{ messages: markdownCoreConversation }} />,
 };
 
 // Real path: the agent calls a tool that needs approval → session enters

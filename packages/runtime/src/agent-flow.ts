@@ -37,6 +37,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
 import type { InvocationContext } from './invocation-context.js';
+import type { EphemeralVoiceAudio } from '@maka/core/voice';
 
 export type { InvocationContext } from './invocation-context.js';
 
@@ -61,6 +62,8 @@ export interface FlowInput {
   orchestration?: EffectiveOrchestration;
   /** User turn text. */
   text: string;
+  /** Operation-owned raw audio, valid only for this live flow. */
+  voiceAudio?: EphemeralVoiceAudio;
   /** Optional attachments bound to the user message. */
   attachments?: AttachmentRef[];
   /** Optional inline quoted excerpts bound to the user message. */
@@ -110,7 +113,7 @@ export interface FlowInput {
  * per invocation, whether the turn completed, errored, aborted, or was
  * cancelled. Non-terminal partial chunks carry `partial: true`.
  *
- * Control surface (`stop` / `respondToPermission` / `dispose`) is optional
+ * Control surface (`stop` / `respondToSandboxBoundary` / `dispose`) is optional
  * on the interface because not every flow implementation owns a steppable
  * engine. `AiSdkFlow` exposes these and delegates them to the wrapped
  * backend so the current control semantics are preserved.
@@ -144,8 +147,8 @@ export type RunnableAgentFlow = Pick<AgentFlow, 'run'>;
  */
 export interface AgentFlowControl {
   stop(reason: 'user_stop' | 'redirect'): Promise<void>;
-  respondToPermission(
-    decision: import('@maka/core/backend-types').PermissionDecision,
+  respondToSandboxBoundary(
+    response: import('@maka/core/sandbox-boundary').SandboxBoundaryResponse,
   ): Promise<void>;
   respondToUserQuestion(
     response: import('@maka/core/user-question').UserQuestionResponse,
@@ -160,7 +163,8 @@ export interface AgentFlowControl {
 export function flowSupportsControl(flow: AgentFlow): flow is AgentFlow & AgentFlowControl {
   return (
     typeof (flow as AgentFlow & Partial<AgentFlowControl>).stop === 'function' &&
-    typeof (flow as AgentFlow & Partial<AgentFlowControl>).respondToPermission === 'function' &&
+    typeof (flow as AgentFlow & Partial<AgentFlowControl>).respondToSandboxBoundary ===
+      'function' &&
     typeof (flow as AgentFlow & Partial<AgentFlowControl>).respondToUserQuestion === 'function' &&
     typeof (flow as AgentFlow & Partial<AgentFlowControl>).dispose === 'function'
   );

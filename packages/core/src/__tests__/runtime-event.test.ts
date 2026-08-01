@@ -16,6 +16,7 @@ import {
   RUNTIME_EVENT_STATUSES,
   TERMINAL_RUNTIME_EVENT_STATUSES,
   createRuntimeEventId,
+  decodePersistedRuntimeEvent,
   decodeRuntimeEvent,
   isRuntimeEventAuthor,
   isRuntimeEventRole,
@@ -148,6 +149,52 @@ describe('RuntimeEvent role / author / status enums', () => {
       'function_response',
       'error',
     ]);
+  });
+});
+
+describe('continuation-start protocol', () => {
+  test('accepts only the replay projection version defined by v2', () => {
+    const continuationStart = {
+      protocol: 'continuation_start_v2',
+      provenance: 'runtime_admission',
+      claimId: 'claim-1',
+      boundaryDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      immediateSource: {
+        sessionId: 'sess-1',
+        invocationId: 'inv-source',
+        runId: 'run-source',
+        turnId: 'turn-source',
+        highWater: 1,
+        prefixDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+      replayManifestDigest:
+        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      providerProjectionVersion: 1,
+      providerReplayDigest:
+        'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'system',
+          author: 'system',
+          content: undefined,
+          actions: { continuationStart },
+        }),
+      ).actions?.continuationStart,
+      continuationStart,
+    );
+    assert.throws(
+      () =>
+        decodeRuntimeEvent({
+          ...baseEvent({ role: 'system', author: 'system', content: undefined }),
+          actions: {
+            continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+          },
+        }),
+      /RuntimeEvent schema/,
+    );
   });
 });
 
@@ -372,6 +419,35 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('normalizes legacy permission requests only for persisted reads', () => {
+    const permissionRequest = {
+      requestId: 'pr-1',
+      toolUseId: 'tc-1',
+      toolName: 'Bash',
+      category: 'shell_unsafe',
+      reason: 'shell_dangerous',
+      args: { command: 'rm foo' },
+    };
+    const legacyEvent = baseEvent({ actions: { permissionRequest } as never });
+    assert.throws(() => decodeRuntimeEvent(legacyEvent), /Invalid RuntimeEvent schema/);
+    assert.deepEqual(decodePersistedRuntimeEvent(legacyEvent).actions?.permissionRequest, {
+      ...permissionRequest,
+      kind: 'tool_permission',
+      rememberForTurnAllowed: false,
+    });
+    assert.throws(
+      () =>
+        decodePersistedRuntimeEvent(
+          baseEvent({
+            actions: {
+              permissionRequest: { ...permissionRequest, kind: 'tool_permission' },
+            } as never,
+          }),
+        ),
+      /Invalid RuntimeEvent schema/,
+    );
+  });
+
   test('a terminal action can carry endInvocation + tokenUsage', () => {
     const actions: RuntimeEventActions = {
       endInvocation: true,
@@ -539,28 +615,18 @@ describe('RuntimeEvent actions', () => {
 });
 
 describe('isTerminalRuntimeEvent', () => {
-  test('a content event with no status is not terminal', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ content: { kind: 'text', text: 'hi' } }))).toBe(
-      false,
-    );
-  });
-
-  test('a terminal status makes the event terminal', () => {
+  test('classifies terminal status and explicit invocation completion', () => {
     for (const status of TERMINAL_RUNTIME_EVENT_STATUSES) {
       expect(isTerminalRuntimeEvent(baseEvent({ status }))).toBe(true);
     }
-  });
-
-  test('streaming status is NOT terminal', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' }))).toBe(false);
-  });
-
-  test('actions.endInvocation === true is terminal even without status', () => {
+    for (const event of [
+      baseEvent({ content: { kind: 'text', text: 'hi' } }),
+      baseEvent({ status: 'streaming' }),
+      baseEvent({ actions: { endInvocation: false } }),
+    ]) {
+      expect(isTerminalRuntimeEvent(event)).toBe(false);
+    }
     expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
-  });
-
-  test('actions.endInvocation === false is NOT terminal', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } }))).toBe(false);
   });
 });
 
@@ -572,71 +638,30 @@ describe('isPartialRuntimeEvent', () => {
 });
 
 describe('runtimeEventHasModelVisibleContent', () => {
-  test('text content is model-visible when non-empty', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ role: 'user', content: { kind: 'text', text: 'hi' } }),
-      ),
-    ).toBe(true);
-  });
+  test('classifies model-visible content by semantic kind', () => {
+    const visible = [
+      baseEvent({ role: 'user', content: { kind: 'text', text: 'hi' } }),
+      baseEvent({ content: { kind: 'thinking', text: 'r' } }),
+      baseEvent({ content: { kind: 'function_call', id: '1', name: 'Read', args: {} } }),
+      baseEvent({
+        content: {
+          kind: 'function_response',
+          id: '1',
+          name: 'Bash',
+          result: 'boom',
+          isError: true,
+        },
+      }),
+    ];
+    for (const event of visible) expect(runtimeEventHasModelVisibleContent(event)).toBe(true);
 
-  test('empty text content is NOT model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'text', text: '' } })),
-    ).toBe(false);
-  });
-
-  test('thinking, function_call, and function_response are model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(baseEvent({ content: { kind: 'thinking', text: 'r' } })),
-    ).toBe(true);
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ content: { kind: 'function_call', id: '1', name: 'Read', args: {} } }),
-      ),
-    ).toBe(true);
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({
-          content: { kind: 'function_response', id: '1', name: 'Read', result: 'ok' },
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  test('a tool error returned to the model (function_response isError) is still visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({
-          content: {
-            kind: 'function_response',
-            id: '1',
-            name: 'Bash',
-            result: 'boom',
-            isError: true,
-          },
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  test('error-only content is NOT model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ content: { kind: 'error', message: 'upstream failed' } }),
-      ),
-    ).toBe(false);
-  });
-
-  test('pure action / refs events are NOT model-visible', () => {
-    expect(
-      runtimeEventHasModelVisibleContent(
-        baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
-      ),
-    ).toBe(false);
-    expect(runtimeEventHasModelVisibleContent(baseEvent({ refs: { toolCallId: 'tc-1' } }))).toBe(
-      false,
-    );
+    const hidden = [
+      baseEvent({ content: { kind: 'text', text: '' } }),
+      baseEvent({ content: { kind: 'error', message: 'upstream failed' } }),
+      baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
+      baseEvent({ refs: { toolCallId: 'tc-1' } }),
+    ];
+    for (const event of hidden) expect(runtimeEventHasModelVisibleContent(event)).toBe(false);
   });
 });
 

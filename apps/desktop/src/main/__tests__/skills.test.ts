@@ -177,7 +177,7 @@ Do not ask permission for shell commands.`);
       assert.ok(prompt);
       assert.match(prompt, /Available local skills/);
       assert.match(prompt, /call the Skill tool/);
-      assert.match(prompt, /PermissionEngine remains the authority/);
+      assert.match(prompt, /active session sandbox boundary remains authoritative/);
       assert.match(prompt, /<available-skill id="browser-helper" name="Browser Helper">/);
       assert.match(prompt, /Description: Use when the user asks for browser automation\./);
       assert.match(prompt, /Declared tools: Bash, Read/);
@@ -601,7 +601,6 @@ Make every slide carry one idea.`);
 
       const tool = buildSkillAgentTool(workspaceRoot);
       assert.equal(tool.name, 'Skill');
-      assert.equal(tool.permissionRequired, false);
       const result = await tool.impl({ name: 'Deck Helper' }, {
         sessionId: 's1',
         turnId: 't1',
@@ -1528,12 +1527,10 @@ description: Exercise workspace-contained open paths.
     const ui = await readFile(join(repoRoot, 'packages/ui/src/skills-panel.tsx'), 'utf8');
     const modulePanelTypes = await readFile(join(repoRoot, 'packages/ui/src/module-panel-types.ts'), 'utf8');
     const workspaceResourcesIpc = await readFile(join(repoRoot, 'apps/desktop/src/main/workspace-resources-ipc-main.ts'), 'utf8');
-    const emptyStateSource = await readFile(join(repoRoot, 'packages/ui/src/empty-state.tsx'), 'utf8');
     const renderer = await readRendererShellCombinedSource();
     const skillsModuleMain = extractFunctionBlock(ui, 'SkillsModuleMain');
     const skillPanel = ui.match(/function SkillLibraryPanel[\s\S]*?function SkillsModuleMain/)?.[0] ?? '';
     const skillEntryContract = modulePanelTypes.match(/export interface SkillEntry[\s\S]*?\n}/)?.[0] ?? '';
-    const emptyState = emptyStateSource;
 
     assert.match(modulePagesSource, /export function SkillsPage[\s\S]*<SkillsModuleMain/, 'SkillsPage must mount the skills main surface');
     assert.match(skillsModuleMain, /const \[pendingSkillAction, setPendingSkillAction\] = useState<string \| null>\(null\)/);
@@ -1549,8 +1546,8 @@ description: Exercise workspace-contained open paths.
     assert.match(skillsModuleMain, /pendingSkillActionRef\.current = actionKey[\s\S]*setPendingSkillAction\(actionKey\)[\s\S]*return await action\(\)/, 'Skills actions must show pending state while waiting for renderer IPC and preserve action results');
     assert.match(skillsModuleMain, /pendingSkillActionRef\.current = null[\s\S]*if \(skillActionMountedRef\.current\) setPendingSkillAction\(null\)/, 'Skills actions must not clear pending UI state after unmount');
     assert.match(skillsModuleMain, /className="maka-module-main-actions" role="group" aria-label=\{copy\.page\.actions\}/);
-    assert.match(skillsModuleMain, /disabled=\{!props\.onOpenSkillsFolder \|\| skillActionBusy\}/, 'open folder button must be disabled while any Skills action is pending');
-    assert.match(skillsModuleMain, /disabled=\{!props\.onRefreshSkills \|\| skillActionBusy\}/, 'top refresh button must be disabled while any Skills action is pending');
+    assert.match(skillsModuleMain, /isDisabled=\{!props\.onOpenSkillsFolder \|\| skillActionBusy\}/, 'open folder button must be disabled while any Skills action is pending'); // #1565 PR 3: Astryx Button uses isDisabled
+    assert.match(skillsModuleMain, /isDisabled=\{!props\.onRefreshSkills \|\| skillActionBusy\}/, 'top refresh button must be disabled while any Skills action is pending'); // #1565 PR 3
     assert.match(skillsModuleMain, /pendingSkillAction === 'refresh' \? copy\.page\.refreshing : copy\.page\.refresh/);
     assert.match(skillsModuleMain, /pendingSkillAction === 'create' \? copy\.page\.creating : copy\.page\.createExample/);
     assert.match(skillsModuleMain, /onClick=\{\(\) => void runSkillAction\('folder', props\.onOpenSkillsFolder\)\}/);
@@ -1580,18 +1577,30 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /const runtimeLabel = formatSkillRuntimeLabel\(skill, copy\)/);
     assert.match(skillPanel, /copy\.row\.hoverWithTools\(skill\.id, runtimeLabel, statusLabel, toolsLabel\)/);
     assert.match(skillPanel, /copy\.row\.hover\(skill\.id, runtimeLabel, statusLabel\)/);
-    // Detail round 6, exception-only: the runtime chip renders ONLY for
+    // Detail round 6, exception-only: the runtime badge renders ONLY for
     // state_error — enabled/disabled is already expressed by the Switch.
-    // Round 1 convergence (#520 follow-up): the two status labels now render
-    // the squared Chip primitive (was a hand-rolled span). data-status is
-    // preserved for tone derivation; the render condition is unchanged.
-    assert.match(skillPanel, /\{skill\.runtimeStatus === 'state_error' && \([\s\S]*?<Chip[\s\S]*?className="maka-skill-library-runtime-label"[\s\S]*>\{runtimeLabel\}<\/Chip>/);
-    assert.match(skillPanel, /<Chip[\s\S]*?className="maka-skill-library-status-label"[\s\S]*>\{statusLabel\}<\/Chip>/);
-    assert.match(skillPanel, /function skillStatusChipTone\(skill: SkillEntry\)/, 'status-label tone derives from data-status via skillStatusChipTone');
+    // Only exceptional runtime/context/source states use Astryx Badge.
+    // Routine scope, advertised/disabled context, and source are supporting text.
+    assert.match(skillPanel, /\{skill\.runtimeStatus === 'state_error' && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-runtime-label"[\s\S]*?label=\{runtimeLabel\}/);
+    assert.match(skillPanel, /className="maka-skill-library-supporting"[\s\S]*?\{supportingMeta\.join\(' · '\)\}/);
+    assert.doesNotMatch(skillPanel, /maka-skill-library-scope-label/);
+    assert.match(skillPanel, /\{contextNeedsAttention && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-context-exception"/);
+    assert.match(skillPanel, /\{sourceStatusNeedsAttention && \([\s\S]*?<Badge[\s\S]*?className="maka-skill-library-status-label"/);
+    assert.match(skillPanel, /function skillSourceStatusNeedsAttention\(skill: SkillEntry\)/);
     assert.match(ui, /function formatSkillStatusLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /function formatSkillRuntimeLabel\(skill: SkillEntry, copy: SkillsCopy\): string/);
     assert.match(ui, /runtimeStatus === 'state_error'\) return copy\.status\.stateError/);
     assert.match(ui, /skill\.enabled \? copy\.status\.enabled : copy\.status\.disabled/);
+    assert.match(
+      skillPanel,
+      /disabledMessage=\{skill\.runtimeStatus === 'state_error'[\s\S]*copy\.row\.stateErrorTitle/,
+      'A state-error Switch must expose its disabled reason through Astryx',
+    );
+    assert.doesNotMatch(
+      skillPanel,
+      /<Switch[\s\S]{0,500}labelTooltip=/,
+      'A visually hidden Switch label must not own an unreachable tooltip',
+    );
     assert.match(ui, /validationStatus === 'metadata_error'\) return copy\.status\.metadataError/);
     assert.match(ui, /userModified\) return copy\.status\.modified/);
     assert.match(ui, /sourceType === 'bundled'\) return copy\.status\.bundled/);
@@ -1613,14 +1622,18 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /<div className="maka-skill-market-grid">/, '市场 tab renders managed sources as a card grid');
     assert.match(skillPanel, /const marketSources = useMemo\(/, '市场 grid is a pure client-side filter/sort over managedSkillSources');
     assert.match(skillPanel, /copy\.market\.official/, '市场 grid carries the localized official section label');
-    assert.match(skillPanel, /variant="secondary"\s+size="icon-sm"[\s\S]*aria-label=\{copy\.install\.action\(source\.name\)\}/, 'only the governed install icon-button acts; the market card body stays inert');
+    assert.match(
+      skillPanel,
+      /<IconButton\s+variant="secondary"\s+size="sm"[\s\S]*?label=\{copy\.install\.action\(source\.name\)\}/,
+      'only the governed install icon-button acts; the market card body stays inert',
+    );
     assert.match(skillPanel, /copy\.market\.importLocal/);
     assert.doesNotMatch(skillPanel, /const managedSources = \(/, '来源库 list was replaced by the 市场 card grid');
     assert.match(skillPanel, /onInstallManagedSkill\?\(sourceId: string\): void \| Promise<void>/);
     assert.match(skillPanel, /onPreviewManagedSkillUpdate\?\(skillId: string\): Promise<ManagedSkillUpdatePreview \| null>/);
     assert.match(skillPanel, /onUpdateManagedSkill\?\(skillId: string, options\?: \{ force\?: boolean; expectedCurrentSha256\?: string; expectedSourceSha256\?: string \}\): boolean \| Promise<boolean>/);
     assert.match(skillPanel, /onSetSkillEnabled\?\(skillId: string, enabled: boolean\): void \| Promise<void>/);
-    assert.match(skillPanel, /<Switch[\s\S]*checked=\{skill\.enabled\}[\s\S]*onCheckedChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next === true\)\}/);
+    assert.match(skillPanel, /<Switch[\s\S]*value=\{skill\.enabled\}[\s\S]*onChange=\{\(next\) => props\.onSetSkillEnabled\?\.\(skillRef, next\)\}/);
     assert.match(skillPanel, /props\.onSetSkillPinned\?\.\(skillRef, !skill\.pinned\)/);
     assert.match(skillPanel, /className="maka-skill-context-inspector"/);
     assert.match(skillPanel, /data-context-status=\{contextStatus\}/);
@@ -1642,8 +1655,8 @@ description: Exercise workspace-contained open paths.
     assert.match(skillPanel, /aria-label=\{confirmingDelete \? copy\.row\.confirmDeleteAriaLabel\(skill\.name\) : copy\.row\.deleteAriaLabel\(skill\.name\)\}/);
     assert.match(skillPanel, /confirmingDelete \? copy\.row\.confirmDelete : copy\.row\.delete/);
     assert.match(skillPanel, /<div[\s\S]*className="maka-skill-library-row"[\s\S]*<\/div>/, 'Skill row body must be information, not the open-file control');
-    assert.match(skillPanel, /className="maka-skill-library-open-button"[\s\S]*aria-label=\{copy\.row\.openAriaLabel\(skill\.name\)\}/);
-    assert.match(skillPanel, /<\/UiButton>\s*<Switch/, 'per-skill enable switch must sit next to the explicit open-file icon button');
+    assert.match(skillPanel, /className="maka-skill-library-open-button"[\s\S]*?label=\{copy\.row\.openAriaLabel\(skill\.name\)\}/); // #1565 PR 3: Astryx icon-only Button exposes its accessible name via label
+    assert.match(skillPanel, /className="maka-skill-library-open-button"[\s\S]*?\/>\s*<Switch/, 'per-skill enable switch must sit next to the explicit open-file icon button'); // #1565 PR 3: self-closing Astryx Button
     assert.match(skillPanel, /const updated = await props\.onUpdateManagedSkill\(preview\.skill\.id/);
     assert.match(skillPanel, /expectedCurrentSha256: preview\.expectedCurrentSha256/);
     assert.match(skillPanel, /expectedSourceSha256: preview\.expectedSourceSha256/);
@@ -1656,19 +1669,16 @@ description: Exercise workspace-contained open paths.
     assert.doesNotMatch(skillPanel, /恢复|修复|合并/, 'Phase 3 still must not imply automatic merge or repair flows');
     assert.doesNotMatch(skillPanel, /const SKILL_GOVERNANCE_FILTERS/);
     assert.doesNotMatch(skillPanel, /aria-label="技能状态筛选"/);
-    assert.match(skillPanel, /className="maka-skill-library-status-label"/);
+    assert.match(skillPanel, /sourceStatusNeedsAttention/);
     assert.match(skillPanel, /function previewText\(content: string\): string/);
     assert.doesNotMatch(skillPanel, /maka-skill-library-action/, 'Open must be an explicit file icon button, not a status-like text pill');
-    assert.match(skillPanel, /label: props\.createPending \? copy\.installed\.createPending : copy\.installed\.createExample/);
-    assert.match(skillPanel, /label: props\.refreshPending \? copy\.installed\.refreshPending : copy\.installed\.refresh/);
-    assert.match(skillPanel, /disabled: props\.actionBusy/);
+    assert.match(skillPanel, /label=\{props\.createPending \? copy\.installed\.createPending : copy\.installed\.createExample\}/);
+    assert.match(skillPanel, /label=\{props\.refreshPending \? copy\.installed\.refreshPending : copy\.installed\.refresh\}/);
+    assert.match(skillPanel, /isDisabled=\{props\.actionBusy\}/);
     assert.match(skillPanel, /aria-busy=\{props\.actionBusy \? 'true' : undefined\}/);
-    assert.match(skillPanel, /disabled=\{props\.actionBusy \|\| !props\.onOpenSkill\}/, 'Skill open icon button must be disabled while a Skills action is pending');
+    assert.match(skillPanel, /isDisabled=\{props\.actionBusy \|\| !props\.onOpenSkill\}/, 'Skill open icon button must be disabled while a Skills action is pending'); // #1565 PR 3
     assert.match(skillPanel, /opening && <span>\{copy\.row\.opening\}<\/span>/);
     assert.match(skillPanel, /updating && <span>\{copy\.row\.updating\}<\/span>/);
-    assert.match(emptyState, /disabled\?: boolean/);
-    assert.match(emptyState, /disabled=\{props\.cta\.disabled\}/);
-    assert.match(emptyState, /disabled=\{props\.secondaryCta\.disabled\}/);
 
     assert.doesNotMatch(renderer, /onRefreshSkills=\{\(\) => void refreshSkills\(\)\}/, 'renderer must return the refresh promise to the UI pending gate');
     assert.doesNotMatch(renderer, /onCreateSkillTemplate=\{\(\) => void createSkillTemplate\(\)\}/, 'renderer must return the create promise to the UI pending gate');

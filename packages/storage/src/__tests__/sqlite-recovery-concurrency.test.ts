@@ -96,6 +96,59 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
+  it('grants provider authority to exactly one process for one continuation boundary', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, ['claim', 'claim']);
+      assert.deepEqual(
+        results.map(({ code }) => code),
+        [0, 0],
+      );
+      assert.deepEqual(
+        results.flatMap(({ stdout }) => stdout.match(/CLAIM (acquired|existing)/g) ?? []).sort(),
+        ['CLAIM acquired', 'CLAIM existing'],
+      );
+    });
+  });
+
+  it('never claims an active source while its terminal append races in another process', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, ['claim_nonterminal', 'append_source']);
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+
+      const store = createSqliteRuntimeStore(dbPath);
+      try {
+        const sourceEvents = await store.readImmutableRuntimeEvents('session-1', 'run-1');
+        const claims = await store.listContinuationClaimsForRecovery('session-1');
+        assert.equal(sourceEvents.length, 3);
+        assert.equal(claims.length, 0);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it('serializes a continuation claim against an ordinary first target event', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, ['claim_fixed_target', 'append_target']);
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+
+      const store = createSqliteRuntimeStore(dbPath);
+      try {
+        const claims = await store.listContinuationClaimsForRecovery('session-1');
+        const targetEvents = await store.readImmutableRuntimeEvents(
+          'session-1',
+          'fixed-target-run',
+        );
+        assert.ok(
+          (claims.length === 1 && targetEvents.length === 0) ||
+            (claims.length === 0 && targetEvents.length === 1),
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it('allows concurrent processes to keep the same initialized WAL database open', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const results = await runOpenWorkers(dbPath, startPath);
@@ -106,11 +159,13 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
-  it('serializes concurrent schema 4 to 5 upgrades', async () => {
+  it('serializes concurrent schema 4 to 6 upgrades', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const db = new DatabaseSync(dbPath);
       try {
-        db.exec('DROP TABLE runtime_capabilities; PRAGMA user_version = 4;');
+        db.exec(
+          'DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+        );
       } finally {
         db.close();
       }
@@ -123,7 +178,7 @@ describe('SQLite recovery authority multi-process races', () => {
 
       const upgraded = createSqliteRuntimeStore(dbPath);
       try {
-        assert.equal(upgraded.schemaVersion(), 5);
+        assert.equal(upgraded.schemaVersion(), 6);
       } finally {
         upgraded.close();
       }
@@ -151,6 +206,34 @@ async function withPreparedDatabase(
   const store = createSqliteRuntimeStore(dbPath);
   try {
     await store.commitToolPrepared(preparedCommit());
+    await store.appendRuntimeEvent('session-1', 'continuation-source-run', {
+      id: 'continuation-source-user',
+      sessionId: 'session-1',
+      invocationId: 'continuation-source-invocation',
+      runId: 'continuation-source-run',
+      turnId: 'continuation-source-turn',
+      ts: 10,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'continue after this completed boundary' },
+    });
+    await store.ensureTerminalRuntimeEventDurable('session-1', 'continuation-source-run', {
+      id: 'continuation-source-terminal',
+      sessionId: 'session-1',
+      invocationId: 'continuation-source-invocation',
+      runId: 'continuation-source-run',
+      turnId: 'continuation-source-turn',
+      ts: 11,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      actions: {
+        endInvocation: true,
+        stateDelta: { failureClass: 'runtime_interrupted' },
+      },
+    });
     store.close();
     await run({ dbPath, startPath });
   } finally {

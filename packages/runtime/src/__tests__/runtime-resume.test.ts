@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import {
+  buildImmutableRuntimePrefix,
+  type ImmutableRuntimePrefixV1,
+} from '@maka/core/runtime-boundary';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 
+import { buildContinuationReplayPlan } from '../continuation-replay.js';
+import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
 import {
   RUNTIME_RESUME_FAILPOINTS,
   RuntimeContinuationPlanner,
@@ -139,6 +146,22 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
   test('replays the user-anchored ancestor prefix when continuing a continuation run', async () => {
     const rootEvents = [
       textEvent('root-user', 'user', 'finish the task'),
+      base({
+        id: 'root-interrupted-thinking',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'unfinished',
+          signature: 'signed-root',
+        },
+      }),
+      base({
+        id: 'root-interrupted-text',
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'I was interrupted' },
+      }),
       base({ id: 'root-terminal', status: 'failed', actions: { endInvocation: true } }),
     ];
     const continuationIdentity = {
@@ -173,19 +196,19 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     const planner = new RuntimeContinuationPlanner({
       readSourceRun: async (_sessionId, runId) =>
         runId === 'run-2'
-          ? {
-              cwd: '/workspace/repo',
-              status: 'failed',
+          ? runHeader('run-2', {
               continuationSource: {
                 sourceInvocationId: 'invocation-1',
                 sourceRunId: 'run-1',
                 sourceTurnId: 'turn-1',
                 sourceRuntimeEventHighWater: rootEvents.length,
               },
-            }
-          : { cwd: '/workspace/repo', status: 'failed' },
-      readRuntimeEvents: async (_sessionId, runId) =>
-        runId === 'run-2' ? childEvents : rootEvents,
+            })
+          : runHeader('run-1'),
+      readImmutableRuntimePrefix: async ({ runId, upToEventSeq }) => {
+        const events = runId === 'run-2' ? childEvents : rootEvents;
+        return immutablePrefix(upToEventSeq === undefined ? events : events.slice(0, upToEventSeq));
+      },
       newId: (() => {
         let next = 2;
         return () => `generated-${++next}`;
@@ -238,6 +261,42 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
       ['tool_not_dispatched'],
     );
     assert.deepEqual(plan.rejectionReasons, ['dangling_tool_state']);
+  });
+
+  test('lets composite replay trim a new-protocol call that never crossed T1', () => {
+    const initial = textEvent('user-1', 'user', 'run it');
+    initial.actions = {
+      runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' },
+    };
+    const events = [
+      initial,
+      callEvent('call-1', 'tool-1', 'Bash', { command: 'touch marker' }),
+      base({
+        id: 'terminal-1',
+        role: 'system',
+        author: 'system',
+        status: 'failed',
+        actions: { endInvocation: true },
+      }),
+    ];
+    const replay = buildContinuationReplayPlan({
+      prefixes: [immutablePrefix(events)],
+      providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    });
+    assert.equal(replay.kind, 'replayable');
+    if (replay.kind !== 'replayable') return;
+
+    const plan = buildSafeBoundaryContinuationPlan(events, {
+      ...safeBoundaryFacts(),
+      continuationReplayPlan: replay.plan,
+    });
+
+    assert.equal(plan.disposition, 'continue');
+    assert.deepEqual(plan.rejectionReasons, []);
+    assert.deepEqual(
+      plan.continuation?.runtimeContext.map((event) => event.id),
+      ['user-1', 'terminal-1'],
+    );
   });
 
   test('creates a new execution identity from a fully committed safe boundary', () => {
@@ -570,6 +629,27 @@ function safeBoundaryFacts() {
   };
 }
 
+function runHeader(runId: string, overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
+  const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
+  const status = overrides.status ?? 'failed';
+  return {
+    runId,
+    invocationId: `invocation-${ordinal}`,
+    sessionId: 'session-1',
+    turnId: `turn-${ordinal}`,
+    status,
+    backendKind: 'fake',
+    llmConnectionSlug: 'test',
+    modelId: 'test-model',
+    cwd: '/workspace/repo',
+    permissionMode: 'ask',
+    ...(status === 'failed' ? { failureClass: 'test_failure' } : {}),
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
 function base(overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {
     id: 'event',
@@ -583,6 +663,23 @@ function base(overrides: Partial<RuntimeEvent>): RuntimeEvent {
     role: 'system',
     ...overrides,
   };
+}
+
+function immutablePrefix(events: readonly RuntimeEvent[]): ImmutableRuntimePrefixV1 {
+  const first = events[0];
+  if (!first) throw new Error('test immutable prefix requires at least one event');
+  return buildImmutableRuntimePrefix(
+    {
+      sessionId: first.sessionId,
+      invocationId: first.invocationId,
+      runId: first.runId,
+      turnId: first.turnId,
+    },
+    events.map((runtimeEvent, index) => ({
+      eventSeq: index + 1,
+      event: runtimeEvent,
+    })),
+  );
 }
 
 function callEvent(id: string, toolCallId: string, name: string, args: unknown): RuntimeEvent {

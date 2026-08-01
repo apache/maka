@@ -3,40 +3,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Bubble, Marker, markerVariants, Message, previewVariants, toolVariants } from '../primitives/chat.js';
+import { Marker, markerVariants, previewVariants, toolVariants } from '../primitives/chat.js';
 import { cn } from '../ui.js';
 
 const chatTurnSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'chat-turn.tsx'),
   'utf8',
 );
-
-// The re-anchored renderer selectors key off the primitives' own `data-slot` /
-// `data-role` / `data-variant`, so a consumer must never be able to clobber
-// them. Both primitives are hook-free pure functions, so calling them directly
-// and inspecting the returned element's props proves the structural hooks win
-// over conflicting props — no DOM, no renderer needed.
-test('Message keeps its own data-slot/data-role over conflicting props', () => {
-  const el = Message({
-    variant: 'assistant',
-    'data-slot': 'spoofed',
-    'data-role': 'user',
-  } as never);
-  const props = el.props as Record<string, unknown>;
-  assert.equal(props['data-slot'], 'message');
-  assert.equal(props['data-role'], 'assistant');
-});
-
-test('Bubble keeps its own data-slot/data-variant over conflicting props', () => {
-  const el = Bubble({
-    variant: 'user',
-    'data-slot': 'spoofed',
-    'data-variant': 'assistant',
-  } as never);
-  const props = el.props as Record<string, unknown>;
-  assert.equal(props['data-slot'], 'bubble');
-  assert.equal(props['data-variant'], 'user');
-});
 
 test('Marker keeps its own data-slot/data-variant but forwards the styling data-* hooks', () => {
   const el = Marker({
@@ -67,8 +40,9 @@ test('markerVariants leaves shared Button geometry and interaction states to the
   assert.ok(!/\b(?:h-|min-h-|px-|py-|text-xs|hover:bg-|focus-visible:)/.test(lineageBadge));
 });
 
-// Footer actions and lineage badges are ordinary actions. Check the production
-// wiring rather than synthesizing a merge that a call site could forget to use.
+// Footer actions and lineage badges are ordinary Astryx actions. Check the
+// production wiring rather than synthesizing a merge that a call site could
+// forget to use.
 test('chat footer actions and lineage badges consume the governed Button tiers', () => {
   assert.doesNotMatch(
     chatTurnSource,
@@ -76,11 +50,11 @@ test('chat footer actions and lineage badges consume the governed Button tiers',
   );
   assert.match(
     chatTurnSource,
-    /<UiButton\b[^>]*variant="quiet"[^>]*size="icon-sm"[^>]*markerVariants\(\{ variant: 'footer-action' \}\)/,
+    /<UiIconButton[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className=\{markerVariants\(\{ variant: 'footer-action' \}\)\}/,
   );
   assert.match(
     chatTurnSource,
-    /<UiButton\b[^>]*variant="quiet"[^>]*size="sm"[^>]*markerVariants\(\{ variant: 'lineage-badge' \}\)/,
+    /<UiButton\b[^>]*\n\s*key=[^]*?variant="ghost"\n\s*size="sm"\n\s*className=\{markerVariants\(\{ variant: 'lineage-badge' \}\)\}/,
   );
 });
 

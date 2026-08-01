@@ -18,6 +18,7 @@ import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event'
 import type { StoredMessage } from '@maka/core/session';
 import type { RuntimeContinuationMetadata } from '@maka/core/backend-types';
 import type { EffectiveOrchestration } from '@maka/core/orchestration';
+import type { EphemeralVoiceAudio } from '@maka/core/voice';
 
 // ============================================================================
 // InvocationSource
@@ -28,7 +29,7 @@ import type { EffectiveOrchestration } from '@maka/core/orchestration';
  * eventually share the same runner; `test` covers in-process fake-service
  * invocations like the ones in this node's test suite.
  */
-export const INVOCATION_SOURCES = ['desktop', 'bot', 'gateway', 'test'] as const;
+export const INVOCATION_SOURCES = ['desktop', 'bot', 'test'] as const;
 export type InvocationSource = (typeof INVOCATION_SOURCES)[number];
 
 export function isInvocationSource(value: unknown): value is InvocationSource {
@@ -80,6 +81,8 @@ export interface InvocationRequest {
   /** Trusted effective orchestration snapshot for this invocation. */
   orchestration?: EffectiveOrchestration;
   text: string;
+  /** Operation-owned raw audio, excluded from every durable projection. */
+  voiceAudio?: EphemeralVoiceAudio;
   /** Optional attachments bound to this user turn. */
   attachments?: AttachmentRef[];
   /** Optional inline quoted excerpts bound to this user turn. */

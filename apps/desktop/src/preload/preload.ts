@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { encodeIngestItems } from './attachment-ingest-payload.js';
 import type {
-  ExpertTeamStartResult,
-  ExpertTeamSummary,
   MakaBridge,
   OnboardingSnapshot,
   PermissionActionResult,
@@ -20,10 +18,12 @@ import type {
   BotOnboardingSnapshot,
   BotOnboardingStartInput,
   HealthSnapshot,
+  ExecutionBoundary,
   LlmConnection,
   ModelDiscoveryResult,
   ModelInfo,
-  PermissionResponse,
+  SandboxBoundaryRequestEvent,
+  SandboxBoundaryResponse,
   UserQuestionResponse,
   PermissionMode,
   CollaborationMode,
@@ -59,7 +59,6 @@ import type {
   ReviseBeforeTurnInput,
   TurnRecord,
   PermissionSnapshot,
-  OpenGatewayRuntimeStatus,
   LocalMemoryEntryPreview,
   LocalMemoryState,
   AuthorizationUrlPayload,
@@ -71,6 +70,13 @@ import type {
   PlanReminderRecurrence,
   DailyReviewArchive,
   DailyReviewArchiveSummary,
+  QueueEnqueueOutcome,
+  VoiceBeginRequest,
+  VoiceBeginResult,
+  VoiceCapturedAudio,
+  VoiceCoordinatorToolCall,
+  VoiceFinishCaptureResult,
+  VoiceRealtimeClientSession,
   DailyReviewConfig,
   DailyReviewMode,
   DailyReviewSummary,
@@ -195,6 +201,8 @@ const makaBridge = {
             type: 'send';
             turnId: string;
             text: string;
+            displayText?: string;
+            voiceOperationId?: string;
             skillIds?: string[];
             attachmentItems?: RendererIngestInput[];
             turnOrchestration?: TurnOrchestration;
@@ -231,8 +239,19 @@ const makaBridge = {
     stop(sessionId: string, input?: { source?: 'stop_button' }): Promise<void> {
       return ipcRenderer.invoke('sessions:stop', sessionId, input);
     },
+    steer(sessionId: string, text: string): Promise<QueueEnqueueOutcome> {
+      return ipcRenderer.invoke('sessions:steer', sessionId, text);
+    },
     readMessages(sessionId: string): Promise<StoredMessage[]> {
       return ipcRenderer.invoke('sessions:readMessages', sessionId);
+    },
+    readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+      return ipcRenderer.invoke('sessions:readExecutionBoundary', sessionId);
+    },
+    listActiveSandboxBoundaryRequests(
+      sessionId: string,
+    ): Promise<SandboxBoundaryRequestEvent[]> {
+      return ipcRenderer.invoke('sessions:listActiveSandboxBoundaryRequests', sessionId);
     },
     listTurns(sessionId: string): Promise<TurnRecord[]> {
       return ipcRenderer.invoke('sessions:listTurns', sessionId);
@@ -246,8 +265,8 @@ const makaBridge = {
     reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
       return ipcRenderer.invoke('sessions:reviseBeforeTurn', sessionId, input);
     },
-    respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
-      return ipcRenderer.invoke('sessions:respondToPermission', sessionId, response);
+    respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
+      return ipcRenderer.invoke('sessions:respondToSandboxBoundary', sessionId, response);
     },
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
       return ipcRenderer.invoke('sessions:respondToUserQuestion', sessionId, response);
@@ -335,6 +354,9 @@ const makaBridge = {
     },
     remove(sessionId: string, options?: { revisionFamily?: boolean }): Promise<void> {
       return ipcRenderer.invoke('sessions:remove', sessionId, options);
+    },
+    cleanupQuoteCompanion(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('sessions:cleanupQuoteCompanion', sessionId);
     },
   },
   projects: {
@@ -474,14 +496,6 @@ const makaBridge = {
       return ipcRenderer.invoke('onboarding:clearMilestone', id);
     },
   },
-  expertTeam: {
-    list(): Promise<{ teams: ExpertTeamSummary[] }> {
-      return ipcRenderer.invoke('expertTeam:list');
-    },
-    start(input: { teamId: string; prompt?: string; projectId?: string | null }): Promise<ExpertTeamStartResult> {
-      return ipcRenderer.invoke('expertTeam:start', input);
-    },
-  },
   permissions: {
     getSnapshot(): Promise<PermissionSnapshot> {
       return ipcRenderer.invoke('permissions:getSnapshot');
@@ -513,10 +527,10 @@ const makaBridge = {
     listProposals(): Promise<ReadonlyArray<LocalMemoryEntryPreview>> {
       return ipcRenderer.invoke('memory:listProposals');
     },
-    propose(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    propose(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:propose', input);
     },
-    remember(input: { title: string; content: string; scope?: 'workspace' | 'session' }): Promise<LocalMemoryMutationResult> {
+    remember(input: { title: string; content: string; scope?: 'workspace' | 'session'; sessionId?: string }): Promise<LocalMemoryMutationResult> {
       return ipcRenderer.invoke('memory:remember', input);
     },
     approveProposal(proposalId: string): Promise<LocalMemoryMutationResult> {
@@ -592,16 +606,6 @@ const makaBridge = {
     // into telemetry.
     thread(request: SearchRequest): Promise<SearchResult[] | { ok: false; reason: SearchErrorReason; message: string }> {
       return ipcRenderer.invoke('search:thread', request);
-    },
-  },
-  gateway: {
-    status(): Promise<OpenGatewayRuntimeStatus> {
-      return ipcRenderer.invoke('gateway:status');
-    },
-    subscribeStatusChanges(handler: (status: OpenGatewayRuntimeStatus) => void): () => void {
-      const listener = (_event: Electron.IpcRendererEvent, payload: OpenGatewayRuntimeStatus) => handler(payload);
-      ipcRenderer.on('gateway:statusChanged', listener);
-      return () => ipcRenderer.off('gateway:statusChanged', listener);
     },
   },
   // PR-OAUTH-SUBSCRIPTION-0: Claude subscription OAuth bridge.
@@ -886,6 +890,29 @@ const makaBridge = {
           return ipcRenderer.invoke('settings:bots:onboarding:open', sessionId);
         },
       },
+    },
+  },
+  voice: {
+    begin(input: VoiceBeginRequest): Promise<VoiceBeginResult> {
+      return ipcRenderer.invoke('voice:begin', input);
+    },
+    finishCapture(
+      operationId: string,
+      audio: VoiceCapturedAudio,
+    ): Promise<VoiceFinishCaptureResult> {
+      return ipcRenderer.invoke('voice:finishCapture', operationId, audio);
+    },
+    cancel(operationId: string): Promise<void> {
+      return ipcRenderer.invoke('voice:cancel', operationId);
+    },
+    createRealtimeSession(offerSdp: string): Promise<VoiceRealtimeClientSession> {
+      return ipcRenderer.invoke('voice:createRealtimeSession', offerSdp);
+    },
+    closeRealtimeSession(sessionId: string): Promise<void> {
+      return ipcRenderer.invoke('voice:closeRealtimeSession', sessionId);
+    },
+    validateCoordinatorToolCall(input: unknown): Promise<VoiceCoordinatorToolCall> {
+      return ipcRenderer.invoke('voice:validateCoordinatorToolCall', input);
     },
   },
   notifications: {

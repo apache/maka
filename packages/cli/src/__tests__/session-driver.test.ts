@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type {
   CreateSessionInput,
+  ExecutionBoundary,
   PermissionMode,
-  PermissionResponse,
   QueueEnqueueOutcome,
   SessionEvent,
   SessionSummary,
@@ -14,8 +14,15 @@ import type {
   UserMessageInput,
   UserQuestionResponse,
 } from '@maka/core';
+import { createGenesisExecutionBoundary, createReadOnlyPermissionProfile } from '@maka/core';
+import { permissionModeLabel } from '../pi-transcript.js';
+import { permissionModePickerItems } from '../pi-tui-pickers.js';
 import { createMakaSessionDriver } from '../session-driver.js';
-import type { RuntimeContinuation, SafeBoundaryContinuationPlan } from '@maka/runtime';
+import type {
+  ContextDiagnostics,
+  RuntimeContinuation,
+  SafeBoundaryContinuationPlan,
+} from '@maka/runtime';
 
 describe('Maka session driver', () => {
   test('creates an ask-permission session from the first prompt and streams the turn', async () => {
@@ -474,6 +481,125 @@ describe('Maka session driver', () => {
     }
   });
 
+  test('rejects externally isolated sessions outside their owning harness', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-external-session-'));
+    try {
+      const runtime = new RecordingRuntime();
+      runtime.sessionSummaries = [sessionSummary({ id: 'external', cwd: repo })];
+      runtime.executionBoundaries.set('external', { kind: 'external', revision: 0 });
+      const driver = createMakaSessionDriver({
+        runtime,
+        cwd: repo,
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      });
+
+      await assert.rejects(
+        driver.switchSession('external'),
+        /externally isolated session external/,
+      );
+      assert.equal(driver.getSessionId(), null);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('derives the resumed TUI mode from the authoritative boundary', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-bypass-session-'));
+    try {
+      const runtime = new RecordingRuntime();
+      runtime.sessionSummaries = [
+        sessionSummary({ id: 'bypass', cwd: repo, permissionMode: 'ask' }),
+      ];
+      runtime.executionBoundaries.set('bypass', { kind: 'bypass', revision: 3 });
+      const driver = createMakaSessionDriver({
+        runtime,
+        cwd: repo,
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      });
+
+      const resumed = await driver.switchSession('bypass');
+
+      assert.equal(driver.getPermissionMode?.(), 'bypass');
+      // The summary is the runtime's, reported as-is: the boundary is what the
+      // display is derived from, so there is no reason to rewrite the header.
+      assert.equal(resumed.summary.permissionMode, 'ask');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('presents a resumed read-only session as read-only, and never as the current Auto', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-read-only-session-'));
+    try {
+      const runtime = new RecordingRuntime();
+      runtime.sessionSummaries = [
+        sessionSummary({ id: 'read-only', cwd: repo, permissionMode: 'ask' }),
+      ];
+      runtime.executionBoundaries.set('read-only', {
+        kind: 'managed',
+        profile: createReadOnlyPermissionProfile(),
+        revision: 4,
+      });
+      const driver = createMakaSessionDriver({
+        runtime,
+        cwd: repo,
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      });
+
+      await driver.switchSession('read-only');
+
+      assert.equal(driver.getPermissionMode?.(), 'explore');
+      assert.equal(permissionModeLabel(driver.getPermissionMode!()), 'Read only');
+      // #1611: marking Auto as `current` here made "select the option I am
+      // already on" silently replace the read-only boundary with a writable
+      // one. Neither option may claim to be in force.
+      assert.deepEqual(
+        permissionModePickerItems(driver.getPermissionMode!()).map((item) => item.description),
+        ['protected', 'your files and network, unprotected'],
+      );
+
+      // Choosing Auto is therefore a real change, and it is applied.
+      await driver.setPermissionMode('ask');
+      assert.deepEqual(runtime.permissionModes, [{ sessionId: 'read-only', mode: 'ask' }]);
+      assert.equal(driver.getPermissionMode?.(), 'ask');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('a fresh session does not inherit the resumed session read-only boundary', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'maka-read-only-new-'));
+    try {
+      const runtime = new RecordingRuntime();
+      runtime.sessionSummaries = [
+        sessionSummary({ id: 'read-only', cwd: repo, permissionMode: 'ask' }),
+      ];
+      runtime.executionBoundaries.set('read-only', {
+        kind: 'managed',
+        profile: createReadOnlyPermissionProfile(),
+        revision: 1,
+      });
+      const driver = createMakaSessionDriver({
+        runtime,
+        cwd: repo,
+        llmConnectionSlug: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      });
+
+      await driver.switchSession('read-only');
+      driver.startNewSession();
+
+      assert.equal(driver.getPermissionMode?.(), 'ask');
+      await collectPrompt(driver, 'fresh session');
+      assert.equal(runtime.created.at(-1)?.permissionMode, 'ask');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   test('uses a resumed session cwd without injecting a synthetic reminder', async () => {
     const oldCwd = await mkdtemp(join(tmpdir(), 'maka-move-persisted-old-'));
     const nextCwd = join(oldCwd, 'worktree-next');
@@ -683,7 +809,7 @@ describe('Maka session driver', () => {
     );
   });
 
-  test('routes permission responses to the active session', async () => {
+  test('routes sandbox boundary responses to the active session', async () => {
     const runtime = new RecordingRuntime();
     const driver = createMakaSessionDriver({
       runtime,
@@ -694,19 +820,17 @@ describe('Maka session driver', () => {
     });
 
     await collectPrompt(driver, 'run tests');
-    await driver.respondToPermission({
-      requestId: 'permission-1',
+    await driver.respondToSandboxBoundary({
+      requestId: 'boundary-1',
       decision: 'allow',
-      rememberForTurn: true,
     });
 
-    assert.deepEqual(runtime.permissionResponses, [
+    assert.deepEqual(runtime.sandboxBoundaryResponses, [
       {
         sessionId: 'session-1',
         response: {
-          requestId: 'permission-1',
+          requestId: 'boundary-1',
           decision: 'allow',
-          rememberForTurn: true,
         },
       },
     ]);
@@ -988,6 +1112,35 @@ describe('Maka session driver', () => {
     assert.equal(driver.retractQueued?.(), '');
     assert.deepEqual(runtime.steered, []);
   });
+
+  test('context diagnostics follow the active persisted session across switch and resume', async () => {
+    const runtime = new RecordingRuntime();
+    const cwd = process.cwd();
+    runtime.sessionSummaries = [sessionSummary({ id: 'session-2', cwd })];
+    runtime.contextDiagnostics.set('session-2', {
+      status: 'available',
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      completedAt: 10,
+      inputTokens: 40,
+      contextWindow: 200,
+      segments: [],
+    });
+    const driver = createMakaSessionDriver({
+      runtime,
+      cwd,
+      llmConnectionSlug: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+
+    await driver.switchSession('session-2');
+    const beforeResume = await driver.getContextDiagnostics?.();
+    await collect(driver.resumeLatest!());
+    const afterResume = await driver.getContextDiagnostics?.();
+
+    assert.deepEqual(afterResume, beforeResume);
+    assert.deepEqual(runtime.contextReads, ['session-2', 'session-2']);
+  });
 });
 
 class RecordingRuntime {
@@ -996,7 +1149,10 @@ class RecordingRuntime {
   readonly compacted: Array<{ sessionId: string; input: { turnId?: string } }> = [];
   readonly resumePlanSessions: string[] = [];
   readonly resumedContinuations: RuntimeContinuation[] = [];
-  readonly permissionResponses: Array<{ sessionId: string; response: PermissionResponse }> = [];
+  readonly sandboxBoundaryResponses: Array<{
+    sessionId: string;
+    response: import('@maka/core/sandbox-boundary').SandboxBoundaryResponse;
+  }> = [];
   readonly userQuestionResponses: Array<{ sessionId: string; response: UserQuestionResponse }> = [];
   readonly permissionModes: Array<{ sessionId: string; mode: PermissionMode }> = [];
   readonly orchestrationModes: Array<{
@@ -1016,6 +1172,9 @@ class RecordingRuntime {
   readonly branched: Array<{ sessionId: string; sourceTurnId: string }> = [];
   readonly branchedBefore: Array<{ sessionId: string; sourceTurnId: string }> = [];
   readonly sessionMessages = new Map<string, StoredMessage[]>();
+  readonly executionBoundaries = new Map<string, ExecutionBoundary>();
+  readonly contextDiagnostics = new Map<string, ContextDiagnostics>();
+  readonly contextReads: string[] = [];
   sessionSummaries: SessionSummary[] = [];
   updatedSessionName = 'New Chat';
 
@@ -1138,8 +1297,11 @@ class RecordingRuntime {
     return this.retractText;
   }
 
-  async respondToPermission(sessionId: string, response: PermissionResponse): Promise<void> {
-    this.permissionResponses.push({ sessionId, response });
+  async respondToSandboxBoundary(
+    sessionId: string,
+    response: import('@maka/core/sandbox-boundary').SandboxBoundaryResponse,
+  ): Promise<void> {
+    this.sandboxBoundaryResponses.push({ sessionId, response });
   }
 
   async respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
@@ -1148,6 +1310,9 @@ class RecordingRuntime {
 
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<SessionSummary> {
     this.permissionModes.push({ sessionId, mode });
+    // The real runtime replaces the session's execution boundary when the mode
+    // changes; surfaces read that boundary, so the fake must move it too.
+    this.executionBoundaries.set(sessionId, createGenesisExecutionBoundary(mode));
     return {
       id: sessionId,
       name: 'New Chat',
@@ -1209,6 +1374,30 @@ class RecordingRuntime {
 
   async getMessages(sessionId: string): Promise<StoredMessage[]> {
     return this.sessionMessages.get(sessionId) ?? [];
+  }
+
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    return (
+      this.executionBoundaries.get(sessionId) ?? {
+        kind: 'managed',
+        profile: {
+          type: 'managed',
+          fileSystem: { kind: 'restricted', entries: [] },
+          network: { kind: 'restricted' },
+        },
+        revision: 0,
+      }
+    );
+  }
+
+  async getContextDiagnostics(sessionId: string): Promise<ContextDiagnostics> {
+    this.contextReads.push(sessionId);
+    return (
+      this.contextDiagnostics.get(sessionId) ?? {
+        status: 'unavailable',
+        reason: 'no_completed_request',
+      }
+    );
   }
 
   async branchFromTurn(

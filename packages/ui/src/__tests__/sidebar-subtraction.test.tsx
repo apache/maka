@@ -32,7 +32,7 @@ describe('sidebar subtraction', () => {
     assert.doesNotMatch(markup, /aria-expanded=/);
   });
 
-  it('keeps the visible scheduled-task label in its pending-reminder accessible name', () => {
+  it('keeps pending-reminder state in the collapsed SideNavItem accessible name', () => {
     const reminder: PlanReminder = {
       id: 'reminder-1',
       title: 'Review open work',
@@ -48,21 +48,24 @@ describe('sidebar subtraction', () => {
     };
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <SessionSidebarNav
+        <SessionListPanel
+          collapsed
           selection={{ section: 'automations', module: 'plan-reminders' }}
           planReminders={[reminder]}
+          sessions={[]}
+          onSelectSession={() => {}}
           onSelect={() => {}}
+          onOpenSettings={() => {}}
           onNew={() => {}}
         />
       </LocaleProvider>,
     );
 
     assert.match(markup, /aria-label="Scheduled tasks, 1 unfinished reminder"/);
-    assert.match(markup, />Scheduled tasks</);
-    assert.doesNotMatch(markup, /aria-label="Automations,/);
+    assert.doesNotMatch(markup, /maka-nav-count/);
   });
 
-  it('renders each child module as a localized path selector instead of a segmented control', () => {
+  it('renders each pair of peer modules as localized view navigation', () => {
     const extensions = renderToStaticMarkup(
       <LocaleProvider locale="zh">
         <ModuleHubSelector hub="extensions" value="skills" onChange={() => {}} />
@@ -74,15 +77,17 @@ describe('sidebar subtraction', () => {
       </LocaleProvider>,
     );
 
-    assert.match(extensions, /class="maka-module-hub-selector"/);
+    assert.match(extensions, /astryx-tab-list/);
     assert.match(extensions, /aria-label="扩展内容：技能"/);
-    assert.match(extensions, /aria-haspopup="menu"/);
+    assert.doesNotMatch(extensions, /role="radiogroup"/);
+    assert.match(extensions, /aria-current="page"/);
     assert.match(extensions, />技能</);
-    assert.doesNotMatch(extensions, /maka-segmented/);
-    assert.match(automations, /class="maka-module-hub-selector"/);
+    assert.match(extensions, />MCP</);
+    assert.doesNotMatch(extensions, /aria-haspopup="menu"/);
+    assert.match(automations, /astryx-tab-list/);
     assert.match(automations, /aria-label="定时任务内容：计划提醒"/);
     assert.match(automations, />计划提醒</);
-    assert.doesNotMatch(automations, /maka-segmented/);
+    assert.match(automations, />每日回顾</);
   });
 
   it('moves session grouping from a permanent segmented control into the list heading', () => {
@@ -119,7 +124,8 @@ describe('sidebar subtraction', () => {
     assert.match(markup, /class="maka-session-list-heading"[^>]*>会话</);
     assert.match(markup, /aria-label="会话分组方式"/);
     assert.doesNotMatch(markup, />按状态</);
-    assert.doesNotMatch(markup, />按项目</);
+    assert.match(markup, /role="menuitemradio"[\s\S]*>按项目</);
+    assert.doesNotMatch(markup, /maka-segmented/);
   });
 
   it('keeps conversation view controls visible while an extension module is selected', () => {
@@ -206,6 +212,6 @@ describe('sidebar subtraction', () => {
     assert.deepEqual(groupLabels, ['置顶']);
     assert.ok(markup.indexOf('最近置顶') < markup.indexOf('较早置顶'));
     assert.ok(markup.indexOf('最近会话') < markup.indexOf('较早会话'));
-    assert.doesNotMatch(markup, /maka-list-group-toggle|maka-list-group-count|aria-expanded=/);
+    assert.doesNotMatch(markup, /maka-list-group-toggle|maka-list-group-count/);
   });
 });

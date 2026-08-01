@@ -1,25 +1,9 @@
 /* ============================================================================
-   Help + confirm modals
+   Help modal
    ----------------------------------------------------------------------------
    Split out of chat-header.css (#546 PR2, relocate — zero visual change).
-   The keyboard-shortcut help modal (`.maka-help-*`) and the confirm
-   dialog width (`.maka-confirm-modal`) — both overlay modals that
-   previously lived in chat-header.css.                                 */
-
-.maka-confirm-modal {
-  width: min(420px, calc(100vw - 48px));
-}
-
-.maka-help-modal {
-  width: min(560px, calc(100vw - 48px));
-  max-height: calc(100dvh - 96px);
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.05);
-}
-
-/* The header row (title + close) is the shared DialogHeader primitive
- * (@maka/ui) now — no help-specific header/eyebrow CSS. */
+   The keyboard-shortcut help content (`.maka-help-*`) previously lived
+   in chat-header.css. Astryx owns the surrounding dialog surface.       */
 
 .maka-help-body {
   display: grid;

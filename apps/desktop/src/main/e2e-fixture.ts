@@ -11,6 +11,7 @@ import {
   PERMISSION_SESSION_ID,
   PROCESSING_SESSION_ID,
   STALE_FAKE_SESSION_ID,
+  STREAMING_SESSION_ID,
   TURN_CONTROL_BRANCH_ORPHAN_SESSION_ID,
   TURN_CONTROL_BRANCH_VISIBLE_SESSION_ID,
   TURN_CONTROL_PRIMARY_SESSION_ID,
@@ -28,10 +29,10 @@ import {
 import {
   errorMessages,
   errorSession,
-  permissionLiveTurns,
+  sandboxBoundaryLiveTurns,
   permissionMessages,
   permissionSession,
-  permissionState,
+  sandboxBoundaryState,
   processingLiveTurns,
   processingMessages,
   processingSession,
@@ -91,6 +92,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'artifact-pane',
   'artifact-errors',
   'streaming-sidebar',
+  'disclosure-output',
   // PR-STREAM-TURN-CENTER: active session renders the live answer bubble in
   // the main panel (below a committed turn) so
   // streaming-vs-committed horizontal alignment is locked deterministically.
@@ -98,7 +100,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // #646: a running session with an armed turn but nothing streaming yet —
   // captures the "正在处理…" model-wait indicator + composer Stop.
   'model-processing',
-  'permission-destructive',
+  'sandbox-boundary',
   'stale-sessions',
   // PR108j: per-Settings-section fixtures so each Settings sub-page can
   // be opened deterministically over the standard seed. Each scenario
@@ -123,7 +125,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-daily-review',
   'settings-permissions',
   'settings-voice',
-  'settings-gateway',
   'settings-search',
   'settings-usage',
   'settings-health',
@@ -178,14 +179,14 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // so xuan's Phase 2 modal gate has a stable fixture state.
   'sidebar-search-modal-open',
   // PR-shared primitive-COMMAND-INPUT-0: same 60-session seed; differs only in
-  // `paletteOpen: true`, which auto-opens CommandPalette so shared primitive
-  // InputGroup changes to the command input shell have a stable fixture state.
+  // `paletteOpen: true`, which auto-opens CommandPalette so command-input
+  // shell changes have a stable fixture state.
   'command-palette-open',
   // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
   // kenji `b3d156e9`): same 60-session seed; differs in
   // `focusActiveRow: true`, which programmatically focuses the
   // active row's button after mount so `:focus-within` triggers
-  // and the `.maka-list-row-menu-trigger` becomes visible.
+  // and the official session item receives focus.
   // Captures the overflow-trigger state so reviewers can verify
   // the time meta + unread dot are hidden underneath (no overlap).
   'sidebar-row-actions-visible',
@@ -367,7 +368,50 @@ function parseReducedMotionFlag(raw: string | undefined): boolean {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
+/**
+ * Sandbox-boundary requests the user has already answered.
+ *
+ * The fixture's requests are rebuilt from the scenario on every read, so
+ * answering one cannot retire it the way a real one is retired — the runtime
+ * drops an active request from its in-memory owner state when the decision is
+ * acknowledged, and the fixture's request has no such owner. Without somewhere
+ * to remember the answer the request keeps coming back, and a decision that
+ * leaves the request pending is not a decision.
+ *
+ * It lives here rather than at either exit because there are two: the sessions
+ * IPC serves the active-request list, and `e2eFixture:getState` hands the
+ * renderer a state it seeds its interaction queue from directly. A retirement
+ * either exit could not see would only move the resurrection to the other one.
+ *
+ * Deliberately not persisted: the answer belongs to the run, and every run
+ * starts from a throwaway userData dir with the request unanswered again.
+ */
+const answeredSandboxBoundaryRequests = new Set<string>();
+
+/** Retire an answered fixture request from every reader of fixture state. */
+export function retireE2eFixtureSandboxBoundaryRequest(requestId: string): void {
+  answeredSandboxBoundaryRequests.add(requestId);
+}
+
+/** Test seam: the retirement set is module state shared across cases. */
+export function resetE2eFixtureSandboxBoundaryRetirement(): void {
+  answeredSandboxBoundaryRequests.clear();
+}
+
 export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | null {
+  const state = buildE2eFixtureState(fixture);
+  if (!state?.sandboxBoundaryBySession) return state;
+  return {
+    ...state,
+    sandboxBoundaryBySession: Object.fromEntries(
+      Object.entries(state.sandboxBoundaryBySession).filter(
+        ([, request]) => !answeredSandboxBoundaryRequests.has(request.requestId),
+      ),
+    ),
+  };
+}
+
+function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | null {
   if (!fixture) return null;
   const state: E2eFixtureState = {
     enabled: true,
@@ -427,6 +471,12 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
         activeSessionId: TURN_SESSION_ID,
         liveTurnBySession: streamingLiveTurns(),
       };
+    case 'disclosure-output':
+      return {
+        ...state,
+        activeSessionId: STREAMING_SESSION_ID,
+        liveTurnBySession: streamingLiveTurns(),
+      };
     case 'streaming-answer':
       // Active session = the committed turn-narrative session, PLUS a live
       // answer streaming into it. The main panel then shows a settled turn
@@ -448,12 +498,12 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
         activeSessionId: PROCESSING_SESSION_ID,
         liveTurnBySession: processingLiveTurns(),
       };
-    case 'permission-destructive':
+    case 'sandbox-boundary':
       return {
         ...state,
         activeSessionId: PERMISSION_SESSION_ID,
-        permissionBySession: permissionState(),
-        liveTurnBySession: permissionLiveTurns(),
+        sandboxBoundaryBySession: sandboxBoundaryState(),
+        liveTurnBySession: sandboxBoundaryLiveTurns(),
       };
     case 'stale-sessions':
       // Active session intentionally a stale one — verifies the @kenji
@@ -497,8 +547,6 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'permissions' };
     case 'settings-voice':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'voice' };
-    case 'settings-gateway':
-      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'open-gateway' };
     case 'settings-search':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'search' };
     case 'settings-usage':
@@ -605,10 +653,10 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
-        permissionBySession: permissionState(),
+        sandboxBoundaryBySession: sandboxBoundaryState(),
         liveTurnBySession: {
           ...streamingLiveTurns(),
-          ...permissionLiveTurns(),
+          ...sandboxBoundaryLiveTurns(),
         },
       };
   }

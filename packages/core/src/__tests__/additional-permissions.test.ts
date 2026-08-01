@@ -1,21 +1,11 @@
 import { describe, test } from 'node:test';
 import { expect } from '../test-helpers.js';
 import {
-  additionalPermissionAllowsPath,
-  applyAdditionalPermissionProfile,
   compactAdditionalFileSystemPermissions,
   serializeAdditionalPermissionProfile,
   validateAdditionalPermissionProfile,
   type AdditionalPermissionProfile,
 } from '../additional-permissions.js';
-import {
-  canReadPath,
-  canWritePath,
-  createWorkspaceWritePermissionProfile,
-  type PermissionProfile,
-} from '../permission-profile.js';
-
-const CONTEXT = { workspaceRoots: ['/workspace/project'] };
 
 describe('AdditionalPermissionProfile validation', () => {
   test('accepts and canonicalizes a minimal filesystem permission', () => {
@@ -91,82 +81,5 @@ describe('AdditionalPermissionProfile validation', () => {
     expect(serializeAdditionalPermissionProfile(first)).toBe(
       serializeAdditionalPermissionProfile(second),
     );
-  });
-});
-
-describe('Additional permission matching and effective profiles', () => {
-  test('exact matches only one path while subtree includes descendants', () => {
-    const profile: AdditionalPermissionProfile = {
-      fileSystem: {
-        entries: [
-          { path: '/outside/exact.txt', access: 'read', scope: 'exact' },
-          { path: '/outside/tree', access: 'write', scope: 'subtree' },
-        ],
-      },
-    };
-    expect(additionalPermissionAllowsPath(profile, '/outside/exact.txt', 'read')).toBe(true);
-    expect(additionalPermissionAllowsPath(profile, '/outside/exact.txt/sibling', 'read')).toBe(
-      false,
-    );
-    expect(additionalPermissionAllowsPath(profile, '/outside/tree/child.txt', 'write')).toBe(true);
-    expect(additionalPermissionAllowsPath(profile, '/outside/tree2/child.txt', 'write')).toBe(
-      false,
-    );
-  });
-
-  test('write permission implies read permission', () => {
-    const profile: AdditionalPermissionProfile = {
-      fileSystem: { entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }] },
-    };
-    expect(additionalPermissionAllowsPath(profile, '/outside/file.txt', 'read')).toBe(true);
-    expect(additionalPermissionAllowsPath(profile, '/outside/file.txt', 'write')).toBe(true);
-  });
-
-  test('effective profile grants one outside path without mutating the base profile', () => {
-    const base = createWorkspaceWritePermissionProfile();
-    const effective = applyAdditionalPermissionProfile(base, {
-      fileSystem: { entries: [{ path: '/outside/file.txt', access: 'write', scope: 'exact' }] },
-    });
-    expect(canWritePath(base, '/outside/file.txt', CONTEXT)).toBe(false);
-    expect(canWritePath(effective, '/outside/file.txt', CONTEXT)).toBe(true);
-    expect(canWritePath(effective, '/outside/sibling.txt', CONTEXT)).toBe(false);
-  });
-
-  test('explicit path grant overrides protected metadata default for its exact target', () => {
-    const effective = applyAdditionalPermissionProfile(createWorkspaceWritePermissionProfile(), {
-      fileSystem: {
-        entries: [{ path: '/workspace/project/.git/config', access: 'write', scope: 'exact' }],
-      },
-    });
-    expect(canWritePath(effective, '/workspace/project/.git/config', CONTEXT)).toBe(true);
-    expect(canReadPath(effective, '/workspace/project/.git/config', CONTEXT)).toBe(true);
-    expect(canWritePath(effective, '/workspace/project/.git/HEAD', CONTEXT)).toBe(false);
-  });
-
-  test('explicit deny remains stronger than an additional allow', () => {
-    const base: PermissionProfile = {
-      type: 'managed',
-      name: 'custom',
-      fileSystem: {
-        kind: 'restricted',
-        entries: [{ kind: 'path', access: 'deny', path: '/outside/locked', match: 'subtree' }],
-      },
-      network: { kind: 'restricted' },
-    };
-    const effective = applyAdditionalPermissionProfile(base, {
-      fileSystem: {
-        entries: [{ path: '/outside/locked/file.txt', access: 'write', scope: 'exact' }],
-      },
-    });
-    expect(canReadPath(effective, '/outside/locked/file.txt')).toBe(false);
-    expect(canWritePath(effective, '/outside/locked/file.txt')).toBe(false);
-  });
-
-  test('network enable changes only the effective managed profile', () => {
-    const base = createWorkspaceWritePermissionProfile();
-    const effective = applyAdditionalPermissionProfile(base, { network: { enabled: true } });
-    expect(base.network.kind).toBe('restricted');
-    expect(effective.type).toBe('managed');
-    if (effective.type === 'managed') expect(effective.network.kind).toBe('enabled');
   });
 });

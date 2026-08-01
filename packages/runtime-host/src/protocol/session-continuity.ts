@@ -19,7 +19,7 @@ import {
 import { defineOperation } from './operation-spec.js';
 import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 
-export const SESSION_CONTINUITY_SCHEMA_VERSION = 1 as const;
+export const SESSION_CONTINUITY_SCHEMA_VERSION = 2 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // Core emits at most 8,192 UTF-16 code units per tool output event. A code unit
@@ -40,6 +40,7 @@ export type SessionLifecycleStatus =
 
 export interface SessionContinuityIdentity {
   sessionId: string;
+  metadataRevision: number;
   status: SessionLifecycleStatus;
   createdAt: number;
   lastUsedAt: number;
@@ -521,6 +522,7 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
   const record = requireRecord(value, 'Session continuity identity');
   assertAllowedKeys(record, 'Session continuity identity', [
     'sessionId',
+    'metadataRevision',
     'status',
     'createdAt',
     'lastUsedAt',
@@ -529,6 +531,7 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
   ]);
   assertRequiredKeys(record, 'Session continuity identity', [
     'sessionId',
+    'metadataRevision',
     'status',
     'createdAt',
     'lastUsedAt',
@@ -539,6 +542,7 @@ function decodeSessionContinuityIdentity(value: unknown): SessionContinuityIdent
   }
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
+    metadataRevision: requirePositiveCount(record.metadataRevision, 'metadataRevision'),
     status: requireSessionLifecycleStatus(record.status),
     createdAt: requireCount(record.createdAt, 'createdAt'),
     lastUsedAt: requireCount(record.lastUsedAt, 'lastUsedAt'),

@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { LlmConnection, SessionEvent, SessionHeader, ToolInvocationRecord } from '@maka/core';
@@ -24,7 +25,6 @@ import {
 } from '../agent-catalog.js';
 import { buildChildAgentTools, AGENT_TOOL_NAMES } from '../subagent-tools.js';
 import type { SpawnChildAgentResult } from '../session-manager.js';
-import { PermissionEngine } from '../permission-engine.js';
 import type { RunTraceLike } from '../run-trace.js';
 import {
   MAX_ACTIVE_CHILD_AGENT_RUNS_PER_TURN,
@@ -44,7 +44,6 @@ describe('AgentSwarm adapter', () => {
     };
 
     assert.equal(tool.name, AGENT_SWARM_TOOL_NAME);
-    assert.equal(tool.permissionRequired, true);
     assert.equal(tool.categoryHint, 'subagent');
     assert.equal(AGENT_SWARM_DEFAULT_ITEM_TIMEOUT_MS, 2 * 60 * 60 * 1_000);
     assert.equal(([...AGENT_TOOL_NAMES] as string[]).includes(AGENT_SWARM_TOOL_NAME), true);
@@ -1041,7 +1040,6 @@ describe('AgentSwarm adapter', () => {
       runtime,
       {
         ...buildAgentSwarmTool({ itemTimeoutMs: 20 }),
-        permissionRequired: false,
       },
       { items: [swarmItem(0), swarmItem(1)], max_concurrency: 1 },
       parent,
@@ -1100,7 +1098,6 @@ describe('AgentSwarm adapter', () => {
       runtime,
       {
         ...buildAgentSwarmTool(),
-        permissionRequired: false,
       },
       {
         items: Array.from({ length: 5 }, (_, index) => swarmItem(index)),
@@ -1186,7 +1183,6 @@ describe('AgentSwarm adapter', () => {
     );
     const swarmTool = {
       ...buildAgentSwarmTool(),
-      permissionRequired: false,
     };
     await executeTool(
       runtime,
@@ -1244,51 +1240,12 @@ describe('AgentSwarm adapter', () => {
     );
   });
 
-  test('one denied parent permission starts zero children', async () => {
-    const events: SessionEvent[] = [];
-    let starts = 0;
-    const permissionEngine = new PermissionEngine({
-      newId: nextId(),
-      now: () => 1,
-    });
-    const runtime = buildRuntime(
-      async () => {
-        starts += 1;
-        return childResult(0);
-      },
-      { permissionEngine, permissionMode: 'ask' },
-    );
-    const pending = executeTool(
-      runtime,
-      buildAgentSwarmTool(),
-      { items: [swarmItem(0), swarmItem(1)] },
-      new AbortController(),
-      events,
-      'tool-denied',
-    );
-
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const requests = events.filter(
-      (event): event is Extract<SessionEvent, { type: 'permission_request' }> =>
-        event.type === 'permission_request',
-    );
-    assert.equal(requests.length, 1);
-    permissionEngine.recordResponse('turn-1', {
-      requestId: requests[0]!.requestId,
-      decision: 'deny',
-    });
-
-    assert.deepEqual(await pending, { error: '用户已拒绝权限请求' });
-    assert.equal(starts, 0);
-  });
-
   test('child tool construction excludes agent_swarm', () => {
     const tools = buildChildAgentTools([
       ...['Read', 'Glob', 'Grep', 'WebSearch'].map((name) => ({
         name,
         description: name,
         parameters: {},
-        permissionRequired: false,
         categoryHint: 'read' as const,
         impl: async () => ({}),
       })),
@@ -1327,7 +1284,6 @@ describe('AgentSwarm adapter', () => {
       runtime,
       {
         ...buildAgentSwarmTool(),
-        permissionRequired: false,
       },
       { items: [swarmItem(1)] },
       new AbortController(),
@@ -1479,7 +1435,6 @@ function singleChildProbeTool(): MakaTool {
     name: 'single_child_probe',
     description: 'test-only single child probe',
     parameters: {},
-    permissionRequired: false,
     categoryHint: 'subagent',
     impl: async (_input, ctx) => {
       if (!ctx.spawnChildSession) throw new Error('missing spawn capability');
@@ -1494,26 +1449,16 @@ function singleChildProbeTool(): MakaTool {
 function buildRuntime(
   spawnChildSession: NonNullable<ConstructorParameters<typeof ToolRuntime>[0]['spawnChildSession']>,
   options: {
-    permissionEngine?: PermissionEngine;
-    permissionMode?: SessionHeader['permissionMode'];
     traceEvents?: TestTraceEvent[];
     recordToolInvocation?: ConstructorParameters<typeof ToolRuntime>[0]['recordToolInvocation'];
   } = {},
 ): ToolRuntime {
-  const permissionEngine =
-    options.permissionEngine ??
-    new PermissionEngine({
-      newId: nextId(),
-      now: () => 1,
-    });
-  permissionEngine.beginTurn('turn-1');
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
-    header: testHeader(options.permissionMode),
+    header: testHeader(),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

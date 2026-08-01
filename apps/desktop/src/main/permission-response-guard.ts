@@ -1,12 +1,12 @@
 import type {
   BranchFromTurnInput,
-  PermissionResponse,
   QuoteRef,
   RegenerateTurnInput,
   ReviseBeforeTurnInput,
   TurnOrchestration,
   UserQuestionResponse,
 } from '@maka/core';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { isOrchestrationMode, isTurnOrchestrationSource } from '@maka/core';
 
 const MAX_PERMISSION_REQUEST_ID_LENGTH = 128;
@@ -21,6 +21,8 @@ interface NormalizedSendSessionCommand {
   type: 'send';
   turnId?: string;
   text: string;
+  displayText?: string;
+  voiceOperationId?: string;
   skillIds?: string[];
   attachmentItems?: unknown;
   turnOrchestration?: TurnOrchestration;
@@ -28,9 +30,9 @@ interface NormalizedSendSessionCommand {
 }
 type NormalizedStopSessionInput = { source?: 'stop_button' };
 
-export function normalizePermissionResponse(input: unknown): PermissionResponse {
+export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
   if (!input || typeof input !== 'object') {
-    throw new Error('Invalid permission response');
+    throw new Error('Invalid sandbox boundary response');
   }
   const value = input as Record<string, unknown>;
   if (
@@ -38,18 +40,14 @@ export function normalizePermissionResponse(input: unknown): PermissionResponse 
     value.requestId.length === 0 ||
     value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
   ) {
-    throw new Error('Invalid permission response requestId');
+    throw new Error('Invalid sandbox boundary response requestId');
   }
   if (value.decision !== 'allow' && value.decision !== 'deny') {
-    throw new Error('Invalid permission response decision');
-  }
-  if (value.rememberForTurn !== undefined && typeof value.rememberForTurn !== 'boolean') {
-    throw new Error('Invalid permission response rememberForTurn');
+    throw new Error('Invalid sandbox boundary response decision');
   }
   return {
     requestId: value.requestId,
     decision: value.decision,
-    ...(value.rememberForTurn !== undefined ? { rememberForTurn: value.rememberForTurn } : {}),
   };
 }
 
@@ -110,12 +108,22 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   const value = requireObject(input, 'Invalid session command');
   if (value.type !== 'send') return undefined;
   const text = normalizeSendText(value.text);
+  const displayText =
+    value.displayText === undefined ? undefined : normalizeSendText(value.displayText);
+  const voiceOperationId =
+    value.voiceOperationId === undefined
+      ? undefined
+      : normalizeVoiceOperationId(value.voiceOperationId);
   const skillIds = normalizeSessionSkillIds(value.skillIds);
-  if (!text.trim() && skillIds.length === 0) throw new Error('Invalid send text');
+  if (!text.trim() && skillIds.length === 0 && !voiceOperationId) {
+    throw new Error('Invalid send text');
+  }
   return {
     type: 'send',
     ...normalizeOptionalSendTurnId(value.turnId),
     text,
+    ...(displayText !== undefined ? { displayText } : {}),
+    ...(voiceOperationId ? { voiceOperationId } : {}),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(value.attachmentItems !== undefined ? { attachmentItems: value.attachmentItems } : {}),
     ...(value.turnOrchestration !== undefined
@@ -123,6 +131,17 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       : {}),
     ...normalizeOptionalQuotes(value.quotes),
   };
+}
+
+function normalizeVoiceOperationId(input: unknown): string {
+  if (
+    typeof input !== 'string' ||
+    input.length > 64 ||
+    !/^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(input)
+  ) {
+    throw new Error('Invalid voice operation id');
+  }
+  return input;
 }
 
 function normalizeTurnOrchestration(input: unknown): TurnOrchestration {

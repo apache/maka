@@ -16,7 +16,10 @@ import {
   planHarnessOracleRegistryAudit,
   resolveHarnessOracleAnnotations,
 } from '../harness-oracle-registry.js';
-import { buildHarnessOracleExecutionPolicyFingerprint } from '../harness-oracle-policy.js';
+import {
+  buildHarnessOracleExecutionPolicyFingerprint,
+  HARBOR_ORACLE_MAX_ATTEMPTS,
+} from '../harness-oracle-policy.js';
 
 describe('harness Oracle evidence registry', () => {
   test('binds qualification to controlled Oracle policy sources instead of host runtime versions', () => {
@@ -304,7 +307,7 @@ describe('harness Oracle evidence registry', () => {
     );
 
     const excessiveAttempts = structuredClone(baseline.snapshot);
-    excessiveAttempts.entries[0]!.oracle!.attempts = 3;
+    excessiveAttempts.entries[0]!.oracle!.attempts = HARBOR_ORACLE_MAX_ATTEMPTS + 1;
     excessiveAttempts.entries[0]!.fingerprint = fingerprintFixture(
       withoutFingerprint(excessiveAttempts.entries[0]!),
     );

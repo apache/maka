@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -57,6 +57,20 @@ function deniedChildProfile(): PermissionProfile {
         ...profile.fileSystem.entries,
         { kind: 'path', access: 'deny', path: '/repo/project/secret' },
       ],
+    },
+  };
+}
+
+function protectedMetadataProfile(): PermissionProfile {
+  const profile = createWorkspaceWritePermissionProfile();
+  return {
+    ...profile,
+    fileSystem: {
+      ...profile.fileSystem,
+      protectedMetadata: {
+        access: 'deny_write',
+        names: ['.git'],
+      },
     },
   };
 }
@@ -120,7 +134,7 @@ describe('buildBubblewrapArgv', () => {
     assert.equal(hasTriple(argv, '--bind', '/repo/project', '/repo/project'), false);
   });
 
-  it('materializes workspace, temp, protected metadata, cwd, and network restrictions', () => {
+  it('materializes writable workspace metadata, temp, cwd, and network restrictions', () => {
     const request = workspaceRequest(createWorkspaceWritePermissionProfile());
     const argv = buildBubblewrapArgv({
       bwrapPath: '/usr/bin/bwrap',
@@ -134,7 +148,10 @@ describe('buildBubblewrapArgv', () => {
     assert.ok(argv.includes('--unshare-user'));
     assert.ok(hasPair(argv, '--seccomp', '3'));
     assert.ok(hasTriple(argv, '--bind', '/repo/project', '/repo/project'));
-    assert.ok(hasTriple(argv, '--ro-bind-try', '/repo/project/.git', '/repo/project/.git'));
+    assert.equal(
+      hasTriple(argv, '--ro-bind-try', '/repo/project/.git', '/repo/project/.git'),
+      false,
+    );
     assert.ok(hasPair(argv, '--tmpfs', '/tmp'));
     assert.ok(hasPair(argv, '--tmpfs', '/var/tmp/maka'));
     assert.ok(hasPair(argv, '--chdir', '/repo/project'));
@@ -236,7 +253,7 @@ describe('buildBubblewrapArgv', () => {
       ...request.command,
       pathContext: {
         ...request.command.pathContext,
-        pinnedWritableFiles: [{ path: '/outside/new.txt', fd: 4, sourceFd: 27 }],
+        pinnedProfilePaths: [{ path: '/outside/new.txt', access: 'write', fd: 4, sourceFd: 27 }],
       },
     } as SandboxTransformRequest['command'];
     const backend = new LinuxBubblewrapBackend({
@@ -256,6 +273,37 @@ describe('buildBubblewrapArgv', () => {
       ),
       { fd: 4, sourceFd: 27 },
     );
+  });
+
+  it('omits inactive exact file roots from an unrelated command', () => {
+    const request = workspaceRequest({
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [
+          { kind: 'path', access: 'read', path: '/outside/missing-read.txt', match: 'exact' },
+          { kind: 'path', access: 'write', path: '/outside/missing-write.txt', match: 'exact' },
+        ],
+      },
+      network: { kind: 'restricted' },
+    });
+
+    const argv = buildBubblewrapArgv({
+      bwrapPath: '/usr/bin/bwrap',
+      command: request.command,
+    });
+
+    assert.equal(
+      hasTriple(argv, '--ro-bind', '/outside/missing-read.txt', '/outside/missing-read.txt'),
+      false,
+    );
+    assert.equal(argv.includes('/outside/missing-read.txt'), false);
+    assert.equal(
+      hasTriple(argv, '--bind', '/outside/missing-write.txt', '/outside/missing-write.txt'),
+      false,
+    );
+    assert.equal(argv.includes('/outside/missing-write.txt'), false);
   });
 
   it('materializes an otherwise-unmounted worker cwd without exposing its contents', () => {
@@ -352,7 +400,7 @@ describe('LinuxBubblewrapBackend', () => {
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
       discoverProtectedMetadataPaths: () => [nested],
     });
-    const result = backend.transform(workspaceRequest(createWorkspaceWritePermissionProfile()));
+    const result = backend.transform(workspaceRequest(protectedMetadataProfile()));
 
     assert.equal(result.ok, true);
     if (result.ok) {
@@ -384,6 +432,32 @@ describe('LinuxBubblewrapBackend', () => {
     if (!result.ok) {
       assert.equal(result.reason, 'invalid_request');
       assert.match(result.message ?? '', /deny entries/i);
+    }
+  });
+
+  it('omits inactive exact directory entries instead of exposing their subtrees', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-linux-exact-directory-'));
+    const backend = new LinuxBubblewrapBackend({
+      capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
+    });
+    const profile: PermissionProfile = {
+      type: 'managed',
+      name: 'custom',
+      fileSystem: {
+        kind: 'restricted',
+        entries: [{ kind: 'path', access: 'read', path: directory, match: 'exact' }],
+      },
+      network: { kind: 'restricted' },
+    };
+
+    try {
+      assert.equal(backend.canEnforceProfile(profile), true);
+      const result = backend.transform(workspaceRequest(profile));
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error('Linux transform failed');
+      assert.equal(result.exec.argv.includes(directory), false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 

@@ -1,8 +1,10 @@
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import {
-  createArtifactStoreWriteAuthority,
+  createSqliteArtifactStoreWriteAuthority,
   type ArtifactAuthorityStore,
   type ArtifactStoreWriteAuthority,
+  type ConversationArtifactCopyInput,
+  type ConversationArtifactCopyResult,
   type CreateArtifactInput,
   type DurableArtifactAttachmentReader,
 } from './artifact-store.js';
@@ -14,6 +16,9 @@ import {
   StorageRootAuthorityError,
   type StorageRootLease,
 } from './root-authority.js';
+
+export { createAttachmentByteReader, createReadImageSnapshotter } from './artifact-attachments.js';
+export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveArtifactStoreWriter');
 const writers = new WeakSet<object>();
@@ -28,18 +33,23 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly [writerBrand]: true;
   recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
+  copyConversationArtifacts(
+    input: ConversationArtifactCopyInput,
+  ): Promise<ConversationArtifactCopyResult>;
+  purgeSessionArtifacts(sessionId: string): Promise<void>;
   listPage: ArtifactAuthorityStore['listPage'];
   getInSession: ArtifactAuthorityStore['getInSession'];
   readTextInSession: ArtifactAuthorityStore['readTextInSession'];
   readBinaryInSession: ArtifactAuthorityStore['readBinaryInSession'];
   deleteUserArtifactInSession: ArtifactAuthorityStore['deleteUserArtifactInSession'];
+  close(): void;
 }
 
 export type HeadlessArtifactStoreWriter = Readonly<
   Pick<
     ArtifactAuthorityStore,
     'create' | 'list' | 'get' | 'readText' | 'readBinary' | 'readDurableAttachmentBinary'
-  >
+  > & { close(): void }
 >;
 
 export function authenticateInteractiveArtifactStoreWriter(
@@ -64,7 +74,7 @@ export async function openInteractiveArtifactStoreForWrite(
       'interactive',
     );
     const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'interactive', 'write');
-    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath, {
+    const authority = createSqliteArtifactStoreWriteAuthority(lease.canonicalPath, {
       assertAuthority,
       leaseBoundWriterLockAuthority,
     });
@@ -99,7 +109,7 @@ export async function openHeadlessArtifactStoreForWrite(
       'headless',
     );
     const assertAuthority = createStorageRootLeaseIdentityGuard(lease, 'headless', 'write');
-    const authority = createArtifactStoreWriteAuthority(lease.canonicalPath, {
+    const authority = createSqliteArtifactStoreWriteAuthority(lease.canonicalPath, {
       assertAuthority,
       leaseBoundWriterLockAuthority,
     });
@@ -129,7 +139,7 @@ function createHeadlessWriterFacade(
   const { store } = authority;
   const run = <T>(operation: () => Promise<T>) =>
     runWithStorageRootLease(lease, 'headless', 'write', operation);
-  return Object.freeze({
+  const facade: HeadlessArtifactStoreWriter = Object.freeze({
     create: (input) => {
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
@@ -139,7 +149,12 @@ function createHeadlessWriterFacade(
     readText: (artifactId, options) => run(() => store.readText(artifactId, options)),
     readBinary: (artifactId, options) => run(() => store.readBinary(artifactId, options)),
     readDurableAttachmentBinary: (input) => run(() => store.readDurableAttachmentBinary(input)),
+    close: () => {
+      if (headlessWriterByLease.get(lease) === facade) headlessWriterByLease.delete(lease);
+      authority.close();
+    },
   });
+  return facade;
 }
 
 function createWriterFacade(
@@ -165,8 +180,20 @@ function createWriterFacade(
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
+    copyConversationArtifacts: (input) => {
+      const acceptedInput: ConversationArtifactCopyInput = Object.freeze({
+        ...input,
+        turnIds: Object.freeze([...input.turnIds]),
+      });
+      return run(() => store.copyConversationArtifacts(acceptedInput));
+    },
+    purgeSessionArtifacts: (sessionId) => run(() => store.purgeSessionArtifacts(sessionId)),
     deleteUserArtifactInSession: (sessionId, artifactId) =>
       run(() => store.deleteUserArtifactInSession(sessionId, artifactId)),
+    close: () => {
+      if (writerByLease.get(lease) === facade) writerByLease.delete(lease);
+      authority.close();
+    },
   };
   return Object.freeze(facade);
 }

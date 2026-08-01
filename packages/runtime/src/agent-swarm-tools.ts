@@ -130,7 +130,6 @@ export function buildAgentSwarmTool(
       'Use this only when every item can run independently. Results return in input order; you remain responsible for semantic synthesis.',
     ].join(' '),
     parameters: agentSwarmInputSchema(),
-    permissionRequired: true,
     executionSemantics: 'exclusive_step',
     categoryHint: 'subagent',
     impl: async (input, ctx) => {

@@ -8,6 +8,14 @@ import {
   type SubscriptionFrame,
 } from './session-continuity.js';
 import {
+  decodeClientCapabilityClientFrame,
+  decodeClientCapabilityHostFrame,
+  isClientCapabilityClientFrameKind,
+  isClientCapabilityHostFrameKind,
+  type ClientCapabilityClientFrame,
+  type ClientCapabilityHostFrame,
+} from './client-capability.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -17,8 +25,10 @@ import {
 
 export { RuntimeHostProtocolError } from './errors.js';
 export * from './interaction.js';
+export * from './client-capability.js';
 export * from './message.js';
 export * from './operations.js';
+export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './task-ledger.js';
 
@@ -26,7 +36,7 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 export const RUNTIME_HOST_MAX_FRAME_BYTES = 64 * 1024;
 
-export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'open_gateway' | 'inspect';
+export type ClientSurface = 'desktop' | 'tui' | 'run' | 'bot' | 'inspect';
 
 export interface ProtocolRange {
   min: number;
@@ -65,8 +75,12 @@ export interface HostDraining {
 
 export type HostHandshakeResult = HostAccepted | HostIncompatible | HostDraining;
 
-export type ClientFrame = ClientHello | RequestFrame;
-export type HostFrame = HostHandshakeResult | ResponseFrame | SubscriptionFrame;
+export type ClientFrame = ClientHello | RequestFrame | ClientCapabilityClientFrame;
+export type HostFrame =
+  | HostHandshakeResult
+  | ResponseFrame
+  | SubscriptionFrame
+  | ClientCapabilityHostFrame;
 
 export interface HostRegistration {
   kind: 'maka-runtime-host';
@@ -117,6 +131,9 @@ export function decodeClientFrame(value: unknown): ClientFrame {
       protocolMax,
     } satisfies ClientHello;
   }
+  if (isClientCapabilityClientFrameKind(frame.kind)) {
+    return decodeClientCapabilityClientFrame(frame);
+  }
   return decodeRequestFrame(frame);
 }
 
@@ -151,6 +168,9 @@ export function decodeHostFrame(value: unknown): HostFrame {
     };
   }
   if (isSubscriptionFrameKind(frame.kind)) return decodeSubscriptionFrame(frame);
+  if (isClientCapabilityHostFrameKind(frame.kind)) {
+    return decodeClientCapabilityHostFrame(frame);
+  }
   return decodeResponseFrame(frame);
 }
 
@@ -265,7 +285,6 @@ function requireSurface(value: unknown): ClientSurface {
     value === 'tui' ||
     value === 'run' ||
     value === 'bot' ||
-    value === 'open_gateway' ||
     value === 'inspect'
   )
     return value;

@@ -58,7 +58,7 @@ The computer-use follow-up files are per-PR follow-up records, incident investig
 
 ## Reverse-engineering records
 
-- `expert-team-plan.md` and `expert-team-implementation.md` — WorkBuddy and QoderWork reverse-engineering and mapping notes behind the expert-teams feature. The shipped design contract is `../expert-team-runtime.md` (#971).
+- `expert-team-plan.md` and `expert-team-implementation.md` — historical WorkBuddy and QoderWork reverse-engineering notes for the retired expert-teams feature (#971).
 
 ## Benchmark logs
 

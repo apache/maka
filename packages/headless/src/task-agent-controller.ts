@@ -65,10 +65,6 @@ import {
   validateRealBackendIsolation,
 } from './isolation.js';
 import {
-  DEFAULT_INTERVENTION_POLICY,
-  handlePermissionIntervention,
-} from './permission-intervention.js';
-import {
   resolveHeadlessSystemPrompt,
   type ResolvedHeadlessSystemPrompt,
 } from './system-prompts.js';
@@ -94,7 +90,6 @@ import {
   type TaskAttemptStatus,
   type TaskEvent,
   type TaskInterventionPolicy,
-  type TaskPermissionGrant,
   type TaskRunError,
   type TaskRunResult,
   type VerifierResult,
@@ -114,9 +109,7 @@ export interface RunTaskOnceDeps extends RunExperimentDeps {
   closeTaskRun?: boolean;
   instructionOverride?: string;
   priorRuntimeContext?: readonly RuntimeEvent[];
-  permissionMode?: 'execute';
   interventionPolicy?: TaskInterventionPolicy;
-  permissionGrants?: readonly TaskPermissionGrant[];
   /** Absolute wall-clock deadline for settling the active runtime before its outer watchdog. */
   deadlineAtMs?: number;
 }
@@ -171,7 +164,6 @@ export async function runTaskOnceWithStorage(
   const attemptId = deps.attemptId ?? `${taskRunId}-attempt-1`;
   const createTaskRun = deps.createTaskRun ?? true;
   const closeTaskRun = deps.closeTaskRun ?? true;
-  const interventionPolicy = deps.interventionPolicy ?? DEFAULT_INTERVENTION_POLICY;
   const taskRunStore = storage.taskRunStore;
   const sessionStore = storage.executionStores.sessionStore;
   const agentRunStore = storage.executionStores.agentRunStore;
@@ -253,17 +245,6 @@ export async function runTaskOnceWithStorage(
       validatedAt: now(),
     }),
   });
-  for (const grant of deps.permissionGrants ?? []) {
-    if (grant.taskRunId !== taskRunId) continue;
-    await appendTaskEvent(taskRunStore, taskRunId, {
-      type: 'permission_grant_recorded',
-      id: newId(),
-      taskRunId,
-      ts: now(),
-      grant,
-    });
-  }
-
   const workspace = await prepareWorkspace(task.workspaceDir);
   let graphCoordinator: AgentGraphCoordinator | undefined;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
@@ -368,18 +349,21 @@ export async function runTaskOnceWithStorage(
       now,
       runtimeSource: 'test',
     });
-    const header = await sessionStore.create({
-      cwd: agentWorkspaceDir,
-      backend: config.backend,
-      llmConnectionSlug: effectiveConfig.llmConnectionSlug,
-      model: effectiveConfig.model,
-      ...(effectiveConfig.thinkingLevel !== undefined
-        ? { thinkingLevel: effectiveConfig.thinkingLevel }
-        : {}),
-      permissionMode: deps.permissionMode ?? 'execute',
-      ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
-      name: `task:${config.id}:${task.id}`,
-    });
+    const header = await sessionStore.create(
+      {
+        cwd: agentWorkspaceDir,
+        backend: config.backend,
+        llmConnectionSlug: effectiveConfig.llmConnectionSlug,
+        model: effectiveConfig.model,
+        ...(effectiveConfig.thinkingLevel !== undefined
+          ? { thinkingLevel: effectiveConfig.thinkingLevel }
+          : {}),
+        permissionMode: 'ask',
+        ...(deps.orchestrationMode ? { orchestrationMode: deps.orchestrationMode } : {}),
+        name: `task:${config.id}:${task.id}`,
+      },
+      { kind: 'external', revision: 0 },
+    );
     graphControlStore = createAgentGraphControlStore(deps.storageRoot);
     graphCoordinator = new AgentGraphCoordinator({
       sessionStore,
@@ -477,32 +461,7 @@ export async function runTaskOnceWithStorage(
       now,
       newId,
     });
-    const permissionHandling = await handlePermissionIntervention({
-      invocation: runtimeInvocation,
-      store: taskRunStore,
-      taskRunId,
-      attemptId,
-      now,
-      newId,
-      policy: interventionPolicy,
-      config,
-      task,
-      sessionId: header.id,
-      startedAt,
-      closeTaskRun,
-      systemPrompt: prompt,
-    });
-    if (permissionHandling.parked) {
-      return {
-        taskRunId,
-        attemptId,
-        resultRecord: permissionHandling.resultRecord,
-        projection: await taskRunStore.project(taskRunId),
-        invocations: [permissionHandling.invocation],
-        settledByDeadline,
-      };
-    }
-    let invocation = permissionHandling.invocation;
+    let invocation = runtimeInvocation;
     const invocations = [invocation];
 
     let runtimeSummary = summarizeRuntime([invocation], deps.realBackendIsolation);
@@ -610,32 +569,7 @@ export async function runTaskOnceWithStorage(
           now,
           newId,
         });
-        const repairPermissionHandling = await handlePermissionIntervention({
-          invocation: repairInvocation,
-          store: taskRunStore,
-          taskRunId,
-          attemptId,
-          now,
-          newId,
-          policy: interventionPolicy,
-          config,
-          task,
-          sessionId: header.id,
-          startedAt,
-          closeTaskRun,
-          systemPrompt: prompt,
-        });
-        if (repairPermissionHandling.parked) {
-          return {
-            taskRunId,
-            attemptId,
-            resultRecord: repairPermissionHandling.resultRecord,
-            projection: await taskRunStore.project(taskRunId),
-            invocations: [...invocations, repairPermissionHandling.invocation],
-            settledByDeadline,
-          };
-        }
-        invocation = repairPermissionHandling.invocation;
+        invocation = repairInvocation;
         invocations.push(invocation);
         const repairSummary = summarizeRuntime([invocation], deps.realBackendIsolation);
         await appendRuntimeFeedback(taskRunStore, taskRunId, attemptId, now, newId, repairSummary);
@@ -1673,12 +1607,6 @@ function errorMessageFromTaxonomy(taxonomy: AutonomousResultTaxonomy): string {
 
 function appendTaskEvent(store: TaskRunWriter, taskRunId: string, event: TaskEvent): Promise<void> {
   return store.appendEvent(taskRunId, event);
-}
-
-function isPermissionHandoffTerminal(event: {
-  actions?: { stateDelta?: Record<string, unknown> };
-}): boolean {
-  return event.actions?.stateDelta?.stopReason === 'permission_handoff';
 }
 
 function isNonTerminalErrorRuntimeEvent(event: RuntimeEvent): boolean {

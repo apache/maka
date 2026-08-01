@@ -22,7 +22,6 @@ function settingsWithSecrets(): AppSettings {
     theme: 'dark',
     network: { proxy: { host: '127.0.0.1', password: 'proxy-secret' } },
     botChat: { channels: { telegram: { chatId: '42', token: 'bot-secret', appSecret: 'app-secret' } } },
-    openGateway: { port: 8848, token: 'gw-secret' },
     webSearch: { providers: { tavily: { apiKey: 'tavily-secret' } } },
   } as unknown as AppSettings;
 }
@@ -89,13 +88,11 @@ describe('config-transfer-service', () => {
     assert.equal('password' in s.network.proxy, false, 'proxy password key omitted');
     assert.equal('token' in s.botChat.channels.telegram, false, 'bot token key omitted');
     assert.equal('appSecret' in s.botChat.channels.telegram, false, 'bot appSecret key omitted');
-    assert.equal('token' in s.openGateway, false, 'gateway token key omitted');
     assert.equal('apiKey' in s.webSearch.providers.tavily, false, 'tavily apiKey key omitted');
     // Non-secret fields at every level pass through untouched.
     assert.equal(s.theme, 'dark');
     assert.equal(s.network.proxy.host, '127.0.0.1');
     assert.equal(s.botChat.channels.telegram.chatId, '42');
-    assert.equal(s.openGateway.port, 8848);
   });
 
   it('keeps settings secrets and enumerates credentials when credentials ARE included', async () => {

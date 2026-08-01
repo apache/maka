@@ -7,14 +7,12 @@ import { z } from 'zod';
 import {
   AiSdkBackend,
   BackendRegistry,
-  PermissionEngine,
   SessionManager,
   buildBuiltinTools,
   buildHistoryCompactBlockFromSummary,
   buildProviderOptions,
   buildSynthesisCacheBlocksFromHydratedArchives,
   computeCost,
-  createDefaultPermissionEngineDeps,
   estimateTokens,
   getAIModel,
   getBuiltinPricing,
@@ -22,10 +20,10 @@ import {
   validateSynthesisCacheBlockShape,
 } from '../packages/runtime/dist/index.js';
 import {
-  createAgentRunStore,
-  createArtifactStore,
-  createRuntimeEventStore,
+  createSqliteAgentRunStore,
+  createSqliteArtifactStore,
   createSessionStore,
+  openRuntimeEventPersistence,
 } from '../packages/storage/dist/index.js';
 
 const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -51,6 +49,21 @@ const cwd = resolve(process.env.MAKA_COST_BASELINE_CWD ?? repoRoot);
 const contextBudget = buildContextBudgetPolicy();
 const stablePolicyLines = parsePositiveInt(process.env.MAKA_COST_BASELINE_STABLE_POLICY_LINES, 140);
 const payloadLines = parsePositiveInt(process.env.MAKA_COST_BASELINE_PAYLOAD_LINES, 70);
+
+async function openCanonicalExecutionStores(root) {
+  const runStore = createSqliteAgentRunStore(root);
+  try {
+    await runStore.ready?.();
+    const runtimePersistence = await openRuntimeEventPersistence({ workspaceRoot: root });
+    return {
+      runStore,
+      runtimeEventStore: runtimePersistence.runtimeEventStore,
+    };
+  } catch (error) {
+    runStore.close?.();
+    throw error;
+  }
+}
 
 if (process.env.MAKA_COST_BASELINE_PHASE7_TOOL_MATRIX === 'on') {
   const exitCode = await runPhase7ToolMatrix({
@@ -111,10 +124,8 @@ if (
 }
 
 const sessionStore = createSessionStore(workspaceRoot);
-const runStore = createAgentRunStore(workspaceRoot);
-const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-const artifactStore = createArtifactStore(workspaceRoot);
-const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
+const { runStore, runtimeEventStore } = await openCanonicalExecutionStores(workspaceRoot);
+const artifactStore = createSqliteArtifactStore(workspaceRoot);
 const backends = new BackendRegistry();
 const llmRecords = [];
 const runTraceEvents = [];
@@ -165,7 +176,7 @@ backends.register(
       connection,
       apiKey,
       modelId: model,
-      permissionEngine,
+      readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
       modelFactory: getAIModel,
       tools,
       loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
@@ -511,10 +522,8 @@ async function runPhase7ToolScenario(input) {
   const workspaceRoot = join(input.matrixOutputRoot, input.mode, 'workspace');
   await mkdir(workspaceRoot, { recursive: true });
   const sessionStore = createSessionStore(workspaceRoot);
-  const runStore = createAgentRunStore(workspaceRoot);
-  const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-  const artifactStore = createArtifactStore(workspaceRoot);
-  const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
+  const { runStore, runtimeEventStore } = await openCanonicalExecutionStores(workspaceRoot);
+  const artifactStore = createSqliteArtifactStore(workspaceRoot);
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -552,7 +561,7 @@ async function runPhase7ToolScenario(input) {
         connection,
         apiKey: input.apiKey,
         modelId: input.model,
-        permissionEngine,
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         modelFactory: getAIModel,
         tools,
         loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
@@ -1200,10 +1209,8 @@ async function runPhase10HistoryCompactScenario(input) {
   const workspaceRoot = join(input.matrixOutputRoot, input.mode, 'workspace');
   await mkdir(workspaceRoot, { recursive: true });
   const sessionStore = createSessionStore(workspaceRoot);
-  const runStore = createAgentRunStore(workspaceRoot);
-  const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-  const artifactStore = createArtifactStore(workspaceRoot);
-  const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
+  const { runStore, runtimeEventStore } = await openCanonicalExecutionStores(workspaceRoot);
+  const artifactStore = createSqliteArtifactStore(workspaceRoot);
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -1240,7 +1247,7 @@ async function runPhase10HistoryCompactScenario(input) {
         connection,
         apiKey: input.apiKey,
         modelId: input.model,
-        permissionEngine,
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         modelFactory: getAIModel,
         tools: [],
         loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
@@ -1454,10 +1461,8 @@ async function runPhase8SynthesisScenario(input) {
   const workspaceRoot = join(input.matrixOutputRoot, input.mode, 'workspace');
   await mkdir(workspaceRoot, { recursive: true });
   const sessionStore = createSessionStore(workspaceRoot);
-  const runStore = createAgentRunStore(workspaceRoot);
-  const runtimeEventStore = createRuntimeEventStore(workspaceRoot);
-  const artifactStore = createArtifactStore(workspaceRoot);
-  const permissionEngine = new PermissionEngine(createDefaultPermissionEngineDeps());
+  const { runStore, runtimeEventStore } = await openCanonicalExecutionStores(workspaceRoot);
+  const artifactStore = createSqliteArtifactStore(workspaceRoot);
   const backends = new BackendRegistry();
   const llmRecords = [];
   const runTraceEvents = [];
@@ -1500,7 +1505,7 @@ async function runPhase8SynthesisScenario(input) {
         connection,
         apiKey: input.apiKey,
         modelId: input.model,
-        permissionEngine,
+        readExecutionBoundary: () => ctx.store.readExecutionBoundary(ctx.sessionId),
         modelFactory: getAIModel,
         tools,
         loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,

@@ -1,48 +1,82 @@
+@import "./cascade-layers.css";
 @import "tailwindcss";
 @source "../../../../packages/ui/src";
+
+/* Astryx substrate (#1565 PR 2). Each import is wrapped in its astryx-*
+   layer — see cascade-layers.css for why unlayered Astryx would invert the
+   whole cascade, and why the layers are top-level names rather than
+   astryx.* sub-layers.
+
+   Two Astryx sheets are deliberately NOT imported yet — each targets bare
+   elements or shadows product tokens, which no layer order can bury (a rule
+   wins wherever no product rule competes; a custom property on the Theme
+   wrapper wins by tree distance):
+   - reset.css (cursor on buttons, small/code sizing) replaces Tailwind
+     preflight and lands with the slice that removes it (PR 12).
+   - tailwind-theme.css: the existing @theme inline bridge below stays the
+     single source for utility tokens until Tailwind leaves in PR 12.
+   Layer slots for them are already reserved in cascade-layers.css.
+
+   maka.css below lands with the first Astryx atom consumers: an `astryx
+   theme build` of the Maka-named theme (a pure extends of neutral). The CLI
+   cannot drop the @scope'd element-typography block at the source (--no-prose
+   was removed for build⇄runtime parity), so scripts/build-astryx-theme.mjs
+   strips it post-build — safe because built themes skip runtime injection,
+   making the imported file the only CSS source. Its internal @layer
+   astryx-theme nests into the astryx-tokens slot below. */
+@import "@astryxdesign/core/astryx.css" layer(astryx-components);
+@import "./astryx-theme/maka.css" layer(astryx-tokens);
 
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
-@import "overlayscrollbars/overlayscrollbars.css";
+/* overlayscrollbars must share maka.legacy with the product CSS: the two
+   trade wins by specificity in both directions (e.g. the library's
+   viewport reset vs .maka-chatViewport height rules), so splitting them
+   across layer boundaries changes outcomes. Same layer preserves the
+   intra-layer specificity and source-order contests exactly. */
+@import "overlayscrollbars/overlayscrollbars.css" layer(maka.legacy);
 
+/* maka-tokens.css stays unlayered: it declares its own @layer base/
+   utilities/components blocks that must keep merging into the top-level
+   Tailwind layers. Wrapping the import would nest them under maka.legacy
+   and raise them above the utilities layer. Residual asymmetry: its few
+   unlayered non-token rules (.maka-shimmer and svg.lucide) now beat all maka.legacy rules unconditionally, no longer
+   by source order — do not add competing declarations for them under
+   styles/. */
 @import "./maka-tokens.css";
-@import "./reference-shell.css";
-@import "./styles/base.css";
-@import "./styles/shell-layout.css";
-@import "./styles/sidebar.css";
-@import "./styles/search-modal.css";
-@import "./styles/prompt-suggestions.css";
-@import "./styles/deep-research.css";
-@import "./styles/onboarding.css";
-@import "./styles/empty-state.css";
-@import "./styles/module-pages.css";
-@import "./styles/field-focus.css";
-@import "./styles/settings/select.css";
-@import "./styles/segmented.css";
-@import "./styles/model-switcher.css";
-@import "./styles/chat-header.css";
-@import "./styles/task-ledger.css";
-@import "./styles/plan-mode.css";
-@import "./styles/agent-graph.css";
-@import "./styles/error.css";
-@import "./styles/toast.css";
-@import "./styles/help.css";
-@import "./styles/palette.css";
-@import "./styles/hero.css";
+@import "./reference-shell.css" layer(maka.legacy);
+@import "./styles/base.css" layer(maka.legacy);
+@import "./styles/shell-layout.css" layer(maka.legacy);
+@import "./styles/sidebar.css" layer(maka.legacy);
+@import "./styles/search-modal.css" layer(maka.legacy);
+@import "./styles/prompt-suggestions.css" layer(maka.legacy);
+@import "./styles/deep-research.css" layer(maka.legacy);
+@import "./styles/onboarding.css" layer(maka.legacy);
+@import "./styles/empty-state.css" layer(maka.legacy);
+@import "./styles/module-pages.css" layer(maka.legacy);
+@import "./styles/settings/select.css" layer(maka.legacy);
+@import "./styles/model-switcher.css" layer(maka.legacy);
+@import "./styles/chat-header.css" layer(maka.legacy);
+@import "./styles/task-ledger.css" layer(maka.legacy);
+@import "./styles/plan-mode.css" layer(maka.legacy);
+@import "./styles/agent-graph.css" layer(maka.legacy);
+@import "./styles/error.css" layer(maka.legacy);
+@import "./styles/help.css" layer(maka.legacy);
+@import "./styles/palette.css" layer(maka.legacy);
+@import "./styles/hero.css" layer(maka.legacy);
 @import "./styles/chat-message.css" layer(components);
-@import "./styles/prose.css" layer(components);
-@import "./styles/composer.css";
-@import "./styles/composer-mention.css";
-@import "./styles/chat-detail.css";
-@import "./styles/settings.css";
-@import "./styles/markdown-link.css" layer(components);
-@import "./styles/permission-dialog.css";
-@import "./styles/daily-review.css";
-@import "./styles/theme-glass.css";
-@import "./styles/prompt-rail.css";
-@import "./styles/quote-chip.css";
-@import "./styles/quote-side-panel.css";
+@import "./styles/composer.css" layer(maka.legacy);
+@import "./styles/composer-mention.css" layer(maka.legacy);
+@import "./styles/chat-detail.css" layer(maka.legacy);
+@import "./styles/settings.css" layer(maka.legacy);
+@import "./styles/interaction-prompts.css" layer(maka.legacy);
+@import "./styles/daily-review.css" layer(maka.legacy);
+@import "./styles/theme-glass.css" layer(maka.legacy);
+@import "./styles/prompt-rail.css" layer(maka.legacy);
+@import "./styles/quote-chip.css" layer(maka.legacy);
+@import "./styles/quote-side-panel.css" layer(maka.legacy);
+@import "./styles/astryx-mount.css" layer(maka.legacy);
 
 @theme inline {
   --color-background: var(--background);

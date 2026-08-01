@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { type SubscriptionAccountState, type UiLocale } from '@maka/core';
 import {
-  Chip,
+  Badge,
   Button,
   RelativeTime,
-  Textarea,
+  TextArea,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { type StatusTone } from './settings-status-badge';
+import { statusBadgeVariant, type StatusTone } from './settings-status-badge';
 import {
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
@@ -121,18 +121,17 @@ export function ClaudeSubscriptionCard() {
             </div>
             <small>{copy.gateUnknown}</small>
           </div>
-          <Chip variant="destructive">{copy.readFailed}</Chip>
+          <Badge variant="error" label={copy.readFailed} />
         </div>
         <small className="settingsErrorText" role="alert">
           {copy.gateError}{experimentalGateError}
         </small>
         <div className="settingsConnectionActions">
           <Button
-            type="button"
+            variant="primary"
             onClick={() => void refreshExperimentalGate()}
-          >
-            {copy.retry}
-          </Button>
+            label={copy.retry}
+          />
         </div>
       </div>
     );
@@ -323,9 +322,7 @@ export function ClaudeSubscriptionCard() {
             {state?.profile?.email ? ` · ${state.profile.email}` : ''}
           </small>
         </div>
-        <Chip variant={presentation.tone}>
-          {presentation.label}
-        </Chip>
+        <Badge variant={statusBadgeVariant(presentation.tone)} label={presentation.label} />
       </div>
       <p className="settingsConnectionDetail">{presentation.detail}</p>
       {pasteError && !authRequestId && (
@@ -355,35 +352,31 @@ export function ClaudeSubscriptionCard() {
       <div className="settingsConnectionActions">
         {canStartClaudeLogin || claudeLoginPending ? (
           <Button
-            type="button"
+            variant="primary"
             onClick={() => void startLogin()}
-            disabled={actionBusy || claudeLoginPending}
-          >
-            {pendingAction === 'login'
+            isDisabled={actionBusy || claudeLoginPending}
+            label={pendingAction === 'login'
               ? copy.openingBrowser
               : claudeLoginPending
               ? copy.loggingIn
               : state?.runtimeState === 'refresh_failed' || state?.runtimeState === 'storage_failed'
                 ? copy.relogin
                 : copy.loginSubscription}
-          </Button>
+          />
         ) : (
           <>
             <Button
-              type="button"
+              variant="primary"
               onClick={() => void refreshQuota()}
-              disabled={actionBusy}
-            >
-              {pendingAction === 'quota' ? copy.refreshing : copy.refreshQuota}
-            </Button>
+              isDisabled={actionBusy}
+              label={pendingAction === 'quota' ? copy.refreshing : copy.refreshQuota}
+            />
             <Button
-              type="button"
               variant="ghost"
               onClick={() => void logout()}
-              disabled={actionBusy}
-            >
-              {pendingAction === 'logout' ? copy.loggingOut : copy.logout}
-            </Button>
+              isDisabled={actionBusy}
+              label={pendingAction === 'logout' ? copy.loggingOut : copy.logout}
+            />
           </>
         )}
       </div>
@@ -396,32 +389,28 @@ export function ClaudeSubscriptionCard() {
           {stateHint && (
             <small>{copy.stateHint} <code>{stateHint}</code> {copy.startsWith}</small>
           )}
-          <Textarea
+          <TextArea
             value={pasteValue}
-            onChange={(event) => setPasteValue(event.currentTarget.value)}
+            onChange={(value) => setPasteValue(value)}
             placeholder={copy.codePlaceholder}
-            aria-label={copy.codeAria}
+            label={copy.codeAria}
             rows={3}
-            spellCheck={false}
-            autoComplete="off"
+            hasSpellCheck={false}
+            status={pasteError ? { type: 'error', message: pasteError } : undefined}
           />
-          {pasteError && <small className="settingsErrorText">{pasteError}</small>}
           <div className="settingsConnectionActions">
             <Button
-              type="button"
+              variant="primary"
               onClick={() => void submitPaste()}
-              disabled={actionBusy || pasteValue.trim().length === 0}
-            >
-              {pendingAction === 'submit' ? copy.submitting : copy.submitCode}
-            </Button>
+              isDisabled={actionBusy || pasteValue.trim().length === 0}
+              label={pendingAction === 'submit' ? copy.submitting : copy.submitCode}
+            />
             <Button
-              type="button"
               variant="ghost"
               onClick={() => void cancelLogin()}
-              disabled={actionBusy}
-            >
-              {pendingAction === 'cancel' ? copy.cancelling : copy.cancel}
-            </Button>
+              isDisabled={actionBusy}
+              label={pendingAction === 'cancel' ? copy.cancelling : copy.cancel}
+            />
           </div>
         </div>
       )}

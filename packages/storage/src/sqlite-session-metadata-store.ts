@@ -1,11 +1,14 @@
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
   AgentGraphClientProjectionConflictError,
+  assessSandboxBoundaryExpansion,
+  assertExecutionBoundaryCapacity,
   assertAgentGraphScheduleUpdateRequest,
   AgentGraphScheduleClosedError,
   AgentGraphScheduleRevisionConflictError,
@@ -14,6 +17,10 @@ import {
   decodeAgentGraphOperatorProvision,
   decodeAgentGraphScheduleUpdate,
   decodeAgentGraphIntentClaim,
+  decodeExecutionBoundary,
+  createGenesisExecutionBoundary,
+  SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
+  validateSandboxBoundaryExpansion,
   isSubagentSessionParent,
   isSubagentSessionRuntime,
   isSubagentSessionSpawn,
@@ -42,6 +49,11 @@ import {
   type ClaimAgentGraphSupervisorWakeRequest,
   type CompleteAgentGraphSupervisorWakeAttemptRequest,
   type CommitAgentGraphClientProjectionRequest,
+  type CreateSandboxBoundaryRequest,
+  type ExecutionBoundary,
+  type SandboxBoundaryRequest,
+  type SandboxBoundarySettlement,
+  type SettleSandboxBoundaryRequest,
   type SessionHeader,
   type SessionListFilter,
   type SubagentSessionParent,
@@ -52,10 +64,19 @@ import {
   SessionNotFoundError,
 } from './session-store.js';
 import {
+  isDiscardableConversationCopy,
+  isValidConversationCopyTransition,
+} from './session-conversation-copy.js';
+import {
   configureSqliteSessionMetadataDatabase,
   migrateSqliteSessionMetadataDatabase,
   readSqliteSessionMetadataSchemaVersion,
 } from './sqlite-session-metadata-schema.js';
+import type { OperationalStateDatabaseLease } from './operational-state-store.js';
+import {
+  buildSqliteSessionCatalogPageQuery,
+  type SqliteSessionCatalogCursor,
+} from './sqlite-session-catalog-query.js';
 
 export { SQLITE_SESSION_METADATA_SCHEMA_VERSION } from './sqlite-session-metadata-schema.js';
 
@@ -86,11 +107,14 @@ export type SqliteSessionMetadataStoreFailpoint =
   | 'after_session_import_marker_write'
   | 'after_agent_graph_intent_claim_write'
   | 'after_agent_graph_schedule_update_write'
-  | 'after_agent_graph_operator_provision_write';
+  | 'after_agent_graph_operator_provision_write'
+  | 'after_sandbox_boundary_write';
 
 export interface SqliteSessionMetadataStoreOptions {
   now?: () => number;
   failpoint?: (point: SqliteSessionMetadataStoreFailpoint) => void;
+  /** @internal Repository connection supplied by the operational DB owner. */
+  databaseLease?: OperationalStateDatabaseLease;
 }
 
 export interface SessionMetadataRecord {
@@ -99,9 +123,70 @@ export interface SessionMetadataRecord {
   committedAt: number;
 }
 
+export interface SessionMetadataCatalogRecord extends SessionMetadataRecord {
+  readonly lastMessagePreview?: string;
+}
+
+export interface SessionCatalogRevisionState {
+  readonly epoch: string;
+  readonly generation: number;
+}
+
+export type SessionMetadataCatalogCursor = SqliteSessionCatalogCursor;
+
+export interface SessionMetadataCatalogPage {
+  readonly revision: SessionCatalogRevisionState;
+  readonly records: readonly SessionMetadataCatalogRecord[];
+  readonly hasMore: boolean;
+}
+
+export interface SessionCatalogMessageProjection {
+  readonly lastMessageAt?: number;
+  readonly lastMessagePreview?: string;
+}
+
+export interface SessionAuthoritySnapshot {
+  record: SessionMetadataRecord;
+  boundary: ExecutionBoundary;
+}
+
 export interface IdempotentSubagentSessionMetadataResult {
   record: SessionMetadataRecord;
   created: boolean;
+}
+
+export type StableSessionCreateProbe =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'existing'; readonly record: SessionMetadataRecord }
+  | {
+      readonly kind: 'conflict';
+      readonly reason: 'identity_mismatch' | 'removed';
+    };
+
+export type StableSessionMetadataCreateResult =
+  | { readonly kind: 'created'; readonly record: SessionMetadataRecord }
+  | { readonly kind: 'existing'; readonly record: SessionMetadataRecord }
+  | {
+      readonly kind: 'conflict';
+      readonly reason: 'identity_mismatch' | 'removed';
+    };
+
+export interface SessionConfigurationMetadataUpdate {
+  readonly expectedVersion: number;
+  readonly configuration: {
+    readonly backend: SessionHeader['backend'];
+    readonly llmConnectionSlug: string;
+    readonly connectionLocked: boolean;
+    readonly model: string;
+    readonly thinkingLevel: SessionHeader['thinkingLevel'];
+    readonly permissionMode: SessionHeader['permissionMode'];
+    readonly collaborationMode: NonNullable<SessionHeader['collaborationMode']>;
+    readonly orchestrationMode: NonNullable<SessionHeader['orchestrationMode']>;
+    readonly labels: readonly string[];
+  };
+  readonly lifecycle:
+    | { readonly kind: 'preserve' }
+    | { readonly kind: 'clear_connection_block'; readonly statusUpdatedAt: number };
 }
 
 export interface IdempotentAgentGraphOperatorMetadataResult
@@ -111,6 +196,7 @@ export interface IdempotentAgentGraphOperatorMetadataResult
 
 export interface SessionMetadataImportEntry {
   header: SessionHeader;
+  initialBoundary?: ExecutionBoundary;
   source: {
     path: string;
     fingerprint: string;
@@ -125,6 +211,20 @@ export interface SessionMetadataImportResult {
 
 export class SessionMetadataConflictError extends Error {
   readonly name: string = 'SessionMetadataConflictError';
+}
+
+export class SessionMetadataVersionConflictError extends SessionMetadataConflictError {
+  readonly name = 'SessionMetadataVersionConflictError';
+
+  constructor(
+    readonly sessionId: string,
+    readonly expectedVersion: number,
+    readonly actualVersion: number,
+  ) {
+    super(
+      `Session metadata version conflict for ${sessionId}: expected ${expectedVersion}, found ${actualVersion}`,
+    );
+  }
 }
 
 export class AgentGraphIntentClaimConflictError extends SessionMetadataConflictError {
@@ -144,6 +244,7 @@ export function createSqliteSessionMetadataStore(
 
 export class SqliteSessionMetadataStore {
   private readonly db: DatabaseSync;
+  private readonly databaseLease?: OperationalStateDatabaseLease;
   private readonly now: () => number;
   private closed = false;
 
@@ -152,6 +253,12 @@ export class SqliteSessionMetadataStore {
     private readonly options: SqliteSessionMetadataStoreOptions = {},
   ) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+    if (options.databaseLease) {
+      this.databaseLease = options.databaseLease;
+      this.db = options.databaseLease.database;
+      this.now = options.now ?? Date.now;
+      return;
+    }
     const { DatabaseSync } = loadSqliteModule();
     this.db = new DatabaseSync(path);
     configureSqliteSessionMetadataDatabase(this.db);
@@ -175,7 +282,8 @@ export class SqliteSessionMetadataStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.db.close();
+    if (this.databaseLease) this.databaseLease.close();
+    else this.db.close();
   }
 
   async backup(destinationPath: string): Promise<number> {
@@ -191,7 +299,318 @@ export class SqliteSessionMetadataStore {
     return loadSqliteModule().backup(this.db, destinationPath);
   }
 
-  async create(header: SessionHeader): Promise<SessionMetadataRecord> {
+  async readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      return this.readCurrentExecutionBoundarySync(sessionId);
+    });
+  }
+
+  async readSessionAuthoritySnapshot(sessionId: string): Promise<SessionAuthoritySnapshot> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      return {
+        record,
+        boundary: this.readCurrentExecutionBoundarySync(sessionId),
+      };
+    });
+  }
+
+  async createSandboxBoundaryRequest(
+    input: CreateSandboxBoundaryRequest,
+  ): Promise<SandboxBoundaryRequest> {
+    this.assertOpen();
+    assertSafeSessionId(input.sessionId);
+    assertSafeBoundaryRequestId(input.requestId);
+    assertSandboxBoundaryProvenanceId(input.turnId, 'turn id');
+    if (input.runId !== undefined) assertSandboxBoundaryProvenanceId(input.runId, 'run id');
+    const validated = validateSandboxBoundaryExpansion(input.expansion);
+    if (!validated.ok) throw new Error(validated.message);
+    const justification = input.justification.trim();
+    if (!justification || justification.length > 2_000) {
+      throw new Error('Sandbox boundary request justification must contain 1 to 2000 characters');
+    }
+
+    return this.transaction(() => {
+      const record = this.readRecordSync(input.sessionId);
+      if (!record) throw new SessionNotFoundError(input.sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+
+      const existing = this.readSandboxBoundaryRequestSync(input.sessionId, input.requestId);
+      if (existing) {
+        if (
+          !isDeepStrictEqual(existing.expansion, validated.expansion) ||
+          existing.justification !== justification ||
+          existing.turnId !== input.turnId ||
+          existing.runId !== input.runId
+        ) {
+          throw new SessionMetadataConflictError(
+            `Sandbox boundary request identity was reused with different content: ${input.requestId}`,
+          );
+        }
+        return existing;
+      }
+
+      const boundary = this.readCurrentExecutionBoundarySync(input.sessionId);
+      const createdAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO sandbox_boundary_log(
+            session_id,
+            entry_id,
+            entry_kind,
+            request_id,
+            status,
+            base_revision,
+            expansion_json,
+            justification,
+            created_at,
+            turn_id,
+            run_id
+          ) VALUES (?, ?, 'expansion_request', ?, 'pending', ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          input.sessionId,
+          `request:${input.requestId}`,
+          input.requestId,
+          boundary.revision,
+          JSON.stringify(validated.expansion),
+          justification,
+          createdAt,
+          input.turnId,
+          input.runId ?? null,
+        );
+      this.options.failpoint?.('after_sandbox_boundary_write');
+      return this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId);
+    });
+  }
+
+  async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      const rows = this.db
+        .prepare(`
+          SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
+          FROM sandbox_boundary_log
+          WHERE session_id = ? AND status = 'pending'
+          ORDER BY created_at, entry_id
+        `)
+        .all(sessionId) as unknown as SandboxBoundaryRequestRow[];
+      return rows.map(decodeSandboxBoundaryRequestRow);
+    });
+  }
+
+  /**
+   * Every request this session closed because the host restarted, settled or
+   * not consumed. Recovery re-reads this instead of remembering what it just
+   * denied: a recovery pass interrupted between the settlement and the run's
+   * terminal commit must still find the closure on its next attempt, and the
+   * pending query cannot serve that because the row is no longer pending.
+   */
+  async listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (!record) throw new SessionNotFoundError(sessionId);
+      const rows = this.db
+        .prepare(`
+          SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
+          FROM sandbox_boundary_log
+          WHERE session_id = ?
+            AND entry_kind = 'expansion_request'
+            AND status = 'denied'
+            AND outcome_reason = ?
+          ORDER BY created_at, entry_id
+        `)
+        .all(
+          sessionId,
+          SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
+        ) as unknown as SandboxBoundaryRequestRow[];
+      return rows.map(decodeSandboxBoundaryRequestRow);
+    });
+  }
+
+  async settleSandboxBoundaryRequest(
+    input: SettleSandboxBoundaryRequest,
+  ): Promise<SandboxBoundarySettlement> {
+    this.assertOpen();
+    assertSafeSessionId(input.sessionId);
+    assertSafeBoundaryRequestId(input.requestId);
+    if (input.decision !== 'allow' && input.decision !== 'deny') {
+      throw new Error('Invalid sandbox boundary decision');
+    }
+
+    return this.transaction(() => {
+      const record = this.readRecordSync(input.sessionId);
+      if (!record) throw new SessionNotFoundError(input.sessionId);
+      this.ensureGenesisExecutionBoundary(record.header);
+      const request = this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId);
+      const current = this.readCurrentExecutionBoundarySync(input.sessionId);
+      if (request.status !== 'pending') {
+        return { request, boundary: current, changed: false };
+      }
+
+      const settledAt = this.now();
+      if (input.decision === 'deny') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'denied',
+          ...(input.closureReason ? { outcomeReason: input.closureReason } : {}),
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+
+      if (current.kind !== 'managed') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'conflict',
+          outcomeReason: 'boundary_kind_changed',
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+
+      const assessment = assessSandboxBoundaryExpansion(current.profile, request.expansion, {
+        root: record.header.cwd,
+        workspaceRoots: [record.header.cwd],
+        tmpdir: tmpdir(),
+        slashTmp: '/tmp',
+      });
+      if (assessment.outcome === 'conflict') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'conflict',
+          outcomeReason: assessment.reason,
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+      if (assessment.outcome === 'noop') {
+        this.settleSandboxBoundaryRequestRow({
+          sessionId: input.sessionId,
+          requestId: input.requestId,
+          status: 'approved',
+          outcomeReason: 'already_applied',
+          settledAt,
+        });
+        return {
+          request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+          boundary: current,
+          changed: false,
+        };
+      }
+
+      const boundary: ExecutionBoundary = {
+        kind: 'managed',
+        profile: assessment.profile,
+        revision: current.revision + 1,
+      };
+      assertExecutionBoundaryCapacity(boundary);
+      this.settleSandboxBoundaryRequestRow({
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        status: 'approved',
+        appliedRevision: boundary.revision,
+        boundary,
+        settledAt,
+      });
+      return {
+        request: this.requireSandboxBoundaryRequestSync(input.sessionId, input.requestId),
+        boundary,
+        changed: true,
+      };
+    });
+  }
+
+  async setExecutionBoundaryKind(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+  ): Promise<ExecutionBoundary> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.transaction(
+      () => this.setExecutionBoundaryKindSync(sessionId, kind, projection).boundary,
+    );
+  }
+
+  async updateSessionConfiguration(
+    sessionId: string,
+    input: SessionConfigurationMetadataUpdate,
+  ): Promise<SessionMetadataRecord> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertMetadataVersion(input.expectedVersion, 'Session configuration expected version');
+    const kind = input.configuration.permissionMode === 'bypass' ? 'bypass' : 'managed';
+    return this.transaction(() => {
+      const current = this.readRecordSync(sessionId);
+      if (!current) throw new SessionNotFoundError(sessionId);
+      if (current.metadataVersion !== input.expectedVersion) {
+        throw new SessionMetadataVersionConflictError(
+          sessionId,
+          input.expectedVersion,
+          current.metadataVersion,
+        );
+      }
+      const lifecyclePatch =
+        input.lifecycle.kind === 'preserve'
+          ? {}
+          : clearConnectionBlock(current, input.lifecycle.statusUpdatedAt);
+      return this.setExecutionBoundaryKindSync(
+        sessionId,
+        kind,
+        {
+          permissionMode: input.configuration.permissionMode,
+          labels: input.configuration.labels,
+        },
+        {
+          expectedVersion: input.expectedVersion,
+          headerPatch: {
+            ...input.configuration,
+            labels: [...input.configuration.labels],
+            ...lifecyclePatch,
+          },
+        },
+      ).record;
+    });
+  }
+
+  async create(
+    header: SessionHeader,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<SessionMetadataRecord> {
     this.assertOpen();
     const normalized = normalizeSessionHeader(header);
     assertSafeSessionId(normalized.id);
@@ -207,11 +626,131 @@ export class SqliteSessionMetadataStore {
       if (this.readRecordSync(normalized.id)) {
         throw new SessionMetadataConflictError(`Session metadata already exists: ${normalized.id}`);
       }
-      return this.insertHeader(normalized, 1, this.now());
+      return this.insertHeader(normalized, 1, this.now(), initialBoundary);
     });
   }
 
-  async createSubagent(header: SessionHeader): Promise<IdempotentSubagentSessionMetadataResult> {
+  async probeStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<StableSessionCreateProbe> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.readTransaction(() =>
+      this.probeStableSessionCreateSync(sessionId, requestFingerprint),
+    );
+  }
+
+  async claimStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<StableSessionCreateProbe> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+      if (probe.kind !== 'absent') return probe;
+      this.db
+        .prepare(`
+          INSERT OR IGNORE INTO session_create_claims(
+            session_id,
+            request_fingerprint,
+            claimed_at
+          ) VALUES (?, ?, ?)
+        `)
+        .run(sessionId, requestFingerprint, this.now());
+      return this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+    });
+  }
+
+  async hasStableSessionCreateClaim(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<boolean> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    const row = this.db
+      .prepare(
+        'SELECT request_fingerprint AS requestFingerprint FROM session_create_claims WHERE session_id = ?',
+      )
+      .get(sessionId) as { requestFingerprint?: unknown } | undefined;
+    return row?.requestFingerprint === requestFingerprint;
+  }
+
+  async createStableSession(
+    header: SessionHeader,
+    requestFingerprint: string,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<StableSessionMetadataCreateResult> {
+    this.assertOpen();
+    const normalized = normalizeSessionHeader(header);
+    assertSafeSessionId(normalized.id);
+    assertSessionCreateFingerprint(requestFingerprint);
+    if (normalized.subagentSpawn) {
+      throw new Error('Subagent spawn metadata requires idempotent child-session creation');
+    }
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(normalized.id, requestFingerprint);
+      if (probe.kind !== 'absent') return probe;
+      const committedAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO session_create_claims(session_id, request_fingerprint, claimed_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(session_id) DO NOTHING
+        `)
+        .run(normalized.id, requestFingerprint, committedAt);
+      return {
+        kind: 'created' as const,
+        record: this.insertHeader(normalized, 1, committedAt, initialBoundary),
+      };
+    });
+  }
+
+  async discardStableSessionCreate(
+    sessionId: string,
+    requestFingerprint: string,
+  ): Promise<boolean> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSessionCreateFingerprint(requestFingerprint);
+    return this.transaction(() => {
+      const probe = this.probeStableSessionCreateSync(sessionId, requestFingerprint);
+      if (probe.kind === 'conflict') {
+        throw new SessionMetadataConflictError(
+          'Stable Session identity belongs to a different request',
+        );
+      }
+      if (probe.kind === 'existing') {
+        const copy = probe.record.header.conversationCopy;
+        if (
+          copy?.requestFingerprint !== requestFingerprint ||
+          !isDiscardableConversationCopy(probe.record.header)
+        ) {
+          throw new SessionMetadataConflictError(
+            'Only a matching incomplete conversation copy can be discarded',
+          );
+        }
+      }
+      const deleted =
+        this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId)
+          .changes === 1;
+      this.db
+        .prepare(
+          'DELETE FROM session_create_claims WHERE session_id = ? AND request_fingerprint = ?',
+        )
+        .run(sessionId, requestFingerprint);
+      return deleted;
+    });
+  }
+
+  async createSubagent(
+    header: SessionHeader,
+    initialBoundary?: ExecutionBoundary,
+  ): Promise<IdempotentSubagentSessionMetadataResult> {
     this.assertOpen();
     const normalized = normalizeSessionHeader(header);
     assertSafeSessionId(normalized.id);
@@ -231,7 +770,10 @@ export class SqliteSessionMetadataStore {
       const committedAt = this.now();
       const claim = this.tryClaimSubagentSpawn(normalized, committedAt);
       if (claim.created) {
-        return { record: this.insertHeader(normalized, 1, committedAt), created: true };
+        return {
+          record: this.insertHeader(normalized, 1, committedAt, initialBoundary),
+          created: true,
+        };
       }
       const existing = this.readRecordSync(claim.childSessionId);
       if (claim.requestFingerprint !== identity.spawn.requestFingerprint) {
@@ -258,6 +800,7 @@ export class SqliteSessionMetadataStore {
     header: SessionHeader,
     request: AgentGraphOperatorProvisionRequest,
     expectedRevision: number,
+    initialBoundary?: ExecutionBoundary,
   ): Promise<IdempotentAgentGraphOperatorMetadataResult> {
     this.assertOpen();
     const normalized = normalizeSessionHeader(header);
@@ -307,7 +850,7 @@ export class SqliteSessionMetadataStore {
           'Graph operator spawn identity exists without its topology provision',
         );
       }
-      const record = this.insertHeader(normalized, 1, provisionedAt);
+      const record = this.insertHeader(normalized, 1, provisionedAt, initialBoundary);
       const provision: AgentGraphOperatorProvision = {
         ...request,
         edges: request.edges.map((edge) => ({ ...edge })),
@@ -358,6 +901,31 @@ export class SqliteSessionMetadataStore {
     return record;
   }
 
+  async readCatalogRecord(sessionId: string): Promise<SessionMetadataCatalogRecord> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    const row = this.db
+      .prepare(`
+        SELECT
+          metadata.session_id,
+          metadata.payload_json,
+          metadata.metadata_version,
+          metadata.committed_at,
+          projection.last_message_preview
+        FROM session_catalog_projection projection
+        JOIN session_metadata metadata
+          ON metadata.session_id = projection.session_id
+        WHERE projection.session_id = ?
+          AND COALESCE(
+            json_extract(metadata.payload_json, '$.conversationCopy.state'),
+            ''
+          ) <> 'preparing'
+      `)
+      .get(sessionId) as SessionMetadataCatalogRow | undefined;
+    if (!row) throw new SessionNotFoundError(sessionId);
+    return decodeCatalogRecord(row);
+  }
+
   async has(sessionId: string): Promise<boolean> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -372,32 +940,7 @@ export class SqliteSessionMetadataStore {
 
   async list(filter: SessionListFilter = {}): Promise<SessionMetadataRecord[]> {
     this.assertOpen();
-    const where: string[] = [];
-    const parameters: Array<string | number> = [];
-    if (filter.isArchived !== undefined) {
-      where.push('metadata.is_archived = ?');
-      parameters.push(filter.isArchived ? 1 : 0);
-    }
-    if (filter.isFlagged !== undefined) {
-      where.push('metadata.is_flagged = ?');
-      parameters.push(filter.isFlagged ? 1 : 0);
-    }
-    if (filter.labelSlug !== undefined) {
-      where.push(`
-        EXISTS (
-          SELECT 1
-          FROM session_metadata_labels labels
-          WHERE labels.session_id = metadata.session_id
-            AND labels.label = ?
-        )
-      `);
-      parameters.push(filter.labelSlug);
-    }
-    if (filter.subagentParentSessionId !== undefined) {
-      assertSafeSessionId(filter.subagentParentSessionId);
-      where.push('metadata.subagent_parent_session_id = ?');
-      parameters.push(filter.subagentParentSessionId);
-    }
+    const { where, parameters } = buildSessionListPredicate(filter);
     const rows = this.db
       .prepare(`
         SELECT session_id, payload_json, metadata_version, committed_at
@@ -409,6 +952,101 @@ export class SqliteSessionMetadataStore {
       `)
       .all(...parameters) as unknown as SessionMetadataRow[];
     return rows.map(decodeRecord);
+  }
+
+  async listCatalogPage(
+    filter: SessionListFilter,
+    cursor: SessionMetadataCatalogCursor | undefined,
+    limit: number,
+  ): Promise<SessionMetadataCatalogPage> {
+    this.assertOpen();
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) {
+      throw new Error('Session catalog page limit must be between 1 and 128');
+    }
+    if (cursor) {
+      assertSafeSessionId(cursor.sessionId);
+      if (!Number.isSafeInteger(cursor.activityAt) || cursor.activityAt < 0) {
+        throw new Error('Session catalog cursor activity is invalid');
+      }
+    }
+    if (filter.subagentParentSessionId !== undefined) {
+      assertSafeSessionId(filter.subagentParentSessionId);
+    }
+    return this.readTransaction(() => {
+      const query = buildSqliteSessionCatalogPageQuery(filter, cursor);
+      const rows = this.db
+        .prepare(query.sql)
+        .all(...query.parameters, limit + 1) as unknown as SessionMetadataCatalogRow[];
+      return {
+        revision: this.readCatalogRevisionSync(),
+        records: rows.slice(0, limit).map(decodeCatalogRecord),
+        hasMore: rows.length > limit,
+      };
+    });
+  }
+
+  async readCatalogRevision(): Promise<SessionCatalogRevisionState> {
+    this.assertOpen();
+    return this.readCatalogRevisionSync();
+  }
+
+  async beginCatalogProjectionWrite(): Promise<void> {
+    this.assertOpen();
+    this.transaction(() => {
+      const result = this.db
+        .prepare(`
+          UPDATE session_catalog_state
+          SET pending_writes = pending_writes + 1
+          WHERE scope = 'catalog'
+        `)
+        .run();
+      if (result.changes !== 1) throw new Error('Session catalog revision state is unavailable');
+    });
+  }
+
+  async commitCatalogProjectionWrite(
+    sessionId: string,
+    projection: SessionCatalogMessageProjection,
+  ): Promise<void> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertCatalogMessageProjection(projection);
+    this.transaction(() => {
+      this.updateCatalogProjectionSync(sessionId, projection, false);
+      this.finishCatalogProjectionWriteSync();
+    });
+  }
+
+  async requireCatalogProjectionRecovery(): Promise<void> {
+    await this.beginCatalogProjectionWrite();
+  }
+
+  async hasPendingCatalogProjectionWrites(): Promise<boolean> {
+    this.assertOpen();
+    return this.readCatalogStateSync().pendingWrites > 0;
+  }
+
+  async recoverCatalogProjections(
+    projections: ReadonlyMap<string, SessionCatalogMessageProjection>,
+  ): Promise<void> {
+    this.assertOpen();
+    for (const [sessionId, projection] of projections) {
+      assertSafeSessionId(sessionId);
+      assertCatalogMessageProjection(projection);
+    }
+    this.transaction(() => {
+      for (const [sessionId, projection] of projections) {
+        this.updateCatalogProjectionSync(sessionId, projection, true);
+      }
+      const result = this.db
+        .prepare(`
+          UPDATE session_catalog_state
+          SET pending_writes = 0
+          WHERE scope = 'catalog'
+        `)
+        .run();
+      if (result.changes !== 1) throw new Error('Session catalog revision state is unavailable');
+    });
   }
 
   async claimAgentGraphIntent(
@@ -1424,7 +2062,7 @@ export class SqliteSessionMetadataStore {
   async update(
     sessionId: string,
     patch: Partial<SessionHeader>,
-    options: { expectedVersion?: number } = {},
+    options: { expectedVersion?: number; skipNoop?: boolean } = {},
   ): Promise<SessionMetadataRecord> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -1440,81 +2078,7 @@ export class SqliteSessionMetadataStore {
     if (Object.prototype.hasOwnProperty.call(patch, 'subagentWorkspace')) {
       throw new Error('Subagent session workspace binding is immutable');
     }
-    return this.transaction(() => {
-      const current = this.readRecordSync(sessionId);
-      if (!current) throw new SessionNotFoundError(sessionId);
-      if (
-        options.expectedVersion !== undefined &&
-        options.expectedVersion !== current.metadataVersion
-      ) {
-        throw new SessionMetadataConflictError(
-          `Session metadata version conflict for ${sessionId}: expected ${options.expectedVersion}, found ${current.metadataVersion}`,
-        );
-      }
-      const next = normalizeSessionHeader({ ...current.header, ...patch }, sessionId);
-      if (next.id !== sessionId) {
-        throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
-      }
-      const metadataVersion = current.metadataVersion + 1;
-      const committedAt = this.now();
-      const updated = this.db
-        .prepare(`
-          UPDATE session_metadata
-          SET
-            payload_json = ?,
-            created_at = ?,
-            last_used_at = ?,
-            last_message_at = ?,
-            name = ?,
-            is_flagged = ?,
-            is_archived = ?,
-            status = ?,
-            status_updated_at = ?,
-            parent_session_id = ?,
-            subagent_parent_session_id = ?,
-            revision_root_session_id = ?,
-            revision_index = ?,
-            has_unread = ?,
-            backend = ?,
-            llm_connection_slug = ?,
-            model = ?,
-            metadata_version = ?,
-            committed_at = ?
-          WHERE session_id = ? AND metadata_version = ?
-        `)
-        .run(
-          JSON.stringify(next),
-          next.createdAt,
-          next.lastUsedAt,
-          next.lastMessageAt ?? null,
-          next.name,
-          booleanInteger(next.isFlagged),
-          booleanInteger(next.isArchived),
-          next.status,
-          next.statusUpdatedAt ?? null,
-          next.parentSessionId ?? null,
-          next.subagentParent?.parentSessionId ?? null,
-          next.revisionRootSessionId ?? null,
-          next.revisionIndex ?? null,
-          booleanInteger(next.hasUnread),
-          next.backend,
-          next.llmConnectionSlug,
-          next.model,
-          metadataVersion,
-          committedAt,
-          sessionId,
-          current.metadataVersion,
-        );
-      if (updated.changes !== 1) {
-        throw new SessionMetadataConflictError(
-          `Session metadata compare-and-set failed: ${sessionId}`,
-        );
-      }
-      this.options.failpoint?.('after_session_row_write');
-      this.replaceLabels(next);
-      this.options.failpoint?.('after_session_labels_write');
-      return { header: next, metadataVersion, committedAt };
-    });
+    return this.transaction(() => this.updateHeaderSync(sessionId, patch, options));
   }
 
   async remove(sessionId: string): Promise<boolean> {
@@ -1562,7 +2126,18 @@ export class SqliteSessionMetadataStore {
         throw new Error(`Duplicate session metadata import source: ${entry.source.path}`);
       }
       sourcePaths.add(entry.source.path);
-      return { header, source: entry.source };
+      return {
+        header,
+        ...(entry.initialBoundary
+          ? {
+              initialBoundary: {
+                ...decodeExecutionBoundary(entry.initialBoundary),
+                revision: 0,
+              },
+            }
+          : {}),
+        source: entry.source,
+      };
     });
     return this.transaction(() => {
       const created: boolean[] = [];
@@ -1597,6 +2172,17 @@ export class SqliteSessionMetadataStore {
               `Session metadata import conflict for ${entry.header.id}`,
             );
           }
+          if (
+            entry.initialBoundary &&
+            !isDeepStrictEqual(
+              this.readCurrentExecutionBoundarySync(entry.header.id),
+              entry.initialBoundary,
+            )
+          ) {
+            throw new SessionMetadataConflictError(
+              `Session execution boundary import conflict for ${entry.header.id}`,
+            );
+          }
           if (entry.header.subagentSpawn) {
             this.assertMatchingSubagentSpawnClaim(entry.header);
           }
@@ -1611,7 +2197,7 @@ export class SqliteSessionMetadataStore {
             }
             this.assertMatchingSubagentSpawnClaim(entry.header);
           }
-          this.insertHeader(entry.header, 1, this.now());
+          this.insertHeader(entry.header, 1, this.now(), entry.initialBoundary);
           created.push(true);
         }
         this.db
@@ -1635,8 +2221,15 @@ export class SqliteSessionMetadataStore {
     header: SessionHeader,
     metadataVersion: number,
     committedAt: number,
+    initialBoundary?: ExecutionBoundary,
   ): SessionMetadataRecord {
-    const inserted = this.tryInsertHeader(header, metadataVersion, committedAt, false);
+    const inserted = this.tryInsertHeader(
+      header,
+      metadataVersion,
+      committedAt,
+      false,
+      initialBoundary,
+    );
     if (!inserted) {
       throw new SessionMetadataConflictError(`Session metadata already exists: ${header.id}`);
     }
@@ -1648,6 +2241,7 @@ export class SqliteSessionMetadataStore {
     metadataVersion: number,
     committedAt: number,
     ignoreConflicts: boolean,
+    initialBoundary?: ExecutionBoundary,
   ): SessionMetadataRecord | undefined {
     const result = this.db
       .prepare(`
@@ -1714,7 +2308,367 @@ export class SqliteSessionMetadataStore {
     this.options.failpoint?.('after_session_row_write');
     this.replaceLabels(header);
     this.options.failpoint?.('after_session_labels_write');
+    this.ensureGenesisExecutionBoundary(header, initialBoundary);
     return { header, metadataVersion, committedAt };
+  }
+
+  private ensureGenesisExecutionBoundary(
+    header: SessionHeader,
+    initialBoundary?: ExecutionBoundary,
+  ): void {
+    const existing = this.db
+      .prepare(
+        `SELECT 1 AS found FROM sandbox_boundary_log WHERE session_id = ? AND applied_revision = 0`,
+      )
+      .get(header.id);
+    if (existing) return;
+
+    const boundary = initialBoundary
+      ? { ...decodeExecutionBoundary(initialBoundary), revision: 0 }
+      : createGenesisExecutionBoundary(header.permissionMode);
+    this.db
+      .prepare(`
+        INSERT INTO sandbox_boundary_log(
+          session_id,
+          entry_id,
+          entry_kind,
+          status,
+          applied_revision,
+          boundary_json,
+          created_at,
+          settled_at
+        ) VALUES (?, 'genesis', 'genesis', 'applied', 0, ?, ?, ?)
+      `)
+      .run(header.id, JSON.stringify(boundary), header.createdAt, header.createdAt);
+    this.options.failpoint?.('after_sandbox_boundary_write');
+  }
+
+  private readCurrentExecutionBoundarySync(sessionId: string): ExecutionBoundary {
+    const row = this.db
+      .prepare(`
+        SELECT boundary_json AS boundaryJson
+        FROM sandbox_boundary_log
+        WHERE session_id = ? AND applied_revision IS NOT NULL
+        ORDER BY applied_revision DESC
+        LIMIT 1
+      `)
+      .get(sessionId) as { boundaryJson?: unknown } | undefined;
+    if (!row || typeof row.boundaryJson !== 'string') {
+      throw new SessionMetadataConflictError(`Session execution boundary is missing: ${sessionId}`);
+    }
+    return decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
+  }
+
+  private readLatestAutoSandboxProfileSync(
+    sessionId: string,
+  ): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
+    const rows = this.db
+      .prepare(`
+        SELECT boundary_json AS boundaryJson
+        FROM sandbox_boundary_log
+        WHERE
+          session_id = ?
+          AND applied_revision IS NOT NULL
+          AND json_extract(boundary_json, '$.kind') = 'managed'
+        ORDER BY applied_revision DESC
+      `)
+      .all(sessionId) as unknown as Array<{ boundaryJson?: unknown }>;
+    for (const row of rows) {
+      if (typeof row.boundaryJson !== 'string') {
+        throw new SessionMetadataConflictError(
+          `Managed sandbox boundary history is invalid: ${sessionId}`,
+        );
+      }
+      const boundary = decodeExecutionBoundary(JSON.parse(row.boundaryJson) as unknown);
+      if (boundary.kind !== 'managed') {
+        throw new SessionMetadataConflictError(
+          `Managed sandbox boundary history is invalid: ${sessionId}`,
+        );
+      }
+      if (!isCanonicalReadOnlySandboxProfile(boundary.profile)) return boundary.profile;
+    }
+    return requireManagedProfile(createGenesisExecutionBoundary('ask'));
+  }
+
+  private readSandboxBoundaryRequestSync(
+    sessionId: string,
+    requestId: string,
+  ): SandboxBoundaryRequest | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT ${SANDBOX_BOUNDARY_REQUEST_COLUMNS}
+        FROM sandbox_boundary_log
+        WHERE session_id = ? AND request_id = ?
+      `)
+      .get(sessionId, requestId) as SandboxBoundaryRequestRow | undefined;
+    return row ? decodeSandboxBoundaryRequestRow(row) : undefined;
+  }
+
+  private requireSandboxBoundaryRequestSync(
+    sessionId: string,
+    requestId: string,
+  ): SandboxBoundaryRequest {
+    const request = this.readSandboxBoundaryRequestSync(sessionId, requestId);
+    if (!request) {
+      throw new SessionMetadataConflictError(
+        `Sandbox boundary request was not found: ${requestId}`,
+      );
+    }
+    return request;
+  }
+
+  private settleSandboxBoundaryRequestRow(input: {
+    sessionId: string;
+    requestId: string;
+    status: 'approved' | 'denied' | 'conflict';
+    settledAt: number;
+    appliedRevision?: number;
+    boundary?: ExecutionBoundary;
+    outcomeReason?: string;
+  }): void {
+    const result = this.db
+      .prepare(`
+        UPDATE sandbox_boundary_log
+        SET
+          status = ?,
+          applied_revision = ?,
+          boundary_json = ?,
+          outcome_reason = ?,
+          settled_at = ?
+        WHERE session_id = ? AND request_id = ? AND status = 'pending'
+      `)
+      .run(
+        input.status,
+        input.appliedRevision ?? null,
+        input.boundary ? JSON.stringify(input.boundary) : null,
+        input.outcomeReason ?? null,
+        input.settledAt,
+        input.sessionId,
+        input.requestId,
+      );
+    if (result.changes !== 1) {
+      throw new SessionMetadataConflictError(
+        `Sandbox boundary request was already settled: ${input.requestId}`,
+      );
+    }
+    this.options.failpoint?.('after_sandbox_boundary_write');
+  }
+
+  private updateHeaderSync(
+    sessionId: string,
+    patch: Partial<SessionHeader>,
+    options: {
+      expectedVersion?: number;
+      skipNoop?: boolean;
+      catalogPreview?: { readonly kind: 'replace'; readonly value?: string };
+    } = {},
+  ): SessionMetadataRecord {
+    const current = this.readRecordSync(sessionId);
+    if (!current) throw new SessionNotFoundError(sessionId);
+    if (
+      options.expectedVersion !== undefined &&
+      options.expectedVersion !== current.metadataVersion
+    ) {
+      throw new SessionMetadataVersionConflictError(
+        sessionId,
+        options.expectedVersion,
+        current.metadataVersion,
+      );
+    }
+    assertConversationCopyTransition(current.header, patch);
+    const next = normalizeSessionHeader({ ...current.header, ...patch }, sessionId);
+    if (next.id !== sessionId) {
+      throw new SessionMetadataConflictError('Session metadata identity cannot be changed');
+    }
+    const labelsChanged = !isDeepStrictEqual(next.labels, current.header.labels);
+    const currentPreview =
+      options.catalogPreview === undefined ? undefined : this.readCatalogPreviewSync(sessionId);
+    const previewChanged =
+      options.catalogPreview !== undefined && options.catalogPreview.value !== currentPreview;
+    if (options.skipNoop && isDeepStrictEqual(next, current.header) && !previewChanged) {
+      return current;
+    }
+    const metadataVersion = current.metadataVersion + 1;
+    const committedAt = this.now();
+    const updated = this.db
+      .prepare(`
+        UPDATE session_metadata
+        SET
+          payload_json = ?,
+          created_at = ?,
+          last_used_at = ?,
+          last_message_at = ?,
+          name = ?,
+          is_flagged = ?,
+          is_archived = ?,
+          status = ?,
+          status_updated_at = ?,
+          parent_session_id = ?,
+          subagent_parent_session_id = ?,
+          revision_root_session_id = ?,
+          revision_index = ?,
+          has_unread = ?,
+          backend = ?,
+          llm_connection_slug = ?,
+          model = ?,
+          metadata_version = ?,
+          committed_at = ?
+        WHERE session_id = ? AND metadata_version = ?
+      `)
+      .run(
+        JSON.stringify(next),
+        next.createdAt,
+        next.lastUsedAt,
+        next.lastMessageAt ?? null,
+        next.name,
+        booleanInteger(next.isFlagged),
+        booleanInteger(next.isArchived),
+        next.status,
+        next.statusUpdatedAt ?? null,
+        next.parentSessionId ?? null,
+        next.subagentParent?.parentSessionId ?? null,
+        next.revisionRootSessionId ?? null,
+        next.revisionIndex ?? null,
+        booleanInteger(next.hasUnread),
+        next.backend,
+        next.llmConnectionSlug,
+        next.model,
+        metadataVersion,
+        committedAt,
+        sessionId,
+        current.metadataVersion,
+      );
+    if (updated.changes !== 1) {
+      throw new SessionMetadataConflictError(
+        `Session metadata compare-and-set failed: ${sessionId}`,
+      );
+    }
+    this.options.failpoint?.('after_session_row_write');
+    if (labelsChanged) {
+      this.replaceLabels(next);
+      this.options.failpoint?.('after_session_labels_write');
+    }
+    if (options.catalogPreview) {
+      const preview = this.db
+        .prepare(`
+          UPDATE session_catalog_projection
+          SET last_message_preview = ?
+          WHERE session_id = ?
+        `)
+        .run(options.catalogPreview.value ?? null, sessionId);
+      if (preview.changes !== 1) {
+        throw new SessionMetadataConflictError(
+          `Session catalog projection is missing: ${sessionId}`,
+        );
+      }
+    }
+    return { header: next, metadataVersion, committedAt };
+  }
+
+  private setExecutionBoundaryKindSync(
+    sessionId: string,
+    kind: 'managed' | 'bypass',
+    projection?: {
+      permissionMode: SessionHeader['permissionMode'];
+      labels?: readonly string[];
+    },
+    options: {
+      expectedVersion?: number;
+      headerPatch?: Partial<SessionHeader>;
+    } = {},
+  ): { boundary: ExecutionBoundary; record: SessionMetadataRecord } {
+    const record = this.readRecordSync(sessionId);
+    if (!record) throw new SessionNotFoundError(sessionId);
+    if (
+      options.expectedVersion !== undefined &&
+      options.expectedVersion !== record.metadataVersion
+    ) {
+      throw new SessionMetadataVersionConflictError(
+        sessionId,
+        options.expectedVersion,
+        record.metadataVersion,
+      );
+    }
+    this.ensureGenesisExecutionBoundary(record.header);
+    const current = this.readCurrentExecutionBoundarySync(sessionId);
+    if (current.kind === 'external') {
+      throw new SessionMetadataConflictError(
+        'An externally isolated session cannot enter Auto or Bypass',
+      );
+    }
+    const projectedMode =
+      projection?.permissionMode ??
+      (kind === 'bypass'
+        ? 'bypass'
+        : record.header.permissionMode === 'bypass'
+          ? 'ask'
+          : record.header.permissionMode);
+    if ((projectedMode === 'bypass') !== (kind === 'bypass')) {
+      throw new Error('Execution boundary kind and legacy permission mode disagree');
+    }
+
+    let boundary: ExecutionBoundary = current;
+    const nextManagedProfile =
+      kind === 'managed'
+        ? projectedMode === 'explore'
+          ? requireManagedProfile(createGenesisExecutionBoundary('explore'))
+          : current.kind === 'managed' && !isCanonicalReadOnlySandboxProfile(current.profile)
+            ? current.profile
+            : this.readLatestAutoSandboxProfileSync(sessionId)
+        : undefined;
+    const boundaryChanged =
+      current.kind !== kind ||
+      (kind === 'managed' &&
+        current.kind === 'managed' &&
+        !isDeepStrictEqual(current.profile, nextManagedProfile));
+    if (boundaryChanged) {
+      const revision = current.revision + 1;
+      boundary =
+        kind === 'bypass'
+          ? { kind: 'bypass', revision }
+          : {
+              kind: 'managed',
+              profile: nextManagedProfile!,
+              revision,
+            };
+      const committedAt = this.now();
+      this.db
+        .prepare(`
+          INSERT INTO sandbox_boundary_log(
+            session_id,
+            entry_id,
+            entry_kind,
+            status,
+            applied_revision,
+            boundary_json,
+            created_at,
+            settled_at
+          ) VALUES (?, ?, 'user_change', 'applied', ?, ?, ?, ?)
+        `)
+        .run(
+          sessionId,
+          `change:${revision}`,
+          revision,
+          JSON.stringify(boundary),
+          committedAt,
+          committedAt,
+        );
+      this.options.failpoint?.('after_sandbox_boundary_write');
+    }
+
+    const projectedLabels = projection?.labels ? [...projection.labels] : record.header.labels;
+    const patch = {
+      ...options.headerPatch,
+      permissionMode: projectedMode,
+      labels: projectedLabels,
+    };
+    const updated = this.updateHeaderSync(sessionId, patch, {
+      ...(options.expectedVersion === undefined
+        ? {}
+        : { expectedVersion: options.expectedVersion }),
+      skipNoop: true,
+    });
+    return { boundary, record: updated };
   }
 
   private replaceLabels(header: SessionHeader): void {
@@ -1737,6 +2691,128 @@ export class SqliteSessionMetadataStore {
       `)
       .get(sessionId) as SessionMetadataRow | undefined;
     return row ? decodeRecord(row) : undefined;
+  }
+
+  private readCatalogPreviewSync(sessionId: string): string | undefined {
+    const row = this.db
+      .prepare(`
+        SELECT last_message_preview
+        FROM session_catalog_projection
+        WHERE session_id = ?
+      `)
+      .get(sessionId) as { last_message_preview?: unknown } | undefined;
+    if (!row) {
+      throw new SessionMetadataConflictError(`Session catalog projection is missing: ${sessionId}`);
+    }
+    return decodeCatalogPreview(row.last_message_preview, sessionId);
+  }
+
+  private updateCatalogProjectionSync(
+    sessionId: string,
+    projection: SessionCatalogMessageProjection,
+    replacePreview: boolean,
+  ): void {
+    const current = this.readRecordSync(sessionId);
+    if (!current) throw new SessionNotFoundError(sessionId);
+    const lastMessageAt = maxTimestamp(current.header.lastMessageAt, projection.lastMessageAt);
+    this.updateHeaderSync(
+      sessionId,
+      {
+        ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
+      },
+      {
+        skipNoop: true,
+        ...(replacePreview || projection.lastMessagePreview !== undefined
+          ? {
+              catalogPreview: {
+                kind: 'replace',
+                ...(projection.lastMessagePreview === undefined
+                  ? {}
+                  : { value: projection.lastMessagePreview }),
+              } as const,
+            }
+          : {}),
+      },
+    );
+  }
+
+  private finishCatalogProjectionWriteSync(): void {
+    const result = this.db
+      .prepare(`
+        UPDATE session_catalog_state
+        SET pending_writes = pending_writes - 1
+        WHERE scope = 'catalog' AND pending_writes > 0
+      `)
+      .run();
+    if (result.changes !== 1) {
+      throw new Error('Session catalog projection write was not pending');
+    }
+  }
+
+  private readCatalogRevisionSync(): SessionCatalogRevisionState {
+    const state = this.readCatalogStateSync();
+    return { epoch: state.epoch, generation: state.generation };
+  }
+
+  private readCatalogStateSync(): SessionCatalogRevisionState & {
+    readonly pendingWrites: number;
+  } {
+    const row = this.db
+      .prepare(`
+        SELECT epoch, generation, pending_writes
+        FROM session_catalog_state
+        WHERE scope = 'catalog'
+      `)
+      .get() as { epoch?: unknown; generation?: unknown; pending_writes?: unknown } | undefined;
+    if (
+      !row ||
+      typeof row.epoch !== 'string' ||
+      !/^[0-9a-f]{32}$/.test(row.epoch) ||
+      !Number.isSafeInteger(row.generation) ||
+      (row.generation as number) < 0 ||
+      !Number.isSafeInteger(row.pending_writes) ||
+      (row.pending_writes as number) < 0
+    ) {
+      throw new Error('Invalid Session catalog revision state');
+    }
+    return {
+      epoch: row.epoch,
+      generation: row.generation as number,
+      pendingWrites: row.pending_writes as number,
+    };
+  }
+
+  private probeStableSessionCreateSync(
+    sessionId: string,
+    requestFingerprint: string,
+  ): StableSessionCreateProbe {
+    const claim = this.db
+      .prepare(`
+        SELECT request_fingerprint AS requestFingerprint
+        FROM session_create_claims
+        WHERE session_id = ?
+      `)
+      .get(sessionId) as { requestFingerprint?: unknown } | undefined;
+    const record = this.readRecordSync(sessionId);
+    if (!claim) {
+      if (record || this.hasTombstone(sessionId)) {
+        return {
+          kind: 'conflict',
+          reason: record ? 'identity_mismatch' : 'removed',
+        };
+      }
+      return { kind: 'absent' };
+    }
+    if (this.hasTombstone(sessionId)) {
+      return { kind: 'conflict', reason: 'removed' };
+    }
+    if (
+      typeof claim.requestFingerprint !== 'string' ||
+      claim.requestFingerprint !== requestFingerprint
+    ) {
+      return { kind: 'conflict', reason: 'identity_mismatch' };
+    }
+    return record ? { kind: 'existing', record } : { kind: 'absent' };
   }
 
   private tryClaimSubagentSpawn(
@@ -2121,6 +3197,7 @@ export class SqliteSessionMetadataStore {
   }
 
   private transaction<T>(operation: () => T): T {
+    if (this.databaseLease) return this.databaseLease.transaction('write', operation);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const result = operation();
@@ -2137,6 +3214,7 @@ export class SqliteSessionMetadataStore {
   }
 
   private readTransaction<T>(operation: () => T): T {
+    if (this.databaseLease) return this.databaseLease.transaction('read', operation);
     this.db.exec('BEGIN');
     try {
       const result = operation();
@@ -2178,6 +3256,90 @@ interface SessionMetadataRow {
   payload_json: string;
   metadata_version: number;
   committed_at: number;
+}
+
+interface SessionMetadataCatalogRow extends SessionMetadataRow {
+  last_message_preview: string | null;
+}
+
+function buildSessionListPredicate(filter: SessionListFilter): {
+  where: string[];
+  parameters: Array<string | number>;
+} {
+  const where: string[] = [];
+  const parameters: Array<string | number> = [];
+  if (filter.isArchived !== undefined) {
+    where.push('metadata.is_archived = ?');
+    parameters.push(filter.isArchived ? 1 : 0);
+  }
+  if (filter.isFlagged !== undefined) {
+    where.push('metadata.is_flagged = ?');
+    parameters.push(filter.isFlagged ? 1 : 0);
+  }
+  if (filter.labelSlug !== undefined) {
+    where.push(`
+      EXISTS (
+        SELECT 1
+        FROM session_metadata_labels labels
+        WHERE labels.session_id = metadata.session_id
+          AND labels.label = ?
+      )
+    `);
+    parameters.push(filter.labelSlug);
+  }
+  if (filter.subagentParentSessionId !== undefined) {
+    assertSafeSessionId(filter.subagentParentSessionId);
+    where.push('metadata.subagent_parent_session_id = ?');
+    parameters.push(filter.subagentParentSessionId);
+  }
+  return { where, parameters };
+}
+
+function clearConnectionBlock(
+  current: SessionMetadataRecord,
+  statusUpdatedAt: number,
+): Pick<SessionHeader, 'status' | 'blockedReason' | 'statusUpdatedAt'> {
+  if (current.header.blockedReason !== 'NO_REAL_CONNECTION') {
+    throw new SessionMetadataConflictError('Session no longer has a connection block to clear');
+  }
+  if (!Number.isSafeInteger(statusUpdatedAt) || statusUpdatedAt < 0) {
+    throw new Error('Session connection unblock timestamp is invalid');
+  }
+  return {
+    status: 'active',
+    blockedReason: undefined,
+    statusUpdatedAt,
+  };
+}
+
+const SANDBOX_BOUNDARY_REQUEST_COLUMNS = `
+  session_id AS sessionId,
+  request_id AS requestId,
+  status,
+  base_revision AS baseRevision,
+  applied_revision AS appliedRevision,
+  expansion_json AS expansionJson,
+  justification,
+  outcome_reason AS outcomeReason,
+  created_at AS createdAt,
+  settled_at AS settledAt,
+  turn_id AS turnId,
+  run_id AS runId
+`;
+
+interface SandboxBoundaryRequestRow {
+  sessionId: string;
+  requestId: string;
+  status: string;
+  baseRevision: number;
+  appliedRevision: number | null;
+  expansionJson: string;
+  justification: string;
+  outcomeReason: string | null;
+  createdAt: number;
+  settledAt: number | null;
+  turnId: string | null;
+  runId: string | null;
 }
 
 interface SubagentSpawnClaim {
@@ -2404,8 +3566,124 @@ function decodeRecord(row: SessionMetadataRow): SessionMetadataRecord {
   };
 }
 
+function decodeCatalogRecord(row: SessionMetadataCatalogRow): SessionMetadataCatalogRecord {
+  const lastMessagePreview = decodeCatalogPreview(row.last_message_preview, row.session_id);
+  return {
+    ...decodeRecord(row),
+    ...(lastMessagePreview === undefined ? {} : { lastMessagePreview }),
+  };
+}
+
+function decodeCatalogPreview(value: unknown, sessionId: string): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string' || Array.from(value).length > 96) {
+    throw new Error(`Invalid SQLite Session catalog preview for ${sessionId}`);
+  }
+  return value;
+}
+
+function assertCatalogMessageProjection(projection: SessionCatalogMessageProjection): void {
+  if (
+    projection.lastMessageAt !== undefined &&
+    (!Number.isSafeInteger(projection.lastMessageAt) || projection.lastMessageAt < 0)
+  ) {
+    throw new Error('Session catalog message timestamp is invalid');
+  }
+  if (
+    projection.lastMessagePreview !== undefined &&
+    Array.from(projection.lastMessagePreview).length > 96
+  ) {
+    throw new Error('Session catalog message preview is too long');
+  }
+}
+
+function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
+}
+
+function decodeSandboxBoundaryRequestRow(row: SandboxBoundaryRequestRow): SandboxBoundaryRequest {
+  const validated = validateSandboxBoundaryExpansion(JSON.parse(row.expansionJson) as unknown);
+  if (
+    !validated.ok ||
+    !['pending', 'approved', 'denied', 'conflict'].includes(row.status) ||
+    !Number.isSafeInteger(row.baseRevision) ||
+    row.baseRevision < 0 ||
+    (row.appliedRevision !== null &&
+      (!Number.isSafeInteger(row.appliedRevision) || row.appliedRevision < 0)) ||
+    !row.justification ||
+    row.justification.length > 2_000 ||
+    !Number.isSafeInteger(row.createdAt) ||
+    row.createdAt < 0 ||
+    (row.settledAt !== null && (!Number.isSafeInteger(row.settledAt) || row.settledAt < 0))
+  ) {
+    throw new Error(`Invalid sandbox boundary request ${row.requestId}`);
+  }
+  assertSafeSessionId(row.sessionId);
+  assertSafeBoundaryRequestId(row.requestId);
+  // Rows written before provenance existed read back as null. They are long
+  // settled, so an absent turn simply means "not attributable" rather than a
+  // corrupt row worth rejecting.
+  if (row.turnId !== null) assertSandboxBoundaryProvenanceId(row.turnId, 'turn id');
+  if (row.runId !== null) assertSandboxBoundaryProvenanceId(row.runId, 'run id');
+  return {
+    sessionId: row.sessionId,
+    requestId: row.requestId,
+    status: row.status as SandboxBoundaryRequest['status'],
+    baseRevision: row.baseRevision,
+    expansion: validated.expansion,
+    justification: row.justification,
+    createdAt: row.createdAt,
+    ...(row.settledAt === null ? {} : { settledAt: row.settledAt }),
+    ...(row.appliedRevision === null ? {} : { appliedRevision: row.appliedRevision }),
+    ...(row.outcomeReason === null ? {} : { outcomeReason: row.outcomeReason }),
+    ...(row.turnId === null ? {} : { turnId: row.turnId }),
+    ...(row.runId === null ? {} : { runId: row.runId }),
+  };
+}
+
 function booleanInteger(value: boolean): 0 | 1 {
   return value ? 1 : 0;
+}
+
+function assertMetadataVersion(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+}
+
+function assertSessionCreateFingerprint(value: string): void {
+  if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new Error('Session create request fingerprint is invalid');
+  }
+}
+
+function assertConversationCopyTransition(
+  current: SessionHeader,
+  patch: Partial<SessionHeader>,
+): void {
+  if (!Object.prototype.hasOwnProperty.call(patch, 'conversationCopy')) return;
+  if (!isValidConversationCopyTransition(current, patch.conversationCopy)) {
+    throw new SessionMetadataConflictError('Session conversation-copy identity is immutable');
+  }
+}
+
+function requireManagedProfile(
+  boundary: ExecutionBoundary,
+): Extract<ExecutionBoundary, { kind: 'managed' }>['profile'] {
+  if (boundary.kind !== 'managed') throw new Error('Expected a managed execution boundary');
+  return boundary.profile;
+}
+
+function isCanonicalReadOnlySandboxProfile(
+  profile: Extract<ExecutionBoundary, { kind: 'managed' }>['profile'],
+): boolean {
+  const { name: _profileName, ...profilePolicy } = profile;
+  const { name: _canonicalName, ...canonicalPolicy } = requireManagedProfile(
+    createGenesisExecutionBoundary('explore'),
+  );
+  return isDeepStrictEqual(profilePolicy, canonicalPolicy);
 }
 
 function assertGraphLookupIdentity(value: string, name: string): void {
@@ -2417,6 +3695,24 @@ function assertGraphLookupIdentity(value: string, name: string): void {
     /[\u0000-\u001f\u007f]/.test(value)
   ) {
     throw new Error(`Invalid agent graph ${name}`);
+  }
+}
+
+function assertSafeBoundaryRequestId(value: string): void {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw new Error('Invalid sandbox boundary request id');
+  }
+}
+
+function assertSandboxBoundaryProvenanceId(value: string, name: string): void {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 256 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new Error(`Invalid sandbox boundary ${name}`);
   }
 }
 

@@ -62,31 +62,6 @@ function createActions(
 }
 
 describe('AppShell quick-entry failure copy', () => {
-  it('forwards an explicit no-project selection to expert-team sessions', async () => {
-    let receivedInput: unknown;
-    const restoreWindow = installWindow({
-      sessions: { create: async () => ({ id: 'unused' }) },
-      onboarding: { setMilestone: async () => undefined },
-      expertTeam: {
-        start: async (input: unknown) => {
-          receivedInput = input;
-          return { ok: true, sessionId: 'session-team' };
-        },
-      },
-    });
-
-    try {
-      assert.equal(
-        await createActions([], undefined, [], () => true, null).handleExpertTeamStart('code-review'),
-        true,
-      );
-    } finally {
-      restoreWindow();
-    }
-
-    assert.deepEqual(receivedInput, { teamId: 'code-review', prompt: '', projectId: null });
-  });
-
   it('sends only the mode — text and Skills belong to the Composer', async () => {
     let receivedInput: unknown;
     const restoreWindow = installWindow({
@@ -97,7 +72,6 @@ describe('AppShell quick-entry failure copy', () => {
         },
       },
       onboarding: { setMilestone: async () => undefined },
-      expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
     });
     const toasts: ToastCall[] = [];
 
@@ -119,27 +93,18 @@ describe('AppShell quick-entry failure copy', () => {
       sessions: {
         create: async () => Promise.reject(new Error('无法创建会话，请稍后再试。')),
       },
-      expertTeam: {
-        start: async () => ({
-          ok: false,
-          reason: 'unknown_team',
-          teamId: 'missing',
-        }),
-      },
     });
     const toasts: ToastCall[] = [];
 
     try {
       const actions = createActions(toasts);
       assert.equal(await actions.startModeSession('deep_research'), false);
-      assert.equal(await actions.handleExpertTeamStart('missing'), false);
     } finally {
       restoreWindow();
     }
 
     assert.deepEqual(toasts, [
       ['Could not start conversation', 'The conversation could not be started. Try again later.'],
-      ['Could not start expert team', 'That expert team could not be found.'],
     ]);
     assert.doesNotMatch(JSON.stringify(toasts), /[\u3400-\u9fff]/u);
   });
@@ -147,21 +112,18 @@ describe('AppShell quick-entry failure copy', () => {
   it('uses localized fallbacks for thrown quick-entry failures', async () => {
     const restoreWindow = installWindow({
       sessions: { create: async () => Promise.reject({ code: 'unexpected' }) },
-      expertTeam: { start: async () => Promise.reject({ code: 'unexpected' }) },
     });
     const toasts: ToastCall[] = [];
 
     try {
       const actions = createActions(toasts);
       assert.equal(await actions.startModeSession('deep_research'), false);
-      assert.equal(await actions.handleExpertTeamStart('team'), false);
     } finally {
       restoreWindow();
     }
 
     assert.deepEqual(toasts, [
       ['Could not start conversation', 'The conversation could not be started. Try again later.'],
-      ['Could not start expert team', 'The expert team could not be started. Try again later.'],
     ]);
   });
 
@@ -188,7 +150,6 @@ describe('AppShell quick-entry failure copy', () => {
         create: async () =>
           Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
       },
-      expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
     });
     const toasts: ToastCall[] = [];
     const setupToasts: SetupToastCall[] = [];
@@ -226,7 +187,6 @@ describe('AppShell quick-entry failure copy', () => {
    *
    * The sibling branches have always gated on the owner; the readiness branch
    * did not, and no test could see that while the stub was pinned to `true`.
-   * Both entry points are covered because both had the same gap.
    */
   it('does not interrupt a surface the user has already left', async () => {
     let refreshed = 0;
@@ -235,7 +195,6 @@ describe('AppShell quick-entry failure copy', () => {
         create: async () =>
           Promise.reject(new Error('NO_REAL_CONNECTION:missing_api_key: no ready connection')),
       },
-      expertTeam: { start: async () => ({ ok: false, reason: 'setup_required' }) },
     });
     const toasts: ToastCall[] = [];
     const setupToasts: SetupToastCall[] = [];
@@ -250,7 +209,6 @@ describe('AppShell quick-entry failure copy', () => {
         () => false,
       );
       assert.equal(await actions.startModeSession('deep_research'), false);
-      assert.equal(await actions.handleExpertTeamStart('team'), false);
     } finally {
       restoreWindow();
     }
@@ -259,7 +217,7 @@ describe('AppShell quick-entry failure copy', () => {
     assert.deepEqual(toasts, []);
     // The snapshot refresh is global and silent, so it still runs — it keeps
     // the first-run hero accurate for whoever looks at it next.
-    assert.equal(refreshed, 2);
+    assert.equal(refreshed, 1);
   });
 
   /**
@@ -278,7 +236,6 @@ describe('AppShell quick-entry failure copy', () => {
     for (const [label, error] of cases) {
       const restoreWindow = installWindow({
         sessions: { create: async () => Promise.reject(error) },
-        expertTeam: { start: async () => ({ ok: false, reason: 'workspace_unavailable' }) },
       });
       const toasts: ToastCall[] = [];
       const setupToasts: SetupToastCall[] = [];
@@ -286,7 +243,6 @@ describe('AppShell quick-entry failure copy', () => {
       try {
         const actions = createActions(toasts, undefined, setupToasts, () => false);
         assert.equal(await actions.startModeSession('deep_research'), false);
-        assert.equal(await actions.handleExpertTeamStart('team'), false);
       } finally {
         restoreWindow();
       }
@@ -294,41 +250,6 @@ describe('AppShell quick-entry failure copy', () => {
       assert.deepEqual(toasts, [], `${label}: a stale surface must not be toasted`);
       assert.deepEqual(setupToasts, []);
     }
-  });
-
-  /**
-   * `expertTeam:start` reports the same state through its own `setup_required`
-   * reason code and carries no sub-reason, so the toast falls back to the
-   * generic setup copy. Both entry points must answer, or the one that does
-   * not is a silent dead end.
-   */
-  it('shows the model-setup toast when an expert team cannot start for setup', async () => {
-    let refreshed = 0;
-    const restoreWindow = installWindow({
-      sessions: { create: async () => ({ id: 'session-1' }) },
-      expertTeam: { start: async () => ({ ok: false, reason: 'setup_required' }) },
-    });
-    const toasts: ToastCall[] = [];
-    const setupToasts: SetupToastCall[] = [];
-
-    try {
-      const actions = createActions(
-        toasts,
-        () => {
-          refreshed += 1;
-        },
-        setupToasts,
-      );
-      assert.equal(await actions.handleExpertTeamStart('team'), false);
-    } finally {
-      restoreWindow();
-    }
-
-    assert.equal(refreshed, 1);
-    assert.deepEqual(setupToasts, [
-      ['This model connection cannot send right now. Check it in Settings · Models and try again.', undefined],
-    ]);
-    assert.deepEqual(toasts, []);
   });
 
   /**
@@ -341,7 +262,6 @@ describe('AppShell quick-entry failure copy', () => {
     let refreshed = 0;
     const restoreWindow = installWindow({
       sessions: { create: async () => Promise.reject(new Error('EIO: i/o error, write')) },
-      expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
     });
     const toasts: ToastCall[] = [];
 
@@ -371,7 +291,6 @@ describe('AppShell quick-entry failure copy', () => {
         create: async () =>
           Promise.reject(new Error('SESSION_WORKSPACE_UNAVAILABLE: /gone')),
       },
-      expertTeam: { start: async () => ({ ok: false, reason: 'unknown_team', teamId: 'x' }) },
     });
     const toasts: ToastCall[] = [];
 

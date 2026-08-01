@@ -3,12 +3,8 @@ import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { SessionEvent } from '@maka/core/events';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import {
-  isToolCategory,
-  type PermissionMode,
-  type ToolPermissionRule,
-} from '@maka/core/permission';
 import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-inputs';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { SessionSummary } from '@maka/core/session';
 import type { InvocationResult } from '@maka/runtime';
 import { createSessionStore } from '@maka/storage';
@@ -20,8 +16,6 @@ import type { ReadySessionTarget } from './connection-target.js';
 import { selectMakaRunSession } from './run-session-selection.js';
 import { resolveMakaWorkspaceRoot } from './workspace-root.js';
 
-export type NonInteractivePermissionMode = Exclude<PermissionMode, 'ask'>;
-
 export interface MakaRunOptions {
   prompt?: string;
   stdinPrompt: boolean;
@@ -31,8 +25,7 @@ export interface MakaRunOptions {
   thinking?: ThinkingLevel;
   timeoutMs?: number;
   maxSteps?: number;
-  permissionMode?: NonInteractivePermissionMode;
-  permissionRules?: ToolPermissionRule[];
+  yolo?: boolean;
   resumeId?: string;
   continueLatest?: boolean;
   graph?: true;
@@ -46,12 +39,14 @@ export type ParseMakaRunArgsResult =
 
 export interface MakaRunRuntime {
   createSession(input: CreateSessionInput): Promise<SessionSummary>;
+  readExecutionBoundary(sessionId: string): Promise<ExecutionBoundary>;
   sendMessage(sessionId: string, input: UserMessageInput): AsyncIterable<SessionEvent>;
-  respondToPermission(
+  respondToSandboxBoundary(
     sessionId: string,
-    response: { requestId: string; decision: 'deny'; rememberForTurn?: boolean },
+    response: { requestId: string; decision: 'deny' },
   ): Promise<void>;
   stopSession(sessionId: string, input?: { source?: 'stop_button' }): Promise<void>;
+  setExecutionBoundaryKind(sessionId: string, kind: 'managed' | 'bypass'): Promise<unknown>;
 }
 
 export interface MakaRunContext {
@@ -86,20 +81,16 @@ const VALUE_FLAGS = new Set([
   'thinking',
   'timeout',
   'max-steps',
-  'permission-mode',
-  'allow',
-  'deny',
   'resume',
 ]);
 
-const REPEATABLE_VALUE_FLAGS = new Set(['allow', 'deny']);
-const BOOLEAN_FLAGS = new Set(['continue', 'graph']);
+const REPEATABLE_VALUE_FLAGS = new Set<string>();
+const BOOLEAN_FLAGS = new Set(['continue', 'yolo', 'graph']);
 
 export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResult {
   const positional: string[] = [];
   const flags = new Map<string, string>();
   const booleanFlags = new Set<string>();
-  const permissionRuleFlags: Array<{ effect: 'allow' | 'deny'; value: string }> = [];
   let literal = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
@@ -123,11 +114,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       if (value === undefined || value.startsWith('--')) {
         return { kind: 'error', message: `option ${arg} needs a value` };
       }
-      if (REPEATABLE_VALUE_FLAGS.has(name)) {
-        permissionRuleFlags.push({ effect: name as 'allow' | 'deny', value });
-      } else {
-        flags.set(name, value);
-      }
+      flags.set(name, value);
       index += 1;
       continue;
     }
@@ -144,7 +131,6 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   const timeout = flags.get('timeout');
   const maxSteps = flags.get('max-steps');
   const thinking = flags.get('thinking');
-  const permissionMode = flags.get('permission-mode');
   const resumeId = flags.get('resume');
   const continueLatest = booleanFlags.has('continue');
   const graph = booleanFlags.has('graph');
@@ -162,24 +148,6 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
   if (thinking !== undefined && thinking !== 'default' && !isThinkingLevel(thinking)) {
     return { kind: 'error', message: `unknown thinking level: ${thinking}` };
   }
-  if (
-    permissionMode !== undefined &&
-    permissionMode !== 'explore' &&
-    permissionMode !== 'execute' &&
-    permissionMode !== 'bypass'
-  ) {
-    return {
-      kind: 'error',
-      message: '--permission-mode must be explore, execute, or bypass',
-    };
-  }
-  const permissionRules: ToolPermissionRule[] = [];
-  for (const { effect, value } of permissionRuleFlags) {
-    const rule = parseToolPermissionRule(value, effect);
-    if (!rule.ok) return { kind: 'error', message: rule.message };
-    permissionRules.push(rule.value);
-  }
-
   return {
     kind: 'run',
     options: {
@@ -191,8 +159,7 @@ export function parseMakaRunArgs(argv: readonly string[]): ParseMakaRunArgsResul
       ...(thinking !== undefined && thinking !== 'default' ? { thinking } : {}),
       ...(timeoutSeconds !== undefined ? { timeoutMs: Math.ceil(timeoutSeconds * 1_000) } : {}),
       ...(parsedMaxSteps !== undefined ? { maxSteps: parsedMaxSteps } : {}),
-      ...(permissionMode !== undefined ? { permissionMode } : {}),
-      ...(permissionRules.length > 0 ? { permissionRules } : {}),
+      ...(booleanFlags.has('yolo') ? { yolo: true } : {}),
       ...(resumeId !== undefined ? { resumeId } : {}),
       ...(continueLatest ? { continueLatest: true } : {}),
       ...(graph ? { graph: true as const } : {}),
@@ -241,9 +208,6 @@ export async function runMakaTextCli(
         ...(parsed.options.thinking !== undefined
           ? { explicitThinking: parsed.options.thinking }
           : {}),
-        ...(parsed.options.permissionMode !== undefined
-          ? { explicitPermissionMode: parsed.options.permissionMode }
-          : {}),
       },
       { canonicalizeDirectory: canonicalDirectory },
     );
@@ -253,6 +217,8 @@ export async function runMakaTextCli(
   }
 
   let invocation: InvocationResult | undefined;
+  let streamBoundaryFailure = false;
+  const boundaryFailureInvocationIds = new Set<string>();
   let context: MakaRunContext;
   try {
     context = await deps.createContext({
@@ -277,11 +243,15 @@ export async function runMakaTextCli(
         ? { sessionCwdOverride: { sessionId: selection.session.id, cwd: selection.cwd } }
         : {}),
       ...(parsed.options.maxSteps !== undefined ? { maxSteps: parsed.options.maxSteps } : {}),
-      ...(parsed.options.permissionRules !== undefined
-        ? { permissionRules: parsed.options.permissionRules }
-        : {}),
       ...(parsed.options.graph ? { enableAgentGraph: true } : {}),
       runtimeInvocationObserver: (result) => {
+        if (invocationHasSandboxBoundaryFailure(result)) {
+          if (invocationRecoveredSandboxBoundaryFailure(result)) {
+            boundaryFailureInvocationIds.delete(result.invocationId);
+          } else {
+            boundaryFailureInvocationIds.add(result.invocationId);
+          }
+        }
         invocation = result;
       },
     });
@@ -301,11 +271,21 @@ export async function runMakaTextCli(
             backend: 'ai-sdk',
             llmConnectionSlug: context.target.connection.slug,
             model: context.target.model,
-            permissionMode: parsed.options.permissionMode ?? 'explore',
+            permissionMode: parsed.options.yolo ? 'bypass' : 'ask',
             ...(parsed.options.thinking !== undefined
               ? { thinkingLevel: parsed.options.thinking }
               : {}),
           });
+    if (selection.kind === 'existing') {
+      const boundary = await context.runtime.readExecutionBoundary(session.id);
+      if (parsed.options.yolo) {
+        await context.runtime.setExecutionBoundaryKind(session.id, 'bypass');
+      } else if (boundary.kind === 'bypass') {
+        throw new Error(`resuming a full-access session ${session.id} requires --yolo`);
+      } else if (boundary.kind === 'external') {
+        throw new Error(`cannot resume externally isolated session ${session.id} from maka run`);
+      }
+    }
   } catch (error) {
     await context.close();
     deps.writeStderr(`maka run: ${errorMessage(error)}\n`);
@@ -316,7 +296,13 @@ export async function runMakaTextCli(
   let timedOut = false;
   let streamFailed = false;
   let stopPromise: Promise<void> | undefined;
+  let resolveStopSignal: (() => void) | undefined;
+  const stopSignal = new Promise<void>((resolve) => {
+    resolveStopSignal = resolve;
+  });
   const stop = (): void => {
+    resolveStopSignal?.();
+    resolveStopSignal = undefined;
     if (stopPromise) return;
     stopPromise = context.runtime.stopSession(session.id, { source: 'stop_button' });
     void stopPromise.catch(() => {});
@@ -347,16 +333,34 @@ export async function runMakaTextCli(
         ? { turnOrchestration: { mode: 'graph' as const, source: 'host_api' as const } }
         : {}),
     })) {
-      if (event.type === 'permission_request') {
-        deps.writeStderr(`maka run: denied permission request for ${event.toolName}\n`);
-        await context.runtime.respondToPermission(session.id, {
+      if (event.type === 'sandbox_boundary_request') {
+        streamBoundaryFailure = true;
+        deps.writeStderr(
+          'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+        );
+        await context.runtime.respondToSandboxBoundary(session.id, {
           requestId: event.requestId,
           decision: 'deny',
         });
       }
+      if (
+        event.type === 'tool_result' &&
+        event.isError &&
+        event.content.kind === 'text' &&
+        event.content.sandboxFailure
+      ) {
+        streamBoundaryFailure = true;
+        deps.writeStderr(
+          event.content.sandboxFailure.reason === 'requires_bypass'
+            ? 'maka run: sandbox bypass requires an explicit --yolo\n'
+            : 'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+        );
+      }
     }
     graphActivity?.release();
-    if (parsed.options.graph) await context.agentGraph!.waitForCompletion(session.id);
+    if (parsed.options.graph && invocation?.status === 'completed') {
+      await Promise.race([context.agentGraph!.waitForCompletion(session.id), stopSignal]);
+    }
     await stopPromise;
   } catch (error) {
     streamFailed = true;
@@ -377,6 +381,12 @@ export async function runMakaTextCli(
     return 1;
   }
   if (streamFailed) return 1;
+  if (
+    (streamBoundaryFailure && !invocationRecoveredSandboxBoundaryFailure(invocation)) ||
+    boundaryFailureInvocationIds.size > 0
+  ) {
+    return 1;
+  }
   if (!invocation) {
     deps.writeStderr('maka run: runtime produced no InvocationResult\n');
     return 1;
@@ -423,45 +433,12 @@ function makaRunHelpText(): string {
     '  --thinking <level>        off|minimal|low|medium|high|xhigh|max|default',
     '  --timeout <seconds>       Invocation timeout',
     '  --max-steps <count>       Tool-step cap',
-    '  --permission-mode <mode>  explore|execute|bypass (default: explore)',
-    '  --allow <rule>            Repeatable category:<name>, tool:<name>, or Bash(<exact command>)',
-    '  --deny <rule>             Repeatable category:<name>, tool:<name>, or Bash(<exact command>)',
+    '  --yolo                    Give this session full access to your files and network',
     '  --resume <session-id>     Continue an explicit compatible session',
     '  --continue                Continue the latest compatible session for cwd',
     '  --graph                   Run this turn in Graph Mode and wait for graph completion',
     '  -h, --help                Show help',
   ].join('\n');
-}
-
-function parseToolPermissionRule(
-  input: string,
-  effect: 'allow' | 'deny',
-): { ok: true; value: ToolPermissionRule } | { ok: false; message: string } {
-  if (input.startsWith('category:')) {
-    const category = input.slice('category:'.length);
-    if (!isToolCategory(category)) {
-      return { ok: false, message: `invalid --${effect} category rule: ${input}` };
-    }
-    return { ok: true, value: { effect, kind: 'category', category } };
-  }
-  if (input.startsWith('tool:')) {
-    const toolName = input.slice('tool:'.length);
-    if (toolName.length === 0 || toolName.trim() !== toolName) {
-      return { ok: false, message: `invalid --${effect} tool rule: ${input}` };
-    }
-    return { ok: true, value: { effect, kind: 'tool', toolName } };
-  }
-  if (input.startsWith('Bash(') && input.endsWith(')')) {
-    const command = input.slice('Bash('.length, -1);
-    if (command.length === 0) {
-      return { ok: false, message: `invalid --${effect} Bash rule: command is empty` };
-    }
-    return { ok: true, value: { effect, kind: 'bash_exact', command } };
-  }
-  return {
-    ok: false,
-    message: `invalid --${effect} rule: expected category:<name>, tool:<name>, or Bash(<exact command>)`,
-  };
 }
 
 function defaultMakaRunDeps(): MakaRunDeps {
@@ -515,4 +492,55 @@ function withTrailingNewline(text: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function invocationHasSandboxBoundaryFailure(result: InvocationResult): boolean {
+  for (const event of result.events) {
+    if (event.content?.kind !== 'function_response') continue;
+    const failure = isRecord(event.content.result)
+      ? event.content.result.sandboxFailure
+      : undefined;
+    if (
+      isRecord(failure) &&
+      (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function invocationRecoveredSandboxBoundaryFailure(result: InvocationResult | undefined): boolean {
+  if (!invocationCompletedWithOutput(result)) return false;
+  let unresolvedBoundaryFailure = false;
+  let recoveredBoundaryFailure = false;
+  for (const event of result.events) {
+    if (event.content?.kind !== 'function_response') continue;
+    const failure = isRecord(event.content.result)
+      ? event.content.result.sandboxFailure
+      : undefined;
+    if (
+      event.content.isError &&
+      isRecord(failure) &&
+      (failure.reason === 'sandbox_boundary_required' || failure.reason === 'requires_bypass')
+    ) {
+      unresolvedBoundaryFailure = true;
+      continue;
+    }
+    if (unresolvedBoundaryFailure && !event.content.isError) {
+      unresolvedBoundaryFailure = false;
+      recoveredBoundaryFailure = true;
+    }
+  }
+  return recoveredBoundaryFailure && !unresolvedBoundaryFailure;
+}
+
+function invocationCompletedWithOutput(
+  result: InvocationResult | undefined,
+): result is InvocationResult & { status: 'completed'; finalOutput: string } {
+  return result?.status === 'completed' && typeof result.finalOutput === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

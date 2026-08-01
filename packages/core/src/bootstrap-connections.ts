@@ -1,0 +1,74 @@
+/**
+ * Bootstrap connection seed decision.
+ *
+ * Decides which provider connections a fresh Maka install seeds before the
+ * user configures anything, and which one is the default. Pure & sync — the
+ * caller owns the connectionStore writes and the change event.
+ *
+ * `opencode-free` is seeded unconditionally so Maka is usable out of the box
+ * with zero credentials: it is an anonymous OpenCode Zen free-tier provider
+ * (no API key; the runtime omits Authorization and the server treats the
+ * request as anonymous, matching the upstream OpenCode client). Env-keyed
+ * providers layer on top and take the default when present, preserving the
+ * prior env-bootstrap precedence (Anthropic before OpenAI).
+ */
+
+import type { ProviderType } from './llm-connections.js';
+
+export interface BootstrapConnectionSeed {
+  readonly slug: string;
+  readonly name: string;
+  readonly providerType: ProviderType;
+  readonly defaultModel: string;
+  readonly isDefault: boolean;
+}
+
+export interface BootstrapEnv {
+  readonly ANTHROPIC_API_KEY?: string;
+  readonly OPENAI_API_KEY?: string;
+}
+
+const OPENCODE_FREE_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
+  slug: 'opencode-free',
+  name: 'OpenCode Free',
+  providerType: 'opencode-free',
+  defaultModel: 'big-pickle',
+};
+
+const ANTHROPIC_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
+  slug: 'env-anthropic',
+  name: 'Anthropic (env)',
+  providerType: 'anthropic',
+  defaultModel: 'claude-sonnet-4-5-20250929',
+};
+
+const OPENAI_ENV_SEED: Omit<BootstrapConnectionSeed, 'isDefault'> = {
+  slug: 'env-openai',
+  name: 'OpenAI (env)',
+  providerType: 'openai',
+  defaultModel: 'gpt-4o-mini',
+};
+
+/**
+ * Resolve the bootstrap connection seeds for a fresh install.
+ *
+ * `opencode-free` is always seeded as the zero-credential fallback. When an
+ * env provider key is present that provider is added and takes the default
+ * (Anthropic wins over OpenAI, and OpenAI is not seeded when Anthropic is
+ * present — matching the original bootstrap's `return` after Anthropic).
+ */
+export function resolveBootstrapConnections(env: BootstrapEnv): readonly BootstrapConnectionSeed[] {
+  const seeds: BootstrapConnectionSeed[] = [];
+
+  const freeDefault = !env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY;
+  seeds.push({ ...OPENCODE_FREE_SEED, isDefault: freeDefault });
+
+  if (env.ANTHROPIC_API_KEY) {
+    seeds.push({ ...ANTHROPIC_ENV_SEED, isDefault: true });
+    return seeds;
+  }
+  if (env.OPENAI_API_KEY) {
+    seeds.push({ ...OPENAI_ENV_SEED, isDefault: true });
+  }
+  return seeds;
+}

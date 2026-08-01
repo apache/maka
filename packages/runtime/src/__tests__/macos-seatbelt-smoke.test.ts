@@ -7,10 +7,10 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 
 import {
+  applySandboxBoundaryExpansion,
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
-} from '@maka/core/permission-profile';
-import type { AdditionalPermissionProfile } from '@maka/core/additional-permissions';
+} from '@maka/core';
 
 import { MACOS_SEATBELT_EXECUTABLE, MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
@@ -48,7 +48,6 @@ function runSeatbeltCommand(
   workspaceRoot: string,
   command: string,
   profile: PermissionProfile = createWorkspaceWritePermissionProfile(),
-  additionalPermissions?: AdditionalPermissionProfile,
 ) {
   const manager = new SandboxManager([new MacosSeatbeltBackend()]);
   const result = manager.transform({
@@ -62,7 +61,6 @@ function runSeatbeltCommand(
         workspaceRoots: [workspaceRoot],
       },
     },
-    ...(additionalPermissions ? { additionalPermissions } : {}),
   });
 
   assert.equal(result.ok, true);
@@ -103,22 +101,22 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
     assert.notEqual(child.status, 0);
   });
 
-  it('allows only the exact outside path granted for one command', async () => {
+  it('allows only the exact outside path in the expanded session boundary', async () => {
     const workspaceRoot = await makeWorkspace();
     const outsideRoot = await realpath(await mkdtemp(join(tmpdir(), 'maka-seatbelt-additional-')));
     cleanup.push(workspaceRoot, outsideRoot);
     const allowedFile = resolve(outsideRoot, 'allowed.txt');
     const siblingFile = resolve(outsideRoot, 'sibling.txt');
+    const expandedProfile = applySandboxBoundaryExpansion(createWorkspaceWritePermissionProfile(), {
+      filesystem: {
+        entries: [{ path: allowedFile, access: 'write', scope: 'exact' }],
+      },
+    });
 
     const allowed = runSeatbeltCommand(
       workspaceRoot,
       `printf ok > ${JSON.stringify(allowedFile)}`,
-      createWorkspaceWritePermissionProfile(),
-      {
-        fileSystem: {
-          entries: [{ path: allowedFile, access: 'write', scope: 'exact' }],
-        },
-      },
+      expandedProfile,
     );
     assert.equal(allowed.status, 0, allowed.stderr);
     assert.equal(await readFile(allowedFile, 'utf8'), 'ok');
@@ -126,24 +124,20 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
     const sibling = runSeatbeltCommand(
       workspaceRoot,
       `printf nope > ${JSON.stringify(siblingFile)}`,
-      createWorkspaceWritePermissionProfile(),
-      {
-        fileSystem: {
-          entries: [{ path: allowedFile, access: 'write', scope: 'exact' }],
-        },
-      },
+      expandedProfile,
     );
     assert.notEqual(sibling.status, 0);
     assert.equal(existsSync(siblingFile), false);
   });
 
-  it('denies writes to protected metadata under the workspace root', async () => {
+  it('allows workspace metadata writes in the standard managed boundary', async () => {
     const workspaceRoot = await makeWorkspace();
     cleanup.push(workspaceRoot);
 
     const child = runSeatbeltCommand(workspaceRoot, 'mkdir .codex');
 
-    assert.notEqual(child.status, 0);
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(existsSync(join(workspaceRoot, '.codex')), true);
   });
 
   it('denies writes to explicit denied children under a writable workspace root', async () => {

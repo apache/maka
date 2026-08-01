@@ -10,10 +10,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.installed.base import NonZeroAgentExitCodeError, with_prompt_template
-from harbor.agents.installed.opencode import OpenCode
-from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
+from harness_compat import (
+    AgentContext,
+    BaseEnvironment,
+    NetworkAllowlist as _NetworkAllowlist,
+    NonZeroAgentExitCodeError,
+    OpenCode,
+    with_prompt_template,
+)
+from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
 
 from trial_pricing import estimate_cost, pricing_from_env
 
@@ -33,6 +38,29 @@ class MakaOpenCodeAgent(OpenCode):
 
     def get_version_command(self) -> str | None:
         return f"{shlex.quote(str(_TOOLCHAIN_OPENCODE))} --version"
+
+    def install_spec(self) -> None:
+        # The pinned OpenCode toolchain is bind-mounted read-only and only
+        # verified (sha256 checksums + manifest fingerprint) in install().
+        # Pier's inherited spec would instead install OpenCode from the
+        # network, which offline tasks cannot reach and which would break the
+        # fixed-build comparison. None keeps the runtime verify path
+        # unchanged (Pier runs install() when no spec is preinstalled).
+        return None
+
+    def network_allowlist(self) -> _NetworkAllowlist | None:
+        # Called only under Pier; plain Harbor never calls it and
+        # harness_compat exports NetworkAllowlist = None there.
+        if _NetworkAllowlist is None:
+            return None
+        # The container runs the pinned OpenCode CLI against
+        # OPENCODE_CONFIG (opencode-benchmark.json), whose provider options
+        # point at MAKA_PROVIDER_PROXY_URL (see _run_with_stop_sentinel);
+        # that proxy host is the only egress the container needs. No fallback
+        # domain: a misconfigured trial fails here, at environment creation.
+        hostname, port = provider_proxy_endpoint(self._get_env, "OpenCode")
+        warn_if_pier_unreachable_proxy_port(port, "OpenCode")
+        return _NetworkAllowlist(domains=[hostname])
 
     async def install(self, environment: BaseEnvironment) -> None:
         expected_fingerprint = self._get_env("MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT")
@@ -69,6 +97,10 @@ class MakaOpenCodeAgent(OpenCode):
         self._started_at_ms = int(time.time() * 1000)
         try:
             await self._run_with_stop_sentinel(instruction, environment)
+            # Hydrate before reading error events: under Pier the explicit
+            # --mounts-json replaces the default /logs bind-mount, so the CLI
+            # stream only exists inside the container until downloaded.
+            await self._download_agent_logs(environment)
             if messages := self._error_messages():
                 raise NonZeroAgentExitCodeError(
                     "OpenCode emitted error event(s): " + "; ".join(messages[:3])
@@ -78,6 +110,25 @@ class MakaOpenCodeAgent(OpenCode):
             raise
         finally:
             self._finished_at_ms = int(time.time() * 1000)
+            await self._download_agent_logs(environment)
+
+    async def _download_agent_logs(self, environment: BaseEnvironment) -> None:
+        # _error_messages() and populate_context_post_run read opencode.txt
+        # from the host log dir. Under plain Harbor the agent log dir is
+        # bind-mounted, so the file is already host-side and is skipped; under
+        # Pier a --mounts-json run replaces the default log mounts while
+        # capabilities.mounted stays true (pier docker.py), so pier's own log
+        # download never runs — without this hydration a real provider error
+        # event is invisible to failure classification and the parsed
+        # trajectory/steps/token metadata come out empty. Best-effort, same
+        # contract as the Kimi and Codex arms.
+        local = self.logs_dir / "opencode.txt"
+        if local.exists():
+            return
+        try:
+            await environment.download_file("/logs/agent/opencode.txt", local)
+        except Exception as exc:  # noqa: BLE001 - best-effort log hydration.
+            self.logger.debug("Could not download OpenCode stream %s: %s", local, exc)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         super().populate_context_post_run(context)
@@ -145,6 +196,7 @@ class MakaOpenCodeAgent(OpenCode):
         provider_env_names = {
             "zai-coding-plan": ("ZAI_BASE_URL", "ZAI_API_KEY"),
             "kimi-coding-plan": ("KIMI_BASE_URL", "KIMI_API_KEY"),
+            "deepseek": ("DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"),
         }
         if provider not in provider_env_names:
             raise ValueError(f"Unsupported Maka OpenCode benchmark provider: {provider}")

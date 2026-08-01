@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core';
-import { createAgentRunStore, createRuntimeEventStore } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import { RuntimeReadModel } from '../runtime-read-model.js';
+import { isHardRuntimeEventReadModelDiagnostic } from '../runtime-event-read-model.js';
 
 const sessionId = 'legacy-runtime-event-session';
 const runId = 'legacy-runtime-event-run';
@@ -35,14 +39,14 @@ const header: AgentRunHeader = {
 test('reopens a persisted legacy subagent RuntimeEvent without rewriting it', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-runtime-persisted-compat-'));
   try {
-    await createAgentRunStore(root).createRun(header);
+    await createLegacyAgentRunStoreForTest(root).createRun(header);
     const ledgerPath = join(root, 'sessions', sessionId, 'runs', runId, 'runtime-events.jsonl');
     await copyFile(fixtureUrl, ledgerPath);
     const originalBytes = await readFile(ledgerPath);
 
     const view = await new RuntimeReadModel({
-      runStore: createAgentRunStore(root),
-      runtimeEventStore: createRuntimeEventStore(root),
+      runStore: createLegacyAgentRunStoreForTest(root),
+      runtimeEventStore: createLegacyRuntimeEventStoreForTest(root),
     }).getSessionView(sessionId);
 
     const persistedResponse = view.events.find(
@@ -79,15 +83,7 @@ test('reopens a persisted legacy subagent RuntimeEvent without rewriting it', as
       'waiting_for_user',
     );
 
-    const hardReadDiagnosticCodes = new Set([
-      'incomplete_event',
-      'unsupported_event',
-      'tool_use_id_mismatch',
-    ]);
-    assert.equal(
-      view.diagnostics.some((diagnostic) => hardReadDiagnosticCodes.has(diagnostic.code)),
-      false,
-    );
+    assert.equal(view.diagnostics.some(isHardRuntimeEventReadModelDiagnostic), false);
     const blockingReplayDiagnosticCodes = new Set([
       'unsupported_role',
       'unsupported_content',

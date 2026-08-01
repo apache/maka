@@ -1,3 +1,4 @@
+import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +14,6 @@ import type {
 import type { SessionEvent } from '@maka/core/events';
 import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';
-import { PermissionEngine } from '../permission-engine.js';
 import {
   AGENT_CONTEXT_ISOLATED,
   AGENT_INVOCATION_FOREGROUND,
@@ -54,10 +54,7 @@ import { expect } from '../test-helpers.js';
 describe('subagent tools', () => {
   test('parent-facing agent tools declare permission hints and names', () => {
     const spawnTool = buildSubagentSpawnTool();
-    expect(spawnTool.permissionRequired).toBe(true);
     expect(spawnTool.categoryHint).toBe('subagent');
-    expect(buildSubagentListTool().permissionRequired).toBe(false);
-    expect(buildSubagentOutputTool().permissionRequired).toBe(false);
     expect(buildParentAgentTools().map((tool) => tool.name)).toEqual([
       AGENT_SPAWN_TOOL_NAME,
       AGENT_SWARM_TOOL_NAME,
@@ -122,7 +119,6 @@ describe('subagent tools', () => {
     expect(LOCAL_READ_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const definitions = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'ask',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -161,7 +157,6 @@ describe('subagent tools', () => {
     expect(WEB_RESEARCH_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const withWebSearch = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -187,7 +182,6 @@ describe('subagent tools', () => {
 
     expect(
       listBuiltinAgentDefinitions({
-        parentPermissionMode: 'execute',
         tools: [
           testCatalogTool('Read', 'read'),
           testCatalogTool('Glob', 'read'),
@@ -201,7 +195,6 @@ describe('subagent tools', () => {
     });
     expect(
       listBuiltinAgentDefinitions({
-        parentPermissionMode: 'ask',
         tools: [
           testCatalogTool('Read', 'read'),
           testCatalogTool('Glob', 'read'),
@@ -209,12 +202,7 @@ describe('subagent tools', () => {
           testCatalogTool('WebSearch', 'web_read'),
         ],
       }).find((definition) => definition.id === WEB_RESEARCH_AGENT_ID)?.availability,
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode: 'ask',
-      requiredPermissionMode: 'execute',
-    });
+    ).toEqual({ status: 'available' });
   });
 
   test('built-in catalog exposes implementation only when a worktree executor is available', async () => {
@@ -241,7 +229,6 @@ describe('subagent tools', () => {
     expect(IMPLEMENTATION_AGENT_DEFINITION.tools.includes('ExploreAgent')).toBe(false);
 
     const availability = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       tools: [
         testCatalogTool('Read', 'read'),
         testCatalogTool('Glob', 'read'),
@@ -261,7 +248,6 @@ describe('subagent tools', () => {
     await expectRejects(
       Promise.resolve().then(() =>
         assertAgentDefinitionRunnable({
-          parentPermissionMode: 'execute',
           definition: IMPLEMENTATION_AGENT_DEFINITION,
           tools: [
             testCatalogTool('Read', 'read'),
@@ -277,7 +263,6 @@ describe('subagent tools', () => {
     );
 
     const runnableAvailability = listBuiltinAgentDefinitions({
-      parentPermissionMode: 'execute',
       worktreeChildExecutorAvailable: true,
       tools: [
         testCatalogTool('Read', 'read'),
@@ -290,7 +275,6 @@ describe('subagent tools', () => {
     }).find((definition) => definition.id === IMPLEMENTATION_AGENT_ID)?.availability;
     expect(runnableAvailability).toEqual({ status: 'available' });
     assertAgentDefinitionRunnable({
-      parentPermissionMode: 'execute',
       worktreeChildExecutorAvailable: true,
       definition: IMPLEMENTATION_AGENT_DEFINITION,
       tools: [
@@ -304,10 +288,9 @@ describe('subagent tools', () => {
     });
   });
 
-  test('agent definition availability reports missing tools and parent permission mismatches without running', () => {
+  test('agent definition availability depends on exposed tools, not legacy parent modes', () => {
     expect(
       evaluateAgentDefinitionAvailability({
-        parentPermissionMode: 'ask',
         definition: LOCAL_READ_AGENT_DEFINITION,
         tools: [testCatalogTool('Read', 'read')],
       }),
@@ -319,7 +302,6 @@ describe('subagent tools', () => {
 
     expect(
       evaluateAgentDefinitionAvailability({
-        parentPermissionMode: 'explore',
         definition: {
           ...LOCAL_READ_AGENT_DEFINITION,
           id: 'writer',
@@ -331,15 +313,10 @@ describe('subagent tools', () => {
           testCatalogTool('Grep', 'read'),
         ],
       }),
-    ).toEqual({
-      status: 'unavailable',
-      reason: 'parent_permission_mode',
-      parentPermissionMode: 'explore',
-      requiredPermissionMode: 'execute',
-    });
+    ).toEqual({ status: 'available' });
   });
 
-  test('agent definition policy evaluates each tool through allowlist and category policy', () => {
+  test('agent definition policy uses the explicit tool allowlist', () => {
     expect(
       evaluateAgentDefinitionToolAccess(
         LOCAL_READ_AGENT_DEFINITION,
@@ -364,35 +341,28 @@ describe('subagent tools', () => {
           ...LOCAL_READ_AGENT_DEFINITION,
           id: 'web-review',
           tools: ['WebSearch'],
-          categoryPolicy: { web_read: 'prompt' },
         },
         testCatalogTool('WebSearch', 'web_read'),
       ),
     ).toEqual({
       category: 'web_read',
-      decision: 'prompt',
+      decision: 'allow',
     });
   });
 
-  test('agent definition cannot require broader permissions than the parent turn', async () => {
-    await expectRejects(
-      Promise.resolve().then(() =>
-        assertAgentDefinitionRunnable({
-          parentPermissionMode: 'explore',
-          definition: {
-            ...LOCAL_READ_AGENT_DEFINITION,
-            id: 'writer',
-            permissionMode: 'execute',
-          },
-          tools: [
-            testCatalogTool('Read', 'read'),
-            testCatalogTool('Glob', 'read'),
-            testCatalogTool('Grep', 'read'),
-          ],
-        }),
-      ),
-      /cannot run in parent permission mode "explore" because it requires "execute"/,
-    );
+  test('legacy parent mode does not override the authoritative child boundary and tool surface', () => {
+    assertAgentDefinitionRunnable({
+      definition: {
+        ...LOCAL_READ_AGENT_DEFINITION,
+        id: 'writer',
+        permissionMode: 'execute',
+      },
+      tools: [
+        testCatalogTool('Read', 'read'),
+        testCatalogTool('Glob', 'read'),
+        testCatalogTool('Grep', 'read'),
+      ],
+    });
   });
 
   test('child agent toolset keeps only built-in profile allowlisted tools', () => {
@@ -531,7 +501,6 @@ describe('subagent tools', () => {
 
     expect(tool.name).toBe(AGENT_SPAWN_TOOL_NAME);
     expect(tool.categoryHint).toBe('subagent');
-    expect(tool.permissionRequired).toBe(true);
     expect(calls).toHaveLength(1);
     const call = calls[0] as {
       agentProfile: string;
@@ -746,80 +715,6 @@ describe('subagent tools', () => {
       turnId: 'child-turn',
     });
     expect(result).toMatchObject({ kind: 'subagent', runId: 'child-run', status: 'completed' });
-  });
-
-  test('agent_spawn permission denial leaves a bound task untouched and never starts a child', async () => {
-    const task: Task = {
-      id: 'task-permission-denied',
-      key: 'T1',
-      subject: 'inspect runtime',
-      status: 'pending',
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const calls: string[] = [];
-    const events: SessionEvent[] = [];
-    const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-    permissionEngine.beginTurn('parent-turn');
-    const header = childHeader('/tmp/cwd');
-    header.permissionMode = 'ask';
-    let spawned = false;
-    const runtime = new ToolRuntime({
-      sessionId: 'session-1',
-      header,
-      connection: testConnection(),
-      modelId: 'mock-model',
-      appendMessage: async () => {},
-      permissionEngine,
-      newId: nextId(),
-      now: () => 1,
-      getPermissionPauseTarget: () => null,
-      getCurrentRunId: () => 'parent-run',
-      spawnChildSession: async () => {
-        spawned = true;
-        return {};
-      },
-    });
-    const tool = buildSubagentSpawnTool({ taskLedger: taskLedgerStub(task, calls) });
-    const pending = runtime
-      .settleToolCall({
-        tool,
-        turnId: 'parent-turn',
-        toolCallId: 'tool-agent-spawn-denied',
-        input: {
-          profile: LOCAL_READ_AGENT_PROFILE,
-          task: 'Inspect the runtime tests.',
-          task_id: task.key,
-        },
-        abortSignal: new AbortController().signal,
-        eventSink: {
-          push: (event) => events.push(event),
-          pushAndWaitUntilConsumed: async (event) => {
-            events.push(event);
-          },
-        },
-      })
-      .then((settlement) => settlement.result);
-    await waitFor(() => events.some((event) => event.type === 'permission_request'));
-    const request = events.find(
-      (event): event is Extract<SessionEvent, { type: 'permission_request' }> =>
-        event.type === 'permission_request',
-    );
-    expect(request).toBeDefined();
-    expect(calls).toEqual([]);
-    expect(spawned).toBe(false);
-
-    permissionEngine.recordResponse('parent-turn', {
-      requestId: request?.requestId ?? 'missing',
-      decision: 'deny',
-    });
-    const result = await pending;
-
-    expect(result).toMatchObject({ error: '用户已拒绝权限请求' });
-    expect(calls).toEqual([]);
-    expect(spawned).toBe(false);
-    expect(task.status).toBe('pending');
-    expect(task.owner).toBeUndefined();
   });
 
   test('agent_spawn rejects a forged task reference before starting a child', async () => {
@@ -1174,8 +1069,6 @@ describe('subagent tools', () => {
 
     expect(listTool.name).toBe(AGENT_LIST_TOOL_NAME);
     expect(outputTool.name).toBe(AGENT_OUTPUT_TOOL_NAME);
-    expect(listTool.permissionRequired).toBe(false);
-    expect(outputTool.permissionRequired).toBe(false);
     expect(list).toEqual({
       definitions: [{ id: LOCAL_READ_AGENT_ID }],
       runs: [{ runId: 'child-run', turnId: 'child-turn' }],
@@ -1205,6 +1098,7 @@ describe('subagent tools', () => {
     const schema = outputTool.parameters as { safeParse(input: unknown): { success: boolean } };
 
     expect(schema.safeParse({ run_id: 'child-run' }).success).toBe(true);
+    expect(schema.safeParse({ run_id: 'child-run', view: 'result' }).success).toBe(true);
     expect(schema.safeParse({ turn_id: 'child-turn' }).success).toBe(true);
     expect(schema.safeParse({ child_session_id: 'child-session' }).success).toBe(true);
     expect(
@@ -1234,6 +1128,8 @@ describe('subagent tools', () => {
         run_id: 'child-run',
         turn_id: 'provider-placeholder',
         max_events: 100,
+        max_bytes: 32_768,
+        view: 'runtime_events',
       },
       {
         sessionId: 'session-1',
@@ -1254,21 +1150,20 @@ describe('subagent tools', () => {
           currentRunId: 'child-run',
         },
         maxEvents: 100,
+        maxBytes: 32_768,
+        view: 'runtime_events',
       },
     });
   });
 });
 
 function makeChildToolRuntime(cwd: string): ToolRuntime {
-  const permissionEngine = new PermissionEngine({ newId: nextId(), now: () => 1 });
-  permissionEngine.beginTurn('child-turn');
-  return new ToolRuntime({
+  return createTestToolRuntime({
     sessionId: 'session-1',
     header: childHeader(cwd),
     connection: testConnection(),
     modelId: 'mock-model',
     appendMessage: async () => {},
-    permissionEngine,
     newId: nextId(),
     now: () => 1,
     getPermissionPauseTarget: () => null,

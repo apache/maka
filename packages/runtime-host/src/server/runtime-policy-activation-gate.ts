@@ -1,29 +1,33 @@
 const POISONED_MESSAGE = 'Runtime policy activation is poisoned';
 
 /**
- * Coordinates runtime-policy mutation/invalidation with the short backend
- * activation window that selects a backend and starts a run.
+ * Coordinates runtime-policy mutation/invalidation with policy-dependent reads
+ * and the short backend activation window that selects a backend and starts a run.
  */
 export class RuntimePolicyActivationGate {
-  readonly #backendActivations = new Set<Promise<void>>();
+  readonly #readActivations = new Set<Promise<void>>();
   #mutationTail = Promise.resolve();
   #poisoned = false;
 
   runBackendActivation<T>(operation: () => Promise<T> | T): Promise<T> {
+    return this.runReadActivation(operation);
+  }
+
+  runReadActivation<T>(operation: () => Promise<T> | T): Promise<T> {
     if (this.#poisoned) return Promise.reject(poisonedError());
 
     const precedingMutations = this.#mutationTail;
     const completion = deferred();
-    this.#backendActivations.add(completion.promise);
+    this.#readActivations.add(completion.promise);
 
-    return this.#executeBackendActivation(precedingMutations, completion, operation);
+    return this.#executeReadActivation(precedingMutations, completion, operation);
   }
 
   runMutation<T>(operation: () => Promise<T> | T): Promise<T> {
     if (this.#poisoned) return Promise.reject(poisonedError());
 
     const precedingMutation = this.#mutationTail;
-    const precedingBackendActivations = [...this.#backendActivations];
+    const precedingReadActivations = [...this.#readActivations];
     const completion = deferred();
 
     // This tail never rejects, so later registrations cannot create an
@@ -32,7 +36,7 @@ export class RuntimePolicyActivationGate {
 
     return this.#executeMutation(
       precedingMutation,
-      precedingBackendActivations,
+      precedingReadActivations,
       completion,
       operation,
     );
@@ -42,7 +46,7 @@ export class RuntimePolicyActivationGate {
     this.#poisoned = true;
   }
 
-  async #executeBackendActivation<T>(
+  async #executeReadActivation<T>(
     precedingMutations: Promise<void>,
     completion: Deferred,
     operation: () => Promise<T> | T,
@@ -53,18 +57,18 @@ export class RuntimePolicyActivationGate {
       return await operation();
     } finally {
       completion.resolve();
-      this.#backendActivations.delete(completion.promise);
+      this.#readActivations.delete(completion.promise);
     }
   }
 
   async #executeMutation<T>(
     precedingMutation: Promise<void>,
-    precedingBackendActivations: readonly Promise<void>[],
+    precedingReadActivations: readonly Promise<void>[],
     completion: Deferred,
     operation: () => Promise<T> | T,
   ): Promise<T> {
     try {
-      await Promise.all([precedingMutation, ...precedingBackendActivations]);
+      await Promise.all([precedingMutation, ...precedingReadActivations]);
       this.#assertOpen();
       return await operation();
     } finally {

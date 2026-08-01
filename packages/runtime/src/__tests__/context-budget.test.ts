@@ -1295,6 +1295,40 @@ describe('context-budget history compact', () => {
     assert.equal(result.diagnostic.historyCompactedTurns, 4);
   });
 
+  test('overflow recovery may fold the latest complete turn with no raw tail', () => {
+    const events = [
+      toolCall('latest-call', 'turn-latest', 'tool-1'),
+      toolResult('latest-result', 'turn-latest', 'tool-1', {
+        text: 'oversized latest result '.repeat(40),
+      }),
+    ];
+
+    const result = applyRuntimeEventContextBudget(
+      events,
+      {
+        maxHistoryEstimatedTokens: 2000,
+        minRecentTurns: 0,
+        charsPerToken: 1,
+        historyCompact: {
+          enabled: true,
+          highWaterRatio: 0.1,
+          minRecentTurns: 0,
+          maxSummaryEstimatedTokens: 120,
+        },
+      },
+      { historyCompactProtocol: 'checkpoint_v2' },
+    );
+
+    assert.ok(result);
+    assert.deepEqual(
+      result.events
+        .filter((event) => !event.id.startsWith('history-compact:'))
+        .map((event) => event.id),
+      [],
+    );
+    assert.equal(result.diagnostic.historyCompactedTurns, 1);
+  });
+
   test('keeps the complete latest turn as the continuation seam', () => {
     const events = [
       textEvent('old-1', 'turn-1', 'old context '.repeat(30)),

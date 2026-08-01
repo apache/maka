@@ -25,9 +25,8 @@ import {
   type TaskRunInput,
   type TaskRunOutput,
   type TaskRunner,
-  type HarborVerifierAttempt,
-  type HarborVerifierOutcome,
 } from './fixed-prompt-controller.js';
+import type { HarborVerifierAttempt, HarborVerifierOutcome } from './fixed-prompt-wal-types.js';
 import {
   HARBOR_ORACLE_EXECUTION_POLICY,
   HARBOR_ORACLE_MAX_ATTEMPTS,
@@ -83,6 +82,20 @@ const PROVIDER_REQUEST_TELEMETRY = 'provider-request-telemetry.json';
 /** A Harbor-side failure (build/docker/timeout/missing artifact) — NOT a benchmark
  * result. The controller turns a thrown error into an infra_failed event so it is
  * excluded from scoring instead of polluting the KEEP/DISCARD decision as reward 0. */
+/** Shared across runners: the last proxied provider request must have
+ * completed. A 200 stream without its protocol terminal event means the
+ * provider response is incomplete — the trial is an infra failure, never a
+ * graded model failure. Complete timed-out trials settle by deadline, so
+ * their truncated tail request is expected and exempt. */
+export function incompleteTerminalProviderRequest(
+  providerTelemetry: readonly ProviderRequestTelemetry[],
+  completeTimedOutTrial: boolean,
+): ProviderRequestTelemetry | undefined {
+  if (completeTimedOutTrial) return undefined;
+  const terminal = providerTelemetry.at(-1);
+  return terminal && terminal.outcome !== 'completed' ? terminal : undefined;
+}
+
 export class HarborInfraError extends Error {
   constructor(
     message: string,
@@ -375,6 +388,28 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
           tail(result.stderr || result.stdout),
         );
       }
+      const terminalProviderRequest = incompleteTerminalProviderRequest(
+        providerTelemetry,
+        completeTimedOutTrial,
+      );
+      if (terminalProviderRequest) {
+        throw new HarborInfraError(
+          `terminal provider request did not complete for task ${input.task.id}`,
+          [
+            `outcome=${terminalProviderRequest.outcome}`,
+            terminalProviderRequest.status !== undefined
+              ? `status=${terminalProviderRequest.status}`
+              : undefined,
+            terminalProviderRequest.errorClass
+              ? `errorClass=${terminalProviderRequest.errorClass}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(', '),
+          'infra_failed',
+          { providerTelemetryPath },
+        );
+      }
       const reward = await readReward(rewardPath, resultPath, input.task.id);
       const rawCell = await readCellOutput(cellOutputPath, input.task.id);
       const usageCheckpoint = await readOptionalTokenSummary(
@@ -385,13 +420,24 @@ export function createHarborTaskRunner(options: HarborTaskRunnerOptions): TaskRu
         selectedUsage && selectedUsage !== rawCell.tokenSummary
           ? { ...rawCell, tokenSummary: selectedUsage }
           : rawCell;
-      const cell =
+      const usageCell =
         checkpointedCell.tokenSummary || !providerUsage || !runnerOptions.pricing
           ? checkpointedCell
           : {
               ...checkpointedCell,
               tokenSummary: providerTokenSummary(providerUsage, runnerOptions.pricing),
             };
+      const cell = completeTimedOutTrial
+        ? {
+            ...usageCell,
+            status: 'failed' as const,
+            errorClass: 'budget_exhausted',
+            deadlineSettlement: {
+              source: 'benchmark.deadline' as const,
+              mode: 'immediate' as const,
+            },
+          }
+        : usageCell;
       const verifierStdout = await readOptionalText(join(trialDir, TRIAL_VERIFIER_STDOUT));
       const verifier = await readVerifierOutcome(
         join(trialDir, TRIAL_VERIFIER_OUTCOME),
@@ -772,7 +818,11 @@ async function readVerifierOutcome(
   if (outcome !== 'passed' && outcome !== 'failed' && outcome !== 'candidate_timeout') {
     throw new HarborInfraError(`verifier outcome is malformed for task ${taskId}`);
   }
-  if (!Array.isArray(value.attempts) || value.attempts.length < 1 || value.attempts.length > 2) {
+  if (
+    !Array.isArray(value.attempts) ||
+    value.attempts.length < 1 ||
+    value.attempts.length > HARBOR_ORACLE_MAX_ATTEMPTS
+  ) {
     throw new HarborInfraError(`verifier outcome attempts are malformed for task ${taskId}`);
   }
   const attempts = value.attempts.map((attempt, index) =>
@@ -1083,6 +1133,8 @@ function harborVerifierConfig(verifier: ReturnType<typeof verifierPolicy>) {
     kwargs: {
       attempt_timeout_sec: verifier.attemptTimeoutSec,
       max_attempts: HARBOR_ORACLE_MAX_ATTEMPTS,
+      retry_backoff_sec: HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryBackoffSec,
+      total_timeout_sec: verifier.totalTimeoutSec,
     },
     override_timeout_sec: verifier.outerTimeoutSec,
   };
@@ -1090,16 +1142,18 @@ function harborVerifierConfig(verifier: ReturnType<typeof verifierPolicy>) {
 
 function verifierPolicy(task: TaskRunInput['task']): {
   attemptTimeoutSec: number;
+  totalTimeoutSec: number;
   outerTimeoutSec: number;
 } {
   const attemptTimeoutSec =
     task.metadata?.verifierTimeoutSec ??
     HARBOR_ORACLE_EXECUTION_POLICY.verifier.defaultAttemptTimeoutSec;
+  const totalTimeoutSec =
+    attemptTimeoutSec * HARBOR_ORACLE_EXECUTION_POLICY.verifier.totalAttemptBudgetMultiplier;
   return {
     attemptTimeoutSec,
-    outerTimeoutSec:
-      attemptTimeoutSec * HARBOR_ORACLE_MAX_ATTEMPTS +
-      HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryGraceSec,
+    totalTimeoutSec,
+    outerTimeoutSec: totalTimeoutSec + HARBOR_ORACLE_EXECUTION_POLICY.verifier.retryGraceSec,
   };
 }
 
@@ -1591,7 +1645,7 @@ export function modelIdForProvider(model: string, provider: string): string {
   return model.startsWith(prefix) ? model.slice(prefix.length) : model;
 }
 
-function modelForOpenCode(model: string, provider: string): string {
+export function modelForOpenCode(model: string, provider: string): string {
   return model.includes('/') ? model : `${provider}/${model}`;
 }
 

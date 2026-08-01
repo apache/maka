@@ -44,6 +44,7 @@ export interface AppShellCommandListOptions {
   uiLocale: UiLocale;
   activeId: string | undefined;
   activePermissionMode: PermissionMode | undefined;
+  canSetPermissionMode: boolean;
   connections: LlmConnection[];
   defaultConnection: string | null;
   dailyReviewBridge: DailyReviewBridge;
@@ -52,7 +53,6 @@ export interface AppShellCommandListOptions {
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
   captureComposerImportOwner: () => ComposerImportOwner;
-  closePalette: () => void;
   composerRef: RefBox<ComposerAppendHandle | null>;
   createSession: () => void;
   startModeSession: (mode: SessionStartMode) => Promise<boolean>;
@@ -151,9 +151,7 @@ export function buildAppShellCommandList(
     onOpenProjectFolder: () => optionsRef.current.openProjectFolder(),
     onOpenSkillsFolder: () => optionsRef.current.openSkillsFolder(),
     onSelectModule: (selection) => {
-      const { closePalette, setNavSelection } = optionsRef.current;
-      setNavSelection(selection);
-      closePalette();
+      optionsRef.current.setNavSelection(selection);
     },
     onExportActiveConversation: async () => {
       const { activeId, messages, sessions, toastApi } = optionsRef.current;
@@ -243,7 +241,9 @@ export function buildAppShellCommandList(
         );
       }
     },
-    onSetPermissionMode: (mode) => optionsRef.current.setPermissionMode(mode),
+    onSetPermissionMode: options.canSetPermissionMode
+      ? (mode) => optionsRef.current.setPermissionMode(mode)
+      : undefined,
     activePermissionMode: options.activePermissionMode,
     onCopyTodayDailyReview: async () => {
       const { dailyReviewBridge, toastApi } = optionsRef.current;

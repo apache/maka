@@ -9,19 +9,44 @@ import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
+  normalizeConnectionModelDiscoveryResult,
 } from '@maka/core/runtime-policy';
-import { proxiedFetch } from './bots/proxied-fetch.js';
 import { anthropicV1Url, googleApiUrl } from './provider-urls.js';
 import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import {
   GITHUB_COPILOT_API_VERSION,
   GITHUB_COPILOT_COMPAT_HEADERS,
 } from './subscription-credentials.js';
+import {
+  ConnectionEffectFetchError,
+  fetchForConnectionEffect,
+  type ConnectionEffectFetch,
+  type ConnectionEffectFetchDependency,
+  type ConnectionEffectFetchOptions,
+  type ConnectionEffectResponse,
+} from './connection-effect-fetch.js';
+import {
+  ConnectionEffectHttpError,
+  ConnectionEffectInvalidResponseError,
+  classifyConnectionEffectStatus,
+  type ConnectionEffectConnection,
+  type ConnectionEffectError,
+  type ConnectionModelDiscoveryEffectOutcome,
+} from './connection-effect-outcome.js';
 
 const MODEL_FETCH_TIMEOUT_MS = 10_000;
 const CLOUDFLARE_MODEL_PAGE_SIZE = 50;
 const CLOUDFLARE_MODEL_MAX_REQUEST_PAGES =
   Math.ceil(CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION / CLOUDFLARE_MODEL_PAGE_SIZE) + 1;
+const COHERE_MODEL_PAGE_SIZE = 1_000;
+const COHERE_MODEL_MAX_REQUEST_PAGES =
+  Math.ceil(CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION / COHERE_MODEL_PAGE_SIZE) + 1;
+const FIREWORKS_PAGE_SIZE = 200;
+const FIREWORKS_MAX_REQUEST_PAGES =
+  Math.ceil(CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION / FIREWORKS_PAGE_SIZE) + 1;
+const FIREWORKS_MAX_ACCOUNTS = 32;
+const FIREWORKS_ACCOUNT_CONCURRENCY = 4;
+const PROVIDER_PAGE_TOKEN_MAX_LENGTH = 2_048;
 
 type RawProviderModel = {
   id?: string;
@@ -94,9 +119,12 @@ type FireworksModelDiscovery = Extract<
 export async function fetchProviderModels(
   connection: LlmConnection,
   apiKey: string,
+  options: ConnectionEffectFetchOptions = {},
 ): Promise<ModelInfo[]> {
   try {
-    return normalizeDiscoveredModels(await fetchProviderModelsStrict(connection, apiKey));
+    return normalizeDiscoveredModels(
+      await fetchProviderModelsStrict(connection, apiKey, options.fetch),
+    );
   } catch (error) {
     // Preserve status-bearing discovery errors so the sync layer can classify
     // auth/protocol/network failures; only wrap unknown errors for display.
@@ -110,9 +138,27 @@ export async function fetchProviderModels(
   }
 }
 
-async function fetchProviderModelsStrict(
-  connection: LlmConnection,
+export async function runConnectionModelDiscoveryEffect(
+  connection: ConnectionEffectConnection,
   apiKey: string,
+  options: ConnectionEffectFetchDependency,
+): Promise<ConnectionModelDiscoveryEffectOutcome> {
+  try {
+    return {
+      ok: true,
+      models: normalizeConnectionEffectModels(
+        await fetchProviderModelsStrict(connection, apiKey, options.fetch),
+      ),
+    };
+  } catch (error) {
+    return { ok: false, error: classifyDiscoveryError(error) };
+  }
+}
+
+async function fetchProviderModelsStrict(
+  connection: ConnectionEffectConnection,
+  apiKey: string,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
   const baseUrl = effectiveBaseUrl(connection);
   const definition = PROVIDER_DEFAULTS[connection.providerType];
@@ -128,72 +174,85 @@ async function fetchProviderModelsStrict(
     return definition.fallbackModels.map((id) => ({ id }));
   }
   if (discovery.kind === 'ollama') {
-    const r = await proxiedFetch(`${ollamaRoot(baseUrl)}/api/tags`, {
+    const r = await fetchForConnectionEffect(fetchFn, `${ollamaRoot(baseUrl)}/api/tags`, {
       timeoutMs: MODEL_FETCH_TIMEOUT_MS,
     });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = (await r.json()) as { models?: Array<{ name?: string }> };
-    return (data.models ?? []).flatMap((model) => (model.name ? [{ id: model.name }] : []));
+    if (!r.ok) {
+      await r.cancel();
+      throw new ConnectionEffectHttpError(r.status);
+    }
+    const data = await readProviderJson<{ models?: unknown }>(r);
+    return providerObjectArray<{ name?: string }>(data.models, 'Ollama models').flatMap((model) =>
+      model.name ? [{ id: model.name }] : [],
+    );
   }
   if (discovery.kind === 'fireworks') {
-    return fetchFireworksModels(baseUrl, apiKey, discovery);
+    return fetchFireworksModels(baseUrl, apiKey, discovery, fetchFn);
   }
   if (discovery.kind === 'cohere') {
-    return fetchCohereModels(baseUrl, apiKey);
+    return fetchCohereModels(baseUrl, apiKey, fetchFn);
   }
   if (discovery.kind === 'cloudflare') {
-    return fetchCloudflareModels(baseUrl, apiKey);
+    return fetchCloudflareModels(baseUrl, apiKey, fetchFn);
   }
   if (discovery.auth === 'github-copilot') {
-    return fetchGitHubCopilotModels(baseUrl, apiKey);
+    return fetchGitHubCopilotModels(baseUrl, apiKey, fetchFn);
   }
   if (discovery.auth === 'openai-codex') {
-    return fetchOpenAiCodexModels(baseUrl, apiKey);
+    return fetchOpenAiCodexModels(baseUrl, apiKey, fetchFn);
   }
 
   switch (definition.protocol) {
     case 'anthropic': {
-      const r = await proxiedFetch(anthropicV1Url(baseUrl, '/models'), {
+      const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(
           discovery.auth === 'claude-subscription' ? discovery.auth : undefined,
           apiKey,
         ),
         timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = (await r.json()) as { data?: RawProviderModel[] };
-      const models = (data.data ?? [])
+      if (!r.ok) {
+        await r.cancel();
+        throw new ConnectionEffectHttpError(r.status);
+      }
+      const data = await readProviderJson<{ data?: unknown }>(r);
+      const models = providerObjectArray<RawProviderModel>(data.data, 'Anthropic models')
         .map(toModelInfo)
         .filter((model): model is ModelInfo => model !== null);
       return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
     }
     case 'openai': {
-      const r = await proxiedFetch(modelListUrl(baseUrl, discovery.path, discovery.query), {
-        headers: {
-          'content-type': 'application/json',
-          ...(apiKey &&
-          (discovery.auth === 'oauth-bearer' ||
-            (discovery.auth !== 'none' && providerAuthSupportsApiKey(connection.providerType)))
-            ? { authorization: `Bearer ${apiKey}` }
-            : {}),
+      const r = await fetchForConnectionEffect(
+        fetchFn,
+        modelListUrl(baseUrl, discovery.path, discovery.query),
+        {
+          headers: {
+            'content-type': 'application/json',
+            ...(apiKey &&
+            (discovery.auth === 'oauth-bearer' ||
+              (discovery.auth !== 'none' && providerAuthSupportsApiKey(connection.providerType)))
+              ? { authorization: `Bearer ${apiKey}` }
+              : {}),
+          },
+          timeoutMs: MODEL_FETCH_TIMEOUT_MS,
         },
-        timeoutMs: MODEL_FETCH_TIMEOUT_MS,
-      });
+      );
       if (!r.ok) {
+        await r.cancel();
         if (connection.providerType === 'xai-oauth') {
           throw new ProviderModelDiscoveryHttpError(r.status);
         }
-        throw new Error(`HTTP ${r.status}`);
+        throw new ConnectionEffectHttpError(r.status);
       }
-      const data = (await r.json()) as { data?: RawProviderModel[] } | RawProviderModel[];
+      const data = await readProviderJson<{ data?: unknown } | unknown[]>(r);
       const rawModels =
         discovery.responseShape === 'array-or-data'
           ? Array.isArray(data)
-            ? data
-            : (data.data ?? [])
+            ? providerObjectArray<RawProviderModel>(data, 'provider models')
+            : providerObjectArray<RawProviderModel>(data.data, 'provider models')
           : Array.isArray(data)
             ? []
-            : (data.data ?? []);
+            : providerObjectArray<RawProviderModel>(data.data, 'provider models');
       const models = rawModels
         .filter((model) => discovery.filter !== 'language-models' || model.type === 'language')
         .map(toModelInfo)
@@ -201,53 +260,69 @@ async function fetchProviderModelsStrict(
       return filterDiscoveredModels(models, discovery.filter, definition.fallbackModels);
     }
     case 'google': {
-      const r = await proxiedFetch(googleApiUrl(baseUrl, '/models', apiKey), {
+      const r = await fetchForConnectionEffect(fetchFn, googleApiUrl(baseUrl, '/models', apiKey), {
         timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = (await r.json()) as { models?: Array<{ name?: string }> };
-      return (data.models ?? []).flatMap((model) => {
-        const id = model.name?.split('/').pop();
-        return id ? [{ id }] : [];
-      });
+      if (!r.ok) {
+        await r.cancel();
+        throw new ConnectionEffectHttpError(r.status);
+      }
+      const data = await readProviderJson<{ models?: unknown }>(r);
+      return providerObjectArray<{ name?: string }>(data.models, 'Google models').flatMap(
+        (model) => {
+          const id = model.name?.split('/').pop();
+          return id ? [{ id }] : [];
+        },
+      );
     }
     case 'cohere':
       throw new Error('Cohere requires native model discovery');
   }
 }
 
-async function fetchCloudflareModels(baseUrl: string, apiKey: string): Promise<ModelInfo[]> {
+async function fetchCloudflareModels(
+  baseUrl: string,
+  apiKey: string,
+  fetchFn: ConnectionEffectFetch | undefined,
+): Promise<ModelInfo[]> {
   const models: ModelInfo[] = [];
   let page = 1;
   let rawModelCount = 0;
+  const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
   while (page <= CLOUDFLARE_MODEL_MAX_REQUEST_PAGES) {
     const url = cloudflareModelsUrl(baseUrl, page);
-    const response = await proxiedFetch(url, {
+    const response = await fetchForConnectionEffect(fetchFn, url, {
       headers: { authorization: `Bearer ${apiKey}` },
+      signal,
       timeoutMs: MODEL_FETCH_TIMEOUT_MS,
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = (await response.json()) as {
+    if (!response.ok) {
+      await response.cancel();
+      throw new ConnectionEffectHttpError(response.status);
+    }
+    const data = await readProviderJson<{
       success?: unknown;
       result?: unknown;
-    };
-    if (data.success !== true || !Array.isArray(data.result)) {
-      throw new Error('Invalid Cloudflare models response');
+    }>(response);
+    if (data.success !== true) {
+      throw new ConnectionEffectInvalidResponseError('Invalid Cloudflare models response');
     }
-    rawModelCount += data.result.length;
+    const rawModels = providerObjectArray<RawCloudflareModel>(
+      data.result,
+      'Cloudflare models',
+      true,
+    );
+    rawModelCount += rawModels.length;
     if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
-      throw new Error('Provider returned too many models');
+      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
     }
     models.push(
-      ...data.result.flatMap((raw) => {
-        const model = raw as RawCloudflareModel;
-        return typeof model.name === 'string' ? [{ id: model.name }] : [];
-      }),
+      ...rawModels.flatMap((model) => (typeof model.name === 'string' ? [{ id: model.name }] : [])),
     );
-    if (data.result.length === 0) return models;
+    if (rawModels.length === 0) return models;
     page += 1;
   }
-  throw new Error('Provider returned too many models');
+  throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
 }
 
 function cloudflareModelsUrl(baseUrl: string, page: number): string {
@@ -279,32 +354,50 @@ function normalizeDiscoveredModels(models: ModelInfo[]): ModelInfo[] {
     }
     unique.set(id, { ...model, id });
     if (unique.size > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
-      throw new Error('Provider returned too many models');
+      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
     }
   }
   return [...unique.values()];
 }
 
+function normalizeConnectionEffectModels(models: ModelInfo[]): readonly ModelInfo[] {
+  try {
+    return normalizeConnectionModelDiscoveryResult({
+      models: normalizeDiscoveredModels(models),
+      source: 'fetched',
+      fetchedAt: 0,
+    }).models;
+  } catch (error) {
+    throw new ConnectionEffectInvalidResponseError('Provider returned invalid model metadata', {
+      cause: error,
+    });
+  }
+}
+
 export async function fetchGitHubCopilotModels(
   baseUrl: string,
   accessToken: string,
-  fetchFn?: typeof fetch,
+  fetchFn?: ConnectionEffectFetch,
 ): Promise<ModelInfo[]> {
-  const response = await (fetchFn ?? proxiedFetch)(`${stripTrailing(baseUrl)}/models`, {
+  const response = await fetchForConnectionEffect(fetchFn, `${stripTrailing(baseUrl)}/models`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       ...GITHUB_COPILOT_COMPAT_HEADERS,
       'Openai-Intent': 'conversation-edits',
       'X-GitHub-Api-Version': GITHUB_COPILOT_API_VERSION,
     },
-    ...(fetchFn
-      ? { signal: AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS) }
-      : { timeoutMs: MODEL_FETCH_TIMEOUT_MS }),
+    timeoutMs: MODEL_FETCH_TIMEOUT_MS,
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const payload = (await response.json()) as { data?: RawGitHubCopilotModel[] };
-  if (!Array.isArray(payload.data)) throw new Error('Invalid GitHub Copilot models response');
-  return payload.data.flatMap(toGitHubCopilotModelInfo);
+  if (!response.ok) {
+    await response.cancel();
+    throw new ConnectionEffectHttpError(response.status);
+  }
+  const payload = await readProviderJson<{ data?: unknown }>(response);
+  return providerObjectArray<RawGitHubCopilotModel>(
+    payload.data,
+    'GitHub Copilot models',
+    true,
+  ).flatMap(toGitHubCopilotModelInfo);
 }
 
 type RawOpenAiCodexModel = {
@@ -319,17 +412,17 @@ type RawOpenAiCodexModel = {
  * can classify auth failures (401/403) vs protocol errors (4xx) vs transient
  * network failures without string-matching the message.
  */
-export class OpenAiCodexDiscoveryError extends Error {
-  constructor(public readonly status: number) {
-    super(`HTTP ${status}`);
+export class OpenAiCodexDiscoveryError extends ConnectionEffectHttpError {
+  constructor(status: number) {
+    super(status);
     this.name = 'OpenAiCodexDiscoveryError';
   }
 }
 
 /** Structured status for standard provider `/models` endpoints. */
-export class ProviderModelDiscoveryHttpError extends Error {
-  constructor(public readonly status: number) {
-    super(`HTTP ${status}`);
+export class ProviderModelDiscoveryHttpError extends ConnectionEffectHttpError {
+  constructor(status: number) {
+    super(status);
     this.name = 'ProviderModelDiscoveryHttpError';
   }
 }
@@ -346,9 +439,10 @@ export class ProviderModelDiscoveryHttpError extends Error {
 export async function fetchOpenAiCodexModels(
   baseUrl: string,
   accessToken: string,
-  fetchFn?: typeof fetch,
+  fetchFn?: ConnectionEffectFetch,
 ): Promise<ModelInfo[]> {
-  const response = await (fetchFn ?? proxiedFetch)(
+  const response = await fetchForConnectionEffect(
+    fetchFn,
     `${stripTrailing(baseUrl)}/models?client_version=1.0.0`,
     {
       headers: {
@@ -356,15 +450,20 @@ export async function fetchOpenAiCodexModels(
         ...openAiCodexHeaders(accessToken),
         'content-type': 'application/json',
       },
-      ...(fetchFn
-        ? { signal: AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS) }
-        : { timeoutMs: MODEL_FETCH_TIMEOUT_MS }),
+      timeoutMs: MODEL_FETCH_TIMEOUT_MS,
     },
   );
-  if (!response.ok) throw new OpenAiCodexDiscoveryError(response.status);
-  const payload = (await response.json()) as { models?: RawOpenAiCodexModel[] };
-  if (!Array.isArray(payload?.models)) throw new Error('Invalid OpenAI Codex models response');
-  const visible = payload.models.filter((model) => {
+  if (!response.ok) {
+    await response.cancel();
+    throw new OpenAiCodexDiscoveryError(response.status);
+  }
+  const payload = await readProviderJson<{ models?: unknown }>(response);
+  const models = providerObjectArray<RawOpenAiCodexModel>(
+    payload.models,
+    'OpenAI Codex models',
+    true,
+  );
+  const visible = models.filter((model) => {
     if (!model || typeof model.slug !== 'string' || !model.slug.trim()) return false;
     const visibility =
       typeof model.visibility === 'string' ? model.visibility.trim().toLowerCase() : '';
@@ -395,12 +494,22 @@ function contextWindowOfOpenAiCodexModel(model: RawOpenAiCodexModel): number | u
 
 function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
   if (
+    typeof model.id !== 'string' ||
     !model.id ||
     model.model_picker_enabled !== true ||
     model.policy?.state === 'disabled' ||
     model.capabilities?.supports?.tool_calls !== true
   )
     return [];
+  assertOptionalArray(model.supported_endpoints, 'model supported_endpoints');
+  assertOptionalArray(
+    model.capabilities.supports.reasoning_effort,
+    'model capabilities.supports.reasoning_effort',
+  );
+  assertOptionalArray(
+    model.capabilities.limits?.vision?.supported_media_types,
+    'model capabilities.limits.vision.supported_media_types',
+  );
   const endpoints = model.supported_endpoints ?? [];
   const apiProtocol = endpoints.includes('/v1/messages')
     ? ('anthropic-messages' as const)
@@ -419,7 +528,9 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
     supports.min_thinking_budget !== undefined;
   const vision =
     supports.vision === true ||
-    limits?.vision?.supported_media_types?.some((type) => type.startsWith('image/')) === true;
+    limits?.vision?.supported_media_types?.some(
+      (type) => typeof type === 'string' && type.startsWith('image/'),
+    ) === true;
   const contextWindow = limits?.max_context_window_tokens ?? limits?.max_prompt_tokens;
   return [
     {
@@ -435,26 +546,54 @@ function toGitHubCopilotModelInfo(model: RawGitHubCopilotModel): ModelInfo[] {
   ];
 }
 
-async function fetchCohereModels(baseUrl: string, apiKey: string): Promise<ModelInfo[]> {
+async function fetchCohereModels(
+  baseUrl: string,
+  apiKey: string,
+  fetchFn: ConnectionEffectFetch | undefined,
+): Promise<ModelInfo[]> {
   const root = stripTrailing(baseUrl).replace(/\/v2$/, '');
   const models: ModelInfo[] = [];
+  const seenPageTokens = new Set<string>();
+  const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
   let pageToken: string | undefined;
-  do {
-    const query = new URLSearchParams({ endpoint: 'chat', page_size: '1000' });
-    if (pageToken) query.set('page_token', pageToken);
-    const response = await proxiedFetch(`${root}/v1/models?${query.toString()}`, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      timeoutMs: MODEL_FETCH_TIMEOUT_MS,
+  let pageCount = 0;
+  let rawModelCount = 0;
+  while (true) {
+    pageCount += 1;
+    if (pageCount > COHERE_MODEL_MAX_REQUEST_PAGES) {
+      throw new ConnectionEffectInvalidResponseError('Provider returned too many model pages');
+    }
+    const query = new URLSearchParams({
+      endpoint: 'chat',
+      page_size: String(COHERE_MODEL_PAGE_SIZE),
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = (await response.json()) as {
-      models?: RawCohereModel[];
-      next_page_token?: string;
-    };
+    if (pageToken) query.set('page_token', pageToken);
+    const response = await fetchForConnectionEffect(
+      fetchFn,
+      `${root}/v1/models?${query.toString()}`,
+      {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal,
+        timeoutMs: MODEL_FETCH_TIMEOUT_MS,
+      },
+    );
+    if (!response.ok) {
+      await response.cancel();
+      throw new ConnectionEffectHttpError(response.status);
+    }
+    const data = await readProviderJson<{ models?: unknown; next_page_token?: unknown }>(response);
+    const rawModels = providerObjectArray<RawCohereModel>(data.models, 'Cohere models');
+    rawModelCount += rawModels.length;
+    if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
+    }
     models.push(
-      ...(data.models ?? []).flatMap((model) => {
-        if (!model.name || model.is_deprecated === true || !model.endpoints?.includes('chat'))
+      ...rawModels.flatMap((model) => {
+        if (typeof model.name !== 'string' || !model.name || model.is_deprecated === true) {
           return [];
+        }
+        assertOptionalArray(model.endpoints, 'model endpoints');
+        if (!model.endpoints?.includes('chat')) return [];
         return [
           {
             id: model.name,
@@ -465,9 +604,13 @@ async function fetchCohereModels(baseUrl: string, apiKey: string): Promise<Model
         ];
       }),
     );
-    pageToken = data.next_page_token || undefined;
-  } while (pageToken);
-  return models;
+    pageToken = nextProviderPageToken(data.next_page_token);
+    if (!pageToken) return models;
+    if (seenPageTokens.has(pageToken)) {
+      throw new ConnectionEffectInvalidResponseError('Provider repeated a model page token');
+    }
+    seenPageTokens.add(pageToken);
+  }
 }
 
 function filterDiscoveredModels(
@@ -499,42 +642,70 @@ async function fetchFireworksModels(
   baseUrl: string,
   apiKey: string,
   discovery: FireworksModelDiscovery,
+  fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
   const root = stripTrailing(baseUrl).replace(/\/inference\/v1$/, '');
   const headers = {
     'content-type': 'application/json',
     authorization: `Bearer ${apiKey}`,
   };
-  const fetchPages = async <T>(
+  const signal = AbortSignal.timeout(MODEL_FETCH_TIMEOUT_MS);
+  const fetchPages = async <T extends object>(
     path: string,
     query: Readonly<Record<string, string>>,
     itemKey: 'accounts' | 'models',
+    maxItems: number,
+    reserveItems?: (count: number) => void,
   ): Promise<T[]> => {
     const items: T[] = [];
+    const seenPageTokens = new Set<string>();
     let pageToken: string | undefined;
-    do {
+    let pageCount = 0;
+    while (true) {
+      pageCount += 1;
+      if (pageCount > FIREWORKS_MAX_REQUEST_PAGES) {
+        throw new ConnectionEffectInvalidResponseError('Provider returned too many model pages');
+      }
       const search = new URLSearchParams(query);
       if (pageToken) search.set('pageToken', pageToken);
-      const response = await proxiedFetch(`${root}${path}?${search.toString()}`, {
-        headers,
-        timeoutMs: MODEL_FETCH_TIMEOUT_MS,
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = (await response.json()) as {
-        accounts?: T[];
-        models?: T[];
-        nextPageToken?: string;
-      };
-      items.push(...(data[itemKey] ?? []));
-      pageToken = data.nextPageToken || undefined;
-    } while (pageToken);
-    return items;
+      const response = await fetchForConnectionEffect(
+        fetchFn,
+        `${root}${path}?${search.toString()}`,
+        {
+          headers,
+          signal,
+          timeoutMs: MODEL_FETCH_TIMEOUT_MS,
+        },
+      );
+      if (!response.ok) {
+        await response.cancel();
+        throw new ConnectionEffectHttpError(response.status);
+      }
+      const data = await readProviderJson<{
+        accounts?: unknown;
+        models?: unknown;
+        nextPageToken?: unknown;
+      }>(response);
+      const rawItems = providerObjectArray<T>(data[itemKey], `Fireworks ${itemKey}`);
+      reserveItems?.(rawItems.length);
+      items.push(...rawItems);
+      if (items.length > maxItems) {
+        throw new ConnectionEffectInvalidResponseError(`Provider returned too many ${itemKey}`);
+      }
+      pageToken = nextProviderPageToken(data.nextPageToken);
+      if (!pageToken) return items;
+      if (seenPageTokens.has(pageToken)) {
+        throw new ConnectionEffectInvalidResponseError('Provider repeated a model page token');
+      }
+      seenPageTokens.add(pageToken);
+    }
   };
 
   const accounts = await fetchPages<{ name?: string }>(
     discovery.accountsPath,
-    { pageSize: '200' },
+    { pageSize: String(FIREWORKS_PAGE_SIZE) },
     'accounts',
+    FIREWORKS_MAX_ACCOUNTS,
   );
   const accountNames = [
     ...accounts.flatMap((account) =>
@@ -542,11 +713,34 @@ async function fetchFireworksModels(
     ),
     discovery.publicAccount,
   ].filter((name, index, names) => names.indexOf(name) === index);
-  const modelLists = await Promise.all(
-    accountNames.map((accountName) =>
-      fetchPages<RawFireworksModel>(`/v1/${accountName}/models`, discovery.query, 'models'),
-    ),
-  );
+  if (accountNames.length > FIREWORKS_MAX_ACCOUNTS) {
+    throw new ConnectionEffectInvalidResponseError('Provider returned too many accounts');
+  }
+  let rawModelCount = 0;
+  const reserveModels = (count: number) => {
+    rawModelCount += count;
+    if (rawModelCount > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION) {
+      throw new ConnectionEffectInvalidResponseError('Provider returned too many models');
+    }
+  };
+  const modelLists: RawFireworksModel[][] = [];
+  for (let index = 0; index < accountNames.length; index += FIREWORKS_ACCOUNT_CONCURRENCY) {
+    modelLists.push(
+      ...(await Promise.all(
+        accountNames
+          .slice(index, index + FIREWORKS_ACCOUNT_CONCURRENCY)
+          .map((accountName) =>
+            fetchPages<RawFireworksModel>(
+              `/v1/${accountName}/models`,
+              discovery.query,
+              'models',
+              CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+              reserveModels,
+            ),
+          ),
+      )),
+    );
+  }
 
   return modelLists.flat().flatMap((model) => {
     if (!model.name) return [];
@@ -567,7 +761,14 @@ async function fetchFireworksModels(
 }
 
 function toModelInfo(model: RawProviderModel): ModelInfo | null {
-  if (!model.id) return null;
+  if (typeof model.id !== 'string' || !model.id) return null;
+  assertOptionalArray(model.input_modalities, 'model input_modalities');
+  assertOptionalArray(model.output_modalities, 'model output_modalities');
+  assertOptionalArray(model.tags, 'model tags');
+  const providers = providerObjectArray<NonNullable<RawProviderModel['providers']>[number]>(
+    model.providers,
+    'model providers',
+  );
   const contextWindow = model.context_length ?? model.context_window;
   const capabilities: NonNullable<ModelInfo['capabilities']> = {};
   if (model.input_modalities?.includes('image')) capabilities.vision = true;
@@ -580,7 +781,7 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   if (model.tags?.includes('reasoning')) capabilities.reasoning = true;
   if (model.tags?.includes('tool-use')) capabilities.functionCalling = true;
   if (model.providers) {
-    capabilities.functionCalling = model.providers.some(
+    capabilities.functionCalling = providers.some(
       (provider) => provider.status === 'live' && provider.supports_tools === true,
     );
   }
@@ -616,4 +817,59 @@ function stripTrailing(u: string): string {
 
 function ollamaRoot(baseUrl: string): string {
   return stripTrailing(baseUrl).replace(/\/v1$/, '');
+}
+
+async function readProviderJson<T>(response: ConnectionEffectResponse): Promise<T> {
+  const value = await response.readJson<unknown>();
+  if (value === null || typeof value !== 'object') {
+    throw new ConnectionEffectInvalidResponseError('Invalid provider JSON response structure');
+  }
+  return value as T;
+}
+
+function providerObjectArray<T extends object>(
+  value: unknown,
+  label: string,
+  required = false,
+): T[] {
+  if (value === undefined && !required) return [];
+  if (
+    !Array.isArray(value) ||
+    value.some((item) => item === null || typeof item !== 'object' || Array.isArray(item))
+  ) {
+    throw new ConnectionEffectInvalidResponseError(`Invalid ${label} response`);
+  }
+  return value as T[];
+}
+
+function assertOptionalArray(
+  value: unknown,
+  label: string,
+): asserts value is unknown[] | undefined {
+  if (value !== undefined && !Array.isArray(value)) {
+    throw new ConnectionEffectInvalidResponseError(`Invalid ${label}`);
+  }
+}
+
+function nextProviderPageToken(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (
+    typeof value !== 'string' ||
+    value.length > PROVIDER_PAGE_TOKEN_MAX_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new ConnectionEffectInvalidResponseError('Invalid provider model page token');
+  }
+  return value;
+}
+
+function classifyDiscoveryError(error: unknown): ConnectionEffectError {
+  if (error instanceof ConnectionEffectFetchError) return { kind: error.kind };
+  if (error instanceof ConnectionEffectHttpError) {
+    return classifyConnectionEffectStatus(error.status);
+  }
+  if (error instanceof ConnectionEffectInvalidResponseError || error instanceof SyntaxError) {
+    return { kind: 'invalid_response' };
+  }
+  return { kind: 'unknown' };
 }

@@ -15,8 +15,10 @@ import {
   type TaskRunOutput,
 } from '../fixed-prompt-controller.js';
 import { CODEX_TOOLCHAIN_FINGERPRINT, CODEX_TOOLCHAIN_SPEC } from '../codex-toolchain.js';
+import { OPENCODE_TOOLCHAIN_FINGERPRINT, OPENCODE_TOOLCHAIN_SPEC } from '../opencode-toolchain.js';
 import { findTrialDir } from '../harbor-task-runner.js';
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT } from '../maka-node-toolchain.js';
+import type { ProviderRequestTelemetry } from '../provider-auth-proxy.js';
 import {
   buildPierRunArgs,
   createPierProviderProxyHub,
@@ -750,15 +752,11 @@ test('pier-graded failed cells stay scored through the fixed-prompt controller',
   });
 });
 
-test('pier and harbor outputs drive identical controller events for an infra-failed graded cell', async () => {
-  // Cross-runner parity lock for the scoring semantics INHERITED from the
-  // fixed-prompt controller (predating this PR): a CLI-crash cell
-  // (errorClass=infra_failed) with pier grade reward=0 is excluded via
-  // isProviderInfraFailure (scored=false), while reward=1 scores through
-  // structuredVerifierPassed. Whether that asymmetry is desirable is a
-  // controller question out of this PR's scope; the runner invariant is that
-  // Pier and Harbor produce controller-identical events for the same trial
-  // shape, so neither side can drift unilaterally.
+test('pier and harbor normalize an infra-labeled graded cell to the same runtime outcome', async () => {
+  // Cross-runner parity lock: once either harness produces a valid structured
+  // pass/fail grade, the verifier is authoritative even if the agent cell
+  // exited with an infrastructure label. Once the candidate had an execution
+  // opportunity, that label describes its runtime outcome, not harness infra.
   await withDirs(async ({ jobsDir, repo }) => {
     const dir = await mkdtemp(join(tmpdir(), 'maka-pier-parity-'));
     try {
@@ -767,6 +765,7 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
       await writeFile(systemPromptPath, systemPrompt, 'utf8');
       const promptHash = hashSystemPrompt(systemPrompt);
       for (const reward of [0, 1]) {
+        const normalizedEvents: Array<Record<string, unknown>> = [];
         const cell = cellOutput({
           status: 'failed',
           errorClass: 'infra_failed',
@@ -807,7 +806,6 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
           },
           cell: pierOutput.cell,
         };
-        const normalizedEvents: Array<Record<string, unknown>> = [];
         for (const [flavor, output] of [
           ['pier', pierOutput],
           ['harbor', harborOutput],
@@ -828,6 +826,11 @@ test('pier and harbor outputs drive identical controller events for an infra-fai
           normalizedEvents.push(event);
         }
         assert.deepEqual(normalizedEvents[0], normalizedEvents[1]);
+        assert.equal(normalizedEvents[0]?.type, 'task_completed');
+        assert.equal(normalizedEvents[0]?.passed, reward > 0);
+        assert.equal(normalizedEvents[0]?.scored, true);
+        assert.equal(normalizedEvents[0]?.eligible, true);
+        assert.equal(normalizedEvents[0]?.errorClass, reward > 0 ? undefined : 'runtime_error');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -1421,6 +1424,156 @@ test('createPierTaskRunner wires the Codex arm through the host proxy with the p
     const mountsFlag = args.indexOf('--mounts-json');
     const mounts = JSON.parse(args[mountsFlag + 1]!) as Array<{ target: string }>;
     assert.ok(mounts.some((mount) => mount.target === '/opt/maka-codex-toolchain'));
+  });
+});
+
+test('buildPierRunArgs targets the OpenCode adapter', () => {
+  const args = buildPierRunArgs({
+    agent: 'opencode',
+    model: 'deepseek-v4-flash',
+    taskPath: '/tasks/dasel',
+    jobsDir: '/jobs',
+    jobName: 'trial',
+    environment: 'docker',
+    timeoutMultiplier: 1,
+    mounts: [],
+    agentEnv: {},
+  });
+  assert.match(args.join(' '), /--agent-import-path opencode_agent:MakaOpenCodeAgent/);
+  assert.ok(!args.includes('--agent-timeout-multiplier'));
+});
+
+test('createPierTaskRunner rejects an OpenCode arm whose version does not match the pinned toolchain', () => {
+  assert.throws(
+    () =>
+      createPierTaskRunner({
+        makaRepoPath: '/repo',
+        jobsDir: '/jobs',
+        model: 'deepseek-v4-flash',
+        agent: 'opencode',
+        agentVersion: '0.0.1',
+      }),
+    /OpenCode adapter version must match toolchain version/,
+  );
+});
+
+test('createPierTaskRunner requires the OpenCode toolchain mount for the OpenCode arm', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'opencode',
+        agentVersion: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
+        provider: 'deepseek',
+        apiKeyFile: '/secrets/deepseek.key',
+        runPier: fakePier({ reward: 0 }),
+      }),
+    );
+    await assert.rejects(runner(runInput()), /opencodeToolchainPath is required/);
+  });
+});
+
+test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is incomplete', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const makeRunner = (outcome: ProviderRequestTelemetry['outcome']) =>
+      createPierTaskRunner(
+        baseOptions({
+          jobsDir,
+          makaRepoPath: repo,
+          agent: 'opencode',
+          agentVersion: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
+          backend: 'ai-sdk',
+          provider: 'deepseek',
+          model: 'deepseek-v4-flash',
+          reasoningEffort: 'max',
+          opencodeToolchainPath: repo,
+          apiKeyFile: '/secrets/deepseek.key',
+          providerProxyHub: {
+            baseUrl: 'http://host.docker.internal:443',
+            issue: () => ({
+              baseUrl: 'http://host.docker.internal:443',
+              token: 'ephemeral-token',
+              usage: () => null,
+              telemetry: () => [
+                {
+                  requestId: 1,
+                  method: 'POST',
+                  path: '/chat/completions',
+                  status: 200,
+                  outcome,
+                  durationMs: 5,
+                  bodyChunks: 1,
+                  responseBytes: 64,
+                  terminalEvent: outcome === 'completed',
+                },
+              ],
+              close: async () => {},
+            }),
+            close: async () => {},
+          },
+          runPier: fakePier({ reward: 0 }),
+        }),
+      );
+
+    // A 200 stream without its protocol terminal event means the provider
+    // response is incomplete: same infra classification as the Harbor runner,
+    // never a graded model failure.
+    await assert.rejects(makeRunner('interrupted')(runInput()), (error: unknown) => {
+      assert.ok(error instanceof PierInfraError);
+      assert.match(error.message, /terminal provider request did not complete/);
+      assert.ok(error.artifactRefs?.providerTelemetryPath);
+      return true;
+    });
+    // A completed terminal request takes the normal reward path.
+    const output = await makeRunner('completed')(runInput());
+    assert.equal(output.harbor.reward, 0);
+  });
+});
+
+test('createPierTaskRunner wires the OpenCode arm through the host proxy with the pinned toolchain', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const captured: FakeOptions['captured'] = {};
+    const runner = createPierTaskRunner(
+      baseOptions({
+        jobsDir,
+        makaRepoPath: repo,
+        agent: 'opencode',
+        agentVersion: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
+        backend: 'ai-sdk',
+        provider: 'deepseek',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'max',
+        opencodeToolchainPath: repo,
+        apiKeyFile: '/secrets/deepseek.key',
+        providerProxyPort: 0,
+        runPier: fakePier({ reward: 0, captured }),
+      }),
+    );
+    const output = await runner(runInput());
+    assert.equal(output.harbor.reward, 0);
+    // The proxy URL and a minted token reach the container via env-file,
+    // never argv — the adapter dials only the proxy.
+    assert.match(
+      captured.envFile?.MAKA_PROVIDER_PROXY_URL ?? '',
+      /^http:\/\/host\.docker\.internal:\d+/,
+    );
+    assert.ok((captured.envFile?.MAKA_PROVIDER_PROXY_TOKEN ?? '').length >= 32);
+    const args = captured.request?.args ?? [];
+    assert.ok(!args.includes('--agent-timeout-multiplier'));
+    // The adapter requires provider/model format (it splits on "/"), unlike
+    // the other arms which take the provider-local bare id.
+    assert.ok(args.includes('deepseek/deepseek-v4-flash'));
+    // The pinned version rides --ak so trial provenance records it; the
+    // toolchain fingerprint and reasoning variant ride --ae.
+    assert.ok(args.includes(`version=${OPENCODE_TOOLCHAIN_SPEC.opencode.version}`));
+    assert.ok(
+      args.includes(`MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT=${OPENCODE_TOOLCHAIN_FINGERPRINT}`),
+    );
+    assert.ok(args.includes('MAKA_OPENCODE_VARIANT=max'));
+    const mountsFlag = args.indexOf('--mounts-json');
+    const mounts = JSON.parse(args[mountsFlag + 1]!) as Array<{ target: string }>;
+    assert.ok(mounts.some((mount) => mount.target === '/opt/maka-opencode-toolchain'));
   });
 });
 

@@ -4,15 +4,14 @@ import { realpathSync } from 'node:fs';
 import { lstat, readdir, readFile, readlink, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { appendFixedPromptWalEvent, hashSystemPrompt } from './fixed-prompt-controller.js';
 import {
-  appendFixedPromptWalEvent,
   FIXED_PROMPT_WAL_SCHEMA_VERSION,
-  hashSystemPrompt,
   PROMPT_CANDIDATE_FAILURE_PATTERNS,
   type PromptCandidateCommittedEvent,
   type PromptCandidateFailurePattern,
   type PromptCandidateRationale,
-} from './fixed-prompt-controller.js';
+} from './fixed-prompt-wal-types.js';
 import {
   projectRsiPromptAttribution,
   type ProjectRsiPromptAttributionInput,

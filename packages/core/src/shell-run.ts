@@ -1,4 +1,5 @@
 export const SHELL_RUN_STATUSES = [
+  'starting',
   'running',
   'completed',
   'failed',
@@ -9,6 +10,8 @@ export const SHELL_RUN_STATUSES = [
 
 export type ShellRunStatus = (typeof SHELL_RUN_STATUSES)[number];
 
+export const SHELL_RUN_ACTIVE_STATUSES = ['starting', 'running'] as const;
+
 export const SHELL_RUN_TERMINAL_STATUSES = [
   'completed',
   'failed',
@@ -18,6 +21,7 @@ export const SHELL_RUN_TERMINAL_STATUSES = [
 ] as const;
 
 export const SHELL_RUN_ID_MAX_CHARS = 128;
+export const SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES = 512;
 
 const SHELL_RUN_ID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${SHELL_RUN_ID_MAX_CHARS}}$`);
 const PIPE_SHELL_OUTPUT_KEYS = new Set([
@@ -44,6 +48,7 @@ const PTY_SHELL_OUTPUT_KEYS = new Set([
 const PTY_CURSOR_KEYS = new Set(['x', 'y', 'visible']);
 
 export type ShellRunTerminalStatus = (typeof SHELL_RUN_TERMINAL_STATUSES)[number];
+export type ShellRunActiveStatus = (typeof SHELL_RUN_ACTIVE_STATUSES)[number];
 export type ShellMode = 'pipes' | 'pty';
 
 export interface PipeShellOutput {
@@ -145,12 +150,35 @@ export function isShellRunStatus(value: unknown): value is ShellRunStatus {
   return typeof value === 'string' && (SHELL_RUN_STATUSES as readonly string[]).includes(value);
 }
 
+export function isShellRunSourceToolCallId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    new TextEncoder().encode(value).byteLength <= SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES
+  );
+}
+
 export function isShellRunId(value: unknown): value is string {
   return typeof value === 'string' && SHELL_RUN_ID_PATTERN.test(value);
 }
 
 export function isTerminalShellRunStatus(value: ShellRunStatus): value is ShellRunTerminalStatus {
   return (SHELL_RUN_TERMINAL_STATUSES as readonly string[]).includes(value);
+}
+
+export function isActiveShellRunStatus(value: ShellRunStatus): value is ShellRunActiveStatus {
+  return (SHELL_RUN_ACTIVE_STATUSES as readonly string[]).includes(value);
+}
+
+export function isValidShellRunStatusTransition(
+  current: ShellRunStatus,
+  next: ShellRunStatus,
+): boolean {
+  if (current === next) return true;
+  if (current === 'starting') {
+    return next === 'running' || next === 'failed' || next === 'orphaned';
+  }
+  return current === 'running' && isTerminalShellRunStatus(next);
 }
 
 export function isShellOutput(value: unknown): value is ShellOutput {
@@ -200,6 +228,7 @@ export function isValidShellRunState(value: {
   observedAt?: unknown;
 }): boolean {
   switch (value.status) {
+    case 'starting':
     case 'running':
       return (
         value.completedAt === undefined &&

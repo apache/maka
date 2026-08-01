@@ -17,20 +17,28 @@ import {
 } from '../protocol/index.js';
 import { encodeArtifactProjection } from '../protocol/artifact.js';
 import type { ArtifactOperationHandlerMap } from './operation-dispatcher.js';
+import { SessionAdmissionGate } from './session-admission-gate.js';
 
 /** Session-scoped Host projection and deletion authority for Artifacts. */
 export class HostArtifactCoordinator {
   readonly handlers: ArtifactOperationHandlerMap = {
-    'artifact.query': (input) => this.#query(input),
+    'artifact.query': (input) =>
+      this.#sessionAdmission.run(input.sessionId, () => this.#query(input)),
     'artifact.delete': (input) => this.#delete(input),
   };
 
   readonly #store: InteractiveArtifactStoreWriter;
   readonly #requestDrain: () => void;
+  readonly #sessionAdmission: SessionAdmissionGate;
 
-  constructor(store: InteractiveArtifactStoreWriter, requestDrain: () => void) {
+  constructor(
+    store: InteractiveArtifactStoreWriter,
+    requestDrain: () => void,
+    sessionAdmission: SessionAdmissionGate,
+  ) {
     this.#store = authenticateInteractiveArtifactStoreWriter(store);
     this.#requestDrain = requestDrain;
+    this.#sessionAdmission = sessionAdmission;
   }
 
   async #query(input: ArtifactQueryInput): Promise<OperationOutcome<'artifact.query'>> {
@@ -108,10 +116,9 @@ export class HostArtifactCoordinator {
     readonly artifactId: string;
   }): Promise<OperationOutcome<'artifact.delete'>> {
     try {
-      const deleted = await this.#store.deleteUserArtifactInSession(
-        input.sessionId,
-        input.artifactId,
-      );
+      const deleteArtifact = () =>
+        this.#store.deleteUserArtifactInSession(input.sessionId, input.artifactId);
+      const deleted = await this.#sessionAdmission.run(input.sessionId, deleteArtifact);
       if (deleted.kind === 'not_found') {
         return {
           ok: false,

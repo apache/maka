@@ -11,7 +11,8 @@ import {
   type AgentBackend,
 } from '@maka/runtime';
 import type { BackendKind, SessionEvent, SessionHeader } from '@maka/core';
-import type { BackendSendInput, PermissionDecision } from '@maka/core/backend-types';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { Config, Task } from '../contracts.js';
 import type { HeadlessBackendContext } from '../isolation.js';
 import { runAutonomousTask } from '../autonomous-agent-loop.js';
@@ -31,7 +32,7 @@ const registerFakeBackend = (registry: BackendRegistry): void => {
   );
 };
 
-class PermissionRequestBackend implements AgentBackend {
+class RequiresBypassBackend implements AgentBackend {
   readonly kind: BackendKind = 'fake';
   readonly sessionId: string;
 
@@ -42,35 +43,30 @@ class PermissionRequestBackend implements AgentBackend {
   async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
     const ts = Date.now();
     yield {
-      type: 'permission_request',
-      kind: 'tool_permission',
-      id: 'permission-request-event',
+      type: 'error',
+      id: 'requires-bypass-error',
       turnId: input.turnId,
       ts,
-      requestId: 'permission-request-1',
-      toolUseId: 'tool-1',
-      toolName: 'Bash',
-      category: 'shell_unsafe',
-      reason: 'shell_dangerous',
-      args: { command: 'rm -rf /tmp/example' },
-      rememberForTurnAllowed: true,
+      recoverable: false,
+      reason: 'requires_bypass',
+      message: 'This operation requires the session to use Bypass.',
     };
     yield {
       type: 'complete',
-      id: 'permission-complete',
+      id: 'requires-bypass-complete',
       turnId: input.turnId,
       ts,
-      stopReason: 'permission_handoff',
+      stopReason: 'error',
     };
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
-const registerPermissionRequestBackend = (registry: BackendRegistry): void => {
-  registry.register('fake', (ctx) => new PermissionRequestBackend(ctx.sessionId));
+const registerRequiresBypassBackend = (registry: BackendRegistry): void => {
+  registry.register('fake', (ctx) => new RequiresBypassBackend(ctx.sessionId));
 };
 
 class RuntimeContextCapturingBackend implements AgentBackend {
@@ -97,7 +93,7 @@ class RuntimeContextCapturingBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -175,7 +171,7 @@ class PromptCapturingProgressBackend implements AgentBackend {
   }
 
   async stop(): Promise<void> {}
-  async respondToPermission(_decision: PermissionDecision): Promise<void> {}
+  async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
   async dispose(): Promise<void> {}
 }
 
@@ -557,7 +553,7 @@ describe('runAutonomousTask', () => {
     });
   });
 
-  test('non-retryable policy-denied taxonomy stops without continuation', async () => {
+  test('requires_bypass fails closed without an autonomous retry', async () => {
     await withDirs(async (fixtureDir, storageRoot) => {
       const task: Task = {
         id: 'policy-denied',
@@ -568,7 +564,7 @@ describe('runAutonomousTask', () => {
 
       const result = await runAutonomousTask(fakeConfig, task, {
         storageRoot,
-        registerBackends: registerPermissionRequestBackend,
+        registerBackends: registerRequiresBypassBackend,
         budget: { maxAttempts: 3 },
         newId: idFactory(),
       });
