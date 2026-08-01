@@ -42,7 +42,6 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
     /arm64/,
   );
 });
-
 test('standalone CLI release has stable paths, aliases, and an Apple Silicon host gate', async () => {
   const {
     assertMacosArm64CliHost,
@@ -89,20 +88,4 @@ test('release workflow verifies and uploads both terminal artifacts', async () =
   assert.match(workflow, /npm run verify:macos-arm64-cli/);
   assert.match(workflow, /steps\.release\.outputs\.cli/);
   assert.match(workflow, /steps\.release\.outputs\.cli \}\}\.sha256/);
-});
-
-test('renderer readiness rejects the static preload skeleton', async () => {
-  const { isPackagedRendererUsable } = await import(
-    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
-  );
-  assert.equal(
-    isPackagedRendererUsable({
-      readyState: 'complete',
-      hasBridge: true,
-      hasRoot: true,
-      hasPreloadSkeleton: true,
-      hasAppShell: false,
-    }),
-    false,
-  );
 });

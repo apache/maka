@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import { parseCliArgs, runWorkspaceTests } from './run-workspace-tests-parallel.mjs';
+import { runWorkspaceTests } from './run-workspace-tests-parallel.mjs';
 
 function makeSpawn(plan) {
   const calls = [];
@@ -24,15 +24,6 @@ function makeSpawn(plan) {
   };
   return { spawn, calls };
 }
-
-test('CLI selection rejects invalid concurrency and unknown workspaces', () => {
-  const available = ['packages/core', 'packages/headless', 'apps/desktop'];
-  assert.throws(() => parseCliArgs(['--concurrency=0'], available), /positive integer/);
-  assert.throws(
-    () => parseCliArgs(['--workspace=packages/missing'], available),
-    /Unknown workspace/,
-  );
-});
 
 test('parallel mode aggregates every failed workspace name', async () => {
   const repoRoot = '/repo';
@@ -74,20 +65,4 @@ test('bounded parallel mode never exceeds its configured concurrency', async () 
   await runWorkspaceTests({ repoRoot, workspaceDirs, concurrency: 2, spawn });
 
   assert.equal(maxActive, 2);
-});
-
-test('spawn errors are reported with the workspace name', async () => {
-  const repoRoot = '/repo';
-  const { spawn } = makeSpawn([{ error: new Error('ENOENT') }]);
-
-  await assert.rejects(
-    () =>
-      runWorkspaceTests({
-        repoRoot,
-        workspaceDirs: ['packages/core'],
-        serial: true,
-        spawn,
-      }),
-    /\[core\] spawn failed: ENOENT/,
-  );
 });

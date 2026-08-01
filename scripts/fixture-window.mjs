@@ -58,7 +58,7 @@ export function inactiveWindowElectronArgs(env = process.env, platform = process
  * @param {import('@playwright/test').ElectronApplication} app
  * @param {import('@playwright/test').Page} page
  */
-export async function mapFixtureWindowInactive(app, page) {
+async function mapFixtureWindowInactive(app, page) {
   const windowHandle = await app.browserWindow(page);
   try {
     const state = await windowHandle.evaluate((window) => {
