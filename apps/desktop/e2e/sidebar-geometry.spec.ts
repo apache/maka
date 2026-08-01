@@ -178,6 +178,17 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
       : Number.POSITIVE_INFINITY;
   }).toBeLessThanOrEqual(1);
 
+  // The newest fixture session is one short exchange. It already fits above
+  // the composer, so reaching its final message must not create a second,
+  // composer-height scroll range below the conversation.
+  const settledChat = (await readGeometry(page)).chat;
+  expect(settledChat, JSON.stringify(settledChat)).not.toBeNull();
+  if (settledChat) {
+    const diagnostics = JSON.stringify(settledChat);
+    expect(settledChat.scrollHeight - settledChat.clientHeight, diagnostics).toBeLessThanOrEqual(1);
+    expect(settledChat.scrollTop, diagnostics).toBeLessThanOrEqual(1);
+  }
+
   // (1a) The sidebar list scroller actually overflows its constrained grid
   // row — this is what makes it an independent scroll container. If the panel
   // loses its constrained height, the row grows to content height and this

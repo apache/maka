@@ -116,7 +116,7 @@ test('chat viewport and message column share the composer centerline', async ({ 
   }
 });
 
-test('empty chat keeps the Astryx message list flush with the viewport', async ({ window: page }) => {
+test('empty chat has no phantom vertical range and stays flush with the viewport', async ({ window: page }) => {
   const content = page.locator('.mainColumn[data-home-surface="true"] .maka-chatContent');
   await expect(content).toBeVisible();
 
@@ -134,11 +134,15 @@ test('empty chat keeps the Astryx message list flush with the viewport', async (
         hostViewportLeftDelta: viewportRect.left - hostRect.left,
         contentDisplay: contentStyle.display,
         contentGap: contentStyle.gap,
+        scrollRange: viewport.scrollHeight - viewport.clientHeight,
+        scrollTop: viewport.scrollTop,
       };
     });
     const diagnostics = JSON.stringify({ width, ...geometry });
     expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
     expect(geometry.contentDisplay, diagnostics).toBe('flex');
+    expect(geometry.scrollRange, diagnostics).toBeLessThanOrEqual(1);
+    expect(geometry.scrollTop, diagnostics).toBeLessThanOrEqual(1);
   }
 });
 
@@ -155,6 +159,21 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
   // And the pin still holds once the walk reports itself done, which is what
   // makes the poll above a contract rather than a lucky early read.
   await settleGeometry(page, { pinned: true });
+
+  const bottomBoundary = await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    const lastTurn = scroller?.querySelector<HTMLElement>('.maka-turn:last-of-type');
+    const dock = scroller?.lastElementChild;
+    if (!lastTurn || !dock) throw new Error('Expected the final turn and Astryx dock');
+    return {
+      dockTop: dock.getBoundingClientRect().top,
+      lastTurnBottom: lastTurn.getBoundingClientRect().bottom,
+    };
+  });
+  expect(
+    bottomBoundary.lastTurnBottom,
+    JSON.stringify(bottomBoundary),
+  ).toBeLessThanOrEqual(bottomBoundary.dockTop + 1);
 });
 
 async function climbToTop(page: import('@playwright/test').Page) {
