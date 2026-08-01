@@ -178,18 +178,14 @@ export function createAppShellE2eFixtureActions(options: {
     }
     // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
     // kenji `b3d156e9`): when the fixture sets `focusActiveRow`,
-    // focus the active row's button after the next paint so the
-    // row's `:focus-within` triggers and the `.maka-list-row-menu-trigger`
-    // becomes visible. The fixture then shows the overflow
-    // trigger against the slim row, proving the time meta
-    // + unread dot are hidden underneath (no overlap with the
-    // action icons — the bug WAWQAQ flagged). Two RAFs let React
+    // focus the Astryx-owned active ListItem action after the next paint.
+    // Two RAFs let React
     // commit the active selection before we query the DOM.
     if (state.focusActiveRow) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const activeRowButton = document.querySelector<HTMLButtonElement>(
-            '.maka-list-row[data-active="true"] .maka-list-row-main',
+            '.astryx-list-item[aria-current="true"] > button',
           );
           activeRowButton?.focus({ preventScroll: true });
         });

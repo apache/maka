@@ -98,8 +98,8 @@ function StoryFrame(props: {
     if (!focusActiveRow && !openActiveRowMenu) return;
     let menuTimeout: number | undefined;
     const focusTimeout = window.setTimeout(() => {
-      const activeRow = ref.current?.querySelector<HTMLElement>('.maka-list-row[data-active="true"]');
-      activeRow?.querySelector<HTMLButtonElement>('.maka-list-row-main')?.focus({ preventScroll: true });
+      const activeRow = ref.current?.querySelector<HTMLElement>('.astryx-list-item[aria-current="true"]');
+      activeRow?.querySelector<HTMLButtonElement>(':scope > button')?.focus({ preventScroll: true });
       if (openActiveRowMenu) {
         menuTimeout = window.setTimeout(() => {
           activeRow?.querySelector<HTMLButtonElement>('[aria-label="对话操作"]')?.click();

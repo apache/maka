@@ -149,6 +149,7 @@ import {
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -1177,6 +1178,7 @@ function AppShellContent({
     workbarTab,
     setWorkbarTab,
   } = useShellLayout();
+  const sessionSideNavHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
   const { startWorkbarResize, onWorkbarResizeHandleKeyDown } = useStableActions(createAppShellLayoutActions, {
     workbarCollapsed,
     workbarWidth,
@@ -2047,9 +2049,8 @@ function AppShellContent({
           <header className="maka-window-titlebar">
             <AppShellTopbarActions
               sidebarCollapsed={sessionListCollapsed}
+              sidebarHandleRef={sessionSideNavHandleRef}
               onOpenSearchModal={() => setSearchModalOpen(true)}
-              onCollapseSidebar={() => setSessionListCollapsed(true)}
-              onExpandSidebar={() => setSessionListCollapsed(false)}
               onCreateSession={createSession}
             />
             {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
@@ -2067,10 +2068,13 @@ function AppShellContent({
         }
         sideNav={
           <SessionListPanel
+            collapseHandleRef={sessionSideNavHandleRef}
             collapsed={sessionListCollapsed}
             onCollapsedChange={setSessionListCollapsed}
             width={sessionListWidth}
-            onWidthChange={setSessionListWidth}
+            onWidthChange={(width) => {
+              if (width >= SESSION_LIST_EXPANDED_MIN_WIDTH) setSessionListWidth(width);
+            }}
             minWidth={SESSION_LIST_EXPANDED_MIN_WIDTH}
             maxWidth={SESSION_LIST_EXPANDED_MAX_WIDTH}
             selection={navSelection}

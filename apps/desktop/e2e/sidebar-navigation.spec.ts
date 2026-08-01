@@ -31,7 +31,7 @@ test('session grouping menu switches between flat conversations and project disc
   const popup = page.getByRole('menu', { name: '会话分组方式' });
 
   await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
-  await expect(sidebar.locator('.maka-list-row').first()).toBeVisible();
+  await expect(sidebar.locator('.astryx-list-item').first()).toBeVisible();
   await grouping.click();
   const byTime = page.getByRole('menuitemradio', { name: '按时间' });
   const byProject = page.getByRole('menuitemradio', { name: '按项目' });
@@ -53,6 +53,76 @@ test('session grouping menu switches between flat conversations and project disc
   await expect(page.getByRole('menuitemradio', { name: '按时间' })).toHaveAttribute('aria-checked', 'false');
 });
 
+test('project history keeps Astryx TreeList as the only arrow-key focus authority', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
+  await page.getByRole('menuitemradio', { name: '按项目' }).click();
+
+  const treeItems = sidebar.getByRole('treeitem');
+  const current = sidebar.getByRole('treeitem', { name: /^会话 00\b/ });
+  await expect(current).toHaveCount(1);
+  const currentIndex = await current.evaluate((element) =>
+    Array.from(element.closest('[role="tree"]')?.querySelectorAll('[role="treeitem"]') ?? []).indexOf(element),
+  );
+  expect(currentIndex).toBeGreaterThanOrEqual(0);
+  const next = treeItems.nth(currentIndex + 1);
+  await expect(current.getByRole('button', { name: /^会话 00\b/ })).toHaveAttribute('tabindex', '-1');
+
+  await current.focus();
+  await expect(current).toBeFocused();
+  await current.press('ArrowDown');
+  await expect(next).toBeFocused();
+});
+
+test('project rename owns Enter without toggling the Astryx TreeList disclosure', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
+  await page.getByRole('menuitemradio', { name: '按项目' }).click();
+
+  const project = sidebar.getByRole('treeitem').first();
+  await expect(project).toHaveAttribute('aria-expanded', 'true');
+  await project.getByRole('button', { name: /项目操作$/ }).click();
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
+
+  const rename = project.getByRole('textbox', { name: '重命名' });
+  await expect(rename).toBeFocused();
+  const disclosureState = await project.getAttribute('aria-expanded');
+  const originalName = await rename.inputValue();
+  const tree = sidebar.getByRole('tree');
+  await rename.press('A');
+  await expect(rename).toBeFocused();
+  await rename.press('Space');
+  await expect(rename).toHaveValue('A ');
+  await expect(rename).toBeFocused();
+  await rename.evaluate((element) => {
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      isComposing: true,
+    }));
+  });
+  await expect(rename).toBeFocused();
+  await rename.fill(originalName);
+  await rename.press('Enter');
+  await expect(tree).toBeVisible();
+  await expect(project).toHaveAttribute('aria-expanded', disclosureState ?? 'false');
+});
+
+test('double-clicking the flat ListItem menu does not enter rename', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  const row = sidebar.locator('.astryx-list-item').filter({ hasText: '会话 00' }).first();
+
+  await row.getByRole('button', { name: '对话操作' }).dispatchEvent('dblclick');
+
+  await expect(sidebar.getByRole('textbox', { name: '重命名对话' })).toHaveCount(0);
+});
+
 test('session grouping menu fits its Chinese labels instead of inheriting the generic minimum width', async ({
   sidebarLongSessionsWindow: page,
 }) => {
@@ -69,8 +139,9 @@ test('session delete intent opens only after its menu closes and restores the tr
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  const row = sidebar.locator('.maka-list-row').filter({ hasText: '会话 00' }).first();
-  const rowButton = row.locator('[data-session-id]').first();
+  const row = sidebar.locator('.astryx-list-item').filter({ hasText: '会话 00' }).first();
+  const rowButton = row.locator(':scope > button');
+  await expect(rowButton).toHaveCount(1);
   await rowButton.focus();
 
   const trigger = row.getByRole('button', { name: '对话操作' });

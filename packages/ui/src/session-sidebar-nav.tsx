@@ -26,7 +26,6 @@ export function SessionSidebarNav(props: {
   return (
     <nav className="maka-sidebar-modules" aria-label={copy.mainLabel}>
       <SideNavItem
-        className="maka-nav-row maka-nav-new-task"
         label={copy.newTask}
         icon={SquarePen}
         size="md"
@@ -34,7 +33,6 @@ export function SessionSidebarNav(props: {
         endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
       />
       <SideNavItem
-        className="maka-nav-row"
         label={copy.extensions}
         icon={Blocks}
         size="md"
@@ -42,13 +40,13 @@ export function SessionSidebarNav(props: {
         onClick={() => props.onSelect({ section: 'extensions', module: moduleMemory.extensions })}
       />
       <SideNavItem
-        className="maka-nav-row"
-        label={copy.automations}
+        label={activePlanReminderCount > 0
+          ? copy.pendingReminders(activePlanReminderCount)
+          : copy.automations}
         icon={Timer}
         size="md"
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
-        endContent={activePlanReminderCount > 0 ? <small className="maka-nav-count">{activePlanReminderCount}</small> : undefined}
       />
     </nav>
   );
@@ -83,7 +81,6 @@ export function SessionSidebarFooter(props: {
   return (
     <footer className="maka-session-panel-footer">
       <SideNavItem
-        className="maka-sidebar-settings-button"
         label={copy.settings}
         icon={Settings}
         size="md"

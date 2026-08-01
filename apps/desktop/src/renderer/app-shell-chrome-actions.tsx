@@ -20,14 +20,17 @@ import {
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
-import { useRef, useState } from 'react';
+import {
+  SideNavCollapseButton,
+  type SideNavImperativeCollapseHandle,
+} from '@astryxdesign/core/SideNav';
+import { useRef, useState, type RefObject } from 'react';
 import { getShellCopy } from './locales/shell-copy';
 
 export function AppShellTopbarActions(props: {
   sidebarCollapsed: boolean;
+  sidebarHandleRef: RefObject<SideNavImperativeCollapseHandle | null>;
   onOpenSearchModal(): void;
-  onCollapseSidebar(): void;
-  onExpandSidebar(): void;
   onCreateSession(): void;
 }) {
   const locale = useUiLocale();
@@ -39,22 +42,21 @@ export function AppShellTopbarActions(props: {
           label={copy.searchConversations}
           icon={<Search aria-hidden="true" />}
           variant="ghost"
-          size="sm"
+          size="md"
           className="maka-titlebar-action"
           data-maka-search-trigger="true"
           onClick={props.onOpenSearchModal}
         />
       </Tooltip>
       <Tooltip content={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}>
-        <IconButton
+        <SideNavCollapseButton
+          handleRef={props.sidebarHandleRef}
           label={props.sidebarCollapsed ? copy.expandSidebar : copy.collapseSidebar}
-          icon={props.sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
-          variant="ghost"
-          size="sm"
           className="maka-titlebar-action"
-          onClick={props.sidebarCollapsed ? props.onExpandSidebar : props.onCollapseSidebar}
           aria-expanded={!props.sidebarCollapsed}
-        />
+        >
+          {props.sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
+        </SideNavCollapseButton>
       </Tooltip>
       {props.sidebarCollapsed && (
         <Tooltip content={copy.newTask}>
@@ -62,7 +64,7 @@ export function AppShellTopbarActions(props: {
             label={copy.newTask}
             icon={<SquarePen aria-hidden="true" />}
             variant="ghost"
-            size="sm"
+            size="md"
             className="maka-titlebar-action"
             onClick={props.onCreateSession}
           />
@@ -107,7 +109,7 @@ export function AppShellWorkspaceTopActions(props: {
           icon: <MoreHorizontal aria-hidden="true" />,
           isIconOnly: true,
           variant: 'ghost',
-          size: 'sm',
+          size: 'md',
           className: 'maka-titlebar-action',
         }}
       >
@@ -122,7 +124,7 @@ export function AppShellWorkspaceTopActions(props: {
             label={workbarLabel}
             icon={props.workbarCollapsed ? <PanelRightOpen aria-hidden="true" /> : <PanelRightClose aria-hidden="true" />}
             variant="ghost"
-            size="sm"
+            size="md"
             className="maka-titlebar-action"
             onClick={props.onToggleWorkbar}
             aria-expanded={!props.workbarCollapsed}

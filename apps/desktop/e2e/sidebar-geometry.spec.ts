@@ -161,7 +161,7 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   // handful of baseline chat sessions; their exact count is not this
   // contract's concern — the 60-row pin alone proves the overflow
   // precondition the geometry assertions depend on.
-  await expect(page.locator('.maka-list-row-main[title^="会话 "]')).toHaveCount(60);
+  await expect(page.locator('[data-session-id][title^="会话 "]')).toHaveCount(60);
 
   // The list scroller and the chat scroller are distinct elements.
   await expect(page.locator(LIST_CONTENT)).toHaveCount(1);
@@ -225,4 +225,28 @@ test('official SideNav resize handle updates the sidebar width from the keyboard
   await expect.poll(async () => Number(await handle.getAttribute('aria-valuenow'))).toBe(beforeWidth + 10);
   await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
     .toBe(beforeWidth + 10);
+});
+
+test('titlebar restores the official SideNav width after pointer collapse', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const shell = page.locator('.appFrame');
+  const panel = page.locator('.maka-session-panel');
+  const handle = page.getByTestId('astryx-sidenav-resize-handle');
+  const handleBox = await handle.boundingBox();
+  const panelBox = await panel.boundingBox();
+  expect(handleBox).not.toBeNull();
+  expect(panelBox).not.toBeNull();
+  if (!handleBox || !panelBox) return;
+
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(panelBox.x + 100, handleBox.y + handleBox.height / 2, { steps: 4 });
+  await page.mouse.up();
+
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'collapsed');
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
+  await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
+    .toBeGreaterThanOrEqual(180);
 });

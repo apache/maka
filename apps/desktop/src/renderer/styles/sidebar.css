@@ -35,17 +35,6 @@
   border-top: 0;
 }
 
-/* Sidebar footer — Settings affordance only. The earlier "Free Plan" account
-   widget was removed (WAWQAQ msg cad3dec4: "现在左下角怎么还有 账户部分,
-   我们没有账户"). About / version still reachable via Settings → 关于. */
-.maka-sidebar-settings-button {
-  display: inline-grid;
-  /* Same glyph column as .maka-nav-row so the gear shares the nav rows'
-     icon axis and 16px chrome size (icon-system contract). */
-  grid-template-columns: var(--icon-size) minmax(0, 1fr);
-  align-items: center;
-}
-
 .maka-sidebar-update-button {
   position: relative;
   min-width: 0;
@@ -113,33 +102,6 @@
   -webkit-app-region: no-drag;
 }
 
-.maka-nav-row {
-  -webkit-app-region: no-drag;
-}
-
-.maka-nav-row span:nth-child(2) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-nav-row small {
-  font-variant-numeric: tabular-nums;
-}
-
-.maka-nav-count {
-  min-width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-pill);
-  padding: 0 var(--space-1);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-}
-
 .maka-list-stack {
   min-height: 0;
   overflow: hidden;
@@ -166,16 +128,6 @@
   border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.05);
 }
 
-.maka-list-group[data-variant="project"] + .maka-list-group[data-variant="project"] {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
-}
-
-.maka-list-group[data-variant="project"][data-expanded="true"] + .maka-list-group[data-variant="project"] {
-  margin-top: var(--space-3);
-}
-
 /* Group label — a quiet, non-interactive divider for flat conversations.
    Project disclosures use their own heading control below. */
 .maka-list-group-label {
@@ -190,32 +142,13 @@
 }
 
 .maka-list-project-heading {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
   gap: var(--space-1-5);
-  width: 100%;
-  min-height: var(--h-control-lg);
-  padding: 0 var(--space-1-5);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
-  text-align: left;
-}
-
-.maka-list-project-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--h-control-lg);
-  align-items: center;
   min-width: 0;
-}
-
-.maka-list-project-heading:disabled {
-  cursor: default;
-  opacity: 1;
 }
 
 .maka-list-project-name {
@@ -232,19 +165,15 @@
   font-variant-numeric: tabular-nums;
 }
 
-.maka-list-project-menu-trigger {
-  justify-self: end;
-}
-
-.maka-list-group[data-unavailable="true"] .maka-list-project-heading {
+.maka-list-project-heading[data-unavailable="true"] {
   color: var(--muted-foreground);
 }
 
-.maka-list-group[data-unavailable="true"] .maka-list-project-heading [aria-label] {
+.maka-list-project-heading[data-unavailable="true"] [aria-label] {
   color: var(--warning-foreground, var(--muted-foreground));
 }
 
-.maka-list-project-rename input {
+.maka-list-project-rename {
   min-width: 0;
   width: 100%;
   height: var(--h-control-sm);
@@ -257,7 +186,7 @@
   padding: 0 var(--space-1);
 }
 
-.maka-list-project-rename input:focus-visible {
+.maka-list-project-rename:focus-visible {
   border-color: var(--focus-ring);
   box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--focus-ring) 24%, transparent);
 }
@@ -267,56 +196,48 @@
   color: var(--muted-foreground);
 }
 
-/* The semantic project heading owns its composite row states. Only the
-   folder-glyph tint + flex-shrink guard remain heading-specific here. */
-.maka-list-project-heading svg {
-  color: var(--muted-foreground);
-  flex: 0 0 auto;
+/* Astryx ListItem and TreeListItem own row geometry, selection, hover, and focus.
+   Maka contributes only product content inside their public slots. */
+.maka-session-item-start,
+.maka-session-item-end,
+.maka-session-item-label,
+.maka-project-item-end {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
 }
 
+.maka-session-item-start,
+.maka-session-item-end,
+.maka-project-item-end {
+  gap: var(--space-1);
+}
 
-
-/* PR-SIDEBAR-IA-0 Phase 3 (WAWQAQ msgs `14ed98b5`, `761141c5` —
- * "list 很丑、很肥很臃肿"; xuan `6b28984e` sign-off + "32-40px 薄行";
- * kenji `2b20c73c`): slim row.
- *
- * Before Phase 3: each row was a 56-72px card (border + radius +
- * shadow) showing title + snippet + meta stacked over three lines.
- * That made 9-10 rows visible in a 990px viewport — far too few for
- * a sidebar of 60 sessions.
- *
- * After Phase 3:
- *   - 32px min-height, single line: status indicator + name + time.
- *   - Flat list (no border, no radius, no shadow); the surrounding
- *     `.maka-list-stackContent` provides the row stack, so rows just need
- *     to read as a list, not a stack of cards.
- *   - Snippet drops out of the default DOM (lives only in a native
- *     `title=` tooltip on hover) — see SessionRow render path.
- *   - A single overflow trigger replaces the time/unread slot on hover or focus.
- *   - Active row uses a neutral flat fill instead of the old accent rail.
- */
-.maka-list-row {
-  position: relative;
-  width: 100%;
-  min-height: var(--h-control-lg);
-  display: flex;
-  align-items: stretch;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground);
+.maka-session-item-label {
+  gap: var(--space-1-5);
   overflow: hidden;
-  transition: background-color var(--duration-base) var(--ease-out-strong);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
 }
 
-.maka-list-session-children {
-  margin-inline-start: var(--space-2);
-  padding-inline-start: var(--space-1);
-  border-inline-start: var(--border-width-hairline) solid var(--border);
+.maka-session-item-label > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.maka-list-row[data-subagent="true"] {
-  background: var(--selection);
+.maka-session-item-label[data-stale="true"] {
+  opacity: var(--opacity-muted);
+}
+
+:is(.astryx-list-item[aria-current="true"], [role="treeitem"][aria-selected="true"])
+  .maka-session-item-label[data-stale="true"] {
+  opacity: 1;
+}
+
+.maka-session-list-item[data-subagent="true"] .maka-session-item-label {
+  color: var(--foreground-secondary);
 }
 
 .maka-list-row-subagent-icon {
@@ -324,100 +245,11 @@
   color: var(--muted-foreground);
 }
 
-.maka-list-row:hover {
-  background: var(--state-hover-bg);
-}
-
-.maka-list-row:active {
-  background: var(--state-selected-bg);
-}
-
-/* Active session row: slightly stronger than hover so the current
-   session is distinguishable from hover, but lighter than nav-row
-   active (0.09) so the main navigation reads as the primary surface. */
-.maka-list-row[data-active="true"] {
-  background: var(--state-selected-bg);
-}
-
-.maka-list-row[data-active="true"] .maka-list-row-name {
-  color: var(--foreground);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-list-row-main {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  /* Phase 3: single-row layout — name takes the flex column, time
-   * sits in the auto column at the inline-end. Snippet drops out of
-   * the default DOM entirely (replaced by native title= tooltip on
-   * the button). */
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-1-5);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: inherit;
-  padding: var(--space-0-5) var(--space-2) var(--space-0-5) var(--space-2-5);
-  text-align: left;
-}
-
-.maka-list-row-menu-trigger {
-  position: absolute;
-  top: 0;
-  right: var(--space-1);
-  width: var(--h-control-lg);
-  height: var(--h-control-lg);
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground-secondary);
-  opacity: 0;
-  transform: translateX(var(--space-1));
-  transition:
-    opacity var(--duration-base) var(--ease-out-strong),
-    transform var(--duration-base) var(--ease-out-strong),
-    background-color var(--duration-base) var(--ease-out-strong),
-    color var(--duration-base) var(--ease-out-strong);
-  pointer-events: none;
-}
-
-.maka-list-row-menu-trigger:hover,
-.maka-list-row-menu-trigger:focus-visible,
-.maka-list-row-menu-trigger[aria-expanded="true"] {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-}
-
-.maka-list-row-menu-trigger:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-list-row:hover .maka-list-row-menu-trigger,
-.maka-list-row:focus-within .maka-list-row-menu-trigger,
-.maka-list-row-menu-trigger[data-visible="true"] {
-  opacity: 1;
-  transform: translateX(0);
-  pointer-events: auto;
-}
-
-.maka-list-row:hover .maka-list-row-meta,
-.maka-list-row:hover .maka-list-row-unread,
-.maka-list-row:focus-within .maka-list-row-meta,
-.maka-list-row:focus-within .maka-list-row-unread,
-.maka-list-row[data-menu-open="true"] .maka-list-row-meta,
-.maka-list-row[data-menu-open="true"] .maka-list-row-unread {
-  visibility: hidden;
-}
-
 .maka-list-row-rename-input {
   width: 100%;
+  min-width: 0;
   border: 0;
+  border-bottom: var(--border-width-hairline) solid oklch(from var(--focus-ring) l c h / 0.4);
   background: transparent;
   color: var(--foreground);
   font: inherit;
@@ -425,29 +257,10 @@
   font-weight: var(--font-weight-semibold);
   outline: 0;
   padding: 1px 0;
-  border-bottom: var(--border-width-hairline) solid oklch(from var(--focus-ring) l c h / 0.4);
 }
 
 .maka-list-row-rename-input:focus {
   border-bottom-color: var(--focus-ring);
-}
-
-.maka-list-row[data-editing="true"] {
-  border-color: oklch(from var(--focus-ring) l c h / 0.45);
-  background: var(--background);
-}
-
-.maka-list-row[data-editing="true"] .maka-list-row-main {
-  cursor: text;
-}
-
-.maka-list-row-main:focus-visible {
-  outline: 0;
-}
-
-.maka-list-row:has(.maka-list-row-main:focus-visible) {
-  border-color: oklch(from var(--focus-ring) l c h / 0.4);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.18);
 }
 
 
@@ -467,24 +280,6 @@
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-}
-
-/* List-row status family — merged back from onboarding.css — issue #546 PR3. */
-.maka-list-row-name {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  overflow: hidden;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  min-width: 0;
-}
-
-.maka-list-row-name > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 
 /* Small pulsing accent dot rendered when a session has live streaming
@@ -518,10 +313,6 @@
   }
 }
 
-.maka-list-row[data-streaming="true"] .maka-list-row-name > span {
-  color: var(--foreground);
-}
-
 /* PR-SIDEBAR-IA-0 Phase 3: meta (relative time) now sits inline at
  * the row's inline-end instead of stacked below the name. Color +
  * size kept muted so it reads as secondary info, not a competing
@@ -535,16 +326,6 @@
   font-weight: var(--font-weight-medium);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
-}
-
-/* PR-SIDEBAR-IA-0 Phase 3: `.maka-list-row-text` collapses to a single
- * row (name on the inline-start). The previous stack-of-three
- * layout (name / preview / meta) is gone — preview drops out of the
- * default DOM, meta moves inline to the row's right column. */
-.maka-list-row-text {
-  min-width: 0;
-  display: flex;
-  align-items: center;
 }
 
 /* PR-SIDEBAR-IA-0 Phase 3: `.maka-list-row-preview` is no longer
@@ -568,25 +349,6 @@
   border-radius: var(--radius-pill);
   background: var(--status-running);
   box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.15);
-}
-
-/* Stale session — `backend='fake'` or `llmConnectionSlug` no longer
- * resolves. Pairs with the chat-header banner (PR108e) so users can spot
- * dead sessions in the sidebar list before clicking in. Visual treatment:
- *
- * - Row body dimmed via opacity reduction (preserves all underlying tones
- *   but reads as "secondary"); active state remains fully opaque so the
- *   currently-selected row never disappears just because it's stale.
- * - A small amber pill labelled "已过期" sits next to the session name —
- *   muted-warning tone, not destructive, because @xuan's send-path silent
- *   rebind makes these sessions still functional.
- */
-.maka-list-row[data-stale="true"] {
-  opacity: var(--opacity-muted);
-}
-
-.maka-list-row[data-stale="true"][data-active="true"] {
-  opacity: 1;
 }
 
 /* PR109b: SessionStatusIcon — small inline icon next to session name
@@ -651,32 +413,6 @@
   animation: none;
 }
 
-.maka-list-project-heading {
-  transition:
-    background-color var(--duration-base) var(--ease-out-strong),
-    color var(--duration-base) var(--ease-out-strong),
-    opacity var(--duration-base) var(--ease-out-strong);
-}
-.maka-list-project-heading:hover {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-}
-.maka-list-project-heading:active {
-  background: var(--state-selected-bg);
-}
-.maka-list-project-heading:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-  border-radius: var(--radius-control);
-}
-.maka-list-project-heading:disabled {
-  cursor: not-allowed;
-  opacity: var(--opacity-disabled);
-}
-.maka-list-project-heading:disabled:hover {
-  background: transparent;
-  color: var(--muted-foreground);
-}
 .maka-list-row-stale-pill {
   flex-shrink: 0;
   /* PR-UI-3: drop margin-left, let parent's gap (6px) handle spacing
@@ -692,10 +428,6 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   line-height: var(--leading-snug);
-}
-
-.maka-list-row:hover .maka-list-row-name {
-  color: var(--foreground);
 }
 
 /* ⌘N hint on the 新任务 row — quiet kbd chip pushed to the right rail,

@@ -32,7 +32,7 @@ describe('sidebar subtraction', () => {
     assert.doesNotMatch(markup, /aria-expanded=/);
   });
 
-  it('keeps the visible scheduled-task label in its pending-reminder accessible name', () => {
+  it('keeps pending-reminder state in the collapsed SideNavItem accessible name', () => {
     const reminder: PlanReminder = {
       id: 'reminder-1',
       title: 'Review open work',
@@ -48,17 +48,21 @@ describe('sidebar subtraction', () => {
     };
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <SessionSidebarNav
+        <SessionListPanel
+          collapsed
           selection={{ section: 'automations', module: 'plan-reminders' }}
           planReminders={[reminder]}
+          sessions={[]}
+          onSelectSession={() => {}}
           onSelect={() => {}}
+          onOpenSettings={() => {}}
           onNew={() => {}}
         />
       </LocaleProvider>,
     );
 
-    assert.match(markup, />Scheduled tasks<\/span>.*>1<\/small>/);
-    assert.doesNotMatch(markup, /aria-label="Automations,/);
+    assert.match(markup, /aria-label="Scheduled tasks, 1 unfinished reminder"/);
+    assert.doesNotMatch(markup, /maka-nav-count/);
   });
 
   it('renders each pair of peer modules as a localized segmented control', () => {

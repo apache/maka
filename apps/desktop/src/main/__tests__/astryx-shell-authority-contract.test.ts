@@ -23,6 +23,8 @@ test('the desktop shell composes the official Astryx AppShell directly', async (
 test('the session sidebar delegates geometry and collapse to official SideNav', async () => {
   const panel = await source('packages/ui/src/session-list-panel.tsx');
   const navigation = await source('packages/ui/src/session-sidebar-nav.tsx');
+  const chrome = await source('apps/desktop/src/renderer/app-shell-chrome-actions.tsx');
+  const shellCss = await source('apps/desktop/src/renderer/styles/shell-layout.css');
 
   assert.match(panel, /@astryxdesign\/core\/SideNav/);
   assert.match(panel, /<SideNav/);
@@ -34,6 +36,10 @@ test('the session sidebar delegates geometry and collapse to official SideNav', 
   assert.match(navigation, /size="md"/);
   assert.doesNotMatch(navigation, /BaseButton/);
   assert.doesNotMatch(navigation, /\bcva\b/);
+  assert.doesNotMatch(navigation, /className="maka-nav-row/);
+  assert.doesNotMatch(chrome, /<SideNavCollapseButton[^>]*\bsize=/);
+  assert.equal(chrome.match(/size(?::|=)\s*(?:"md"|'md')/g)?.length, 4);
+  assert.doesNotMatch(shellCss, /maka-shell-2col|maka-resize-handle|isResizingColumns/);
 });
 
 test('history and workbar use Astryx navigation taxonomy without shared wrappers', async () => {
@@ -42,10 +48,20 @@ test('history and workbar use Astryx navigation taxonomy without shared wrappers
 
   assert.match(history, /@astryxdesign\/core\/List/);
   assert.match(history, /@astryxdesign\/core\/TreeList/);
-  const renameNavigationGuards = history.match(
-    /\['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'\]\.includes\(event\.key\)\)\s*\{\s*event\.stopPropagation\(\);/g,
+  assert.doesNotMatch(history, /@base-ui\/react\/button/);
+  assert.doesNotMatch(history, /querySelectorAll<HTMLButtonElement>\('\.maka-list-row-main'\)/);
+  assert.match(history, /<ListItem[\s\S]*?onClick=\{isEditing \? undefined/);
+  assert.match(history, /startContent=\{/);
+  assert.match(history, /endContent=\{/);
+  assert.match(history, /function sessionItem\(session: SessionSummary\): TreeListItemData/);
+  assert.match(history, /onClick: isEditing[\s\S]*?props\.onSelectSession\(session\.id\)/);
+  assert.doesNotMatch(history, /function ProjectSessionGroup/);
+  assert.match(history, /const projectItem[\s\S]*?startContent:[\s\S]*?endContent:/);
+  const renameExclusiveKeyHandlers = history.match(
+    /onKeyDown=\{\(event\) => \{\s*event\.stopPropagation\(\);/g,
   );
-  assert.equal(renameNavigationGuards?.length, 2);
+  assert.equal(renameExclusiveKeyHandlers?.length, 2);
+  assert.doesNotMatch(history, /onDoubleClick=/);
   assert.match(workbar, /@astryxdesign\/core\/Toolbar/);
   assert.match(workbar, /@astryxdesign\/core\/TabList/);
   assert.match(workbar, /<Toolbar/);

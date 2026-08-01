@@ -1,11 +1,12 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import { ChatView, Composer, SessionListPanel } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
 
@@ -253,6 +254,7 @@ function ComposedShell(props: {
   motionEnabled?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
+  const sidebarHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
   const sidebarWidth = 260;
   const sessions = sidebarSessions.map((s) =>
@@ -284,9 +286,8 @@ function ComposedShell(props: {
           <header className="maka-window-titlebar">
             <AppShellTopbarActions
               sidebarCollapsed={collapsed}
+              sidebarHandleRef={sidebarHandleRef}
               onOpenSearchModal={noop}
-              onCollapseSidebar={() => setCollapsed(true)}
-              onExpandSidebar={() => setCollapsed(false)}
               onCreateSession={noop}
             />
             <AppShellWorkspaceTopActions
@@ -302,6 +303,7 @@ function ComposedShell(props: {
         }
         sideNav={
           <SessionListPanel
+            collapseHandleRef={sidebarHandleRef}
             collapsed={collapsed}
             onCollapsedChange={setCollapsed}
             width={sidebarWidth}

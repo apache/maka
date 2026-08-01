@@ -64,20 +64,9 @@ html[data-os="darwin"] .maka-list-group-label {
   color: var(--color-text-quaternary);
 }
 
-/* Force opaque-foreground text on every direct sidebar text surface so
-   the glass material doesn't pull legibility down through inheritance
-   (audit finding §6). The wash + 50% base provide enough contrast for
-   foreground @ full alpha; nav rows / list rows / settings button all
-   inherit. */
-html[data-os="darwin"] .maka-session-list,
-  html[data-os="darwin"] .maka-list-row {
-    color: var(--foreground);
-  }
-
-/* `.maka-nav-row` is a semantic navigation control, so this darwin glass
-   override must outrank the sidebar default color — same maka.legacy layer,
-   higher specificity. */
-html[data-os="darwin"] .maka-nav-row {
+/* Product content inherits one foreground while Astryx owns the navigation
+   item chrome and its state colors. */
+html[data-os="darwin"] .maka-session-list {
   color: var(--foreground);
 }
 
@@ -105,8 +94,6 @@ html[data-os="darwin"] .maka-session-panel-footer {
 
 .maka-session-panel,
   .maka-session-panel-footer,
-  .maka-nav-row,
-  .maka-list-row,
   .maka-module-main-header,
   .maka-plan-heading,
   .maka-skill-tab,
