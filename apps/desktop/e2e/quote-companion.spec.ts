@@ -1,5 +1,11 @@
 import { test, expect } from './fixtures';
 
+/**
+ * Quote companion lifecycle: stage selection → side panel → remove one staged
+ * quote → fork explore session → send → exit cleans up.
+ * Composer chrome only needs token *count* here; full quote text lives in the
+ * panel list (Token labels truncate and must not be the source of truth).
+ */
 test('quote companion removes one staged quote, forks, answers, and cleans up on exit', async ({
   window: page,
 }) => {
@@ -35,15 +41,14 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
 
   const panel = page.locator('.maka-quote-companion');
   await expect(panel).toBeVisible();
-  // Quiet composer stages quotes as drawer Tokens (not the retired quote chip).
-  const quoteTokens = panel.locator('.maka-composer .maka-composer-quote-token');
+
+  // Quiet composer stages quotes as drawer Tokens (Astryx Token + remove).
+  const quoteTokens = panel.locator('.maka-composer-context-drawer .astryx-token');
   await expect(quoteTokens).toHaveCount(2);
-  // Astryx Token remove control: "Remove {label}".
   await quoteTokens.first().getByRole('button', { name: /^Remove / }).click();
   await expect(quoteTokens).toHaveCount(1);
-  await expect(quoteTokens).toContainText(
-    'Fake backend received: quote companion source two',
-  );
+
+  // Full text authority is the companion panel list, not truncated token labels.
   await expect(
     panel.locator('.maka-quote-panel-quote', {
       hasText: 'Fake backend received: quote companion source one',

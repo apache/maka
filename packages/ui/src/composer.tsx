@@ -769,7 +769,6 @@ export const Composer = forwardRef<
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
-                    className="maka-composer-quote-token"
                     label={quote.label?.trim() || quote.text.slice(0, 48) || copy.pastedQuoteLabel}
                     onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
                   />

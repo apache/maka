@@ -1,52 +1,33 @@
 import { expect, test } from './fixtures';
 
-const READ_ONLY_HINT = '只读搜索，不写文件、不上网；需要时先问你。';
-// Icon trigger tooltip is "label — hint"; accessible description follows tooltip.
-const READ_ONLY_DESCRIPTION = `只读 — ${READ_ONLY_HINT}`;
-
 /**
- * #1611 + #1616: the composer's permission control is the only place a user
- * learns what the running session may do. Quiet composer: ghost icon button
- * + short radio menu (labels only; full hint on the trigger).
+ * #1611 + #1616: cross-boundary permission journeys only.
+ * Quiet chrome shape (icon menu, labels, no sandbox wording in options) is
+ * covered by packages/ui permission-mode-menu unit tests — do not re-lock
+ * tooltip / aria-description copy here.
  */
-test('a read-only session names its boundary and can still be raised to full access', async ({
+test('a read-only session can open full-access confirm and still choose Auto', async ({
   readOnlyBoundaryWindow: page,
 }) => {
   const trigger = page
     .locator('.maka-composer-left-controls .permissionModeIcon')
     .getByRole('button');
   await expect(trigger).toHaveAccessibleName('权限模式：只读');
-  await expect(trigger).toHaveAccessibleDescription(READ_ONLY_DESCRIPTION);
-  await expect(trigger).toHaveAttribute('aria-description', READ_ONLY_HINT);
-
-  await trigger.click();
-  const radios = page.getByRole('menuitemradio');
-  await expect(radios).toHaveCount(2);
-  await expect(radios.nth(0)).toContainText('自动');
-  await expect(radios.nth(1)).toContainText('完全权限');
-  await expect(page.getByRole('menu')).not.toContainText('沙箱');
-
-  // Read-only is display-only: neither option is selected.
-  await expect(radios.nth(0)).toHaveAttribute('aria-checked', 'false');
-  await expect(radios.nth(1)).toHaveAttribute('aria-checked', 'false');
-
-  // Opening and dismissing is not a choice.
-  await page.keyboard.press('Escape');
-  await expect(page.getByRole('menu')).toHaveCount(0);
-  await expect(trigger).toHaveAccessibleName('权限模式：只读');
 
   // Full access still requires confirmation; cancel leaves the boundary.
   await trigger.click();
-  await page.getByRole('menuitemradio', { name: /完全权限/ }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu).toBeVisible();
+  await menu.getByRole('menuitemradio', { name: /完全权限/ }).click();
   await expect(page.locator('.maka-confirm-modal')).toHaveCount(1);
   await page.getByRole('button', { name: '保持自动' }).click();
   await expect(page.locator('.maka-confirm-modal')).toHaveCount(0);
   await expect(trigger).toHaveAccessibleName('权限模式：只读');
 
-  // Choosing Auto is a real permission change.
+  // Choosing Auto is a real permission change against the session boundary.
   await trigger.click();
-  await expect(page.getByRole('menu')).toBeVisible();
-  await page.getByRole('menuitemradio', { name: /自动/ }).click();
+  await expect(menu).toBeVisible();
+  await menu.getByRole('menuitemradio', { name: /自动/ }).click();
   await expect(trigger).toHaveAccessibleName('权限模式：自动');
 });
 
