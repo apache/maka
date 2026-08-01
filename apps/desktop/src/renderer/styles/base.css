@@ -2,6 +2,13 @@
   body {
     margin: 0;
   }
+/* Astryx 0.2.0 reset uses zero-specificity `:where([hidden])`, so component
+   display declarations can make native-hidden surfaces interactive again.
+   Justified !important: the HTML hidden invariant must beat every component
+   display mode. Remove when the pinned Astryx reset enforces the same invariant. */
+[hidden] {
+    display: none !important;
+  }
 .detailPane {
     min-width: 0;
     min-height: 0;
