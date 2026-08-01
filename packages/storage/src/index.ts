@@ -1,4 +1,28 @@
-export * from './session-store.js';
+export {
+  SQLITE_SESSION_METADATA_DATABASE_NAME,
+  SessionNotFoundError,
+  SessionReadMarkerMessageNotFoundError,
+  assertSafeSessionId,
+  createSessionStore,
+  createUserMessage,
+  decodeSessionHeader,
+  isSafeSessionId,
+  isSessionNotFoundError,
+  normalizeSessionHeader,
+} from './session-store.js';
+export type {
+  CreateStableSessionRequest,
+  CreateStableSessionResult,
+  ProbeStableSessionCreateResult,
+  SessionAuthorityStore,
+  SessionCatalogPageCursor,
+  SessionCatalogPageResult,
+  SessionCatalogRecord,
+  SessionHeaderSnapshot,
+  SessionStore,
+  StableSessionCreateInput,
+  UpdateSessionConfigurationRequest,
+} from './session-store.js';
 export * from './session-transcript.js';
 export * from './sqlite-session-metadata-store.js';
 export * from './session-metadata-transfer.js';
@@ -45,7 +69,20 @@ export type {
   LegacyCredentialDecryptor,
 } from './credential-store.js';
 export * from './settings-store.js';
-export * from './telemetry-repo.js';
+export {
+  TelemetryQueryValidationError,
+  TelemetryRepoClosedError,
+  TelemetryRepoNotLoadedError,
+  TelemetryRepoPublicationError,
+  resolveRange,
+} from './telemetry-repo.js';
+export type {
+  CreateTelemetryRepoOptions,
+  PersistedLlmCallRecord,
+  PersistedToolInvocationRecord,
+  TelemetryRepo,
+  ToolUsageQuery,
+} from './telemetry-repo.js';
 export * from './sqlite-usage-store.js';
 export * from './usage-stores.js';
 export {
@@ -65,11 +102,34 @@ export type {
 } from './artifact-store.js';
 export * from './artifact-attachments.js';
 export * from './provider-request-capture-artifact.js';
-export * from './plan-reminder-store.js';
-export * from './plan-store.js';
-export * from './task-ledger-store.js';
+export { createSqlitePlanReminderStore } from './plan-reminder-store.js';
+export type {
+  CreateSqlitePlanReminderStoreOptions,
+  PlanReminderStore,
+  SqlitePlanReminderStore,
+} from './plan-reminder-store.js';
+export { applyPlanEvent, createSqlitePlanStore } from './plan-store.js';
+export type {
+  CreatePlanStoreOptions,
+  CreateSqlitePlanStoreOptions,
+  SqlitePlanStore,
+} from './plan-store.js';
+export { createSqliteTaskLedgerStore } from './task-ledger-store.js';
+export type {
+  ConversationTaskLedgerCopyInput,
+  CreateSqliteTaskLedgerStoreOptions,
+  SqliteTaskLedgerStore,
+  TaskLedgerAuthorityStore,
+  TaskLedgerStore,
+} from './task-ledger-store.js';
 export * from './foreign-session-store.js';
-export * from './deep-research-store.js';
+export { createSqliteDeepResearchStore } from './deep-research-store.js';
+export type {
+  CreateDeepResearchStoreOptions,
+  CreateSqliteDeepResearchStoreOptions,
+  DeepResearchStore,
+  SqliteDeepResearchStore,
+} from './deep-research-store.js';
 export * from './config-transfer.js';
 export * from './automation-store.js';
 export * from './sqlite-runtime-store.js';

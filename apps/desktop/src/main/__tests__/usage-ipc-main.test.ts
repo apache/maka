@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import { createTelemetryRepo } from '@maka/storage';
+import { createSqliteTelemetryRepo } from '@maka/storage';
 import { registerUsageIpc, type UsageIpcDeps } from '../usage-ipc-main.js';
 
 type Handler = (...args: any[]) => any;
@@ -17,10 +17,10 @@ function deferred() {
   return { promise, resolve };
 }
 
-test('usage IPC leaves settings usage session-derived while detailed usage waits for raw repo readiness', async () => {
+test('usage IPC leaves settings usage session-derived while detailed usage waits for SQLite readiness', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-usage-ipc-ready-'));
-  const seeded = createTelemetryRepo(root);
-  const telemetryRepo = createTelemetryRepo(root, { createIfMissing: false });
+  const seeded = createSqliteTelemetryRepo(root);
+  const telemetryRepo = createSqliteTelemetryRepo(root, { createIfMissing: false });
   const ready = deferred();
   const handlers = new Map<string, Handler>();
   const calls: string[] = [];
@@ -70,7 +70,7 @@ test('usage IPC leaves settings usage session-derived while detailed usage waits
   }
 });
 
-test('legacy pricing IPC mutations serialize through the raw compatibility repo', async () => {
+test('pricing IPC mutations serialize through the canonical SQLite repo after legacy import', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-usage-ipc-pricing-'));
   const legacy = pricing('openai:legacy');
   await writeFile(
@@ -82,7 +82,7 @@ test('legacy pricing IPC mutations serialize through the raw compatibility repo'
     }),
     'utf8',
   );
-  const telemetryRepo = createTelemetryRepo(root);
+  const telemetryRepo = createSqliteTelemetryRepo(root);
   const handlers = new Map<string, Handler>();
   const firstWrite = deferred();
   const firstWriteStarted = deferred();

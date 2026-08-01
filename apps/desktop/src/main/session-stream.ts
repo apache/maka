@@ -33,9 +33,9 @@ import type {
 import {
   type ArtifactStore,
   createAttachmentByteReader,
-  createTelemetryRepo,
   openRuntimeEventPersistence,
   persistProviderRequestCaptureArtifact,
+  type TelemetryRepo,
 } from '@maka/storage';
 import { WEB_SEARCH_TOOL_NAME } from './web-search/agent-tool.js';
 import { errorCode, errorMessage, errorReason } from './chat-readiness.js';
@@ -54,7 +54,6 @@ type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
-type TelemetryRepo = ReturnType<typeof createTelemetryRepo>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];
 const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;

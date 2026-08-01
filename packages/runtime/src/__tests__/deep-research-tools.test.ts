@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import type { ArtifactRecord, DeepResearchRun } from '@maka/core';
-import { createDeepResearchStore } from '@maka/storage';
+import { createLegacyDeepResearchStoreForTest } from '@maka/storage/legacy-storage-test-support';
 import {
   DEEP_RESEARCH_CHECKPOINT_TOOL_NAME,
   DEEP_RESEARCH_COMPLETE_TOOL_NAME,
@@ -108,7 +108,7 @@ async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> 
 describe('Deep Research runtime tools', () => {
   it('exposes eight Maka-owned local workspace tools', () => {
     const tools = buildDeepResearchTools({
-      store: createDeepResearchStore('/tmp/maka-unused-deep-research'),
+      store: createLegacyDeepResearchStoreForTest('/tmp/maka-unused-deep-research'),
       artifactStore: new FakeArtifactStore(),
     });
     assert.deepEqual(
@@ -130,7 +130,7 @@ describe('Deep Research runtime tools', () => {
     await withTempRoot(async (root) => {
       const artifactStore = new FakeArtifactStore();
       const notifications: string[] = [];
-      const store = createDeepResearchStore(root);
+      const store = createLegacyDeepResearchStoreForTest(root);
       const tools = buildDeepResearchTools({
         store,
         artifactStore,
@@ -450,7 +450,7 @@ describe('Deep Research runtime tools', () => {
 
   it('rejects untraceable derived artifacts at the schema boundary', () => {
     const tools = buildDeepResearchTools({
-      store: createDeepResearchStore('/tmp/maka-unused-deep-research-2'),
+      store: createLegacyDeepResearchStoreForTest('/tmp/maka-unused-deep-research-2'),
       artifactStore: new FakeArtifactStore(),
     });
     const save = findTool(tools, DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME);
@@ -527,7 +527,7 @@ describe('Deep Research runtime tools', () => {
     await withTempRoot(async (root) => {
       const artifactStore = new FakeArtifactStore();
       const tools = buildDeepResearchTools({
-        store: createDeepResearchStore(root),
+        store: createLegacyDeepResearchStoreForTest(root),
         artifactStore,
       });
       await execute(
