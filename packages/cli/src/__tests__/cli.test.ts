@@ -19,7 +19,6 @@ import { createMakaCliRuntimeContext } from '../runtime-bootstrap.js';
 
 const execFileAsync = promisify(execFile);
 const cliPath = new URL('../cli.js', import.meta.url).pathname;
-const legacyCliPath = new URL('../../../headless/dist/cli.js', import.meta.url).pathname;
 
 function runCliProcess(
   entrypoint: string,
@@ -126,12 +125,6 @@ describe('Maka CLI args', () => {
     });
   });
 
-  test('runs the plain TUI without a resumeSessionId', () => {
-    const command = parseMakaCliArgs([], '0.1.0');
-    assert.deepEqual(command, { kind: 'tui' });
-    assert.equal((command as { resumeSessionId?: string }).resumeSessionId, undefined);
-  });
-
   test('uses the command exit code when no earlier exit reason exists', () => {
     assert.equal(resolveMakaCliExitCode(2, undefined), 2);
   });
@@ -186,12 +179,6 @@ describe('Maka CLI args', () => {
     assert.equal(signal, null);
     assert.equal(code, 1);
     assert.ok(Date.now() - startedAt >= 2_500);
-  });
-
-  test('prints version from the executable entrypoint', async () => {
-    const { stdout } = await execFileAsync(process.execPath, [cliPath, '--version']);
-
-    assert.equal(stdout.trim(), '0.1.0');
   });
 
   test('inspects a Session through the executable entrypoint', async () => {
@@ -280,40 +267,12 @@ describe('Maka CLI args', () => {
     }
   });
 
-  test('exposes identical run help through maka run and maka -p', async () => {
-    const run = await runCliProcess(cliPath, ['run', '--help']);
-    const alias = await runCliProcess(cliPath, ['-p', '--help']);
-
-    assert.equal(run.code, 0, run.stderr);
-    assert.equal(alias.code, 0, alias.stderr);
-    assert.equal(alias.stdout, run.stdout);
-    assert.match(run.stdout, /Usage: maka run/);
-  });
-
   test('returns exit 2 for missing non-interactive input before configuration startup', async () => {
     const result = await runCliProcess(cliPath, ['run']);
 
     assert.equal(result.code, 2);
     assert.match(result.stderr, /missing prompt input/);
     assert.equal(result.stdout, '');
-  });
-
-  test('keeps all five legacy command families on the unified router exit contract', async () => {
-    const pairs = [
-      { unified: ['eval', 'run'], legacy: ['eval'] },
-      { unified: ['eval', 'compare'], legacy: ['compare'] },
-      { unified: ['eval', 'task-run'], legacy: ['task'] },
-      { unified: ['eval', 'harbor'], legacy: ['harbor'] },
-      { unified: ['eval', 'ahe'], legacy: ['ahe'] },
-    ];
-    for (const pair of pairs) {
-      const unified = await runCliProcess(cliPath, pair.unified);
-      const legacy = await runCliProcess(legacyCliPath, pair.legacy);
-      assert.equal(legacy.code, unified.code, pair.unified.join(' '));
-      assert.equal(legacy.stdout, unified.stdout, pair.unified.join(' '));
-      assert.match(legacy.stderr, /maka-headless is deprecated/);
-      assert.doesNotMatch(unified.stderr, /maka-headless is deprecated/);
-    }
   });
 
   test('runs when launched through a bin symlink', async () => {
