@@ -3,12 +3,10 @@
    shadow-maka-panel z-overlay) is set via Tailwind utilities on the element;
    this file owns layout + row chrome only.
 
-   The popup is an ABSOLUTE overlay anchored to `.maka-composer-inner` (which is
+   The popup is an ABSOLUTE overlay anchored to `.maka-composer-input` (which is
    already position:relative at rest), bottom-anchored so it floats above the
    textarea and never grows the composer box (composer-constant-footprint-
-   contract). No `.maka-composer-inner` rest rule is added here — the
-   composer-container-single-source contract keeps that selector's single
-   definition in composer.css. */
+   contract). Astryx remains the only composer-shell chrome owner. */
 .maka-composer-mention-popup {
   position: absolute;
   left: 0;

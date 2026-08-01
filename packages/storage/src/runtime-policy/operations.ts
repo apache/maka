@@ -29,6 +29,27 @@ export interface RuntimePolicyOperationSecretMaterial {
   readonly networkProxy?: RuntimePolicyCredentialMaterial;
 }
 
+export type OAuthCredentialLocator = Omit<
+  Extract<CredentialLocator, { scope: 'connection' }>,
+  'kind'
+> & {
+  readonly kind: 'oauth_token';
+};
+
+export interface CompareAndSetOAuthCredentialInput {
+  readonly locator: OAuthCredentialLocator;
+  readonly expected: Pick<CredentialVersionBasis, 'credentialId' | 'revision'>;
+  readonly secret: string;
+}
+
+export type CompareAndSetOAuthCredentialResult =
+  | {
+      readonly kind: 'committed';
+      readonly credentialId: string;
+      readonly revision: number;
+    }
+  | { readonly kind: 'superseded' };
+
 export type CredentialStatusQueryResult =
   | { readonly kind: 'status'; readonly status: CredentialStatus }
   | { readonly kind: 'connection_not_found' };
@@ -91,6 +112,9 @@ export type ResolveExecutionConnectionResult =
 
 export interface RuntimePolicyOperationCoordinator {
   resolveExecutionConnection(connectionSlug: string): Promise<ResolveExecutionConnectionResult>;
+  compareAndSetOAuthCredential(
+    input: CompareAndSetOAuthCredentialInput,
+  ): Promise<CompareAndSetOAuthCredentialResult>;
   beginModelFetch(connectionId: string): Promise<BeginModelFetchResult>;
   completeModelFetch(
     ticket: ModelFetchTicket,

@@ -4,7 +4,6 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { deriveCapabilityAuditReport } from '@maka/core';
 import { CapabilityAuditStrip, LocaleProvider } from '@maka/ui';
-import { readRendererContractCss } from './contract-css-helpers.js';
 
 describe('capability audit visible system contract', () => {
   it('renders sources, skills, and automations status without widening skill permissions', () => {
@@ -76,14 +75,5 @@ describe('capability audit visible system contract', () => {
 
     assert.equal(report.skills[0].permissionMode, 'ask');
     assert.notEqual(report.skills[0].permissionMode, 'execute');
-  });
-
-  it('keeps the exception-only strip free of the retired metrics band CSS', async () => {
-    const styles = await readRendererContractCss();
-
-    // The Alert primitive owns the warning chrome; the module CSS must not
-    // regrow the old full-width band (kicker / metrics dl / media grid).
-    assert.doesNotMatch(styles, /\.maka-capability-audit-metrics/);
-    assert.doesNotMatch(styles, /\.maka-capability-audit-kicker/);
   });
 });

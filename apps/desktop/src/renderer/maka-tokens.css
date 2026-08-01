@@ -406,15 +406,10 @@
      only misuse, and a contract test pinned the result. Adjacency is
      the whole rule; state it or the rule licenses nonsense.
 
-     Both legitimate forms in this codebase:
-       1. Tier swap, when outer − inset lands on a tier — the segmented
-          track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
-          --radius-control for the buttons that hug its ends.
-          See styles/segmented.css.
-       2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
+     A legitimate form in this codebase is
+       `calc(var(--radius-*) - 1px)`, the border inset — a ::before
           overlay at inset-0 hugging the inner edge of a 1px border.
-          See primitives/empty.tsx.
-     Both are corner-adjacent with a uniform inset. If a proposed
+     It is corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */
   --radius-control: 6px;
@@ -1231,9 +1226,18 @@ html[data-os="darwin"].dark {
     content-visibility: visible;
   }
 
-  /* Tools now render inline via the flat `ToolTrow`; reasoning uses Astryx
-     Collapsible through `DeepThinking`. Product text and shimmer remain local,
-     while disclosure focus, keyboard behavior, chevron, and chrome are Astryx-owned. */
+  /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
+     Core's atom sheet already contains every compiled StyleX atom except the
+     five shimmer declarations below; these are copied verbatim from lab.css. */
+  @keyframes x1ofn8cw-B {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
+  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
+  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
+  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
+  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
 
   /* ---- Tool activity ---------------------------------------------- */
 
@@ -1263,7 +1267,7 @@ html[data-os="darwin"].dark {
 
   /* ---- Composer --------------------------------------------------- */
 
-  .maka-composer[data-drag-active="true"] .maka-composer-inner {
+  .maka-composer[data-drag-active="true"] .maka-composer-astryx {
     border-color: oklch(from var(--focus-ring) l c h / 0.46);
     background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
     box-shadow:
@@ -1278,34 +1282,6 @@ html[data-os="darwin"].dark {
     gap: var(--space-2);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-  }
-
-  /* ---- Tabs ------------------------------------------------------- */
-
-  /* Shared tab spec (#499 P0-3): one `maka-tab` class + `underline`/`pill`
-   * variants on the Base UI Tabs primitive. Active/hover use the neutral
-   * state tokens — no brand color, no per-surface hand-written tab CSS.
-   * underline = neutral under-bar via the Base UI indicator (no bg fill);
-   * pill = neutral bg fill + bold (indicator hidden). */
-  .maka-tabs-list[data-variant="pill"] .maka-tab {
-    min-height: 34px;
-    border-radius: var(--radius-pill);
-    border: var(--border-width-hairline) solid transparent;
-    background: var(--foreground-5);
-    color: var(--foreground-secondary);
-    padding: 0 var(--space-4);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab:hover {
-    background: var(--state-hover-bg);
-    color: var(--foreground);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab[data-active] {
-    border-color: oklch(from var(--foreground) l c h / 0.16);
-    background: var(--state-selected-bg);
-    font-weight: var(--font-weight-semibold);
-  }
-  .maka-tabs-list[data-variant="underline"] .maka-tab[data-active] {
-    color: var(--foreground);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */
@@ -1386,44 +1362,6 @@ html[data-os="darwin"].dark {
   );
   background-size: 200% 100%;
   animation: maka-shimmer 1.5s var(--ease-in-out-strong) infinite;
-}
-
-/* Skeleton placeholder primitives — used while data is still in flight.
-   The base block carries the shimmer animation and a token-based tint so
-   they read the same in light + dark modes. Compose `.maka-skeleton-line`
-   widths via `style={{ width: '40%' }}` from the consuming component. */
-.maka-skeleton {
-  position: relative;
-  overflow: hidden;
-  background: var(--foreground-3);
-  border-radius: var(--radius-control);
-}
-.maka-skeleton::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    oklch(from var(--foreground) l c h / 0.06) 50%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: maka-shimmer 1.6s var(--ease-in-out-strong) infinite;
-}
-.maka-skeleton-line {
-  height: 12px;
-  border-radius: var(--radius-pill);
-}
-.maka-skeleton-line[data-size="lg"] { height: 16px; }
-.maka-skeleton-line[data-size="sm"] { height: 9px; }
-.maka-skeleton-card {
-  height: 92px;
-  border-radius: var(--radius-surface);
-}
-.maka-skeleton-stack {
-  display: grid;
-  gap: var(--space-2-5);
 }
 
 /* =============================================================================

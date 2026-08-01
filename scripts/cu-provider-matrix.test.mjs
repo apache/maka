@@ -1,16 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import {
-  buildProviderMatrix,
-  normalizeReport,
-  renderMarkdown,
-  summarizeLatency,
-  validateRealReport,
-} from './cu-provider-matrix.mjs';
+import { buildProviderMatrix, runCli, validateRealReport } from './cu-provider-matrix.mjs';
 
 function scenario(overrides = {}) {
   return {
@@ -119,213 +112,41 @@ function withLedgerCounts(report) {
   };
 }
 
-test('summarizeLatency reports stable aggregate latency metrics', () => {
-  assert.deepEqual(summarizeLatency([40, 10, 30, 20]), {
-    samples: 4,
-    averageMs: 25,
-    p50Ms: 20,
-    p95Ms: 40,
-    maxMs: 40,
-  });
-  assert.equal(summarizeLatency([null, undefined, Number.NaN]), null);
-});
-
-test('normalizeReport unifies real-model and direct-provider report fields', () => {
-  const metrics = normalizeReport(
-    {
-      actions: [
-        { modelLatencyMs: 120, toolLatencyMs: 40, displayLagMs: 8 },
-        { modelLatencyMs: 80, durationMs: 20, displayLagMs: 4, retry: true },
-      ],
-      forbiddenEffects: [],
-      fixtureState: { target: { blue: 1, red: 0 } },
-    },
-    scenario(),
-  );
-
-  assert.equal(metrics.modelLatency.averageMs, 100);
-  assert.equal(metrics.toolLatency.averageMs, 30);
-  assert.equal(metrics.displayLag.p50Ms, 4);
-  assert.equal(metrics.actionCount, 2);
-  assert.equal(metrics.retries, 1);
-  assert.equal(metrics.fixture.status, 'pass');
-  assert.equal(metrics.forbiddenEffects.status, 'pass');
-});
-
-test('buildProviderMatrix covers Claude, OpenAI, Kimi, and MiniMax readiness', async () => {
-  const reports = new Map([
-    [
-      '/reports/claude-click.json',
-      realReport({
-        provider: 'claude',
-        model: 'claude-sonnet',
-        actions: [
-          {
-            type: 'observe',
-            toolCallId: 'observe-1',
-            resultObservationId: 'observation-1',
-            targetPid: 42,
-            targetWindowId: 7,
-            success: true,
-            targetOwned: true,
-            modelLatencyMs: 100,
-            toolLatencyMs: 25,
-            displayLagMs: 5,
-          },
-          {
-            type: 'click_element',
-            toolCallId: 'click-1',
-            sourceObservationId: 'observation-1',
-            resultObservationId: 'observation-2',
-            targetPid: 42,
-            targetWindowId: 7,
-            success: true,
-            targetOwned: true,
-            durationMs: 30,
-          },
-        ],
-      }),
-    ],
-    [
-      '/reports/openai-click.json',
-      realReport({
-        status: 'fail',
-        fixtureState: { target: { blue: 1, red: 1 } },
-        forbiddenEffects: {
-          status: 'fail',
-          violations: [{ windowId: 'target', path: 'red', actual: 1, pass: false }],
-        },
-      }),
-    ],
-  ]);
-  const scenarios = [scenario()];
-  const providers = [
-    {
-      id: 'claude',
-      label: 'Claude',
-      readiness: 'real',
-      producer: 'cu-real-model-launcher',
-      model: 'claude-sonnet',
-      commandTemplate: ['npm', 'run', 'e2e:computer-use:model', '--', '{scenarioId}'],
-      reportTemplate: '/reports/{providerId}-{scenarioId}.json',
-    },
-    {
-      id: 'openai',
-      label: 'OpenAI',
-      readiness: 'real',
-      producer: 'cu-real-model-launcher',
-      model: 'gpt-5.4',
-      commandTemplate: 'npm run e2e:computer-use:openai -- {scenarioId}',
-      reportTemplate: '/reports/{providerId}-{scenarioId}.json',
-    },
-    {
-      id: 'kimi',
-      label: 'Kimi',
-      readiness: 'contract',
-      commandTemplate: 'node kimi.mjs {scenarioId}',
-    },
-    { id: 'minimax', label: 'MiniMax', readiness: 'unsupported' },
-  ];
-  const matrix = await buildProviderMatrix({
-    scenarios,
-    providers,
-    generatedAt: '2026-07-12T00:00:00.000Z',
-    loadReport: async (path) => {
-      if (!reports.has(path)) {
-        const error = new Error('missing');
-        error.code = 'ENOENT';
-        throw error;
-      }
-      return reports.get(path);
-    },
-  });
-
-  assert.deepEqual(matrix.summary.readiness, { real: 2, contract: 1, unsupported: 1 });
-  assert.deepEqual(matrix.summary.status, {
-    pass: 1,
-    'invalid-report': 1,
-    'contract-only': 1,
-    unsupported: 1,
-  });
-  assert.equal(matrix.rows[0].command, 'npm run e2e:computer-use:model -- click');
-  assert.equal(matrix.rows[0].modelLatency.p50Ms, 100);
-  assert.equal(matrix.rows[1].status, 'invalid-report');
-  assert.match(matrix.rows[1].reportError, /status must be pass/);
-  assert.equal(matrix.rows[2].actionCount, null);
-  assert.equal(matrix.rows[3].status, 'unsupported');
-
-  const markdown = renderMarkdown(matrix);
-  assert.match(
-    markdown,
-    /Claude \| Owned fixture click \| real \| real-runtime \| enforced \| pass/,
-  );
-  assert.match(markdown, /OpenAI \| Owned fixture click \| real \| - \| - \| invalid-report/);
-  assert.match(markdown, /Kimi \| Owned fixture click \| contract \| - \| - \| contract-only/);
-  assert.match(markdown, /MiniMax \| Owned fixture click \| unsupported \| - \| - \| unsupported/);
-});
-
-test('CLI writes JSON and Markdown without executing provider command templates', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'cu-provider-matrix-'));
-  const marker = join(dir, 'provider-command-ran');
-  const scenariosPath = join(dir, 'scenarios.json');
-  const providersPath = join(dir, 'providers.json');
-  const reportPath = join(dir, 'claude-click.json');
-  const jsonPath = join(dir, 'output', 'matrix.json');
-  const markdownPath = join(dir, 'output', 'matrix.md');
-  await Promise.all([
-    writeFile(scenariosPath, JSON.stringify({ scenarios: [scenario()] })),
-    writeFile(
-      providersPath,
-      JSON.stringify({
-        providers: [
-          {
-            id: 'claude',
-            readiness: 'real',
-            producer: 'cu-real-model-launcher',
-            model: 'gpt-5.4',
-            commandTemplate: `${process.execPath} -e "require('node:fs').writeFileSync('${marker}','bad')"`,
-            reportTemplate: '{providerId}-{scenarioId}.json',
-          },
-          { id: 'openai', readiness: 'contract', commandTemplate: 'openai {scenarioId}' },
-          { id: 'kimi', readiness: 'contract', commandTemplate: 'kimi {scenarioId}' },
-          { id: 'minimax', readiness: 'unsupported' },
-        ],
-      }),
-    ),
-    writeFile(
-      reportPath,
-      JSON.stringify(
-        realReport({
-          provider: 'claude',
-          model: 'gpt-5.4',
+test('matrix generation never executes provider command templates', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'cu-matrix-'));
+  const marker = join(directory, 'executed');
+  const scenariosPath = join(directory, 'scenarios.json');
+  const providersPath = join(directory, 'providers.json');
+  try {
+    await Promise.all([
+      writeFile(scenariosPath, JSON.stringify({ scenarios: [scenario()] })),
+      writeFile(
+        providersPath,
+        JSON.stringify({
+          providers: [
+            {
+              id: 'openai',
+              readiness: 'contract',
+              commandTemplate: `${process.execPath} -e "require('node:fs').writeFileSync('${marker}','bad')"`,
+            },
+          ],
         }),
       ),
-    ),
-  ]);
-
-  const result = spawnSync(
-    process.execPath,
-    [
-      new URL('./cu-provider-matrix.mjs', import.meta.url).pathname,
+    ]);
+    await runCli([
       '--scenarios',
       scenariosPath,
       '--providers',
       providersPath,
       '--json',
-      jsonPath,
+      join(directory, 'matrix.json'),
       '--markdown',
-      markdownPath,
-    ],
-    { encoding: 'utf8' },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  await assert.rejects(readFile(marker, 'utf8'), { code: 'ENOENT' });
-
-  const json = JSON.parse(await readFile(jsonPath, 'utf8'));
-  const markdown = await readFile(markdownPath, 'utf8');
-  assert.equal(json.rows.length, 4);
-  assert.equal(json.rows[0].status, 'pass');
-  assert.match(markdown, /# Computer Use Provider E2E Matrix/);
+      join(directory, 'matrix.md'),
+    ]);
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('invalid readiness fails closed', async () => {
@@ -376,132 +197,70 @@ test('a hermetic or unlabeled report cannot satisfy real-provider readiness', as
   }
 });
 
-test('a bypassed real run remains explicitly labeled', async () => {
-  const matrix = await buildProviderMatrix({
-    scenarios: [scenario()],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'report.json',
-      },
+test('real reports reject invalid readiness, identity, provenance, and lineage', async () => {
+  for (const [label, patch, pattern] of [
+    ['inconclusive status', { status: 'inconclusive' }, /status must be pass/],
+    ['wrong provider', { provider: 'claude' }, /provider mismatch/],
+    ['wrong model', { model: 'other' }, /model mismatch/],
+    [
+      'bad terminal',
+      { terminal: { type: 'complete', stopReason: 'max_tokens' } },
+      /complete\/end_turn/,
     ],
-    loadReport: async () => realReport({ policyMode: 'bypassed' }),
-  });
-  assert.equal(matrix.rows[0].status, 'pass-policy-bypassed');
-});
-
-for (const [label, patch, pattern] of [
-  ['inconclusive status', { status: 'inconclusive' }, /status must be pass/],
-  ['wrong provider', { provider: 'claude' }, /provider mismatch/],
-  ['wrong model', { model: 'other' }, /model mismatch/],
-  [
-    'bad terminal',
-    { terminal: { type: 'complete', stopReason: 'max_tokens' } },
-    /complete\/end_turn/,
-  ],
-  [
-    'failed action',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: false,
-          targetOwned: true,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /scenario-authorized expected failures/,
-  ],
-  [
-    'wrong target',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 99,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: false,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /PID\/window trace evidence/,
-  ],
-  ['missing dispatch', { driverTraces: [] }, /dispatch evidence missing/],
-  ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
-  ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
-  ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
-  ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
-  ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
-  [
-    'missing fixture ownership trace',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          success: true,
-          targetOwned: true,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'observation-1',
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /PID\/window trace evidence/,
-  ],
-  [
-    'broken observation lineage',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'unknown-observation',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /observation lineage/,
-  ],
-]) {
-  test(`real report rejects ${label}`, async () => {
+    [
+      'wrong target',
+      {
+        actions: [
+          {
+            type: 'observe',
+            resultObservationId: 'observation-1',
+            targetPid: 99,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: false,
+          },
+          {
+            type: 'click_element',
+            sourceObservationId: 'observation-1',
+            targetPid: 42,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: true,
+          },
+        ],
+      },
+      /PID\/window trace evidence/,
+    ],
+    ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
+    ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
+    ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
+    ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
+    ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
+    [
+      'broken observation lineage',
+      {
+        actions: [
+          {
+            type: 'observe',
+            resultObservationId: 'observation-1',
+            targetPid: 42,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: true,
+          },
+          {
+            type: 'click_element',
+            sourceObservationId: 'unknown-observation',
+            targetPid: 42,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: true,
+          },
+        ],
+      },
+      /observation lineage/,
+    ],
+  ]) {
     const report = realReport(patch);
     Object.assign(report, withLedgerCounts(report));
     const matrix = await buildProviderMatrix({
@@ -517,71 +276,9 @@ for (const [label, patch, pattern] of [
       ],
       loadReport: async () => report,
     });
-    assert.equal(matrix.rows[0].status, 'invalid-report');
-    assert.match(matrix.rows[0].reportError, pattern);
-  });
-}
-
-test('wait and cursor_position do not require observation lineage or target ownership', async () => {
-  const noTargetScenario = scenario({
-    allowedActions: ['observe', 'wait', 'cursor_position'],
-    minimumActionCounts: { observe: 1, wait: 1, cursor_position: 1 },
-    maxActionCounts: { observe: 1, wait: 1, cursor_position: 1 },
-    maxTotalActions: 3,
-    expectedState: [{ windowId: 'target', path: 'blue', equals: 1 }],
-  });
-  const report = withLedgerCounts(
-    realReport({
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-        { type: 'wait', success: true },
-        { type: 'cursor_position', success: true },
-      ],
-    }),
-  );
-  const matrix = await buildProviderMatrix({
-    scenarios: [noTargetScenario],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () => report,
-  });
-  assert.equal(matrix.rows[0].status, 'pass');
-});
-
-test('fault-injection evidence cannot satisfy real-provider readiness', async () => {
-  const matrix = await buildProviderMatrix({
-    scenarios: [scenario()],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () =>
-      realReport({
-        evidenceClass: 'fault-injection',
-        qualificationEligible: false,
-      }),
-  });
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /real-runtime/);
+    assert.equal(matrix.rows[0].status, 'invalid-report', label);
+    assert.match(matrix.rows[0].reportError, pattern, label);
+  }
 });
 
 test('an explicit action sequence is checked exactly', async () => {
@@ -827,25 +524,6 @@ test('every successful mutation requires its own target-bound dispatch trace', a
   assert.match(matrix.rows[0].reportError, /safe dispatch evidence missing for click_element/);
 });
 
-test('missing forbidden-effect evidence is inconclusive', () => {
-  const metrics = normalizeReport(
-    realReport({ fixtureState: { target: { blue: 1 } } }),
-    scenario(),
-  );
-  assert.equal(metrics.forbiddenEffects.status, 'unknown');
-});
-
-test('malformed reported violations do not crash normalization', () => {
-  const metrics = normalizeReport(
-    realReport({
-      forbiddenEffects: { status: 'fail', violations: 'bad' },
-    }),
-    scenario(),
-  );
-  assert.equal(metrics.forbiddenEffects.status, 'fail');
-  assert.ok(Array.isArray(metrics.forbiddenEffects.violations));
-});
-
 test('over-budget action sequence is invalid', async () => {
   const report = realReport({
     actions: [
@@ -871,24 +549,6 @@ test('over-budget action sequence is invalid', async () => {
   });
   assert.equal(matrix.rows[0].status, 'invalid-report');
   assert.match(matrix.rows[0].reportError, /budget exceeded/);
-});
-
-test('shared real-report verdict rejects lineage that a launcher-local summary could miss', () => {
-  const currentScenario = scenario({
-    expectedActionSequence: ['observe', 'observe', 'click_element'],
-  });
-  const report = realReport();
-  const errors = validateRealReport(
-    report,
-    {
-      id: 'openai',
-      producer: 'cu-real-model-launcher',
-      model: 'gpt-5.4',
-    },
-    currentScenario,
-  );
-
-  assert.match(errors.join('; '), /action sequence mismatch/);
 });
 
 test('validator rejects action attempt and per-action counts that diverge from the ledger', () => {

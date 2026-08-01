@@ -570,3 +570,8 @@
     font-size: var(--font-size-caption);
     line-height: var(--leading-normal);
   }
+.settingsCapabilityAuditEmpty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+}

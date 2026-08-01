@@ -320,7 +320,10 @@ export class RootTurnCoordinator {
       );
       errors.push(
         ...results
-          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .filter(
+            (result): result is PromiseRejectedResult =>
+              result.status === 'rejected' && !isShutdownCancelledBackendStart(result.reason),
+          )
           .map((result) => result.reason),
       );
     }
@@ -1524,6 +1527,20 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
     snapshot.status === 'completed' ||
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
+  );
+}
+
+function isShutdownCancelledBackendStart(error: unknown): boolean {
+  // The Host began draining while a Turn was still starting its backend, so
+  // the interaction bind was rejected with authority_draining. The Turn never
+  // ran; its drain rejects with this FailStopError and the Host is already
+  // shutting down. Treating it as a shutdown failure would fail the whole
+  // Host close — it is the expected consequence of stopping mid-start, not a
+  // resource that failed to close.
+  return (
+    error instanceof RuntimeInteractionFailStopError &&
+    error.authorityFailure instanceof RuntimeInteractionAdmissionRejectedError &&
+    error.authorityFailure.reason === 'authority_draining'
   );
 }
 

@@ -16,14 +16,46 @@
   background: transparent;
 }
 
-.composerActions {
+.maka-composer-astryx {
+  width: min(var(--maka-chat-measure), 100%);
+  max-width: var(--maka-chat-measure);
+}
+
+.maka-composer-context-drawer,
+.maka-composer-context-items {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1-5);
+}
+
+.maka-composer-context-drawer {
+  flex-direction: column;
+  padding: var(--space-1) var(--space-3) var(--space-2);
+}
+
+.maka-composer-input {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+
+.maka-composer-header-actions {
+  display: flex;
+  min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
-  padding-top: var(--space-0-5);
-  border-top: 0;
+  gap: var(--space-1);
+}
+
+.maka-composer-header-context {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
 }
 
 .maka-composer-left-controls,
@@ -38,6 +70,7 @@
      individual controls separable while pulling them into one
      coherent toolbar group. */
   gap: var(--space-1-5);
+  flex-wrap: wrap;
 }
 
 .maka-composer-left-controls {
@@ -61,11 +94,12 @@
 }
 
 .maka-composer-status-slot {
+  display: inline-flex;
   min-width: 0;
-  flex: 1 1 auto;
+  align-items: center;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  text-align: center;
+  white-space: nowrap;
 }
 
 /* Product-owned quiet controls. Model and thinking selectors now keep Astryx
@@ -140,143 +174,11 @@
 }
 
 
-/* ============================================================================
-   Composer container + input field — single source
-   ----------------------------------------------------------------------------
-   The composer card (`.maka-composer-inner`) + its textarea + placeholder
-   used to be triplicated across maka-tokens.css (@layer components),
-   styles/tool-output.css, and reference-shell.css — three definitions of the
-   same selector fighting by specificity/layer, plus a duplicated textarea
-   font. Consolidated here as one definition per selector (pinned by
-   composer-container-single-source-contract).
-
-   Rest / textarea / placeholder values are the exact computed winners — no
-   visual change for those. One deliberate change: tool-output's
-   `.composer .maka-composer-inner::before { content: none }` shared specificity
-   (0,2,1) with — and was imported after — the streaming top-sweep that used to
-   live in chat-header.css (`.maka-composer-inner[data-streaming="true"]::before`),
-   so it was silently suppressing that deliberate streaming indicator. Removing
-   the reset restores the sweep; the matching `::after` reset had no competing
-   rule and was genuinely dead.
-
-   #546 PR2 relocated that streaming top-sweep here so all `.maka-composer-inner`
-   chrome (rest / focus / streaming state) is in one file; see the
-   `[data-streaming="true"]` block below the card chrome. */
-
-/* The composer card — a calm parchment surface: hairline border + 1px ring
-   at rest, single accent ring on focus. The shared `.agents-parchment-paper-
-   surface` base (reference-shell.css) resets border/bg/box-shadow; this rule
-   re-establishes the composer's own chrome on top of it. */
-.composer .maka-composer-inner {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
-  margin: 0 auto;
-  margin-inline: auto;
-  box-sizing: border-box;
-  border: var(--border-width-hairline) solid var(--color-border-tertiary);
-  border-radius: var(--radius-modal);
-  padding: var(--space-2) var(--space-3) var(--space-1-5);
-  background-color: var(--agents-content-area-bg);
-  /* Ring alpha is a token so dark mode can strengthen the edge without a
-     second rest rule (composer-container-single-source-contract). In dark
-     the composer and pane share the same bg, and 3.5% of the near-white
-     foreground vanished — the card lost its outline (designer audit P1-6). */
-  box-shadow: 0 0 0 1px oklch(from var(--foreground) l c h / var(--composer-ring-alpha, 0.035));
-  transition:
-    border-color var(--duration-emphasized) var(--ease-out-strong),
-    box-shadow var(--duration-emphasized) var(--ease-out-strong);
-}
-
-.composer .maka-composer-inner:focus-within {
-  border-color: oklch(from var(--focus-ring) l c h / 0.45);
-  box-shadow: 0 0 0 var(--focus-ring-width) oklch(from var(--focus-ring) l c h / 0.30);
-}
-
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */
 .mainColumn:not([data-home-surface="true"]) .composer {
   padding-top: 0;
-}
-
-/* Docked resting card — hairline only, no wash (PR-COMPOSER-BAND-SEAM).
-   The docked composer rides the same pure-white content surface as the
-   transcript above it (`.composer` outer is transparent; the card fill is
-   `--agents-content-area-bg`, identical to the panel). The earlier
-   "docked-over-stream lift" added a two-layer foreground-derived drop
-   (`0 2px 6px` + `0 10px 22px`) UNDER the resting, unfocused card. Because
-   the card is ~measure-wide and nearly fills the dock, that soft grey drop
-   read as a light-grey band with a boundary line beneath the composer —
-   the "色差" the maintainer flagged — and it appeared only while the
-   composer was NOT focused (focus swaps in the accent ring below), which is
-   exactly the reported "sometimes". The band is not a separate layer, so
-   there is nothing to converge structurally: the fix is to drop the wash and
-   keep AT MOST the card's own hairline ring, so the dock converges cleanly
-   onto the white content surface. Dark mode already carries no resting drop
-   (the one-step tone lift below is its only cue). */
-.mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner:not(:focus-within) {
-  box-shadow: 0 0 0 1px oklch(from var(--foreground) l c h / var(--composer-ring-alpha, 0.035));
-}
-
-/* Dark mode: separate the card from the panel by ONE monotonic tone step and
-   nothing else. Any line at the boundary that is brighter than the card fill
-   becomes a local luminance peak, which the eye parses as its own object —
-   that is the "third layer". So the card sits one step lighter than the panel
-   (0.24 → 0.29, matching a mainstream dark composer's fill/canvas ratio) and
-   carries NO resting line: no drop (halo), no ring (double frame), no colored
-   border (peak). The panel↔card profile is a single step. (Light mode carries
-   only the card's hairline ring above; there the white panel already
-   separates by tone.) */
-.dark .mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner {
-  background-color: oklch(from var(--agents-content-area-bg) calc(l + 0.05) c h);
-}
-
-/* Resting state carries no boundary line at all — the tone step is the only
-   cue. border-color is zeroed (the 1px width stays to avoid a focus layout
-   jump) and the ring is dropped. Scoped off :focus-within so the accent border
-   + focus ring still land on focus. */
-.dark .mainColumn:not([data-home-surface="true"]) .composer .maka-composer-inner:not(:focus-within) {
-  border-color: transparent;
-  box-shadow: none;
-}
-
-/* D6 spectrum #2 (Command Input processing): while the assistant is
-   streaming, a slow top-edge light sweep on the composer shell keeps
-   "working" visible at the exact place the user's attention returns
-   to. 1px line, foreground-derived, infinite = functional status.
-   Relocated from chat-header.css (#546 PR2) so the card's own rest /
-   focus / streaming states live together. */
-.maka-composer-inner[data-streaming="true"] {
-  position: relative;
-  overflow: hidden;
-}
-
-.maka-composer-inner[data-streaming="true"]::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  border-radius: var(--radius-pill);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    oklch(from var(--status-running) l c h / 0.55) 50%,
-    transparent
-  );
-  background-size: 200% 100%;
-  animation: maka-processing-sweep 2.2s var(--ease-in-out-strong) infinite;
-  pointer-events: none;
-}
-
-@keyframes maka-processing-sweep {
-  0%   { background-position: 180% 0; }
-  100% { background-position: -80% 0; }
 }
 
 /* The textarea owns no chrome (the card does). It auto-resizes from
@@ -294,8 +196,8 @@
   background: transparent;
   color: var(--foreground);
   font-family: var(--font-default);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
+  font-size: 14px;
+  line-height: 22px;
   min-height: var(--h-composer-min);
   max-height: 240px;
 }
@@ -303,8 +205,8 @@
 .composer .maka-composer-textarea::placeholder {
   color: var(--muted-foreground);
   font-family: var(--font-default);
-  font-size: var(--font-size-base);
-  line-height: var(--leading-normal);
+  font-size: 14px;
+  line-height: 22px;
   transition: opacity var(--duration-emphasized) var(--ease-out-strong);
 }
 

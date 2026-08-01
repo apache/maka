@@ -439,6 +439,83 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('refreshes only the matching OAuth credential generation without invalidating verification', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('oauth-refresh', 'github-copilot', 'OAuth refresh'),
+      );
+      const locator = connectionCredential(connection, 'oauth_token');
+      const originalSecret = JSON.stringify({
+        access_token: 'github-access-v1',
+        refresh_token: 'github-refresh-v1',
+        expires_at: 1,
+      });
+      const configured = await stores.credentialVault.set({
+        locator,
+        expected: null,
+        secret: originalSecret,
+      });
+      assert.equal(configured.kind, 'committed');
+      if (configured.kind !== 'committed') return;
+      await verifyConnection(stores, connection.connectionId, '2026-08-01T00:00:00.000Z');
+      const status = await getCredentialStatus(stores.credentialVault, locator);
+      const initialRevision = credentialBasis(status).revision;
+      const replacementSecret = JSON.stringify({
+        access_token: 'github-access-v2',
+        refresh_token: 'github-refresh-v2',
+        expires_at: Number.MAX_SAFE_INTEGER,
+      });
+
+      const refreshed = await stores.operations.compareAndSetOAuthCredential({
+        locator: { ...locator, kind: 'oauth_token' },
+        expected: credentialExpectation(status),
+        secret: replacementSecret,
+      });
+
+      assert.equal(refreshed.kind, 'committed');
+      if (refreshed.kind !== 'committed') return;
+      assert.equal(refreshed.credentialId, credentialBasis(status).credentialId);
+      assert.equal(refreshed.revision, initialRevision + 1);
+      const refreshedStatus = await getCredentialStatus(stores.credentialVault, locator);
+      assert.equal(credentialBasis(refreshedStatus).revision, initialRevision + 1);
+      assert.equal(
+        (await stores.connectionCatalog.getSnapshot()).connections[0]?.lastTest?.status,
+        'verified',
+      );
+      const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind === 'ready') {
+        assert.equal(resolved.secretMaterial.connection?.secret, replacementSecret);
+      }
+
+      const stale = await stores.operations.compareAndSetOAuthCredential({
+        locator: { ...locator, kind: 'oauth_token' },
+        expected: credentialExpectation(status),
+        secret: 'stale-refresh-must-not-commit',
+      });
+      assert.equal(stale.kind, 'superseded');
+      const stillResolved = await stores.operations.resolveExecutionConnection(connection.slug);
+      assert.equal(stillResolved.kind, 'ready');
+      if (stillResolved.kind === 'ready') {
+        assert.equal(stillResolved.secretMaterial.connection?.secret, replacementSecret);
+      }
+
+      const deleted = await stores.credentialVault.delete({
+        expected: credentialBasis(refreshedStatus),
+      });
+      assert.equal(deleted.kind, 'committed');
+      const resurrection = await stores.operations.compareAndSetOAuthCredential({
+        locator: { ...locator, kind: 'oauth_token' },
+        expected: credentialExpectation(refreshedStatus),
+        secret: 'refresh-must-not-recreate-a-deleted-credential',
+      });
+      assert.equal(resurrection.kind, 'superseded');
+      assert.equal((await getCredentialStatus(stores.credentialVault, locator)).configured, false);
+    });
+  });
+
   test('conditionally commits discovery and test facts from the latest admitted state with one-shot tickets', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(

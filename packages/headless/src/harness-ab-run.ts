@@ -30,6 +30,7 @@ export interface RunHarnessAbComparisonInput {
   arms: readonly [HarnessAbRuntimeArm, HarnessAbRuntimeArm];
   pairConcurrency?: number;
   armExecution?: 'parallel' | 'sequential';
+  retryAdjudicatedInfraRoundIdsOnce?: readonly string[];
   now?: () => number;
   newId?: () => string;
 }
@@ -50,6 +51,18 @@ export async function runHarnessAbComparisonUnlocked(
   const pairConcurrency = input.pairConcurrency ?? HARNESS_AB_PAIR_CONCURRENCY;
   if (!Number.isSafeInteger(pairConcurrency) || pairConcurrency < 1) {
     throw new Error('pairConcurrency must be a positive integer');
+  }
+  const retryRoundIds = new Set(input.retryAdjudicatedInfraRoundIdsOnce ?? []);
+  if (retryRoundIds.size !== (input.retryAdjudicatedInfraRoundIdsOnce?.length ?? 0)) {
+    throw new Error('adjudicated infra retry round ids must be unique');
+  }
+  const validRoundIds = new Set(
+    input.evaluationTasks.flatMap((task) => input.arms.map((arm) => `ab-${arm.id}-r0-${task.id}`)),
+  );
+  for (const roundId of retryRoundIds) {
+    if (!validRoundIds.has(roundId)) {
+      throw new Error(`adjudicated infra retry names unknown round ${roundId}`);
+    }
   }
   const preexistingEventIds = new Set(
     (await readFixedPromptWal(input.resultsJsonlPath))
@@ -92,6 +105,7 @@ export async function runHarnessAbComparisonUnlocked(
         tasks: [task],
         infraFailurePolicy: 'terminal',
         protectPassAtOne: true,
+        ...(retryRoundIds.has(roundId) ? { retryAdjudicatedInfraTaskIdsOnce: [task.id] } : {}),
         requireExecutionIdentity: true,
         requireFinalUsage: true,
         expectedPricingProfile: runtimeArm.expectedPricingProfile,

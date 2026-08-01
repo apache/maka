@@ -110,6 +110,96 @@ test('harness A/B uses one safe execution default and accepts per-run overrides'
   );
 });
 
+test('harness A/B parses an explicit one-shot adjudicated infra retry', async () => {
+  const { resolveHarnessAdjudicatedInfraRetryRoundIds } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+
+  assert.deepEqual(resolveHarnessAdjudicatedInfraRetryRoundIds(undefined), []);
+  assert.deepEqual(
+    resolveHarnessAdjudicatedInfraRetryRoundIds(' ab-maka-r0-winning-avg-corewars '),
+    ['ab-maka-r0-winning-avg-corewars'],
+  );
+  assert.throws(() => resolveHarnessAdjudicatedInfraRetryRoundIds(' , '), /must not be empty/);
+  assert.throws(
+    () => resolveHarnessAdjudicatedInfraRetryRoundIds('ab-maka-r0-a,ab-maka-r0-a'),
+    /must not contain duplicates/,
+  );
+});
+
+test('harness A/B resumes an explicit infra retry from the frozen manifest identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-frozen-resume-'));
+  try {
+    const { buildHarnessAbManifest, resolveHarnessAbManifestForRun, resolveHarnessComposition } =
+      await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+    const manifestPath = join(dir, 'harness-ab-manifest.json');
+    const composition = resolveHarnessComposition({
+      runtime: 'deepseek-v4-flash-max',
+      competitor: 'opencode',
+    });
+    const taskIds = ['winning-avg-corewars'];
+    const frozen = buildHarnessAbManifest({
+      subjectFingerprint: `sha256:${'1'.repeat(64)}`,
+      taskSourceFingerprint: `sha256:${'2'.repeat(64)}`,
+      toolchainFingerprint: `sha256:${'3'.repeat(64)}`,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'parallel',
+    });
+    await writeFile(manifestPath, `${JSON.stringify(frozen)}\n`, 'utf8');
+    const current = buildHarnessAbManifest({
+      subjectFingerprint: `sha256:${'4'.repeat(64)}`,
+      taskSourceFingerprint: frozen.taskSourceFingerprint,
+      toolchainFingerprint: `sha256:${'5'.repeat(64)}`,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'parallel',
+    });
+
+    assert.deepEqual(
+      await resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: current,
+        retryRoundIds: ['ab-maka-r0-winning-avg-corewars'],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      frozen,
+    );
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: current,
+        retryRoundIds: [],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      /requires an explicit adjudicated infra retry/,
+    );
+
+    const changedSchedule = buildHarnessAbManifest({
+      subjectFingerprint: current.subjectFingerprint,
+      taskSourceFingerprint: current.taskSourceFingerprint,
+      toolchainFingerprint: current.toolchainFingerprint,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'sequential',
+    });
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: changedSchedule,
+        retryRoundIds: ['ab-maka-r0-winning-avg-corewars'],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      /differs beyond the frozen subject and toolchain identity/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('harness A/B selects one named task only with an explicit run identity', async () => {
   const {
     buildHarnessAbManifest,
@@ -458,6 +548,65 @@ test('harness A/B resolves an explicit GLM 5.2 runtime independently from OpenCo
   assert.equal(resolveHarnessAbRunId(composition), 'glm-5.2-maka-vs-opencode-tbench-2.1-full-v1');
 });
 
+test('harness A/B resolves DeepSeek V4 Flash as a metered OpenCode comparison', async () => {
+  const {
+    buildHarnessAbManifest,
+    buildHarnessExecutionProfile,
+    resolveHarnessAbRunId,
+    resolveHarnessComposition,
+    resolveHarnessRuntimeCredentials,
+  } = await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+  const composition = resolveHarnessComposition({
+    runtime: 'deepseek-v4-flash-max',
+    competitor: 'opencode',
+  });
+
+  assert.deepEqual(buildHarnessExecutionProfile(composition.runtimeProfile), {
+    modelSpec: 'deepseek/deepseek-v4-flash',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    reasoningEffort: 'max',
+    baseUrl: 'https://api.deepseek.com',
+    billingMode: 'metered',
+    pricing: {
+      inputUsdPer1M: 0.145,
+      cacheReadUsdPer1M: 0.0029,
+      cacheWriteUsdPer1M: 0,
+      outputUsdPer1M: 0.29,
+      source: 'deepseek-v4-flash',
+    },
+  });
+  assert.deepEqual(
+    await resolveHarnessRuntimeCredentials({
+      composition,
+      env: { MAKA_HARNESS_AB_DEEPSEEK_KEY_FILE: '/secrets/deepseek.key' },
+    }),
+    { apiKeyFile: '/secrets/deepseek.key' },
+  );
+
+  const manifest = buildHarnessAbManifest({
+    subjectFingerprint: 'subject',
+    taskSourceFingerprint: 'tasks',
+    toolchainFingerprint: 'tools',
+    composition,
+  });
+  assert.deepEqual(manifest.metadata.pricing, {
+    currency: 'USD',
+    unit: 'per_1m_tokens',
+    input: 0.145,
+    cachedInput: 0.0029,
+    cacheWrite: 0,
+    output: 0.29,
+    source: 'deepseek-v4-flash',
+  });
+  assert.equal(manifest.arms[1].id, 'opencode');
+  assert.equal(manifest.arms[1].metadata.config.billingMode, 'metered');
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-opencode-tbench-2.1-full-v1',
+  );
+});
+
 test('harness A/B composition defaults preserve existing routes and reject unsupported triples', async () => {
   const {
     buildHarnessAbManifest,
@@ -499,7 +648,7 @@ test('harness A/B composition defaults preserve existing routes and reject unsup
   );
   assert.throws(
     () => resolveHarnessComposition({ runtime: 'unknown' }),
-    /MAKA_HARNESS_AB_RUNTIME must be one of: kimi-coding-plan-k3-max, zai-coding-plan-glm-5\.2-max, openai-codex-gpt-5\.6-sol-xhigh/,
+    /MAKA_HARNESS_AB_RUNTIME must be one of: kimi-coding-plan-k3-max, zai-coding-plan-glm-5\.2-max, deepseek-v4-flash-max, openai-codex-gpt-5\.6-sol-xhigh/,
   );
 
   const glmComposition = resolveHarnessComposition({
@@ -1021,6 +1170,39 @@ test('harness A/B CLI rejects modified task contents before reading credentials'
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('harness A/B forwards an explicit host-proxy advertised host for native-Linux Pier runs', async () => {
+  const { resolveHarnessProviderProxyHubOptions } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  // Native Linux Docker injects no host.docker.internal; the VM operator
+  // names the docker-bridge-reachable host address explicitly.
+  assert.deepEqual(resolveHarnessProviderProxyHubOptions('172.17.0.1'), {
+    providerProxyAdvertisedHost: '172.17.0.1',
+  });
+  // Unset or blank keeps the hub default (host.docker.internal).
+  assert.deepEqual(resolveHarnessProviderProxyHubOptions(undefined), {});
+  assert.deepEqual(resolveHarnessProviderProxyHubOptions('   '), {});
+});
+
+test('harness A/B supports the DeepSeek-metered OpenCode composition on full DeepSWE', async () => {
+  const { resolveHarnessAbRunId, resolveHarnessComposition } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+  const composition = resolveHarnessComposition({
+    benchmark: 'deep-swe-1.1-full',
+    runtime: 'deepseek-v4-flash-max',
+    competitor: 'opencode',
+  });
+  assert.equal(composition.benchmarkProfile.executor, 'pier');
+  assert.equal(composition.runtimeProfile.model, 'deepseek-v4-flash');
+  assert.equal(composition.runtimeProfile.billingMode, 'metered');
+  assert.equal(composition.competitorProfile.id, 'opencode');
+  assert.equal(
+    resolveHarnessAbRunId(composition),
+    'deepseek-v4-flash-maka-vs-opencode-deepswe-full-v1',
+  );
 });
 
 test('harness A/B resolves the full DeepSWE benchmark as a sibling profile', async () => {

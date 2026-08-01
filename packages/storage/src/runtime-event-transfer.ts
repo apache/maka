@@ -1,7 +1,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { decodePersistedRuntimeEvent, type RuntimeEvent, type RuntimeEventStore } from '@maka/core';
-import { createRuntimeEventStore, type DurableRuntimeEventStore } from './agent-run-store.js';
+import { decodePersistedRuntimeEvent, type RuntimeEvent } from '@maka/core';
+import { createRuntimeEventStore } from './agent-run-store.js';
 import { classifyJsonRecord } from './json-prefix.js';
 import type { SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
@@ -23,9 +23,19 @@ export type RuntimeEventPersistence = {
 
 export type RuntimeEventReadPersistence = {
   kind: 'jsonl' | 'sqlite';
-  runtimeEventStore: DurableRuntimeEventStore;
+  runtimeEventStore: RuntimeEventReadStore;
   close(): void;
 };
+
+export interface RuntimeEventExportSource {
+  readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readImmutableRuntimeEvents?(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+}
+
+export interface RuntimeEventReadStore extends RuntimeEventExportSource {
+  readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+}
 
 export interface RuntimeEventImportReport {
   eventsRead: number;
@@ -75,14 +85,14 @@ export async function openRuntimeEventReadPersistence(input: {
   if (!(await pathExists(databasePath))) {
     return {
       kind: 'jsonl',
-      runtimeEventStore: createRuntimeEventStore(input.workspaceRoot),
+      runtimeEventStore: asRuntimeEventReader(createRuntimeEventStore(input.workspaceRoot)),
       close: () => {},
     };
   }
   const store = createSqliteRuntimeStore(databasePath, { readOnly: true });
   return {
     kind: 'sqlite',
-    runtimeEventStore: store,
+    runtimeEventStore: asRuntimeEventReader(store),
     close: () => store.close(),
   };
 }
@@ -98,7 +108,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export async function exportRuntimeEventsToJsonl(
-  source: RuntimeEventStore,
+  source: RuntimeEventExportSource,
   sessionId: string,
   runId: string,
 ): Promise<string> {
@@ -106,6 +116,16 @@ export async function exportRuntimeEventsToJsonl(
     ? await source.readImmutableRuntimeEvents(sessionId, runId)
     : await source.readRuntimeEvents(sessionId, runId);
   return events.length === 0 ? '' : `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+}
+
+function asRuntimeEventReader(store: RuntimeEventReadStore): RuntimeEventReadStore {
+  return Object.freeze({
+    readRuntimeEvents: (sessionId: string, runId: string) =>
+      store.readRuntimeEvents(sessionId, runId),
+    readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
+      store.readImmutableRuntimeEvents(sessionId, runId),
+    readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),
+  });
 }
 
 export async function importRuntimeEventsFromJsonl(input: {

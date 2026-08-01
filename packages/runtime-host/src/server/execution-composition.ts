@@ -2,17 +2,26 @@ import { randomUUID } from 'node:crypto';
 import {
   AgentGraphCoordinator,
   BackendRegistry,
+  createBuiltinSandboxManager,
+  createFilesystemWorkerLaunchSpecProvider,
   FakeBackend,
+  FilesystemWorkerClient,
+  isBuiltinFilesystemWorkerSandboxAvailable,
   SessionManager,
+  ShellRunProcessManager,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
-import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import {
+  createReadImageSnapshotter,
+  openInteractiveArtifactStoreForWrite,
+} from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveMemoryBundleStoreForWrite } from '@maka/storage/memory-bundle-store';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
@@ -25,11 +34,13 @@ import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './ho
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from './message-coordinator.js';
+import { HostOAuthExecutionAuthority } from './oauth-execution-authority.js';
 import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
+import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
 import { HostSessionRevisionCoordinator } from './session-revision-coordinator.js';
@@ -49,21 +60,48 @@ export async function createExecutionRuntimeHostComposition(
     | undefined;
   let usageStores: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>> | undefined;
   let artifactStore: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
+  let shellRunStore: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>> | undefined;
   try {
     const runtimePolicyStores = await openInteractiveRuntimePolicyStoresForWrite(
       context.owner.lease,
     );
+    const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
     const memoryStore = await openInteractiveMemoryBundleStoreForWrite(context.owner.lease);
     taskLedgerStore = await openInteractiveTaskLedgerStoreForWrite(context.owner.lease);
     const openedArtifactStore = await openInteractiveArtifactStoreForWrite(context.owner.lease);
     artifactStore = openedArtifactStore;
     const openedUsageStores = await openInteractiveUsageStoresForWrite(context.owner.lease);
     usageStores = openedUsageStores;
+    const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
+    shellRunStore = openedShellRunStore;
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
+    let runtimeResources: HostRuntimeResourceCoordinator | undefined;
+    const shellRuns = new ShellRunProcessManager({
+      store: openedShellRunStore,
+      newId: randomUUID,
+      now: Date.now,
+      onShellRunUpdate: (update) => runtimeResources?.observeShellRunUpdate(update),
+    });
+    const sandboxManager = createBuiltinSandboxManager();
+    const filesystemWorkerLaunchSpecProvider =
+      sandboxManager && isBuiltinFilesystemWorkerSandboxAvailable()
+        ? createFilesystemWorkerLaunchSpecProvider({
+            runtime: 'node',
+            platform: process.platform,
+            resourceLocation: { kind: 'runtime' },
+          })
+        : undefined;
+    const filesystemWorker =
+      sandboxManager && filesystemWorkerLaunchSpecProvider
+        ? new FilesystemWorkerClient({
+            sandboxManager,
+            getLaunchSpec: filesystemWorkerLaunchSpecProvider,
+          })
+        : undefined;
     const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
@@ -133,6 +171,7 @@ export async function createExecutionRuntimeHostComposition(
     const beginDrain = () => {
       if (draining) return;
       draining = true;
+      runtimeResources?.beginDrain();
       messages.beginDrain();
       interactions.beginDrain();
       connectionEffects.beginDrain();
@@ -170,12 +209,23 @@ export async function createExecutionRuntimeHostComposition(
       createHostAiSdkBackend({
         context: backendContext,
         runtimePolicy: runtimePolicyStores,
+        oauthCredentials,
+        claudeDeviceId: context.owner.capability.rootId,
         skills,
         memory: requireMemory(memory),
         taskLedger,
         artifacts: openedArtifactStore,
         usage: openedUsageStores,
         clientCapabilities: requireClientCapabilities(clientCapabilities),
+        builtinTools: {
+          shellRuns: requireRuntimeResources(runtimeResources),
+          runtimeResources: requireRuntimeResources(runtimeResources),
+          backgroundTasks: requireRuntimeResources(runtimeResources),
+          ptyControls: requireRuntimeResources(runtimeResources),
+          snapshotImage: createReadImageSnapshotter(openedArtifactStore),
+          ...(sandboxManager ? { sandboxManager } : {}),
+          ...(filesystemWorker ? { filesystemWorker } : {}),
+        },
         runtimeCommitSink: stores.runtimeEventStore,
         requestDrain: context.requestDrain,
       }),
@@ -210,6 +260,15 @@ export async function createExecutionRuntimeHostComposition(
       },
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
+      shellRuns,
+    });
+    runtimeResources = new HostRuntimeResourceCoordinator({
+      manager: shellRuns,
+      sessions: manager,
+      sessionHeaders: stores.sessionStore,
+      sessionAdmission,
+      acquireResidency: context.acquireResidency,
+      requestDrain: context.requestDrain,
     });
     const graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
@@ -308,6 +367,7 @@ export async function createExecutionRuntimeHostComposition(
       ...usagePricing.handlers,
       ...requireMemory(memory).handlers,
       ...clientCapabilities.handlers,
+      ...runtimeResources.handlers,
     } satisfies DomainOperationHandlerMap;
     const recover = () => {
       recoveryTask ??= (async () => {
@@ -361,6 +421,11 @@ export async function createExecutionRuntimeHostComposition(
           } catch (error) {
             errors.push(error);
           }
+        }
+        try {
+          await runtimeResources?.close();
+        } catch (error) {
+          errors.push(error);
         }
         if (!backendInvalidationPoisoned) {
           try {
@@ -420,6 +485,11 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
+          shellRunStore?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
           await stores.sessionStore.close?.();
         } catch (error) {
           errors.push(error);
@@ -438,6 +508,7 @@ export async function createExecutionRuntimeHostComposition(
       releaseConnection: (connectionId: string) => {
         requireMemory(memory).releaseConnection(connectionId);
         clientCapabilities?.releaseConnection(connectionId);
+        runtimeResources?.releaseConnection(connectionId);
       },
       beginDrain,
       recover,
@@ -462,6 +533,11 @@ export async function createExecutionRuntimeHostComposition(
     }
     try {
       taskLedgerStore?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
+    try {
+      shellRunStore?.close();
     } catch (closeError) {
       errors.push(closeError);
     }
@@ -503,5 +579,12 @@ function requireClientCapabilities(
   coordinator: HostClientCapabilityCoordinator | undefined,
 ): HostClientCapabilityCoordinator {
   if (!coordinator) throw new Error('Runtime Host Client Capability coordinator is not composed');
+  return coordinator;
+}
+
+function requireRuntimeResources(
+  coordinator: HostRuntimeResourceCoordinator | undefined,
+): HostRuntimeResourceCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Runtime Resource coordinator is not composed');
   return coordinator;
 }

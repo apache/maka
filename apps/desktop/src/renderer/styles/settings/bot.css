@@ -67,13 +67,16 @@
   padding: var(--space-2) var(--space-2-5);
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-title"] {
+.settingsRemoteAccessItemTitle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
   min-width: 0;
   flex-wrap: wrap;
   overflow-wrap: anywhere;
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-description"] {
+.settingsRemoteAccessItemDescription {
   overflow-wrap: anywhere;
 }
 
@@ -81,8 +84,8 @@
   background: oklch(from var(--warning) l c h / 0.06);
 }
 
-.settingsRemoteAccessChannelRow [data-slot="item-actions"],
-.settingsRemoteAccessCatalogRow [data-slot="item-actions"] {
+.settingsRemoteAccessItemActions {
+  display: flex;
   color: var(--muted-foreground);
 }
 
@@ -280,8 +283,7 @@
   /* The whole row remains the named button. In the narrow layout, dropping
      the redundant chevron leaves enough room for the provider name, status
      chip, and a useful diagnostic summary. */
-  .settingsRemoteAccessChannelRow [data-slot="item-actions"],
-  .settingsRemoteAccessCatalogRow [data-slot="item-actions"] {
+  .settingsRemoteAccessItemActions {
     display: none;
   }
 }
@@ -314,53 +316,16 @@
   justify-content: space-between;
 }
 
-/* House tab language (skills / MCP precedent): an underline TabsList with
-   count pills, sitting on a hairline that spans the panel width. */
+/* The wrapper only contains overflow at the minimum window width; Astryx owns
+   the tab geometry, divider, focus ring, and selected indicator. */
 .settingsUsageTabsBar {
   display: flex;
   align-items: center;
-  border-bottom: var(--border-width-hairline) solid var(--border);
   /* #1364: five nowrap tabs + count pills are ~453px min-content — wider than
      the whole content column at the 480px window floor, and the bar dragged
      the page into horizontal scroll. Tabs stay one line by design, so the bar
      scrolls within itself (the hairline still spans the visible width). */
   overflow-x: auto;
-}
-
-.settingsUsageTabs {
-  display: flex;
-  gap: var(--space-4);
-  border-bottom: 0;
-}
-
-.settingsUsageTab {
-  position: relative;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 1px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.settingsUsageTab span {
-  min-width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding-inline: var(--space-1);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.06);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  font-variant-numeric: tabular-nums;
 }
 
 .settingsUsageTabPanel {
@@ -372,6 +337,10 @@
   gap: var(--space-2);
   min-height: 0;
   margin-top: var(--space-2-5);
+}
+
+.settingsUsageNumericCell {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Empty tab: the shared EmptyState card, nudged to the density of the
@@ -461,10 +430,6 @@
 
 /* .settingsRow / .settingsRows moved to rows.css — the single style home
    for the settings-rows.tsx primitives (PR-SETTINGS-ROWS-CONVERGENCE-0). */
-
-/* #520 PR9: .settingsBadge retired onto the Chip primitive variant="neutral"
-   (packages/ui/src/primitives/chip.tsx, size="sm"). Generic settings labels
-   stay squared (radius-control), not pill Badge. */
 
 .settingsBotActionStack {
   display: flex;
@@ -624,27 +589,14 @@
   gap: var(--space-2-5);
 }
 
-.settingsBotAdvancedToggle {
-  align-self: flex-start;
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  padding: var(--space-1) 0;
-  font-size: var(--font-size-ui);
-  text-decoration: underline;
-  text-decoration-style: dotted;
-  text-underline-offset: 3px;
-}
-
-.settingsBotAdvancedToggle:hover {
-  color: var(--foreground);
-}
-
 .settingsBotAdvancedBody {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding-left: var(--space-3);
   border-left: var(--border-width-thick) solid var(--border);
+}
+
+.settingsBotBannerDescription {
+  overflow-wrap: anywhere;
 }

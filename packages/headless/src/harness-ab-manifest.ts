@@ -396,6 +396,7 @@ export interface HarnessAbRunManifestInput {
     unit: 'per_1m_tokens';
     input: number;
     cachedInput: number;
+    cacheWrite?: number;
     output: number;
     source: string;
   };

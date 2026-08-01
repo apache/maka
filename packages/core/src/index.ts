@@ -449,12 +449,14 @@ export {
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
   isShellOutput,
   isActiveShellRunStatus,
   isShellRunId,
+  isShellRunSourceToolCallId,
   isShellRunStatus,
   isValidShellRunState,
   isValidShellRunStatusTransition,

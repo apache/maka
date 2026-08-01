@@ -340,29 +340,29 @@ describe('web-search renderer boundary (PR-WEB-SEARCH-TAVILY-0)', () => {
     assert.ok(page, 'Web search settings page block must exist');
     assert.match(
       page![0],
-      /<SettingsRows className="settingsWebSearchCredentialCard">/,
-      'Web search credential controls should sit in the shared grouped Settings card primitive',
+      /<Card padding=\{0\} className="settingsRows settingsWebSearchCredentialCard">/,
+      'Web search credential controls should sit in an Astryx Card',
     );
     assert.match(
       page![0],
-      /<SettingsRows className="settingsWebSearchQueryCard">/,
-      'Web search live-query controls should sit in the shared grouped Settings card primitive',
+      /<Card padding=\{0\} className="settingsRows settingsWebSearchQueryCard">/,
+      'Web search live-query controls should sit in an Astryx Card',
     );
     for (const rowClass of [
-      'settingsRow settingsWebSearchEnableRow',
-      'settingsRow settingsWebSearchKeyRow',
-      'settingsRow settingsWebSearchCredentialActionRow',
-      'settingsRow settingsWebSearchQueryIntroRow',
-      'settingsRow settingsWebSearchQueryInputRow',
-      'settingsRow settingsWebSearchSearchRow',
+      'settingsWebSearchEnableRow',
+      'settingsWebSearchKeyRow',
+      'settingsWebSearchCredentialActionRow',
+      'settingsWebSearchQueryIntroRow',
+      'settingsWebSearchQueryInputRow',
+      'settingsWebSearchSearchRow',
     ]) {
-      assert.match(page![0], new RegExp(`className="${rowClass}"`), `Web search Settings must keep ${rowClass} inside grouped rows`);
+      assert.match(page![0], new RegExp(`<Item[\\s\\S]*?className="${rowClass}"`), `Web search Settings must use Astryx Item for ${rowClass}`);
     }
     assert.match(page![0], /className="settingsWebSearchDisabledReason"/);
     assert.match(page![0], /<ul className="settingsWebSearchResults" aria-label=\{copy\.resultsAria\}>/);
     assert.doesNotMatch(
       page![0],
-      /settingsFormRow|settingsFormGrid|style=\{\{/,
+      /className="settingsRow\b|settingsFormRow|settingsFormGrid|style=\{\{/,
       'Web search Settings must not regress to naked form rows/grids or inline layout styles',
     );
     assert.match(styles, /\.settingsWebSearchKeyField/);

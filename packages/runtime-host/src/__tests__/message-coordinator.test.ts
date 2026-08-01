@@ -52,6 +52,52 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('submit re-runs admission when the queue revision moves during preflight', async () => {
+  let preflightCalls = 0;
+  const fixture = createFixture(undefined, async () => {
+    preflightCalls += 1;
+    if (preflightCalls === 2) {
+      // The steering submit already passed its preflight (call 1). This is
+      // the follow-up submit's preflight: a running Turn consumes the queued
+      // steering outside the admission lock while it awaits, so the queue
+      // revision moves and the stale candidate must be re-admitted instead
+      // of surfacing a spurious session_busy to the client.
+      const [lease] = owner.pull();
+      assert.ok(lease);
+      owner.ack([lease.id]);
+    }
+    return true;
+  });
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const input = (messageId: string, text: string, placement: 'current_turn' | 'next_turn') =>
+    ({
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      messageId,
+      content: { text },
+      placement,
+    }) as const;
+
+  const steering = await fixture.coordinator.handlers['turn.message.submit'](
+    input('steering-1', 'steer', 'current_turn'),
+    operationContext(),
+  );
+  assert.equal(steering.ok, true);
+
+  const followup = await fixture.coordinator.handlers['turn.message.submit'](
+    input('followup-1', 'queued task', 'next_turn'),
+    operationContext(),
+  );
+  assert.equal(followup.ok, true);
+  assert.equal(followup.ok && followup.result.disposition, 'followup');
+  assert.ok(
+    preflightCalls >= 2,
+    `expected admission retry, preflight ran ${preflightCalls} time(s)`,
+  );
+  owner.release();
+});
+
 test('invalidates the canonical projection after each observable queue mutation', async () => {
   const changedSessions: string[] = [];
   const fixture = createFixture((sessionId) => changedSessions.push(sessionId));

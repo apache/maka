@@ -27,6 +27,7 @@
     "./agent-run": "./dist/agent-run.js",
     "./model-call-attempt": "./dist/model-call-attempt.js",
     "./shell-run": "./dist/shell-run.js",
+    "./shell-run-result": "./dist/shell-run-result.js",
     "./browser": "./dist/browser.js",
     "./session-event-health": "./dist/session-event-health.js",
     "./permission": "./dist/permission.js",

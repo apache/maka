@@ -223,6 +223,15 @@ export interface QueueFenceResult {
   readonly retracted: readonly RetractedMessageSnapshot[];
 }
 
+/**
+ * How many times a submit re-runs admission after its preflight snapshot went
+ * stale. Steering consumption (pull/ack/nack) happens outside the admission
+ * lock, so the queue can change while a submit awaits its preflight; the
+ * change is transient and a fresh pass succeeds. The cap bounds how long a
+ * contended submit waits before reporting session_busy.
+ */
+const SUBMIT_ADMISSION_RETRY_LIMIT = 4;
+
 /** The sole in-memory message authority for one Runtime Host Epoch. */
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
@@ -496,144 +505,159 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       if (this.#draining) {
         return failure('host_draining', 'Runtime Host is draining');
       }
-      const header = await this.#root.readSessionHeader(input.sessionId);
-      if (this.#failStopped) {
-        return failure('host_draining', 'Runtime Host message authority has failed');
-      }
-      if (!header) return failure('not_found', 'Session does not exist');
-      if (header.isArchived) return failure('session_archived', 'Session is archived');
-      const rootState = await this.#root.readRootState(input.sessionId);
-      if (this.#failStopped) {
-        return failure('host_draining', 'Runtime Host message authority has failed');
-      }
-      if (rootState.kind === 'idle') {
-        if (header.unavailableReason) {
-          return failure('operation_unavailable', header.unavailableReason);
+      // A Turn consumes steering out of the queue outside the admission lock
+      // (#pull/#ack/#nack), so a submit's preflight snapshot can go stale while
+      // it awaits. That is transient: re-read the queue and re-run admission
+      // instead of surfacing a spurious session_busy to the client.
+      for (let attempt = 0; ; attempt++) {
+        const header = await this.#root.readSessionHeader(input.sessionId);
+        if (this.#failStopped) {
+          return failure('host_draining', 'Runtime Host message authority has failed');
         }
-        const existingState = this.#sessions.get(input.sessionId);
-        if (existingState && hasLiveMessageState(existingState)) {
+        if (!header) return failure('not_found', 'Session does not exist');
+        if (header.isArchived) return failure('session_archived', 'Session is archived');
+        const rootState = await this.#root.readRootState(input.sessionId);
+        if (this.#failStopped) {
+          return failure('host_draining', 'Runtime Host message authority has failed');
+        }
+        if (rootState.kind === 'idle') {
+          if (header.unavailableReason) {
+            return failure('operation_unavailable', header.unavailableReason);
+          }
+          const existingState = this.#sessions.get(input.sessionId);
+          if (existingState && hasLiveMessageState(existingState)) {
+            throw new RuntimeMessageAuthorityInvariantError(
+              'Root reported idle while the message authority retained live state',
+            );
+          }
+          const sourceMessage: RootTurnSourceMessage = {
+            messageId: input.messageId,
+            content: payload.content,
+            placement: input.placement,
+            disposition: 'turn_started',
+          };
+          const started = await this.#root.startFromMessage(
+            {
+              sessionId: input.sessionId,
+              content: payload.content,
+              sourceMessage,
+              initiatingConnectionId,
+            },
+            admission,
+          );
+          if ('error' in started) {
+            return failure('operation_conflict', started.error);
+          }
+          if (!isEntityId(started.turnId)) {
+            throw new RuntimeMessageAuthorityInvariantError(
+              'Started Turn identity is not encodable',
+            );
+          }
+          const result = { disposition: 'turn_started', turnId: started.turnId } as const;
+          return success(result);
+        }
+        const state = this.#requireState(input.sessionId);
+        if (state.phase !== 'open') {
+          return failure('session_busy', 'Message admission is closed for the active generation');
+        }
+        if (!state.reservedRoot || !sameRun(state.reservedRoot, rootState)) {
           throw new RuntimeMessageAuthorityInvariantError(
-            'Root reported idle while the message authority retained live state',
+            'Root state does not match message reservation',
           );
         }
-        const sourceMessage: RootTurnSourceMessage = {
+        if (allLiveEntries(state).length >= MESSAGE_QUEUE_MAX_ENTRIES) {
+          return failure('session_busy', 'Message queue capacity is full');
+        }
+        const disposition = input.placement === 'current_turn' ? 'steering' : 'followup';
+        const candidateRevision = state.revision;
+        const candidateGeneration = state.generation;
+        const entryId = this.#createId();
+        if (!isEntityId(entryId)) {
+          throw new RuntimeMessageAuthorityInvariantError(
+            'Message entry identity is not encodable',
+          );
+        }
+        const candidateEntry: QueuedMessageSnapshot = {
+          entryId,
           messageId: input.messageId,
           content: payload.content,
           placement: input.placement,
-          disposition: 'turn_started',
+          state: 'queued',
         };
-        const started = await this.#root.startFromMessage(
+        const current = this.#project(state);
+        const candidate: SessionMessageQueueProjection = {
+          ...current,
+          queueRevision: state.revision + 1,
+          steering:
+            disposition === 'steering'
+              ? [
+                  ...[...state.inFlight.values()].map(inFlightSnapshot),
+                  ...state.steering.map(queuedSteeringSnapshot),
+                  { ...candidateEntry, placement: 'current_turn' },
+                ]
+              : current.steering,
+          followup:
+            disposition === 'followup' ? [...current.followup, candidateEntry] : current.followup,
+        };
+        if (!projectionFitsEveryEntryState(candidate)) {
+          return failure('session_busy', 'Message queue projection capacity is full');
+        }
+        if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: candidate }))) {
+          return failure('session_busy', 'Session projection capacity is full');
+        }
+        if (!interruptResultFits(candidate, rootState)) {
+          return failure('session_busy', 'Message queue interrupt result capacity is full');
+        }
+        const prospectiveSources = [
+          ...[...state.inFlight.values(), ...state.steering, ...state.followup].map(
+            sourceFromEntry,
+          ),
           {
-            sessionId: input.sessionId,
+            messageId: input.messageId,
             content: payload.content,
-            sourceMessage,
-            initiatingConnectionId,
+            placement: input.placement,
+            disposition,
           },
-          admission,
-        );
-        if ('error' in started) {
-          return failure('operation_conflict', started.error);
+        ] satisfies RootTurnSourceMessage[];
+        if (!rootAdmissionPayloadFits(prospectiveSources)) {
+          return failure('session_busy', 'Message queue cannot form a durable follow-up Turn');
         }
-        if (!isEntityId(started.turnId)) {
-          throw new RuntimeMessageAuthorityInvariantError('Started Turn identity is not encodable');
+        if (
+          state.phase !== 'open' ||
+          state.revision !== candidateRevision ||
+          state.generation !== candidateGeneration ||
+          !state.reservedRoot ||
+          !sameRun(state.reservedRoot, rootState)
+        ) {
+          if (attempt >= SUBMIT_ADMISSION_RETRY_LIMIT) {
+            return failure('session_busy', 'Message queue changed during admission');
+          }
+          continue;
         }
-        const result = { disposition: 'turn_started', turnId: started.turnId } as const;
-        return success(result);
-      }
-      const state = this.#requireState(input.sessionId);
-      if (state.phase !== 'open') {
-        return failure('session_busy', 'Message admission is closed for the active generation');
-      }
-      if (!state.reservedRoot || !sameRun(state.reservedRoot, rootState)) {
-        throw new RuntimeMessageAuthorityInvariantError(
-          'Root state does not match message reservation',
-        );
-      }
-      if (allLiveEntries(state).length >= MESSAGE_QUEUE_MAX_ENTRIES) {
-        return failure('session_busy', 'Message queue capacity is full');
-      }
-      const disposition = input.placement === 'current_turn' ? 'steering' : 'followup';
-      const candidateRevision = state.revision;
-      const candidateGeneration = state.generation;
-      const entryId = this.#createId();
-      if (!isEntityId(entryId)) {
-        throw new RuntimeMessageAuthorityInvariantError('Message entry identity is not encodable');
-      }
-      const candidateEntry: QueuedMessageSnapshot = {
-        entryId,
-        messageId: input.messageId,
-        content: payload.content,
-        placement: input.placement,
-        state: 'queued',
-      };
-      const current = this.#project(state);
-      const candidate: SessionMessageQueueProjection = {
-        ...current,
-        queueRevision: state.revision + 1,
-        steering:
-          disposition === 'steering'
-            ? [
-                ...[...state.inFlight.values()].map(inFlightSnapshot),
-                ...state.steering.map(queuedSteeringSnapshot),
-                { ...candidateEntry, placement: 'current_turn' },
-              ]
-            : current.steering,
-        followup:
-          disposition === 'followup' ? [...current.followup, candidateEntry] : current.followup,
-      };
-      if (!projectionFitsEveryEntryState(candidate)) {
-        return failure('session_busy', 'Message queue projection capacity is full');
-      }
-      if (!(await this.#preflightSessionSnapshot(input.sessionId, { queue: candidate }))) {
-        return failure('session_busy', 'Session projection capacity is full');
-      }
-      if (!interruptResultFits(candidate, rootState)) {
-        return failure('session_busy', 'Message queue interrupt result capacity is full');
-      }
-      const prospectiveSources = [
-        ...[...state.inFlight.values(), ...state.steering, ...state.followup].map(sourceFromEntry),
-        {
+        const result = { disposition, queueRevision: candidateRevision + 1 } as const;
+        const residency = this.#acquireResidency();
+        const entry: LiveEntry = {
+          entryId,
           messageId: input.messageId,
           content: payload.content,
+          initiatingConnectionId,
           placement: input.placement,
           disposition,
-        },
-      ] satisfies RootTurnSourceMessage[];
-      if (!rootAdmissionPayloadFits(prospectiveSources)) {
-        return failure('session_busy', 'Message queue cannot form a durable follow-up Turn');
+          generation: state.generation,
+          residency,
+          state: 'queued',
+        };
+        if (disposition === 'steering') state.steering.push(entry);
+        else state.followup.push(entry);
+        this.#mutated(state);
+        try {
+          await this.#commitReceipt('submit', input.sessionId, input.messageId, payload, result);
+        } catch (error) {
+          this.#failStop();
+          throw error;
+        }
+        return success(result);
       }
-      if (
-        state.phase !== 'open' ||
-        state.revision !== candidateRevision ||
-        state.generation !== candidateGeneration ||
-        !state.reservedRoot ||
-        !sameRun(state.reservedRoot, rootState)
-      ) {
-        return failure('session_busy', 'Message queue changed during admission');
-      }
-      const result = { disposition, queueRevision: candidateRevision + 1 } as const;
-      const residency = this.#acquireResidency();
-      const entry: LiveEntry = {
-        entryId,
-        messageId: input.messageId,
-        content: payload.content,
-        initiatingConnectionId,
-        placement: input.placement,
-        disposition,
-        generation: state.generation,
-        residency,
-        state: 'queued',
-      };
-      if (disposition === 'steering') state.steering.push(entry);
-      else state.followup.push(entry);
-      this.#mutated(state);
-      try {
-        await this.#commitReceipt('submit', input.sessionId, input.messageId, payload, result);
-      } catch (error) {
-        this.#failStop();
-        throw error;
-      }
-      return success(result);
     });
   }
 

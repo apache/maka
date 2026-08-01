@@ -186,7 +186,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   // kenji `b3d156e9`): same 60-session seed; differs in
   // `focusActiveRow: true`, which programmatically focuses the
   // active row's button after mount so `:focus-within` triggers
-  // and the `.maka-list-row-menu-trigger` becomes visible.
+  // and the official session item receives focus.
   // Captures the overflow-trigger state so reviewers can verify
   // the time meta + unread dot are hidden underneath (no overlap).
   'sidebar-row-actions-visible',

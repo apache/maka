@@ -810,7 +810,7 @@ describe('e2e-fixture mode', () => {
     // `E2eFixtureState.focusActiveRow=true`, which the renderer
     // reads to focus the active row's button after mount. That
     // triggers `:focus-within` and reveals the
-    // `.maka-list-row-menu-trigger` — the fixture then proves
+    // official session item action — the fixture then proves
     // the time meta / unread dot are correctly hidden underneath.
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-e2e-fixture-row-actions-'));
     try {

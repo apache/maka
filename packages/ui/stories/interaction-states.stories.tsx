@@ -106,9 +106,9 @@ export const ListRowStates: Story = {
     </StoryFrame>
   ),
   play: async ({ canvasElement }) => {
-    const hoverTarget = canvasElement.querySelector<HTMLButtonElement>('.maka-nav-row:not([data-active="true"])');
+    const hoverTarget = canvasElement.querySelector<HTMLButtonElement>('.astryx-side-nav-item');
     hoverTarget?.setAttribute('data-state-target', 'hover');
-    const focusTarget = canvasElement.querySelector<HTMLButtonElement>('.maka-list-row[data-active="true"] .maka-list-row-main');
+    const focusTarget = canvasElement.querySelector<HTMLButtonElement>('.astryx-list-item[aria-current="true"] > button');
     focusTarget?.setAttribute('data-state-target', 'focus');
     const tabStops = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button:not([disabled])'));
     const focusIndex = focusTarget ? tabStops.indexOf(focusTarget) : -1;

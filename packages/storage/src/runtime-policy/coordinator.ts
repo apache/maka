@@ -52,6 +52,7 @@ import {
   type CredentialStatusQueryResult,
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
+  type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
   type ConnectionTestTicket,
@@ -271,7 +272,11 @@ export class RuntimePolicyCoordinator {
       if (prepared.kind !== 'ready') return prepared;
       const cleared = await this.clearCredentialDependentLastTests(root, locator, catalog);
       try {
-        return await this.vault.commitSet(root, prepared);
+        await this.vault.commitSet(root, prepared);
+        return deepFreeze({
+          kind: 'committed' as const,
+          snapshot: vaultSnapshot(prepared.document),
+        });
       } catch (error) {
         if (cleared) {
           throw commitOutcomeUnknown(
@@ -281,6 +286,39 @@ export class RuntimePolicyCoordinator {
         }
         throw error;
       }
+    });
+  }
+
+  compareAndSetOAuthCredential(rawInput: CompareAndSetOAuthCredentialInput) {
+    return this.inLane(async (root) => {
+      const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
+      if (
+        input.locator.scope !== 'connection' ||
+        input.locator.kind !== 'oauth_token' ||
+        input.expected === null
+      ) {
+        throw codecError(
+          'invalid_credential_input',
+          'OAuth refresh requires an existing connection OAuth credential generation',
+        );
+      }
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, input.locator);
+      if (!connection) return deepFreeze({ kind: 'superseded' as const });
+      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
+        throw codecError(
+          'invalid_credential_input',
+          'OAuth refresh credential does not match the provider auth contract',
+        );
+      }
+      const prepared = this.vault.prepareSet(await this.vault.read(root), input);
+      if (prepared.kind !== 'ready') return deepFreeze({ kind: 'superseded' as const });
+      await this.vault.commitSet(root, prepared);
+      return deepFreeze({
+        kind: 'committed' as const,
+        credentialId: prepared.entry.credentialId,
+        revision: prepared.entry.revision,
+      });
     });
   }
 

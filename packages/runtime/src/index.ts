@@ -518,6 +518,7 @@ export {
   MIN_PTY_ROWS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
   SHELL_RUN_RESOURCE_PREFIX,
+  ShellRunPtyControlClosedError,
   isWellFormedTerminalInput,
   isShellRunResourceRef,
   shellRunResourceRef,
@@ -1054,7 +1055,11 @@ export { materializeSession, applyAppendedMessage, setToolStatus } from './mater
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
 
 export { AsyncEventQueue } from './async-queue.js';
-export { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from './fake-backend.js';
+export {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
+  FakeBackend,
+} from './fake-backend.js';
 
 export {
   BUILTIN_PRICING,

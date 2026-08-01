@@ -16,7 +16,7 @@ import { SandboxBoundaryPrompt } from '../sandbox-boundary-prompt.js';
 import { ToolTrow } from '../tool-activity.js';
 import { summarizeTrowTools } from '../tool-activity/trow-summary.js';
 import { UserQuestionPrompt } from '../user-question-prompt.js';
-import { ModelProviderRetryIndicator } from '../chat-turn.js';
+import { ModelProviderRetryIndicator, TurnView } from '../chat-turn.js';
 
 function render(locale: UiLocale, children: ReactNode): string {
   return renderToStaticMarkup(<LocaleProvider locale={locale}>{children}</LocaleProvider>);
@@ -67,6 +67,34 @@ const archivedSession = {
 } satisfies SessionSummary;
 
 describe('localized conversation journey', () => {
+  it('keeps Astryx message semantics in the active locale', () => {
+    const surface = (
+      <TurnView
+        turn={{
+          turnId: 'turn-localized',
+          status: 'completed',
+          partialOutputRetained: false,
+          user: { id: 'user-1', role: 'user', text: 'hello' },
+          assistant: { id: 'assistant-1', role: 'assistant', text: 'hi' },
+          tools: [],
+          timeline: [{ kind: 'text', text: 'hi', messageId: 'assistant-1' }],
+          notes: [{ id: 'system-1', role: 'system', text: 'notice' }],
+          startedAt: 1,
+        }}
+      />
+    );
+    const zh = render('zh', surface);
+    const en = render('en', surface);
+
+    for (const label of ['你发送的消息', '系统消息', 'Maka 的回答']) {
+      assert.match(zh, new RegExp(`aria-label="${label}"`));
+    }
+    for (const label of ['Your message', 'System message', "Maka's response"]) {
+      assert.match(en, new RegExp(`aria-label="${label.replace("'", '&#x27;')}"`));
+    }
+    assert.doesNotMatch(zh, /Message from (?:user|assistant|system)/);
+  });
+
   it('renders provider retry attempts without exposing provider error details', () => {
     const retry = {
       type: 'provider_retry',

@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  sanitizeCuDirectReport,
-  sanitizeCuModelPlans,
-  sanitizeCuReport,
-} from './cu-report-sanitize.mjs';
+import { sanitizeCuDirectReport, sanitizeCuReport } from './cu-report-sanitize.mjs';
 
 test('CU reports keep metrics while dropping typed text, coordinates, URL secrets, and trace payloads', () => {
   const secret = 'secret-canary';
@@ -55,25 +51,6 @@ test('CU reports keep metrics while dropping typed text, coordinates, URL secret
   ]);
   assert.doesNotMatch(serialized, new RegExp(secret));
   assert.doesNotMatch(serialized, /"x":12|"y":34/);
-});
-
-test('model plans expose only turn and action types', () => {
-  const plans = sanitizeCuModelPlans([
-    {
-      turn: 1,
-      responseId: 'private-response',
-      actions: [
-        { type: 'click', x: 20, y: 40 },
-        { type: 'type', text: 'private' },
-      ],
-    },
-  ]);
-  assert.deepEqual(plans, [
-    {
-      turn: 1,
-      actionTypes: ['click', 'type'],
-    },
-  ]);
 });
 
 test('report sanitizer preserves validated attribution and drops arbitrary fields', () => {
