@@ -23,7 +23,9 @@ test('settings navigation collapses through the Astryx API at the narrow window 
   const source = read('apps/desktop/src/renderer/settings/settings-surface.tsx');
   const css = read('apps/desktop/src/renderer/styles/settings/form.css');
 
-  assert.match(source, /useSyncExternalStore/);
+  assert.match(source, /useMediaQuery\(NARROW_SETTINGS_QUERY\)/);
   assert.match(source, /collapsible=\{\{[\s\S]*?isCollapsed: isNarrowSettings/);
-  assert.match(css, /@media \(max-width: 760px\)[\s\S]*?grid-template-columns: 48px minmax\(0, 1fr\)/);
+  assert.match(source, /<LayoutPanel[\s\S]*?width=\{isNarrowSettings \? 48 : 260\}/);
+  assert.doesNotMatch(source, /useSyncExternalStore|subscribeToNarrowSettings/);
+  assert.doesNotMatch(css, /@media \(max-width: 760px\)|grid-template-columns/);
 });
