@@ -50,14 +50,8 @@
   gap: var(--space-1);
 }
 
-/* Chat activity disclosure: one trigger dialect for reasoning / tool rows /
-   product trow. !important beats StyleX `.x*:not(#\#)` atoms (see sidebar.css). */
-.maka-turn .astryx-chat-tool-calls [role="button"],
-.maka-turn .astryx-chat-reasoning [role="button"],
-.maka-turn [data-trow] .astryx-collapsible-trigger {
-  /* Hand reserved for links (native-cursor convention). */
-  cursor: default !important;
-}
+/* Cursor for tool/reasoning disclosure triggers is owned by
+   styles/native-cursor.css (role=button + default !important). */
 
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
   font-family: var(--font-family-body) !important;
