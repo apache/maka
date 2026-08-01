@@ -52,8 +52,3 @@ export async function readSettingsCombinedSource(): Promise<string> {
   return sources.join('\n');
 }
 
-export function readSettingsCombinedSourceSync(): string {
-  return sourcePaths
-    .map((sourcePath) => readFileSync(resolve(SETTINGS_ROOT, sourcePath), 'utf8'))
-    .join('\n');
-}

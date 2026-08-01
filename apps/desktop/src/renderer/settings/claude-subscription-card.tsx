@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { type SubscriptionAccountState, type UiLocale } from '@maka/core';
 import {
-  Chip,
+  Badge,
   Button,
   RelativeTime,
   TextArea,
@@ -10,7 +10,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { type StatusTone } from './settings-status-badge';
+import { statusBadgeVariant, type StatusTone } from './settings-status-badge';
 import {
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
@@ -121,7 +121,7 @@ export function ClaudeSubscriptionCard() {
             </div>
             <small>{copy.gateUnknown}</small>
           </div>
-          <Chip variant="destructive">{copy.readFailed}</Chip>
+          <Badge variant="error" label={copy.readFailed} />
         </div>
         <small className="settingsErrorText" role="alert">
           {copy.gateError}{experimentalGateError}
@@ -322,9 +322,7 @@ export function ClaudeSubscriptionCard() {
             {state?.profile?.email ? ` · ${state.profile.email}` : ''}
           </small>
         </div>
-        <Chip variant={presentation.tone}>
-          {presentation.label}
-        </Chip>
+        <Badge variant={statusBadgeVariant(presentation.tone)} label={presentation.label} />
       </div>
       <p className="settingsConnectionDetail">{presentation.detail}</p>
       {pasteError && !authRequestId && (

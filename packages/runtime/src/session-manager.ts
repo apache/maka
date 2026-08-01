@@ -170,7 +170,7 @@ import {
   type TurnStartOptions,
 } from './runtime-kernel.js';
 import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
-import type { HistoryCompactCleanupRequest } from './runtime-kernel.js';
+import type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-coordinator.js';
 import { fingerprintAgentGraphRunnableIntent } from './stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from './stream-graph-readiness.js';
 import { projectAgentGraphRecords } from './stream-graph-projection.js';

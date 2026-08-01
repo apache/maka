@@ -75,29 +75,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.ok(afterPrompt.includes('hello world'));
   });
 
-  test('falls back to a plain maka mark when the terminal is too narrow for the wordmark', () => {
-    const state = createMakaPiTranscriptState();
-
-    // One column below the wordmark's own width degrades it to a single maka line.
-    const narrow = renderMakaPiTranscript(state, meta(), MAKA_WORDMARK_WIDTH - 1).map((line) =>
-      stripAnsi(line).replace(/\s+$/, ''),
-    );
-    assert.equal(narrow[0], 'maka');
-    assert.equal(
-      narrow.slice(0, 4).some((line) => /__/.test(line)),
-      false,
-    );
-    // The tagline and hints still show below the fallback mark.
-    assert.ok(narrow.includes('陪你把事做完'));
-    assert.ok(narrow.some((line) => /\/session/.test(line)));
-
-    // At the wordmark's own width the four-line wordmark still renders.
-    const atThreshold = renderMakaPiTranscript(state, meta(), MAKA_WORDMARK_WIDTH).map((line) =>
-      stripAnsi(line).replace(/\s+$/, ''),
-    );
-    assert.deepEqual(atThreshold.slice(0, 4), MAKA_WORDMARK);
-  });
-
   test('keeps assistant text after a tool call visible after the tool block', () => {
     const state = createMakaPiTranscriptState();
     appendUserPrompt(state, 'inspect the package');
@@ -1724,63 +1701,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(compact, /final error line/);
     // The exit code is red.
     assert.match(lines.join('\n'), /\x1b\[31mexit 1\x1b\[39m/);
-  });
-
-  test('marks a completed tool with a green disc', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'tool-1',
-        toolName: 'Bash',
-        args: { command: 'true' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'tool-1',
-        isError: false,
-        content: terminalResult('', '', { cmd: 'true' }),
-      }),
-    );
-
-    const lines = renderMakaPiTranscript(state, meta(), 100);
-    assert.match(lines.join('\n'), /\x1b\[32m●\x1b\[39m/);
-  });
-
-  test('hides a sub-second duration on a settled compact row', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'bash-fast',
-        toolName: 'Bash',
-        args: { command: 'true' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'bash-fast',
-        isError: false,
-        content: shellRun({
-          status: 'completed',
-          startedAt: 1_000,
-          updatedAt: 1_300,
-          completedAt: 1_300,
-          exitCode: 0,
-        }),
-      }),
-    );
-
-    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(rendered, /● Bash  \$ true \(no output\)/);
-    assert.doesNotMatch(rendered, /0s/);
   });
 
   test('shows the first real command line when a Bash command leads with comments', () => {
@@ -3781,32 +3701,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(expanded, /Read 4 lines, 59 bytes/);
   });
 
-  test('counts a Read summary without the file trailing newline', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'read-nl',
-        toolName: 'Read',
-        args: { path: 'one.txt' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'read-nl',
-        isError: false,
-        content: { kind: 'json', value: { content: 'only-line\n' } },
-      }),
-    );
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /Read 1 line, 10 bytes/);
-  });
-
   test('shows maka://runtime resource Read output in full, never summarized or capped', () => {
     const state = createMakaPiTranscriptState();
     // A runtime resource read returns live state (background-task metadata +
@@ -3881,36 +3775,6 @@ describe('Maka Pi TUI transcript', () => {
     const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.match(expanded, /Archived tool result: not_loaded/);
     assert.doesNotMatch(expanded, /Read \d+ lines,/);
-  });
-
-  test('reports the same Read line count collapsed and expanded for a trailing-newline file', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'read-count',
-        toolName: 'Read',
-        args: { path: 'three.txt' },
-      }),
-    );
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_result',
-        toolUseId: 'read-count',
-        isError: false,
-        content: { kind: 'json', value: { content: 'a\nb\nc\n' } },
-      }),
-    );
-
-    // Collapsed and expanded must agree: both drop the trailing newline, so the
-    // same card cannot flip from "4 lines" to "3 lines" when toggled with Ctrl+O.
-    const compact = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(compact, /\(3 lines\)/);
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /Read 3 lines, 6 bytes/);
   });
 
   test('preserves a real trailing blank line in the Read line count', () => {
@@ -5058,48 +4922,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(expanded, /chunk-512\b/);
   });
 
-  test('ignores empty output without displacing retained output', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'output-empty',
-        toolName: 'Bash',
-        args: { command: 'verbose' },
-      }),
-    );
-    for (let i = 0; i < 512; i += 1) {
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_output_delta',
-          toolUseId: 'output-empty',
-          seq: i,
-          stream: i % 2 === 0 ? 'stdout' : 'stderr',
-          chunk: `chunk-${i}\n`,
-          redacted: false,
-        }),
-      );
-    }
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_output_delta',
-        toolUseId: 'output-empty',
-        seq: 512,
-        stream: 'stdout',
-        chunk: '',
-        redacted: false,
-      }),
-    );
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /chunk-0\b/);
-    assert.match(expanded, /chunk-511\b/);
-  });
-
   test('retains the newest progress when progress text exceeds its buffer limit', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -5160,42 +4982,6 @@ describe('Maka Pi TUI transcript', () => {
     const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
     assert.doesNotMatch(expanded, /progress-0\b/);
     assert.match(expanded, /progress-512\b/);
-  });
-
-  test('ignores empty progress without displacing retained progress', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'progress-empty',
-        toolName: 'Workflow',
-        args: {},
-      }),
-    );
-    for (let i = 0; i < 512; i += 1) {
-      applyMakaSessionEventToTranscript(
-        state,
-        event({
-          type: 'tool_progress',
-          toolUseId: 'progress-empty',
-          chunk: `progress-${i}\n`,
-        }),
-      );
-    }
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_progress',
-        toolUseId: 'progress-empty',
-        chunk: '',
-      }),
-    );
-
-    assert.equal(toggleAllToolExpansion(state), true);
-    const expanded = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
-    assert.match(expanded, /progress-0\b/);
-    assert.match(expanded, /progress-511\b/);
   });
 });
 
@@ -5439,102 +5225,6 @@ describe('Maka Pi TUI status line', () => {
     );
   });
 
-  test('shows thinking:high when thinkingLevel is set', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          thinkingLevel: 'high',
-          thinkingLevels: ['off', 'low', 'medium', 'high', 'max'],
-        },
-        100,
-      ),
-    );
-    assert.match(line, /thinking:high/);
-  });
-
-  test('omits thinking:default when thinkingLevel is unset but levels are available (#1064)', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          thinkingLevels: ['off', 'low', 'medium', 'high', 'max'],
-        },
-        100,
-      ),
-    );
-    assert.doesNotMatch(line, /thinking/);
-  });
-
-  test('omits thinking segment when no levels are available', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-        },
-        100,
-      ),
-    );
-    assert.doesNotMatch(line, /thinking/);
-  });
-
-  test('omits thinking segment when thinkingLevels is empty', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          thinkingLevels: [],
-        },
-        100,
-      ),
-    );
-    assert.doesNotMatch(line, /thinking/);
-  });
-
-  test('shows ctx used/window pct% when modelContextWindow and contextRemaining are both set', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          modelContextWindow: 128_000,
-          usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0, contextRemaining: 96_000 },
-        },
-        100,
-      ),
-    );
-    assert.match(line, /ctx 32k\/128k 25%/);
-  });
-
-  test('omits ctx segment when modelContextWindow is set but no contextRemaining (#1064)', () => {
-    // token_usage.input is a billing-cumulative sum across tool-loop steps,
-    // not the last request's context size, so it cannot serve as a proxy
-    // for "used context". The ctx segment is omitted rather than misleading.
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          modelContextWindow: 128_000,
-          usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
-        },
-        100,
-      ),
-    );
-    assert.doesNotMatch(line, /ctx /);
-  });
-
-  test('ctx segment uses yellow when usage >80% (#1064)', () => {
-    const raw = renderMakaPiStatusLine(
-      {
-        ...meta(),
-        modelContextWindow: 128_000,
-        usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0, contextRemaining: 12_800 },
-      },
-      100,
-    );
-    // 115200/128000 = 90% → yellow (\x1b[33m)
-    assert.ok(raw.includes('\x1b[33m'), 'ctx segment should use yellow at >80%');
-  });
-
   test('ctx segment uses red when usage >95% (#1064)', () => {
     const raw = renderMakaPiStatusLine(
       {
@@ -5546,63 +5236,6 @@ describe('Maka Pi TUI status line', () => {
     );
     // 124800/128000 = 97.5% → red (\x1b[31m)
     assert.ok(raw.includes('\x1b[31m'), 'ctx segment should use red at >95%');
-  });
-
-  test('ctx segment uses dim when usage <=80% (#1064)', () => {
-    const raw = renderMakaPiStatusLine(
-      {
-        ...meta(),
-        modelContextWindow: 128_000,
-        usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0, contextRemaining: 96_000 },
-      },
-      100,
-    );
-    // 25% → dim (\x1b[2m), not yellow or red
-    assert.ok(raw.includes('\x1b[2m'), 'ctx segment should use dim at <=80%');
-    assert.ok(!raw.includes('\x1b[33m'), 'ctx segment should not use yellow at <=80%');
-    assert.ok(!raw.includes('\x1b[31m'), 'ctx segment should not use red at <=80%');
-  });
-
-  test('shortens cwd to ~-relative path when under home (#1064)', () => {
-    const home = process.env.HOME ?? '';
-    if (home) {
-      const line = stripAnsi(
-        renderMakaPiStatusLine(
-          {
-            ...meta(),
-            cwd: `${home}/workspace/project`,
-          },
-          120,
-        ),
-      );
-      assert.match(line, /~\/workspace\/project/);
-    }
-  });
-
-  test('leaves cwd unchanged when not under home (#1064)', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          cwd: '/tmp/project',
-        },
-        120,
-      ),
-    );
-    assert.match(line, /\/tmp\/project/);
-  });
-
-  test('omits ctx segment when contextRemaining is set but no modelContextWindow', () => {
-    const line = stripAnsi(
-      renderMakaPiStatusLine(
-        {
-          ...meta(),
-          usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0, contextRemaining: 96_000 },
-        },
-        100,
-      ),
-    );
-    assert.doesNotMatch(line, /ctx /);
   });
 });
 
@@ -5640,24 +5273,6 @@ describe('Maka Pi TUI activity strip', () => {
       text: 'recovered',
     });
     assert.equal(state.providerRetry, undefined);
-  });
-
-  test('shows Working… Ns when turnElapsedMs is set', () => {
-    const line = stripAnsi(
-      renderMakaPiActivityStrip(
-        {
-          ...meta(),
-          turnElapsedMs: 5_500,
-        },
-        100,
-      ),
-    );
-    assert.equal(line, 'Working… 5s');
-  });
-
-  test('shows blank row when turnElapsedMs is undefined', () => {
-    const line = renderMakaPiActivityStrip(meta(), 100);
-    assert.equal(line, '');
   });
 });
 

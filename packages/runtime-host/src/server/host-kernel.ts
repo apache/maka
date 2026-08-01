@@ -592,11 +592,12 @@ export class RuntimeHostKernel {
     this.#assertShutdownCanContinue();
     await this.#options.owner.close().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
-    if (errors.length > 0)
+    if (errors.length > 0) {
       throw new AggregateError(
         errors,
         'Runtime Host shutdown did not cleanly close every resource',
       );
+    }
   }
 
   async #abortStartup(): Promise<void> {

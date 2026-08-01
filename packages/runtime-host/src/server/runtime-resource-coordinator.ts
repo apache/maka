@@ -1,0 +1,663 @@
+import { createHash } from 'node:crypto';
+import type { ShellRunSnapshotResult, ShellRunUpdate, ToolResultContent } from '@maka/core/events';
+import { isActiveShellRunStatus } from '@maka/core/shell-run';
+import {
+  type BackgroundTaskStopper,
+  type PtyControlWriter,
+  type RuntimeResourceReader,
+  type ShellRunBashInput,
+  type ShellRunLauncher,
+  type ShellRunWriteInput,
+  ShellRunPtyControlClosedError,
+  isShellRunResourceRef,
+} from '@maka/runtime';
+import { isSessionNotFoundError } from '@maka/storage/execution-stores';
+import {
+  decodeRuntimeResourceControllerAcquireResult,
+  decodeRuntimeResourceControllerControlResult,
+  decodeRuntimeResourceQueryResult,
+  decodeRuntimeResourceStopResult,
+  RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE,
+  type OperationOutcome,
+  type RuntimeResourceControllerAcquireInput,
+  type RuntimeResourceControllerControlInput,
+  type RuntimeResourceControllerReleaseInput,
+  type RuntimeResourceControllerReleaseResult,
+  type RuntimeResourcePtyControl,
+  type RuntimeResourceQueryInput,
+  type RuntimeResourceQueryResult,
+  type RuntimeResourceRevision,
+  type RuntimeResourceStopInput,
+} from '../protocol/index.js';
+import type { RuntimeHostResidency } from './host-kernel.js';
+import type {
+  ConnectionContext,
+  RuntimeResourceOperationHandlerMap,
+} from './operation-dispatcher.js';
+import { SessionAdmissionGate } from './session-admission-gate.js';
+import {
+  boundedRuntimeResourceSnapshot,
+  canonicalRuntimeResources,
+  createRuntimeResourcePage,
+  runtimeResourceRevision,
+  runtimeResourceSnapshotFromResult,
+} from './runtime-resource-projection.js';
+
+const MAX_CONTROL_REPLAYS = 128;
+
+interface RuntimeResourceSessionReader {
+  listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]>;
+}
+
+interface RuntimeResourceHeaderReader {
+  readHeader(sessionId: string): Promise<{ readonly status: string; readonly isArchived: boolean }>;
+}
+
+interface RuntimeResourceManager
+  extends ShellRunLauncher,
+    RuntimeResourceReader,
+    BackgroundTaskStopper,
+    PtyControlWriter {
+  inspectResource(sessionId: string, ref: string): Promise<ShellRunSnapshotResult>;
+  terminateAll(): Promise<void>;
+}
+
+export interface HostRuntimeResourceCoordinatorInput {
+  readonly manager: RuntimeResourceManager;
+  readonly sessions: RuntimeResourceSessionReader;
+  readonly sessionHeaders: RuntimeResourceHeaderReader;
+  readonly sessionAdmission: SessionAdmissionGate;
+  readonly acquireResidency: () => RuntimeHostResidency;
+  readonly requestDrain: () => void;
+}
+
+interface ControllerState {
+  readonly connectionId: string;
+  readonly controllerId: string;
+  nextSequence: number;
+}
+
+interface ControlReplay {
+  readonly connectionId: string;
+  readonly controllerId: string;
+  readonly resourceKey: string;
+  readonly sequence: number;
+  readonly digest: string;
+  readonly result: ReturnType<typeof decodeRuntimeResourceControllerControlResult>;
+}
+
+/** Owns Host Shell/PTY tools plus the connection-scoped Client controller fence. */
+export class HostRuntimeResourceCoordinator
+  implements ShellRunLauncher, RuntimeResourceReader, BackgroundTaskStopper, PtyControlWriter
+{
+  readonly handlers: RuntimeResourceOperationHandlerMap = {
+    'runtime.resource.query': (input) => this.#query(input),
+    'runtime.resource.controller.acquire': (input, context) => this.#acquire(input, context),
+    'runtime.resource.controller.control': (input, context) => this.#control(input, context),
+    'runtime.resource.controller.release': (input, context) => this.#release(input, context),
+    'runtime.resource.stop': (input) => this.#stop(input),
+  };
+
+  readonly #manager: RuntimeResourceManager;
+  readonly #sessions: RuntimeResourceSessionReader;
+  readonly #sessionHeaders: RuntimeResourceHeaderReader;
+  readonly #sessionAdmission: SessionAdmissionGate;
+  readonly #acquireResidency: () => RuntimeHostResidency;
+  readonly #requestDrain: () => void;
+  readonly #resourceQueue = new ResourceSerialQueue();
+  readonly #controllers = new Map<string, ControllerState>();
+  readonly #controllerResources = new Map<string, string>();
+  readonly #controlReplays = new Map<string, ControlReplay>();
+  #draining = false;
+  #termination: Promise<void> | undefined;
+
+  constructor(input: HostRuntimeResourceCoordinatorInput) {
+    this.#manager = input.manager;
+    this.#sessions = input.sessions;
+    this.#sessionHeaders = input.sessionHeaders;
+    this.#sessionAdmission = input.sessionAdmission;
+    this.#acquireResidency = input.acquireResidency;
+    this.#requestDrain = input.requestDrain;
+  }
+
+  runForegroundBash(input: ShellRunBashInput): ReturnType<ShellRunLauncher['runForegroundBash']> {
+    return this.#sessionAdmission.run(input.sessionId, async () => {
+      await this.#assertActiveSession(input.sessionId);
+      return this.#manager.runForegroundBash(input);
+    });
+  }
+
+  async runBackgroundBash(
+    input: ShellRunBashInput,
+  ): Promise<Awaited<ReturnType<ShellRunLauncher['runBackgroundBash']>>> {
+    if (this.#draining) throw new Error('Runtime resources are draining');
+    const residency = this.#acquireResidency();
+    let completed = false;
+    const complete = (outcome: { successful: boolean }) => {
+      if (completed) return;
+      completed = true;
+      try {
+        input.onCompletion?.(outcome);
+      } finally {
+        residency.release();
+      }
+    };
+    try {
+      return await this.#sessionAdmission.run(input.sessionId, async () => {
+        await this.#assertActiveSession(input.sessionId);
+        return this.#manager.runBackgroundBash({ ...input, onCompletion: complete });
+      });
+    } catch (error) {
+      complete({ successful: false });
+      throw error;
+    }
+  }
+
+  readRuntimeResource(
+    sessionId: string,
+    ref: string,
+    abortSignal: AbortSignal,
+  ): Promise<ToolResultContent> {
+    return this.#sessionAdmission.run(sessionId, () =>
+      this.#manager.readRuntimeResource(sessionId, ref, abortSignal),
+    );
+  }
+
+  stopBackgroundTask(
+    sessionId: string,
+    ref: string,
+    abortSignal: AbortSignal,
+  ): Promise<ToolResultContent> {
+    return this.#sessionAdmission.run(sessionId, () =>
+      this.#resourceQueue.run(resourceKey(sessionId, ref), async () => {
+        const result = await this.#manager.stopBackgroundTask(sessionId, ref, abortSignal);
+        this.#releaseControllerIfTerminal(sessionId, ref, result);
+        return result;
+      }),
+    );
+  }
+
+  writeStdin(input: ShellRunWriteInput): ReturnType<PtyControlWriter['writeStdin']> {
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
+        if (this.#controllers.has(resourceKey(input.sessionId, input.ref))) {
+          throw new Error('This PTY is controlled by a connected Client');
+        }
+        const result = await this.#manager.writeStdin(input);
+        this.#releaseControllerIfTerminal(input.sessionId, input.ref, result);
+        return result;
+      }),
+    );
+  }
+
+  observeShellRunUpdate(update: ShellRunUpdate): void {
+    if (!isActiveShellRunStatus(update.result.status)) {
+      this.#releaseController(resourceKey(update.sessionId, update.result.ref));
+    }
+  }
+
+  releaseConnection(connectionId: string): void {
+    for (const [key, controller] of this.#controllers) {
+      if (controller.connectionId === connectionId) this.#releaseController(key);
+    }
+    for (const [key, replay] of this.#controlReplays) {
+      if (replay.connectionId === connectionId) this.#controlReplays.delete(key);
+    }
+  }
+
+  beginDrain(): void {
+    if (this.#draining) return;
+    this.#draining = true;
+    this.#controllers.clear();
+    this.#controllerResources.clear();
+    this.#controlReplays.clear();
+    this.#termination = this.#manager.terminateAll();
+  }
+
+  async close(): Promise<void> {
+    this.beginDrain();
+    await this.#termination;
+  }
+
+  #query(input: RuntimeResourceQueryInput): Promise<OperationOutcome<'runtime.resource.query'>> {
+    if (input.kind === 'get' && !isShellRunResourceRef(input.ref)) {
+      return Promise.resolve(
+        queryFailure('invalid_request', 'Runtime Resource ref is unsupported'),
+      );
+    }
+    return this.#sessionAdmission.run(input.sessionId, async () => {
+      let updates: ShellRunUpdate[];
+      try {
+        updates = await this.#sessions.listShellRunUpdates(input.sessionId);
+      } catch {
+        this.#requestDrain();
+        return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
+      }
+      try {
+        const resources = canonicalRuntimeResources(updates);
+        const revision = runtimeResourceRevision(resources);
+        if (input.kind === 'get') {
+          return {
+            ok: true,
+            result: decodeRuntimeResourceQueryResult({
+              kind: 'resource',
+              sessionId: input.sessionId,
+              revision,
+              resource: resources.find((resource) => resource.result.ref === input.ref) ?? null,
+            }),
+          };
+        }
+        if (input.kind === 'list_continue' && input.revision !== revision) {
+          return {
+            ok: true,
+            result: { kind: 'revision_changed', expected: input.revision, actual: revision },
+          };
+        }
+        const offset = input.kind === 'list_start' ? 0 : decodeCursor(input.cursor);
+        if (
+          offset === undefined ||
+          offset > resources.length ||
+          (input.kind === 'list_continue' && offset === 0) ||
+          (input.kind === 'list_continue' && offset === resources.length)
+        ) {
+          return queryFailure('invalid_request', 'Runtime Resource cursor is invalid');
+        }
+        return {
+          ok: true,
+          result: createRuntimeResourcePage(input.sessionId, revision, resources, offset),
+        };
+      } catch {
+        return queryFailure('internal_failure', 'Runtime Resource projection is unavailable');
+      }
+    });
+  }
+
+  #acquire(
+    input: RuntimeResourceControllerAcquireInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'runtime.resource.controller.acquire'>> {
+    if (!isShellRunResourceRef(input.ref)) {
+      return Promise.resolve(
+        mutationFailure('runtime.resource.controller.acquire', {
+          code: 'invalid_request',
+          message: 'Runtime Resource ref is unsupported',
+        }),
+      );
+    }
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
+        const sessionFailure = await this.#mutableSessionFailure(input.sessionId);
+        if (sessionFailure)
+          return mutationFailure('runtime.resource.controller.acquire', sessionFailure);
+        try {
+          const snapshot = await this.#manager.inspectResource(input.sessionId, input.ref);
+          if (snapshot.mode !== 'pty' || !isActiveShellRunStatus(snapshot.status)) {
+            return mutationFailure('runtime.resource.controller.acquire', {
+              code: 'operation_conflict',
+              message: 'Only an active PTY Runtime Resource can be controlled',
+            });
+          }
+          const key = resourceKey(input.sessionId, input.ref);
+          const identity = controllerIdentity(context.connectionId, input.controllerId);
+          const claimedResource = this.#controllerResources.get(identity);
+          if (claimedResource && claimedResource !== key) {
+            return mutationFailure('runtime.resource.controller.acquire', {
+              code: 'operation_conflict',
+              message: 'Controller identity is already bound to another Runtime Resource',
+            });
+          }
+          const current = this.#controllers.get(key);
+          if (
+            current &&
+            (current.connectionId !== context.connectionId ||
+              current.controllerId !== input.controllerId)
+          ) {
+            return mutationFailure('runtime.resource.controller.acquire', {
+              code: 'operation_conflict',
+              message: 'Runtime Resource already has a connected controller',
+            });
+          }
+          const controller = current ?? {
+            connectionId: context.connectionId,
+            controllerId: input.controllerId,
+            nextSequence: 1,
+          };
+          this.#controllers.set(key, controller);
+          this.#controllerResources.set(identity, key);
+          return {
+            ok: true,
+            result: decodeRuntimeResourceControllerAcquireResult({
+              controllerId: controller.controllerId,
+              nextSequence: controller.nextSequence,
+              resource: boundedRuntimeResourceSnapshot(snapshot),
+            }),
+          };
+        } catch (error) {
+          return this.#resourceFailure('runtime.resource.controller.acquire', error);
+        }
+      }),
+    );
+  }
+
+  #control(
+    input: RuntimeResourceControllerControlInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'runtime.resource.controller.control'>> {
+    if (!isShellRunResourceRef(input.ref)) {
+      return Promise.resolve(
+        mutationFailure('runtime.resource.controller.control', {
+          code: 'invalid_request',
+          message: 'Runtime Resource ref is unsupported',
+        }),
+      );
+    }
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
+        const key = resourceKey(input.sessionId, input.ref);
+        const digest = controlDigest(input.control);
+        const replay = this.#controlReplays.get(controlReplayKey(context.connectionId, input));
+        if (replay && replay.sequence === input.sequence) {
+          return replay.digest === digest
+            ? { ok: true, result: structuredClone(replay.result) }
+            : mutationFailure('runtime.resource.controller.control', {
+                code: 'operation_conflict',
+                message: 'Controller sequence was retried with different input',
+              });
+        }
+        const sessionFailure = await this.#mutableSessionFailure(input.sessionId);
+        if (sessionFailure)
+          return mutationFailure('runtime.resource.controller.control', sessionFailure);
+        const controller = this.#controllers.get(key);
+        if (
+          !controller ||
+          controller.connectionId !== context.connectionId ||
+          controller.controllerId !== input.controllerId
+        ) {
+          return mutationFailure('runtime.resource.controller.control', {
+            code: 'operation_conflict',
+            message: 'Runtime Resource controller is not held by this connection',
+          });
+        }
+        if (input.sequence !== controller.nextSequence) {
+          return mutationFailure('runtime.resource.controller.control', {
+            code: 'operation_conflict',
+            message: 'Runtime Resource controller sequence is out of order',
+          });
+        }
+        try {
+          const controlled = await this.#manager.writeStdin({
+            sessionId: input.sessionId,
+            ref: input.ref,
+            ...controlWrite(input.control),
+          });
+          const result = decodeRuntimeResourceControllerControlResult({
+            controllerId: input.controllerId,
+            sequence: input.sequence,
+            resource: boundedRuntimeResourceSnapshot(runtimeResourceSnapshotFromResult(controlled)),
+          });
+          this.#rememberReplay({
+            connectionId: context.connectionId,
+            controllerId: input.controllerId,
+            resourceKey: key,
+            sequence: input.sequence,
+            digest,
+            result,
+          });
+          if (controller.nextSequence === RUNTIME_RESOURCE_MAX_CONTROL_SEQUENCE) {
+            this.#releaseController(key);
+          } else {
+            controller.nextSequence += 1;
+            this.#releaseControllerIfTerminal(input.sessionId, input.ref, controlled);
+          }
+          return { ok: true, result };
+        } catch (error) {
+          if (error instanceof ShellRunPtyControlClosedError) {
+            this.#releaseController(key);
+            return mutationFailure('runtime.resource.controller.control', {
+              code: 'operation_conflict',
+              message: 'Runtime Resource PTY control is closed while the process is stopping',
+            });
+          }
+          return this.#resourceFailure('runtime.resource.controller.control', error);
+        }
+      }),
+    );
+  }
+
+  #release(
+    input: RuntimeResourceControllerReleaseInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'runtime.resource.controller.release'>> {
+    if (!isShellRunResourceRef(input.ref)) {
+      return Promise.resolve(
+        mutationFailure('runtime.resource.controller.release', {
+          code: 'invalid_request',
+          message: 'Runtime Resource ref is unsupported',
+        }),
+      );
+    }
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
+        const key = resourceKey(input.sessionId, input.ref);
+        const controller = this.#controllers.get(key);
+        if (!controller) {
+          return releaseSuccess(input.controllerId, false);
+        }
+        if (
+          controller.connectionId !== context.connectionId ||
+          controller.controllerId !== input.controllerId
+        ) {
+          return mutationFailure('runtime.resource.controller.release', {
+            code: 'operation_conflict',
+            message: 'Runtime Resource controller is held by another connection',
+          });
+        }
+        this.#releaseController(key);
+        this.#controlReplays.delete(controlReplayKey(context.connectionId, input));
+        return releaseSuccess(input.controllerId, true);
+      }),
+    );
+  }
+
+  #stop(input: RuntimeResourceStopInput): Promise<OperationOutcome<'runtime.resource.stop'>> {
+    if (!isShellRunResourceRef(input.ref)) {
+      return Promise.resolve(
+        mutationFailure('runtime.resource.stop', {
+          code: 'invalid_request',
+          message: 'Runtime Resource ref is unsupported',
+        }),
+      );
+    }
+    return this.#sessionAdmission.run(input.sessionId, () =>
+      this.#resourceQueue.run(resourceKey(input.sessionId, input.ref), async () => {
+        const sessionFailure = await this.#mutableSessionFailure(input.sessionId);
+        if (sessionFailure) return mutationFailure('runtime.resource.stop', sessionFailure);
+        try {
+          const result = await this.#manager.stopBackgroundTask(
+            input.sessionId,
+            input.ref,
+            new AbortController().signal,
+          );
+          this.#releaseControllerIfTerminal(input.sessionId, input.ref, result);
+          return {
+            ok: true,
+            result: decodeRuntimeResourceStopResult({
+              resource: boundedRuntimeResourceSnapshot(runtimeResourceSnapshotFromResult(result)),
+            }),
+          };
+        } catch (error) {
+          return this.#resourceFailure('runtime.resource.stop', error);
+        }
+      }),
+    );
+  }
+
+  async #assertActiveSession(sessionId: string): Promise<void> {
+    const header = await this.#sessionHeaders.readHeader(sessionId);
+    if (header.isArchived || header.status === 'archived') {
+      throw new Error('Session is archived');
+    }
+  }
+
+  async #mutableSessionFailure(
+    sessionId: string,
+  ): Promise<
+    { code: 'not_found' | 'session_archived' | 'internal_failure'; message: string } | undefined
+  > {
+    try {
+      const header = await this.#sessionHeaders.readHeader(sessionId);
+      return header.isArchived || header.status === 'archived'
+        ? { code: 'session_archived', message: 'Session is archived' }
+        : undefined;
+    } catch (error) {
+      if (isSessionNotFoundError(error)) {
+        return { code: 'not_found', message: 'Session was not found' };
+      }
+      this.#requestDrain();
+      return { code: 'internal_failure', message: 'Session state is unavailable' };
+    }
+  }
+
+  #resourceFailure<
+    K extends Exclude<keyof RuntimeResourceOperationHandlerMap, 'runtime.resource.query'>,
+  >(operation: K, error: unknown): OperationOutcome<K> {
+    if (isNotFoundError(error)) {
+      return mutationFailure(operation, {
+        code: 'not_found',
+        message: 'Runtime Resource was not found in this Session',
+      });
+    }
+    this.#requestDrain();
+    return mutationFailure(operation, {
+      code: 'internal_failure',
+      message: 'Runtime Resource operation failed',
+    });
+  }
+
+  #releaseControllerIfTerminal(sessionId: string, ref: string, result: ToolResultContent): void {
+    if (result.kind === 'shell_run' && !isActiveShellRunStatus(result.status)) {
+      this.#releaseController(resourceKey(sessionId, ref));
+    }
+  }
+
+  #releaseController(key: string): void {
+    const controller = this.#controllers.get(key);
+    if (!controller) return;
+    this.#controllers.delete(key);
+    this.#controllerResources.delete(
+      controllerIdentity(controller.connectionId, controller.controllerId),
+    );
+  }
+
+  #rememberReplay(replay: ControlReplay): void {
+    const key = controlReplayIdentity(replay.connectionId, replay.controllerId, replay.resourceKey);
+    this.#controlReplays.delete(key);
+    this.#controlReplays.set(key, structuredClone(replay));
+    if (this.#controlReplays.size <= MAX_CONTROL_REPLAYS) return;
+    const oldest = this.#controlReplays.keys().next().value;
+    if (oldest !== undefined) this.#controlReplays.delete(oldest);
+  }
+}
+
+function controlWrite(
+  control: RuntimeResourcePtyControl,
+): Pick<ShellRunWriteInput, 'input' | 'size'> {
+  switch (control.kind) {
+    case 'input':
+      return { input: control.input };
+    case 'resize':
+      return { size: { cols: control.cols, rows: control.rows } };
+    case 'input_and_resize':
+      return { input: control.input, size: { cols: control.cols, rows: control.rows } };
+  }
+}
+
+function decodeCursor(cursor: string): number | undefined {
+  if (!/^(?:0|[1-9]\d*)$/.test(cursor)) return undefined;
+  const offset = Number(cursor);
+  return Number.isSafeInteger(offset) ? offset : undefined;
+}
+
+function resourceKey(sessionId: string, ref: string): string {
+  return `${sessionId}\0${ref}`;
+}
+
+function controllerIdentity(connectionId: string, controllerId: string): string {
+  return `${connectionId}\0${controllerId}`;
+}
+
+function controlReplayKey(
+  connectionId: string,
+  input: Pick<RuntimeResourceControllerControlInput, 'sessionId' | 'ref' | 'controllerId'>,
+): string {
+  return controlReplayIdentity(
+    connectionId,
+    input.controllerId,
+    resourceKey(input.sessionId, input.ref),
+  );
+}
+
+function controlReplayIdentity(connectionId: string, controllerId: string, key: string): string {
+  return `${controllerIdentity(connectionId, controllerId)}\0${key}`;
+}
+
+function controlDigest(control: RuntimeResourcePtyControl): string {
+  return createHash('sha256').update(JSON.stringify(control)).digest('hex');
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
+function queryFailure(
+  code: 'invalid_request' | 'internal_failure',
+  message: string,
+): OperationOutcome<'runtime.resource.query'> {
+  return { ok: false, error: { code, message } };
+}
+
+function mutationFailure<
+  K extends Exclude<keyof RuntimeResourceOperationHandlerMap, 'runtime.resource.query'>,
+>(
+  _operation: K,
+  error: {
+    code:
+      | 'not_found'
+      | 'session_archived'
+      | 'operation_conflict'
+      | 'invalid_request'
+      | 'internal_failure';
+    message: string;
+  },
+): OperationOutcome<K> {
+  return { ok: false, error } as OperationOutcome<K>;
+}
+
+function releaseSuccess(
+  controllerId: string,
+  released: boolean,
+): OperationOutcome<'runtime.resource.controller.release'> {
+  const result: RuntimeResourceControllerReleaseResult = { controllerId, released };
+  return { ok: true, result };
+}
+
+class ResourceSerialQueue {
+  readonly #tails = new Map<string, Promise<void>>();
+
+  async run<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#tails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.#tails.set(key, tail);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#tails.get(key) === tail) this.#tails.delete(key);
+    }
+  }
+}

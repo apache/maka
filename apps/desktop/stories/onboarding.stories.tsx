@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
-import { ChatView } from '@maka/ui';
+import { ChatSurfaceLayout, ChatView } from '@maka/ui';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -51,7 +51,7 @@ const connections: LlmConnection[] = [
  * #1433, second pass: the replacement claimed to be the app's chain "class for
  * class" and was not — it nested `.mainColumn` OUTSIDE `.maka-panel-detail`
  * (the app nests it inside), and dropped `.maka-detail-with-artifacts`,
- * ChatView's 32px `header.maka-chat-header`, and the scroll viewport. Writing
+ * ChatView's session-owned chrome, and the scroll viewport. Writing
  * a chain out by hand is the same mistake one level down.
  *
  * So only the part that cannot be imported is written out: app-shell.tsx owns
@@ -65,18 +65,24 @@ const connections: LlmConnection[] = [
 function DetailPane(props: { children: ReactNode }) {
   return (
     <div
-      className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
+      className="app maka-shell-astryx agents-layout-body"
       data-sidebar-state="expanded"
-      data-agents-view="im_hub"
       style={{ background: 'var(--surface-canvas)', height: '100%', minHeight: 560 }}
     >
-      <div className="maka-detail-with-artifacts">
-        <div className="mainColumn" data-home-surface="true">
-          <ChatView
-            messages={[]}
-            onNew={() => undefined}
-            emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
-          />
+      <div
+        className="maka-panel maka-panel-detail agents-parchment-paper-surface"
+        data-agents-view="im_hub"
+      >
+        <div className="maka-detail-with-artifacts">
+          <div className="mainColumn" data-home-surface="true">
+            <ChatSurfaceLayout composer={null}>
+              <ChatView
+                messages={[]}
+                onNew={() => undefined}
+                emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
+              />
+            </ChatSurfaceLayout>
+          </div>
         </div>
       </div>
     </div>

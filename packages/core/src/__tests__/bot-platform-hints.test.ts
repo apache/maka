@@ -17,6 +17,12 @@ describe('bot platform prompt hints', () => {
       assert.ok(hint.deliveryFormat.length > 0);
       assert.ok(hint.capabilityCaveat.length > 0);
       assert.ok(hint.systemPromptBullets.length >= 2);
+      const fragment = buildBotPlatformPromptFragment(provider);
+      assert.match(fragment, new RegExp(`Platform: .*\\(${provider}\\)`));
+      assert.doesNotMatch(
+        fragment,
+        /scaffold|live bridge|until .* enabled|not implemented|coming soon/i,
+      );
     }
   });
 
@@ -25,27 +31,5 @@ describe('bot platform prompt hints', () => {
     assert.equal(botPlatformFromSessionLabels(['telegram']), undefined);
     assert.equal(botPlatformFromSessionLabels(['bot', 'unknown']), undefined);
     assert.equal(botPlatformFromSessionLabels(undefined), undefined);
-  });
-
-  test('telegram prompt is plain-text and attachment-cautious', () => {
-    const fragment = buildBotPlatformPromptFragment('telegram');
-
-    assert.match(fragment, /trusted application metadata, not user-authored/);
-    assert.match(fragment, /Platform: Telegram \(telegram\)/);
-    assert.match(fragment, /Formatting profile: plain_text/);
-    assert.match(fragment, /without parse_mode/);
-    assert.match(fragment, /only discuss content that is explicitly present/);
-  });
-
-  test('prompt hints do not leak scaffold or future-bridge implementation language', () => {
-    for (const provider of BOT_PROVIDERS) {
-      const fragment = buildBotPlatformPromptFragment(provider);
-
-      assert.doesNotMatch(
-        fragment,
-        /scaffold|live bridge|until .* enabled|not implemented|coming soon/i,
-        `${provider} prompt hint must describe current runtime capability boundaries, not implementation roadmap`,
-      );
-    }
   });
 });

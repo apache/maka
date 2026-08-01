@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps, ReactNode } from 'react';
 import type { SessionSummary, StoredMessage } from '@maka/core';
-import { ChatView, Composer, type TurnFooterActionMeta } from '../src/components.js';
+import { ChatSurfaceLayout, ChatView, Composer, type TurnFooterActionMeta } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
@@ -127,24 +127,25 @@ const baseComposerProps: ComposerProps = {
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
+  onModelChange: noop,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
-	  workspacePicker: {
-	    label: 'maka-agent',
-	    branch: 'codex/storybook-chat-surface',
-	    projects: [],
-	    onAdd: noop,
-	    onSelectProject: noop,
-	    onRelink: noop,
-	    onSelectNoProject: noop,
-	  },
+  workspacePicker: {
+    label: 'maka-agent',
+    branch: 'codex/storybook-chat-surface',
+    projects: [],
+    onAdd: noop,
+    onSelectProject: noop,
+    onRelink: noop,
+    onSelectNoProject: noop,
+  },
 };
 
-function SurfaceFrame(props: { children: ReactNode; narrow?: boolean }) {
+function SurfaceFrame(props: { children: ReactNode; narrow?: boolean; width?: number }) {
   return (
     <div
       style={{
-        width: props.narrow ? 560 : 960,
+        width: props.width ?? (props.narrow ? 560 : 960),
         maxWidth: 'calc(100vw - 48px)',
         height: props.narrow ? 700 : 760,
         margin: '0 auto',
@@ -165,27 +166,24 @@ function ChatSurface(props: {
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
   narrow?: boolean;
+  width?: number;
 }) {
   const messages = props.chat?.messages ?? baseChatProps.messages;
   const turnFooterActionsByTurn = Object.fromEntries(
     [...new Set(messages.map((m) => m.turnId))].map((id) => [id, DEFAULT_FOOTER_ACTIONS]),
   );
   return (
-    <SurfaceFrame narrow={props.narrow}>
-      <div
-        style={{
-          display: 'flex',
-          minHeight: 0,
-          width: '100%',
-          flexDirection: 'column',
-          background: 'var(--background)',
-        }}
+    <SurfaceFrame narrow={props.narrow} width={props.width}>
+      <ChatSurfaceLayout
+        style={{ width: '100%' }}
+        composer={
+          <div style={{ padding: '0 16px 16px' }}>
+            <Composer {...baseComposerProps} {...props.composer} />
+          </div>
+        }
       >
         <ChatView {...baseChatProps} turnFooterActionsByTurn={turnFooterActionsByTurn} {...props.chat} />
-        <div style={{ padding: '0 24px 24px' }}>
-          <Composer {...baseComposerProps} {...props.composer} />
-        </div>
-      </div>
+      </ChatSurfaceLayout>
     </SurfaceFrame>
   );
 }
@@ -533,6 +531,19 @@ export const EmptyChat: Story = {
   ),
 };
 
+// Real path: a session already exists but has not produced its first turn yet.
+// This locks the Astryx ChatMessageList empty-state path separately from 新任务.
+export const ActiveEmptyChat: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        activeSession: session({ name: '尚未开始的会话' }),
+        messages: [],
+      }}
+    />
+  ),
+};
+
 // Real path: send a message → the turn is running and text is streaming in; the composer
 // shows Stop.
 export const StreamingResponse: Story = {
@@ -594,6 +605,66 @@ export const Processing: Story = {
   ),
 };
 
+// Real path: inspect a persisted reasoning/tool turn with the native Astryx
+// tool group expanded. The tool group owns its disclosure directly; Maka no
+// longer adds a second Processing disclosure around the same timeline.
+export const ProcessingExpanded: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: processingConversation,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    canvasElement
+      .querySelector<HTMLElement>('.astryx-chat-tool-calls [role="button"][aria-expanded="false"]')
+      ?.click();
+  },
+};
+
+// Canonical review path for Slice 9: a real long conversation containing
+// reasoning, multiple native Astryx tool calls, long prose, and the complete
+// composer control area with staged context. This is the first story to open
+// for visual acceptance; the focused stories below isolate individual states.
+export const AstryxNativeConversation: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        messages: [...longMessages, ...multiStepConversation],
+        memoryActive: true,
+        onOpenMemorySettings: noop,
+      }}
+      composer={{
+        draftKey: 'composer-astryx-native-conversation',
+        pendingAttachments: [
+          {
+            displayName: 'chat-surface-review.png',
+            kind: 'image',
+            mimeType: 'image/png',
+            size: 284_160,
+          },
+        ],
+        onRemoveAttachment: noop,
+        mentionSkills: [
+          { id: 'review', name: 'Review', description: '检查实现与回归风险' },
+          { id: 'frontend-design', name: 'Frontend Design', description: '检查界面层级与交互' },
+        ],
+        activeThinkingLevels: ['off', 'low', 'medium', 'high'],
+        activeThinkingLevel: 'medium',
+        onThinkingLevelChange: noop,
+        onPlanModeChange: noop,
+        onSwarmModeChange: noop,
+        onGraphModeChange: noop,
+        onToggleVoiceCapture: noop,
+        onToggleRealtimeVoice: noop,
+        voiceProviderLabel: '系统语音',
+      }}
+    />
+  ),
+};
+
 // Real path: hover a turn → 从这里分支 → the new session opens with the parent banner above
 // the transcript.
 export const BranchedConversation: Story = {
@@ -623,6 +694,106 @@ export const BranchedConversation: Story = {
       }}
     />
   ),
+};
+
+// Real path: a derived revision is running an autonomous goal with local
+// memory and Deep Research enabled. Session metadata stays in one context
+// layer above the transcript instead of splitting across header pills and
+// standalone branch/revision rows.
+export const SessionContextCombined: Story = {
+  render: () => {
+    const activeSession = session({
+      id: 'session-context-combined',
+      name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
+      labels: ['mode:deep_research'],
+      parentSessionId: 'session-parent',
+      branchOfTurnId: 'turn-1',
+    });
+    return (
+      <ChatSurface
+        chat={{
+          activeSession,
+          messages: shortConversation,
+          memoryActive: true,
+          onOpenMemorySettings: noop,
+          goalIndicator: {
+            condition: '把 Session Context Layer 收敛到可 review 状态',
+            status: 'active',
+            iterations: 4,
+            maxIterations: 12,
+            onClear: noop,
+          },
+          branchBanner: {
+            parentSessionId: 'session-parent',
+            parentSessionName: 'UI polish 主线评审与跨会话来源追踪的完整上下文',
+            fromAbortedTurn: true,
+          },
+          onBranchBannerClick: noop,
+          revisionNavigation: {
+            current: 2,
+            total: 3,
+            previousSessionId: 'session-context-revision-1',
+            nextSessionId: 'session-context-revision-3',
+          },
+          onRevisionNavigate: noop,
+        }}
+        composer={{
+          draftKey: 'composer-session-context-combined',
+          activeSession,
+        }}
+      />
+    );
+  },
+};
+
+// Real path: the same combined context with a narrow chat column. Goal remains
+// visible while lower-priority metadata collapses into Astryx MoreMenu.
+export const SessionContextNarrow: Story = {
+  render: () => {
+    const activeSession = session({
+      id: 'session-context-narrow',
+      name: 'Chat Surface 收敛',
+      labels: ['mode:deep_research'],
+      parentSessionId: 'session-parent',
+      branchOfTurnId: 'turn-1',
+    });
+    return (
+      <ChatSurface
+        narrow
+        width={360}
+        chat={{
+          activeSession,
+          messages: shortConversation,
+          memoryActive: true,
+          onOpenMemorySettings: noop,
+          goalIndicator: {
+            condition: '把 Session Context Layer 收敛到可 review 状态',
+            status: 'active',
+            iterations: 4,
+            maxIterations: 12,
+            onClear: noop,
+          },
+          branchBanner: {
+            parentSessionId: 'session-parent',
+            parentSessionName: 'UI polish 主线评审',
+            fromAbortedTurn: true,
+          },
+          onBranchBannerClick: noop,
+          revisionNavigation: {
+            current: 2,
+            total: 3,
+            previousSessionId: 'session-context-revision-1',
+            nextSessionId: 'session-context-revision-3',
+          },
+          onRevisionNavigate: noop,
+        }}
+        composer={{
+          draftKey: 'composer-session-context-narrow',
+          activeSession,
+        }}
+      />
+    );
+  },
 };
 
 // Real path: two composer states, side by side as a review scaffold: left = Stop pressed

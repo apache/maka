@@ -56,20 +56,16 @@ export type { SettingsNavGroup };
 // PR-SETTINGS-IA-CONSOLIDATE-0 + PR-SETTINGS-REVIEW-0: WAWQAQ msg
 // `886f6406` rolled back the 记忆+回顾 merge — the combined page was
 // too dense. 记忆 and 每日回顾 are separate nav items again.
-// PR-SETTINGS-NAV-REGROUP-0 (WAWQAQ msg `a9ef0d5d`): 5 narrow groups
-// → 3 wider groups. 基础→通用, AI+集成→「AI 与集成」, 数据+其他→系统.
-// Mirrors reference's tighter grouping (1 big group + a couple small
-// ones) instead of 5 categories with only 1-3 items each.
 export const SETTINGS_NAV: SettingsNavItem[] = [
-  { id: 'general', Icon: SettingsIcon, enabled: true, group: 'general' },
-  { id: 'appearance', Icon: Palette, enabled: true, group: 'general' },
-  { id: 'models', Icon: Cpu, enabled: true, group: 'ai-integrations' },
-  { id: 'usage', Icon: BarChart3, enabled: true, group: 'ai-integrations' },
-  { id: 'memory', Icon: Brain, enabled: true, group: 'ai-integrations' },
-  { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'ai-integrations' },
-  { id: 'voice', Icon: Mic, enabled: true, group: 'ai-integrations' },
-  { id: 'bot-chat', Icon: Bot, enabled: true, group: 'ai-integrations' },
-  { id: 'search', Icon: Search, enabled: true, group: 'ai-integrations', badge: 'Beta' },
+  { id: 'general', Icon: SettingsIcon, enabled: true, group: 'preferences' },
+  { id: 'appearance', Icon: Palette, enabled: true, group: 'preferences' },
+  { id: 'models', Icon: Cpu, enabled: true, group: 'capabilities' },
+  { id: 'memory', Icon: Brain, enabled: true, group: 'capabilities' },
+  { id: 'voice', Icon: Mic, enabled: true, group: 'capabilities' },
+  { id: 'bot-chat', Icon: Bot, enabled: true, group: 'capabilities' },
+  { id: 'search', Icon: Search, enabled: true, group: 'capabilities', badge: 'Beta' },
+  { id: 'usage', Icon: BarChart3, enabled: true, group: 'activity' },
+  { id: 'daily-review', Icon: CalendarDays, enabled: true, group: 'activity' },
   { id: 'data', Icon: Database, enabled: true, group: 'system' },
   { id: 'permissions', Icon: ShieldCheck, enabled: true, group: 'system' },
   { id: 'health', Icon: Activity, enabled: true, group: 'system' },

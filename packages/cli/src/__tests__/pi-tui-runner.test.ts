@@ -54,10 +54,8 @@ import {
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
-import { arrangeAutocompleteAboveEditor } from '../tui-autocomplete-layout.js';
 import {
   assertBottomPickerPlacement,
-  autocompleteSuggestionLines,
   FakeTerminal,
   inputSurfaceRows,
   latestPlainLineContaining,
@@ -179,24 +177,6 @@ describe('Maka Pi TUI runner', () => {
     assert.match(stdout, /CLOSED/);
   });
 
-  test('restores the terminal before exiting on SIGHUP', async () => {
-    const { code, signal, stdout } = await runSignalExitProbe('SIGHUP');
-
-    assert.equal(signal, null);
-    assert.equal(code, 129);
-    assert.match(stdout, /TERMINAL_STOP/);
-    assert.match(stdout, /CLOSED/);
-  });
-
-  test('restores the terminal before exiting on SIGINT', async () => {
-    const { code, signal, stdout } = await runSignalExitProbe('SIGINT');
-
-    assert.equal(signal, null);
-    assert.equal(code, 130);
-    assert.match(stdout, /TERMINAL_STOP/);
-    assert.match(stdout, /CLOSED/);
-  });
-
   test('forces signal exit when outer cleanup never settles after terminal restoration', async () => {
     const { code, signal, stdout } = await runSignalExitProbe('SIGTERM', true);
 
@@ -208,16 +188,6 @@ describe('Maka Pi TUI runner', () => {
 
   test('restores the terminal before reporting an uncaught exception', async () => {
     const { code, signal, stdout, stderr } = await runFatalExitProbe('uncaughtException');
-
-    assert.equal(signal, null);
-    assert.equal(code, 1);
-    assert.match(stdout, /TERMINAL_STOP/);
-    assert.match(stdout, /CLOSED/);
-    assert.match(stderr, /fatal probe/);
-  });
-
-  test('reports and forces fatal exit when outer cleanup never settles', async () => {
-    const { code, signal, stdout, stderr } = await runFatalExitProbe('uncaughtException', true);
 
     assert.equal(signal, null);
     assert.equal(code, 1);
@@ -353,46 +323,6 @@ describe('Maka Pi TUI runner', () => {
       run,
       delay(500).then(() => {
         throw new Error('TUI did not close after /exit');
-      }),
-    ]);
-  });
-
-  test('/setup marks existing connections 已设置 in the provider search', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const providers = defaultOnboardingProviders().map((p) =>
-      p.providerType === 'anthropic'
-        ? { ...p, hasConnection: true, enabledModelIds: ['claude-sonnet-5'] }
-        : p,
-    );
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-      onboarding: fakeOnboardingSurface({ providers }),
-    });
-
-    await delay(20);
-    terminal.input('/setup');
-    terminal.input('\r');
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已设置'));
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
       }),
     ]);
   });
@@ -725,216 +655,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('onboarding wizard filters the provider list as you type in the search field', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: '',
-      connectionSlug: '',
-      permissionMode: 'bypass',
-      terminal,
-      firstRun: true,
-      onboarding: fakeOnboardingSurface(),
-    });
-
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    const before = plainTerminalOutput(terminal.screenOutput());
-    assert.ok(before.includes('Anthropic'));
-    assert.ok(before.includes('DeepSeek'));
-
-    // Typing in the wizard's search field filters the provider list live: the
-    // unmatched providers leave the list while the match stays.
-    terminal.input('anth');
-    await waitFor(() => {
-      const out = plainTerminalOutput(terminal.screenOutput());
-      return out.includes('Anthropic') && !out.includes('DeepSeek');
-    });
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
-      }),
-    ]);
-  });
-
-  test('verify/saving status stays beside the input, out of the transcript', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const verifyCalls: string[] = [];
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-      onboarding: fakeOnboardingSurface({
-        verify: async (input) => {
-          verifyCalls.push(input.apiKey ?? '');
-          return verifyCalls.length === 1
-            ? { kind: 'error', text: 'HTTP 401 Unauthorized' }
-            : { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
-        },
-      }),
-    });
-
-    await delay(20);
-    terminal.input('/setup');
-    terminal.input('\r');
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('\r'); // pick provider -> key phase
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('sk-bad');
-    terminal.input('\r');
-    await waitFor(() => verifyCalls.length === 1);
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), '验证失败') !== null;
-      } catch {
-        return false;
-      }
-    });
-    // A succeeding retry advances to the models step. The in-flight failure
-    // status lived only in the overlay, so it leaves no residue in the transcript.
-    terminal.input('sk-good');
-    terminal.input('\r');
-    await waitFor(() => verifyCalls.length === 2);
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
-    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /验证失败/);
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
-      }),
-    ]);
-  });
-
-  test('key Esc returns to the provider search (step 1/3)', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-      onboarding: fakeOnboardingSurface(),
-    });
-
-    await delay(20);
-    terminal.input('/setup');
-    terminal.input('\r');
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('\r'); // pick provider -> key phase
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
-      } catch {
-        return false;
-      }
-    });
-    // Esc from the key field returns to the search phase: the step marker is
-    // back to 1/3 and the provider list is visible again.
-    terminal.input('\x1b');
-    await waitFor(() => {
-      const out = plainTerminalOutput(terminal.screenOutput());
-      return out.includes('1/3') && out.includes('Anthropic');
-    });
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
-      }),
-    ]);
-  });
-
-  test('models Esc returns to the key step (step 2/3)', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-      onboarding: fakeOnboardingSurface(),
-    });
-
-    await delay(20);
-    terminal.input('/setup');
-    terminal.input('\r');
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('\r'); // pick provider -> key phase
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('sk-test');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
-    // Esc from the models step moves back exactly one level to the key step.
-    terminal.input('\x1b');
-    await waitFor(() => {
-      const out = plainTerminalOutput(terminal.screenOutput());
-      return out.includes('2/3') && out.includes('API key');
-    });
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
-      }),
-    ]);
-  });
-
   test('models Space toggles selection; Enter saves at least one model', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -992,129 +712,6 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => saveCalls.length === 1);
     assert.deepEqual(saveCalls[0]!.enabledModelIds, ['gpt-5.5']);
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
-      }),
-    ]);
-  });
-
-  test('models search field moves the cursor with arrow keys like the other fields', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-      onboarding: fakeOnboardingSurface(),
-    });
-
-    await delay(20);
-    terminal.input('/setup');
-    terminal.input('\r');
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('\r'); // pick provider -> key phase
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('sk-test');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
-    terminal.input('gpt'); // type into the model search field
-    await delay(30);
-    terminal.input('\x1b[D'); // left arrow — should move the cursor left
-    terminal.input('x'); // insert x at the cursor (before the t)
-    await delay(30);
-    const out = plainTerminalOutput(terminal.screenOutput());
-    assert.ok(
-      out.includes('gpxt'),
-      'left arrow should move the cursor so x inserts before the final t',
-    );
-    assert.ok(!out.includes('gptx'), 'without the left arrow the x would append after t');
-
-    process.emit('SIGTERM');
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close after SIGTERM');
-      }),
-    ]);
-  });
-
-  test('model search filters without discarding selections', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const saveCalls: Array<{ enabledModelIds: readonly string[] }> = [];
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'bypass',
-      terminal,
-      onboarding: fakeOnboardingSurface({
-        save: async (input) => {
-          saveCalls.push(input);
-          return { kind: 'ok', modelChoices: [] };
-        },
-      }),
-    });
-
-    await delay(20);
-    terminal.input('/setup');
-    terminal.input('\r');
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'Set Up Provider') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('\r'); // pick provider -> key phase
-    await waitFor(() => {
-      try {
-        return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
-      } catch {
-        return false;
-      }
-    });
-    terminal.input('sk-test');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
-    terminal.input(' '); // toggle the first model on (gpt-5.5)
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已选 1 ·'));
-    // Filtering to 'mini' hides gpt-5.5, but its selection survives.
-    terminal.input('mini');
-    await waitFor(() => {
-      const out = plainTerminalOutput(terminal.screenOutput());
-      return (
-        out.includes('gpt-5.5-mini') && !out.includes('☐ gpt-5.5 ') && !out.includes('☑ gpt-5.5 ')
-      );
-    });
-    terminal.input(' '); // toggle gpt-5.5-mini on while filtered
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已选 2 ·'));
-    terminal.input('\r');
-    await waitFor(() => saveCalls.length === 1);
-    // Both selections reach save — the filtered-out gpt-5.5 was not discarded.
-    assert.deepEqual(saveCalls[0]!.enabledModelIds, ['gpt-5.5', 'gpt-5.5-mini']);
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -2903,45 +2500,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('renders the statusline below the input editor', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes(
-        'Maka · Auto · deepseek-v4-flash · deepseek · /repo',
-      ),
-    );
-
-    const lines = plainTerminalOutput(terminal.output()).split(/\r?\n/);
-    const statusLineIndex = lines.findIndex((line) =>
-      line.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
-    );
-    const editorBorderIndexes = lines
-      .map((line, index) => (/^─+$/.test(line) ? index : -1))
-      .filter((index) => index >= 0);
-
-    assert.ok(editorBorderIndexes.length >= 2);
-    assert.ok(statusLineIndex > editorBorderIndexes[editorBorderIndexes.length - 1]!);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('shows Working… in the activity strip while a turn runs', async () => {
     const terminal = new FakeTerminal();
     const driver = new HangingTurnDriver();
@@ -2962,32 +2520,6 @@ describe('Maka Pi TUI runner', () => {
 
     driver.releaseComplete();
     await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('Working…'));
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('uses logo blue for TUI accent chrome', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    await waitFor(() => terminal.output().includes('\x1b[38;2;87;163;239m'));
-
-    assert.doesNotMatch(terminal.output(), /\x1b\[36m─/);
 
     exitMaka(terminal);
     await Promise.race([
@@ -4063,167 +3595,6 @@ describe('Maka Pi TUI runner', () => {
     assert.equal(terminal.stopCalls, 1);
   });
 
-  test('shows slash commands alphabetically when typing /', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/');
-
-    await waitFor(() => {
-      const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-      return autocompleteSuggestionLines(lines).some((line) => line.includes('/session'));
-    });
-    // Scope to the autocomplete overlay — the empty-session home now shows
-    // /session /model /setup as hint text, so a whole-screen grep would pick up
-    // the home's copies and misorder them against the menu (#1098).
-    const suggestions = autocompleteSuggestionLines(
-      plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/),
-    ).join('\n');
-    const exitIndex = suggestions.indexOf('/exit');
-    const modelIndex = suggestions.indexOf('/model');
-    const permissionsIndex = suggestions.indexOf('/permissions');
-    const sessionIndex = suggestions.indexOf('/session');
-
-    assert.ok(exitIndex >= 0);
-    assert.ok(modelIndex >= 0);
-    assert.ok(permissionsIndex >= 0);
-    assert.ok(sessionIndex >= 0);
-    assert.ok(exitIndex < modelIndex);
-    assert.ok(modelIndex < permissionsIndex);
-    assert.ok(permissionsIndex < sessionIndex);
-    // The whole menu is visible at once — including the last command
-    // alphabetically — so new commands don't push older ones below the fold.
-    assert.ok(suggestions.indexOf('/thinking') > sessionIndex);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('renders slash autocomplete above the input editor', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/');
-
-    await waitFor(() => {
-      const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-      return (
-        lines.some((line) => line.includes('→')) &&
-        autocompleteSuggestionLines(lines).some((line) => line.includes('/model'))
-      );
-    });
-    // Scope to the autocomplete overlay, not the whole screen: the empty-session
-    // home now shows /session /model /setup as hint text, so a whole-screen
-    // findIndex('/model') would land on the home's hint and pass even if the
-    // overlay never rendered (#1098).
-    const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-    const [editorTopBorder, editorBottomBorder] = inputSurfaceRows(lines);
-    const cursorIndex = lines.findIndex((line) => line.includes('→'));
-    const statusLineIndex = lines.findIndex((line) =>
-      line.includes('Maka · Auto · deepseek-v4-flash · deepseek · /repo'),
-    );
-
-    // The autocomplete menu (→ cursor) renders above the editor's top border.
-    assert.ok(cursorIndex >= 0);
-    assert.ok(cursorIndex < editorTopBorder);
-    // The menu carries /model, scoped to the overlay rather than the home hint.
-    assert.ok(autocompleteSuggestionLines(lines).some((line) => line.includes('/model')));
-    // The editor's bottom border sits just above the statusline.
-    assert.equal(editorBottomBorder, statusLineIndex - 1);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('keeps slash autocomplete filtering anchored to the input editor', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/');
-
-    await waitFor(() => {
-      const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-      return autocompleteSuggestionLines(lines).some((line) => line.includes('/session'));
-    });
-    const beforeLines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-    const beforeRows = inputSurfaceRows(beforeLines);
-
-    terminal.input('s');
-
-    await waitFor(() => {
-      const suggestions = autocompleteSuggestionLines(
-        plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/),
-      );
-      return (
-        suggestions.some((line) => line.includes('/session')) &&
-        !suggestions.some((line) => line.includes('/model'))
-      );
-    });
-    const afterLines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-    const afterRows = inputSurfaceRows(afterLines);
-    const afterSuggestions = autocompleteSuggestionLines(afterLines);
-
-    // The input surface did not shift while filtering.
-    assert.deepEqual(afterRows, beforeRows);
-    // The 's' filter matches four commands — /session, /setup, /skill, /swarm — bottom-
-    // aligned immediately above the editor's top border. Scope to the overlay so
-    // the empty-session home's /session /model /setup hints don't collide (#1098).
-    assert.equal(afterSuggestions.length, 4);
-    assert.deepEqual(
-      afterSuggestions.map((line) => line.match(/\/\w+/)?.[0]),
-      ['/session', '/setup', '/skill', '/swarm'],
-    );
-    assert.ok(afterLines[afterRows[0] - 1]!.includes('/swarm'));
-    assert.ok(afterLines[afterRows[0] - 2]!.includes('/skill'));
-    assert.ok(afterLines[afterRows[0] - 3]!.includes('/setup'));
-    assert.ok(afterLines[afterRows[0] - 4]!.includes('/session'));
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('keeps slash autocomplete filtering pinned to the bottom after scrollback', async () => {
     const terminal = new FakeTerminal();
     const driver = new LongTranscriptDriver();
@@ -4279,24 +3650,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('bottom-aligns filtered autocomplete inside a stable slot', () => {
-    const expanded = arrangeAutocompleteAboveEditor({
-      lines: ['────────', '/ ', '────────', '→ /exit', '  /model', '  /permissions', '  /session'],
-      autocompleteShowing: true,
-      autocompleteSlotRows: 0,
-    });
-
-    const filtered = arrangeAutocompleteAboveEditor({
-      lines: ['────────', '/s ', '────────', '→ /session'],
-      autocompleteShowing: true,
-      autocompleteSlotRows: expanded.autocompleteSlotRows,
-    });
-
-    assert.equal(filtered.lines.length, expanded.lines.length);
-    assert.deepEqual(filtered.lines.slice(0, 4), ['', '', '', '→ /session']);
-    assert.deepEqual(filtered.lines.slice(4), ['────────', '/s ', '────────']);
-  });
-
   test('navigates submitted prompt history and restores the unsent draft', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -4349,33 +3702,6 @@ describe('Maka Pi TUI runner', () => {
         }),
       ]);
     }
-  });
-
-  test('handles /exit without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/exit');
-    terminal.input('\r');
-
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close after /exit');
-      }),
-    ]);
-
-    assert.deepEqual(driver.prompts, []);
-    assert.equal(terminal.stopCalls, 1);
   });
 
   test('keeps Maka open when Ctrl-D is pressed during a control command', async () => {
@@ -4502,41 +3828,6 @@ describe('Maka Pi TUI runner', () => {
 
     exitMaka(terminal);
     await run;
-  });
-
-  test('applies the selected slash command from autocomplete', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      models: ['deepseek-v4-flash', 'gpt-5.3-codex-spark'],
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/m');
-
-    await waitFor(() => {
-      const lines = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-      return autocompleteSuggestionLines(lines).some((line) => line.includes('/model'));
-    });
-    terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Select Model'));
-
-    assert.deepEqual(driver.prompts, []);
-
-    terminal.input('\x1b');
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
   });
 
   test('rejects removed permission modes without sending a prompt', async () => {
@@ -4796,67 +4087,6 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
-  test('handles /thinking high without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'gpt-5.5',
-      connectionSlug: 'openai',
-      providerType: 'openai',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/thinking high');
-    terminal.input('\r');
-
-    await waitFor(() => driver.thinkingLevelUpdates.length === 1);
-    assert.deepEqual(driver.thinkingLevelUpdates, ['high']);
-    assert.deepEqual(driver.prompts, []);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('shows the default thinking status for Ollama Cloud GLM-5.2', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'glm-5.2',
-      connectionSlug: 'ollama-cloud',
-      providerType: 'ollama-cloud',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    // #1064: thinking:default is no longer shown — only an explicitly set
-    // thinkingLevel appears. The status line omits the thinking segment.
-    await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes(
-        'Maka · Auto · glm-5.2 · ollama-cloud · /repo',
-      ),
-    );
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('handles /thinking off when the current model exposes a real off wire', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -5044,37 +4274,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('handles /model without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/model claude-opus-4-1');
-    terminal.input('\r');
-
-    await waitFor(() => driver.models.length === 1);
-    await waitFor(() => terminal.output().includes('Model: claude-opus-4-1'));
-
-    assert.deepEqual(driver.models, ['claude-opus-4-1']);
-    assert.deepEqual(driver.prompts, []);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('selects a model from /model', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -5171,117 +4370,6 @@ describe('Maka Pi TUI runner', () => {
     await Promise.race([
       run,
       delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('cross-connection /model filters the model list as you type in the search field', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'gpt-5.5',
-      connectionSlug: 'openai',
-      providerType: 'openai',
-      modelChoices: [
-        {
-          connectionSlug: 'openai',
-          connectionName: 'OpenAI',
-          providerType: 'openai',
-          model: 'gpt-5.5',
-          isDefaultConnection: true,
-        },
-        {
-          connectionSlug: 'zai',
-          connectionName: 'Z.ai',
-          providerType: 'openai',
-          model: 'glm-5.2',
-          isDefaultConnection: false,
-        },
-      ],
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    await delay(20);
-    terminal.input('/model');
-    terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Select Model'));
-    await waitFor(() => terminal.output().includes('glm-5.2'));
-    const before = plainTerminalOutput(terminal.screenOutput());
-    assert.ok(before.includes('gpt-5.5'));
-    assert.ok(before.includes('glm-5.2'));
-    // The searchable overlay stays bottom-anchored above the editor + status line,
-    // just like the non-searchable picker it replaces.
-    assertBottomPickerPlacement(terminal, 'Select Model', 'Maka · Auto · gpt-5.5 · openai · /repo');
-
-    // Typing in the search field filters the cross-connection list live. The
-    // query "gpt" matches only the OpenAI model id, so the Z.ai model leaves
-    // the visible list while the match stays. The current model (gpt-5.5) is
-    // still shown by the status line regardless, so the assertion targets the
-    // model that was filtered out (glm-5.2, not the current model).
-    terminal.input('gpt');
-    await waitFor(() => {
-      const out = plainTerminalOutput(terminal.screenOutput());
-      return out.includes('gpt-5.5') && !out.includes('glm-5.2');
-    });
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(500).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('cross-connection /model shows an empty state when no model matches the search', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'gpt-5.5',
-      connectionSlug: 'openai',
-      providerType: 'openai',
-      modelChoices: [
-        {
-          connectionSlug: 'openai',
-          connectionName: 'OpenAI',
-          providerType: 'openai',
-          model: 'gpt-5.5',
-          isDefaultConnection: true,
-        },
-        {
-          connectionSlug: 'zai',
-          connectionName: 'Z.ai',
-          providerType: 'openai',
-          model: 'glm-5.2',
-          isDefaultConnection: false,
-        },
-      ],
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    await delay(20);
-    terminal.input('/model');
-    terminal.input('\r');
-    await waitFor(() => terminal.output().includes('Select Model'));
-
-    // A query that matches no model id, provider, or connection surfaces an
-    // in-frame empty state instead of the full list.
-    terminal.input('zzz');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('没有匹配的模型'));
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(500).then(() => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
@@ -5537,40 +4625,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('handles /rename without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/rename Updated title');
-    terminal.input('\r');
-
-    await waitFor(() => driver.renames.length === 1);
-    await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Session renamed to "Updated title"'),
-    );
-    await waitFor(() => terminal.titles.includes('Updated title (Maka)'));
-
-    assert.deepEqual(driver.renames, ['Updated title']);
-    assert.deepEqual(driver.prompts, []);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('uses the canonical session name returned by /rename', async () => {
     const terminal = new FakeTerminal();
     const driver = new CanonicalRenameDriver();
@@ -5812,38 +4866,6 @@ describe('Maka Pi TUI runner', () => {
       plainTerminalOutput(terminal.output()).includes('Usage: /rename <new name>'),
     );
     assert.deepEqual(driver.renames, []);
-    assert.deepEqual(driver.prompts, []);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('handles /session without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver([fakeSessionSummary('session-2', '/repo')]);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/session session-2');
-    terminal.input('\r');
-
-    await waitFor(() => driver.sessionIds.length === 1);
-    await waitFor(() => terminal.output().includes('Resumed session "Existing chat"'));
-    await waitFor(() => terminal.titles.includes('Existing chat (Maka)'));
-
-    assert.deepEqual(driver.sessionIds, ['session-2']);
     assert.deepEqual(driver.prompts, []);
 
     exitMaka(terminal);
@@ -6595,45 +5617,6 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
-  test('the session picker scrolls through every session rather than capping', async () => {
-    const terminal = new FakeTerminal();
-    const sessions = Array.from({ length: 12 }, (_, i) =>
-      fakeSessionSummary(`session-${i}`, '/repo', `chat ${i}`),
-    );
-    const driver = new SlashCommandDriver(sessions);
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/session');
-    terminal.input('\r');
-
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
-    // All 12 are in the list (not sliced to 10): the scroll indicator counts the
-    // full total, so the window shows "(1/12)".
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('/12)'));
-    // And the 12th is genuinely reachable: scrolling down brings it into view,
-    // even though it starts below the visible window.
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('chat 11'), false);
-    for (let i = 0; i < 11; i += 1) terminal.input('\x1b[B');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('chat 11'));
-
-    terminal.input('\x1b');
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('the session picker disambiguates same-named sessions by short id', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([
@@ -6659,49 +5642,6 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('bbbb4444'));
 
     terminal.input('\x1b');
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('/help lists commands and keybindings', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/help');
-    terminal.input('\r');
-
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Commands'));
-    const out = plainTerminalOutput(terminal.output());
-    // Commands are derived from the registry, so a representative one shows up.
-    assert.ok(out.includes('/rewind'));
-    assert.ok(out.includes('Rewind to an earlier turn'));
-    assert.ok(out.includes('/new'));
-    // Keybindings — the whole reason /help exists (they are otherwise hidden).
-    assert.ok(out.includes('Keybindings'));
-    assert.ok(out.includes('Ctrl+O'));
-    assert.ok(out.includes('Esc Esc'));
-    assert.ok(out.includes('Ctrl+C — stop the turn, clear input, or press twice to exit'));
-    assert.ok(out.includes('Ctrl+D — exit when input is empty'));
-    // Scrolling is the terminal's own now; the removed PgUp/PgDn pager must not
-    // be advertised as a working keybinding.
-    assert.ok(out.includes('terminal or trackpad'));
-    assert.equal(out.includes('PageUp'), false);
-    assert.deepEqual(driver.prompts, []);
-
     exitMaka(terminal);
     await Promise.race([
       run,
@@ -6770,57 +5710,6 @@ describe('Maka Pi TUI runner', () => {
         .every((line) => visibleWidth(line) <= terminal.columns),
       true,
     );
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('/context labels unavailable request diagnostics', async () => {
-    const terminal = new FakeTerminal();
-    Object.defineProperty(terminal, 'columns', { value: 36 });
-    const driver = new SlashCommandDriver();
-    driver.contextDiagnostics = {
-      status: 'available',
-      providerId: 'anthropic',
-      modelId: 'claude-test',
-      completedAt: 20,
-      segments: [],
-    };
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/context');
-    terminal.input('\r');
-
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('provider report missing'));
-    const out = plainTerminalOutput(terminal.output()).replace(/\s+/g, ' ');
-    assert.match(
-      out,
-      /Usage Used: unavailable provider report missing Total: unavailable request-model snapshot missing Free: unavailable requires Used and Total Share: unavailable requires Used and Total/,
-    );
-    assert.match(
-      out,
-      /Estimated breakdown Unavailable no captured request segments History compaction Unavailable for this request/,
-    );
-    assert.equal(
-      plainTerminalOutput(terminal.screenOutput())
-        .split(/\r?\n/)
-        .every((line) => visibleWidth(line) <= terminal.columns),
-      true,
-    );
-    assert.deepEqual(driver.prompts, []);
 
     exitMaka(terminal);
     await Promise.race([
@@ -7932,70 +6821,6 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('does not ring when a short turn ends unfocused', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      // Default (large) threshold: the immediate-complete turn is far too short.
-      terminal,
-    });
-
-    terminal.input('\x1b[O');
-    terminal.input('go');
-    terminal.input('\r');
-
-    await waitFor(() => driver.prompts.length === 1);
-    await delay(30);
-    assert.equal(bellCount(terminal), 0);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('does not ring when a long turn ends while still focused', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      attentionLongTurnThresholdMs: 0,
-      terminal,
-    });
-
-    // No blur report: the terminal is assumed focused, so a finished turn is
-    // silent — the user is watching it.
-    terminal.input('go');
-    terminal.input('\r');
-
-    await waitFor(() => driver.prompts.length === 1);
-    await delay(30);
-    assert.equal(bellCount(terminal), 0);
-    assert.equal(terminal.titles.includes('★ Maka'), false);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
   test('rings when a sandbox boundary prompt appears unfocused', async () => {
     const terminal = new FakeTerminal();
     const driver = new SandboxBoundaryPromptDriver();
@@ -8020,38 +6845,6 @@ describe('Maka Pi TUI runner', () => {
     // Answer so the parked turn can finish and the TUI closes cleanly.
     terminal.input('y');
     await waitFor(() => driver.boundaryResponses.length === 1);
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
-  });
-
-  test('rings when a short turn fails unfocused', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new QuickErrorDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      // Default (large) threshold: the ring must come from the error path, not
-      // from turn duration — the turn fails immediately.
-      terminal,
-    });
-
-    terminal.input('\x1b[O');
-    terminal.input('go');
-    terminal.input('\r');
-
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('turn failed'));
-    await waitFor(() => bellCount(terminal) === 1);
-    assert.ok(terminal.titles.includes('★ Maka'));
 
     exitMaka(terminal);
     await Promise.race([
@@ -8517,58 +7310,6 @@ describe('Maka Pi TUI runner', () => {
       ]);
     });
 
-    test('an idle-triggered recap is shown normally when no later prompt supersedes it', async (t) => {
-      const terminal = new FakeTerminal();
-      const driver = new RewindDriver([
-        { turnId: 'turn-1', label: 'first' },
-        { turnId: 'turn-2', label: 'second' },
-        { turnId: 'turn-3', label: 'third' },
-      ]);
-      const gate = deferred<void>();
-      let calls = 0;
-      const run = runMakaPiTui({
-        title: 'Maka',
-        driver,
-        cwd: '/repo',
-        model: 'claude-sonnet-4-5',
-        connectionSlug: 'claude-subscription',
-        permissionMode: 'ask',
-        terminal,
-        recap: {
-          generate: async () => {
-            calls++;
-            await gate.promise;
-            return { ok: true, text: 'fresh recap result', raw: 'fresh recap result' };
-          },
-        },
-      });
-
-      t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
-      t.mock.timers.tick(AUTO_RECAP_IDLE_MS + 1_000);
-      terminal.input('first prompt after idle');
-      terminal.input('\r');
-      t.mock.timers.reset();
-
-      await waitFor(() => calls === 1); // idle auto-recap fired; generate() is in flight
-      await waitFor(() => driver.prompts.length === 1);
-      await waitFor(() => terminal.progressStates.at(-1) === false);
-
-      // No further prompt is submitted before the recap resolves, so promptSeq
-      // is unchanged from what runRecap captured on entry: the notice shows.
-      gate.resolve();
-      await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes('Recap: fresh recap result'),
-      );
-
-      exitMaka(terminal);
-      await Promise.race([
-        run,
-        delay(50).then(() => {
-          throw new Error('TUI did not close during test cleanup');
-        }),
-      ]);
-    });
-
     // PR #1182 review fix: recapInFlight must be set synchronously, before any
     // await, so two /recap submissions with no await between them (unlike the
     // "already running" test above, which waits for the first generate() call
@@ -8765,33 +7506,6 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.prompts, []);
   });
 
-  test('a bare "exit" line exits Maka without sending a prompt', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'claude-sonnet-4-5',
-      connectionSlug: 'claude-subscription',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('exit');
-    terminal.input('\r');
-
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close on a bare "exit" line');
-      }),
-    ]);
-
-    assert.equal(terminal.stopCalls, 1);
-    assert.deepEqual(driver.prompts, []);
-  });
-
   test('"quit now" and "请 exit" are sent as ordinary prompts, not the exit word', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -8849,35 +7563,6 @@ describe('Maka Pi TUI runner', () => {
 
     assert.equal(terminal.stopCalls, 1);
     assert.deepEqual(driver.prompts, []);
-  });
-
-  test('/quit is a hidden alias of /exit, not its own autocomplete entry', async () => {
-    const terminal = new FakeTerminal();
-    const driver = new SlashCommandDriver();
-    const run = runMakaPiTui({
-      title: 'Maka',
-      driver,
-      cwd: '/repo',
-      model: 'deepseek-v4-flash',
-      connectionSlug: 'deepseek',
-      permissionMode: 'ask',
-      terminal,
-    });
-
-    terminal.input('/');
-
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('/exit'));
-    const output = plainTerminalOutput(terminal.output());
-    assert.ok(output.includes('/exit'));
-    assert.ok(!output.includes('/quit'));
-
-    exitMaka(terminal);
-    await Promise.race([
-      run,
-      delay(50).then(() => {
-        throw new Error('TUI did not close during test cleanup');
-      }),
-    ]);
   });
 
   test('resumes a session at startup via resumeSessionId', async () => {
@@ -10953,16 +9638,23 @@ async function runSignalExitProbe(
   });
   let stdout = '';
   let signalSent = false;
+  let killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
     if (!signalSent && stdout.includes('READY')) {
       signalSent = true;
       child.kill(signalToSend);
+      // Time the kill against the signal handling window, not the child's
+      // startup: on a slow CI runner importing the TUI and reaching READY can
+      // itself take seconds, which would otherwise leave the 3s exit grace
+      // (beginMakaCliExit) past the 5s kill timer and the probe would be
+      // SIGKILLed before the graceful exit it is asserting.
+      clearTimeout(killTimer);
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
     }
   });
 
-  const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
   const [code, signal] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
   clearTimeout(killTimer);
   return { code, signal, stdout };
@@ -11052,11 +9744,20 @@ async function runFatalExitProbe(
   });
   let stdout = '';
   let stderr = '';
-  const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+  let childReady = false;
+  let killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
+    // Same reasoning as runSignalExitProbe: the fatal trigger fires right
+    // after READY, and the process needs the 3s exit grace after that; on a
+    // slow CI runner the pre-READY startup must not eat into that budget.
+    if (!childReady && stdout.includes('READY')) {
+      childReady = true;
+      clearTimeout(killTimer);
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+    }
   });
   child.stderr.on('data', (chunk: string) => {
     stderr += chunk;

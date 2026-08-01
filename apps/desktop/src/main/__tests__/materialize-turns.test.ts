@@ -629,119 +629,42 @@ describe('materializeTurns timeline', () => {
 });
 
 describe('deriveTurnLineageMap', () => {
-  it('derives reverse links without mutating old turns', () => {
-    const map = deriveTurnLineageMap([
-      { turnId: 'old' },
-      { turnId: 'retry', retriedFromTurnId: 'old' },
-      { turnId: 'regen', regeneratedFromTurnId: 'old' },
-    ]);
-
-    assert.deepEqual(map.get('old'), {
-      retriedToTurnId: 'retry',
-      regeneratedToTurnId: 'regen',
-    });
-  });
-
-  it('returns empty map when no descendants', () => {
-    const map = deriveTurnLineageMap([
-      { turnId: 'solo-a' },
-      { turnId: 'solo-b' },
-    ]);
-    assert.equal(map.size, 0);
-  });
-
-  it('retriedTo only when no regenerate descendant exists', () => {
-    const map = deriveTurnLineageMap([
-      { turnId: 'origin' },
-      { turnId: 'retry-1', retriedFromTurnId: 'origin' },
-    ]);
-    assert.deepEqual(map.get('origin'), { retriedToTurnId: 'retry-1' });
-    assert.equal(map.get('origin')?.regeneratedToTurnId, undefined);
-  });
-
-  it('regeneratedTo only when no retry descendant exists', () => {
-    const map = deriveTurnLineageMap([
-      { turnId: 'origin' },
-      { turnId: 'regen-1', regeneratedFromTurnId: 'origin' },
-    ]);
-    assert.deepEqual(map.get('origin'), { regeneratedToTurnId: 'regen-1' });
-    assert.equal(map.get('origin')?.retriedToTurnId, undefined);
-  });
-
-  it('multi-retry uses last-wins semantics (most recent retry surfaced)', () => {
-    // Two retries off the same origin: the most recent one in the
-    // input array wins. UI consumers can show "已重新生成 → turn ${id}"
-    // pointing at the latest attempt; older retries are still findable
-    // by scanning the turn list for `retriedFromTurnId === origin`.
-    const map = deriveTurnLineageMap([
-      { turnId: 'origin' },
-      { turnId: 'retry-1', retriedFromTurnId: 'origin' },
-      { turnId: 'retry-2', retriedFromTurnId: 'origin' },
-      { turnId: 'retry-3', retriedFromTurnId: 'origin' },
-    ]);
-    assert.equal(map.get('origin')?.retriedToTurnId, 'retry-3');
-  });
-
-  it('mixed retry + regenerate descendants populate both fields independently', () => {
-    const map = deriveTurnLineageMap([
-      { turnId: 'origin' },
-      { turnId: 'retry-1', retriedFromTurnId: 'origin' },
-      { turnId: 'regen-1', regeneratedFromTurnId: 'origin' },
-      { turnId: 'regen-2', regeneratedFromTurnId: 'origin' },
-    ]);
-    const entry = map.get('origin');
-    assert.equal(entry?.retriedToTurnId, 'retry-1');
-    assert.equal(entry?.regeneratedToTurnId, 'regen-2'); // last regen wins
-  });
-
-  it('multiple origins each get their own entry', () => {
-    const map = deriveTurnLineageMap([
+  it('derives independent reverse links with last-wins semantics', () => {
+    const input = [
       { turnId: 'origin-a' },
       { turnId: 'origin-b' },
-      { turnId: 'retry-a', retriedFromTurnId: 'origin-a' },
+      { turnId: 'retry-a-1', retriedFromTurnId: 'origin-a' },
+      { turnId: 'regen-a-1', regeneratedFromTurnId: 'origin-a' },
+      { turnId: 'retry-a-2', retriedFromTurnId: 'origin-a' },
       { turnId: 'retry-b', retriedFromTurnId: 'origin-b' },
-    ]);
-    assert.equal(map.size, 2);
-    assert.equal(map.get('origin-a')?.retriedToTurnId, 'retry-a');
-    assert.equal(map.get('origin-b')?.retriedToTurnId, 'retry-b');
-  });
-
-  it('descendant turns without a lineage parent do not appear as origins', () => {
-    // A bare turn list (no parents pointing to anything) produces an
-    // empty map even if the turns themselves carry no lineage fields.
-    const map = deriveTurnLineageMap([
-      { turnId: 'a' },
-      { turnId: 'b' },
-      { turnId: 'c' },
-    ]);
-    assert.equal(map.size, 0);
-  });
-
-  it('helper is pure (no mutation of input)', () => {
-    const input = [
-      { turnId: 'origin' },
-      { turnId: 'retry', retriedFromTurnId: 'origin' },
     ] as const;
     const before = JSON.stringify(input);
-    deriveTurnLineageMap(input);
+    const map = deriveTurnLineageMap(input);
+
+    assert.deepEqual([...map], [
+      [
+        'origin-a',
+        { retriedToTurnId: 'retry-a-2', regeneratedToTurnId: 'regen-a-1' },
+      ],
+      ['origin-b', { retriedToTurnId: 'retry-b' }],
+    ]);
     assert.equal(JSON.stringify(input), before);
+  });
+
+  it('returns no reverse links when turns have no lineage parent', () => {
+    assert.equal(deriveTurnLineageMap([{ turnId: 'a' }, { turnId: 'b' }]).size, 0);
   });
 });
 
 describe('automation turn attribution (F6)', () => {
-  it('projects an automation origin onto the turn user entry', () => {
+  it('projects only explicit automation origins', () => {
     const turns = materializeTurns([
       { type: 'user', id: 'u1', turnId: 't1', ts: 1, text: '早报', origin: { kind: 'automation', automationId: 'auto-1' } },
       { type: 'assistant', id: 'a1', turnId: 't1', ts: 2, text: '好的' },
+      { type: 'user', id: 'u2', turnId: 't2', ts: 3, text: '你好' },
     ] as StoredMessage[]);
     assert.equal(turns[0]?.user?.automationOrigin?.automationId, 'auto-1');
-  });
-
-  it('hand-typed turns carry no automation origin', () => {
-    const turns = materializeTurns([
-      { type: 'user', id: 'u1', turnId: 't1', ts: 1, text: '你好' },
-    ] as StoredMessage[]);
-    assert.equal(turns[0]?.user?.automationOrigin, undefined);
+    assert.equal(turns[1]?.user?.automationOrigin, undefined);
   });
 });
 

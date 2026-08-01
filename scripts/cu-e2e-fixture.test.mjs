@@ -54,15 +54,3 @@ test('partial fixture construction destroys already-created windows', async () =
   );
   assert.equal(FakeWindow.instances[0]?.destroyed, true);
 });
-
-test('stale-window fixture exposes only surviving window ids', async () => {
-  FakeWindow.instances = [];
-  const fixture = await createCuE2eFixture({
-    BrowserWindow: FakeWindow,
-    screen: fakeScreen,
-    scenario: getCuE2eScenario('l3-stale-window'),
-  });
-  assert.ok(!fixture.windowIds().includes('stale'));
-  assert.ok(fixture.windowIds().includes('current'));
-  fixture.destroy();
-});

@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core';
 import { createInMemoryTaskRunStore, runTaskOnce } from '@maka/headless';
-import { createAgentRunStore, createRuntimeEventStore, createSessionStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import {
   openHeadlessExecutionStoresForWrite,
   openInteractiveExecutionStoresForWrite,
@@ -241,8 +245,8 @@ describe('inspect CLI storage authority boundary', () => {
 
 type InspectCommandTestStores = {
   sessionStore: ReturnType<typeof createSessionStore>;
-  agentRunStore: ReturnType<typeof createAgentRunStore>;
-  runtimeEventStore: ReturnType<typeof createRuntimeEventStore>;
+  agentRunStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
+  runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
   taskRunStore: ReturnType<typeof createInMemoryTaskRunStore>;
 };
 
@@ -283,8 +287,8 @@ async function withStores(run: (stores: InspectCommandTestStores) => Promise<voi
   try {
     await run({
       sessionStore: createSessionStore(root),
-      agentRunStore: createAgentRunStore(root),
-      runtimeEventStore: createRuntimeEventStore(root),
+      agentRunStore: createLegacyAgentRunStoreForTest(root),
+      runtimeEventStore: createLegacyRuntimeEventStoreForTest(root),
       taskRunStore: createInMemoryTaskRunStore(),
     });
   } finally {

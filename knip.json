@@ -13,6 +13,7 @@
         "src/main/**/*.test.ts",
         "e2e/**/*.spec.ts",
         ".storybook/preview.@(ts|tsx)",
+        ".storybook/node-crypto-boundary.ts",
         "stories/**/*.@(ts|tsx)",
         "scripts/browser-observe-act-smoke.mjs",
         "src/renderer/astryx-theme/maka.d.ts",

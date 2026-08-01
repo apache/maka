@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { useToast } from './toast.js';
 import {
@@ -34,16 +34,13 @@ import {
 } from './plan-reminder-helpers.js';
 import { PlanReminderFormDialog } from './plan-reminder-form-dialog.js';
 import {
-  TabsList,
-  TabsPanel,
-  TabsRoot,
-  TabsTrigger,
-} from './ui.js';
-import {
   Badge,
   Button as UiButton,
+  EmptyState,
   Selector,
   Switch,
+  Tab,
+  TabList,
 } from '@astryxdesign/core';
 import {
   DropdownMenu,
@@ -51,10 +48,9 @@ import {
   DropdownMenuItem,
 } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
-import { Chip, type ChipProps } from './primitives/chip.js';
+import type { BadgeProps } from '@astryxdesign/core/Badge';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
-import { EmptyState } from './empty-state.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
 import type {
   PlanReminderDraftInput,
@@ -63,15 +59,15 @@ import type {
 import { getPlanReminderCopy } from './plan-reminder-copy.js';
 import { useUiLocale } from './locale-context.js';
 
-// Run-history status Chip tone. triggered = it fired (info, informational,
+// Run-history status Badge tone. triggered = it fired (info, informational,
 // not a health signal), blocked = intentionally skipped (warning), failed =
 // delivery error (destructive). Exception-only: no success green for a plain
 // "it ran" record.
-function planRunStatusChipTone(
+function planRunStatusBadgeVariant(
   status: NonNullable<PlanReminder['lastRun']>['status'],
-): ChipProps['variant'] {
+): BadgeProps['variant'] {
   if (status === 'blocked') return 'warning';
-  if (status === 'failed') return 'destructive';
+  if (status === 'failed') return 'error';
   return 'info';
 }
 
@@ -108,20 +104,12 @@ export function PlanReminderPanel(props: {
   const planReminderMountedRef = useMountedRef();
   const refreshPendingRef = useRef(false);
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
-  const pendingReminderMenuIntentRef = useRef<(() => void) | null>(null);
-  // A reminder row's menu trigger button, keyed by reminder id. When a
-  // deferred menu intent (edit/duplicate/clear-runs/delete) opens a dialog
-  // after the menu closes, Astryx Dialog restores focus on Esc to whatever
-  // was `document.activeElement` when it opened. The menu's own close-focus-
-  // return and the deferred dialog open sit two `requestAnimationFrame`s
-  // apart, so on a loaded runner the captured element can land on <body>
-  // instead of the trigger and Esc strands focus away from the row. The
-  // deferred intent re-focuses the trigger right before opening the dialog,
-  // making that capture deterministic. See plan-reminders E2E.
+  const pendingReminderMenuIntentRef = useRef<((trigger?: HTMLButtonElement) => void) | null>(null);
   const reminderMenuTriggerRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const formDialogTriggerRef = useRef<HTMLButtonElement | null>(null);
   // Issue #1044: all create/edit form fields + submit moved into
   // PlanReminderFormDialog. The panel owns its open state and seed;
-  // `formNonce` remounts a closed form session before Astryx opens it.
+  // `formNonce` gives Astryx a fresh native dialog for each form session.
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [openReminderMenuId, setOpenReminderMenuId] = useState<string | null>(null);
   const [formSeed, setFormSeed] = useState<PlanReminderFormSeed>(() => createPlanReminderFormSeed());
@@ -179,6 +167,15 @@ export function PlanReminderPanel(props: {
     };
   }, []);
 
+  // Put the product action that opened the form back in focus before Astryx
+  // Dialog's passive effect captures its opener. Astryx still owns opening,
+  // Escape handling, trapping, and focus restoration on close.
+  useLayoutEffect(() => {
+    if (!formDialogOpen) return;
+    formDialogTriggerRef.current?.focus();
+    formDialogTriggerRef.current = null;
+  }, [formDialogOpen, formNonce]);
+
   // Re-sync the switch to the persisted snapshot when it changes (external
   // edit, relaunch), unless a local write is mid-flight — the optimistic
   // value wins until the write settles.
@@ -212,28 +209,26 @@ export function PlanReminderPanel(props: {
     }
   }
 
-  function openReminderDialog(seed: PlanReminderFormSeed) {
-    setFormDialogOpen(false);
+  function openReminderDialog(seed: PlanReminderFormSeed, trigger?: HTMLButtonElement) {
+    formDialogTriggerRef.current = trigger ?? null;
     setFormSeed(seed);
     setFormNonce((nonce) => nonce + 1);
-    window.requestAnimationFrame(() => {
-      if (planReminderMountedRef.current) setFormDialogOpen(true);
-    });
+    setFormDialogOpen(true);
   }
 
   function openCreateReminderDialog() {
     openReminderDialog(createPlanReminderFormSeed());
   }
 
-  function editReminder(reminder: PlanReminder) {
-    openReminderDialog(planReminderEditSeed(reminder));
+  function editReminder(reminder: PlanReminder, trigger?: HTMLButtonElement) {
+    openReminderDialog(planReminderEditSeed(reminder), trigger);
   }
 
-  function duplicateReminder(reminder: PlanReminder) {
-    openReminderDialog(planReminderDuplicateSeed(reminder, locale));
+  function duplicateReminder(reminder: PlanReminder, trigger?: HTMLButtonElement) {
+    openReminderDialog(planReminderDuplicateSeed(reminder, locale), trigger);
   }
 
-  function runReminderMenuIntentAfterClose(intent: () => void) {
+  function runReminderMenuIntentAfterClose(intent: (trigger?: HTMLButtonElement) => void) {
     pendingReminderMenuIntentRef.current = intent;
   }
 
@@ -245,12 +240,7 @@ export function PlanReminderPanel(props: {
     if (intent) {
       window.requestAnimationFrame(() => {
         if (!planReminderMountedRef.current) return;
-        // Re-establish the trigger as the active element before the intent
-        // opens a dialog, so the dialog captures and later restores focus to
-        // the row's menu trigger instead of whatever drifted to <body> during
-        // the menu-close → deferred-open window.
-        reminderMenuTriggerRefs.current.get(reminderId)?.focus();
-        intent();
+        intent(reminderMenuTriggerRefs.current.get(reminderId));
       });
     }
   }
@@ -338,22 +328,19 @@ export function PlanReminderPanel(props: {
           }
         />
 
-        <TabsRoot
-          className="maka-plan-tabs"
-          value={planView}
-          onValueChange={(value) => {
-            if (value === 'tasks' || value === 'runs') setPlanView(value);
-          }}
-        >
+        <div className="maka-plan-tabs">
           <div className="maka-plan-tabs-bar">
-            <TabsList variant="underline" className="maka-plan-tabs-list" aria-label={copy.page.viewsAriaLabel}>
-              <TabsTrigger className="maka-plan-tab" value="tasks">
-                {copy.page.tasks}
-              </TabsTrigger>
-              <TabsTrigger className="maka-plan-tab" value="runs">
-                {copy.page.runs}
-              </TabsTrigger>
-            </TabsList>
+            <TabList
+              value={planView}
+              onChange={(value) => {
+                if (value === 'tasks' || value === 'runs') setPlanView(value);
+              }}
+              hasDivider
+              aria-label={copy.page.viewsAriaLabel}
+            >
+              <Tab value="tasks" label={copy.page.tasks} />
+              <Tab value="runs" label={copy.page.runs} />
+            </TabList>
             {planView === 'tasks' ? (
               showListControls ? (
                 <div className="maka-plan-toolbar" aria-label={copy.page.filtersAriaLabel}>
@@ -414,27 +401,28 @@ export function PlanReminderPanel(props: {
             )}
           </div>
 
-          <TabsPanel className="maka-plan-tab-panel" value="tasks">
-            {normalizedListQuery && (
+          {planView === 'tasks' ? (
+            <div className="maka-plan-tab-panel">
+              {normalizedListQuery && (
               <div className="maka-plan-search-summary" role="status" aria-live="polite">
                 <span>{copy.page.searchMatches(searchMatchedReminders.length)}</span>
                 <UiButton variant="ghost" size="sm" onClick={() => setListQuery('')} label={copy.page.clearSearch} />
               </div>
-            )}
+              )}
             {props.reminders.length === 0 ? (
               <EmptyState
-                Icon={Clock}
+                icon={<Clock />}
                 title={copy.page.emptyTitle}
-                body={copy.page.emptyBody}
-                extraClassName="maka-plan-empty"
+                description={copy.page.emptyBody}
+                className="maka-plan-empty"
               />
             ) : sortedReminders.length === 0 ? (
               <EmptyState
-                Icon={Clock}
+                icon={<Clock />}
                 title={normalizedListQuery ? copy.page.noSearchTitle : copy.page.noFilterTitle}
-                body={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
-                secondaryCta={{ label: copy.page.clearSearch, onClick: () => setListQuery(''), disabled: !normalizedListQuery }}
-                extraClassName="maka-plan-empty"
+                description={normalizedListQuery ? copy.page.noSearchBody : copy.page.noFilterBody}
+                actions={<UiButton variant="ghost" label={copy.page.clearSearch} onClick={() => setListQuery('')} isDisabled={!normalizedListQuery} />}
+                className="maka-plan-empty"
               />
             ) : (
               <div className="maka-plan-list" aria-label={copy.page.listAriaLabel}>
@@ -482,9 +470,10 @@ export function PlanReminderPanel(props: {
                         </div>
                         {reminder.lastRun && (
                           <div className="maka-plan-card-run">
-                            <Chip size="sm" variant={planRunStatusChipTone(reminder.lastRun.status)}>
-                              {runStatusLabel(reminder.lastRun.status, locale)}
-                            </Chip>
+                            <Badge
+                              variant={planRunStatusBadgeVariant(reminder.lastRun.status)}
+                              label={runStatusLabel(reminder.lastRun.status, locale)}
+                            />
                             <span>{reminder.lastRun.message}</span>
                           </div>
                         )}
@@ -519,7 +508,7 @@ export function PlanReminderPanel(props: {
                         >
                             <DropdownMenuItem
                               onClick={() =>
-                                runReminderMenuIntentAfterClose(() => editReminder(reminder))
+                                runReminderMenuIntentAfterClose((trigger) => editReminder(reminder, trigger))
                               }
                               isDisabled={reminderActionPending || reminder.status === 'completed'}
                               icon={<Pencil size={14} aria-hidden="true" />}
@@ -527,7 +516,7 @@ export function PlanReminderPanel(props: {
                             />
                             <DropdownMenuItem
                               onClick={() =>
-                                runReminderMenuIntentAfterClose(() => duplicateReminder(reminder))
+                                runReminderMenuIntentAfterClose((trigger) => duplicateReminder(reminder, trigger))
                               }
                               isDisabled={reminderActionPending}
                               icon={<Copy size={14} aria-hidden="true" />}
@@ -579,28 +568,28 @@ export function PlanReminderPanel(props: {
                 })}
               </div>
             )}
-          </TabsPanel>
+            </div>
+          ) : null}
 
-          <TabsPanel className="maka-plan-tab-panel" value="runs">
-            {visibleRunEntries.length === 0 ? (
+          {planView === 'runs' ? (
+            <div className="maka-plan-tab-panel">
+              {visibleRunEntries.length === 0 ? (
               <EmptyState
-                Icon={Clock}
+                icon={<Clock />}
                 title={copy.page.noRunsTitle}
-                body={copy.page.noRunsBody}
-                extraClassName="maka-plan-empty maka-plan-runs-empty"
+                description={copy.page.noRunsBody}
+                className="maka-plan-empty maka-plan-runs-empty"
               />
             ) : (
               <div className="maka-plan-run-list" aria-label={copy.page.runsAriaLabel}>
                 {visibleRunEntries.map(({ reminder, run }) => (
                   <article key={`${reminder.id}:${run.id}`} className="maka-plan-run-row">
-                    <Chip
-                      size="sm"
-                      variant={planRunStatusChipTone(run.status)}
+                    <Badge
+                      variant={planRunStatusBadgeVariant(run.status)}
                       className="maka-plan-run-status"
                       data-status={run.status}
-                    >
-                      {runStatusLabel(run.status, locale)}
-                    </Chip>
+                      label={runStatusLabel(run.status, locale)}
+                    />
                     <div className="maka-plan-run-main">
                       <strong>{reminder.title}</strong>
                       <span>{run.message}</span>
@@ -609,9 +598,10 @@ export function PlanReminderPanel(props: {
                   </article>
                 ))}
               </div>
-            )}
-          </TabsPanel>
-        </TabsRoot>
+              )}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <PlanReminderFormDialog

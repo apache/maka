@@ -75,7 +75,7 @@
    (uppercase brand-blue h3 + brand-deep tinted card) was a fourth section-
    header voice used by 关于's privacy card AND 数据's 配置导入导出 header.
    Both converged onto the sanctioned language — SectionHeader for the
-   heading, Alert variant="passive" for the 关于 callout, plain flow for
+   heading, Astryx Banner for the 关于 callout, plain flow for
    数据's form — so these blocks are now just neutral gap containers. */
 .settingsPrivacyBlock {
   display: grid;

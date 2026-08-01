@@ -26,10 +26,7 @@ export function deriveToolActivityPresentation(
   return {
     kind: trowActivityKind(item.toolName, item.activityKind),
     summary: formatUserVisibleToolText(item.intent ?? '', locale) || resolveToolDisplayName(item, locale),
-    // Only a permission prompt is an attention state: it is actionable and a
-    // collapsed row would hide it. An errored tool stays collapsed — the trow
-    // summary line keeps the failure signal (「N 个失败」 in destructive
-    // color), and the diagnostics stay one click away.
+    // Only permission prompts force-open; ordinary failures stay collapsed.
     needsAttention: item.status === 'waiting_permission',
   };
 }

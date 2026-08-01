@@ -110,10 +110,7 @@
 }
 
 .maka-agent-graph-operator-copy span,
-.maka-agent-graph-operator-status,
-.maka-agent-graph-open,
-.maka-agent-graph-stop,
-.maka-agent-graph-retry {
+.maka-agent-graph-operator-status {
   font-size: var(--font-size-caption);
   line-height: var(--leading-snug);
 }
@@ -125,23 +122,6 @@
 .maka-agent-graph-operator-status {
   color: var(--muted-foreground);
   white-space: nowrap;
-}
-
-.maka-agent-graph-open,
-.maka-agent-graph-stop,
-.maka-agent-graph-retry {
-  min-height: var(--h-control-sm);
-  padding: 0 var(--space-2);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--foreground);
-}
-
-.maka-agent-graph-open:hover,
-.maka-agent-graph-stop:hover,
-.maka-agent-graph-retry:hover {
-  background: var(--state-hover-bg);
 }
 
 .maka-agent-graph-results {

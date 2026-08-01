@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { DailyReviewSummary, PlanReminder } from '@maka/core';
+import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
   AutomationsPage,
   DailyReviewPage,
@@ -263,6 +264,61 @@ const withMcpBridge = withScopedMakaBridge({
   },
 });
 
+const configuredMcpConfig: McpConfigFile = {
+  version: 1,
+  mcpServers: {
+    filesystem: {
+      enabled: true,
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '/Users/yuhan/workspace'],
+    },
+    'team-tools': {
+      enabled: true,
+      url: 'https://mcp.example.com/team/tools',
+      transport: 'streamable-http',
+    },
+  },
+};
+
+const configuredMcpStatuses: McpServerStatus[] = [
+  {
+    serverId: 'filesystem',
+    state: 'connected',
+    transport: 'stdio',
+    toolCount: 2,
+    tools: [
+      { serverId: 'filesystem', name: 'read_file', inputSchema: {} },
+      { serverId: 'filesystem', name: 'list_directory', inputSchema: {} },
+    ],
+    updatedAt: NOW,
+  },
+  {
+    serverId: 'team-tools',
+    state: 'error',
+    transport: 'streamable-http',
+    toolCount: 0,
+    tools: [],
+    error: '连接超时，请检查服务器地址或网络代理。',
+    stderrTail: ['request timed out after 30s'],
+    updatedAt: NOW,
+  },
+];
+
+const withConfiguredMcpBridge = withScopedMakaBridge({
+  mcp: {
+    getConfig: async () => configuredMcpConfig,
+    listStatuses: async () => configuredMcpStatuses,
+    setConfig: async () => configuredMcpConfig,
+    upsert: async () => configuredMcpConfig,
+    install: async () => configuredMcpConfig,
+    remove: async () => configuredMcpConfig,
+    cancelInstall: async () => configuredMcpConfig,
+    test: async () => ({ ok: true, status: configuredMcpStatuses[0], latencyMs: 42 }),
+    reconnect: async () => configuredMcpStatuses[0],
+    subscribeChanges: () => () => {},
+  },
+});
+
 function ModuleSurface(props: {
   children: ReactNode;
   agentsView: 'skills' | 'mcp' | 'cron' | 'daily-review';
@@ -412,6 +468,18 @@ export const ExtensionsSkillsInstalled: Story = {
 export const ExtensionsMcp: Story = {
   decorators: [withMcpBridge],
   render: () => <ExtensionsMcpSurface />,
+};
+
+// Real path: sidebar → 扩展 → MCP, with one healthy server and one actionable failure.
+export const ExtensionsMcpConfigured: Story = {
+  decorators: [withConfiguredMcpBridge],
+  render: () => <ExtensionsMcpSurface />,
+  play: async ({ canvasElement }) => {
+    const installed = canvasElement.querySelector<HTMLButtonElement>('[data-tab-value="installed"]');
+    if (!installed) throw new Error('Configured MCP story did not render the installed tab');
+    installed.click();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  },
 };
 
 // Real path: sidebar → 定时任务 → 计划提醒, before any reminder exists.

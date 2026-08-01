@@ -7034,6 +7034,92 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(loop.callCount(), 3);
   });
 
+  test('reserves the final child-agent step for a tool-free evidence summary', async () => {
+    const durable = durableTurnHarness('turn-1', 'audit the repository');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                {
+                  type: 'text-delta',
+                  id: 'text-final',
+                  delta: 'Verified evidence summary with explicit gaps.',
+                },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: { ...header(), collaborationMode: 'agent' },
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      maxSteps: 2,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 2);
+    assert.equal(model.doStreamCalls[1]?.tools?.length ?? 0, 0);
+    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /final budgeted step/i);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.type === 'text_delta' &&
+          event.text === 'Verified evidence summary with explicit gaps.',
+      ),
+    );
+    assert.equal(events.at(-1)?.type, 'complete');
+    assert.equal(
+      (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason,
+      'end_turn',
+    );
+  });
+
   test('reports an explicit step limit without making an auxiliary model call', async () => {
     const appended: StoredMessage[] = [];
     const durable = durableTurnHarness('turn-1', 'finish the task');

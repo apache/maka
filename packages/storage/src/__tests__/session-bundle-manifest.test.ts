@@ -61,6 +61,21 @@ test('omits optional Activation provenance instead of inventing authority', () =
   assert.doesNotMatch(text, /lastCommittedActivationId/);
 });
 
+test('does not serialize inherited Activation provenance', () => {
+  const envelope = Object.assign(
+    Object.create({ lastCommittedActivationId: 'inherited-activation' }) as object,
+    { sessionId: manifest.envelope.sessionId },
+  ) as SessionBundleManifestV1['envelope'];
+
+  const encoded = encodeSessionBundleManifestV1({ ...manifest, envelope });
+  const text = new TextDecoder().decode(encoded);
+  assert.match(text, /"envelope":\{"sessionId":"cloud-session-α"\}/);
+  assert.doesNotMatch(text, /inherited-activation|lastCommittedActivationId/);
+  assert.deepEqual(decodeSessionBundleManifestV1(encoded).envelope, {
+    sessionId: manifest.envelope.sessionId,
+  });
+});
+
 test('rejects parseable but non-canonical manifest bytes', () => {
   const nonCanonical = new TextEncoder().encode(JSON.stringify(manifest));
   assertBundleError(() => decodeSessionBundleManifestV1(nonCanonical), 'invalid_manifest');

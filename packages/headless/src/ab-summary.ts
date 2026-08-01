@@ -579,6 +579,10 @@ function summarizeAttemptPairs(
   let evaluatedPairs = 0;
   let baselinePassed = 0;
   let candidatePassed = 0;
+  let nonBudgetEvaluatedPairs = 0;
+  let baselineNonBudgetPassed = 0;
+  let candidateNonBudgetPassed = 0;
+  const budgetExcludedPairIds: string[] = [];
   let fullyMeteredPairs = 0;
   let baselineMeteredPassed = 0;
   let candidateMeteredPassed = 0;
@@ -612,6 +616,13 @@ function summarizeAttemptPairs(
       evaluatedPairs += 1;
       if (baseline.passed) baselinePassed += 1;
       if (candidate.passed) candidatePassed += 1;
+      if (isBudgetExhaustedOutcome(baseline) || isBudgetExhaustedOutcome(candidate)) {
+        budgetExcludedPairIds.push(pairId);
+      } else {
+        nonBudgetEvaluatedPairs += 1;
+        if (baseline.passed) baselineNonBudgetPassed += 1;
+        if (candidate.passed) candidateNonBudgetPassed += 1;
+      }
       if (hasCompleteTokenSummary(baseline) && hasCompleteTokenSummary(candidate)) {
         fullyMeteredPairs += 1;
         baselineEvaluatedEvents.push(baseline);
@@ -636,6 +647,10 @@ function summarizeAttemptPairs(
     evaluatedPairs,
     baselinePassed,
     candidatePassed,
+    nonBudgetEvaluatedPairs,
+    baselineNonBudgetPassed,
+    candidateNonBudgetPassed,
+    budgetExcludedPairIds,
     fullyMeteredPairs,
     baselineMeteredPassed,
     candidateMeteredPassed,
@@ -767,7 +782,8 @@ function abOutcomeCategory(event: FixedPromptTaskWalEvent): AbOutcomeCategory {
   if (event.type === 'task_plumbing_failed') return 'plumbing';
   if (event.type === 'task_completed') {
     if (isHardPlumbingErrorClass(event.errorClass)) return 'plumbing';
-    if (event.errorClass === 'tool_step_cap_reached') return 'budget';
+    if (event.errorClass === 'budget_exhausted' || event.errorClass === 'tool_step_cap_reached')
+      return 'budget';
     return event.scored ? 'completed' : 'infra';
   }
   if (

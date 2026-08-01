@@ -30,6 +30,7 @@ import {
 import {
   AutomationsPage,
   DailyReviewPage,
+  ChatSurfaceLayout,
   type ComposerHandle,
   type MakaUriDest,
   MakaUriContext,
@@ -148,6 +149,8 @@ import {
   isSessionWorkspaceUnavailableError,
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors';
+import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
+import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 
 type ComposerImportOwner = {
   sessionId: string | undefined;
@@ -301,7 +304,7 @@ function AppShellContent({
     pendingPermissionModeBySession,
     pendingSessionModelBySession,
   } = sessionUiState;
-  // PR-MEMORY-VISIBILITY-INDICATOR-0: chat-header memory pill (MEMORY.md
+  // PR-MEMORY-VISIBILITY-INDICATOR-0: session-context memory state (MEMORY.md
   // injected into the system prompt). State and the fire-and-forget refresh
   // live in `useShellMemoryPill`; recompute is triggered on mount (bootstrap
   // subscriptions) and when Settings closes (closeSettings).
@@ -982,7 +985,7 @@ function AppShellContent({
     openSessionInChatRef.current(sessionId);
   }, []);
 
-  // PR109f: branched session banner. When the active session was
+  // PR109f: branched session context. When the active session was
   // created via `sessions:branchFromTurn`, its `parentSessionId` is
   // set; render a banner above the chat surface so the user knows
   // they're in a derived conversation and can jump back to the parent.
@@ -1176,10 +1179,8 @@ function AppShellContent({
     workbarTab,
     setWorkbarTab,
   } = useShellLayout();
-  const { startColumnResize, onResizeHandleKeyDown, startWorkbarResize, onWorkbarResizeHandleKeyDown } = useStableActions(createAppShellLayoutActions, {
-    sessionListCollapsed,
-    sessionListWidth,
-    setSessionListWidth,
+  const sessionSideNavHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
+  const { startWorkbarResize, onWorkbarResizeHandleKeyDown } = useStableActions(createAppShellLayoutActions, {
     workbarCollapsed,
     workbarWidth,
     setWorkbarWidth,
@@ -1946,7 +1947,7 @@ function AppShellContent({
     // write (e.g. defaultSlug picked) may not always fire one.
     onboarding.refresh();
     // PR-MEMORY-VISIBILITY-INDICATOR-0: same recompute path for the
-    // chat-header memory pill — user may have just flipped the
+    // session-context memory state — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
     // PR-DEFAULT-PERMISSION-MODE-0: the General page writes
@@ -2030,64 +2031,53 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-      <div className="appFrame agents-layout-root" data-agents-page>
-      <div
-        className="app maka-shell-2col agents-layout-body"
+    <div
+      className="appFrame agents-layout-root"
+      data-agents-page
+      data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
+    >
+      <AstryxAppShell
+        className="app maka-shell-astryx agents-layout-body"
+        variant="surface"
+        height="fill"
+        contentPadding={0}
+        mobileNav={{ breakpoint: 'none', hasToggle: false }}
         aria-hidden={hasModalOpen ? 'true' : undefined}
         inert={hasModalOpen ? true : undefined}
         data-modal-background-hidden={hasModalOpen ? 'true' : undefined}
         data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
-        style={
-          {
-            '--maka-session-list-expanded-width': `${sessionListWidth}px`,
-            '--maka-resize-handle-width': '0px',
-          } as CSSProperties
-        }
-      >
-        {/* The window's titlebar: the shell's first grid row, spanning every
-            column, and the only element that declares `-webkit-app-region:
-            drag`. Its action clusters are ordinary in-flow children that each
-            declare `no-drag`, so the OS draggable region is whatever the row
-            has left over — no container has to reserve space for a sibling.
-            Two properties make that work and must hold together:
-            it is the FIRST child (Chromium builds the draggable region by
-            walking annotated elements in DOCUMENT ORDER, adding `drag` rects
-            and subtracting `no-drag` ones, so only a `no-drag` element declared
-            after it can carve itself back out), and it OCCUPIES a row rather
-            than floating over one, so content below can never land inside it.
-            Locked by e2e/window-titlebar.spec.ts. */}
-        <header className="maka-window-titlebar">
-          <AppShellTopbarActions
-            sidebarCollapsed={sessionListCollapsed}
-            onOpenSearchModal={() => {
-              setSearchModalOpen(true);
-            }}
-            onCollapseSidebar={() => setSessionListCollapsed(true)}
-            onExpandSidebar={() => setSessionListCollapsed(false)}
-            onCreateSession={createSession}
-          />
-          {/* The module surfaces that own their whole column show no workspace
-              toolbar. That used to be a `display: none` override reaching in
-              from the detail panel's `data-agents-view`; now that the toolbar
-              lives in the titlebar it is simply not rendered. */}
-          {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-            <AppShellWorkspaceTopActions
-              workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
-              workbarCollapsed={workbarCollapsed}
-              onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
-              onOpenFeedback={() => openSettingsSection('about')}
-              onOpenPalette={openPalette}
-              onOpenHelp={openHelp}
-              onOpenHealth={() => openSettingsSection('health')}
+        topNav={
+          <header className="maka-window-titlebar">
+            <AppShellTopbarActions
+              sidebarCollapsed={sessionListCollapsed}
+              sidebarHandleRef={sessionSideNavHandleRef}
+              onOpenSearchModal={() => setSearchModalOpen(true)}
+              onCreateSession={createSession}
             />
-          )}
-        </header>
-        <div
-          className="maka-panel maka-panel-list maka-floating-panel"
-          aria-hidden={sessionListCollapsed ? 'true' : undefined}
-          inert={sessionListCollapsed ? true : undefined}
-        >
+            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+              <AppShellWorkspaceTopActions
+                workbarAvailable={navSelection.section === 'sessions' && Boolean(activeId)}
+                workbarCollapsed={workbarCollapsed}
+                onToggleWorkbar={() => setWorkbarCollapsed((current) => !current)}
+                onOpenFeedback={() => openSettingsSection('about')}
+                onOpenPalette={openPalette}
+                onOpenHelp={openHelp}
+                onOpenHealth={() => openSettingsSection('health')}
+              />
+            )}
+          </header>
+        }
+        sideNav={
           <SessionListPanel
+            collapseHandleRef={sessionSideNavHandleRef}
+            collapsed={sessionListCollapsed}
+            onCollapsedChange={setSessionListCollapsed}
+            width={sessionListWidth}
+            onWidthChange={(width) => {
+              if (width >= SESSION_LIST_EXPANDED_MIN_WIDTH) setSessionListWidth(width);
+            }}
+            minWidth={SESSION_LIST_EXPANDED_MIN_WIDTH}
+            maxWidth={SESSION_LIST_EXPANDED_MAX_WIDTH}
             selection={navSelection}
             sessions={visibleSessions}
             activeId={activeId}
@@ -2109,20 +2099,8 @@ function AppShellContent({
             rowActions={sessionRowActions}
             projectActions={projectRowActions}
           />
-        </div>
-        <div
-          className="maka-resize-handle"
-          role="separator"
-          aria-label={sessionListCollapsed ? shellCopy.sidebarCollapsed : shellCopy.resizeConversationList}
-          aria-orientation="vertical"
-          aria-valuemin={SESSION_LIST_EXPANDED_MIN_WIDTH}
-          aria-valuemax={SESSION_LIST_EXPANDED_MAX_WIDTH}
-          aria-valuenow={sessionListWidth}
-          aria-hidden={sessionListCollapsed ? 'true' : undefined}
-          tabIndex={sessionListCollapsed ? -1 : 0}
-          onPointerDown={startColumnResize}
-          onKeyDown={onResizeHandleKeyDown}
-        />
+        }
+      >
         <AppShellDetailPanel
           data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
           agentsView={agentsView}
@@ -2201,8 +2179,229 @@ function AppShellContent({
                   onAppendMarkdown={appendDailyReviewMarkdown}
                   onSaveMarkdown={(input) => saveDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
                 />
-              ) : (
-              <ChatMessageSurface
+              ) : null}
+              <ChatSurfaceLayout
+                hidden={navSelection.section !== 'sessions'}
+                composer={
+                  <>
+                    {navSelection.section === 'sessions' &&
+                    activeId &&
+                    activeSessionForView &&
+                    !activeSessionForView.subagentParent ? (
+                      <AgentGraphPanel
+                        rootSessionId={activeId}
+                        enabled={(activeSessionForView.orchestrationMode ?? 'default') === 'graph'}
+                        locale={uiLocale}
+                        onOpenSession={openSessionInChat}
+                      />
+                    ) : null}
+                    {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    <ChatComposerRegion
+                  composerRef={composerRef}
+                  active={navSelection.section === 'sessions'}
+                  onboardingComposerHidden={
+                    onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
+                  }
+                  boundaryUnreadableNotice={boundaryUnreadableNotice}
+                  activeInteraction={activeInteraction}
+                  activeId={activeId}
+                  stopPendingBySession={stopPendingBySession}
+                  activeSandboxBoundary={activeSandboxBoundary}
+                  respondToSandboxBoundary={respondToSandboxBoundary}
+                  activeQuestion={activeQuestion}
+                  respondToUserQuestion={respondToUserQuestion}
+                  stop={stop}
+                  // #646: Stop must be available for the WHOLE turn - the moment the
+                  // user most wants to interrupt is a long wait with nothing on
+                  // screen (first token, or a slow provider's step-to-step lull).
+                  // Drive Stop off `turnInFlight` (armed at send, cleared at the
+                  // terminal event), not the wait indicators, so it never blinks out
+                  // in a mid-turn gap. But `turnInFlight` alone goes STALE: the event
+                  // stream only follows `activeId`, so a session whose turn completes
+                  // while backgrounded never receives its terminal event and keeps its
+                  // arm. Gate on `sessionAwaitingModel` (status === 'running', kept
+                  // truthful for backgrounded sessions by sessions:changed and made
+                  // synchronous at send by markSessionRunningOptimistic) so returning
+                  // to such a session shows Send, not a stuck Stop that hides it.
+                  // `activeStreamingLive` is folded in defensively for the rare replay
+                  // where the arm was over-cleared.
+                  streaming={(sessionAwaitingModel && turnInFlight) || activeStreamingLive}
+                  // #646: in the first-token wait (Stop up, nothing streams yet) the
+                  // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
+                  // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
+                  processing={showProcessingIndicator && !activeStreamingLive}
+                  continuing={showContinuingIndicator && !activeStreamingLive}
+                  voiceCaptureState={voiceInput.captureState}
+                  realtimeVoiceState={voiceInput.realtimeState}
+                  voiceProviderLabel={voiceInput.providerLabel}
+                  onToggleVoiceCapture={voiceInput.toggleCapture}
+                  onCancelVoiceCapture={voiceInput.cancelCapture}
+                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
+                  onSend={sendWithAttachments}
+                  onStop={stop}
+                  revisionNotice={
+                    revisionDraft && activeId === revisionDraft.draftSessionId
+                      ? {
+                          title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
+                          detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
+                          cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
+                          onCancel: () => { void cancelRevisionDraft(); },
+                        }
+                      : undefined
+                  }
+                  mentionSkills={mentionSkills}
+                  onSearchMentionFiles={searchMentionFiles}
+                  pendingAttachments={pendingAttachments}
+                  onRemoveAttachment={removeAttachment}
+                  pendingQuotes={pendingQuotes}
+                  onRemoveQuote={removeQuote}
+                  onPasteAsQuote={addQuote}
+                  onPickAttachments={
+                    revisionDraft && activeId === revisionDraft.draftSessionId
+                      ? undefined
+                      : pickAttachments
+                  }
+                  onAttachFilePaths={
+                    revisionDraft && activeId === revisionDraft.draftSessionId
+                      ? undefined
+                      : attachFilePaths
+                  }
+                  modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
+                  activeSession={activeSessionForView}
+                  activeConnectionLabel={activeConnectionLabel}
+                  activeModel={activeModel}
+                  activeModelLabel={activeModelLabel}
+                  activeProviderType={activeConnection?.providerType}
+                  modelChoices={chatModelChoices}
+                  renderProviderMark={(type) => <ProviderBrandMark type={type} />}
+                  modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
+                  onModelChange={(input) => setSessionModel(input)}
+                  activeThinkingLevels={activeThinkingLevels}
+                  activeThinkingLevel={activeThinkingLevel}
+                  onThinkingLevelChange={(level) => setSessionThinkingLevel(level)}
+                  newChatModel={newChatModel}
+                  newChatProviderType={newChatProviderType}
+                  onPickNewChatModel={(input) => {
+                    setPendingNewChatModel(input);
+                    saveComposerDefaults({ model: input });
+                  }}
+                  newChatThinkingLevels={newChatThinkingLevels}
+                  newChatThinkingLevel={newChatThinkingLevel}
+                  onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
+                  onOpenModelSettings={() => openSettingsSection('models')}
+                  noModelConnection={connections.length === 0}
+                  workspacePicker={{
+                    label:
+                      currentProject?.name ??
+                      (currentProjectId === null
+                        ? getConversationCopy(uiLocale).workspace.noProject
+                        : undefined),
+                    branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
+                    pending: projectPickerPending,
+                    projects: projects.filter((project) => project.archivedAt === undefined),
+                    selectedProjectId: currentProjectId,
+                    onAdd: () => {
+                      void addProject();
+                    },
+                    onSelectProject: (projectId: string) => {
+                      void selectProject(projectId);
+                    },
+                    onRelink: (projectId: string) => {
+                      void relinkProject(projectId, true);
+                    },
+                    onSelectNoProject: selectNoProject,
+                  }}
+                  branchPicker={
+                    currentProjectId !== null && projectInfo?.projectGit.isGitRepo
+                      ? {
+                          branch: projectInfo.projectGit.branch ?? null,
+                          pending: branchPending,
+                          branches: branchList?.branches ?? [],
+                          onOpen: () => {
+                            void listGitBranches(activeId);
+                          },
+                          onSelect: (branch: string) => {
+                            void checkoutGitBranch(branch, activeId);
+                          },
+                        }
+                      : undefined
+                  }
+                  permissionMode={activePermissionMode}
+                  permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
+                  permissionModeDisabledReason={
+                    activeId && pendingPermissionModeBySession[activeId] === true
+                        ? shellCopy.permissionModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.permissionModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.permissionModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.permissionModeWaiting
+                            : undefined
+                  }
+                  onPermissionModeChange={
+                    activeBoundarySurface.localInteractionAvailable
+                      ? (mode) => setPermissionMode(mode)
+                      : undefined
+                  }
+                  planModeActive={activeId
+                    ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
+                    : newChatPlanModeActive}
+                  planModePending={activeId ? pendingCollaborationModeBySession[activeId] === true : false}
+                  planModeDisabledReason={
+                    activeId && pendingCollaborationModeBySession[activeId] === true
+                      ? shellCopy.planModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.planModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.planModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.planModeWaiting
+                            : undefined
+                  }
+                  onPlanModeChange={setPlanMode}
+                  swarmModeActive={activeId
+                    ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
+                    : newChatSwarmModeActive}
+                  swarmModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
+                  swarmModeDisabledReason={
+                    activeId && pendingOrchestrationModeBySession[activeId] === true
+                      ? shellCopy.swarmModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.swarmModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.swarmModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.swarmModeWaiting
+                            : undefined
+                  }
+                  onSwarmModeChange={(active) => {
+                    void setSwarmMode(active);
+                  }}
+                  graphModeActive={activeId
+                    ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
+                    : newChatGraphModeActive}
+                  graphModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
+                  graphModeDisabledReason={
+                    activeId && pendingOrchestrationModeBySession[activeId] === true
+                      ? shellCopy.graphModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.graphModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.graphModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.graphModeWaiting
+                            : undefined
+                  }
+                  onGraphModeChange={(active) => {
+                    void setGraphMode(active);
+                  }}
+                    />
+                  </>
+                }
+              >
+                {navSelection.section === 'sessions' ? (
+                  <ChatMessageSurface
                 messages={messages}
                 liveTurn={activeLiveTurn}
                 shellRunUpdates={activeShellRunUpdates}
@@ -2328,223 +2527,9 @@ function AppShellContent({
                   }
                 }}
                 conversationItems={planConversationItems}
-              />
-              )}
-              {navSelection.section === 'sessions' &&
-              activeId &&
-              activeSessionForView &&
-              !activeSessionForView.subagentParent ? (
-                <AgentGraphPanel
-                  rootSessionId={activeId}
-                  enabled={(activeSessionForView?.orchestrationMode ?? 'default') === 'graph'}
-                  locale={uiLocale}
-                  onOpenSession={openSessionInChat}
-                />
-              ) : null}
-              {navSelection.section === 'sessions' && (
-                <PlanExecutionPanel planMode={planMode} />
-              )}
-              <ChatComposerRegion
-                composerRef={composerRef}
-                active={navSelection.section === 'sessions'}
-                onboardingComposerHidden={
-                  onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
-                }
-                boundaryUnreadableNotice={boundaryUnreadableNotice}
-                activeInteraction={activeInteraction}
-                activeId={activeId}
-                stopPendingBySession={stopPendingBySession}
-                activeSandboxBoundary={activeSandboxBoundary}
-                respondToSandboxBoundary={respondToSandboxBoundary}
-                activeQuestion={activeQuestion}
-                respondToUserQuestion={respondToUserQuestion}
-                stop={stop}
-                // #646: Stop must be available for the WHOLE turn - the moment the
-                // user most wants to interrupt is a long wait with nothing on
-                // screen (first token, or a slow provider's step-to-step lull).
-                // Drive Stop off `turnInFlight` (armed at send, cleared at the
-                // terminal event), not the wait indicators, so it never blinks out
-                // in a mid-turn gap. But `turnInFlight` alone goes STALE: the event
-                // stream only follows `activeId`, so a session whose turn completes
-                // while backgrounded never receives its terminal event and keeps its
-                // arm. Gate on `sessionAwaitingModel` (status === 'running', kept
-                // truthful for backgrounded sessions by sessions:changed and made
-                // synchronous at send by markSessionRunningOptimistic) so returning
-                // to such a session shows Send, not a stuck Stop that hides it.
-                // `activeStreamingLive` is folded in defensively for the rare replay
-                // where the arm was over-cleared.
-                streaming={(sessionAwaitingModel && turnInFlight) || activeStreamingLive}
-                // #646: in the first-token wait (Stop up, nothing streams yet) the
-                // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
-                // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
-                processing={showProcessingIndicator && !activeStreamingLive}
-                continuing={showContinuingIndicator && !activeStreamingLive}
-                voiceCaptureState={voiceInput.captureState}
-                realtimeVoiceState={voiceInput.realtimeState}
-                voiceProviderLabel={voiceInput.providerLabel}
-                onToggleVoiceCapture={voiceInput.toggleCapture}
-                onCancelVoiceCapture={voiceInput.cancelCapture}
-                onToggleRealtimeVoice={voiceInput.toggleRealtime}
-                onSend={sendWithAttachments}
-                onStop={stop}
-                revisionNotice={
-                  revisionDraft && activeId === revisionDraft.draftSessionId
-                    ? {
-                        title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
-                        detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
-                        cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
-                        onCancel: () => { void cancelRevisionDraft(); },
-                      }
-                    : undefined
-                }
-                mentionSkills={mentionSkills}
-                onSearchMentionFiles={searchMentionFiles}
-                pendingAttachments={pendingAttachments}
-                onRemoveAttachment={removeAttachment}
-                pendingQuotes={pendingQuotes}
-                onRemoveQuote={removeQuote}
-                onPasteAsQuote={addQuote}
-                onPickAttachments={
-                  revisionDraft && activeId === revisionDraft.draftSessionId
-                    ? undefined
-                    : pickAttachments
-                }
-                onAttachFilePaths={
-                  revisionDraft && activeId === revisionDraft.draftSessionId
-                    ? undefined
-                    : attachFilePaths
-                }
-                modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
-                activeSession={activeSessionForView}
-                activeConnectionLabel={activeConnectionLabel}
-                activeModel={activeModel}
-                activeModelLabel={activeModelLabel}
-                activeProviderType={activeConnection?.providerType}
-                modelChoices={chatModelChoices}
-                renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-                modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
-                onModelChange={(input) => setSessionModel(input)}
-                activeThinkingLevels={activeThinkingLevels}
-                activeThinkingLevel={activeThinkingLevel}
-                onThinkingLevelChange={(level) => setSessionThinkingLevel(level)}
-                newChatModel={newChatModel}
-                newChatProviderType={newChatProviderType}
-                onPickNewChatModel={(input) => {
-                  setPendingNewChatModel(input);
-                  saveComposerDefaults({ model: input });
-                }}
-                newChatThinkingLevels={newChatThinkingLevels}
-                newChatThinkingLevel={newChatThinkingLevel}
-                onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
-                onOpenModelSettings={() => openSettingsSection('models')}
-                noModelConnection={connections.length === 0}
-                workspacePicker={{
-                  label:
-                    currentProject?.name ??
-                    (currentProjectId === null
-                      ? getConversationCopy(uiLocale).workspace.noProject
-                      : undefined),
-                  branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
-                  pending: projectPickerPending,
-                  projects: projects.filter((project) => project.archivedAt === undefined),
-                  selectedProjectId: currentProjectId,
-                  onAdd: () => {
-                    void addProject();
-                  },
-                  onSelectProject: (projectId: string) => {
-                    void selectProject(projectId);
-                  },
-                  onRelink: (projectId: string) => {
-                    void relinkProject(projectId, true);
-                  },
-                  onSelectNoProject: selectNoProject,
-                }}
-                branchPicker={
-                  currentProjectId !== null && projectInfo?.projectGit.isGitRepo
-                    ? {
-                        branch: projectInfo.projectGit.branch ?? null,
-                        pending: branchPending,
-                        branches: branchList?.branches ?? [],
-                        onOpen: () => {
-                          void listGitBranches(activeId);
-                        },
-                        onSelect: (branch: string) => {
-                          void checkoutGitBranch(branch, activeId);
-                        },
-                      }
-                    : undefined
-                }
-                permissionMode={activePermissionMode}
-                permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
-                permissionModeDisabledReason={
-                  activeId && pendingPermissionModeBySession[activeId] === true
-                      ? shellCopy.permissionModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.permissionModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.permissionModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.permissionModeWaiting
-                          : undefined
-                }
-                onPermissionModeChange={
-                  activeBoundarySurface.localInteractionAvailable
-                    ? (mode) => setPermissionMode(mode)
-                    : undefined
-                }
-                planModeActive={activeId
-                  ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
-                  : newChatPlanModeActive}
-                planModePending={activeId ? pendingCollaborationModeBySession[activeId] === true : false}
-                planModeDisabledReason={
-                  activeId && pendingCollaborationModeBySession[activeId] === true
-                    ? shellCopy.planModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.planModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.planModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.planModeWaiting
-                          : undefined
-                }
-                onPlanModeChange={setPlanMode}
-                swarmModeActive={activeId
-                  ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
-                  : newChatSwarmModeActive}
-                swarmModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
-                swarmModeDisabledReason={
-                  activeId && pendingOrchestrationModeBySession[activeId] === true
-                    ? shellCopy.swarmModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.swarmModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.swarmModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.swarmModeWaiting
-                          : undefined
-                }
-                onSwarmModeChange={(active) => {
-                  void setSwarmMode(active);
-                }}
-                graphModeActive={activeId
-                  ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
-                  : newChatGraphModeActive}
-                graphModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
-                graphModeDisabledReason={
-                  activeId && pendingOrchestrationModeBySession[activeId] === true
-                    ? shellCopy.graphModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.graphModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.graphModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.graphModeWaiting
-                          : undefined
-                }
-                onGraphModeChange={(active) => {
-                  void setGraphMode(active);
-                }}
-              />
+                  />
+                ) : null}
+              </ChatSurfaceLayout>
             </div>
             {navSelection.section === 'sessions' && activeId && !workbarCollapsed && (
               <ChatWorkbar
@@ -2575,7 +2560,7 @@ function AppShellContent({
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
-      </div>
+      </AstryxAppShell>
       <AppShellOverlays
         settingsOpen={settingsOpen}
         connections={connections}
@@ -2611,6 +2596,6 @@ function AppShellContent({
         closePalette={closePalette}
         commandOptions={commandOptions}
       />
-      </div>
+    </div>
   );
 }

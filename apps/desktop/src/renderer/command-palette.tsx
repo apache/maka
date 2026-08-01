@@ -14,17 +14,13 @@ import {
   CommandPalette as AstryxCommandPalette,
   CommandPaletteFooter,
   CommandPaletteInput,
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-  Kbd,
-  KbdGroup,
   AstryxLocaleProvider,
   type SearchSource,
   type SearchableItem,
   useUiLocale,
 } from '@maka/ui';
+import { Kbd } from '@astryxdesign/core/Kbd';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
 import type { Command, CommandKind } from './command-palette-types';
 import { getShellCopy } from './locales/shell-copy';
 export type { Command, CommandKind } from './command-palette-types';
@@ -155,12 +151,13 @@ export function CommandPalette(props: {
           />
         )}
         emptySearchText={(
-          <Empty className="maka-palette-empty py-8 md:py-10 gap-3">
-            <EmptyHeader>
-              <EmptyTitle>{copy.emptyTitle}</EmptyTitle>
-              <EmptyDescription>{copy.emptyDescription}</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState
+            role="presentation"
+            className="maka-palette-empty py-8 md:py-10 gap-3"
+            title={copy.emptyTitle}
+            description={copy.emptyDescription}
+            isCompact
+          />
         )}
         emptyBootstrapText={copy.emptyDescription}
         onValueChange={commit}
@@ -189,18 +186,16 @@ export function CommandPalette(props: {
         footer={(
           <CommandPaletteFooter>
             <span className="maka-palette-footer-hint">
-              <KbdGroup>
-                <Kbd>↑</Kbd>
-                <Kbd>↓</Kbd>
-              </KbdGroup>
+              <Kbd keys="up" />
+              <Kbd keys="down" />
               <span>{copy.selectHint}</span>
             </span>
             <span className="maka-palette-footer-hint">
-              <Kbd>↵</Kbd>
+              <Kbd keys="enter" />
               <span>{copy.runHint}</span>
             </span>
             <span className="maka-palette-footer-hint">
-              <Kbd>Esc</Kbd>
+              <Kbd keys="escape" />
               <span>{copy.closeHint}</span>
             </span>
           </CommandPaletteFooter>

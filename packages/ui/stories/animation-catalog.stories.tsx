@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { Spinner } from '../src/primitives/spinner.js';
+import { Spinner } from '@astryxdesign/core/Spinner';
 
 const meta = {
   title: 'Design System/Animation Catalog',

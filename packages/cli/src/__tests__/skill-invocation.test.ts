@@ -16,7 +16,7 @@ import { FakeTerminal } from './tui-terminal-mock.js';
 before(() => _setColorLevelForTesting(3));
 
 describe('skill invocation tokens', () => {
-  test('parses tokens anywhere in text, deduped case-insensitively, in order', () => {
+  test('parses canonical tokens and rejects lookalikes', () => {
     const tokens = parseSkillInvocationTokens(
       '帮我 /skill:weekly-report 整理\n然后 /skill:Alpha 和 /skill:WEEKLY-REPORT 各来一遍',
     );
@@ -26,50 +26,41 @@ describe('skill invocation tokens', () => {
     );
     assert.equal(tokens[0].start, 3);
     assert.equal(tokens[0].end, 3 + '/skill:weekly-report'.length);
-  });
-
-  test('rejects path-like and colon-less occurrences', () => {
-    assert.deepEqual(parseSkillInvocationTokens('cat docs/skill:alpha'), []);
-    assert.deepEqual(parseSkillInvocationTokens('/skill alpha'), []);
-    assert.deepEqual(parseSkillInvocationTokens('/skill:'), []);
-    assert.deepEqual(parseSkillInvocationTokens('看 https://example.com/skill:x'), []);
-  });
-
-  test('token name stops at the id charset boundary', () => {
-    const tokens = parseSkillInvocationTokens('/skill:alpha，整理一下');
+    for (const input of [
+      'cat docs/skill:alpha',
+      '/skill alpha',
+      '/skill:',
+      '看 https://example.com/skill:x',
+    ]) {
+      assert.deepEqual(parseSkillInvocationTokens(input), [], input);
+    }
     assert.deepEqual(
-      tokens.map((token) => token.name),
+      parseSkillInvocationTokens('/skill:alpha，整理一下').map((token) => token.name),
       ['alpha'],
     );
   });
 
-  test('strips named tokens and tidies only the touched lines', () => {
-    const text = [
-      '帮我 /skill:alpha 整理一下',
-      '```',
-      'code  with  double  spaces',
-      '```',
-      '/skill:beta',
-      '收尾 /skill:ALPHA',
-    ].join('\n');
-    const stripped = stripSkillInvocationTokens(text, new Set(['alpha', 'beta']));
-    assert.equal(
-      stripped,
-      ['帮我 整理一下', '```', 'code  with  double  spaces', '```', '收尾'].join('\n'),
-    );
-  });
+  test('strips resolved tokens without disturbing unrelated text', () => {
+    const cases: Array<[string, string[], string]> = [
+      [
+        [
+          '帮我 /skill:alpha 整理一下',
+          '```',
+          'code  with  double  spaces',
+          '```',
+          '/skill:beta',
+          '收尾 /skill:ALPHA',
+        ].join('\n'),
+        ['alpha', 'beta'],
+        ['帮我 整理一下', '```', 'code  with  double  spaces', '```', '收尾'].join('\n'),
+      ],
+      ['用 /skill:nope 和 /skill:alpha 处理', ['alpha'], '用 /skill:nope 和 处理'],
+      ['/skill:alpha\n    make target\n', ['alpha'], '    make target\n'],
+    ];
 
-  test('keeps unresolved tokens literal', () => {
-    const text = '用 /skill:nope 和 /skill:alpha 处理';
-    assert.equal(stripSkillInvocationTokens(text, new Set(['alpha'])), '用 /skill:nope 和 处理');
-  });
-
-  test('preserves indented code after a token-only line (no global trim)', () => {
-    const stripped = stripSkillInvocationTokens(
-      '/skill:alpha\n    make target\n',
-      new Set(['alpha']),
-    );
-    assert.equal(stripped, '    make target\n');
+    for (const [text, resolved, expected] of cases) {
+      assert.equal(stripSkillInvocationTokens(text, new Set(resolved)), expected, text);
+    }
   });
 
   test('detects the autocomplete prefix at the cursor', () => {
@@ -106,8 +97,12 @@ describe('skill autocomplete', () => {
   ];
   const listSkills = async () => skills;
 
-  test('suggests by id prefix or name substring, suppressing file completion', async () => {
-    const provider = new MakaAutocompleteProvider('/repo', [], listSkills);
+  test('suggests and applies skills ahead of command and file completion', async () => {
+    const provider = new MakaAutocompleteProvider(
+      '/repo',
+      [{ name: 'skill', description: 'Invoke a skill' }],
+      listSkills,
+    );
     const byId = await provider.getSuggestions(['/skill:we'], 0, 9, {
       signal: new AbortController().signal,
     });
@@ -131,15 +126,7 @@ describe('skill autocomplete', () => {
     const noMatch = await provider.getSuggestions(['/skill:zzz'], 0, 10, {
       signal: new AbortController().signal,
     });
-    assert.equal(noMatch, null, 'no skill match closes the popup instead of offering paths');
-  });
-
-  test('wins over slash-command completion at line start', async () => {
-    const provider = new MakaAutocompleteProvider(
-      '/repo',
-      [{ name: 'skill', description: 'Invoke a skill' }],
-      listSkills,
-    );
+    assert.equal(noMatch, null);
     const suggestions = await provider.getSuggestions(['/skill:dat'], 0, 10, {
       signal: new AbortController().signal,
     });
@@ -147,10 +134,6 @@ describe('skill autocomplete', () => {
       suggestions?.items.map((item) => item.value),
       ['data-crunch'],
     );
-  });
-
-  test('applies completion as a token with trailing space, mid-line', () => {
-    const provider = new MakaAutocompleteProvider('/repo', [], listSkills);
     const applied = provider.applyCompletion(
       ['帮我 /skill:we 一下'],
       0,
@@ -160,10 +143,6 @@ describe('skill autocomplete', () => {
     );
     assert.deepEqual(applied.lines, ['帮我 /skill:weekly-report  一下']);
     assert.equal(applied.lines[0].slice(0, applied.cursorCol), '帮我 /skill:weekly-report ');
-  });
-
-  test('never triggers file completion inside a token', () => {
-    const provider = new MakaAutocompleteProvider('/repo', [], listSkills);
     assert.equal(provider.shouldTriggerFileCompletion(['/skill:we'], 0, 9), false);
   });
 });

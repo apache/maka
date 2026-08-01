@@ -99,6 +99,7 @@ export function header(input: {
   blockedReason?: SessionHeader['blockedReason'];
   isArchived?: boolean;
   isFlagged?: boolean;
+  orchestrationMode?: SessionHeader['orchestrationMode'];
 }): SessionHeader {
   return {
     id: input.id,
@@ -116,6 +117,7 @@ export function header(input: {
     ...(input.blockedReason ? { blockedReason: input.blockedReason } : {}),
     statusUpdatedAt: input.lastMessageAt,
     hasUnread: input.hasUnread ?? false,
+    ...(input.orchestrationMode ? { orchestrationMode: input.orchestrationMode } : {}),
     // Legacy backend kinds like 'claude' aren't in the current BackendKind
     // union but are needed for the stale-sessions reproduction. Forward
     // the value verbatim into the JSONL so the renderer sees exactly what

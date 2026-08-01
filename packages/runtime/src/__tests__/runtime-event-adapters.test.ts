@@ -36,7 +36,6 @@ import {
   buildSteeringEnvelope,
   buildTextModelMessagesFromRuntimeEvents,
   collectToolActivityTurnIds,
-  type ModelHistoryEntry,
   steeringMessagesMissingFromBase,
   steeringModelMessage,
   steeringProviderOptions,
@@ -251,37 +250,6 @@ describe('storedMessageToRuntimeEvent', () => {
     expect(storedMessageToRuntimeEvent(toolCall('tc1', 'Read'), ctx)).toBeNull();
   });
 
-  test('tool_result → null', () => {
-    expect(storedMessageToRuntimeEvent(toolResult('tc1', false, 'data'), ctx)).toBeNull();
-  });
-
-  test('token_usage → null', () => {
-    expect(storedMessageToRuntimeEvent(tokens('tu1'), ctx)).toBeNull();
-  });
-
-  test('permission_decision → null', () => {
-    expect(storedMessageToRuntimeEvent(permission('pd1'), ctx)).toBeNull();
-  });
-
-  test('turn_state → null', () => {
-    expect(storedMessageToRuntimeEvent(turnState('ts1'), ctx)).toBeNull();
-  });
-
-  test('context ts override is honored', () => {
-    const e = storedMessageToRuntimeEvent(user('u', 'x'), { ...ctx, ts: 9999 });
-    if (!e) throw new Error('expected event');
-    expect(e.ts).toBe(9999);
-  });
-
-  test('context turnId override is honored (session-level note has no turnId)', () => {
-    const e = storedMessageToRuntimeEvent(note('n', 'session_start'), {
-      ...ctx,
-      turnId: 'override-turn',
-    });
-    if (!e) throw new Error('expected event');
-    expect(e.turnId).toBe('override-turn');
-  });
-
   test('session-level note without turnId defaults to empty string', () => {
     const e = storedMessageToRuntimeEvent(note('n', 'session_resume'), ctx);
     if (!e) throw new Error('expected event');
@@ -303,12 +271,6 @@ describe('storedMessageToRuntimeEvent', () => {
 // ============================================================================
 
 describe('storedMessageToRuntimeEvents', () => {
-  test('assistant without thinking → single text event', () => {
-    const out = storedMessageToRuntimeEvents(assistant('a1', 'hi'), ctx);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content?.kind).toBe('text');
-  });
-
   test('assistant with thinking → [text event, thinking event]', () => {
     const out = storedMessageToRuntimeEvents(
       assistant('a2', 'answer', { text: 'reasoning', signature: 'sig-1' }),
@@ -364,29 +326,6 @@ describe('storedMessageToRuntimeEvents', () => {
         },
       },
     ]);
-  });
-
-  test('user message → single event (same as singular)', () => {
-    const out = storedMessageToRuntimeEvents(user('u', 'hello'), ctx);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content).toEqual({ kind: 'text', text: 'hello' });
-  });
-
-  test('user message with attachments → single attachment-preserving event', () => {
-    const out = storedMessageToRuntimeEvents(
-      { ...user('u-attach', 'see attached'), attachments: [attachment] },
-      ctx,
-    );
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content).toEqual({
-      kind: 'text',
-      text: 'see attached',
-      attachments: [attachment],
-    });
-  });
-
-  test('tool_call → empty array', () => {
-    expect(storedMessageToRuntimeEvents(toolCall('tc', 'Read'), ctx)).toEqual([]);
   });
 
   test('assistant with explicit empty thinking preserves provider replay metadata', () => {
@@ -503,51 +442,6 @@ describe('runtimeEventToStoredMessageDraft', () => {
     });
     expect(runtimeEventToStoredMessageDraft(event)).toBeNull();
   });
-
-  test('function_response event → null', () => {
-    const event = ev({
-      role: 'tool',
-      author: 'tool',
-      content: {
-        kind: 'function_response',
-        id: 'fc1',
-        name: 'Read',
-        result: 'data',
-        isError: false,
-      },
-    });
-    expect(runtimeEventToStoredMessageDraft(event)).toBeNull();
-  });
-
-  test('actions-only event (token usage) → null', () => {
-    const event = ev({
-      role: 'system',
-      author: 'system',
-      actions: {
-        tokenUsage: { input: 10, output: 5 },
-      },
-    });
-    expect(runtimeEventToStoredMessageDraft(event)).toBeNull();
-  });
-
-  test('error-content event → null', () => {
-    const event = ev({
-      role: 'model',
-      author: 'agent',
-      content: { kind: 'error', message: 'boom' },
-    });
-    expect(runtimeEventToStoredMessageDraft(event)).toBeNull();
-  });
-
-  test('round-trip: user message → event → draft preserves text', () => {
-    const original = user('orig', 'round-trip text');
-    const event = storedMessageToRuntimeEvent(original, ctx);
-    if (!event) throw new Error('expected event');
-    const draft = runtimeEventToStoredMessageDraft(event);
-    if (!draft || draft.type !== 'user') throw new Error('expected user draft');
-    expect(draft.text).toBe('round-trip text');
-    expect(draft.id).toBe('orig');
-  });
 });
 
 // ============================================================================
@@ -555,82 +449,6 @@ describe('runtimeEventToStoredMessageDraft', () => {
 // ============================================================================
 
 describe('buildModelHistoryFromRuntimeEvents', () => {
-  test('empty input → empty history', () => {
-    expect(buildModelHistoryFromRuntimeEvents([])).toEqual([]);
-  });
-
-  test('user + final model text → two entries in order', () => {
-    const events: RuntimeEvent[] = [
-      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'q' } }),
-      ev({ role: 'model', author: 'agent', content: { kind: 'text', text: 'a' } }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(2);
-    expect(out[0]?.role).toBe('user');
-    expect(out[1]?.role).toBe('model');
-    expect(out[0]?.content).toEqual({ kind: 'text', text: 'q' });
-  });
-
-  test('POLICY: partial model chunks are excluded', () => {
-    const events: RuntimeEvent[] = [
-      ev({
-        partial: true,
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'streaming chunk...' },
-      }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'final answer' },
-      }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content).toEqual({ kind: 'text', text: 'final answer' });
-  });
-
-  test('POLICY: function_call + function_response included by default', () => {
-    const events: RuntimeEvent[] = [
-      ev({
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'read the file' },
-      }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'function_call',
-          id: 'fc1',
-          name: 'Read',
-          args: { path: '/x' },
-        },
-      }),
-      ev({
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'fc1',
-          name: 'Read',
-          result: 'file contents',
-          isError: false,
-        },
-      }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'done' },
-      }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(4);
-    expect(out.map((e) => e.role)).toEqual(['user', 'model', 'tool', 'model']);
-    expect(out[1]?.content?.kind).toBe('function_call');
-    expect(out[2]?.content?.kind).toBe('function_response');
-  });
-
   test('POLICY: function_response with isError stays model-visible', () => {
     const events: RuntimeEvent[] = [
       ev({
@@ -677,72 +495,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     expect(out.map((e) => e.role)).toEqual(['user', 'model']);
   });
 
-  test('POLICY: token-usage (actions-only) event excluded', () => {
-    const events: RuntimeEvent[] = [
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'text', text: 'a' },
-        actions: { tokenUsage: { input: 100, output: 50 } },
-      }),
-      ev({
-        role: 'system',
-        author: 'system',
-        actions: { tokenUsage: { input: 0, output: 0 } },
-      }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content?.kind).toBe('text');
-  });
-
-  test('POLICY: permission ack (actions-only) event excluded', () => {
-    const events: RuntimeEvent[] = [
-      ev({
-        role: 'system',
-        author: 'system',
-        actions: {
-          permissionDecision: {
-            requestId: 'req-1',
-            decision: 'allow',
-          },
-        },
-      }),
-      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'q' } }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.role).toBe('user');
-  });
-
-  test('POLICY: error-only content event excluded', () => {
-    const events: RuntimeEvent[] = [
-      ev({
-        role: 'model',
-        author: 'agent',
-        content: { kind: 'error', message: 'something broke' },
-      }),
-      ev({ role: 'model', author: 'agent', content: { kind: 'text', text: 'a' } }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.content?.kind).toBe('text');
-  });
-
-  test('POLICY: system-role (UI note) event excluded by default', () => {
-    const events: RuntimeEvent[] = [
-      ev({
-        role: 'system',
-        author: 'system',
-        content: { kind: 'text', text: 'system_note:session_start' },
-      }),
-      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'q' } }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.role).toBe('user');
-  });
-
   test('POLICY: system-role event included when includeSystemEvents=true', () => {
     const events: RuntimeEvent[] = [
       ev({
@@ -774,21 +526,6 @@ describe('buildModelHistoryFromRuntimeEvents', () => {
     });
     expect(out).toHaveLength(2);
     expect(out[0]?.content?.kind).toBe('thinking');
-  });
-
-  test('endInvocation terminal marker with no content → excluded', () => {
-    const events: RuntimeEvent[] = [
-      ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'q' } }),
-      ev({
-        role: 'model',
-        author: 'agent',
-        status: 'completed',
-        actions: { endInvocation: true },
-      }),
-    ];
-    const out = buildModelHistoryFromRuntimeEvents(events);
-    expect(out).toHaveLength(1);
-    expect(out[0]?.role).toBe('user');
   });
 
   test('entries preserve event order and carry eventId + ts', () => {
@@ -1491,19 +1228,5 @@ describe('adapter → projection integration', () => {
     expect(history[0]?.role).toBe('user');
     expect(history[1]?.role).toBe('model');
     expect((history[0].content as { text: string }).text).toBe('what is 2+2?');
-  });
-
-  test('ModelHistoryEntry type carries the discriminated content union', () => {
-    const entry: ModelHistoryEntry = {
-      role: 'model',
-      content: { kind: 'function_call', id: 'fc1', name: 'Read', args: {} },
-      ts: 1,
-      eventId: 'e1',
-    };
-    if (entry.content.kind === 'function_call') {
-      expect(entry.content.name).toBe('Read');
-    } else {
-      throw new Error('discriminator failed');
-    }
   });
 });

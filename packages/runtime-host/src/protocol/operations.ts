@@ -14,6 +14,7 @@ import {
   type OperationSpec,
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
+import { RUNTIME_RESOURCE_OPERATION_SPECS } from './runtime-resource.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
@@ -86,6 +87,7 @@ export * from './connection-effects.js';
 export * from './client-capability.js';
 export * from './memory.js';
 export * from './runtime-policy.js';
+export * from './runtime-resource.js';
 export * from './session-catalog.js';
 export * from './session-revision.js';
 export * from './skill-catalog.js';
@@ -96,6 +98,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   TURN_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
+  RUNTIME_RESOURCE_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,

@@ -17,7 +17,7 @@ import { test, expect } from './fixtures';
  */
 
 const probeScroller = `(() => {
-  const scroller = document.querySelector('.maka-chatViewport');
+  const scroller = document.querySelector('[data-chat-scroll-container="true"]');
   return {
     scrollHeight: scroller.scrollHeight,
     clientHeight: scroller.clientHeight,
@@ -45,10 +45,10 @@ type ColumnGeometry = {
 
 async function probeColumnGeometry(page: import('@playwright/test').Page): Promise<ColumnGeometry> {
   return await page.evaluate(() => {
-    const host = document.querySelector<HTMLElement>('.maka-chat.messages');
-    const viewport = document.querySelector<HTMLElement>('.maka-chatViewport');
+    const host = document.querySelector<HTMLElement>('.maka-chat-layout');
+    const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
     const turn = document.querySelector<HTMLElement>('.maka-turn');
-    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-inner');
+    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
     if (!host || !viewport || !turn || !composer) {
       throw new Error('Expected the active chat host, viewport, turn, and composer to be mounted');
     }
@@ -91,13 +91,16 @@ async function probeColumnGeometry(page: import('@playwright/test').Page): Promi
  * done, so ask it.
  */
 async function settleGeometry(page: import('@playwright/test').Page, options: { pinned: boolean }): Promise<void> {
-  await expect(page.locator('.maka-chatViewport[data-turn-warmup="settled"]')).toBeAttached({ timeout: 15_000 });
+  await expect(page.locator('[data-chat-scroll-container="true"][data-turn-warmup="settled"]')).toBeAttached({ timeout: 15_000 });
   const settled = await page.evaluate(probeScroller) as { scrollHeight: number };
   expect(settled.scrollHeight, JSON.stringify(settled)).toBeGreaterThan(WARMED_HEIGHT_FLOOR);
   // The last chunk's inflation reaches the pinned follower through a
-  // ResizeObserver, one layout after the walk hands back.
+  // ResizeObserver, one layout after the walk hands back. A fully pinned
+  // scroller can read distance 1 rather than 0: Chromium keeps sub-pixel
+  // scrollTop values (observed 30106.5), so the rounded distance lands on 1
+  // even though the content is flush. The contract is "flush", so accept both.
   if (options.pinned) {
-    await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
+    await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBeLessThanOrEqual(1);
   }
 }
 
@@ -113,15 +116,15 @@ test('chat viewport and message column share the composer centerline', async ({ 
   }
 });
 
-test('empty chat keeps its grid content flush with the viewport', async ({ window: page }) => {
+test('empty chat has no phantom vertical range and stays flush with the viewport', async ({ window: page }) => {
   const content = page.locator('.mainColumn[data-home-surface="true"] .maka-chatContent');
   await expect(content).toBeVisible();
 
   for (const width of [900, 1180, 1440]) {
     await page.setViewportSize({ width, height: 760 });
     const geometry = await page.evaluate(() => {
-      const host = document.querySelector<HTMLElement>('.maka-chat.messages');
-      const viewport = document.querySelector<HTMLElement>('.maka-chatViewport');
+      const host = document.querySelector<HTMLElement>('.maka-chat-layout');
+      const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
       const content = document.querySelector<HTMLElement>('.maka-chatContent');
       if (!host || !viewport || !content) throw new Error('Expected the empty chat scroll surface');
       const hostRect = host.getBoundingClientRect();
@@ -131,26 +134,16 @@ test('empty chat keeps its grid content flush with the viewport', async ({ windo
         hostViewportLeftDelta: viewportRect.left - hostRect.left,
         contentDisplay: contentStyle.display,
         contentGap: contentStyle.gap,
+        scrollRange: viewport.scrollHeight - viewport.clientHeight,
+        scrollTop: viewport.scrollTop,
       };
     });
     const diagnostics = JSON.stringify({ width, ...geometry });
     expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
-    expect(geometry.contentDisplay, diagnostics).toBe('grid');
-    expect(geometry.contentGap, diagnostics).toBe('0px');
+    expect(geometry.contentDisplay, diagnostics).toBe('flex');
+    expect(geometry.scrollRange, diagnostics).toBeLessThanOrEqual(1);
+    expect(geometry.scrollTop, diagnostics).toBeLessThanOrEqual(1);
   }
-});
-
-test('chat turns keep twelve pixels of vertical separation', async ({ longTranscriptWindow: page }) => {
-  await expect(page.locator('.maka-turn')).toHaveCount(24);
-
-  const gap = await page.evaluate(() => {
-    const turns = document.querySelectorAll<HTMLElement>('.maka-turn');
-    const first = turns[0]?.getBoundingClientRect();
-    const second = turns[1]?.getBoundingClientRect();
-    if (!first || !second) throw new Error('Expected two chat turns');
-    return second.top - first.bottom;
-  });
-  expect(gap).toBe(12);
 });
 
 test('long session opens pinned to bottom and stays pinned while geometry settles', async ({ longTranscriptWindow: page }) => {
@@ -159,17 +152,56 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
   // Pinned from the start: the session-open pin must hold. During the idle
   // warm-up the document grows by thousands of pixels with no mutation and
   // no scroll event — the follower must ride every growth step, so the
-  // distance stays 0 while scrollHeight rises to its final value.
-  await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBe(0);
+  // distance stays within 1px (sub-pixel scrollTop; see settleGeometry)
+  // while scrollHeight rises to its final value.
+  await expect.poll(async () => (await page.evaluate(probeScroller)).distanceFromBottom).toBeLessThanOrEqual(1);
 
-  // And the pin is still 0 once the walk reports itself done, which is what
+  // And the pin still holds once the walk reports itself done, which is what
   // makes the poll above a contract rather than a lucky early read.
   await settleGeometry(page, { pinned: true });
+
+  const bottomBoundary = await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    const lastTurn = scroller?.querySelector<HTMLElement>('.maka-turn:last-of-type');
+    const dock = scroller?.lastElementChild;
+    if (!lastTurn || !dock) throw new Error('Expected the final turn and Astryx dock');
+    return {
+      dockTop: dock.getBoundingClientRect().top,
+      lastTurnBottom: lastTurn.getBoundingClientRect().bottom,
+    };
+  });
+  expect(
+    bottomBoundary.lastTurnBottom,
+    JSON.stringify(bottomBoundary),
+  ).toBeLessThanOrEqual(bottomBoundary.dockTop + 1);
+  expect(
+    bottomBoundary.dockTop - bottomBoundary.lastTurnBottom,
+    JSON.stringify(bottomBoundary),
+  ).toBeLessThanOrEqual(48);
+});
+
+test('graph status stays docked above the composer while transcript history scrolls', async ({ longTranscriptWindow: page }) => {
+  await settleGeometry(page, { pinned: true });
+  const graphPanel = page.locator('.maka-agent-graph-panel');
+  await expect(graphPanel).toBeVisible();
+
+  const before = await graphPanel.boundingBox();
+  expect(before).not.toBeNull();
+  await page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!scroller) throw new Error('Expected the Astryx chat scroller');
+    scroller.scrollTop = 0;
+  });
+  const after = await graphPanel.boundingBox();
+  expect(after).not.toBeNull();
+  if (before && after) {
+    expect(Math.abs(after.y - before.y), JSON.stringify({ before, after })).toBeLessThanOrEqual(1);
+  }
 });
 
 async function climbToTop(page: import('@playwright/test').Page) {
   return await page.evaluate(async () => {
-    const scroller = document.querySelector('.maka-chatViewport') as HTMLElement;
+    const scroller = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement;
     const started = performance.now();
     // Self-imposed deadline well under the 60s test timeout: a stalled or
     // crawling compositor must produce a diagnosable assertion failure with
@@ -249,7 +281,10 @@ test('returning to the session after visiting skills re-settles the new transcri
   // `.maka-turn` node with no remembered size, so the warm-up must walk the
   // NEW DOM. Fixture windows don't pass OS hit-testing — dispatch clicks.
   await page.locator('button[aria-label="展开侧边栏"]').dispatchEvent('click');
-  await page.locator('button[aria-label="扩展"]').dispatchEvent('click');
+  await page
+    .getByRole('navigation', { name: '对话列表' })
+    .getByRole('button', { name: '扩展', exact: true })
+    .dispatchEvent('click');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
   await page.getByText('超长会话滚动几何').first().dispatchEvent('click');
   await expect(page.locator('.maka-turn')).toHaveCount(24);

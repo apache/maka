@@ -137,17 +137,14 @@ function decodeEnvelope(value: unknown): SessionBundleManifestV1['envelope'] {
   ) {
     throw invalidManifest();
   }
-  if (
-    Object.hasOwn(value, 'lastCommittedActivationId') &&
-    !isNonEmptyUnicodeString(value.lastCommittedActivationId)
-  ) {
-    throw invalidManifest();
+  let lastCommittedActivationId: string | undefined;
+  if (Object.hasOwn(value, 'lastCommittedActivationId')) {
+    if (!isNonEmptyUnicodeString(value.lastCommittedActivationId)) throw invalidManifest();
+    lastCommittedActivationId = value.lastCommittedActivationId;
   }
   return {
     sessionId: value.sessionId,
-    ...(typeof value.lastCommittedActivationId === 'string'
-      ? { lastCommittedActivationId: value.lastCommittedActivationId }
-      : {}),
+    ...(lastCommittedActivationId === undefined ? {} : { lastCommittedActivationId }),
   };
 }
 

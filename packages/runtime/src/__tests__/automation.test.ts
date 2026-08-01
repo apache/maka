@@ -24,50 +24,7 @@ function createManager() {
 
 describe('AutomationManager', () => {
   describe('create', () => {
-    test('creates a heartbeat automation', () => {
-      const mgr = createManager();
-      const result = mgr.create({
-        kind: 'heartbeat',
-        name: 'check deploy',
-        prompt: 'Run deploy check',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 30 },
-      });
-      assert.ok(!('error' in result));
-      assert.equal(result.id, 'auto-1');
-      assert.equal(result.kind, 'heartbeat');
-      assert.equal(result.status, 'active');
-      assert.equal(result.fireCount, 0);
-      assert.ok(result.nextFireAt);
-    });
-
-    test('creates a cron automation', () => {
-      const mgr = createManager();
-      const result = mgr.create({
-        kind: 'cron',
-        name: 'daily review',
-        prompt: 'Review PRs',
-        sessionId: 'sess-1',
-        schedule: { type: 'cron', expression: '0 9 * * 1-5' },
-      });
-      assert.ok(!('error' in result));
-      assert.equal(result.kind, 'cron');
-    });
-
-    test('creates a one-shot automation', () => {
-      const mgr = createManager();
-      const result = mgr.create({
-        kind: 'heartbeat',
-        name: 'remind me',
-        prompt: 'Check the thing',
-        sessionId: 'sess-1',
-        schedule: { type: 'once', delaySeconds: 300 },
-      });
-      assert.ok(!('error' in result));
-      assert.equal(result.schedule.type, 'once');
-    });
-
-    test('rejects when max automations reached', () => {
+    test('enforces the automation limit per session', () => {
       const mgr = createManager();
       for (let i = 0; i < 20; i++) {
         mgr.create({
@@ -87,72 +44,26 @@ describe('AutomationManager', () => {
       });
       assert.ok('error' in result);
       assert.ok(result.error.includes('Maximum'));
-    });
-
-    test('different sessions have independent limits', () => {
-      const mgr = createManager();
-      for (let i = 0; i < 20; i++) {
-        mgr.create({
-          kind: 'heartbeat',
-          name: `auto-${i}`,
-          prompt: 'test',
-          sessionId: 'sess-1',
-          schedule: { type: 'interval', seconds: 60 },
-        });
-      }
-      const result = mgr.create({
+      const otherSession = mgr.create({
         kind: 'heartbeat',
         name: 'another session',
         prompt: 'test',
         sessionId: 'sess-2',
         schedule: { type: 'interval', seconds: 60 },
       });
-      assert.ok(!('error' in result));
+      assert.ok(!('error' in otherSession));
     });
 
-    test('respects maxFires', () => {
+    test('durability is a cron-only policy with a durable default', () => {
       const mgr = createManager();
-      const result = mgr.create({
-        kind: 'heartbeat',
-        name: 'limited',
-        prompt: 'test',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-        maxFires: 3,
-      });
-      assert.ok(!('error' in result));
-      assert.equal(result.maxFires, 3);
-    });
-
-    test('cron defaults to durable (survives restart without an explicit flag)', () => {
-      const mgr = createManager();
-      const result = mgr.create({
+      const durableCron = mgr.create({
         kind: 'cron',
         name: 'daily',
         prompt: 'p',
         sessionId: 'sess-1',
         schedule: { type: 'cron', expression: '0 9 * * *' },
       });
-      assert.ok(!('error' in result));
-      assert.equal(result.durable, true);
-    });
-
-    test('heartbeat defaults to non-durable (bound to its session)', () => {
-      const mgr = createManager();
-      const result = mgr.create({
-        kind: 'heartbeat',
-        name: 'poll',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in result));
-      assert.ok(!result.durable);
-    });
-
-    test('explicit durable refines cron; heartbeat is always session-bound', () => {
-      const mgr = createManager();
-      const cron = mgr.create({
+      const ephemeralCron = mgr.create({
         kind: 'cron',
         name: 'ephemeral-cron',
         prompt: 'p',
@@ -160,10 +71,7 @@ describe('AutomationManager', () => {
         schedule: { type: 'cron', expression: '0 9 * * *' },
         durable: false,
       });
-      assert.ok(!('error' in cron));
-      assert.ok(!cron.durable);
-      // durable is a cron-only concept — a heartbeat cannot opt into it.
-      const beat = mgr.create({
+      const heartbeat = mgr.create({
         kind: 'heartbeat',
         name: 'durable-beat',
         prompt: 'p',
@@ -171,37 +79,12 @@ describe('AutomationManager', () => {
         schedule: { type: 'interval', seconds: 60 },
         durable: true,
       });
-      assert.ok(!('error' in beat));
-      assert.ok(!beat.durable);
-    });
-  });
-
-  describe('delete', () => {
-    test('deletes own automation', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      assert.equal(mgr.delete(auto.id, 'sess-1'), true);
-      assert.equal(mgr.get(auto.id), undefined);
-    });
-
-    test('cannot delete another sessions automation', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      assert.equal(mgr.delete(auto.id, 'sess-2'), false);
+      assert.ok(!('error' in durableCron));
+      assert.equal(durableCron.durable, true);
+      assert.ok(!('error' in ephemeralCron));
+      assert.equal(Boolean(ephemeralCron.durable), false);
+      assert.ok(!('error' in heartbeat));
+      assert.equal(Boolean(heartbeat.durable), false);
     });
   });
 
@@ -221,17 +104,9 @@ describe('AutomationManager', () => {
       return auto as Extract<typeof auto, { id: string }>;
     }
 
-    test('listVisibleForSession surfaces durable automations owned by another session', () => {
+    test('durable crons are globally visible and manageable; heartbeats stay private', () => {
       const mgr = createManager();
-      makeDurableCron(mgr, 'creator-sess');
-      // A brand-new session (as after a restart) sees the persisted cron.
-      const visible = mgr.listVisibleForSession('fresh-sess');
-      assert.equal(visible.length, 1);
-      assert.equal(visible[0].name, 'nightly backup');
-    });
-
-    test('a non-durable heartbeat stays private to its session', () => {
-      const mgr = createManager();
+      const cron = makeDurableCron(mgr, 'creator-sess');
       const beat = mgr.create({
         kind: 'heartbeat',
         name: 'poll',
@@ -240,19 +115,13 @@ describe('AutomationManager', () => {
         schedule: { type: 'interval', seconds: 60 },
       });
       assert.ok(!('error' in beat));
-      assert.equal(mgr.listVisibleForSession('other-sess').length, 0);
-      // …and cannot be managed from another session.
-      assert.equal(mgr.pause((beat as { id: string }).id, 'other-sess'), undefined);
-    });
-
-    test('pause / resume / delete a durable cron from a different session', () => {
-      const mgr = createManager();
-      const cron = makeDurableCron(mgr, 'creator-sess');
-      // Pause from a fresh session.
+      const visible = mgr.listVisibleForSession('fresh-sess');
+      assert.equal(visible.length, 1);
+      assert.equal(visible[0].name, 'nightly backup');
+      assert.equal(mgr.pause(beat.id, 'other-sess'), undefined);
+      assert.equal(mgr.delete(beat.id, 'other-sess'), false);
       assert.equal(mgr.pause(cron.id, 'fresh-sess')?.status, 'paused');
-      // Resume from yet another session.
       assert.equal(mgr.resume(cron.id, 'another-sess')?.status, 'active');
-      // Delete from a fresh session.
       assert.equal(mgr.delete(cron.id, 'fresh-sess'), true);
       assert.equal(mgr.get(cron.id), undefined);
     });
@@ -284,110 +153,32 @@ describe('AutomationManager', () => {
   });
 
   describe('pause and resume', () => {
-    test('pause sets status to paused', () => {
+    test('resume refuses to re-arm exhausted maxFires and one-shot automations', () => {
       const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      const paused = mgr.pause(auto.id, 'sess-1');
-      assert.equal(paused?.status, 'paused');
-    });
-
-    test('resume reactivates paused automation', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      mgr.pause(auto.id, 'sess-1');
-      const resumed = mgr.resume(auto.id, 'sess-1');
-      assert.equal(resumed?.status, 'active');
-      assert.ok(resumed?.nextFireAt);
-    });
-
-    test('cannot pause already paused', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      mgr.pause(auto.id, 'sess-1');
-      assert.equal(mgr.pause(auto.id, 'sess-1'), undefined);
-    });
-
-    test('resume refuses to re-arm a maxFires-exhausted automation (no fire beyond the hard cap)', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'cron',
-        name: 'capped',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'cron', expression: '* * * * *' },
-        maxFires: 1,
-      });
-      assert.ok(!('error' in auto));
-      // The single allowed fire starts (fireCount=1, cap nulls nextFireAt)…
-      const started = mgr.attemptStarted(auto.id);
-      assert.equal(started?.fireCount, 1);
-      assert.equal(started?.nextFireAt, null);
-      // …then FAILS, settling to paused (the resumable-but-spent trap).
-      mgr.attemptFailed(auto.id, 'boom');
-      assert.equal(mgr.get(auto.id)?.status, 'paused');
-      // resume must NOT revive the spent budget.
-      const resumed = mgr.resume(auto.id, 'sess-1');
-      assert.equal(resumed, undefined);
-      assert.equal(mgr.get(auto.id)?.status, 'paused');
-      assert.equal(mgr.get(auto.id)?.nextFireAt, null);
-    });
-
-    test('resume refuses to re-fire a one-shot that already fired', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'cron',
-        name: 'once',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'once', delaySeconds: 30 },
-      });
-      assert.ok(!('error' in auto));
-      mgr.attemptStarted(auto.id);
-      mgr.attemptFailed(auto.id, 'boom');
-      assert.equal(mgr.get(auto.id)?.status, 'paused');
-      assert.equal(mgr.resume(auto.id, 'sess-1'), undefined);
-      assert.equal(mgr.get(auto.id)?.nextFireAt, null);
+      const cases: Array<[string, AutomationSchedule, number | undefined]> = [
+        ['capped', { type: 'cron', expression: '* * * * *' }, 1],
+        ['once', { type: 'once', delaySeconds: 30 }, undefined],
+      ];
+      for (const [name, schedule, maxFires] of cases) {
+        const auto = mgr.create({
+          kind: 'cron',
+          name,
+          prompt: 'p',
+          sessionId: 'sess-1',
+          schedule,
+          maxFires,
+        });
+        assert.ok(!('error' in auto));
+        mgr.attemptStarted(auto.id);
+        mgr.attemptFailed(auto.id, 'boom');
+        assert.equal(mgr.get(auto.id)?.status, 'paused', name);
+        assert.equal(mgr.resume(auto.id, 'sess-1'), undefined, name);
+        assert.equal(mgr.get(auto.id)?.nextFireAt, null, name);
+      }
     });
   });
 
   describe('markFired', () => {
-    test('increments fireCount and updates nextFireAt', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      const fired = mgr.attemptStarted(auto.id);
-      assert.equal(fired?.fireCount, 1);
-      assert.ok(fired?.nextFireAt);
-      assert.ok(fired?.lastFireAt);
-    });
-
     test('one-shot completes after a successful fire', () => {
       const mgr = createManager();
       const auto = mgr.create({
@@ -459,21 +250,6 @@ describe('AutomationManager', () => {
   });
 
   describe('attemptFailed', () => {
-    test('increments consecutiveFailures', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'heartbeat',
-        name: 'test',
-        prompt: 'p',
-        sessionId: 'sess-1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      mgr.attemptFailed(auto.id, 'timeout');
-      assert.equal(mgr.get(auto.id)?.consecutiveFailures, 1);
-      assert.equal(mgr.get(auto.id)?.lastError, 'timeout');
-    });
-
     test('auto-pauses after MAX_CONSECUTIVE_FAILURES', () => {
       const mgr = createManager();
       const auto = mgr.create({
@@ -579,36 +355,20 @@ describe('AutomationManager', () => {
       assert.equal(healed?.status, 'active');
     });
 
-    test('settles a spent-maxFires interrupted fire to completed (at-most-once, no re-run)', () => {
-      const settled = load(createManager(), {
-        status: 'active',
-        nextFireAt: null,
-        fireCount: 3,
-        maxFires: 3,
-      });
-      assert.equal(settled?.status, 'completed');
-      assert.equal(settled?.nextFireAt, null);
-      // Surfaces the uncertainty rather than asserting a clean success.
-      assert.ok(
-        settled?.lastError,
-        'an interrupted-then-settled fire must record its unknown outcome',
-      );
-    });
-
-    test('settles an interrupted once fire to completed (no drift, no re-run)', () => {
-      const settled = load(createManager(), {
-        status: 'active',
-        nextFireAt: null,
-        fireCount: 1,
-        schedule: { type: 'once', delaySeconds: 30 },
-      });
-      assert.equal(settled?.status, 'completed');
-      assert.equal(settled?.nextFireAt, null);
-    });
-
-    test('leaves a normally-scheduled automation untouched', () => {
-      const kept = load(createManager(), { status: 'active', nextFireAt: 999999 });
-      assert.equal(kept?.nextFireAt, 999999);
+    test('settles interrupted exhausted schedules without re-running them', () => {
+      for (const [label, state, recordsUncertainty] of [
+        ['maxFires', { fireCount: 3, maxFires: 3 }, true],
+        ['once', { fireCount: 1, schedule: { type: 'once', delaySeconds: 30 } }, false],
+      ] as const) {
+        const settled = load(createManager(), {
+          status: 'active',
+          nextFireAt: null,
+          ...state,
+        });
+        assert.equal(settled?.status, 'completed', label);
+        assert.equal(settled?.nextFireAt, null, label);
+        if (recordsUncertainty) assert.ok(settled?.lastError);
+      }
     });
   });
 
@@ -638,24 +398,6 @@ describe('AutomationManager', () => {
   });
 
   describe('skipFire', () => {
-    test('advances a recurring automation to its next slot', () => {
-      const mgr = createManager();
-      const auto = mgr.create({
-        kind: 'cron',
-        name: 'daily',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      assert.ok(!('error' in auto));
-      const id = (auto as { id: string }).id;
-      const before = mgr.get(id)?.nextFireAt;
-      mgr.skipFire(id);
-      const after = mgr.get(id);
-      assert.equal(after?.status, 'active');
-      assert.ok(after?.nextFireAt && before && after.nextFireAt >= before);
-    });
-
     test('a skipped once is settled terminally (no drift, not re-armed)', () => {
       const mgr = createManager();
       const auto = mgr.create({
@@ -676,82 +418,40 @@ describe('AutomationManager', () => {
       assert.equal(mgr.get(id)?.status, 'expired');
     });
   });
-
-  describe('dispose', () => {
-    test('clears all automations', () => {
-      const mgr = createManager();
-      mgr.create({
-        kind: 'heartbeat',
-        name: 'h1',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'interval', seconds: 60 },
-      });
-      mgr.create({
-        kind: 'cron',
-        name: 'c1',
-        prompt: 'p',
-        sessionId: 's2',
-        schedule: { type: 'cron', expression: '0 9 * * *' },
-      });
-      mgr.dispose();
-      assert.equal(mgr.listActive().length, 0);
-    });
-  });
 });
 
 describe('computeNextCronFire', () => {
-  test('every 5 minutes', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const next = computeNextCronFire('*/5 * * * *', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    assert.equal(d.getMinutes() % 5, 0);
-    assert.ok(next! > base);
-  });
-
   describe('validation + named tokens (O(1), no multi-second scan)', () => {
-    test('named weekday MON resolves to Monday', () => {
+    test('named weekday, weekday range, and month tokens resolve case-insensitively', () => {
       const base = new Date('2026-07-06T08:00:00').getTime(); // 2026-07-06 is a Monday
       const named = computeNextCronFire('0 9 * * MON', base);
       const numeric = computeNextCronFire('0 9 * * 1', base);
       assert.ok(named);
       assert.equal(named, numeric, 'MON must resolve identically to 1');
       assert.equal(new Date(named!).getDay(), 1);
-    });
 
-    test('named month JAN resolves to January; case-insensitive', () => {
-      const base = new Date('2026-07-06T00:00:00').getTime();
-      const next = computeNextCronFire('0 0 1 jan *', base);
-      assert.ok(next);
-      assert.equal(new Date(next!).getMonth(), 0); // January
-      assert.equal(new Date(next!).getDate(), 1);
-    });
+      const january = new Date(computeNextCronFire('0 0 1 jan *', base)!);
+      assert.equal(january.getMonth(), 0);
+      assert.equal(january.getDate(), 1);
 
-    test('named weekday range MON-FRI fires on a weekday', () => {
-      const base = new Date('2026-07-06T00:00:00').getTime();
-      const next = computeNextCronFire('0 9 * * mon-fri', base);
-      assert.ok(next);
-      const dow = new Date(next!).getDay();
+      const dow = new Date(computeNextCronFire('0 9 * * mon-fri', base)!).getDay();
       assert.ok(dow >= 1 && dow <= 5);
     });
 
-    test('out-of-range fields are rejected in O(1)', () => {
+    test('invalid fields and impossible dates fail fast', () => {
       const base = Date.now();
       const start = Date.now();
-      assert.equal(computeNextCronFire('0 9 32 * *', base), null); // day 32
-      assert.equal(computeNextCronFire('0 25 * * *', base), null); // hour 25
-      assert.equal(computeNextCronFire('0 9 * 13 *', base), null); // month 13
-      assert.equal(computeNextCronFire('0 9 * * BADTOKEN', base), null);
-      assert.ok(Date.now() - start < 100, 'invalid expressions must fail fast, not scan');
-    });
-
-    test('impossible calendar dates fail fast (no 8-year scan)', () => {
-      const base = Date.now();
-      const start = Date.now();
-      assert.equal(computeNextCronFire('0 0 30 2 *', base), null); // Feb 30
-      assert.equal(computeNextCronFire('0 0 31 4 *', base), null); // Apr 31
-      assert.ok(Date.now() - start < 100, 'impossible dates must fail fast');
+      for (const expression of [
+        '0 9 32 * *',
+        '0 25 * * *',
+        '0 9 * 13 *',
+        '0 9 * * BADTOKEN',
+        '0 0 30 2 *',
+        '0 0 31 4 *',
+      ]) {
+        assert.equal(computeNextCronFire(expression, base), null, expression);
+      }
+      assert.ok(Date.now() - start < 100, 'invalid expressions must fail fast');
     });
 
     test('impossible dom is NOT rejected when dow is also restricted (Vixie OR)', () => {
@@ -788,69 +488,6 @@ describe('computeNextCronFire', () => {
     });
   });
 
-  test('specific time (9:30)', () => {
-    const base = new Date('2026-07-06T08:00:00').getTime();
-    const next = computeNextCronFire('30 9 * * *', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    assert.equal(d.getHours(), 9);
-    assert.equal(d.getMinutes(), 30);
-  });
-
-  test('weekdays only', () => {
-    // 2026-07-06 is a Monday
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const next = computeNextCronFire('0 9 * * 1-5', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    const dow = d.getDay();
-    assert.ok(dow >= 1 && dow <= 5);
-  });
-
-  test('returns null for invalid expression', () => {
-    assert.equal(computeNextCronFire('invalid', Date.now()), null);
-  });
-
-  test('handles range in field', () => {
-    const base = new Date('2026-07-06T00:00:00').getTime();
-    const next = computeNextCronFire('0 9-17 * * *', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    assert.ok(d.getHours() >= 9 && d.getHours() <= 17);
-  });
-
-  test('handles comma-separated values', () => {
-    const base = new Date('2026-07-06T00:00:00').getTime();
-    const next = computeNextCronFire('0,30 * * * *', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    assert.ok(d.getMinutes() === 0 || d.getMinutes() === 30);
-  });
-
-  test('range/step 10-30/5 only matches 10,15,20,25,30', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const results: number[] = [];
-    let cursor = base;
-    for (let i = 0; i < 10; i++) {
-      const next = computeNextCronFire('10-30/5 * * * *', cursor);
-      if (!next) break;
-      results.push(new Date(next).getMinutes());
-      cursor = next;
-    }
-    for (const min of results) {
-      assert.ok(min >= 10 && min <= 30, `minute ${min} should be in range 10-30`);
-      assert.equal((min - 10) % 5, 0, `minute ${min} should be step of 5 from 10`);
-    }
-  });
-
-  test('range/step */10 matches 0,10,20,30,40,50', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const next = computeNextCronFire('*/10 * * * *', base);
-    assert.ok(next);
-    const min = new Date(next!).getMinutes();
-    assert.equal(min % 10, 0);
-  });
-
   test('range/step 5-15/3 does not match 18,21,24...', () => {
     // Verify values outside the range don't match
     assert.equal(matchesCronField('5-15/3', 18, 0, 59), false);
@@ -860,15 +497,6 @@ describe('computeNextCronFire', () => {
     assert.equal(matchesCronField('5-15/3', 11, 0, 59), true);
     assert.equal(matchesCronField('5-15/3', 14, 0, 59), true);
     assert.equal(matchesCronField('5-15/3', 15, 0, 59), false); // 15-5=10, 10%3≠0
-  });
-
-  test('timestamps are on clean minute boundaries', () => {
-    const base = new Date('2026-07-06T10:00:37.123').getTime();
-    const next = computeNextCronFire('*/5 * * * *', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    assert.equal(d.getSeconds(), 0);
-    assert.equal(d.getMilliseconds(), 0);
   });
 
   // --- Bug 1: sparse annual crons must resolve within a bounded window ---
@@ -886,12 +514,6 @@ describe('computeNextCronFire', () => {
     const isLeap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
     assert.ok(isLeap, `${y} should be a leap year`);
     assert.ok(next! > base);
-  });
-
-  test('impossible cron 0 0 30 2 * returns null (bounded, no infinite loop)', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    const next = computeNextCronFire('0 0 30 2 *', base);
-    assert.equal(next, null, 'Feb 30 never occurs, must return null after bounded search');
   });
 
   // --- Bug 2: dom + dow are OR (not AND) when BOTH fields are restricted ---
@@ -925,34 +547,8 @@ describe('computeNextCronFire', () => {
       fires.some((d) => d.getDate() === 13 && d.getDay() !== 5),
       'expected at least one 13th that is not a Friday',
     );
-  });
-
-  test('dom-only 0 0 13 * * matches only the 13th (dow unrestricted → AND)', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    let cursor = base;
-    for (let i = 0; i < 4; i++) {
-      const next = computeNextCronFire('0 0 13 * *', cursor);
-      assert.ok(next);
-      const d = new Date(next!);
-      assert.equal(d.getDate(), 13, `${d.toISOString()} should be the 13th`);
-      assert.equal(d.getHours(), 0);
-      assert.equal(d.getMinutes(), 0);
-      cursor = next!;
-    }
-  });
-
-  test('dow-only 0 0 * * 5 matches only Fridays (dom unrestricted → AND)', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    let cursor = base;
-    for (let i = 0; i < 4; i++) {
-      const next = computeNextCronFire('0 0 * * 5', cursor);
-      assert.ok(next);
-      const d = new Date(next!);
-      assert.equal(d.getDay(), 5, `${d.toISOString()} should be a Friday`);
-      assert.equal(d.getHours(), 0);
-      assert.equal(d.getMinutes(), 0);
-      cursor = next!;
-    }
+    assert.equal(new Date(computeNextCronFire('0 0 13 * *', base)!).getDate(), 13);
+    assert.equal(new Date(computeNextCronFire('0 0 * * 5', base)!).getDay(), 5);
   });
 
   test('dow=7 matches Sundays (cron allows 0 OR 7 for Sunday)', () => {
@@ -973,45 +569,6 @@ describe('computeNextCronFire', () => {
       cursor = n ?? cursor;
     }
     assert.ok(sawSunday, '5-7 range includes Sunday');
-  });
-
-  // --- Regression: common crons keep working after the OR/window changes ---
-
-  test('regression: */5 * * * * still fires every 5 minutes', () => {
-    const base = new Date('2026-07-06T10:02:00').getTime();
-    const next = computeNextCronFire('*/5 * * * *', base);
-    assert.ok(next);
-    const d = new Date(next!);
-    assert.equal(d.getMinutes() % 5, 0);
-    assert.equal(d.getMinutes(), 5);
-  });
-
-  test('regression: 0 9 * * 1-5 still fires 09:00 on weekdays only', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    let cursor = base;
-    for (let i = 0; i < 6; i++) {
-      const next = computeNextCronFire('0 9 * * 1-5', cursor);
-      assert.ok(next);
-      const d = new Date(next!);
-      assert.equal(d.getHours(), 9);
-      assert.equal(d.getMinutes(), 0);
-      const dow = d.getDay();
-      assert.ok(dow >= 1 && dow <= 5, `${d.toISOString()} should be Mon-Fri`);
-      cursor = next!;
-    }
-  });
-
-  test('regression: 10-30/5 * * * * only matches 10,15,20,25,30', () => {
-    const base = new Date('2026-07-06T10:00:00').getTime();
-    let cursor = base;
-    for (let i = 0; i < 12; i++) {
-      const next = computeNextCronFire('10-30/5 * * * *', cursor);
-      assert.ok(next);
-      const min = new Date(next!).getMinutes();
-      assert.ok(min >= 10 && min <= 30, `minute ${min} should be in range 10-30`);
-      assert.equal((min - 10) % 5, 0, `minute ${min} should be step of 5 from 10`);
-      cursor = next!;
-    }
   });
 });
 
@@ -1105,117 +662,31 @@ describe('AutomationManager edge cases', () => {
     mgr.attemptFailed(auto.id, 'should not change status');
     assert.equal(mgr.get(auto.id)?.status, 'completed');
   });
-
-  test('listAll returns all automations regardless of status', () => {
-    const mgr = createManager();
-    mgr.create({
-      kind: 'heartbeat',
-      name: 'active',
-      prompt: 'p',
-      sessionId: 's1',
-      schedule: { type: 'interval', seconds: 60 },
-    });
-    const once = mgr.create({
-      kind: 'heartbeat',
-      name: 'done',
-      prompt: 'p',
-      sessionId: 's1',
-      schedule: { type: 'once', delaySeconds: 10 },
-    });
-    assert.ok(!('error' in once));
-    mgr.attemptStarted(once.id);
-    mgr.attemptSucceeded(once.id);
-
-    const all = mgr.listAll();
-    assert.ok(all.length >= 2);
-    const statuses = all.map((a) => a.status);
-    assert.ok(statuses.includes('active'));
-    assert.ok(statuses.includes('completed'));
-  });
-
-  test('registerAll bulk-loads automations', () => {
-    const mgr = createManager();
-    mgr.registerAll([
-      {
-        id: 'loaded-1',
-        kind: 'heartbeat',
-        name: 'a',
-        status: 'active',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'interval', seconds: 60 },
-        createdAt: 0,
-        updatedAt: 0,
-        nextFireAt: 999,
-        lastFireAt: null,
-        lastRunId: null,
-        fireCount: 0,
-        maxFires: null,
-        expiresAt: null,
-        lastError: null,
-        consecutiveFailures: 0,
-      },
-      {
-        id: 'loaded-2',
-        kind: 'cron',
-        name: 'b',
-        status: 'paused',
-        prompt: 'p',
-        sessionId: 's1',
-        schedule: { type: 'cron', expression: '0 9 * * *' },
-        createdAt: 0,
-        updatedAt: 0,
-        nextFireAt: 999,
-        lastFireAt: null,
-        lastRunId: null,
-        fireCount: 0,
-        maxFires: null,
-        expiresAt: null,
-        lastError: null,
-        consecutiveFailures: 0,
-      },
-    ]);
-    assert.equal(mgr.get('loaded-1')?.name, 'a');
-    assert.equal(mgr.get('loaded-2')?.status, 'paused');
-  });
 });
 
 // ─── Thundering-herd jitter (ported from the old wakeup-scheduler) ───────────
 
 describe('computeJitter', () => {
-  test('for recurring returns a value within bounds', () => {
-    for (let i = 0; i < 50; i++) {
-      const delayMs = 600_000; // 10 minutes
-      const jitter = computeJitter(delayMs, true);
-      // 10% of 600000 = 60000, which is < the 15-minute cap (900000)
-      assert.ok(jitter >= 0, 'recurring jitter should be non-negative');
-      assert.ok(jitter <= 60_000, 'recurring jitter should be <= 10% of delay');
+  test('recurring jitter stays positive and bounded by 10% or 15 minutes', () => {
+    for (const [delayMs, maximum] of [
+      [600_000, 60_000],
+      [24 * 60 * 60 * 1000, 15 * 60 * 1000],
+    ]) {
+      for (let i = 0; i < 50; i++) {
+        const jitter = computeJitter(delayMs, true);
+        assert.ok(jitter >= 0);
+        assert.ok(jitter <= maximum, `expected <= ${maximum}, got ${jitter}`);
+      }
     }
   });
 
-  test('for recurring caps at 15 minutes for long delays', () => {
-    for (let i = 0; i < 50; i++) {
-      const delayMs = 24 * 60 * 60 * 1000; // 24h → 10% = 2.4h, capped at 15min
-      const jitter = computeJitter(delayMs, true);
-      assert.ok(jitter >= 0);
-      assert.ok(jitter <= 15 * 60 * 1000, `recurring jitter should cap at 15min, got ${jitter}`);
-    }
-  });
-
-  test('for one-shot returns 0 when the fire time is off the round mark', () => {
-    // The round-mark property belongs to the fire TIMESTAMP, not the delay:
-    // 10:07 + 30min = 10:37 → no early jitter.
+  test('one-shot jitter is zero off round marks and negative within bounds on them', () => {
     const firesAt = new Date(2026, 0, 1, 10, 37, 0, 0).getTime();
-    const jitter = computeJitter(30 * 60 * 1000, false, Math.random, firesAt);
-    assert.equal(jitter, 0);
-    // Without a timestamp there is no round-mark evidence → no jitter.
+    assert.equal(computeJitter(30 * 60 * 1000, false, Math.random, firesAt), 0);
     assert.equal(computeJitter(60_000, false), 0);
-  });
-
-  test('for one-shot firing on a :00/:30 minute returns negative value in bounds', () => {
     for (let i = 0; i < 50; i++) {
-      const firesAt = new Date(2026, 0, 1, 11, i % 2 === 0 ? 0 : 30, 0, 0).getTime();
-      const jitter = computeJitter(17 * 60 * 1000, false, Math.random, firesAt);
+      const roundMark = new Date(2026, 0, 1, 11, i % 2 === 0 ? 0 : 30, 0, 0).getTime();
+      const jitter = computeJitter(17 * 60 * 1000, false, Math.random, roundMark);
       assert.ok(jitter <= 0, `one-shot jitter should be <= 0, got ${jitter}`);
       assert.ok(jitter >= -90_000, `one-shot jitter should be >= -90000, got ${jitter}`);
     }

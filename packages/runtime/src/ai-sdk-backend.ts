@@ -208,6 +208,14 @@ export { normalizeAiSdkUsage } from './model-adapter.js';
 export type { ModelFactory, ModelFactoryInput, RepairableAiSdkToolCall } from './model-adapter.js';
 export type { RunTraceEvent, RunTraceRecorder } from './run-trace.js';
 
+const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
+  '<step_budget_finalization>',
+  'This is the final budgeted step for this child-agent turn.',
+  'Do not call tools. Return the best concise final answer now using evidence already gathered.',
+  'Clearly separate verified findings from inference and explicitly name any remaining gaps.',
+  '</step_budget_finalization>',
+].join('\n');
+
 // ============================================================================
 // AgentBackend interface — port contract now lives in @maka/core/backend-types;
 // re-exported here for backward compatibility with existing import sites.
@@ -1231,7 +1239,18 @@ export class AiSdkBackend implements AgentBackend {
               })
             : undefined;
           const projectedMessages = shaped?.messages ?? requestMessages;
-          const activeToolsForRequest = shaped?.activeTools ?? currentRepairToolNames();
+          const finalChildSummaryStep =
+            this.input.header.collaborationMode === 'agent' &&
+            this.maxSteps !== undefined &&
+            this.maxSteps > 1 &&
+            runtimeSteps === this.maxSteps - 1 &&
+            completedProviderSteps.length > 0;
+          const activeToolsForRequest = finalChildSummaryStep
+            ? []
+            : (shaped?.activeTools ?? currentRepairToolNames());
+          const requestSystemPrompt = finalChildSummaryStep
+            ? joinPromptFragments([systemPrompt, CHILD_STEP_BUDGET_FINALIZATION_PROMPT])
+            : systemPrompt;
           providerRequestTracker?.setStep(runtimeSteps);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
@@ -1262,7 +1281,7 @@ export class AiSdkBackend implements AgentBackend {
                   error,
                 });
               },
-              system: systemPrompt,
+              system: requestSystemPrompt,
               abortSignal: turnAbortController.signal,
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
             });

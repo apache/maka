@@ -11,7 +11,7 @@ const READ_ONLY_HINT = '只读取和搜索，不写入文件、不访问网络�
 test('a read-only session names its boundary and can still be raised to full access', async ({
   readOnlyBoundaryWindow: page,
 }) => {
-  const trigger = page.locator('.maka-composer-left-controls').getByRole('combobox');
+  const trigger = page.locator('.maka-composer-header-context').getByRole('combobox');
   await expect(trigger).toHaveText('只读');
   await expect(trigger).toHaveAccessibleName('权限模式：只读');
   await expect(trigger).toHaveAccessibleDescription(READ_ONLY_HINT);
@@ -65,7 +65,7 @@ test('approving an expansion updates the permission label at once and after a re
   sandboxBoundaryWindow: page,
 }) => {
   const prompt = page.locator('.maka-sandbox-boundary-prompt');
-  const trigger = page.locator('.maka-composer-left-controls').getByRole('combobox');
+  const trigger = page.locator('.maka-composer-header-context').getByRole('combobox');
 
   // The session runs read-only and is asking to write outside the workspace.
   await expect(prompt).toHaveCount(1);

@@ -29,11 +29,8 @@ export interface ToolActivityCopy {
     truncated: string;
     close: string;
     closeAriaLabel: string;
-    showRaw: string;
-    hideRaw: string;
   };
   copy: { idle: string; pending: string; copied: string; failed: string };
-  error: { title: string; copyAriaLabel: (label: string) => string };
   sandboxBlocked: {
     title: string;
     description: string;
@@ -163,9 +160,8 @@ const TOOL_ACTIVITY_COPY = {
   zh: {
     status: { pending: '排队中', running: '运行中', waitingPermission: '等待权限', completed: '已完成', failed: '失败', sandboxBlocked: '可能被沙箱阻止', interrupted: '已中断', cancelled: '已取消', timedOut: '已超时' },
     group: { ariaLabel: '工具调用记录', title: '工具调用', callCount: (count) => `${count} 次调用`, failedSuffix: '失败', sandboxBlockedSuffix: '可能被沙箱阻止' },
-    output: { redacted: '[已脱敏]', redactedAriaLabel: '已脱敏', truncated: '输出已截断', close: '关闭', closeAriaLabel: '关闭预览', showRaw: '显示原始诊断', hideRaw: '隐藏原始诊断' },
+    output: { redacted: '[已脱敏]', redactedAriaLabel: '已脱敏', truncated: '输出已截断', close: '关闭', closeAriaLabel: '关闭预览' },
     copy: { idle: '复制', pending: '复制中…', copied: '已复制', failed: '复制失败' },
-    error: { title: '工具调用失败', copyAriaLabel: (label) => `${label}错误信息` },
     sandboxBlocked: { title: '操作可能被沙箱阻止', description: '沙箱可能阻止了该调用中的至少一项操作。失败前可能已经产生部分结果，请检查输出和工作区状态后再决定是否重试。', copyAriaLabel: (label) => `${label}沙箱诊断信息` },
     summary: {
       kind: { read: (n) => `读取 ${n} 个文件`, search: (n) => `搜索 ${n} 次`, websearch: (n) => `联网搜索 ${n} 次`, webfetch: (n) => `抓取 ${n} 个网页`, edit: (n) => `编辑 ${n} 个文件`, command: (n) => `运行 ${n} 条命令`, explore: (n) => `探索 ${n} 次`, browser: (n) => `浏览器操作 ${n} 次`, tool: (n) => `调用 ${n} 个工具` },
@@ -195,9 +191,8 @@ const TOOL_ACTIVITY_COPY = {
   en: {
     status: { pending: 'Pending', running: 'Running', waitingPermission: 'Waiting for permission', completed: 'Completed', failed: 'Failed', sandboxBlocked: 'Possibly blocked by sandbox', interrupted: 'Interrupted', cancelled: 'Cancelled', timedOut: 'Timed out' },
     group: { ariaLabel: 'Tool call history', title: 'Tool calls', callCount: (count) => `${count} ${count === 1 ? 'call' : 'calls'}`, failedSuffix: 'Failed', sandboxBlockedSuffix: 'Possibly blocked by sandbox' },
-    output: { redacted: '[Redacted]', redactedAriaLabel: 'Redacted', truncated: 'Output truncated', close: 'Close', closeAriaLabel: 'Close preview', showRaw: 'Show raw diagnostics', hideRaw: 'Hide raw diagnostics' },
+    output: { redacted: '[Redacted]', redactedAriaLabel: 'Redacted', truncated: 'Output truncated', close: 'Close', closeAriaLabel: 'Close preview' },
     copy: { idle: 'Copy', pending: 'Copying…', copied: 'Copied', failed: 'Copy failed' },
-    error: { title: 'Tool call failed', copyAriaLabel: (label) => `${label} error details` },
     sandboxBlocked: { title: 'Operation may have been blocked by sandbox', description: 'The sandbox may have blocked at least one action in this call. Some effects may have occurred before it failed; check the output and workspace state before retrying.', copyAriaLabel: (label) => `${label} sandbox diagnostics` },
     summary: {
       kind: { read: (n) => `Read ${n} ${n === 1 ? 'file' : 'files'}`, search: (n) => `Searched ${n} ${n === 1 ? 'time' : 'times'}`, websearch: (n) => `Ran ${n} web ${n === 1 ? 'search' : 'searches'}`, webfetch: (n) => `Fetched ${n} web ${n === 1 ? 'page' : 'pages'}`, edit: (n) => `Edited ${n} ${n === 1 ? 'file' : 'files'}`, command: (n) => `Ran ${n} ${n === 1 ? 'command' : 'commands'}`, explore: (n) => `Explored ${n} ${n === 1 ? 'time' : 'times'}`, browser: (n) => `Performed ${n} browser ${n === 1 ? 'action' : 'actions'}`, tool: (n) => `Called ${n} ${n === 1 ? 'tool' : 'tools'}` },

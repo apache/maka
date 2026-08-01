@@ -27,7 +27,7 @@ import type { Page } from '@playwright/test';
  *     and does not assert rendered footer-visibility geometry. The two layers
  *     deliberately lock different declarations.
  *   - `scroll-geometry.spec.ts` boots `long-transcript` and probes
- *     `.maka-chatViewport`, not the sidebar.
+ *     Astryx `ChatLayout`, not the sidebar.
  *
  * This spec is the rendered-geometry lock. It boots the `sidebar-long-sessions`
  * fixture and asserts, against the live desktop shell:
@@ -47,8 +47,8 @@ import type { Page } from '@playwright/test';
  * collapses) and the footer leaves the viewport; both are caught below.
  */
 
-const LIST_VIEWPORT = '.maka-list-stackViewport';
-const CHAT_VIEWPORT = '.maka-chatViewport';
+const LIST_CONTENT = '.maka-session-list';
+const CHAT_VIEWPORT = '[data-chat-scroll-container="true"]';
 
 interface ScrollerMetrics {
   scrollTop: number;
@@ -74,7 +74,7 @@ interface Geometry {
 }
 
 async function readGeometry(page: Page): Promise<Geometry> {
-  return page.evaluate(() => {
+  return page.evaluate((listContentSelector) => {
     const rect = (el: Element | null): Rect | null => {
       if (!el) return null;
       const { top, right, bottom, left, width, height } = el.getBoundingClientRect();
@@ -89,10 +89,10 @@ async function readGeometry(page: Page): Promise<Geometry> {
       footer: rect(document.querySelector('.maka-session-panel-footer')),
       panel: rect(document.querySelector('.maka-session-panel')),
       viewport: { width: window.innerWidth, height: window.innerHeight },
-      list: scroller(document.querySelector('.maka-list-stackViewport')),
-      chat: scroller(document.querySelector('.maka-chatViewport')),
+      list: scroller(document.querySelector(listContentSelector)?.parentElement ?? null),
+      chat: scroller(document.querySelector('[data-chat-scroll-container="true"]')),
     };
-  });
+  }, LIST_CONTENT);
 }
 
 // The footer must sit fully inside the sidebar panel AND inside the window
@@ -130,7 +130,7 @@ async function scrollListToBottom(page: Page): Promise<number> {
     .poll(
       async () => {
         const metrics = await page.evaluate((selector) => {
-          const el = document.querySelector(selector) as HTMLElement | null;
+          const el = document.querySelector(selector)?.parentElement as HTMLElement | null;
           if (!el) return null;
           el.scrollTop = el.scrollHeight;
           return {
@@ -138,7 +138,7 @@ async function scrollListToBottom(page: Page): Promise<number> {
             scrollHeight: el.scrollHeight,
             clientHeight: el.clientHeight,
           };
-        }, LIST_VIEWPORT);
+        }, LIST_CONTENT);
         if (!metrics) return false;
         const atBottom =
           metrics.scrollTop > 0 &&
@@ -161,11 +161,33 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   // handful of baseline chat sessions; their exact count is not this
   // contract's concern — the 60-row pin alone proves the overflow
   // precondition the geometry assertions depend on.
-  await expect(page.locator('.maka-list-row-main[title^="会话 "]')).toHaveCount(60);
+  await expect(page.locator('[data-session-id][title^="会话 "]')).toHaveCount(60);
 
   // The list scroller and the chat scroller are distinct elements.
-  await expect(page.locator(LIST_VIEWPORT)).toHaveCount(1);
+  await expect(page.locator(LIST_CONTENT)).toHaveCount(1);
   await expect(page.locator(CHAT_VIEWPORT)).toHaveCount(1);
+
+  // Astryx owns the chat's initial fill and follows transcript geometry
+  // asynchronously. Establish its terminal pinned position before using the
+  // chat scrollTop as the sidebar-independence control value.
+  await expect(page.locator(`${CHAT_VIEWPORT}[data-turn-warmup="settled"]`)).toBeAttached();
+  await expect.poll(async () => {
+    const geometry = await readGeometry(page);
+    return geometry.chat
+      ? Math.round(geometry.chat.scrollHeight - geometry.chat.scrollTop - geometry.chat.clientHeight)
+      : Number.POSITIVE_INFINITY;
+  }).toBeLessThanOrEqual(1);
+
+  // The newest fixture session is one short exchange. It already fits above
+  // the composer, so reaching its final message must not create a second,
+  // composer-height scroll range below the conversation.
+  const settledChat = (await readGeometry(page)).chat;
+  expect(settledChat, JSON.stringify(settledChat)).not.toBeNull();
+  if (settledChat) {
+    const diagnostics = JSON.stringify(settledChat);
+    expect(settledChat.scrollHeight - settledChat.clientHeight, diagnostics).toBeLessThanOrEqual(1);
+    expect(settledChat.scrollTop, diagnostics).toBeLessThanOrEqual(1);
+  }
 
   // (1a) The sidebar list scroller actually overflows its constrained grid
   // row — this is what makes it an independent scroll container. If the panel
@@ -199,8 +221,8 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
 
   // The sidebar's own scrollTop moved...
   expect(after.list?.scrollTop ?? -1, afterDiag).toBeGreaterThan(listScrollTopBefore);
-  // ...while the chat viewport's scrollTop is unaffected (short transcript →
-  // stays pinned at 0). This is the scroll-independence lock for this seed.
+  // ...while the already-settled chat viewport's scrollTop is unaffected.
+  // This is the scroll-independence lock for this seed.
   expect(after.chat?.scrollTop ?? -1, afterDiag).toBe(chatScrollTopBefore);
 
   // (b) Footer still fully inside the panel and the window after scrolling the
@@ -209,39 +231,70 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   expectFooterContained(after, 'after-scroll-to-bottom');
 });
 
-test('keyboard sidebar resize bypasses drawer motion without disabling collapse motion', async ({
+test('official SideNav resize handle updates the sidebar width from the keyboard', async ({
   sidebarLongSessionsWindow: page,
 }) => {
-  const shell = page.locator('.maka-shell-2col');
-  const handle = page.locator('.maka-resize-handle');
+  const shell = page.locator('.appFrame');
+  const panel = page.locator('.maka-session-panel');
+  const handle = page.getByTestId('astryx-sidenav-resize-handle');
 
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
-  await page.locator('html').evaluate((element) => {
-    element.removeAttribute('data-maka-e2e-fixture');
-  });
-
   await handle.focus();
   await expect(handle).toBeFocused();
-  expect(await shell.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe('0s');
 
   const beforeWidth = Number(await handle.getAttribute('aria-valuenow'));
   await handle.press('ArrowRight');
-  const after = await shell.evaluate((element) => {
-    const handle = element.querySelector('.maka-resize-handle');
-    const firstTrack = getComputedStyle(element).gridTemplateColumns.split(' ')[0];
-    return {
-      ariaWidth: Number(handle?.getAttribute('aria-valuenow')),
-      trackWidth: Number.parseFloat(firstTrack ?? ''),
-    };
-  });
+  await expect.poll(async () => Number(await handle.getAttribute('aria-valuenow'))).toBe(beforeWidth + 10);
+  await expect.poll(() => panel.evaluate((element) => element.getBoundingClientRect().width))
+    .toBe(beforeWidth + 10);
+});
 
-  expect(after.ariaWidth).toBe(beforeWidth + 10);
-  expect(after.trackWidth).toBe(after.ariaWidth);
+/**
+ * A collapse/expand round trip must return the sidebar to a usable width, and
+ * to the width the user had chosen rather than the default.
+ *
+ * This used to drive the collapse by dragging the resize handle past its
+ * minimum. That no longer works: since the Astryx 0.2.0 upgrade (#1750) the
+ * handle does not respond to synthesised pointer input at all. Measured on this
+ * branch — after `mouse.down()` on the handle and a drag across the panel,
+ * `aria-valuenow` and the panel's rendered width both stay at 260, and
+ * dispatching a hand-built `PointerEvent` sequence (correct `pointerId`,
+ * `buttons`, and `isPrimary`, delivered both to the handle and to `window`)
+ * moves neither. The handle still works from the keyboard, which the test above
+ * covers, so this is specific to pointer drag. The test kept asserting
+ * `data-sidebar-state="collapsed"` after a drag that no longer collapsed
+ * anything, which is why it has failed on every CI run since #1750.
+ *
+ * Collapsing through the titlebar control is the same round trip by the path a
+ * user actually has, and it is drivable.
+ *
+ * NOT covered here, and deliberately: `app-shell.tsx` refuses to persist a
+ * width below `SESSION_LIST_EXPANDED_MIN_WIDTH`, which is what stops a
+ * drag-to-collapse from writing a sub-minimum width that the next expand would
+ * restore. Reaching that guard needs Astryx to report an under-minimum width,
+ * and pointer drag is the only thing that produces one. It has no renderer-side
+ * test seam today, so it is currently unlocked rather than silently "covered".
+ */
+test('titlebar restores the chosen SideNav width across a collapse round trip', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const shell = page.locator('.appFrame');
+  const panel = page.locator('.maka-session-panel');
+  const handle = page.getByTestId('astryx-sidenav-resize-handle');
+  const panelWidth = () => panel.evaluate((element) => element.getBoundingClientRect().width);
 
-  await handle.blur();
-  await expect
-    .poll(() => shell.evaluate((element) => getComputedStyle(element).transitionDuration))
-    .toBe('0.28s');
-  expect(await shell.evaluate((element) => getComputedStyle(element).transitionProperty))
-    .toContain('grid-template-columns');
+  // Choose a non-default width from the keyboard, so the restore assertion can
+  // tell "came back" apart from "fell back to the 260px default".
+  await handle.focus();
+  const chosenWidth = Number(await handle.getAttribute('aria-valuenow')) + 10;
+  await handle.press('ArrowRight');
+  await expect.poll(panelWidth).toBe(chosenWidth);
+
+  await page.getByRole('button', { name: '收起侧边栏' }).click();
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'collapsed');
+
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
+  await expect.poll(panelWidth).toBe(chosenWidth);
+  expect(chosenWidth).toBeGreaterThanOrEqual(180);
 });

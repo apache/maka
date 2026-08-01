@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { Plus, Search, Trash2 } from '@maka/ui/icons';
 import { Button } from '../src/index.js';
-import { Spinner } from '../src/primitives/spinner.js';
+import { Spinner } from '@astryxdesign/core/Spinner';
 
 const meta = {
   title: 'Design System/Tokens',

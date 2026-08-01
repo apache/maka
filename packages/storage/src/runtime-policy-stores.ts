@@ -33,6 +33,8 @@ export {
 export type {
   BeginConnectionTestResult,
   BeginModelFetchResult,
+  CompareAndSetOAuthCredentialInput,
+  CompareAndSetOAuthCredentialResult,
   ConnectionEffectChangedDomain,
   ConnectionEffectCompletionResult,
   ConnectionEffectPreparationFailure,
@@ -196,6 +198,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     operations: {
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
+      compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
       completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
       beginConnectionTest: (connectionId, modelId) =>

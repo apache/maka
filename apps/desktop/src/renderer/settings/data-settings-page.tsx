@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
+import { Card } from '@astryxdesign/core';
 import type { ConfigCategory } from '@maka/storage';
 import {
-  Alert,
-  AlertDescription,
   Button,
   SectionHeader,
   Selector,
@@ -11,9 +10,10 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { openPathFailureCopy, openPathActionLabel } from '../open-path';
-import { SettingsRows, SettingRow } from './settings-rows';
+import { SettingRow } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard } from './use-action-guard';
 import { getDataSettingsCopy, type DataSettingsCopy } from '../locales/settings-data-copy';
@@ -183,7 +183,7 @@ export function DataSettingsPage() {
 
   return (
     <div className="settingsStructuredPage">
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <SettingRow
           title={copy.rows.workspace}
           detail={copy.rows.workspaceDetail}
@@ -200,7 +200,7 @@ export function DataSettingsPage() {
           detail={copy.rows.historyDetail}
           value={copy.rows.localStorage}
         />
-      </SettingsRows>
+      </Card>
       {/* Detail audit: was two wrapped rows with 打开文件夹 wearing primary
           (a utility action) and destructive 清空输入历史 dressed neutral.
           One row; utilities are secondary; the destructive action reads
@@ -226,15 +226,10 @@ export function DataSettingsPage() {
           label={isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
         />
       </div>
-      <Alert variant="info">
-        <AlertDescription>{copy.backupNotice}</AlertDescription>
-      </Alert>
+      <Banner status="info" title={copy.backupNotice} />
       {infoError && (
-        <Alert variant="info" role="alert">
-          <AlertDescription>{copy.pathLoadFailed(infoError)}</AlertDescription>
-        </Alert>
+        <Banner status="info" role="alert" title={copy.pathLoadFailed(infoError)} />
       )}
-
       <section className="settingsConfigSection" aria-label={copy.configAria}>
         <SectionHeader as="h3" title={copy.configTitle} subtitle={copy.configHelp} />
         <div role="group" aria-label={copy.categoryAria} className="settingsConfigCategoryList">

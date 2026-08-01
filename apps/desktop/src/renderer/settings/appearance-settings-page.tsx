@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { SettingsRows } from './settings-rows';
+import { Card, Item, SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import type {
   AppSettings,
   PersonalizationSettings,
@@ -11,7 +11,7 @@ import type {
 import {
   RadioList,
   RadioListItem,
-  Segmented,
+  FormLayout,
   TextArea,
   TextInput,
   useMountedRef,
@@ -169,12 +169,8 @@ export function PersonalizationSettingsPage(props: {
       {/* These editable values stay in the same grouped Settings card as the
           neighboring preferences; the full-width tone field uses the vertical
           row variant. */}
-      <SettingsRows>
-        <div className="settingsFormRow settingsPersonalizationDisplayName">
-          <div>
-            <strong>{copy.displayName}</strong>
-            <small>{copy.displayNameHelp}</small>
-          </div>
+      <Card padding={0} className="settingsRows">
+        <FormLayout className="settingsFormLayout">
           <TextInput
             type="text"
             value={displayName}
@@ -182,10 +178,9 @@ export function PersonalizationSettingsPage(props: {
             onBlur={() => flushDisplayName(displayName)}
             placeholder={copy.displayNamePlaceholder}
             label={copy.displayName}
-            isLabelHidden
+            description={copy.displayNameHelp}
             width="100%"
           />
-        </div>
 
         {/*
           PR-LANG-PREF-0 (WAWQAQ msg `edc9cb41` + kenji `7e532892`
@@ -193,24 +188,20 @@ export function PersonalizationSettingsPage(props: {
           choice wins over the temporary auto -> zh fallback;
           e2e-fixture override wins over both (deterministic baselines).
         */}
-        <div className="settingsFormRow">
-          <div>
-            <strong>{copy.interfaceLanguage}</strong>
-            <small>{copy.interfaceLanguageHelp}</small>
-          </div>
-          <Segmented
+        <Item
+          label={copy.interfaceLanguage}
+          description={copy.interfaceLanguageHelp}
+          endContent={<SegmentedControl
             value={uiLocale}
-            options={copy.localeOptions}
             onChange={(next) => persistLocale(next as UiLocalePreference)}
-            ariaLabel={copy.interfaceLanguage}
-          />
-        </div>
+            label={copy.interfaceLanguage}
+          >
+            {copy.localeOptions.map(([value, label]) => (
+              <SegmentedControlItem key={value} value={value} label={label} />
+            ))}
+          </SegmentedControl>}
+        />
 
-        <div className="settingsFormRow" data-orient="vertical">
-          <div>
-            <strong>{copy.assistantTone}</strong>
-            <small>{copy.assistantToneHelp}</small>
-          </div>
           <TextArea
             value={assistantTone}
             onChange={(value) => {
@@ -223,15 +214,15 @@ export function PersonalizationSettingsPage(props: {
             rows={4}
             hasSpellCheck={false}
             label={copy.assistantTone}
-            isLabelHidden
+            description={copy.assistantToneHelp}
             width="100%"
             style={{
               boxSizing: 'border-box',
               height: 'calc(var(--space-16) + var(--space-5))',
             }}
           />
-        </div>
-      </SettingsRows>
+        </FormLayout>
+      </Card>
     </div>
   );
 }

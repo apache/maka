@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildExploreAgentTool, runReadOnlyExplore } from '../explore-agent-tool.js';
-
-const repoRoot = join(process.cwd(), '..', '..');
 
 describe('ExploreAgent read-only worker', () => {
   it('exposes a categorized read-only subagent tool', () => {
@@ -473,110 +471,6 @@ describe('ExploreAgent read-only worker', () => {
     });
   });
 
-  it('has a structured chat preview instead of raw JSON fallback', async () => {
-    const [toolResultPreview, agentPreview, events] = await Promise.all([
-      readFile(join(process.cwd(), '../../packages/ui/src/tool-activity/tool-result-preview.tsx'), 'utf8'),
-      readFile(join(process.cwd(), '../../packages/ui/src/tool-activity/agent-preview.tsx'), 'utf8'),
-      readFile(join(process.cwd(), '../../packages/core/src/events.ts'), 'utf8'),
-    ]);
-
-    assert.match(events, /kind: 'explore_agent'/);
-    assert.match(events, /partial\?: boolean/);
-    assert.match(events, /terminalStatus\?: 'completed'/);
-    assert.match(events, /filesDiscovered\?: number/);
-    assert.match(events, /ignoredPaths\?: string/);
-    assert.match(events, /stoppingCondition\?: string/);
-    assert.match(events, /limitReasons\?: ReadonlyArray/);
-    assert.match(events, /summary\?: string/);
-    assert.match(events, /recentEvents\?: ReadonlyArray/);
-    assert.match(toolResultPreview, /content\.kind === 'explore_agent'/);
-    assert.match(agentPreview, /export function ExploreAgentPreview/);
-    const previewBlock = agentPreview.match(/export function ExploreAgentPreview[\s\S]*$/)?.[0] ?? '';
-    assert.match(previewBlock, /result\.progress/);
-    assert.match(previewBlock, /result\.recentEvents/);
-    assert.match(previewBlock, /formatExploreAgentEvent/);
-    assert.match(previewBlock, /formatExploreAgentEvent\(event, result\.startedAt, locale\)/);
-    assert.match(previewBlock, /formatExploreAgentEventOffset/);
-    assert.match(previewBlock, /result\.evidence/);
-    assert.match(previewBlock, /result\.summary/);
-    assert.match(previewBlock, /result\.report/);
-    assert.match(previewBlock, /result\.durationMs/);
-    assert.match(previewBlock, /copy\.section\.process/);
-    assert.match(previewBlock, /copy\.section\.evidence/);
-    assert.match(previewBlock, /copy\.section\.report/);
-    assert.match(previewBlock, /copy\.duration/);
-    assert.match(previewBlock, /resultSummary/);
-    assert.match(previewBlock, /terminalStatus/);
-    assert.match(previewBlock, /copy\.field\.terminal/);
-    assert.match(previewBlock, /copy\.terminalStatus\.completed_empty/);
-    assert.match(previewBlock, /filesDiscovered/);
-    assert.match(previewBlock, /copy\.field\.foundRead/);
-    assert.match(previewBlock, /copy\.foundRead/);
-    assert.match(previewBlock, /copyPayloads\.summary/);
-    assert.match(previewBlock, /copy\.detail\.scope/);
-    assert.match(previewBlock, /copy\.detail\.queries/);
-    assert.match(previewBlock, /copy\.detail\.boundary/);
-    assert.match(previewBlock, /copy\.copyButtons\.summary/);
-    assert.match(previewBlock, /processLines/);
-    assert.match(previewBlock, /result\.recentEvents\.slice\(0, 20\)/);
-    assert.match(previewBlock, /copyPayloads\.process/);
-    assert.match(previewBlock, /copy\.field\.events/);
-    assert.match(previewBlock, /copy\.copyButtons\.process/);
-    assert.match(previewBlock, /copyPayloads\.evidence/);
-    assert.match(previewBlock, /copy\.field\.evidence/);
-    assert.match(previewBlock, /copy\.copyButtons\.evidence/);
-    assert.match(previewBlock, /copyPayloads\.candidate/);
-    assert.match(previewBlock, /copy\.field\.candidates/);
-    assert.match(previewBlock, /copy\.copyButtons\.candidate/);
-    assert.match(previewBlock, /copyPayloads\.matches/);
-    assert.match(previewBlock, /copy\.field\.matches/);
-    assert.match(previewBlock, /copy\.copyButtons\.matches/);
-    assert.match(previewBlock, /continuationText/);
-    assert.match(previewBlock, /needsContinuation/);
-    assert.match(previewBlock, /continuationReason/);
-    assert.match(previewBlock, /presentExploreAgentContinuationReason/);
-    assert.match(previewBlock, /copy\.continuationIntro/);
-    assert.match(previewBlock, /copy\.field\.continuationReason/);
-    assert.match(previewBlock, /copy\.continuationSuggested/);
-    assert.match(previewBlock, /getToolActivityCopy\(locale\)\.agent\.continuationReason/);
-    assert.match(previewBlock, /return copy\.empty/);
-    assert.match(previewBlock, /copy\.field\.previousDuration/);
-    assert.match(previewBlock, /copy\.field\.previousBoundary/);
-    assert.match(previewBlock, /copy\.continuationCandidates/);
-    assert.match(previewBlock, /copy\.copyButtons\.continuation/);
-    assert.match(previewBlock, /copy\.copyButtons\.report/);
-    assert.match(previewBlock, /useClipboardCopyFeedback\(\)/);
-    assert.match(previewBlock, /data-pending=\{summaryCopy\.phase === 'pending'/);
-    assert.match(previewBlock, /data-copy-error=\{summaryCopy\.phase === 'failed'/);
-    // #1565 PR 3: Astryx Button spells the disabled prop `isDisabled`.
-    assert.match(previewBlock, /isDisabled=\{summaryCopy\.disabled\}/);
-    assert.match(previewBlock, /<UiButton[\s\S]*?variant="ghost"[\s\S]*?size="sm"[\s\S]*?className=\{previewVariants\(\{ part: 'agent-copy' \}\)\}/);
-    assert.equal(
-      previewBlock.match(/previewVariants\(\{ part: 'agent-copy' \}\)/g)?.length,
-      7,
-      'ExploreAgent copy actions should keep the governed previewVariants agent-copy part on shared UiButton controls',
-    );
-    assert.doesNotMatch(previewBlock, /\bmaka-explore-agent-copy\b/);
-    const chatPrimitive = await readFile(join(repoRoot, 'packages/ui/src/primitives/chat.tsx'), 'utf8');
-    const agentCopyVariant = chatPrimitive.match(/"agent-copy":\s*[\s\S]*?data-\[copy-error=true\][^,]+/)?.[0] ?? '';
-    assert.doesNotMatch(agentCopyVariant, /\b(?:gap-|min-h-|px-|py-|text-xs)\b/);
-    assert.doesNotMatch(previewBlock, /data-size="sm"/);
-    assert.match(previewBlock, /copy\.copyState\.pending/);
-    assert.match(previewBlock, /copy\.copyState\.failed/);
-    assert.match(previewBlock, /sensitiveFilesSkipped/);
-    assert.match(previewBlock, /ignoredPaths/);
-    assert.match(previewBlock, /copy\.detail\.ignored/);
-    assert.match(previewBlock, /stoppingCondition/);
-    assert.match(previewBlock, /copy\.detail\.stopping/);
-    assert.match(previewBlock, /limitReasons/);
-    assert.match(previewBlock, /copy\.budgetLimited/);
-    assert.match(previewBlock, /copy\.detail\.boundary/);
-    assert.match(previewBlock, /copy\.cancelledPartial/);
-    assert.match(previewBlock, /copy\.terminalStatus\.canceled/);
-    assert.match(previewBlock, /copy\.candidateReason/);
-    assert.match(previewBlock, /redactSecrets/);
-    assert.doesNotMatch(previewBlock, /<a\s/i, 'ExploreAgent preview should not create links from tool result paths');
-  });
 });
 
 async function withWorkspace(fn: (workspaceRoot: string) => Promise<void>): Promise<void> {

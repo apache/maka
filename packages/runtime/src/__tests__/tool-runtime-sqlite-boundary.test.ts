@@ -11,6 +11,90 @@ import type { InvocationContext } from '../invocation-context.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
 
 describe('ToolRuntime with real SQLite boundary', () => {
+  it('persists a preflight-rejected sibling beside an exclusive tool without an orphan response', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-exclusive-reject-'));
+    const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+    try {
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'model-1',
+        appendMessage: async () => {},
+        newId: nextId(),
+        now: nextNow(),
+        getPermissionPauseTarget: () => null,
+        getCurrentRunId: () => 'run-1',
+        getCurrentInvocationId: () => 'invocation-1',
+        runtimeCommitSink: store,
+      });
+      runtime.beginTurn('turn-1');
+      const published: SessionEvent[] = [];
+      const eventSink = {
+        push: (event: SessionEvent) => published.push(event),
+        pushAndWaitUntilConsumed: async (event: SessionEvent) => {
+          published.push(event);
+        },
+      };
+      const exclusive: MakaTool = {
+        name: 'agent_swarm',
+        description: 'exclusive',
+        parameters: {},
+        executionSemantics: 'exclusive_step',
+        impl: async () => ({ ok: true }),
+      };
+      const sibling: MakaTool = {
+        name: 'agent_output',
+        description: 'sibling',
+        parameters: {},
+        impl: async () => ({ ok: true }),
+      };
+
+      await runtime.settleToolCall({
+        tool: exclusive,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: 'provider-call-exclusive',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink,
+      });
+      const rejected = await runtime.settleToolCall({
+        tool: sibling,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: 'provider-call-rejected',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink,
+      });
+      assert.match(JSON.stringify(rejected.result), /exclusive tool agent_swarm/i);
+
+      const memory = createSessionEventMapMemory();
+      for (const event of published) {
+        if (event.type !== 'tool_start' && event.type !== 'tool_result') continue;
+        const runtimeEvent = mapSessionEventToRuntimeEvent(event, invocationContext(), memory);
+        if (runtimeEvent.refs?.operationId !== undefined) continue;
+        await store.appendRuntimeEvent('session-1', 'run-1', runtimeEvent);
+      }
+
+      const rejectedEvents = (await store.readRuntimeEvents('session-1', 'run-1')).filter(
+        (event) =>
+          event.content?.kind === 'function_call'
+            ? event.content.id === 'provider-call-rejected'
+            : event.content?.kind === 'function_response' &&
+              event.content.id === 'provider-call-rejected',
+      );
+      assert.deepEqual(
+        rejectedEvents.map((event) => event.content?.kind),
+        ['function_call', 'function_response'],
+      );
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists one atomic prepared/outcome pair around the real implementation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-'));
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));

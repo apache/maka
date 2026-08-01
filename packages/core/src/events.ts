@@ -24,6 +24,7 @@ import type {
   ShellRunStatus,
   ShellRunTerminalStatus,
 } from './shell-run.js';
+export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
 import type {
   CacheMissInputSource,
   ContextBudgetDiagnostic,

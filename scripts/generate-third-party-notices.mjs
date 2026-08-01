@@ -52,6 +52,7 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   // The published tarball omits the repository LICENSE; sibling @astryxdesign
   // packages ship it verbatim with this notice.
   ['@astryxdesign/core@0.1.9', 'Copyright (c) 2026 Meta Platforms, Inc.'],
+  ['@astryxdesign/core@0.2.0', 'Copyright (c) 2026 Meta Platforms, Inc.'],
   ['@stylexjs/stylex@0.19.0', 'Copyright (c) Meta Platforms, Inc. and affiliates.'],
   ['@wecom/aibot-node-sdk@1.0.7', 'Copyright (c) WeComTeam contributors'],
   [
@@ -65,7 +66,6 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
-  ['overlayscrollbars@2.16.0', 'Copyright (c) 2022 Rene Haas'],
 ]);
 
 const MIT_TEXT = (copyrightNotice) => `MIT License

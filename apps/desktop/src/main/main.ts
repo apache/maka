@@ -10,12 +10,14 @@ import {
   resolveUiLocale,
 } from '@maka/core';
 import type {
+  AppSettings,
   BotProvider,
   ConnectionEvent,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
   SessionHeader,
+  UpdateAppSettingsInput,
 } from '@maka/core';
 import { deriveBotStatusPersistenceUpdate } from './bot-status-persistence.js';
 import { runThreadSearch } from './search/thread-search.js';
@@ -58,7 +60,6 @@ import type {
 } from '@maka/runtime';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
-  createAgentRunStore,
   createSqliteArtifactStore,
   createSqliteDeepResearchStore,
   createReadImageSnapshotter,
@@ -71,7 +72,6 @@ import {
   createSessionStore,
   createSettingsStore,
   createMcpConfigStore,
-  createShellRunStore,
   createSqliteTelemetryRepo,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -158,6 +158,7 @@ import {
   resolveProjectContextRoot,
 } from './project-context-root.js';
 import { resolveDesktopStorageRoot } from './storage-root-startup.js';
+import { openDesktopExecutionStoreWiring } from './execution-store-wiring.js';
 
 // E2E switches must never fire in a packaged build, and must never run against
 // the real user data: a stray MAKA_E2E on a build/dev machine would otherwise
@@ -267,12 +268,12 @@ const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot);
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
-const runStore = createAgentRunStore(workspaceRoot);
+const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
+const { runStore, shellRunStore } = executionStoreWiring;
 const runtimePersistence = await openRuntimeEventPersistence({
   workspaceRoot,
 });
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
-const shellRunStore = createShellRunStore(workspaceRoot);
 const connectionStore = createConnectionStore(workspaceRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
@@ -680,6 +681,7 @@ const {
   automationWiring,
   goalWiring,
   settingsStore,
+  updateAgentSettings,
   shellRuns,
   snapshotReadImage,
   readArchivedToolResultResource,
@@ -1223,6 +1225,14 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     safeSendToRenderer,
   });
 
+async function updateAgentSettings(patch: UpdateAppSettingsInput): Promise<AppSettings> {
+  const normalizedPatch = await normalizeSettingsPatch(patch);
+  const next = await settingsStore.update(normalizedPatch);
+  await applySettingsRuntimeEffects(next, patch);
+  safeSendToRenderer('settings:externalChanged', { ts: Date.now() });
+  return next;
+}
+
 const streamEvents = createSessionStreamer({
   sessionActivities,
   goalWiring,
@@ -1414,6 +1424,7 @@ wireAppLifecycle({
   shellRuns,
   mcpManager,
   runtimePersistence,
+  executionStoreWiring,
   closeWorkflowStores,
   mainWindowController,
   runtime,

@@ -74,7 +74,7 @@ test('slash suggestions in a Deep Research session drop non-research Skills', as
   await page.getByRole('button', { name: '更多操作' }).click();
   await page.getByRole('menuitem', { name: '打开命令面板' }).click();
   await page.getByRole('dialog', { name: '命令面板' }).getByRole('option', { name: /新建深度研究/ }).click();
-  await expect(page.getByLabel('深度研究，只读探索')).toBeVisible();
+  await expect(page.getByLabel('深度研究，只读探索').filter({ visible: true })).toBeVisible();
 
   await composer.fill('/');
   await expect(listbox).toContainText('Deep Research Only');

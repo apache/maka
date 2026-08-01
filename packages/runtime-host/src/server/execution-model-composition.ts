@@ -11,6 +11,7 @@ import {
 import {
   AiSdkBackend,
   buildAskUserQuestionTool,
+  buildBuiltinTools,
   buildDefaultContextBudgetPolicy,
   buildHostCapabilitiesFromBinding,
   buildLlmHistorySummarizer,
@@ -33,8 +34,10 @@ import {
   resolveSelectedModelContextWindow,
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
+  type BuildBuiltinToolsOptions,
   type MakaTool,
   type ProxiedFetchProxy,
+  type ProxiedFetchTransport,
   type RuntimeCommitSink,
   type ScannedSkill,
   type SkillCatalogBudgetOptions,
@@ -58,6 +61,11 @@ import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
 } from './client-capability-coordinator.js';
+import {
+  createHostOAuthModelFetch,
+  type HostOAuthExecutionAuthority,
+  type HostOAuthExecutionBinding,
+} from './oauth-execution-authority.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
   'A child agent inherits the current session permission, privacy, workspace, and skill constraints.',
@@ -92,6 +100,7 @@ export interface HostExecutionModelCompositionInput {
   readonly shell?: string;
   readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
+  readonly builtinTools?: BuildBuiltinToolsOptions;
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -101,7 +110,7 @@ export function createHostExecutionModelComposition(
   const inventoryFor = createTurnSkillInventoryResolver(input.skills);
   const defaultTools = input.boundTools
     ? input.boundTools
-    : buildDefaultHostTools(input.taskLedger, inventoryFor);
+    : buildDefaultHostTools(input.taskLedger, inventoryFor, input.builtinTools);
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
     tools: defaultTools,
@@ -181,6 +190,8 @@ export function createHostExecutionModelComposition(
 export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
   readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly oauthCredentials: HostOAuthExecutionAuthority;
+  readonly claudeDeviceId: string;
   readonly skills: HostSkillCatalogCoordinator;
   readonly memory: HostMemoryCoordinator;
   readonly taskLedger: TaskLedgerStore;
@@ -189,12 +200,21 @@ export interface HostAiSdkBackendInput {
   readonly requestDrain: () => void;
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly runtimeCommitSink?: RuntimeCommitSink;
+  readonly builtinTools?: BuildBuiltinToolsOptions;
+  readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
 /** Builds one real provider backend from canonical Host state. */
 export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Promise<AiSdkBackend> {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const target = await readDuringBackendCreation(
-    () => resolveExecutionTarget(input.context.header, input.runtimePolicy),
+    () =>
+      resolveExecutionTarget(
+        input.context.header,
+        input.runtimePolicy,
+        input.oauthCredentials,
+        createFetchTransport,
+      ),
     input.context.abortSignal,
   );
   const pricingSnapshot = await readDuringBackendCreation(
@@ -202,9 +222,31 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     input.context.abortSignal,
   );
   const pricing = buildPricingLookup(pricingSnapshot.overrides);
-  const transport = createProxiedFetchTransport(
-    toProxySettings(target.networkProxy, target.proxySecret),
-  );
+  const transport = createFetchTransport(toProxySettings(target.networkProxy, target.proxySecret));
+  let apiKey = target.apiKey;
+  let modelFetch: typeof fetch = transport.fetch;
+  const oauthBinding = target.oauthBinding;
+  if (oauthBinding) {
+    try {
+      const initialOAuthTokens = await readDuringBackendCreation(
+        () => oauthBinding.resolve(),
+        input.context.abortSignal,
+      );
+      apiKey = initialOAuthTokens.access_token;
+      modelFetch = createHostOAuthModelFetch({
+        binding: oauthBinding,
+        initialTokens: initialOAuthTokens,
+        connection: target.connection,
+        sessionId: input.context.sessionId,
+        modelId: target.model,
+        claudeDeviceId: input.claudeDeviceId,
+        fetchFn: transport.fetch,
+      });
+    } catch (error) {
+      await transport.close();
+      throw error;
+    }
+  }
   const providerOptions = buildProviderOptions(
     target.connection,
     target.model,
@@ -223,6 +265,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.context.systemPrompt ? { childInstruction: input.context.systemPrompt } : {}),
       ...(input.context.tools ? { boundTools: input.context.tools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
+      ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -237,7 +280,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   }
   const modelFactory = (
     modelInput: Parameters<typeof getAIModel>[0],
-  ): ReturnType<typeof getAIModel> => getAIModel({ ...modelInput, fetch: transport.fetch });
+  ): ReturnType<typeof getAIModel> => getAIModel({ ...modelInput, fetch: modelFetch });
   let telemetryDrainRequested = false;
   const persistTelemetry = async (operation: () => Promise<void>): Promise<void> => {
     try {
@@ -310,7 +353,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             }
           : {}),
         connection: target.connection,
-        apiKey: target.apiKey,
+        apiKey,
         modelId: target.model,
         modelFactory,
         tools: [...modelComposition.tools],
@@ -334,7 +377,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           resolveModel: () =>
             modelFactory({
               connection: target.connection,
-              apiKey: target.apiKey,
+              apiKey,
               modelId: target.model,
             }),
           providerOptions,
@@ -478,6 +521,7 @@ interface ResolvedExecutionTarget {
   readonly connection: RuntimeExecutionConnection;
   readonly model: string;
   readonly apiKey: string;
+  readonly oauthBinding?: HostOAuthExecutionBinding;
   readonly networkProxy: RuntimePolicy['networkProxy'];
   readonly proxySecret?: string;
 }
@@ -485,6 +529,8 @@ interface ResolvedExecutionTarget {
 async function resolveExecutionTarget(
   header: BackendFactoryContext['header'],
   runtimePolicy: RuntimePolicyStoresWriter,
+  oauthCredentials: HostOAuthExecutionAuthority,
+  createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
     header.llmConnectionSlug,
@@ -496,10 +542,6 @@ async function resolveExecutionTarget(
   if (!provider || provider.runtimeAdapter.kind === 'unavailable') {
     throw new Error('Runtime Host model provider is not executable');
   }
-  if (provider.authKind === 'oauth_token') {
-    throw new Error('Runtime Host OAuth execution authority is not available');
-  }
-
   const model = header.model.trim();
   const modelInfo = resolved.connection.models.find((candidate) => candidate.id === model);
   if (!model || !resolved.connection.enabledModelIds.includes(model) || !modelInfo) {
@@ -509,14 +551,39 @@ async function resolveExecutionTarget(
     throw new Error('Runtime Host Session model is not chat-capable');
   }
 
+  const connection: RuntimeExecutionConnection = {
+    slug: resolved.connection.slug,
+    providerType: resolved.connection.providerType,
+    ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
+    defaultModel: model,
+    models: [...resolved.connection.models],
+  };
+  if (provider.authKind === 'oauth_token') {
+    const material = resolved.secretMaterial.connection;
+    if (!material) throw new Error('Runtime Host OAuth credential is not configured');
+    const refreshProxy = toProxySettings(
+      resolved.networkProxy,
+      resolved.secretMaterial.networkProxy?.secret,
+    );
+    return {
+      connection,
+      model,
+      apiKey: '',
+      oauthBinding: oauthCredentials.bind({
+        providerType: resolved.connection.providerType,
+        connectionSlug: resolved.connection.slug,
+        material,
+        createRefreshTransport: () => createFetchTransport(refreshProxy),
+      }),
+      networkProxy: resolved.networkProxy,
+      ...(resolved.secretMaterial.networkProxy
+        ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
+        : {}),
+    };
+  }
+
   return {
-    connection: {
-      slug: resolved.connection.slug,
-      providerType: resolved.connection.providerType,
-      ...(resolved.connection.baseUrl ? { baseUrl: resolved.connection.baseUrl } : {}),
-      defaultModel: model,
-      models: [...resolved.connection.models],
-    },
+    connection,
     model,
     apiKey: resolved.secretMaterial.connection?.secret ?? '',
     networkProxy: resolved.networkProxy,
@@ -529,13 +596,22 @@ async function resolveExecutionTarget(
 function buildDefaultHostTools(
   taskLedger: TaskLedgerStore,
   inventoryFor: SkillInventoryResolver,
+  builtinOptions?: BuildBuiltinToolsOptions,
 ): MakaTool[] {
+  const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
-  const toolNames = [question.name, 'Skill', 'SkillSearch', ...taskTools.map((tool) => tool.name)];
+  const toolNames = [
+    ...builtins.map((tool) => tool.name),
+    question.name,
+    'Skill',
+    'SkillSearch',
+    ...taskTools.map((tool) => tool.name),
+  ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
   return [
+    ...builtins,
     question,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, {
       shadowTracker,

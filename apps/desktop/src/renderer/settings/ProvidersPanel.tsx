@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
+import { Banner, Button, Item, Skeleton, Tab, TabList } from '@astryxdesign/core';
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -11,16 +11,15 @@ import {
   type UiLocale,
 } from '@maka/core';
 import {
-  Chip,
+  Badge,
   TextInput,
-  PrimitiveTabs, PrimitiveTabsList, PrimitiveTabsTrigger, PrimitiveTabsPanel,
-  Item, ItemMedia, ItemContent, ItemTitle, ItemDescription, ItemActions,
   SectionHeader,
   useMountedRef,
   useUiLocale,
   useToast,
 } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
+import { statusBadgeVariant } from './settings-status-badge';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderCatalogCard } from './provider-catalog';
 import { ProviderConnectionDialog } from './provider-connection-dialog';
@@ -180,11 +179,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       ?? dialogState.connection
     : null;
 
-  function chipTitle(connection: LlmConnection): string {
-    const status = connectionChipStatus(connection, locale);
-    return status ? `${connection.name} · ${status.label}` : connection.name;
-  }
-
   function chipAriaLabel(connection: LlmConnection): string {
     const provider = providerDisplay(connection.providerType, locale).name;
     const status = connectionChipStatus(connection, locale);
@@ -213,11 +207,11 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     return (
       <div className="providersPanel providersLoading" data-maka-contract="providers-panel" aria-busy="true" aria-label={copy.loadingAria}>
         <div className="providersLoadingStrip">
-          <div className="maka-skeleton maka-skeleton-line" data-size="lg" style={{ width: '34%' }} />
-          <div className="maka-skeleton maka-skeleton-line" data-size="sm" style={{ width: '52%' }} />
+          <Skeleton width="34%" height={16} radius="rounded" index={0} />
+          <Skeleton width="52%" height={9} radius="rounded" index={1} />
         </div>
         <div className="providersLoadingGrid">
-          {[0, 1, 2, 3, 4, 5].map((index) => <div key={index} className="maka-skeleton maka-skeleton-card" />)}
+          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={92} radius={3} index={index + 2} />)}
         </div>
       </div>
     );
@@ -236,10 +230,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             count={connections.length > 0 ? copy.count(connections.length) : undefined}
           />
           {loadError ? (
-            <BaseButton className="enabledEmptyChip enabledEmptyAction" type="button" onClick={() => void reload()}>
-              <strong>{copy.loadFailed}</strong>
-              <small>{loadError} · {copy.retry}</small>
-            </BaseButton>
+            <Banner
+              status="error"
+              title={copy.loadFailed}
+              description={loadError}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
           ) : connections.length === 0 ? (
             <div className="enabledEmptyChip" role="note">
               <strong>{copy.empty}</strong>
@@ -253,26 +249,25 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   <li key={connection.slug}>
                     <Item
                       className="connectionRow"
-                      selected={connection.slug === defaultSlug}
+                      isSelected={connection.slug === defaultSlug}
                       data-connection-slug={connection.slug}
                       data-disabled={connection.enabled ? undefined : 'true'}
-                      aria-label={chipAriaLabel(connection)}
-                      title={chipTitle(connection)}
-                      render={<button type="button" onClick={() => openDialog({ kind: 'manage', connection })} />}
-                    >
-                      <ItemMedia><ProviderLogo type={connection.providerType} compact /></ItemMedia>
-                      <ItemContent>
-                        <ItemTitle>
+                      startContent={<ProviderLogo type={connection.providerType} compact />}
+                      label={(
+                        <span aria-label={chipAriaLabel(connection)}>
                           {connection.name}
-                          {connection.slug === defaultSlug && <Chip size="sm" variant="accent">{copy.default}</Chip>}
-                        </ItemTitle>
-                        <ItemDescription>{providerDisplay(connection.providerType, locale).name}</ItemDescription>
-                      </ItemContent>
-                      <ItemActions>
-                        {status && <Chip dot size="sm" variant={status.tone}>{status.label}</Chip>}
+                          {connection.slug === defaultSlug && <Badge variant="neutral" label={copy.default} />}
+                        </span>
+                      )}
+                      description={providerDisplay(connection.providerType, locale).name}
+                      endContent={(
+                        <span className="connectionRowActions">
+                        {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
                         <ChevronRight size={16} aria-hidden="true" />
-                      </ItemActions>
-                    </Item>
+                        </span>
+                      )}
+                      onClick={() => openDialog({ kind: 'manage', connection })}
+                    />
                   </li>
                 );
               })}
@@ -287,18 +282,17 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             title={copy.add}
             subtitle={copy.addHelp}
           />
-          <PrimitiveTabs
-            className="catalogTabsRoot"
-            value={catalogCategory}
-            onValueChange={(value) => setCatalogCategory(value as CatalogCategory)}
-          >
-            <PrimitiveTabsList variant="pill" className="catalogTabs catalogPillTabs" aria-label={copy.categoriesAria}>
+          <div className="catalogTabsRoot">
+            <TabList
+              value={catalogCategory}
+              onChange={(value) => setCatalogCategory(value as CatalogCategory)}
+              className="catalogTabs catalogPillTabs"
+              aria-label={copy.categoriesAria}
+            >
               {CATALOG_TABS.map((tab) => (
-                <PrimitiveTabsTrigger key={tab} value={tab} data-catalog-tab={tab}>
-                  <strong>{copy.tabs[tab]}</strong>
-                </PrimitiveTabsTrigger>
+                <Tab key={tab} value={tab} label={copy.tabs[tab]} data-catalog-tab={tab} />
               ))}
-            </PrimitiveTabsList>
+            </TabList>
             <div className="providerCatalogSearch">
               <TextInput
                 ref={providerCatalogSearchRef}
@@ -311,7 +305,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                 width="100%"
               />
             </div>
-            <PrimitiveTabsPanel value={catalogCategory}>
+            <div>
               {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (
                 <ModelOAuthSection
                   query={catalogQuery}
@@ -335,8 +329,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   <div className="providerCatalogEmpty" role="status">{copy.noMatch}</div>
                 );
               })()}
-            </PrimitiveTabsPanel>
-          </PrimitiveTabs>
+            </div>
+          </div>
         </section>
       </section>
 

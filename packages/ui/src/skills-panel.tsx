@@ -14,16 +14,21 @@ import {
 } from './icons.js';
 import type { CapabilityAuditReport } from '@maka/core';
 import { deriveCapabilityAuditReport } from '@maka/core';
-import { Button as UiButton, IconButton, Switch } from '@astryxdesign/core';
-import { TabsRoot, TabsList, TabsTrigger, TabsPanel } from './ui.js';
-import { Chip, type ChipProps } from './primitives/chip.js';
+import {
+  Badge,
+  Button as UiButton,
+  EmptyState,
+  IconButton,
+  Switch,
+  Tab,
+  TabList,
+} from '@astryxdesign/core';
 import { PageHeader } from './primitives/page-header.js';
 import { TextInput } from '@astryxdesign/core';
 import {
   Selector,
   type SelectorOptionData,
 } from '@astryxdesign/core/Selector';
-import { EmptyState } from './empty-state.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { CapabilityAuditStrip } from './capability-audit-strip.js';
 import type { ModuleHubHeader } from './module-hub-selector.js';
@@ -167,12 +172,9 @@ function SkillLibraryPanel(props: {
     return filtered;
   }, [allManagedSources, marketCategory, marketSort, normalizedSkillQuery]);
   const skillListEmptyTitle = normalizedSkillQuery ? copy.installed.emptySearchTitle : copy.installed.emptyTitle;
-  const skillListEmptyBody: ReactNode = normalizedSkillQuery ? copy.installed.emptySearchBody : (
-    <>
-      {copy.installed.emptyBodyBeforeCode} <code className="maka-empty-state-code">SKILL.md</code>{' '}
-      {copy.installed.emptyBodyAfterCode}
-    </>
-  );
+  const skillListEmptyBody = normalizedSkillQuery
+    ? copy.installed.emptySearchBody
+    : `${copy.installed.emptyBodyBeforeCode} SKILL.md ${copy.installed.emptyBodyAfterCode}`;
   async function reviewManagedSkillUpdate(skill: SkillEntry) {
     if (!props.onPreviewManagedSkillUpdate || reviewingSkillId !== null) return;
     setReviewingSkillId(skill.id);
@@ -233,22 +235,25 @@ function SkillLibraryPanel(props: {
 
   const tabs = (
     <div className="maka-skill-tabs-bar">
-      <TabsList variant="underline" className="maka-skill-tabs" aria-label={copy.tabs.ariaLabel}>
+      <TabList
+        value={activeSkillTab}
+        onChange={(value) => setActiveSkillTab(value as typeof activeSkillTab)}
+        hasDivider
+        aria-label={copy.tabs.ariaLabel}
+      >
         {([
           ['market', copy.tabs.market, allManagedSources.length],
           ['builtin', copy.tabs.builtin, bundledCatalog.length],
           ['installed', copy.tabs.installed, installedSkills.length],
         ] as const).map(([tab, label, count]) => (
-          <TabsTrigger
+          <Tab
             key={tab}
-            className="maka-skill-tab"
             value={tab}
-          >
-            {label}
-            <span>{count}</span>
-          </TabsTrigger>
+            label={label}
+            endContent={<span>{count}</span>}
+          />
         ))}
-      </TabsList>
+      </TabList>
       {/* Marketplace launch: real client-side category + sort controls on
           the tab row's right side (market tab only). The old static 全部 /
           排序：热门 pills were dead chrome; these drive marketSources. */}
@@ -301,19 +306,19 @@ function SkillLibraryPanel(props: {
       />
       {allManagedSources.length === 0 ? (
         <EmptyState
-          Icon={BookOpen}
+          icon={<BookOpen />}
           title={normalizedSkillQuery ? copy.market.emptySearchTitle : copy.market.emptyTitle}
-          body={normalizedSkillQuery
+          description={normalizedSkillQuery
             ? copy.market.emptySearchBody
             : copy.market.emptyBody}
-          extraClassName="maka-skill-installed-empty"
+          className="maka-skill-installed-empty"
         />
       ) : marketSources.length === 0 ? (
         <EmptyState
-          Icon={Search}
+          icon={<Search />}
           title={copy.market.emptySearchTitle}
-          body={copy.market.emptyFilterBody}
-          extraClassName="maka-skill-installed-empty"
+          description={copy.market.emptyFilterBody}
+          className="maka-skill-installed-empty"
         />
       ) : (
         <div className="maka-skill-market-grid">
@@ -346,7 +351,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Chip size="sm" variant="neutral" className="maka-skill-market-category">{copy.categories[source.category]}</Chip>
+                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[source.category]} />
                   <span>{installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -365,17 +370,17 @@ function SkillLibraryPanel(props: {
       />
       {bundledCatalog.length === 0 ? (
         <EmptyState
-          Icon={Blocks}
+          icon={<Blocks />}
           title={copy.builtin.emptyTitle}
-          body={copy.builtin.emptyBody}
-          extraClassName="maka-skill-installed-empty"
+          description={copy.builtin.emptyBody}
+          className="maka-skill-installed-empty"
         />
       ) : bundledCatalogFiltered.length === 0 ? (
         <EmptyState
-          Icon={Search}
+          icon={<Search />}
           title={copy.builtin.noMatchTitle}
-          body={copy.builtin.noMatchBody}
-          extraClassName="maka-skill-installed-empty"
+          description={copy.builtin.noMatchBody}
+          className="maka-skill-installed-empty"
         />
       ) : (
         <div className="maka-skill-market-grid">
@@ -406,7 +411,7 @@ function SkillLibraryPanel(props: {
                 </div>
                 <p>{description}</p>
                 <div className="maka-skill-market-card-foot">
-                  <Chip size="sm" variant="neutral" className="maka-skill-market-category">{copy.categories[entry.category]}</Chip>
+                  <Badge variant="neutral" className="maka-skill-market-category" label={copy.categories[entry.category]} />
                   <span>{entry.installed ? copy.install.installed : copy.install.notInstalled}</span>
                 </div>
               </article>
@@ -417,24 +422,20 @@ function SkillLibraryPanel(props: {
     </section>
   );
 
-  const skillList = (list: SkillEntry[], emptyTitle: string, emptyBody: ReactNode, label: string) => (
+  const skillList = (list: SkillEntry[], emptyTitle: string, emptyBody: string, label: string) => (
     <section className="maka-skill-installed" aria-label={label}>
       {list.length === 0 ? (
         <EmptyState
-          Icon={Blocks}
+          icon={<Blocks />}
           title={emptyTitle}
-          body={emptyBody}
-          cta={props.onCreateSkillTemplate ? {
-            label: props.createPending ? copy.installed.createPending : copy.installed.createExample,
-            onClick: props.onCreateSkillTemplate,
-            disabled: props.actionBusy,
-          } : undefined}
-          secondaryCta={props.onRefreshSkills ? {
-            label: props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh,
-            onClick: props.onRefreshSkills,
-            disabled: props.actionBusy,
-          } : undefined}
-          extraClassName="maka-skill-installed-empty"
+          description={emptyBody}
+          actions={(
+            <>
+              {props.onCreateSkillTemplate ? <UiButton variant="primary" label={props.createPending ? copy.installed.createPending : copy.installed.createExample} onClick={props.onCreateSkillTemplate} isDisabled={props.actionBusy} /> : null}
+              {props.onRefreshSkills ? <UiButton variant="ghost" label={props.refreshPending ? copy.installed.refreshPending : copy.installed.refresh} onClick={props.onRefreshSkills} isDisabled={props.actionBusy} /> : null}
+            </>
+          )}
+          className="maka-skill-installed-empty"
         />
       ) : (
         <>
@@ -468,6 +469,16 @@ function SkillLibraryPanel(props: {
                   : formatSkillLibraryDescription(skill, copy);
               const statusLabel = formatSkillStatusLabel(skill, copy);
               const runtimeLabel = formatSkillRuntimeLabel(skill, copy);
+              const contextLabel = `${isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
+                ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
+                : copy.context.decision[contextStatus]}${!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}`;
+              const contextNeedsAttention = isDiscoveryDiagnostic || (contextStatus !== 'advertised' && contextStatus !== 'disabled');
+              const sourceStatusNeedsAttention = !isDiscoveryDiagnostic && skillSourceStatusNeedsAttention(skill);
+              const supportingMeta = [
+                skill.scope ? copy.context.scope[skill.scope] : null,
+                contextNeedsAttention ? null : contextLabel,
+                !isDiscoveryDiagnostic && !sourceStatusNeedsAttention ? statusLabel : null,
+              ].filter((value): value is string => Boolean(value));
               const opening = props.openingSkillId === skillRef;
               const updating = props.updatingSkillId === skill.id;
               const toggling = props.togglingSkillId === skillRef;
@@ -515,36 +526,28 @@ function SkillLibraryPanel(props: {
                           appears for states the switch can't express
                           (state_error). 已启用/已停用 stay in the hover text. */}
                       {skill.runtimeStatus === 'state_error' && (
-                        <Chip size="sm" variant="warning" className="maka-skill-library-runtime-label" data-status={skill.runtimeStatus}>{runtimeLabel}</Chip>
+                        <Badge variant="warning" className="maka-skill-library-runtime-label" data-status={skill.runtimeStatus} label={runtimeLabel} />
                       )}
-                      {skill.scope && (
-                        <Chip size="sm" variant="neutral" className="maka-skill-library-scope-label" data-scope={skill.scope}>
-                          {copy.context.scope[skill.scope]}
-                        </Chip>
+                      {supportingMeta.length > 0 && (
+                        <span className="maka-skill-library-supporting">{supportingMeta.join(' · ')}</span>
                       )}
                       {skill.needsReview && (
-                        <Chip
-                          size="sm"
+                        <Badge
                           variant="warning"
                           className="maka-skill-library-review-label"
-                          title={copy.context.needsReviewTitle}
-                        >
-                          {copy.context.needsReview}
-                        </Chip>
+                          label={copy.context.needsReview}
+                        />
                       )}
-                      <Chip
-                        size="sm"
-                        variant={contextStatus === 'advertised' ? 'neutral' : 'warning'}
-                        className="maka-skill-library-context-label"
-                        data-status={contextStatus}
-                      >
-                        {isDiscoveryDiagnostic && skill.discoveryDiagnosticReason
-                          ? copy.context.discoveryDiagnostic[skill.discoveryDiagnosticReason]
-                          : copy.context.decision[contextStatus]}
-                        {!isDiscoveryDiagnostic && skill.contextRank ? ` #${skill.contextRank}` : ''}
-                      </Chip>
-                      {!isDiscoveryDiagnostic && (
-                        <Chip size="sm" variant={skillStatusChipTone(skill)} className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'}>{statusLabel}</Chip>
+                      {contextNeedsAttention && (
+                        <Badge
+                          variant="warning"
+                          className="maka-skill-library-context-exception"
+                          data-status={contextStatus}
+                          label={contextLabel}
+                        />
+                      )}
+                      {sourceStatusNeedsAttention && (
+                        <Badge variant="warning" className="maka-skill-library-status-label" data-status={skill.managedUpdateStatus ?? skill.validationStatus ?? skill.sourceType ?? 'workspace'} label={statusLabel} />
                       )}
                       {opening && <span>{copy.row.opening}</span>}
                       {updating && <span>{copy.row.updating}</span>}
@@ -686,15 +689,15 @@ function SkillLibraryPanel(props: {
   return (
     <div className="maka-skill-library" aria-busy={props.actionBusy ? 'true' : undefined}>
       {banner}
-      <TabsRoot value={activeSkillTab} onValueChange={(v) => setActiveSkillTab(v as 'market' | 'builtin' | 'installed')}>
-        {tabs}
-        <TabsPanel value="market">{market}</TabsPanel>
-        <TabsPanel value="builtin">{builtinCatalog}</TabsPanel>
-        <TabsPanel value="installed">
+      {tabs}
+      {activeSkillTab === 'market' ? market : null}
+      {activeSkillTab === 'builtin' ? builtinCatalog : null}
+      {activeSkillTab === 'installed' ? (
+        <div>
           {skillList(installedSkills, skillListEmptyTitle, skillListEmptyBody, copy.installed.sectionLabel)}
           {updateReview}
-        </TabsPanel>
-      </TabsRoot>
+        </div>
+      ) : null}
       {props.skills && props.skills.length > 0 ? (
         <span className="maka-skill-tool-summary-hidden" aria-hidden="true">
           {copy.installed.summary(skillCount, new Set((props.skills ?? []).flatMap((skill) => skill.declaredTools ?? [])).size)}
@@ -746,19 +749,13 @@ function formatSkillRuntimeLabel(skill: SkillEntry, copy: SkillsCopy): string {
   return skill.enabled ? copy.status.enabled : copy.status.disabled;
 }
 
-// Derive the source-status Chip tone from the same data-status the retired
-// .maka-skill-library-status-label CSS keyed off. Exception-only: 内置 / 本地
-// (expected states) stay neutral; only genuine attention states carry a tone.
-//   metadata_error / local_modified → warning (needs the user's attention)
-//   受管理 (managed base) → info (managed but nothing wrong)
-//   bundled / workspace default → neutral
-function skillStatusChipTone(skill: SkillEntry): ChipProps['variant'] {
-  if (skill.validationStatus === 'metadata_error') return 'warning';
-  if (skill.sourceType === 'managed') {
-    if (skill.managedUpdateStatus === 'local_modified' || skill.managedUpdateStatus === 'metadata_error') return 'warning';
-    return 'info';
-  }
-  return 'neutral';
+function skillSourceStatusNeedsAttention(skill: SkillEntry): boolean {
+  if (skill.validationStatus && skill.validationStatus !== 'ok') return true;
+  if (skill.userModified) return true;
+  if (skill.sourceType !== 'managed') return false;
+  return skill.managedUpdateStatus !== undefined
+    && skill.managedUpdateStatus !== 'not_managed'
+    && skill.managedUpdateStatus !== 'up_to_date';
 }
 
 function previewText(content: string): string {
