@@ -121,7 +121,9 @@ export function SessionHistoryList(props: {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
     const active = document.activeElement as HTMLElement | null;
     if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
-    const row = active.closest<HTMLElement>('[role="treeitem"], .astryx-list-item, [data-session-id]');
+    const row = active.closest<HTMLElement>(
+      '[role="treeitem"], [data-maka-contract="list-row"], [data-session-id]',
+    );
     const sessionId = row?.dataset.sessionId ?? row?.querySelector<HTMLElement>('[data-session-id]')?.dataset.sessionId;
     if (sessionId && props.rowActions) {
       event.preventDefault();

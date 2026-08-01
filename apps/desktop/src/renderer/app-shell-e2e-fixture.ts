@@ -178,16 +178,21 @@ export function createAppShellE2eFixtureActions(options: {
     }
     // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
     // kenji `b3d156e9`): when the fixture sets `focusActiveRow`,
-    // focus the Astryx-owned active ListItem action after the next paint.
+    // focus the active ListItem action through Maka's stable row hook after
+    // the next paint. The actionable descendant is located semantically, not
+    // through Astryx implementation classes or child structure.
     // Two RAFs let React
     // commit the active selection before we query the DOM.
     if (state.focusActiveRow) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const activeRowButton = document.querySelector<HTMLButtonElement>(
-            '.astryx-list-item[aria-current="true"] > button',
+          const activeRow = document.querySelector<HTMLElement>(
+            '[data-maka-contract="list-row"][aria-current="true"]',
           );
-          activeRowButton?.focus({ preventScroll: true });
+          const activeRowAction = activeRow?.querySelector<HTMLElement>(
+            'button, a[href], [tabindex]:not([tabindex="-1"])',
+          );
+          activeRowAction?.focus({ preventScroll: true });
         });
       });
     }
