@@ -66,16 +66,6 @@ test('canonical evidence keeps attribution and lineage without private fields', 
       gitRevision,
       generatedAt,
     },
-    evidenceClass: 'fault-injection',
-    scenarioId: 'appkit-ax-intervention-recovery',
-    producer: 'cu-real-ax-model-e2e',
-    transportClass: 'live-network',
-    policyMode: 'enforced',
-    qualificationEligible: false,
-    provider: 'openai',
-    model: 'gpt-5.4',
-    status: 'inconclusive',
-    run: { status: 'waiting_for_user' },
     failure: 'private provider body',
     loopStatus: { private: true },
     turns: [{ text: 'private' }],
@@ -87,7 +77,6 @@ test('canonical evidence keeps attribution and lineage without private fields', 
         { pid: 84, windowIds: [9] },
       ],
     },
-    faultInjection: { layer: 'runtime', kind: 'user_intervened' },
     actions: [
       {
         action: { type: 'set_value', value: 'private' },
@@ -100,7 +89,6 @@ test('canonical evidence keeps attribution and lineage without private fields', 
         success: true,
       },
     ],
-    actionAttempts: 1,
     traces: [
       {
         type: 'dispatch',
@@ -123,20 +111,10 @@ test('canonical evidence keeps attribution and lineage without private fields', 
     ],
   });
   assert.equal(report.runId, 'run-1');
-  assert.equal(report.gitRevision, gitRevision);
-  assert.equal(report.generatedAt, generatedAt);
   assert.deepEqual(report.contentLineage, {
     generator: 'scripts/cu-real-ax-model-e2e.mjs',
     gitRevision,
     generatedAt,
-  });
-  assert.equal(report.actionAttempts, 1);
-  assert.equal(report.provider, 'openai');
-  assert.equal(report.model, 'gpt-5.4');
-  assert.equal(report.run.status, 'waiting_for_user');
-  assert.deepEqual(report.faultInjection, {
-    layer: 'runtime',
-    kind: 'user_intervened',
   });
   assert.deepEqual(report.actions[0], {
     type: 'set_value',

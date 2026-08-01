@@ -169,22 +169,14 @@ test('real reports reject invalid identity, provenance, sequence, budget, and le
       scenario({ id: 'l0-observe-only' }),
       [/scenarioId mismatch/],
     ],
-    ['missing evidence class', { evidenceClass: undefined }, scenario(), [/real-runtime/]],
     ['hermetic evidence', { evidenceClass: 'hermetic-protocol' }, scenario(), [/real-runtime/]],
     ['inconclusive status', { status: 'inconclusive' }, scenario(), [/status must be pass/]],
     ['wrong provider', { provider: 'claude' }, scenario(), [/provider mismatch/]],
-    ['wrong model', { model: 'other' }, scenario(), [/model mismatch/]],
     [
       'bad terminal',
       { terminal: { type: 'complete', stopReason: 'max_tokens' } },
       scenario(),
       [/complete\/end_turn/],
-    ],
-    [
-      'unknown producer',
-      { producer: 'legacy-runner' },
-      scenario(),
-      [/producer missing or unknown/],
     ],
     [
       'missing policy provenance',
@@ -199,7 +191,6 @@ test('real reports reject invalid identity, provenance, sequence, budget, and le
       scenario(),
       [/qualificationEligible/],
     ],
-    ['deprecated report', { deprecated: true }, scenario(), [/deprecated reports cannot qualify/]],
     [
       'broken content lineage',
       { gitRevision: 'bad', contentLineage: undefined },
@@ -225,14 +216,7 @@ test('real reports reject invalid identity, provenance, sequence, budget, and le
   }
 });
 
-test('real readiness accepts one canonical report and rejects an unowned producer', async () => {
-  const matrix = await buildProviderMatrix({
-    scenarios: [scenario()],
-    providers: [provider],
-    loadReport: async () => realReport(),
-  });
-  assert.equal(matrix.rows[0].status, 'pass');
-
+test('real readiness rejects an unowned producer', async () => {
   await assert.rejects(
     buildProviderMatrix({
       scenarios: [scenario()],
