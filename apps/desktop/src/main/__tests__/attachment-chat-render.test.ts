@@ -3,11 +3,14 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { AttachmentRef, SessionSummary, StoredMessage } from '@maka/core';
-import { ChatView, LocaleProvider } from '@maka/ui';
+import { ChatSurfaceLayout, ChatView, LocaleProvider } from '@maka/ui';
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
-    createElement(LocaleProvider, { locale: 'zh', children: child }),
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
+    }),
   );
 }
 

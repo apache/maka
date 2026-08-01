@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { SessionEvent } from '@maka/core';
 import {
   armLiveTurn,
+  ChatSurfaceLayout,
   ChatView,
   LocaleProvider,
   type LiveTurnProjection,
@@ -14,7 +15,10 @@ import { createAppShellSessionEventHandlers } from '../../renderer/app-shell-ses
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
-    createElement(LocaleProvider, { locale: 'zh', children: child }),
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(ChatSurfaceLayout, { composer: null, children: child }),
+    }),
   );
 }
 
