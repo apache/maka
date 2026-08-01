@@ -29,11 +29,12 @@ test('settings and module view navigation uses Astryx TabList directly', () => {
   for (const rel of [
     'apps/desktop/src/renderer/styles/module-pages/skills.css',
     'apps/desktop/src/renderer/styles/module-pages/mcp.css',
+    'apps/desktop/src/renderer/styles/module-pages/plan-reminders.css',
     'apps/desktop/src/renderer/styles/settings/bot.css',
   ]) {
     assert.doesNotMatch(
       read(rel),
-      /\.(?:maka-skill-tab|maka-mcp-tab|settingsUsageTab)(?:s)?(?:\s|,|\{)/,
+      /\.(?:maka-skill-tabs?|maka-mcp-tabs?|maka-plan-tab|maka-plan-tabs-list|settingsUsageTabs?)(?:\s|,|\{)/,
       `${rel} must leave Astryx Tab geometry intact`,
     );
   }

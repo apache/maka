@@ -340,11 +340,10 @@ export function PlanReminderPanel(props: {
                 if (value === 'tasks' || value === 'runs') setPlanView(value);
               }}
               hasDivider
-              className="maka-plan-tabs-list"
               aria-label={copy.page.viewsAriaLabel}
             >
-              <Tab className="maka-plan-tab" value="tasks" label={copy.page.tasks} />
-              <Tab className="maka-plan-tab" value="runs" label={copy.page.runs} />
+              <Tab value="tasks" label={copy.page.tasks} />
+              <Tab value="runs" label={copy.page.runs} />
             </TabList>
             {planView === 'tasks' ? (
               showListControls ? (

@@ -110,7 +110,6 @@ html[data-os="darwin"] .maka-session-panel-footer {
   .maka-module-main-header,
   .maka-plan-heading,
   .maka-skill-tab,
-  .maka-plan-tab,
   .maka-titlebar-action {
     -webkit-user-select: none;
     user-select: none;
