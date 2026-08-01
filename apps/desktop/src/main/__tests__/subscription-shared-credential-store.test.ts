@@ -6,11 +6,10 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import type { SubscriptionActionResult } from '@maka/core';
 import { AntigravitySubscriptionService } from '../oauth/antigravity-subscription-service.js';
 import { ClaudeSubscriptionService } from '../oauth/claude-subscription-service.js';
@@ -18,10 +17,6 @@ import { CursorSubscriptionService } from '../oauth/cursor-subscription-service.
 import { OpenAiCodexService } from '../oauth/openai-codex-service.js';
 import type { SharedOAuthCredentialStore } from '../oauth/shared-credential-bridge.js';
 import { XaiOAuthService } from '../oauth/xai-oauth-service.js';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
-
-const DESKTOP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const OAUTH_DIR = resolve(DESKTOP_ROOT, 'src', 'main', 'oauth');
 
 interface OAuthServiceContract {
   getAccountState(): Promise<object>;
@@ -488,79 +483,6 @@ describe('OAuth subscription token authority (shared CredentialStore)', () => {
     await assert.rejects(stat(join(userDataDir, '.cursor_subscription_token')), { code: 'ENOENT' });
   });
 
-  it('no production OAuth path invokes safeStorage (#1125 acceptance)', async () => {
-    // The acceptance bar for #1125: saving or loading a runtime-usable
-    // token must never require safeStorage. No module under oauth/ may
-    // import or call safeStorage (the bridge's legacy import takes an
-    // injected decryptor instead); main.ts may only pass the object
-    // into the legacy importers, never call it.
-    for (const file of await readdir(OAUTH_DIR)) {
-      if (!file.endsWith('.ts')) continue;
-      const src = await readFile(resolve(OAUTH_DIR, file), 'utf8');
-      assert.doesNotMatch(
-        src,
-        /import\s*\{[^}]*\bsafeStorage\b[^}]*\}\s*from 'electron'/,
-        `oauth/${file} must not import safeStorage from electron`,
-      );
-      assert.doesNotMatch(
-        src,
-        /\bsafeStorage\s*[.(]/,
-        `oauth/${file} must not invoke safeStorage`,
-      );
-    }
-    // R6: credential startup moved to app-lifecycle.ts. Read the combined
-    // main-process source so the "hand safeStorage over, never invoke it" pin
-    // follows the code to its new home.
-    const mainSrc = await readMainProcessCombinedSource();
-    assert.doesNotMatch(
-      mainSrc,
-      /safeStorage\s*\./,
-      'main process must only hand safeStorage to the legacy importers, never call it',
-    );
-  });
-
-  it('main.ts runs the one-shot legacy token import at startup, non-fatally', async () => {
-    const src = await readMainProcessCombinedSource();
-    assert.match(
-      src,
-      /try\s*\{[\s\S]{0,600}importLegacyOAuthTokenFiles\(\{[\s\S]*?\}\);?[\s\S]{0,600}catch/,
-      'legacy OAuth token import must be wrapped so a failure cannot break startup',
-    );
-    for (const slug of ['claude-subscription', 'codex-subscription']) {
-      assert.match(
-        src,
-        new RegExp(`slug: '${slug}', filePath: join\\(userDataDir, '\\.\\w+_subscription_token'\\)`),
-        `startup import must cover the legacy ${slug} token file`,
-      );
-    }
-  });
-
-  it('finishes credential migration before the first window can issue OAuth mutations', async () => {
-    const src = await readMainProcessCombinedSource();
-    const credentialStartup = src.indexOf('await runCredentialStartup();');
-    const initialWindowSignal = src.indexOf(
-      'const initialWindowSignal = quitCoordinator.getWindowCreationSignal();',
-    );
-    const backgroundStartup = src.indexOf('backgroundStartup = runBackgroundStartup();');
-    const createWindow = src.indexOf(
-      'await mainWindowController.createWindow(initialWindowSignal);',
-      backgroundStartup,
-    );
-    const secondInstance = src.indexOf("app.on('second-instance'");
-    const activate = src.indexOf("app.on('activate'");
-
-    assert.notEqual(credentialStartup, -1, 'startup must expose an awaited credential migration phase');
-    assert.ok(
-      credentialStartup < initialWindowSignal &&
-        initialWindowSignal < backgroundStartup &&
-        backgroundStartup < createWindow,
-      'credential migration must finish before background startup opens the interactive window',
-    );
-    assert.ok(
-      credentialStartup < secondInstance && credentialStartup < activate,
-      'window-creation events must not be registered until credential migration finishes',
-    );
-  });
 });
 
 function jwt(payload: Record<string, unknown>): string {

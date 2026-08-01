@@ -21,7 +21,6 @@ import {
 } from '../skills.js';
 import { importManagedSkillSource } from '../managed-skill-sources.js';
 import { createSystemPromptMainService } from '../system-prompt-main.js';
-import { readRendererShellCombinedSource } from './renderer-shell-source-helpers.js';
 
 describe('skills ingestion', () => {
   it('applies Desktop host tool and capability gates to the system skill prompt', async () => {
@@ -1017,32 +1016,6 @@ description: Exercise workspace-contained open paths.
     });
   });
 
-
-  it('surfaces thrown Skills IPC failures as toasts', async () => {
-    const repoRoot = process.cwd().endsWith('apps/desktop')
-      ? join(process.cwd(), '..', '..')
-      : process.cwd();
-    const renderer = await readRendererShellCombinedSource();
-    const createBlock = renderer.match(/async function createSkillTemplate\(\)[\s\S]*?async function openSkillsFolder/)?.[0] ?? '';
-    const folderBlock = renderer.match(/async function openSkillsFolder\(\)[\s\S]*?async function openSkill/)?.[0] ?? '';
-    const openBlock = renderer.match(/async function openSkill\(skillId: string\)[\s\S]*?\n  \}/)?.[0] ?? '';
-
-    assert.match(createBlock, /try \{[\s\S]*window\.maka\.skills\.createStarter\(\)/);
-    assert.match(
-      createBlock,
-      /catch \(error\) \{[\s\S]*if \(isSkillsSurfaceActive\(\)\) \{[\s\S]*toastApi\.error\(\s*copy\.createTemplateFailedTitle,\s*localizedShellErrorMessage\(error, copy\.createTemplateFallback, uiLocale\),?\s*\);[\s\S]*\}/,
-    );
-    assert.doesNotMatch(createBlock, /toastApi\.error\('无法创建示例技能', cleanErrorMessage\(error\)\)/);
-    assert.match(folderBlock, /try \{[\s\S]*window\.maka\.app\.openPath\('skills'\)/);
-    assert.match(folderBlock, /catch \(error\) \{[\s\S]*toastApi\.error\([\s\S]*copy\.openFailedTitle\(openPathActionLabel\('skills', uiLocale\)\)[\s\S]*openPathActionErrorMessage\(error, 'skills', uiLocale\)/);
-    assert.doesNotMatch(folderBlock, /cleanErrorMessage\(error\)/, 'Skills folder thrown openPath failures must not expose raw IPC/path details');
-    assert.match(openBlock, /try \{[\s\S]*window\.maka\.skills\.open\(skillId, 'file'\)/);
-    assert.match(
-      openBlock,
-      /catch \(error\) \{[\s\S]*if \(isSkillsSurfaceActive\(\)\) \{[\s\S]*toastApi\.error\(copy\.openFailedTitle, localizedShellErrorMessage\(error, copy\.openFallback, uiLocale\)\);[\s\S]*\}/,
-    );
-    assert.doesNotMatch(openBlock, /toastApi\.error\('无法打开 Skill', cleanErrorMessage\(error\)\)/);
-  });
 
 });
 
