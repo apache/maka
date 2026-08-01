@@ -123,11 +123,10 @@ const PROBE_EXPR = `(() => {
         const style = styleOf(node);
         if (style.overflow === 'visible' && style.overflowX === 'visible' && style.overflowY === 'visible') continue;
         const clip = rectOf(node);
-        // display:contents and other zero-box wrappers report an empty rect
-        // while clipping nothing. Intersecting with those collapses the
-        // probe to the origin and makes every point land on whatever sits in
-        // the top-left corner.
-        if (clip.width <= 0 || clip.height <= 0) continue;
+        // display:contents reports an empty box while clipping nothing. A real
+        // zero-size overflow container is different: it is how collapsed
+        // Astryx content leaves its descendants mounted but unreachable.
+        if (style.display === 'contents') continue;
         left = Math.max(left, clip.left);
         top = Math.max(top, clip.top);
         right = Math.min(right, clip.right);

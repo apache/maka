@@ -331,6 +331,7 @@ function SessionListGroups(props: {
                 <ListItem
                   key={session.id}
                   className="maka-session-list-item"
+                  data-maka-contract="list-row"
                   data-subagent={nested ? 'true' : undefined}
                   isSelected={session.id === props.activeId}
                   onClick={isEditing ? undefined : (event) => {

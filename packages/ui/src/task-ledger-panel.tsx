@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react';
-import { Collapsible, IconButton, Text } from '@astryxdesign/core';
+import { Collapsible, IconButton } from '@astryxdesign/core';
 import type { Task, TaskStatus } from '@maka/core';
 import {
   AlertCircle,
@@ -80,7 +80,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <Text as="p" type="supporting">{copy.empty}</Text>
+            <p className="m-0 text-[length:var(--font-size-ui)] leading-normal text-[color:var(--muted-foreground)]">{copy.empty}</p>
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible

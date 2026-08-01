@@ -722,6 +722,7 @@ export const Composer = forwardRef<
       >
         <AstryxChatComposer
           className="maka-composer-astryx"
+          data-maka-contract="composer-inner"
           data-streaming={props.streaming ? 'true' : undefined}
           onSubmit={() => void sendCurrent()}
           isDisabled={props.disabled}
