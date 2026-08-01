@@ -1013,53 +1013,6 @@ html[data-os="darwin"].dark {
 }
 
 /* =============================================================================
-   UTILITY CLASSES
-============================================================================= */
-
-@layer utilities {
-  /* Hide scrollbar but keep scrolling */
-  .scrollbar-hide              { -ms-overflow-style: none; scrollbar-width: none; }
-  .scrollbar-hide::-webkit-scrollbar { display: none; }
-
-  /* Reveal scrollbar only on parent hover (use with .group) */
-  .scrollbar-hover::-webkit-scrollbar       { width: 4px; }
-  .scrollbar-hover::-webkit-scrollbar-track { background: transparent; }
-  .scrollbar-hover::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--radius-control); }
-  .group:hover .scrollbar-hover::-webkit-scrollbar-thumb { background: var(--border); }
-
-  /* Shadow recipes — apply as standalone classes */
-  .shadow-minimal      { box-shadow: var(--shadow-minimal); }
-  .shadow-minimal-flat { box-shadow: var(--shadow-minimal-flat); }
-  .shadow-medium       { box-shadow: var(--shadow-medium); }
-  .shadow-modal        { box-shadow: var(--shadow-modal); }
-
-  /* iOS-style continuous corners (supported in WebKit/Chromium). */
-  .smooth-corners {
-    corner-shape: superellipse;
-    -webkit-corner-shape: superellipse;
-  }
-
-  /* "Pill" — used for status badges and labels.
-     Background is 5% foreground; text is 80% foreground. */
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-medium);
-    color: var(--foreground-secondary);
-    background: var(--foreground-5);
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-pill);
-  }
-  .pill[data-tone="accent"]      { background: oklch(from var(--accent) l c h / 0.08); color: var(--accent); border-color: oklch(from var(--accent) l c h / 0.15); }
-  .pill[data-tone="info"]        { background: oklch(from var(--info) l c h / 0.10); color: var(--info-text); border-color: oklch(from var(--info) l c h / 0.20); }
-  .pill[data-tone="success"]     { background: oklch(from var(--success) l c h / 0.10); color: var(--success-text); border-color: oklch(from var(--success) l c h / 0.20); }
-  .pill[data-tone="destructive"] { background: oklch(from var(--destructive) l c h / 0.10); color: var(--destructive-text); border-color: oklch(from var(--destructive) l c h / 0.20); }
-}
-
-/* =============================================================================
    COMPONENT RECIPES — drop-in classes for our V0.1 UI
 
    These are literal class names used by the React components. Layout stays in JSX; this file
