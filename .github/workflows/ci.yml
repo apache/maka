@@ -60,6 +60,11 @@ jobs:
         run: npx knip --workspace apps/desktop
       - name: Knip (packages/ui)
         run: npx knip --workspace packages/ui
+      # Dead-CSS governance. Lived only under `check:release`, so a regression
+      # stayed invisible until a release was cut; it was red on main when this
+      # step was added. Same class of source-scanning guard as knip above.
+      - name: Dead CSS
+        run: node scripts/check-dead-css.mjs --check
 
   test:
     needs: changes
@@ -151,3 +156,18 @@ jobs:
       # e2e step just built; same xvfb pattern.
       - name: Alignment audit
         run: xvfb-run -a node scripts/audit-alignment.mjs
+      # Storybook is where pixel work happens (see stories/FIDELITY.md), but
+      # nothing verified that it still renders: story typechecking rides along
+      # in `typecheck`, while the static build and the render/play smoke ran
+      # only if someone remembered to run them locally.
+      #
+      # The E2E suite above drives Electron through `_electron.launch`, which
+      # uses Electron's own binary — it never downloads a browser. The smoke
+      # calls `chromium.launch()`, so the Chromium build must be fetched here
+      # explicitly; without it the step fails on a missing executable.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build Storybook
+        run: npm --workspace @maka/desktop run build-storybook
+      - name: Storybook smoke
+        run: npm --workspace @maka/desktop run smoke:storybook

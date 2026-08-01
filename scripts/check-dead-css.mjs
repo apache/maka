@@ -55,6 +55,9 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'astryx-button',
   'astryx-badge',
   'astryx-resize-handle-pill',
+  // Rendered by Astryx's own Collapsible; chat-message.css targets it to give
+  // reasoning/tool disclosures one trigger dialect inside the turn body (#1768).
+  'astryx-collapsible-trigger',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in

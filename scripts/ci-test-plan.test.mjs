@@ -14,6 +14,10 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
+  // .storybook/preview.tsx reads THEME_PALETTES from @maka/core, and the e2e
+  // job now builds and smokes Storybook, so a core change must reach it.
+  assert.equal(planTests(['packages/core/src/settings.ts'], { graph }).e2e, true);
+
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
   assert.equal(backend.e2e, false);
   for (const workspace of ['packages/storage', 'packages/runtime', 'apps/desktop']) {

@@ -156,7 +156,17 @@ export function planTests(changedFiles, options = {}) {
 
   return {
     code,
-    e2e: directWorkspaces.has('apps/desktop') || directWorkspaces.has('packages/ui'),
+    // Gates every renderer verification: the Electron E2E suite, the alignment
+    // audit, and the Storybook build/smoke. Deliberately keyed on DIRECT
+    // workspace changes, not the reverse-dependency closure — a storage or
+    // runtime change must not drag the renderer suites along. @maka/core is
+    // the one exception: .storybook/preview.tsx reads THEME_PALETTES straight
+    // out of packages/core/src/settings.ts, so a core change can break the
+    // Storybook build without touching apps/desktop or packages/ui.
+    e2e:
+      directWorkspaces.has('apps/desktop') ||
+      directWorkspaces.has('packages/ui') ||
+      directWorkspaces.has('packages/core'),
     full: false,
     headless: workspaces.includes('packages/headless'),
     // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
