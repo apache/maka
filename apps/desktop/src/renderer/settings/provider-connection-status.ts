@@ -1,8 +1,7 @@
 // Pure status helper for the Settings → 模型 connection list. Kept out
 // of `ProvidersPanel.tsx` (no React, no DOM) so the decision logic can be
-// exercised directly from the desktop test runner, the same way
-// `connection-status.ts` is. Behavioural tests live in
-// `provider-connection-status.test.ts`.
+// exercised directly from the desktop test runner. Behavioural tests live
+// in `provider-connection-status.test.ts`.
 
 import type { LlmConnection, UiLocale } from '@maka/core';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
