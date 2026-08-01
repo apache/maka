@@ -4,13 +4,13 @@ import { createServer } from 'node:http';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const PRODUCT_VIEWPORTS = Object.freeze({
+const PRODUCT_VIEWPORTS = Object.freeze({
   wide: Object.freeze({ width: 1280, height: 900 }),
   compact: Object.freeze({ width: 820, height: 900 }),
   floor: Object.freeze({ width: 480, height: 900 }),
 });
 
-export const REQUIRED_PRODUCT_SURFACES = Object.freeze([
+const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'settings',
   'skills',
   'mcp',
@@ -28,7 +28,7 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function validateCoverageManifest(manifest, storyIndex) {
+function validateCoverageManifest(manifest, storyIndex) {
   if (!isRecord(manifest) || manifest.version !== 1) fail('version must be 1');
   if (!isRecord(manifest.viewports)) fail('viewports must be an object');
   if (!isRecord(manifest.surfaces)) fail('surfaces must be an object');
@@ -118,7 +118,7 @@ function describeBrowserValue(value) {
   return String(value);
 }
 
-export function installStorybookSmokeProbe({ storyId }) {
+function installStorybookSmokeProbe({ storyId }) {
   const smoke = {
     finished: false,
     failures: [],
@@ -176,7 +176,7 @@ export function installStorybookSmokeProbe({ storyId }) {
   connect();
 }
 
-export async function smokeStory(page, baseUrl, job, options = {}) {
+async function smokeStory(page, baseUrl, job, options = {}) {
   const prefix = `[${job.storyId} @ ${job.viewport}]`;
   const browserFailures = [];
   const onConsole = (message) => {

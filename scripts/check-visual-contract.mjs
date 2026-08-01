@@ -78,7 +78,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // capture a third of the size of its longhand equivalent. Computed
 // width/height are omitted because the recorded rect already carries the
 // used box, and it also reflects transforms and flex stretching.
-export const PROPERTIES = [
+const PROPERTIES = [
   'display',
   'position',
   'inset',
@@ -135,7 +135,7 @@ export const PROPERTIES = [
 // `auto / auto / auto / auto`) and those entries never matched once, so the
 // properties they were meant to suppress appeared on all 3,964 records.
 // `findDeadOmissionRules` below fails the run if that regresses.
-export const INITIAL_VALUES = {
+const INITIAL_VALUES = {
   position: 'static',
   inset: 'auto',
   zIndex: 'auto',
@@ -167,9 +167,8 @@ export const INITIAL_VALUES = {
 // so one container change prints as N descendant lines and eats the print
 // limit. An inherited property must not also appear in INITIAL_VALUES —
 // "absent" has to mean exactly one thing (equal to the nearest recorded
-// ancestor), or a reader cannot recover the value. Both rules are pinned by
-// check-visual-contract.test.mjs.
-export const INHERITED_PROPERTIES = [
+// ancestor), or a reader cannot recover the value.
+const INHERITED_PROPERTIES = [
   'cursor',
   'pointerEvents',
   'fontFamily',
@@ -519,7 +518,7 @@ const SALVAGED_ANCHORS = [
 
 // Exact hook match: `list-row` must not be satisfied by `list-row-meta`,
 // which is a different element than the one the regression happened on.
-export function checkSalvagedAnchors(captures, anchors = SALVAGED_ANCHORS) {
+function checkSalvagedAnchors(captures, anchors = SALVAGED_ANCHORS) {
   const missing = [];
   for (const entry of anchors) {
     const records = captures.get(`${entry.route}.light.darwin`);
@@ -541,7 +540,7 @@ export function checkSalvagedAnchors(captures, anchors = SALVAGED_ANCHORS) {
  * skip (the border/outline paint gates) is invisible in the output but still
  * counted at the sample.
  */
-export function findDeadOmissionRules(omission, initialValues = INITIAL_VALUES) {
+function findDeadOmissionRules(omission, initialValues = INITIAL_VALUES) {
   if (!omission || omission.sampled === 0) return [];
   const dead = [];
   for (const property of Object.keys(initialValues)) {
@@ -550,7 +549,7 @@ export function findDeadOmissionRules(omission, initialValues = INITIAL_VALUES) 
   return dead;
 }
 
-export function parseArgs(argv) {
+function parseArgs(argv) {
   const args = {
     against: 'main',
     routes: null,
@@ -725,7 +724,7 @@ async function ensureBaseBuild(ref) {
 // every path beneath it, and each renamed record reads as a `removed` plus an
 // `added`. `summarise` below names that case instead of letting a reviewer
 // read hundreds of truncated lines as hundreds of regressions.
-export function diffRecords(baseline, current) {
+function diffRecords(baseline, current) {
   const byPath = (records) => new Map(records.map((record) => [record.path, record]));
   const before = byPath(baseline);
   const after = byPath(current);
@@ -782,7 +781,7 @@ export function diffRecords(baseline, current) {
  * declared set is empty — then every change is out of scope, which is
  * exactly the PR 1/PR 2 gate.
  */
-export function partitionChanges(changes, declaredNames) {
+function partitionChanges(changes, declaredNames) {
   const declared = new Set(declaredNames);
   const inScope = [];
   const outOfScope = [];
@@ -807,12 +806,12 @@ export function partitionChanges(changes, declaredNames) {
  * route without letting either two broad containers or leaf selectors turn
  * the contract off.
  */
-export const SCOPE_COVERAGE_LIMIT = 0.5;
-export const REPEATABLE_SCOPE_MIN_ROOT_SIZE = 2;
-export const REPEATABLE_SCOPE_ROOT_LIMIT = 0.15;
-export const REPEATABLE_SCOPE_COVERAGE_LIMIT = 0.6;
+const SCOPE_COVERAGE_LIMIT = 0.5;
+const REPEATABLE_SCOPE_MIN_ROOT_SIZE = 2;
+const REPEATABLE_SCOPE_ROOT_LIMIT = 0.15;
+const REPEATABLE_SCOPE_COVERAGE_LIMIT = 0.6;
 
-export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT, scopes = []) {
+function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT, scopes = []) {
   if (records.length === 0) return [];
   const repeatable = new Set(
     scopes.filter((scope) => scope.repeatable === true).map((scope) => scope.name),
@@ -869,7 +868,7 @@ export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT, scopes
  * Describe a diff in one line, and say so when its shape means the tree moved
  * rather than the styles.
  */
-export function summarise(changes, baselineSize) {
+function summarise(changes, baselineSize) {
   const counts = { changed: 0, removed: 0, added: 0 };
   for (const change of changes) counts[change.kind] += 1;
   const parts = [];
@@ -1081,9 +1080,8 @@ async function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-// Only when run directly: the pure helpers above are imported by
-// check-visual-contract.test.mjs, which must not launch Electron. Compared
-// through pathToFileURL, not string concatenation — a checkout path with a
+// Only when run directly. Compared through pathToFileURL, not string
+// concatenation — a checkout path with a
 // space or non-ASCII segment percent-encodes in import.meta.url, and the
 // mismatch would make this instrument exit 0 having measured nothing.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
