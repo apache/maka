@@ -48,7 +48,10 @@ import {
   type AgentGraphOperatorInspection,
   type BuildAgentGraphClientReadModelInput,
 } from './stream-graph-read-model.js';
-import { buildAgentGraphSupervisorTools } from './stream-graph-supervisor-tools.js';
+import {
+  buildAgentGraphSupervisorTools,
+  type AgentGraphYieldPermit,
+} from './stream-graph-supervisor-tools.js';
 import type { AgentGraphTraceTopology } from './stream-graph-trace.js';
 import { stableHash } from './request-shape.js';
 import {
@@ -56,6 +59,7 @@ import {
   type AgentGraphTimelinePage,
   type AgentGraphTimelinePageOptions,
 } from './agent-graph-timeline.js';
+import { isAgentGraphSupervisorMilestone } from './agent-graph-supervisor-wake.js';
 
 const DEFAULT_MAX_NEW_ACTIVATIONS = 8;
 const MAX_CLIENT_PROJECTION_COMMIT_ATTEMPTS = 4;
@@ -103,6 +107,8 @@ interface GraphDriver {
   paused: boolean;
   stopping: boolean;
   stopGeneration: number;
+  driveGeneration: number;
+  activeDriveGeneration?: number;
   closed: boolean;
   abortController?: AbortController;
   task?: Promise<void>;
@@ -112,6 +118,16 @@ interface GraphDriver {
   runtimeFailureRunIds: Set<string>;
   lastResult?: AgentGraphScheduleReconciliationResult;
   lastError?: unknown;
+  yieldWaiters: Set<GraphYieldWaiter>;
+}
+
+interface GraphYieldWaiter {
+  minimumGeneration: number;
+  activationReady: boolean;
+  milestoneRevisions: number[];
+  proof: Promise<void>;
+  resolveProof(): void;
+  cancelled: boolean;
 }
 
 export type AgentGraphClientChangedReason =
@@ -175,7 +191,7 @@ export class AgentGraphCoordinator {
       graphId: driver.graphId,
       scheduleStore: this.#input.controlStore,
       observeGraph: () => this.observe(rootSessionId),
-      hasPendingSupervisorWake: () => driver.requested || driver.task !== undefined,
+      prepareYieldPermit: () => this.#prepareYieldPermit(driver),
       authorizeScheduleUpdate: (request): ScheduleWakeFence => {
         if (request.graphId !== driver.graphId || request.source.sessionId !== rootSessionId) {
           throw new Error(
@@ -499,6 +515,8 @@ export class AgentGraphCoordinator {
     while (driver.requested && !driver.paused && !driver.closed && !this.#closed) {
       driver.requested = false;
       driver.lastError = undefined;
+      const generation = ++driver.driveGeneration;
+      driver.activeDriveGeneration = generation;
       const abortController = new AbortController();
       driver.abortController = abortController;
       try {
@@ -509,6 +527,14 @@ export class AgentGraphCoordinator {
           await this.#repairClientProjectionBestEffort(driver);
         }
         await notify(this.#input.onReconciliation, driver.rootSessionId, result);
+        if (isAgentGraphSupervisorMilestone(result)) {
+          for (const waiter of driver.yieldWaiters) {
+            if (!waiter.cancelled && generation >= waiter.minimumGeneration) {
+              waiter.milestoneRevisions.push(result.schedule.revision);
+              waiter.resolveProof();
+            }
+          }
+        }
         this.#notifyClientChanged(driver, 'reconciled');
       } catch (error) {
         if (!abortController.signal.aborted) {
@@ -517,6 +543,9 @@ export class AgentGraphCoordinator {
         }
       } finally {
         if (driver.abortController === abortController) driver.abortController = undefined;
+        if (driver.activeDriveGeneration === generation) {
+          driver.activeDriveGeneration = undefined;
+        }
       }
     }
   }
@@ -557,7 +586,18 @@ export class AgentGraphCoordinator {
           );
           void notify(this.#input.supervisor?.onObservation, observation);
         },
-        onActivationReady: this.#input.supervisor?.onActivationReady,
+        onActivationReady: (activation) => {
+          const generation = driver.activeDriveGeneration;
+          if (generation !== undefined) {
+            for (const waiter of driver.yieldWaiters) {
+              if (!waiter.cancelled && generation >= waiter.minimumGeneration) {
+                waiter.activationReady = true;
+                waiter.resolveProof();
+              }
+            }
+          }
+          void notify(this.#input.supervisor?.onActivationReady, activation);
+        },
         onRuntimeEvent: (event) => {
           if (!driver.paused) driver.requested = true;
           if (event.event.type === 'error') {
@@ -902,9 +942,11 @@ export class AgentGraphCoordinator {
       paused: false,
       stopping: false,
       stopGeneration: 0,
+      driveGeneration: 0,
       closed: false,
       clientProjectionDirty: false,
       runtimeFailureRunIds: new Set(),
+      yieldWaiters: new Set(),
     };
     this.#drivers.set(graphId, created);
     return created;
@@ -933,6 +975,58 @@ export class AgentGraphCoordinator {
         this.#requestDrive(driver);
       }
     });
+  }
+
+  #prepareYieldPermit(driver: GraphDriver): AgentGraphYieldPermit {
+    let resolveProof!: () => void;
+    const proof = new Promise<void>((resolve) => {
+      resolveProof = resolve;
+    });
+    const waiter: GraphYieldWaiter = {
+      minimumGeneration: driver.activeDriveGeneration ?? driver.driveGeneration + 1,
+      activationReady: false,
+      milestoneRevisions: [],
+      proof,
+      resolveProof,
+      cancelled: false,
+    };
+    driver.yieldWaiters.add(waiter);
+    const cancel = (): void => {
+      if (waiter.cancelled) return;
+      waiter.cancelled = true;
+      driver.yieldWaiters.delete(waiter);
+    };
+    return {
+      acquire: async ({ scheduleRevision, observation }) => {
+        try {
+          if (hasLiveGraphOperator(observation) || waiter.activationReady) return true;
+          while (driver.task) {
+            const task = driver.task;
+            const proved = await Promise.race([
+              waiter.proof.then(() => true),
+              task.then(() => false),
+            ]);
+            if (
+              proved &&
+              (waiter.activationReady ||
+                waiter.milestoneRevisions.some((revision) => revision >= scheduleRevision))
+            ) {
+              return true;
+            }
+            if (proved) await task;
+          }
+          const current = await this.observe(driver.rootSessionId);
+          return (
+            hasLiveGraphOperator(current) ||
+            waiter.activationReady ||
+            waiter.milestoneRevisions.some((revision) => revision >= scheduleRevision)
+          );
+        } finally {
+          cancel();
+        }
+      },
+      cancel,
+    };
   }
 
   #notifyClientChanged(driver: GraphDriver, reason: AgentGraphClientChangedReason): void {
@@ -1021,6 +1115,12 @@ function isMaterializedGraphClientEvent(
     'queue_update',
     'provider_retry',
   ].includes(type);
+}
+
+function hasLiveGraphOperator(observation: AgentGraphSupervisorObservation): boolean {
+  return observation.projection.operators.some(
+    (operator) => observation.projection.state.operators[operator.operatorId]?.status === 'running',
+  );
 }
 
 export function topologyFromProvisions(

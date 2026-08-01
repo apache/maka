@@ -358,12 +358,20 @@ export type YieldAgentGraphToolResult = {
   reason: string;
 };
 
+export interface AgentGraphYieldPermit {
+  acquire(input: {
+    scheduleRevision: number;
+    observation: AgentGraphSupervisorObservation;
+  }): Promise<boolean>;
+  cancel(): void;
+}
+
 export interface BuildAgentGraphSupervisorToolsInput {
   graphId: string;
   scheduleStore: AgentGraphScheduleStore;
   observeGraph(): Promise<AgentGraphSupervisorObservation>;
-  /** Process-local proof that reconciliation can still produce a checkpoint wake. */
-  hasPendingSupervisorWake?(): boolean | Promise<boolean>;
+  /** Register before state reads so runtime/reconciliation transitions cannot escape yield admission. */
+  prepareYieldPermit?(): AgentGraphYieldPermit;
   /** Host ownership check performed before append-only schedule admission. */
   authorizeScheduleUpdate?(request: AgentGraphScheduleUpdateRequest): unknown | Promise<unknown>;
   /**
@@ -455,35 +463,42 @@ export function buildAgentGraphSupervisorTools(
     recoveryMode: 'replay_safe',
     executionSemantics: 'exclusive_step',
     impl: async ({ reason }) => {
-      const [updates, observation, hasPendingSupervisorWake] = await Promise.all([
-        input.scheduleStore.listAgentGraphScheduleUpdates(graphId),
-        input.observeGraph(),
-        input.hasPendingSupervisorWake?.() ?? false,
-      ]);
-      assertGraphObservation(graphId, observation);
-      const schedule = projectAgentGraphSchedule(graphId, updates);
-      if (schedule.closed) {
-        throw new Error('Agent graph is already finished; yield is no longer valid');
+      const permit = input.prepareYieldPermit?.();
+      try {
+        const [updates, observation] = await Promise.all([
+          input.scheduleStore.listAgentGraphScheduleUpdates(graphId),
+          input.observeGraph(),
+        ]);
+        assertGraphObservation(graphId, observation);
+        const schedule = projectAgentGraphSchedule(graphId, updates);
+        if (schedule.closed) {
+          throw new Error('Agent graph is already finished; yield is no longer valid');
+        }
+        const pendingWorkCount = schedule.work.filter((work) => work.status === 'requested').length;
+        if (pendingWorkCount === 0) {
+          throw new Error('Agent graph has no pending scheduled work to yield for');
+        }
+        const liveOperatorCount = observation.projection.operators.filter(
+          (operator) =>
+            observation.projection.state.operators[operator.operatorId]?.status === 'running',
+        ).length;
+        const acquired = permit
+          ? await permit.acquire({ scheduleRevision: schedule.revision, observation })
+          : liveOperatorCount > 0;
+        if (!acquired) {
+          throw new Error(
+            'Agent graph has no in-flight work or pending reconciliation that can produce a future supervisor checkpoint; inspect results and finish or update the graph instead',
+          );
+        }
+        return {
+          kind: 'agent_graph_yielded',
+          pendingWorkCount,
+          liveOperatorCount,
+          reason,
+        };
+      } finally {
+        permit?.cancel();
       }
-      const pendingWorkCount = schedule.work.filter((work) => work.status === 'requested').length;
-      if (pendingWorkCount === 0) {
-        throw new Error('Agent graph has no pending scheduled work to yield for');
-      }
-      const liveOperatorCount = observation.projection.operators.filter(
-        (operator) =>
-          observation.projection.state.operators[operator.operatorId]?.status === 'running',
-      ).length;
-      if (liveOperatorCount === 0 && !hasPendingSupervisorWake) {
-        throw new Error(
-          'Agent graph has no in-flight work or pending reconciliation that can produce a future supervisor checkpoint; inspect results and finish or update the graph instead',
-        );
-      }
-      return {
-        kind: 'agent_graph_yielded',
-        pendingWorkCount,
-        liveOperatorCount,
-        reason,
-      };
     },
   };
   return [viewTool, updateTool, yieldTool];

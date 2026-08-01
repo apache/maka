@@ -172,7 +172,7 @@ export class AgentGraphSupervisorWakeCoordinator {
   }
 
   notify(rootSessionId: string, result: AgentGraphScheduleReconciliationResult): void {
-    if (this.#closed || !isSupervisorMilestone(result)) return;
+    if (this.#closed || !isAgentGraphSupervisorMilestone(result)) return;
     const task = this.#wake(rootSessionId, result).catch((error) => {
       if (!this.#closed && !isAbortError(error)) {
         return notifyError(this.#input.onError, rootSessionId, error);
@@ -534,7 +534,9 @@ export class AgentGraphSupervisorWakeCoordinator {
   }
 }
 
-function isSupervisorMilestone(result: AgentGraphScheduleReconciliationResult): boolean {
+export function isAgentGraphSupervisorMilestone(
+  result: AgentGraphScheduleReconciliationResult,
+): boolean {
   if (
     result.status === 'cancelled' ||
     result.status === 'stale' ||

@@ -24,7 +24,11 @@ import {
   agentGraphIdForRootSession,
   type AgentGraphCoordinatorInput,
 } from '../stream-graph-coordinator.js';
-import { UPDATE_AGENT_GRAPH_TOOL_NAME } from '../stream-graph-supervisor-tools.js';
+import {
+  UPDATE_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
+  compileAgentGraphScheduleUpdate,
+} from '../stream-graph-supervisor-tools.js';
 
 describe('host-managed agent graph coordinator', () => {
   test('boots an empty graph from agent work and recovers it without duplicate topology', async () => {
@@ -133,7 +137,9 @@ describe('host-managed agent graph coordinator', () => {
       });
       const tools = await coordinator.toolsForSession(rootSession.id);
       const update = tools.find((tool) => tool.name === UPDATE_AGENT_GRAPH_TOOL_NAME);
+      const yieldGraph = tools.find((tool) => tool.name === YIELD_AGENT_GRAPH_TOOL_NAME);
       assert.ok(update);
+      assert.ok(yieldGraph);
       const graphId = agentGraphIdForRootSession(rootSession.id);
       await assert.rejects(
         async () =>
@@ -165,6 +171,12 @@ describe('host-managed agent graph coordinator', () => {
         },
         toolContext(rootSession.id, sourceRun.runId, sourceTurnId),
       );
+      const yielded = (await yieldGraph.impl(
+        { reason: 'The claimed activation is now running.' },
+        toolContext(rootSession.id, sourceRun.runId, sourceTurnId, 'tool-yield-running'),
+      )) as { kind: string; pendingWorkCount: number };
+      assert.equal(yielded.kind, 'agent_graph_yielded');
+      assert.equal(yielded.pendingWorkCount, 1);
       await coordinator.waitForIdle(rootSession.id);
       assert.equal(
         supervisorWakeTurnCount,
@@ -567,6 +579,105 @@ describe('host-managed agent graph coordinator', () => {
           )),
     );
     assert.deepEqual(stopped.sort(), ['child-a', 'child-b']);
+  });
+
+  test('rejects concurrent yield when reconciliation only waits for uncommitted input', async () => {
+    const rootSessionId = 'root-session';
+    const graphId = agentGraphIdForRootSession(rootSessionId);
+    const controlStore = createSqliteSessionMetadataStore(':memory:');
+    let releaseProvisionRead!: () => void;
+    let markProvisionReadStarted!: () => void;
+    const provisionReadStarted = new Promise<void>((resolve) => {
+      markProvisionReadStarted = resolve;
+    });
+    const provisionReadReleased = new Promise<void>((resolve) => {
+      releaseProvisionRead = resolve;
+    });
+    let holdProvisionRead = true;
+    const gatedStore = new Proxy(controlStore, {
+      get(target, property) {
+        if (property === 'listAgentGraphOperatorProvisions') {
+          return async (...args: Parameters<typeof target.listAgentGraphOperatorProvisions>) => {
+            if (holdProvisionRead) {
+              holdProvisionRead = false;
+              markProvisionReadStarted();
+              await provisionReadReleased;
+            }
+            return target.listAgentGraphOperatorProvisions(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const coordinator = new AgentGraphCoordinator({
+      sessionStore: {
+        listForRecovery: async () => [],
+        readHeader: async (sessionId: string) =>
+          ({ id: sessionId, status: 'active', isArchived: false }) as never,
+      },
+      runStore: { listSessionRuns: async () => [] },
+      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      controlStore: gatedStore,
+      runtime: {
+        provisionAgentGraphOperator: async () => {
+          throw new Error('missing input must prevent operator provisioning');
+        },
+        runClaimedAgentGraphIntent: async () => {
+          throw new Error('missing input must prevent runtime dispatch');
+        },
+        stopSession: async () => {},
+      },
+      newId: randomUUID,
+      rootSessionId,
+    } as unknown as AgentGraphCoordinatorInput);
+    try {
+      const tools = await coordinator.toolsForSession(rootSessionId);
+      const yieldTool = tools.find((tool) => tool.name === YIELD_AGENT_GRAPH_TOOL_NAME);
+      assert.ok(yieldTool);
+      await controlStore.commitAgentGraphScheduleUpdate(
+        compileAgentGraphScheduleUpdate({
+          graphId,
+          input: {
+            operation: 'add_work',
+            add_work: [
+              {
+                target_kind: 'new_agent',
+                agent_id: 'implementation',
+                instruction: 'Use an upstream result that is not committed yet.',
+                input_ids: ['missing-record'],
+                replacement_mode: 'none',
+              },
+            ],
+          },
+          context: toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-schedule'),
+        }),
+      );
+
+      coordinator.wake(rootSessionId);
+      await provisionReadStarted;
+      let settled = false;
+      const yielding = Promise.resolve(
+        yieldTool.impl(
+          { reason: 'Wait for the missing upstream result.' },
+          toolContext(rootSessionId, 'run-root', 'turn-root', 'tool-yield'),
+        ),
+      ).finally(() => {
+        settled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false, 'yield admission must await the in-flight reconciliation');
+      releaseProvisionRead();
+      await assert.rejects(
+        yielding,
+        /no in-flight work or pending reconciliation.*future supervisor checkpoint/,
+      );
+      assert.equal((await coordinator.reconcile(rootSessionId)).status, 'waiting');
+    } finally {
+      releaseProvisionRead();
+      await coordinator.close();
+      controlStore.close();
+    }
   });
 });
 

@@ -239,7 +239,10 @@ describe('stream graph supervisor tools', () => {
       graphId: 'graph-terminal-only',
       scheduleStore: store,
       observeGraph: async () => observation,
-      hasPendingSupervisorWake: () => false,
+      prepareYieldPermit: () => ({
+        acquire: async () => false,
+        cancel() {},
+      }),
     });
     try {
       await updateTool.impl(
@@ -266,6 +269,67 @@ describe('stream graph supervisor tools', () => {
           ),
         /no in-flight work or pending reconciliation.*future supervisor checkpoint/,
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('registers yield admission before reading a terminal runtime transition', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const observation = terminalObservation('graph-terminal-race');
+    let yielding = false;
+    let permitRegistered = false;
+    let terminalProofCaptured = false;
+    const [, updateTool, yieldTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-terminal-race',
+      scheduleStore: store,
+      observeGraph: async () => {
+        if (yielding) {
+          assert.equal(permitRegistered, true, 'the waiter must exist before observation starts');
+          terminalProofCaptured = true;
+        }
+        return observation;
+      },
+      prepareYieldPermit: () => {
+        permitRegistered = true;
+        return {
+          acquire: async () => terminalProofCaptured,
+          cancel() {
+            permitRegistered = false;
+          },
+        };
+      },
+    });
+    try {
+      await updateTool.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'existing_operator',
+              operator_id: 'writer',
+              instruction: 'Follow up after the terminal transition.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+          ],
+        },
+        toolContext('tool-terminal-race'),
+      );
+      yielding = true;
+      assert.deepEqual(
+        await yieldTool.impl(
+          { reason: 'The registered waiter captured the terminal checkpoint.' },
+          toolContext('yield-terminal-race'),
+        ),
+        {
+          kind: 'agent_graph_yielded',
+          pendingWorkCount: 1,
+          liveOperatorCount: 0,
+          reason: 'The registered waiter captured the terminal checkpoint.',
+        },
+      );
+      assert.equal(permitRegistered, false);
     } finally {
       store.close();
     }
