@@ -177,6 +177,10 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      # Stories import @maka/core / @maka/ui package exports (dist/). The old
+      # e2e job paid for this via `build:with-deps`; the split job must too.
+      - name: Build workspace packages
+        run: npm --workspace @maka/desktop run build:workspace-deps
       # The smoke calls `chromium.launch()`; Electron's binary is irrelevant.
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
