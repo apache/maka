@@ -339,10 +339,8 @@ describe('tool activity presentation', () => {
     // Failure note, not a permanent exit-code chrome row for successes.
     assert.match(markup, /失败 · 退出码 1|失败.*退出码 1/);
     assert.match(markup, /Error: boom/);
-    // Unified panel surface (Codex-like well).
-    assert.match(markup, /bg-\[var\(--foreground-3\)\]|data-slot="tool-output"/);
-    // Tool output body uses base 13px, not caption 11px.
-    assert.match(markup, /font-size-base/);
+    // Astryx CodeBlock well (or the product data-slot wrapper around it).
+    assert.match(markup, /astryx-codeblock|data-slot="tool-output"/);
     // No always-on copy control on the output well (error banner may still copy).
     assert.doesNotMatch(markup, /复制研读提示/);
   });
@@ -391,7 +389,7 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(markup, /实时输出/);
     assert.match(markup, /packages/);
     assert.match(markup, /已截断|输出已截断/);
-    assert.match(markup, /bg-\[var\(--foreground-3\)\]|data-slot="tool-output"/);
+    assert.match(markup, /astryx-codeblock|data-slot="tool-output"/);
     assert.match(markup, /max-h-64/);
   });
 

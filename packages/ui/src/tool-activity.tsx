@@ -53,6 +53,7 @@ import {
   Collapsible as AstryxCollapsible,
   type ChatToolCallItem,
 } from '@astryxdesign/core';
+import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
@@ -234,16 +235,22 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
         </span>
       )}
     >
-      {open ? <ToolCardBody item={item} /> : null}
+      {open ? (
+        <ToolDetailReveal>
+          <ToolCardBody item={item} />
+        </ToolDetailReveal>
+      ) : null}
     </AstryxCollapsible>
   );
 }
 
 /**
- * The tool detail body — error banner + one Codex-like output well for
- * command/args, live stream, and structured results. Shared by the boxed
+ * The tool detail body — error banner + Astryx CodeBlock for ordinary text
+ * output, live stream, and structured results. Shared by the boxed
  * `ToolActivityCard` and flat trow rows. Args/results route through
  * quiet formatters (tool-args-redaction-contract / quiet-panel contracts).
+ * Rich kinds (terminal/shell_run/subagent/…) keep product cards via
+ * ToolResultPreview; code/text wells use CodeBlock per Astryx guidance.
  */
 function ToolCardBody({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
@@ -324,46 +331,54 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
         )
       )}
       {hasSharedPanelContent && (
-        <div
-          data-slot="tool-output"
-          className={cn(
-            TOOL_OUTPUT_PANEL_CLASS,
-            errored && 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]',
-            sandboxBlocked && 'border-[oklch(from_var(--warning)_l_c_h_/_0.32)]',
-          )}
-        >
-          {showInvocation && (
-            <code className={TOOL_OUTPUT_COMMAND_CLASS}>{invocationLine}</code>
-          )}
-          {resultHeadline && (
-            <code className={TOOL_OUTPUT_COMMAND_CLASS}>{resultHeadline}</code>
-          )}
-          {/* No formatRedactedJson dump — if invocation failed, quiet-format args. */}
-          {!showInvocation && !resultHeadline && item.args !== undefined && !permissionDenied && !showResult && (
-            <pre className={cn(TOOL_OUTPUT_BODY_CLASS, 'max-h-40')}>
-              {formatQuietJsonValue(item.args, locale).body}
-            </pre>
-          )}
+        <div data-slot="tool-output" className="mt-1 flex min-w-0 flex-col gap-1.5">
           {showLiveStream && (
-            <ToolOutputStream
-              chunks={item.outputChunks!}
-              live={running}
-              truncated={item.outputTruncated === true}
-            />
+            <>
+              {showInvocation && invocationLine ? (
+                <ToolCodeBlock code={invocationLine} />
+              ) : null}
+              <ToolOutputStream
+                chunks={item.outputChunks!}
+                live={running}
+                truncated={item.outputTruncated === true}
+              />
+            </>
           )}
-          {showResult && !ownsPanel && displayResult && !errored && (
-            quietJson ? (
-              <pre className={TOOL_OUTPUT_BODY_CLASS}>{quietJson.body}</pre>
-            ) : (
-              <ToolResultPreview content={displayResult} toolName={item.toolName} />
-            )
-          )}
+          {!showLiveStream && (() => {
+            // Args-only fallback when there is no invocation line and no result yet.
+            const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
+              && !permissionDenied && !showResult
+              ? formatQuietJsonValue(item.args, locale).body
+              : undefined;
+            const body = quietJson?.body ?? argsBody;
+            const title = resultHeadline ?? (showInvocation ? invocationLine : undefined);
+            if (body) {
+              return (
+                <ToolCodeBlock
+                  code={body}
+                  // Quiet bodies are already plain text (match lines, etc.); only
+                  // raw args dumps are real JSON.
+                  language={argsBody ? 'json' : undefined}
+                  title={title}
+                />
+              );
+            }
+            if (showInvocation && invocationLine) {
+              // No language: shell one-liners stay contiguous text (tokenizer
+              // would otherwise wrap keywords like `test` in spans).
+              return <ToolCodeBlock code={invocationLine} />;
+            }
+            if (showResult && !ownsPanel && displayResult && !errored) {
+              return <ToolResultPreview content={displayResult} toolName={item.toolName} />;
+            }
+            return null;
+          })()}
         </div>
       )}
       {errored && showResult && displayResult && !ownsPanel && (
         <ToolErrorDetails>
           {quietJson ? (
-            <pre className={TOOL_OUTPUT_BODY_CLASS}>{quietJson.body}</pre>
+            <ToolCodeBlock code={quietJson.body} />
           ) : (
             <ToolResultPreview content={displayResult} />
           )}
@@ -456,7 +471,11 @@ function AstryxToolCalls({ items }: { items: ToolActivityItem[] }) {
           locale,
         )).replace(/^Error:\s*/i, '')
       : undefined,
-    resultDetail: <ToolCardBody item={item} />,
+    resultDetail: (
+      <ToolDetailReveal>
+        <ToolCardBody item={item} />
+      </ToolDetailReveal>
+    ),
   }));
 
   return (
@@ -530,15 +549,19 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
       )}
     >
       {disclosure.open
-        ? (items.length === 1 ? (
-            <ToolCardBody item={items[0]!} />
-          ) : (
-            <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-              {items.map((item) => (
-                <ToolTrowRow key={item.toolUseId} item={item} />
-              ))}
-            </div>
-          ))
+        ? (
+          <ToolDetailReveal>
+            {items.length === 1 ? (
+              <ToolCardBody item={items[0]!} />
+            ) : (
+              <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+                {items.map((item) => (
+                  <ToolTrowRow key={item.toolUseId} item={item} />
+                ))}
+              </div>
+            )}
+          </ToolDetailReveal>
+        )
         : null}
     </AstryxCollapsible>
   );
@@ -611,7 +634,11 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
         </span>
       )}
     >
-      {disclosure.open ? <ToolCardBody item={item} /> : null}
+      {disclosure.open ? (
+        <ToolDetailReveal>
+          <ToolCardBody item={item} />
+        </ToolDetailReveal>
+      ) : null}
     </AstryxCollapsible>
   );
 }

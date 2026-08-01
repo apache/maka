@@ -117,6 +117,31 @@
   }
 }
 
+/* Tool row detail enter — Astryx ChatToolCalls group + ChatReasoning use
+   grid-template-rows 0fr→1fr over --duration-medium; row-level resultDetail
+   mounts with no transition. Product shell restores the same motion. */
+@keyframes maka-chat-tool-detail-open {
+  from { grid-template-rows: 0fr; }
+  to { grid-template-rows: 1fr; }
+}
+
+.maka-chat-tool-detail {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: maka-chat-tool-detail-open var(--duration-medium, 300ms) var(--ease-standard, cubic-bezier(0.24, 1, 0.4, 1)) both;
+}
+
+.maka-chat-tool-detail-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-chat-tool-detail {
+    animation: none;
+  }
+}
+
 /* --- Assistant bubble shell ----------------------------------------------- */
 /* User message: a tinted, width-capped Astryx bubble anchored to the right. */
 /* Assistant: no bubble — just text on background, like an editor. The
