@@ -8,7 +8,6 @@ const read = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8');
 
 test('Settings and Module navigation inputs use Astryx SegmentedControl directly', () => {
   for (const rel of [
-    'packages/ui/src/module-hub-selector.tsx',
     'packages/ui/src/daily-review-panel.tsx',
     'apps/desktop/src/renderer/settings/appearance-settings-page.tsx',
     'apps/desktop/src/renderer/settings/bot-chat-detail.tsx',
@@ -19,8 +18,5 @@ test('Settings and Module navigation inputs use Astryx SegmentedControl directly
     assert.match(source, /\bSegmentedControl\b/);
     assert.match(source, /\bSegmentedControlItem\b/);
     assert.doesNotMatch(source, /<Segmented\b|\bSegmented,/);
-    if (rel.endsWith('module-hub-selector.tsx')) {
-      assert.doesNotMatch(source, /DropdownMenu/);
-    }
   }
 });

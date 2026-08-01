@@ -1,8 +1,5 @@
 import type { ReactNode } from 'react';
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from '@astryxdesign/core';
+import { Tab, TabList } from '@astryxdesign/core';
 import type { AutomationModule, ExtensionModule } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { Blocks, CalendarCheck, Plug, Sun } from './icons.js';
@@ -35,16 +32,16 @@ function Selector(props: {
   onChange(value: string): void;
 }) {
   return (
-    <SegmentedControl
+    <TabList
       className="maka-module-hub-selector"
       value={props.value}
-      label={props.ariaLabel}
+      aria-label={props.ariaLabel}
       onChange={props.onChange}
     >
       {props.options.map(([value, label, icon]) => (
-        <SegmentedControlItem key={value} value={value} label={label} icon={icon} />
+        <Tab key={value} value={value} label={label} icon={icon} />
       ))}
-    </SegmentedControl>
+    </TabList>
   );
 }
 

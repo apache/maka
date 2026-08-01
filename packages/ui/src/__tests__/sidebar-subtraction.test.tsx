@@ -61,7 +61,7 @@ describe('sidebar subtraction', () => {
     assert.doesNotMatch(markup, /aria-label="Automations,/);
   });
 
-  it('renders each pair of peer modules as a localized segmented control', () => {
+  it('renders each pair of peer modules as localized view navigation', () => {
     const extensions = renderToStaticMarkup(
       <LocaleProvider locale="zh">
         <ModuleHubSelector hub="extensions" value="skills" onChange={() => {}} />
@@ -73,13 +73,14 @@ describe('sidebar subtraction', () => {
       </LocaleProvider>,
     );
 
-    assert.match(extensions, /astryx-segmented-control/);
+    assert.match(extensions, /astryx-tab-list/);
     assert.match(extensions, /aria-label="扩展内容：技能"/);
-    assert.match(extensions, /role="radiogroup"/);
+    assert.doesNotMatch(extensions, /role="radiogroup"/);
+    assert.match(extensions, /aria-current="page"/);
     assert.match(extensions, />技能</);
     assert.match(extensions, />MCP</);
     assert.doesNotMatch(extensions, /aria-haspopup="menu"/);
-    assert.match(automations, /astryx-segmented-control/);
+    assert.match(automations, /astryx-tab-list/);
     assert.match(automations, /aria-label="定时任务内容：计划提醒"/);
     assert.match(automations, />计划提醒</);
     assert.match(automations, />每日回顾</);
