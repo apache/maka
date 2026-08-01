@@ -76,7 +76,7 @@ const markerVariants = cva("", {
       footer:
         "flex w-full max-w-[var(--maka-chat-measure,680px)] flex-wrap items-center justify-start gap-0.5 mt-0.5 ml-0 mr-auto p-0 opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/answer:opacity-100 focus-within:opacity-100",
       // `.maka-turn-footer-action` (UiButton) — borderless ghost action. Also
-      // reused by the user-message copy (`MessageCopyButton footerStyle`), so
+      // reused by the user-message copy (`MessageCopyButton`), so
       // it carries only the button look, never the footer's measure column.
       "footer-action":
         "rounded-[var(--radius-surface)] [border:0] text-[color:var(--muted-foreground)]"
@@ -229,8 +229,7 @@ export function TextShimmer({
  *
  * NOTE: the args `<pre>` keeps the shared `.maka-code` inline-code base (used by
  * Markdown / artifact previews too — out of scope); the `args` part below is only
- * the `.toolArgs` override. The `ToolErrorBanner` (`Alert` + `.maka-tool-error*`)
- * is a separate concern on a different substrate and migrates in its own pass.
+ * the `.toolArgs` override.
  */
 // `waiting_permission` carries a literal underscore, which Tailwind reads as a
 // SPACE in an arbitrary value (`[data-status="waiting permission"]` — never

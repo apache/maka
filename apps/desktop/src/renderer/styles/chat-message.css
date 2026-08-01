@@ -50,6 +50,88 @@
   gap: var(--space-1);
 }
 
+/* Chat activity disclosure: one trigger dialect for reasoning / tool rows /
+   product trow. !important beats StyleX `.x*:not(#\#)` atoms (see sidebar.css). */
+.maka-turn .astryx-chat-tool-calls [role="button"],
+.maka-turn .astryx-chat-reasoning [role="button"],
+.maka-turn [data-trow] .astryx-collapsible-trigger {
+  /* Hand reserved for links (native-cursor convention). */
+  cursor: default !important;
+}
+
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
+  font-family: var(--font-family-body) !important;
+}
+
+.maka-turn .astryx-chat-reasoning [role="button"] > span:last-child,
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child {
+  width: 14px !important;
+  height: 14px !important;
+  margin-inline-start: auto;
+}
+
+.maka-turn .astryx-chat-reasoning [role="button"] > span:last-child svg,
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child svg,
+.maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child > * {
+  width: 0.75rem !important;
+  height: 0.75rem !important;
+}
+
+@media (hover: hover) {
+  .maka-turn .astryx-chat-tool-calls [role="button"]:hover,
+  .maka-turn .astryx-chat-reasoning [role="button"]:hover,
+  .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
+    background-color: var(--color-overlay-hover);
+    border-radius: var(--radius-element);
+  }
+}
+
+/* Product trow (permission / sandbox / interrupted): Collapsible defaults large. */
+.maka-turn [data-trow] .astryx-collapsible-trigger {
+  min-height: 24px;
+  gap: var(--spacing-1-5, 6px);
+  padding-block: 2px;
+  border-radius: var(--radius-element);
+  font-family: var(--font-family-body) !important;
+  font-size: var(--text-supporting-size) !important;
+  font-weight: var(--font-weight-medium, 500) !important;
+  color: var(--color-text-secondary) !important;
+}
+
+.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child svg,
+.maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child > * {
+  width: 0.75rem !important;
+  height: 0.75rem !important;
+}
+
+/* Row detail open: same 0fr→1fr medium motion as group/reasoning. */
+@keyframes maka-chat-tool-detail-open {
+  from { grid-template-rows: 0fr; }
+  to { grid-template-rows: 1fr; }
+}
+
+.maka-chat-tool-detail {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: maka-chat-tool-detail-open var(--duration-medium, 300ms) var(--ease-standard, cubic-bezier(0.24, 1, 0.4, 1)) both;
+}
+
+.maka-chat-tool-detail-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-chat-tool-detail {
+    animation: none;
+  }
+}
+
 /* --- Assistant bubble shell ----------------------------------------------- */
 /* User message: a tinted, width-capped Astryx bubble anchored to the right. */
 /* Assistant: no bubble — just text on background, like an editor. The
@@ -60,92 +142,6 @@
 /* The streaming ▎ caret + its trailing-<p> inline hack were retired by the
    streaming UI rework. Chat smooths the visible text before it reaches
    Markdown; PR 8 owns the remaining streaming and scroll-anchoring boundary. */
-
-/* --- Hover-revealed copy button on assistant messages -------------------- */
-/* The wrapper is position: relative so the button can anchor to the top-right
-   corner. The hover/focus-within guard keeps it out of the way until the user
-   deliberately mouses over the bubble or tabs into it. */
-.maka-bubble-with-actions {
-  position: relative;
-}
-.maka-message-copy {
-  position: absolute;
-  top: 2px;
-  right: -2px;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--background) l c h / 0.88);
-  color: var(--muted-foreground);
-  opacity: 0;
-  /* PR-CHAT-COPY-BUTTON-POLISH-0 (WAWQAQ 10min loop): the copy
-     button used to fade in on hover but never moved — felt like
-     a label flickering on. Add a tiny entrance translate (4px
-     down → 0) + scale (0.94 → 1) on the rest state so the reveal
-     on hover reads as "this just slid in from above" rather than
-     a fade-only flash. transform stays GPU-accelerated; transition
-     list keeps both axes coherent. */
-  transform: translateY(-3px) scale(var(--scale-press));
-  transition:
-    opacity var(--duration-base) var(--ease-out-strong),
-    transform var(--duration-emphasized) var(--ease-out-strong),
-    color var(--duration-quick) var(--ease-out-strong),
-    background var(--duration-quick) var(--ease-out-strong),
-    box-shadow var(--duration-quick) var(--ease-out-strong);
-}
-
-/* Labelled variant (e.g. "复制思考过程") — flows inline, doesn't absolute-
-   position, and always visible since it's already inside a collapsible
-   region the user has expanded. */
-.maka-message-copy[data-labelled="true"] {
-  position: static;
-  width: auto;
-  height: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-0-5) var(--space-2);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  opacity: 1;
-  background: transparent;
-}
-/* (The user-turn meta-row copy renders via MessageCopyButton's
-   `footerStyle`, so it reuses the Marker `footer-action` shell
-   (`markerVariants('footer-action')`) directly and needs no bespoke
-   override here.) */
-.maka-bubble-with-actions:hover .maka-message-copy,
-.maka-bubble-with-actions:focus-within .maka-message-copy,
-.maka-message-copy:focus-visible {
-  opacity: 1;
-  /* Settle into the resting position when the parent bubble is
-     hovered or anything inside it gains focus. The entrance
-     translate / scale defined on .maka-message-copy resolves
-     here. */
-  transform: translateY(0) scale(1);
-}
-.maka-message-copy:hover {
-  color: var(--foreground);
-  background: var(--state-hover-bg);
-  box-shadow: 0 1px 3px oklch(from var(--foreground) l c h / 0.08);
-}
-.maka-message-copy[data-copied="true"] {
-  color: var(--success-text);
-  background: oklch(from var(--success) l c h / 0.08);
-  opacity: 1;
-}
-.maka-message-copy[data-pending="true"] {
-  cursor: progress;
-  opacity: 1;
-}
-.maka-message-copy[data-copy-feedback="failed"] {
-  color: var(--destructive);
-  background: oklch(from var(--destructive) l c h / 0.08);
-  opacity: 1;
-}
 
 /* --- User-turn meta row (relocated from tool-output.css) ----------------- */
 /* PR-CHAT-CHROME-FOLLOWUP-0 / PR5 CHAT-MESSAGE-TIME-0: the relative time is

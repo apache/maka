@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
 import { useMountedRef } from './use-mounted-ref.js';
 import { CalendarDays, ChevronLeft, ChevronRight } from './icons.js';
 import type {
@@ -21,16 +20,20 @@ import {
 } from './daily-review-helpers.js';
 import {
   Badge,
+  Banner,
   type BadgeProps,
   Button as UiButton,
+  Collapsible,
+  CollapsibleGroup,
   EmptyState,
   IconButton,
+  Item,
   SegmentedControl,
   SegmentedControlItem,
   Selector,
   type SelectorOptionData,
+  Skeleton,
 } from '@astryxdesign/core';
-import { Alert, AlertAction, AlertDescription } from './primitives/alert.js';
 import { StatTile } from './primitives/stat-tile.js';
 import { SectionHeader } from './primitives/section-header.js';
 import { PageHeader } from './primitives/page-header.js';
@@ -108,7 +111,7 @@ export function DailyReviewPanel(props: {
     };
   }, []);
 
-  function chooseDailyReviewArchive(archiveId: string) {
+  function chooseDailyReviewArchive(archiveId: string | null) {
     archiveLoadRequestRef.current += 1;
     setSelectedArchiveId(archiveId);
     setSelectedArchive(null);
@@ -435,19 +438,19 @@ export function DailyReviewPanel(props: {
       <section className="maka-daily-review-overview" aria-label={copy.overview.ariaLabel(dayLabel)}>
         <SectionHeader as="h4" accent title={copy.overview.title} action={overviewActions} />
         {error && visibleSummary ? (
-          <Alert variant="warning" className="maka-daily-review-alert">
-            <AlertDescription>{copy.overview.refreshFailed(error)}</AlertDescription>
-            <AlertAction>
-              <UiButton
+          <Banner
+            status="warning"
+            className="maka-daily-review-alert"
+            title={copy.overview.refreshFailed(error)}
+            endContent={<UiButton
                 variant="ghost"
                 size="sm"
                 className="maka-daily-review-alert-retry"
                 onClick={() => setReloadToken((n) => n + 1)}
                 isDisabled={loading}
                 label={copy.overview.retry}
-              />
-            </AlertAction>
-          </Alert>
+              />}
+          />
         ) : null}
 
         {error && !visibleSummary ? (
@@ -460,9 +463,9 @@ export function DailyReviewPanel(props: {
           />
         ) : !visibleSummary ? (
           <div className="maka-daily-review-loading" aria-busy="true">
-            <div className="maka-skeleton maka-skeleton-line" style={{ width: '60%' }} />
-            <div className="maka-skeleton maka-skeleton-line" style={{ width: '90%' }} />
-            <div className="maka-skeleton maka-skeleton-line" style={{ width: '75%' }} />
+            <Skeleton width="60%" height={12} radius="rounded" index={0} />
+            <Skeleton width="90%" height={12} radius="rounded" index={1} />
+            <Skeleton width="75%" height={12} radius="rounded" index={2} />
           </div>
         ) : (
           <>
@@ -495,27 +498,22 @@ export function DailyReviewPanel(props: {
                     <SectionHeader as="h4" accent title={copy.overview.activeConversations} />
                     <ul className="maka-daily-review-list" aria-label={copy.overview.activeConversationList}>
                       {visibleSummary.sessions.map((session) => (
-                        <li key={session.id} className="maka-daily-review-list-item">
-                          {/* Active-conversation rows are composite navigation
-                              controls. Their semantic row seam owns layout and state;
-                              they are not a shared Button size or variant. */}
-                          <BaseButton
-                            type="button"
-                            className="maka-daily-review-session-button"
+                        <li key={session.id}>
+                          <Item
+                            density="compact"
                             onClick={() => props.onSelectSession?.(session.id)}
-                            disabled={!props.onSelectSession}
-                          >
-                            <span className="maka-daily-review-session-name">{session.name}</span>
-                            <RelativeTime
+                            isDisabled={!props.onSelectSession}
+                            label={<span className="maka-daily-review-session-name">{session.name}</span>}
+                            description={session.lastMessagePreview ? (
+                              <span className="maka-daily-review-session-preview">
+                                {session.lastMessagePreview}
+                              </span>
+                            ) : undefined}
+                            endContent={<RelativeTime
                               ts={session.lastMessageAt}
                               className="maka-daily-review-session-time"
-                            />
-                          </BaseButton>
-                          {session.lastMessagePreview && (
-                            <span className="maka-daily-review-session-preview">
-                              {session.lastMessagePreview}
-                            </span>
-                          )}
+                            />}
+                          />
                         </li>
                       ))}
                     </ul>
@@ -550,19 +548,19 @@ export function DailyReviewPanel(props: {
             count={<span className="maka-daily-review-archive-count">{copy.reports.count(archives.length)}</span>}
           />
           {archiveError && (
-            <Alert variant="warning" className="maka-daily-review-alert">
-              <AlertDescription>{copy.reports.readFailed(archiveError)}</AlertDescription>
-              <AlertAction>
-                <UiButton
+            <Banner
+              status="warning"
+              className="maka-daily-review-alert"
+              title={copy.reports.readFailed(archiveError)}
+              endContent={<UiButton
                   variant="ghost"
                   size="sm"
                   className="maka-daily-review-alert-retry"
                   onClick={() => setArchiveReloadToken((n) => n + 1)}
                   isDisabled={archiveLoading}
                   label={copy.overview.retry}
-                />
-              </AlertAction>
-            </Alert>
+                />}
+            />
           )}
           {archives.length === 0 && !archiveError ? (
             <EmptyState
@@ -573,9 +571,16 @@ export function DailyReviewPanel(props: {
               className="maka-daily-review-summary-empty"
             />
           ) : (
-            <ul className="maka-daily-review-report-list" aria-label={copy.reports.historyAriaLabel}>
+            <CollapsibleGroup
+              type="single"
+              value={selectedArchiveId ?? ''}
+              onChange={(value) => chooseDailyReviewArchive(typeof value === 'string' && value ? value : null)}
+              hasDividers
+              density="balanced"
+              role="list"
+              aria-label={copy.reports.historyAriaLabel}
+            >
               {archives.map((archive) => {
-                const selected = selectedArchiveId === archive.id;
                 // Status color is exception-only (#651): 已生成 / 无数据 / 已跳过
                 // are EXPECTED outcomes and stay as muted prose meta. Only a
                 // failed / no_model run raises a colored Badge that needs eyes.
@@ -586,14 +591,12 @@ export function DailyReviewPanel(props: {
                   archive.modelKey ? formatDailyReviewModelLabel(archive.modelKey) : copy.archive.defaultModel,
                 ].join(' · ');
                 return (
-                  <li key={archive.id}>
-                    <article className="maka-daily-review-report" data-selected={selected ? '' : undefined}>
-                      <button
-                        type="button"
-                        className="maka-daily-review-report-head"
-                        onClick={() => chooseDailyReviewArchive(archive.id)}
-                        aria-expanded={selected}
-                      >
+                  <Collapsible
+                    key={archive.id}
+                    value={archive.id}
+                    role="listitem"
+                    trigger={(
+                      <span className="maka-daily-review-report-trigger">
                         <span className="maka-daily-review-report-heading">
                           <span className="maka-daily-review-report-title">
                             {formatDailyReviewArchiveTitle(archive, locale)}
@@ -608,15 +611,14 @@ export function DailyReviewPanel(props: {
                             label={copy.archive.status[archive.status]}
                           />
                         )}
-                      </button>
-                      {selected && (
-                        <DailyReviewArchiveBody archive={selectedArchive} loading={archiveLoading} />
-                      )}
-                    </article>
-                  </li>
+                      </span>
+                    )}
+                  >
+                    <DailyReviewArchiveBody archive={selectedArchive} loading={archiveLoading} />
+                  </Collapsible>
                 );
               })}
-            </ul>
+            </CollapsibleGroup>
           )}
         </section>
       )}
@@ -630,9 +632,9 @@ function DailyReviewArchiveBody(props: { archive: DailyReviewArchive | null; loa
   if (props.loading) {
     return (
       <div className="maka-daily-review-report-body" aria-busy="true">
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '58%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '92%' }} />
-        <div className="maka-skeleton maka-skeleton-line" style={{ width: '74%' }} />
+        <Skeleton width="58%" height={12} radius="rounded" index={0} />
+        <Skeleton width="92%" height={12} radius="rounded" index={1} />
+        <Skeleton width="74%" height={12} radius="rounded" index={2} />
       </div>
     );
   }

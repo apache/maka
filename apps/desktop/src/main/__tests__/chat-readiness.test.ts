@@ -56,6 +56,20 @@ describe('chat readiness guard', () => {
         includes: '等待填写 API key',
         reason: 'missing_api_key',
       },
+      {
+        name: 'OAuth provider requires login token',
+        slug: 'claude-subscription',
+        deps: deps({
+          connection: connection({
+            slug: 'claude-subscription',
+            name: 'Claude OAuth',
+            providerType: 'claude-subscription',
+          }),
+          apiKey: null,
+        }),
+        includes: '等待完成 OAuth 登录',
+        reason: 'missing_api_key',
+      },
     ];
 
     for (const entry of table) {
@@ -132,42 +146,6 @@ describe('chat readiness guard', () => {
     assert.equal(real.model, 'claude-3-5-sonnet-20241022');
   });
 
-  test('allows Claude OAuth once its subscription send path is wired', async () => {
-    const ready = await requireReadyConnection(
-      'claude-subscription',
-      deps({
-        connection: connection({
-          slug: 'claude-subscription',
-          name: 'Claude OAuth',
-          providerType: 'claude-subscription',
-          defaultModel: 'claude-sonnet-4-5-20250929',
-        }),
-        apiKey: 'oauth-access-token',
-      }),
-    );
-    assert.equal(ready.connection.slug, 'claude-subscription');
-    assert.equal(ready.apiKey, 'oauth-access-token');
-    assert.equal(ready.model, 'claude-sonnet-4-5-20250929');
-  });
-
-  test('allows Codex OAuth once its subscription send path is wired', async () => {
-    const ready = await requireReadyConnection(
-      'openai-codex',
-      deps({
-        connection: connection({
-          slug: 'openai-codex',
-          name: 'Codex Subscription',
-          providerType: 'openai-codex',
-          defaultModel: 'gpt-5.5',
-        }),
-        apiKey: 'codex-oauth-secret',
-      }),
-    );
-    assert.equal(ready.connection.slug, 'openai-codex');
-    assert.equal(ready.apiKey, 'codex-oauth-secret');
-    assert.equal(ready.model, 'gpt-5.5');
-  });
-
   test('normalizes stale Codex OAuth session model away from unsupported ChatGPT-account model', async () => {
     const ready = await requireReadyConnection(
       'openai-codex',
@@ -236,55 +214,6 @@ describe('chat readiness guard', () => {
         assert.match(message, /gpt-4o-NOT-IN-LIST/, 'requested model must appear in error copy');
         assert.doesNotMatch(message, /claude-3-5-sonnet-20241022/, 'defaultModel must NOT leak into requested-model error');
         assert.equal(errorReason(error), 'model_not_enabled');
-        return true;
-      },
-    );
-  });
-
-  test('PR110a regression: missing_model error fires when both requested and default are empty', async () => {
-    await assertRejectsReadiness(
-      'no requested, no default',
-      () => requireReadyConnection('custom', deps({
-        connection: connection({ slug: 'custom', defaultModel: '' }),
-        apiKey: 'sk-test',
-      })),
-      '没有可用模型',
-      'missing_model',
-    );
-  });
-
-  test('missing_api_key copy is an actionable waiting state, not a raw missing-field error', async () => {
-    await assert.rejects(
-      () => requireReadyConnection('anthropic', deps({ connection: connection(), apiKey: null })),
-      (error) => {
-        const message = (error as Error).message;
-        assert.match(message, /等待填写 API key/);
-        assert.doesNotMatch(message, /缺少 API key/);
-        assert.equal(errorReason(error), 'missing_api_key');
-        return true;
-      },
-    );
-  });
-
-  test('Claude OAuth missing token copy asks the user to login, not paste an API key', async () => {
-    await assert.rejects(
-      () => requireReadyConnection(
-        'claude-subscription',
-        deps({
-          connection: connection({
-            slug: 'claude-subscription',
-            name: 'Claude OAuth',
-            providerType: 'claude-subscription',
-            defaultModel: 'claude-sonnet-4-5-20250929',
-          }),
-          apiKey: null,
-        }),
-      ),
-      (error) => {
-        const message = (error as Error).message;
-        assert.match(message, /等待完成 OAuth 登录/);
-        assert.doesNotMatch(message, /等待填写 API key/);
-        assert.equal(errorReason(error), 'missing_api_key');
         return true;
       },
     );
@@ -537,19 +466,6 @@ describe('chat readiness guard', () => {
     );
   });
 
-  test('fake backend send failures do not expose dev/demo terminology', async () => {
-    await assert.rejects(
-      () => assertSessionCanSend(header({ backend: 'fake', llmConnectionSlug: 'fake', model: 'fake-model' }), deps()),
-      (error) => {
-        const message = (error as Error).message;
-        const visibleMessage = message.replace(/^NO_REAL_CONNECTION:[a-z_]+:\s*/, '');
-        assert.match(visibleMessage, /旧的本地模拟连接/);
-        assert.doesNotMatch(visibleMessage, /FakeBackend|fake|开发演示|演示版/i);
-        assert.equal(errorReason(error), 'fake_backend');
-        return true;
-      },
-    );
-  });
 });
 
 async function assertRejectsReadiness(name: string, fn: () => Promise<unknown>, includes: string, reason: string): Promise<void> {

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button as BaseButton } from '@base-ui/react/button';
-import { Item, Tab, TabList } from '@astryxdesign/core';
+import { Banner, Button, Item, Skeleton, Tab, TabList } from '@astryxdesign/core';
 import { ChevronRight, Search } from '@maka/ui/icons';
 import {
   CATALOG_PROVIDER_TYPES,
@@ -208,11 +207,11 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     return (
       <div className="providersPanel providersLoading" data-maka-contract="providers-panel" aria-busy="true" aria-label={copy.loadingAria}>
         <div className="providersLoadingStrip">
-          <div className="maka-skeleton maka-skeleton-line" data-size="lg" style={{ width: '34%' }} />
-          <div className="maka-skeleton maka-skeleton-line" data-size="sm" style={{ width: '52%' }} />
+          <Skeleton width="34%" height={16} radius="rounded" index={0} />
+          <Skeleton width="52%" height={9} radius="rounded" index={1} />
         </div>
         <div className="providersLoadingGrid">
-          {[0, 1, 2, 3, 4, 5].map((index) => <div key={index} className="maka-skeleton maka-skeleton-card" />)}
+          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={92} radius={3} index={index + 2} />)}
         </div>
       </div>
     );
@@ -231,10 +230,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             count={connections.length > 0 ? copy.count(connections.length) : undefined}
           />
           {loadError ? (
-            <BaseButton className="enabledEmptyChip enabledEmptyAction" type="button" onClick={() => void reload()}>
-              <strong>{copy.loadFailed}</strong>
-              <small>{loadError} · {copy.retry}</small>
-            </BaseButton>
+            <Banner
+              status="error"
+              title={copy.loadFailed}
+              description={loadError}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
           ) : connections.length === 0 ? (
             <div className="enabledEmptyChip" role="note">
               <strong>{copy.empty}</strong>

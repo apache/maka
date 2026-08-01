@@ -1175,7 +1175,17 @@ export class ShellRunProcessManager
     cause?: LifecycleCause,
   ): TerminationLifecycle | undefined {
     if (live.rootExited || live.finalizeOnce) return live.termination;
-    if (live.termination) return live.termination;
+    if (live.termination) {
+      // A timeout fired while termination was still waiting for the process
+      // (POSIX process discovery, child startup); a cancellation that arrives
+      // before the kill is applied should win, so callers observe 'cancelled'
+      // instead of a stale 'timed_out'. Once the process is gone (rootExited /
+      // finalizeOnce) we never reach this branch.
+      if (cause === 'cancel' && live.lifecycleCause === 'timeout') {
+        live.lifecycleCause = 'cancel';
+      }
+      return live.termination;
+    }
     const lifecycle = createTerminationLifecycle();
     live.termination = lifecycle;
     this.startTermination(live, lifecycle, cause, () => {

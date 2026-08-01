@@ -11,7 +11,7 @@ import {
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Alert, AlertDescription, AlertTitle, Badge, Button, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
+import { Badge, Button, FormLayout, TextInput, useMountedRef, useUiLocale, Banner } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
@@ -191,9 +191,7 @@ export function AddProviderForm(props: {
           hasAutoFocus
         />
         {error?.field === 'form' && (
-          <Alert variant="error">
-            <AlertDescription>{error.message}</AlertDescription>
-          </Alert>
+          <Banner status="error" title={error.message} />
         )}
         <div className="providerKeyDialogActions">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
@@ -209,12 +207,12 @@ export function AddProviderForm(props: {
         <Badge variant="neutral" label={categoryLabel(defaults.category, locale)} />
       </div>
       {isExperimental && (
-        <Alert variant="info">
-          <AlertTitle>{isWiredOAuth ? copy.wiredTitle : copy.unwiredTitle}</AlertTitle>
-          <AlertDescription>{isWiredOAuth
+        <Banner
+          status="info"
+          title={isWiredOAuth ? copy.wiredTitle : copy.unwiredTitle}
+          description={isWiredOAuth
             ? copy.wiredDetail
-            : copy.unwiredDetail}</AlertDescription>
-        </Alert>
+            : copy.unwiredDetail} />
       )}
       <FormLayout>
         {supportsApiKey && (
@@ -313,9 +311,7 @@ export function AddProviderForm(props: {
         )}
       </FormLayout>
       {error?.field === 'form' && (
-        <Alert variant="error">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
+        <Banner status="error" title={error.message} />
       )}
       <div className="providerActions">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />

@@ -8,8 +8,6 @@ import type {
 } from '@maka/core';
 import { defaultVoiceCaptureCaps, validateVoiceCaptureRequest } from '@maka/core';
 import {
-  Alert,
-  AlertDescription,
   Badge,
   Button,
   FormLayout,
@@ -21,6 +19,7 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { getVoiceSettingsCopy, type VoiceSettingsCopy } from '../locales/settings-voice-copy';
 import { AddProviderForm } from './provider-add-form';
@@ -421,7 +420,6 @@ export function VoiceModelsSettingsPage(props: {
         badge={<Badge variant="neutral" label={copy.badge} />}
         subtitle={copy.subtitle}
       />
-
       <div className="settingsFeatureStatusHeroHeading">
         <h3>{copy.recognitionTitle}</h3>
       </div>
@@ -498,11 +496,8 @@ export function VoiceModelsSettingsPage(props: {
         />
       </div>
       {recognitionTest ? (
-        <Alert variant="passive" role="status">
-          <AlertDescription>{recognitionTest}</AlertDescription>
-        </Alert>
+        <Banner status="info" role="status" title={recognitionTest} />
       ) : null}
-
       {recognitionDialog?.kind === 'create' ? (
         <ProviderConnectionDialog
           title={copy.createRecognitionConnectionTitle}
@@ -524,7 +519,6 @@ export function VoiceModelsSettingsPage(props: {
           />
         </ProviderConnectionDialog>
       ) : null}
-
       {recognitionDialog?.kind === 'edit' ? (
         <ProviderConnectionDialog
           title={copy.editRecognitionConnectionTitle}
@@ -544,7 +538,6 @@ export function VoiceModelsSettingsPage(props: {
           />
         </ProviderConnectionDialog>
       ) : null}
-
       <div className="settingsFeatureStatusHeroHeading">
         <h3>{copy.realtimeTitle}</h3>
       </div>
@@ -576,7 +569,6 @@ export function VoiceModelsSettingsPage(props: {
           onBlur={() => void updateVoice({ realtime: { voice: realtimeDraft.voice } })}
         />
       </FormLayout>
-
       <dl className="settingsBotStatusGrid" aria-label={copy.statusAria}>
         <div>
           <dt>{copy.microphone}</dt>
@@ -595,7 +587,6 @@ export function VoiceModelsSettingsPage(props: {
           <dd>{copy.privacyValue}</dd>
         </div>
       </dl>
-
       <div className="settingsActionRow">
         <Button
           variant="primary"
@@ -607,15 +598,11 @@ export function VoiceModelsSettingsPage(props: {
           label={isBusy ? copy.checking : copy.run}
         />
       </div>
-
-      <Alert
+      <Banner
+        status={smoke.status === 'error' ? 'error' : smoke.status === 'ok' ? 'success' : 'info'}
         id={smokeStatusId}
-        variant={smoke.status === 'error' ? 'error' : smoke.status === 'ok' ? 'success' : 'passive'}
         role="status"
-      >
-        <AlertDescription>{voiceSmokeMessage(smoke, copy)}</AlertDescription>
-      </Alert>
-
+        title={voiceSmokeMessage(smoke, copy)} />
       <div className="settingsFeatureStatusHeroHeading">
         <h3>{copy.boundary}</h3>
       </div>

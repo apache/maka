@@ -6,7 +6,7 @@ import type {
 } from '@maka/core';
 import { HEALTH_SIGNAL_LAYERS } from '@maka/core';
 import { Item } from '@astryxdesign/core';
-import { Alert, AlertAction, AlertDescription, AlertTitle, Button, Badge, RelativeTime, SectionHeader, StatTile, useUiLocale } from '@maka/ui';
+import { Button, Badge, RelativeTime, SectionHeader, StatTile, useUiLocale, Banner } from '@maka/ui';
 import { getHealthCenterCopy, type HealthCenterCopy } from '../locales/settings-health-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsSkeletonStack } from './settings-skeleton';
@@ -65,13 +65,11 @@ export function HealthCenterPage() {
   if (error || !snapshot) {
     return (
       <div className="settingsHealthPage">
-        <Alert variant="error">
-          <AlertTitle>{copy.readFailed}</AlertTitle>
-          <AlertDescription>{error ?? copy.noData}</AlertDescription>
-          <AlertAction>
-            <Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />
-          </AlertAction>
-        </Alert>
+        <Banner
+          status="error"
+          title={copy.readFailed}
+          description={error ?? copy.noData}
+          endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />} />
       </div>
     );
   }

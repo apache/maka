@@ -26,7 +26,7 @@ import { test, expect } from './fixtures';
 async function probeNoticeAlignment(page: import('@playwright/test').Page) {
   return await page.evaluate(() => {
     const notice = document.querySelector<HTMLElement>('.maka-session-health-notice');
-    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-inner');
+    const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
     if (!notice || !composer) {
       throw new Error('Expected both the health notice and the composer card to be mounted');
     }

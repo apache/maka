@@ -139,10 +139,6 @@
   color: var(--muted-foreground);
 }
 
-.maka-browser-empty-hint {
-  max-width: 280px;
-}
-
 .maka-artifact-pane {
   width: 100%;
   height: 100%;
@@ -159,34 +155,7 @@
 }
 
 .maka-artifact-list-error {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  gap: var(--space-2);
-  align-items: start;
   margin: var(--space-2);
-  padding: var(--space-2);
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.28);
-  border-radius: var(--radius-surface);
-  background: oklch(from var(--warning) l c h / 0.08);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-}
-
-.maka-artifact-list-error svg {
-  color: var(--warning-text, var(--info-text));
-}
-
-.maka-artifact-list-error strong {
-  display: block;
-  margin-bottom: var(--space-0-5);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-artifact-list-error p {
-  margin: 0;
-  color: var(--foreground-secondary);
-  overflow-wrap: anywhere;
 }
 
 .maka-artifact-list {
@@ -436,10 +405,7 @@
 }
 
 .maka-artifact-preview-spinner {
-  width: 12px;
-  height: 12px;
   flex: 0 0 auto;
-  color: var(--status-running);
 }
 
 .maka-artifact-preview-fail {

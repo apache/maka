@@ -15,13 +15,18 @@ import { SessionSidebarFooter, SessionSidebarNav, type SidebarUpdateReminder } f
 import { ListTodo } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { SideNav } from '@astryxdesign/core/SideNav';
+import {
+  SideNav,
+  type SideNavImperativeCollapseHandle,
+} from '@astryxdesign/core/SideNav';
+import type { Ref } from 'react';
 
 export type SessionViewMode = 'conversation' | 'project';
 
 export function SessionListPanel(props: {
   collapsed?: boolean;
   onCollapsedChange?(collapsed: boolean): void;
+  collapseHandleRef?: Ref<SideNavImperativeCollapseHandle>;
   width?: number;
   onWidthChange?(width: number): void;
   minWidth?: number;
@@ -62,6 +67,7 @@ export function SessionListPanel(props: {
 
   return (
     <SideNav
+      handleRef={props.collapseHandleRef}
       className="maka-session-panel agents-sidebar"
       aria-label={copy.listAriaLabel}
       collapsible={{

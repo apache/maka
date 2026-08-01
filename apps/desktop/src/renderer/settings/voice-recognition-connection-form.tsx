@@ -7,15 +7,7 @@ import {
 import {
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
-import {
-  Alert,
-  AlertDescription,
-  Button,
-  FormLayout,
-  TextInput,
-  useMountedRef,
-  useUiLocale,
-} from '@maka/ui';
+import { Button, FormLayout, TextInput, useMountedRef, useUiLocale, Banner } from '@maka/ui';
 import { getVoiceSettingsCopy } from '../locales/settings-voice-copy';
 import { PasswordInput } from './password-input';
 import {
@@ -136,9 +128,7 @@ export function VoiceRecognitionConnectionForm(props: {
         />
       </FormLayout>
       {error?.field === 'form' ? (
-        <Alert variant="error">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
+        <Banner status="error" title={error.message} />
       ) : null}
       <div className="providerActions">
         <Button

@@ -60,18 +60,6 @@
   contain: layout paint style;
 }
 
-.agents-content-area {
-  flex: 1 1 auto;
-  /* PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `486b5611`): zero left
-     margin made the content card butt up against the sidebar;
-     gradient-meets-flat seam read as a visible border line. The
-     panel is a floating card — give it a left gap too. */
-  margin: var(--agents-content-area-gap);
-  border-radius: var(--radius-modal);
-  background: var(--agents-content-area-bg);
-  transition: margin-left var(--duration-base) var(--ease-out-strong);
-}
-
 /* `.agents-parchment-paper-surface` is reused by the composer body. The bare
    class drops its border; Astryx ChatComposer owns composer chrome. */
 .agents-parchment-paper-surface {

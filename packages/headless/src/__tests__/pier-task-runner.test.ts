@@ -18,6 +18,7 @@ import { CODEX_TOOLCHAIN_FINGERPRINT, CODEX_TOOLCHAIN_SPEC } from '../codex-tool
 import { OPENCODE_TOOLCHAIN_FINGERPRINT, OPENCODE_TOOLCHAIN_SPEC } from '../opencode-toolchain.js';
 import { findTrialDir } from '../harbor-task-runner.js';
 import { MAKA_NODE_TOOLCHAIN_FINGERPRINT } from '../maka-node-toolchain.js';
+import type { ProviderRequestTelemetry } from '../provider-auth-proxy.js';
 import {
   buildPierRunArgs,
   createPierProviderProxyHub,
@@ -1470,6 +1471,63 @@ test('createPierTaskRunner requires the OpenCode toolchain mount for the OpenCod
       }),
     );
     await assert.rejects(runner(runInput()), /opencodeToolchainPath is required/);
+  });
+});
+
+test('createPierTaskRunner rejects a Pier cell whose terminal provider stream is incomplete', async () => {
+  await withDirs(async ({ jobsDir, repo }) => {
+    const makeRunner = (outcome: ProviderRequestTelemetry['outcome']) =>
+      createPierTaskRunner(
+        baseOptions({
+          jobsDir,
+          makaRepoPath: repo,
+          agent: 'opencode',
+          agentVersion: OPENCODE_TOOLCHAIN_SPEC.opencode.version,
+          backend: 'ai-sdk',
+          provider: 'deepseek',
+          model: 'deepseek-v4-flash',
+          reasoningEffort: 'max',
+          opencodeToolchainPath: repo,
+          apiKeyFile: '/secrets/deepseek.key',
+          providerProxyHub: {
+            baseUrl: 'http://host.docker.internal:443',
+            issue: () => ({
+              baseUrl: 'http://host.docker.internal:443',
+              token: 'ephemeral-token',
+              usage: () => null,
+              telemetry: () => [
+                {
+                  requestId: 1,
+                  method: 'POST',
+                  path: '/chat/completions',
+                  status: 200,
+                  outcome,
+                  durationMs: 5,
+                  bodyChunks: 1,
+                  responseBytes: 64,
+                  terminalEvent: outcome === 'completed',
+                },
+              ],
+              close: async () => {},
+            }),
+            close: async () => {},
+          },
+          runPier: fakePier({ reward: 0 }),
+        }),
+      );
+
+    // A 200 stream without its protocol terminal event means the provider
+    // response is incomplete: same infra classification as the Harbor runner,
+    // never a graded model failure.
+    await assert.rejects(makeRunner('interrupted')(runInput()), (error: unknown) => {
+      assert.ok(error instanceof PierInfraError);
+      assert.match(error.message, /terminal provider request did not complete/);
+      assert.ok(error.artifactRefs?.providerTelemetryPath);
+      return true;
+    });
+    // A completed terminal request takes the normal reward path.
+    const output = await makeRunner('completed')(runInput());
+    assert.equal(output.harbor.reward, 0);
   });
 });
 

@@ -74,7 +74,7 @@ const plainBlock = code('', 'plain or unknown\nindented sample');
 export const RichAssistantAnswer: Story = {
   render: () => (
     <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '## 改动思路',
@@ -109,7 +109,7 @@ export const RichAssistantAnswer: Story = {
 export const CodeBlockVariety: Story = {
   render: () => (
     <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '下面是几种常见代码块，用来核对语言标签和复制按钮。',
@@ -134,7 +134,7 @@ export const CodeBlockVariety: Story = {
 export const ListsAndQuote: Story = {
   render: () => (
     <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '可以按下面顺序处理：',
@@ -164,7 +164,7 @@ export const LinkRouting: Story = {
   render: () => (
     <ProseFrame>
       <MakaUriContext.Provider value={noop}>
-        <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
+        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
           <Markdown
             text={[
               '这里有三类链接，用来核对内部路由和安全过滤。',
@@ -197,7 +197,7 @@ export const LinkRouting: Story = {
 export const WideTable: Story = {
   render: () => (
     <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '列多且内容长的表格会在正文宽度内横向滚动：',
@@ -220,7 +220,7 @@ export const WideTable: Story = {
 export const LongFormArticle: Story = {
   render: () => (
     <ProseFrame width={680}>
-      <ChatMessageBubble variant="ghost" className="maka-bubble-with-actions maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '# Storybook 表面覆盖：为什么单独可看很重要',

@@ -152,6 +152,9 @@ export interface RunFixedPromptControllerInput {
   /** Refuse resume when a model attempt was durably admitted but no terminal
    * event exists, preserving single-sample benchmark semantics. */
   protectPassAtOne?: boolean;
+  /** Permit exactly one additional attempt for explicitly adjudicated terminal
+   * infra failures. The durable attempt WAL prevents a third attempt. */
+  retryAdjudicatedInfraTaskIdsOnce?: readonly string[];
   taskRunner: TaskRunner;
   now?: () => number;
   newId?: () => string;
@@ -203,6 +206,16 @@ export async function runFixedPromptController(
     input.resumeFingerprint,
     terminalInfraFailures,
   );
+  permitAdjudicatedInfraRetries({
+    taskIds: input.retryAdjudicatedInfraTaskIdsOnce ?? [],
+    tasks: input.tasks,
+    completed,
+    attemptEvents,
+    runId: input.runId,
+    roundId: input.roundId,
+    expectedPromptHash,
+    resumeFingerprint: input.resumeFingerprint,
+  });
   const orphanedAttempts = orphanedTaskAttempts(
     [...attemptEvents, ...events],
     input.runId,
@@ -324,6 +337,39 @@ export async function runFixedPromptController(
     ...(input.resultsTsvPath !== undefined ? { resultsTsvPath: input.resultsTsvPath } : {}),
     ...(stopReason ? { stopReason } : {}),
   };
+}
+
+function permitAdjudicatedInfraRetries(input: {
+  taskIds: readonly string[];
+  tasks: readonly FixedPromptTask[];
+  completed: Map<string, FixedPromptTaskWalEvent>;
+  attemptEvents: readonly FixedPromptWalEvent[];
+  runId: string;
+  roundId: string;
+  expectedPromptHash: string;
+  resumeFingerprint?: string;
+}): void {
+  assertUniqueTaskIds(input.taskIds);
+  const configuredTaskIds = new Set(input.tasks.map((task) => task.id));
+  for (const taskId of input.taskIds) {
+    if (!configuredTaskIds.has(taskId)) {
+      throw new Error(`adjudicated infra retry names unknown task ${taskId}`);
+    }
+    const terminal = input.completed.get(taskId);
+    if (terminal?.type !== 'task_infra_failed') {
+      throw new Error(`adjudicated infra retry requires a terminal infra failure for ${taskId}`);
+    }
+    const admittedAttempts = input.attemptEvents.filter(
+      (event) =>
+        event.type === 'task_attempt_started' &&
+        event.runId === input.runId &&
+        event.roundId === input.roundId &&
+        event.taskId === taskId &&
+        event.promptHash === input.expectedPromptHash &&
+        event.resumeFingerprint === input.resumeFingerprint,
+    ).length;
+    if (admittedAttempts === 1) input.completed.delete(taskId);
+  }
 }
 
 function assertUniqueTaskIds(taskIds: readonly string[]): void {
@@ -653,7 +699,7 @@ function taskCompletedEvent(input: {
   ts: number;
 }): FixedPromptTaskCompletedEvent {
   const { output } = input;
-  const promptHash = output.cell.promptHash ?? output.cell.executionIdentity?.systemPromptHash;
+  const promptHash = attestedPromptHash(output.cell);
   const deadlineSettled = output.cell.deadlineSettlement?.source === 'benchmark.deadline';
   const verifierGrade = structuredVerifierGrade(output.harbor);
   const verifierGraded =
@@ -814,16 +860,17 @@ function classifyPlumbingFailure(
     expectedPricingProfile,
   );
   if (identityFailure) return identityFailure;
-  if (output.cell.status === 'completed' && output.cell.promptHash === undefined) {
+  const promptHash = attestedPromptHash(output.cell);
+  if (output.cell.status === 'completed' && promptHash === undefined) {
     return {
       errorClass: 'missing_prompt_hash',
       error: `Harbor cell did not report prompt hash ${expectedPromptHash}`,
     };
   }
-  if (output.cell.promptHash !== undefined && output.cell.promptHash !== expectedPromptHash) {
+  if (promptHash !== undefined && promptHash !== expectedPromptHash) {
     return {
       errorClass: 'prompt_hash_mismatch',
-      error: `Harbor cell prompt hash ${output.cell.promptHash} did not match ${expectedPromptHash}`,
+      error: `Harbor cell prompt hash ${promptHash} did not match ${expectedPromptHash}`,
     };
   }
   if (requireFinalUsage && output.cell.tokenSummary === undefined) {
@@ -844,6 +891,10 @@ function classifyPlumbingFailure(
     };
   }
   return undefined;
+}
+
+function attestedPromptHash(cell: TaskRunOutput['cell']): string | undefined {
+  return cell.promptHash ?? cell.executionIdentity?.systemPromptHash;
 }
 
 function classifyExecutionIdentityFailure(

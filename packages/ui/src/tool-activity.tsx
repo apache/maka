@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ComponentType } from 'react';
 import type { ToolResultContent } from '@maka/core';
 import {
-  AlertOctagon,
   Check,
   Clock,
   Copy,
@@ -44,15 +43,16 @@ import {
   withLiveStreamFallback,
 } from './tool-activity/result-projection.js';
 import { isSandboxDeniedTool } from './tool-activity/sandbox-denial.js';
-import { Alert, AlertAction, AlertDescription, AlertTitle } from './primitives/alert.js';
 import { previewVariants, TextShimmer, toolVariants } from './primitives/chat.js';
 import { redactSecrets } from './redact.js';
 import {
   Button as UiButton,
+  Banner,
   ChatToolCalls,
   Collapsible as AstryxCollapsible,
   type ChatToolCallItem,
 } from '@astryxdesign/core';
+import { ToolCodeBlock, ToolDetailReveal } from './tool-activity/tool-code-block.js';
 import { cn } from './ui.js';
 import { describeLoadToolResult, formatToolIntent } from './tool-format.js';
 import {
@@ -206,11 +206,7 @@ export function ToolActivity(props: {
 
 function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; open?: boolean }) {
   const locale = useUiLocale();
-  // Ordinary work stays summarized. A new permission prompt opens the
-  // diagnostics (it is actionable); an errored tool stays collapsed — the
-  // failure signal lives on the summary line. An explicit user toggle survives
-  // later ordinary status changes. Keep this controlled: an Astryx
-  // `defaultIsOpen` would lose that product-level state transition.
+  // Controlled disclosure: product open-on-permission state, not Astryx defaultIsOpen.
   const presentation = deriveToolActivityPresentation(item, locale);
   const disclosure = useToolDisclosure(presentation);
   const open = openProp ?? disclosure.open;
@@ -234,40 +230,32 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
         </span>
       )}
     >
-      {open ? <ToolCardBody item={item} /> : null}
+      {open ? (
+        <ToolDetailReveal>
+          <ToolCardBody item={item} />
+        </ToolDetailReveal>
+      ) : null}
     </AstryxCollapsible>
   );
 }
 
-/**
- * The tool detail body — error banner + one Codex-like output well for
- * command/args, live stream, and structured results. Shared by the boxed
- * `ToolActivityCard` and flat trow rows. Args/results route through
- * quiet formatters (tool-args-redaction-contract / quiet-panel contracts).
- */
 function ToolCardBody({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
   const cancelled = isCancelledToolResult(item.result);
   const sandboxBlocked = isSandboxDeniedTool(item);
-  // Cancel maps to interrupted at materialize/live-projection; keep defensive
-  // checks so a stale errored+cancelled item still does not look like failure.
+  // Cancel is not a failure; stale errored+cancelled must not paint as failed.
   const failedOutcome = item.status === 'errored' && !cancelled;
-  const errored = failedOutcome && !sandboxBlocked;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = item.status === 'running' || item.status === 'pending';
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
-  // Rich kinds + tool-specific cards own their chrome — never nest in the shared well.
   const ownsPanel = resultOwnsOwnPanel(item);
-  const showErrorBanner = failedOutcome && !ptyControlResult;
-  // Every tool: human invocation line from args — never pretty-printed JSON.
-  // Skip when the result panel already prints the command (terminal/shell_run).
+  // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
+  const showSandboxBanner = sandboxBlocked && failedOutcome && !ptyControlResult;
+  // Skip invocation when the owned panel already prints the command.
   const invocationLine = !permissionDenied && !ownsPanel
     ? formatToolInvocationLine(item, locale)
     : undefined;
-  // While running the live stream is the output; once a structured result
-  // preview exists it is the single quiet output block — never render both.
-  // Owned terminal/shell_run panels absorb an empty-body handoff via
-  // withLiveStreamFallback (never a second live panel).
+  // Live stream or settled result — never both (owned panels use withLiveStreamFallback).
   const showLiveStream = !!item.outputChunks
     && item.outputChunks.length > 0
     && !ownsPanel
@@ -283,31 +271,25 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
     displayResult?.kind === 'json'
       ? formatQuietJsonValue(displayResult.value, locale)
       : undefined;
-  // Keep the invocation line whenever args yield one. Only add a result
-  // headline when it says something different (avoids dropping Write/Edit paths
-  // when path === path).
+  // Drop headline when it duplicates the invocation (e.g. Write path === path).
   const showInvocation = invocationLine !== undefined;
   const resultHeadline = quietJson?.headline
     && quietJson.headline !== invocationLine
     ? quietJson.headline
     : undefined;
-  // Owned-panel kinds render alone. Everything else shares one quiet well.
   const hasSharedPanelContent =
     !ownsPanel && (
       showInvocation
       || !!resultHeadline
       || showLiveStream
-      || (showResult && !failedOutcome)
+      || showResult
       || (!!item.args && !permissionDenied && !invocationLine && !showResult && !showLiveStream)
     );
 
   return (
     <div className="mt-1 flex flex-col gap-1.5">
-      {showErrorBanner && (
-        <ToolErrorBanner
-          result={displayResult ?? item.result}
-          sandboxBlocked={sandboxBlocked}
-        />
+      {showSandboxBanner && (
+        <SandboxBlockedBanner result={displayResult ?? item.result} />
       )}
       {showResult && ownsPanel && displayResult && (
         isConnectorTool(item.toolName) && displayResult.kind === 'json' ? (
@@ -324,50 +306,48 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
         )
       )}
       {hasSharedPanelContent && (
-        <div
-          data-slot="tool-output"
-          className={cn(
-            TOOL_OUTPUT_PANEL_CLASS,
-            errored && 'border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]',
-            sandboxBlocked && 'border-[oklch(from_var(--warning)_l_c_h_/_0.32)]',
-          )}
-        >
-          {showInvocation && (
-            <code className={TOOL_OUTPUT_COMMAND_CLASS}>{invocationLine}</code>
-          )}
-          {resultHeadline && (
-            <code className={TOOL_OUTPUT_COMMAND_CLASS}>{resultHeadline}</code>
-          )}
-          {/* No formatRedactedJson dump — if invocation failed, quiet-format args. */}
-          {!showInvocation && !resultHeadline && item.args !== undefined && !permissionDenied && !showResult && (
-            <pre className={cn(TOOL_OUTPUT_BODY_CLASS, 'max-h-40')}>
-              {formatQuietJsonValue(item.args, locale).body}
-            </pre>
-          )}
+        <div data-slot="tool-output" className="mt-1 flex min-w-0 flex-col gap-1.5">
           {showLiveStream && (
-            <ToolOutputStream
-              chunks={item.outputChunks!}
-              live={running}
-              truncated={item.outputTruncated === true}
-            />
+            <>
+              {showInvocation && invocationLine ? (
+                <ToolCodeBlock code={invocationLine} />
+              ) : null}
+              <ToolOutputStream
+                chunks={item.outputChunks!}
+                live={running}
+                truncated={item.outputTruncated === true}
+              />
+            </>
           )}
-          {showResult && !ownsPanel && displayResult && !errored && (
-            quietJson ? (
-              <pre className={TOOL_OUTPUT_BODY_CLASS}>{quietJson.body}</pre>
-            ) : (
-              <ToolResultPreview content={displayResult} toolName={item.toolName} />
-            )
-          )}
+          {!showLiveStream && (() => {
+            const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
+              && !permissionDenied && !showResult
+              ? formatQuietJsonValue(item.args, locale).body
+              : undefined;
+            const body = quietJson?.body ?? argsBody;
+            const title = resultHeadline ?? (showInvocation ? invocationLine : undefined);
+            if (body) {
+              return (
+                <ToolCodeBlock
+                  code={body}
+                  // Only raw args dumps are JSON; quiet bodies stay untokenized.
+                  language={argsBody ? 'json' : undefined}
+                  title={title}
+                />
+              );
+            }
+            if (showInvocation && invocationLine && !showResult) {
+              return <ToolCodeBlock code={invocationLine} />;
+            }
+            if (showResult && !ownsPanel && displayResult) {
+              return <ToolResultPreview content={displayResult} toolName={item.toolName} />;
+            }
+            if (showInvocation && invocationLine) {
+              return <ToolCodeBlock code={invocationLine} />;
+            }
+            return null;
+          })()}
         </div>
-      )}
-      {errored && showResult && displayResult && !ownsPanel && (
-        <ToolErrorDetails>
-          {quietJson ? (
-            <pre className={TOOL_OUTPUT_BODY_CLASS}>{quietJson.body}</pre>
-          ) : (
-            <ToolResultPreview content={displayResult} />
-          )}
-        </ToolErrorDetails>
       )}
     </div>
   );
@@ -392,24 +372,10 @@ export function ToolKindIcon({ kind, ...props }: LucideProps & { kind: TrowActiv
   return <Icon {...props} />;
 }
 
-// #646 run→done seam: the one-shot settle "landing" for the group summary line.
-// Reuses the whitelisted `maka-stream-fade-in` keyframe (opacity 0→1, one-shot
-// `both`) — no new keyframe (design-406 governance) — and rides
-// `var(--duration-emphasized)` / `var(--ease-out-strong)` so it converges with
-// the motion tokens. Applied only when the group was seen running here and
-// just settled, so a replayed transcript's summary stays static. Auto-frozen
-// under reduced-motion / e2e-fixture by the global rules in styles/base.css.
-// The per-row seam is a light-band stop (no opacity fade) so parallel tools
-// finishing together don't stack N fades (#tool-jitter).
+// Group settle landing; only when the group was seen running this session.
 export const SETTLE_FADE = '[animation:maka-stream-fade-in_var(--duration-emphasized)_var(--ease-out-strong)_both]';
 
-/**
- * Ordinary tool activity is rendered by Astryx ChatToolCalls, including its
- * native single-row/group geometry, status icons, keyboard disclosure, and
- * detail placement. Maka keeps a product-owned disclosure only for states the
- * Astryx status model cannot express: permission prompts, sandbox denials, and
- * interrupted calls.
- */
+/** Astryx ChatToolCalls for ordinary tools; product trow for permission/sandbox/interrupted. */
 export function ToolTrow({
   items,
   variant = 'group',
@@ -456,7 +422,11 @@ function AstryxToolCalls({ items }: { items: ToolActivityItem[] }) {
           locale,
         )).replace(/^Error:\s*/i, '')
       : undefined,
-    resultDetail: <ToolCardBody item={item} />,
+    resultDetail: (
+      <ToolDetailReveal>
+        <ToolCardBody item={item} />
+      </ToolDetailReveal>
+    ),
   }));
 
   return (
@@ -472,20 +442,9 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
   const locale = useUiLocale();
   const running = isTrowRunning(items);
   const attention = trowNeedsAttention(items);
-  // The group's presentation follows the first item (the first-seen bucket the
-  // summary clauses and icon use). The active-tool lookup is gone: a multi-tool
-  // running group shows the whole-group aggregation, a single-tool group's
-  // active tool is items[0] anyway, and disclosure attention is overridden by
-  // the whole-group trowNeedsAttention below.
   const firstPresentation = deriveToolActivityPresentation(items[0]!, locale);
-  // Groups share the same disclosure state as a single row: ordinary work is
-  // summarized; a new permission prompt opens diagnostics (errors stay
-  // collapsed — the summary line carries the failure signal); manual choice
-  // survives ordinary status changes.
   const disclosure = useToolDisclosure({ ...firstPresentation, needsAttention: attention });
-  // #646: a group settles when all its tools do; the settle fade plays only if
-  // the group was ever seen running here (not a replayed transcript). The
-  // delayed shimmer de-flickers a group whose tools all finish sub-second.
+  // Settle fade only if this session saw the group running (not a replayed transcript).
   const everRunningRef = useRef(false);
   if (running) everRunningRef.current = true;
   const settled = !running;
@@ -499,15 +458,7 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
     : hasSandboxBlocked
       ? 'text-[color:var(--warning-text,var(--info-text))]'
       : 'text-[color:var(--muted-foreground)]';
-  // #tool-jitter: the group icon stays on the first bucket's kind (the same
-  // first-seen order the summary clauses use), not the active tool's kind — so
-  // a mixed-kind group's icon doesn't flip as the active tool changes mid-run.
-  // Multi-tool running group shows the whole-group bucket aggregation with a
-  // "正在" prefix instead of the active tool's description, so the summary line
-  // stops cycling through each tool's intent as tools start/finish in
-  // parallel (the 1234567 jitter). Single-tool rows keep the tool's own
-  // description — the "what exactly is running" signal is useful when there is
-  // only one, and it is locked by existing tests.
+  // Icon + multi-tool summary stay first-bucket stable so parallel tools don't jitter.
   const summary = running
     ? (items.length > 1 ? summarizeTrowTools(items, { live: true, locale }) : firstPresentation.summary)
     : summarizeTrowTools(items, { locale });
@@ -519,62 +470,50 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
       isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className="flex min-w-0 items-center gap-2 py-0.5">
+        <span className="flex min-w-0 items-center gap-[length:var(--spacing-1-5,0.375rem)] py-0.5">
           <ToolKindIcon kind={firstPresentation.kind} size={16} aria-hidden="true" className={cn('shrink-0', settledTone)} />
           {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{summary}</TextShimmer>
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium">{summary}</TextShimmer>
           ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', settledTone, settling && SETTLE_FADE)}>{summary}</span>
+            <span className={cn('min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium', settledTone, settling && SETTLE_FADE)}>{summary}</span>
           )}
         </span>
       )}
     >
       {disclosure.open
-        ? (items.length === 1 ? (
-            <ToolCardBody item={items[0]!} />
-          ) : (
-            <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
-              {items.map((item) => (
-                <ToolTrowRow key={item.toolUseId} item={item} />
-              ))}
-            </div>
-          ))
+        ? (
+          <ToolDetailReveal>
+            {items.length === 1 ? (
+              <ToolCardBody item={items[0]!} />
+            ) : (
+              <div className="mt-0.5 ml-2 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+                {items.map((item) => (
+                  <ToolTrowRow key={item.toolUseId} item={item} />
+                ))}
+              </div>
+            )}
+          </ToolDetailReveal>
+        )
         : null}
     </AstryxCollapsible>
   );
 }
 
-/**
- * A single flat, borderless tool row inside a multi-tool trow. Ordinary work
- * is collapsed; permission prompts open for attention (errors stay collapsed —
- * the summary line carries the failure signal), and a user's manual choice
- * survives later ordinary status changes. No card frame
- * (`toolVariants({item})`), per the flat trow visual language.
- */
 function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
   const presentation = deriveToolActivityPresentation(item, locale);
   const disclosure = useToolDisclosure(presentation);
   const duration = formatDuration(item.durationMs);
-  // #tool-jitter: a row settles by its shimmer stopping — the same seam as the
-  // 深度思考 disclosure title (light band → static muted text), with no opacity
-  // fade. Parallel tools finishing together each just drop their light band
-  // instead of stacking N opacity-0→1 fades, so a batch settle no longer 1234567.
   const running = isToolRowRunning(item.status);
   const settled = isToolRowSettled(item.status);
   const sandboxBlocked = isSandboxDeniedTool(item);
   const errored = item.status === 'errored' && !sandboxBlocked;
-  // One row language with the multi-tool summary row: a kind icon + a
-  // user-language phrase, never the old status-dot + mono tool-name + status
-  // word. Running shimmers the model's intent (or the friendly tool name);
-  // settled prefers the intent, falls back to the display name.
   const summaryTone = errored
     ? 'text-[color:var(--destructive)]'
     : sandboxBlocked
       ? 'text-[color:var(--warning-text,var(--info-text))]'
       : 'text-[color:var(--muted-foreground)]';
-  // Settled attention states stay collapsed, so tint alone is not enough:
-  // spell out whether the operation failed or the sandbox blocked it.
+  // Collapsed rows still need a word for fail/block; tint alone is not enough.
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
     <AstryxCollapsible
@@ -585,7 +524,7 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
       isOpen={disclosure.open}
       onOpenChange={disclosure.setOpen}
       trigger={(
-        <span className="flex min-w-0 items-center gap-2 py-0.5">
+        <span className="flex min-w-0 items-center gap-[length:var(--spacing-1-5,0.375rem)] py-0.5">
           <ToolKindIcon
             kind={presentation.kind}
             size={16}
@@ -593,9 +532,9 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
             className={cn('shrink-0', summaryTone)}
           />
           {running ? (
-            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--font-size-base)]">{presentation.summary}</TextShimmer>
+            <TextShimmer active delayed className="min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium">{presentation.summary}</TextShimmer>
           ) : (
-            <span className={cn('min-w-0 truncate text-[length:var(--font-size-base)]', summaryTone)}>
+            <span className={cn('min-w-0 truncate text-[length:var(--text-supporting-size)] font-medium', summaryTone)}>
               {errored
                 ? `${rowLabel} · ${getToolActivityCopy(locale).group.failedSuffix}`
                 : sandboxBlocked
@@ -604,29 +543,22 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
             </span>
           )}
           {duration && (
-            <span className="shrink-0 text-[length:var(--font-size-caption)] text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]">
+            <span className="shrink-0 text-[length:var(--text-supporting-size)] text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]">
               {duration}
             </span>
           )}
         </span>
       )}
     >
-      {disclosure.open ? <ToolCardBody item={item} /> : null}
+      {disclosure.open ? (
+        <ToolDetailReveal>
+          <ToolCardBody item={item} />
+        </ToolDetailReveal>
+      ) : null}
     </AstryxCollapsible>
   );
 }
 
-/**
- * Live stdout/stderr body for the unified tool-output panel.
- *
- * No second card shell and no "实时输出" header — the parent panel is the
- * only chrome. Chunks keep stream tags so stderr can tint destructive.
- * Redacted chunks still surface an inline "[已脱敏]" hint. Truncation is a
- * quiet footer note, not a flag row.
- *
- * Auto-scroll: while `live` is true, anchor to the bottom on every chunk
- * update; stop once the tool settles so the user can scroll history.
- */
 function ToolOutputStream(props: {
   chunks: ToolOutputChunk[];
   live: boolean;
@@ -671,20 +603,14 @@ function ToolOutputStream(props: {
   );
 }
 
-// Preserve the retired `.maka-tool-error*` leaf utilities onto Alert (#332 PR3c) —
-// Alert owns the shell; these are the few declarations it doesn't set, kept arbitrary
-// so they map 1:1 to the old CSS (`[align-self:start]`, not Tailwind's `flex-start`).
-function ToolErrorBanner(props: {
+/** Warning banner only for sandbox denials; ordinary failures use row status + wells. */
+function SandboxBlockedBanner(props: {
   result: ToolActivityItem['result'];
-  sandboxBlocked?: boolean;
 }) {
   const locale = useUiLocale();
   const copyText = getToolActivityCopy(locale);
-  const bannerCopy = props.sandboxBlocked ? copyText.sandboxBlocked : copyText.error;
-  // Tool stderr / raw provider errors occasionally slip credential paths,
-  // bearer tokens, or API keys through main-side redaction. Apply a
-  // defensive UI-level mask before display *and* before clipboard copy so
-  // the user can't accidentally paste a credential into a bug report.
+  const bannerCopy = copyText.sandboxBlocked;
+  // UI-level mask before display and copy (main-side redaction can miss paths).
   const errorText = formatUserVisibleToolText(redactSecrets(extractErrorText(props.result, locale)), locale);
   const copyFeedback = useClipboardCopyFeedback();
   const copyPhase = copyFeedback.phaseFor('tool-error');
@@ -703,82 +629,37 @@ function ToolErrorBanner(props: {
   }
 
   return (
-    <Alert variant={props.sandboxBlocked ? 'warning' : 'error'} className="mb-2.5">
-      {props.sandboxBlocked
-        ? <ShieldAlert size={16} aria-hidden="true" />
-        : <AlertOctagon size={16} aria-hidden="true" />}
-      <AlertTitle>{bannerCopy.title}</AlertTitle>
-      {props.sandboxBlocked ? (
-        <AlertDescription className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
-          <span>{copyText.sandboxBlocked.description}</span>
+    <Banner
+      status="warning"
+      className="mb-2.5"
+      icon={<ShieldAlert size={16} aria-hidden="true" />}
+      title={bannerCopy.title}
+      description={(
+        <span className="flex flex-col gap-1 text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
+          <span>{bannerCopy.description}</span>
           {errorText && (
             <span className="[font-family:var(--font-mono)]">
               {summarizeErrorText(errorText)}
             </span>
           )}
-        </AlertDescription>
-      ) : errorText ? (
-        <AlertDescription className="[font-family:var(--font-mono)] text-xs leading-normal whitespace-pre-wrap [word-break:break-word]">
-          {summarizeErrorText(errorText)}
-        </AlertDescription>
-      ) : null}
-      {errorText && (
-        <AlertAction>
-          <UiButton
-            variant="ghost"
-            size="sm"
-            className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
-            data-pending={copyPending ? 'true' : undefined}
-            data-copy-feedback={copyPhase ?? undefined}
-            aria-label={bannerCopy.copyAriaLabel(copyLabel)}
-            aria-busy={copyPending ? 'true' : undefined}
-            isDisabled={copyPending}
-            onClick={() => void copy()}
-            icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-            label={copyLabel}
-          />
-        </AlertAction>
+        </span>
       )}
-    </Alert>
-  );
-}
-
-/**
- * Raw diagnostic details for an errored tool, collapsed by default so a verbose
- * validation/runtime failure cannot dominate the conversation. The ToolErrorBanner
- * already shows the first 240px of the error text + a copy action; this disclosure
- * owns the full raw payload (quiet JSON body / structured ToolResultPreview) so it
- * is reachable but not loud. Astryx owns the keyboard-accessible trigger;
- * secret redaction + size caps stay enforced upstream (redactSecrets,
- * the banner's 240px truncation, and the result preview's own caps).
- */
-export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
-  children: ReactNode;
-  /** Controlled open state. When omitted the disclosure manages its own state
-   *  (collapsed by default). Passed by tests to render the expanded state in
-   *  static markup; production callers leave it uncontrolled. */
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
-}) {
-  const copy = getToolActivityCopy(useUiLocale()).output;
-  const [internalOpen, setInternalOpen] = useState(false);
-  const open = openProp ?? internalOpen;
-  // Always update internalOpen so an onOpenChange-only caller still sees the
-  // panel toggle (the old `onOpenChange ?? setInternalOpen` left internalOpen
-  // stuck closed when only the callback was passed).
-  const setOpen = (next: boolean) => {
-    setInternalOpen(next);
-    onOpenChange?.(next);
-  };
-  return (
-    <AstryxCollapsible
-      isOpen={open}
-      onOpenChange={setOpen}
-      className="mt-1"
-      trigger={<span className="text-[length:var(--font-size-ui)] text-[color:var(--muted-foreground)]">{open ? copy.hideRaw : copy.showRaw}</span>}
-    >
-      {open ? <div className="mt-1">{children}</div> : null}
-    </AstryxCollapsible>
+      endContent={errorText ? (
+        <UiButton
+          variant="ghost"
+          size="sm"
+          className="[align-self:start] data-[pending=true]:cursor-progress data-[copy-feedback=copied]:text-[color:var(--link)] data-[copy-feedback=copied]:border-[oklch(from_var(--link)_l_c_h_/_0.35)] data-[copy-feedback=failed]:text-[color:var(--destructive)] data-[copy-feedback=failed]:border-[oklch(from_var(--destructive)_l_c_h_/_0.35)]"
+          data-pending={copyPending ? 'true' : undefined}
+          data-copy-feedback={copyPhase ?? undefined}
+          aria-label={bannerCopy.copyAriaLabel(copyLabel)}
+          aria-busy={copyPending ? 'true' : undefined}
+          isDisabled={copyPending}
+          onClick={() => void copy()}
+          icon={copyPhase === 'copied' ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          label={copyLabel}
+        />
+      ) : undefined}
+    />
   );
 }
 

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentRunHeader, RuntimeEvent } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
-import { createLegacyFileSessionStore } from '@maka/storage';
+import { createLegacySessionStoreForTest } from '@maka/storage/legacy-storage-test-support';
 import {
   createLegacyAgentRunStoreForTest,
   createLegacyRuntimeEventStoreForTest,
@@ -16,7 +16,7 @@ import { buildStatusPatch } from '../session-projection-helpers.js';
 test('does not re-append atomically committed tool facts through the generic event lane', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-atomic-tool-boundary-'));
   try {
-    const store = createLegacyFileSessionStore(root);
+    const store = createLegacySessionStoreForTest(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
       backend: 'fake',
@@ -91,7 +91,7 @@ test('does not re-append atomically committed tool facts through the generic eve
 test('acks a steering event whose canonical append preceded proof publication failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-steering-recovery-'));
   try {
-    const store = createLegacyFileSessionStore(root);
+    const store = createLegacySessionStoreForTest(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
       backend: 'fake',
@@ -169,7 +169,7 @@ test('acks a steering event whose canonical append preceded proof publication fa
 test('awaits canonical Run status persistence before accepting an interaction resume', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-barrier-'));
   try {
-    const store = createLegacyFileSessionStore(root);
+    const store = createLegacySessionStoreForTest(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
       backend: 'fake',
@@ -249,7 +249,7 @@ test('awaits canonical Run status persistence before accepting an interaction re
 test('required interaction resume recovers a failed best-effort Run Store latch through terminal commit', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-latch-'));
   try {
-    const store = createLegacyFileSessionStore(root);
+    const store = createLegacySessionStoreForTest(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
       backend: 'fake',
@@ -364,7 +364,7 @@ test('required interaction resume recovers a failed best-effort Run Store latch 
 test('required interaction resume stays fail-closed until a later required write succeeds', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-status-latch-failure-'));
   try {
-    const store = createLegacyFileSessionStore(root);
+    const store = createLegacySessionStoreForTest(root);
     const session = await store.create({
       cwd: '/tmp/cwd',
       backend: 'fake',

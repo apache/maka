@@ -110,6 +110,96 @@ test('harness A/B uses one safe execution default and accepts per-run overrides'
   );
 });
 
+test('harness A/B parses an explicit one-shot adjudicated infra retry', async () => {
+  const { resolveHarnessAdjudicatedInfraRetryRoundIds } = await import(
+    new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href
+  );
+
+  assert.deepEqual(resolveHarnessAdjudicatedInfraRetryRoundIds(undefined), []);
+  assert.deepEqual(
+    resolveHarnessAdjudicatedInfraRetryRoundIds(' ab-maka-r0-winning-avg-corewars '),
+    ['ab-maka-r0-winning-avg-corewars'],
+  );
+  assert.throws(() => resolveHarnessAdjudicatedInfraRetryRoundIds(' , '), /must not be empty/);
+  assert.throws(
+    () => resolveHarnessAdjudicatedInfraRetryRoundIds('ab-maka-r0-a,ab-maka-r0-a'),
+    /must not contain duplicates/,
+  );
+});
+
+test('harness A/B resumes an explicit infra retry from the frozen manifest identity', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-harness-ab-frozen-resume-'));
+  try {
+    const { buildHarnessAbManifest, resolveHarnessAbManifestForRun, resolveHarnessComposition } =
+      await import(new URL('../../harbor/run-harness-ab.mjs', import.meta.url).href);
+    const manifestPath = join(dir, 'harness-ab-manifest.json');
+    const composition = resolveHarnessComposition({
+      runtime: 'deepseek-v4-flash-max',
+      competitor: 'opencode',
+    });
+    const taskIds = ['winning-avg-corewars'];
+    const frozen = buildHarnessAbManifest({
+      subjectFingerprint: `sha256:${'1'.repeat(64)}`,
+      taskSourceFingerprint: `sha256:${'2'.repeat(64)}`,
+      toolchainFingerprint: `sha256:${'3'.repeat(64)}`,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'parallel',
+    });
+    await writeFile(manifestPath, `${JSON.stringify(frozen)}\n`, 'utf8');
+    const current = buildHarnessAbManifest({
+      subjectFingerprint: `sha256:${'4'.repeat(64)}`,
+      taskSourceFingerprint: frozen.taskSourceFingerprint,
+      toolchainFingerprint: `sha256:${'5'.repeat(64)}`,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'parallel',
+    });
+
+    assert.deepEqual(
+      await resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: current,
+        retryRoundIds: ['ab-maka-r0-winning-avg-corewars'],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      frozen,
+    );
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: current,
+        retryRoundIds: [],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      /requires an explicit adjudicated infra retry/,
+    );
+
+    const changedSchedule = buildHarnessAbManifest({
+      subjectFingerprint: current.subjectFingerprint,
+      taskSourceFingerprint: current.taskSourceFingerprint,
+      toolchainFingerprint: current.toolchainFingerprint,
+      composition,
+      taskIds,
+      pairConcurrency: 1,
+      armExecution: 'sequential',
+    });
+    await assert.rejects(
+      resolveHarnessAbManifestForRun({
+        manifestPath,
+        proposedManifest: changedSchedule,
+        retryRoundIds: ['ab-maka-r0-winning-avg-corewars'],
+        expectedExistingFingerprint: frozen.fingerprint,
+      }),
+      /differs beyond the frozen subject and toolchain identity/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('harness A/B selects one named task only with an explicit run identity', async () => {
   const {
     buildHarnessAbManifest,

@@ -32,6 +32,7 @@ import {
   readTrialException,
   resolveNativeTrialTimeoutMs,
   withProviderTelemetryArtifact,
+  incompleteTerminalProviderRequest,
   modelForOpenCode,
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
@@ -537,6 +538,27 @@ export function createPierTaskRunner(options: PierTaskRunnerOptions): TaskRunner
         throw new PierInfraError(
           `pier run exited ${result.exitCode} for task ${input.task.id}`,
           tail(result.stderr || result.stdout),
+        );
+      }
+      // Same terminal-stream contract as the Harbor runner: a non-completing
+      // last provider request is infra, never a graded model failure.
+      const terminalProviderRequest = incompleteTerminalProviderRequest(
+        providerTelemetry,
+        completeTimedOutTrial,
+      );
+      if (terminalProviderRequest) {
+        throw new PierInfraError(
+          `terminal provider request did not complete for task ${input.task.id}`,
+          [
+            `outcome=${terminalProviderRequest.outcome}`,
+            terminalProviderRequest.status !== undefined
+              ? `status=${terminalProviderRequest.status}`
+              : undefined,
+          ]
+            .filter(Boolean)
+            .join(', '),
+          'infra_failed',
+          { providerTelemetryPath },
         );
       }
 

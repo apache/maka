@@ -17,17 +17,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Globe, RotateCw, X } from '@maka/ui/icons';
 import { normalizeBrowserAddressInput, type BrowserState } from '@maka/core';
 import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
   IconButton,
   TextInput,
   useMountedRef,
   useToast,
   useUiLocale,
 } from '@maka/ui';
+import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { getBrowserCopy, type BrowserCopy } from './locales/browser-copy';
 
@@ -218,17 +214,13 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       </div>
       <div className="maka-browser-strip" ref={stripRef}>
         {!state.hasPage && (
-          <Empty className="maka-browser-empty absolute inset-0 py-10 md:py-12">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <Globe aria-hidden="true" />
-              </EmptyMedia>
-              <EmptyTitle>{copy.title}</EmptyTitle>
-              <EmptyDescription className="maka-browser-empty-hint">
-                {copy.description}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState
+            className="maka-browser-empty absolute inset-0 py-10 md:py-12"
+            icon={<Globe aria-hidden="true" />}
+            title={copy.title}
+            description={copy.description}
+            isCompact
+          />
         )}
       </div>
     </div>

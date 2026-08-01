@@ -65,18 +65,22 @@ const connections: LlmConnection[] = [
 function DetailPane(props: { children: ReactNode }) {
   return (
     <div
-      className="maka-panel maka-panel-detail agents-content-area agents-parchment-paper-surface"
+      className="app maka-shell-astryx agents-layout-body"
       data-sidebar-state="expanded"
-      data-agents-view="im_hub"
       style={{ background: 'var(--surface-canvas)', height: '100%', minHeight: 560 }}
     >
-      <div className="maka-detail-with-artifacts">
-        <div className="mainColumn" data-home-surface="true">
-          <ChatView
-            messages={[]}
-            onNew={() => undefined}
-            emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
-          />
+      <div
+        className="maka-panel maka-panel-detail agents-parchment-paper-surface"
+        data-agents-view="im_hub"
+      >
+        <div className="maka-detail-with-artifacts">
+          <div className="mainColumn" data-home-surface="true">
+            <ChatView
+              messages={[]}
+              onNew={() => undefined}
+              emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
+            />
+          </div>
         </div>
       </div>
     </div>

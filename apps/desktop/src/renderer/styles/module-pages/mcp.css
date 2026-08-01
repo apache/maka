@@ -359,8 +359,7 @@
   white-space: pre-wrap;
 }
 
-/* The empty / no-results panels ride the shared EmptyState primitive; this
-   class is only a light layout override on top of `.maka-empty-state`. */
+/* Product layout around the Astryx EmptyState. */
 .maka-mcp-empty {
   align-self: start;
 }

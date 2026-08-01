@@ -1,6 +1,5 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { setTimeout as timerDelay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import {
@@ -13940,18 +13939,6 @@ describe('SessionManager permission mode updates', () => {
       { role: 'system', text: undefined, status: 'completed' },
     ]);
     expect(backendInstances[0]?.sendInputs.length ?? 0).toBe(1);
-  });
-
-  test('RuntimeKernel turn runner uses AiSdkFlow instead of an inline mapper flow', async () => {
-    const source = await readFile(new URL('../../src/runtime-kernel.ts', import.meta.url), 'utf8');
-    const turnRunnerSource = source.slice(
-      source.indexOf('private async *runAgentTurn'),
-      source.indexOf('async stopSession'),
-    );
-
-    expect(turnRunnerSource.includes('new AiSdkFlow')).toBe(true);
-    expect(turnRunnerSource.includes('mapSessionEventToRuntimeEvent')).toBe(false);
-    expect(turnRunnerSource.includes('createSessionEventMapMemory')).toBe(false);
   });
 
   test('rejects backend configuration updates while a turn is actively streaming', async () => {

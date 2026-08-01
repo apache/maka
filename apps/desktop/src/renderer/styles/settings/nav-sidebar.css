@@ -111,6 +111,11 @@
   max-width: 540px;
 }
 
+.settingsSkeletonStack {
+  display: grid;
+  gap: var(--space-2-5);
+}
+
 .providersLoading {
   display: grid;
   align-content: start;
@@ -148,27 +153,22 @@
   position: relative;
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  box-sizing: border-box;
+  width: calc(100% - var(--agents-content-area-gap));
+  height: calc(100% - 2 * var(--agents-content-area-gap));
   margin: var(--agents-content-area-gap) var(--agents-content-area-gap) var(--agents-content-area-gap) 0;
   border: 0;
   border-radius: var(--radius-modal);
   background: var(--agents-content-area-bg);
   box-shadow: none;
   overflow: hidden;
-  /* Traffic-light-aligned top padding so the page title sits at the
-     same Y baseline as the sidebar brand. */
-  padding: var(--space-12) 0 0;
 }
 
-/* PR-SETTINGS-REVIEW-0 fix-2: max-width centering on a grid child
-   didn't actually align the H2 with the centered column underneath.
-   Use the same edge math the content column uses
-   (`calc((100% - 640px) / 2 + 24px)`) so the header content lines up
-   with row cards regardless of viewport width. */
 .settingsPageHeader {
   min-height: 36px;
-  padding: 0 max(var(--space-6), calc((100% - 640px) / 2 + var(--space-6)));
+  /* Astryx owns the header's inline geometry. This extra block inset is the
+     Electron traffic-light clearance shared with the settings navigation. */
+  padding-top: var(--space-6);
   display: flex;
   align-items: center;
   /* X close button moved to the sidebar `返回应用` — header hosts the
@@ -208,36 +208,6 @@
   font-size: var(--font-size-ui);
   line-height: var(--leading-normal);
   text-wrap: pretty;
-}
-
-.settingsPageContent {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.settingsPageContentViewport {
-  height: 100%;
-  overscroll-behavior: contain;
-}
-
-/* PR-SETTINGS-SHELL-OWNS-LAYOUT-0 (2026-06-23, WAWQAQ msg `70c224f4`):
-   the page chrome (max-width column + side padding + top/bottom gutter)
-   used to live on each sub-page's own wrapper (settingsStructuredPage,
-   settingsAboutPage, settingsPermissionPage, settingsHealthPage…),
-   forcing per-page CSS edits whenever the chrome shifts. The shell
-   now owns it via `.settingsPageContentInner` — the single
-   OverlayScrollArea inner div every page renders through. Sub-pages
-   only manage their own row stack.
-
-   WAWQAQ msg `eafc18a1` correction: reference rows DO have 1px borders
-   + small radius, not flat. Earlier flat-row recipe (PR-PAGE-BODY-0)
-   was wrong; this PR reinstates per-row borders with the reference
-   recipe — 1px subtle border, 8px radius, white-ish bg, 8px gap. */
-.settingsPageContentInner {
-  box-sizing: border-box;
-  max-width: 640px;
-  margin: 0 auto;
-  padding: var(--space-10) var(--space-6) var(--space-16);
 }
 
 /* PR-SETTINGS-CSS-ROOT-CLEANUP-0 (WAWQAQ msg `57de86ae`): the renamed

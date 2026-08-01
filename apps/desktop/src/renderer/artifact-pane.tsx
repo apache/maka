@@ -42,11 +42,8 @@ import {
 import type { ArtifactKind, ArtifactRecord, UiLocale } from '@maka/core';
 import { formatRelativeTimestamp, generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core';
 import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
   Badge,
+  Banner,
   Button,
   formatBytes,
   useMountedRef,
@@ -358,11 +355,13 @@ export function ArtifactPane(props: {
   return (
     <div className="maka-artifact-pane" aria-label={copy.pane.panelAria} onKeyDown={handlePaneKeyDown}>
       {activeListError && (
-            <Alert variant="error" className="maka-artifact-list-error">
-              <AlertTriangle size={14} aria-hidden="true" />
-              <AlertTitle>{copy.pane.listLoadFailed}</AlertTitle>
-              <AlertDescription>{activeListError}</AlertDescription>
-              <AlertAction>
+            <Banner
+              status="error"
+              className="maka-artifact-list-error"
+              icon={<AlertTriangle size={14} aria-hidden="true" />}
+              title={copy.pane.listLoadFailed}
+              description={activeListError}
+              endContent={(
                 <Button
                   variant="secondary"
                   size="sm"
@@ -373,8 +372,8 @@ export function ArtifactPane(props: {
                   icon={<RefreshCcw size={13} aria-hidden="true" />}
                   label={pendingArtifactListRetry ? copy.pane.retrying : copy.pane.retry}
                 />
-              </AlertAction>
-            </Alert>
+              )}
+            />
           )}
           <ul
             ref={listRef}

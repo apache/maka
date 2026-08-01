@@ -16,6 +16,7 @@ import type { SessionStore } from './session-manager.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FAKE_ASK_USER_QUESTION_PROMPT = '__e2e_ask_user_question__';
+export const FAKE_WAIT_FOR_STEERING_PROMPT = '__e2e_wait_for_steering__';
 
 type PendingQuestion = {
   turnId: string;
@@ -97,6 +98,18 @@ export class FakeBackend implements AgentBackend {
     };
 
     try {
+      if (input.text === FAKE_WAIT_FOR_STEERING_PROMPT) {
+        let pending = drainSteering();
+        while (pending.length === 0 && !this.stopped) {
+          await sleep(5);
+          pending = drainSteering();
+        }
+        for (const { leaseId, event } of pending) {
+          yield event;
+          settleOutstanding(leaseId);
+        }
+      }
+
       for (const chunk of chunks) {
         if (this.stopped) {
           yield { type: 'abort', id: randomUUID(), turnId, ts: Date.now(), reason: 'user_stop' };
@@ -109,7 +122,7 @@ export class FakeBackend implements AgentBackend {
           };
           return;
         }
-        await sleep(45);
+        if (input.text !== FAKE_WAIT_FOR_STEERING_PROMPT) await sleep(45);
         for (const { leaseId, event } of drainSteering()) {
           yield event;
           settleOutstanding(leaseId);

@@ -290,7 +290,7 @@ export const test = base.extend<{
   // The `[data-sidebar-state="expanded"]` part is load-bearing. The shell
   // boots collapsed (the localStorage default), and `sidebarCollapsed: false`
   // only lands later, from `applyE2eFixture` — a rAF plus two IPC round trips
-  // after mount. A bare `.maka-list-row` does not gate on it: a collapsed
+  // after mount. A bare session label does not gate on it: a collapsed
   // sidebar keeps the whole list mounted at full width behind `opacity: 0` in
   // a 0px grid column, which Playwright still reports as visible. Tests then
   // started against a sidebar that was about to expand under them.
@@ -298,7 +298,7 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: '[data-sidebar-state="expanded"] .maka-list-row',
+        readinessSelector: '[data-sidebar-state="expanded"] [data-session-id]',
         e2eFixtureScenario: 'sidebar-long-sessions',
         locale: 'zh',
       },
@@ -309,7 +309,7 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: '[data-processing="block"] > button[aria-expanded="false"]',
+        readinessSelector: '.astryx-chat-tool-calls [role="button"][aria-expanded="false"]',
         e2eFixtureScenario: 'disclosure-output',
         locale: 'zh',
       },

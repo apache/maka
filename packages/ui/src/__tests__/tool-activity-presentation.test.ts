@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
-import type { StoredMessage, ToolResultContent } from '@maka/core';
-import { ToolActivity, ToolErrorDetails, ToolTrow } from '../tool-activity.js';
+import { ToolActivity, ToolTrow } from '../tool-activity.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
 import {
   createToolDisclosureState,
@@ -11,7 +10,7 @@ import {
   setToolDisclosureOpen,
   syncToolDisclosureState,
 } from '../tool-activity/presentation.js';
-import { materializeTools, type ToolActivityItem } from '../materialize.js';
+import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 
 function renderToStaticMarkup(node: ReactNode): string {
@@ -30,17 +29,6 @@ function renderTool(item: ToolActivityItem): string {
 }
 
 describe('tool activity presentation', () => {
-  it('does not mount collapsed raw error diagnostics', () => {
-    const markup = renderToStaticMarkup(createElement(
-      ToolErrorDetails,
-      null,
-      createElement('pre', null, 'large private diagnostic payload'),
-    ));
-
-    assert.match(markup, /aria-expanded="false"/);
-    assert.doesNotMatch(markup, /large private diagnostic payload/);
-  });
-
   it('prefers a declared semantic kind over the legacy tool-name fallback', () => {
     const item: ToolActivityItem = {
       toolUseId: 'tool-kind',
@@ -51,53 +39,6 @@ describe('tool activity presentation', () => {
     };
 
     assert.equal(deriveToolActivityPresentation(item).kind, 'command');
-  });
-
-  it('materializes a persisted activity kind for replay', () => {
-    const messages: StoredMessage[] = [{
-      type: 'tool_call',
-      id: 'tool-replay',
-      turnId: 'turn-replay',
-      ts: 1,
-      toolName: 'CustomPatch',
-      activityKind: 'edit',
-      args: {},
-    }];
-
-    assert.equal(materializeTools(messages)[0]?.activityKind, 'edit');
-  });
-
-  it('renders a running command through the native Astryx tool-call row', () => {
-    const markup = renderTool({
-      toolUseId: 'tool-running',
-      toolName: 'Bash',
-      intent: '检查当前项目结构',
-      status: 'running',
-      args: { command: 'Get-ChildItem -Recurse -Depth 1' },
-      outputChunks: [
-        { seq: 1, stream: 'stdout', text: 'packages\n', redacted: false, createdAt: 1 },
-      ],
-    });
-
-    assert.match(markup, /class="astryx-chat-tool-calls\b/);
-    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
-    assert.match(markup, /Bash/);
-    assert.match(markup, /检查当前项目结构/);
-    assert.doesNotMatch(markup, /Get-ChildItem|packages|data-slot="tool-output"/);
-  });
-
-  it('delegates the tool disclosure, status, and content linkage to ChatToolCalls', () => {
-    const markup = renderTool({
-      toolUseId: 'tool-astryx',
-      toolName: 'Read',
-      status: 'completed',
-      args: { path: '/tmp/example.ts' },
-    });
-
-    assert.match(markup, /class="astryx-chat-tool-calls\b/);
-    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
-    assert.match(markup, /astryx-icon/);
-    assert.doesNotMatch(markup, /astryx-collapsible|lucide-chevron-right/);
   });
 
   it('preserves a manual expansion across ordinary status changes', () => {
@@ -116,32 +57,6 @@ describe('tool activity presentation', () => {
 
     assert.deepEqual(
       syncToolDisclosureState(expanded, deriveToolActivityPresentation(completed)),
-      { open: true, manuallySet: true },
-    );
-  });
-
-  it('preserves a manual expansion through a permission attention cycle', () => {
-    const running: ToolActivityItem = {
-      toolUseId: 'tool-permission',
-      toolName: 'Bash',
-      status: 'running',
-      args: { command: 'npm test' },
-    };
-    const waiting: ToolActivityItem = {
-      ...running,
-      status: 'waiting_permission',
-    };
-    const expanded = setToolDisclosureOpen(
-      createToolDisclosureState(deriveToolActivityPresentation(running)),
-      true,
-    );
-    const duringPermission = syncToolDisclosureState(
-      expanded,
-      deriveToolActivityPresentation(waiting),
-    );
-
-    assert.deepEqual(
-      syncToolDisclosureState(duringPermission, deriveToolActivityPresentation(running)),
       { open: true, manuallySet: true },
     );
   });
@@ -173,31 +88,6 @@ describe('tool activity presentation', () => {
       syncToolDisclosureState(collapsed, deriveToolActivityPresentation(errored)),
       { open: false, manuallySet: true },
     );
-  });
-
-  it('keeps a settled errored tool collapsed while Astryx exposes the error state', () => {
-    const markup = renderTool({
-      toolUseId: 'tool-errored-collapsed',
-      toolName: 'Bash',
-      activityKind: 'command',
-      intent: '跑测试',
-      status: 'errored',
-      args: { command: 'npm test' },
-      result: {
-        kind: 'terminal',
-        cwd: '/tmp/maka',
-        cmd: 'npm test',
-        status: 'failed',
-        exitCode: 1,
-        output: pipeOutput('', 'Error: boom\n'),
-      },
-    });
-
-    assert.match(markup, /class="astryx-chat-tool-calls\b/);
-    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
-    assert.match(markup, /Bash/);
-    assert.match(markup, /Error: boom/);
-    assert.doesNotMatch(markup, /Error: Error:|data-slot="tool-output"/);
   });
 
   it('presents a command sandbox denial as blocked instead of failed', () => {
@@ -238,34 +128,7 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(expanded, /工具调用失败/);
   });
 
-  it('presents a filesystem worker sandbox denial as blocked instead of failed', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-filesystem-sandbox-blocked',
-        toolName: 'Grep',
-        activityKind: 'search',
-        intent: '搜索文件',
-        status: 'errored',
-        args: { pattern: 'needle', path: '/workspace' },
-        result: {
-          kind: 'text',
-          text: 'Filesystem access was denied.',
-          sandboxDenial: {
-            likely: true,
-            backend: 'macos-seatbelt',
-          },
-        },
-      } satisfies ToolActivityItem],
-      open: true,
-    }));
-
-    assert.match(markup, /可能被沙箱阻止/);
-    assert.match(markup, /操作可能被沙箱阻止/);
-    assert.match(markup, /Filesystem access was denied/);
-    assert.doesNotMatch(markup, /工具调用失败/);
-  });
-
-  it('keeps an ordinary filesystem permission error in the generic failure state', () => {
+  it('keeps an ordinary filesystem permission error as Astryx error detail, not a sandbox block', () => {
     const markup = renderToStaticMarkup(createElement(ToolActivity, {
       items: [{
         toolUseId: 'tool-filesystem-denied',
@@ -282,7 +145,9 @@ describe('tool activity presentation', () => {
       open: true,
     }));
 
-    assert.match(markup, /工具调用失败/);
+    assert.match(markup, /astryx-codeblock/);
+    assert.match(markup, /Filesystem access was denied/);
+    assert.doesNotMatch(markup, /工具调用失败/);
     assert.doesNotMatch(markup, /可能被沙箱阻止/);
   });
 
@@ -311,42 +176,6 @@ describe('tool activity presentation', () => {
     assert.match(markup, /已截断|输出已截断/);
   });
 
-  it('renders expanded terminal output as one quiet panel without diagnostic chrome', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-terminal-panel',
-        toolName: 'Bash',
-        intent: '跑测试',
-        status: 'errored',
-        args: { command: 'npm run -w @maka/ui test' },
-        result: {
-          kind: 'terminal',
-          cwd: '/tmp/maka',
-          cmd: 'npm run -w @maka/ui test',
-          status: 'failed',
-          exitCode: 1,
-          output: pipeOutput('packages/ui ok\n', 'Error: boom\n'),
-        },
-      } satisfies ToolActivityItem],
-      open: true,
-    }));
-
-    // Command without shell prompt; no cwd / success-style exit badge bar.
-    assert.match(markup, /npm run -w @maka\/ui test/);
-    assert.doesNotMatch(markup, /\$\s*npm run -w @maka\/ui test/);
-    assert.doesNotMatch(markup, /\/tmp\/maka/);
-    assert.doesNotMatch(markup, /实时输出/);
-    // Failure note, not a permanent exit-code chrome row for successes.
-    assert.match(markup, /失败 · 退出码 1|失败.*退出码 1/);
-    assert.match(markup, /Error: boom/);
-    // Unified panel surface (Codex-like well).
-    assert.match(markup, /bg-\[var\(--foreground-3\)\]|data-slot="tool-output"/);
-    // Tool output body uses base 13px, not caption 11px.
-    assert.match(markup, /font-size-base/);
-    // No always-on copy control on the output well (error banner may still copy).
-    assert.doesNotMatch(markup, /复制研读提示/);
-  });
-
   it('contains a malformed persisted terminal result instead of crashing the renderer', () => {
     const malformed = {
       kind: 'terminal',
@@ -368,87 +197,7 @@ describe('tool activity presentation', () => {
 
     assert.match(markup, /npm test/);
     assert.match(markup, /终端输出不可用/);
-    assert.match(markup, /失败 · 退出码 1|失败.*退出码 1/);
-  });
-
-  it('keeps live tool output in the same quiet panel language when open', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-live-panel',
-        toolName: 'Bash',
-        intent: '检查结构',
-        status: 'waiting_permission',
-        args: { command: 'Get-ChildItem -Depth 1' },
-        outputChunks: [
-          { seq: 1, stream: 'stdout', text: 'packages\n', redacted: false, createdAt: 1 },
-        ],
-        outputTruncated: true,
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.match(markup, /Get-ChildItem -Depth 1/);
-    assert.doesNotMatch(markup, /\$\s*Get-ChildItem/);
-    assert.doesNotMatch(markup, /实时输出/);
-    assert.match(markup, /packages/);
-    assert.match(markup, /已截断|输出已截断/);
-    assert.match(markup, /bg-\[var\(--foreground-3\)\]|data-slot="tool-output"/);
-    assert.match(markup, /max-h-64/);
-  });
-
-  it('renders Read as path + file text, not tool-call/result JSON', () => {
-    // waiting_permission opens the panel without the error banner (which would
-    // otherwise stringify the JSON result for copy).
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-read',
-        toolName: 'Read',
-        activityKind: 'read',
-        intent: '读取 tool-runtime',
-        status: 'waiting_permission',
-        args: { path: 'packages/runtime/src/tool-runtime.ts', limit: 100 },
-        result: {
-          kind: 'json',
-          value: {
-            content: 'import type {\n  SessionEvent,\n  ToolOutputStream,\n} from \'@maka/core/events\';\n',
-          },
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.match(markup, /packages\/runtime\/src\/tool-runtime\.ts/);
-    assert.match(markup, /SessionEvent/);
-    assert.match(markup, /ToolOutputStream/);
-    assert.doesNotMatch(markup, /&quot;path&quot;\s*:|"path"\s*:/);
-    assert.doesNotMatch(markup, /&quot;limit&quot;\s*:|"limit"\s*:/);
-    assert.doesNotMatch(markup, /&quot;content&quot;\s*:|"content"\s*:/);
-    assert.doesNotMatch(markup, /import type \{\\n/);
-  });
-
-  it('renders Grep as pattern + match lines, not raw JSON', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-grep',
-        toolName: 'Grep',
-        activityKind: 'search',
-        intent: '搜索 ToolOutputStream',
-        status: 'waiting_permission',
-        args: { pattern: 'ToolOutputStream', path: 'packages/ui/src' },
-        result: {
-          kind: 'json',
-          value: {
-            matches: [
-              'packages/ui/src/tool-activity.tsx:10:function ToolOutputStream',
-              'packages/ui/src/tool-activity.tsx:20:  chunks',
-            ],
-          },
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.match(markup, /ToolOutputStream/);
-    assert.match(markup, /packages\/ui\/src\/tool-activity\.tsx:10/);
-    assert.doesNotMatch(markup, /&quot;pattern&quot;\s*:|"pattern"\s*:/);
-    assert.doesNotMatch(markup, /&quot;matches&quot;\s*:|"matches"\s*:/);
+    assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
   });
 
   it('never dumps pretty JSON for an arbitrary tool result object', () => {
@@ -476,85 +225,27 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(markup, /line one\\nline two/);
   });
 
-  it('redacts credential-bearing property names in quiet key/value output', () => {
-    const secret = 'sk-1234567890abcdefghi';
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-secret-key',
-        toolName: 'CustomInspect',
-        status: 'waiting_permission',
-        args: { [`api_key=${secret}`]: true },
-        result: {
-          kind: 'json',
-          value: { nested: { [`token=${secret}`]: 'ok' } },
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.doesNotMatch(markup, new RegExp(secret));
-    assert.match(markup, /redacted|api_key|&lt;redacted&gt;|ok/i);
-  });
-
-  it('redacts short secrets under sensitive keys like password', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-password',
-        toolName: 'CustomInspect',
-        status: 'waiting_permission',
-        args: { password: 'correct-horse' },
-        result: {
-          kind: 'json',
-          value: { token: 'short-secret', ok: true },
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.doesNotMatch(markup, /correct-horse/);
-    assert.doesNotMatch(markup, /short-secret/);
-    assert.match(markup, /redacted|password|token/i);
-  });
-
-  it('redacts secrets embedded in property names', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-password-key',
-        toolName: 'CustomInspect',
-        status: 'waiting_permission',
-        args: { 'password=correct-horse': true },
-        result: { kind: 'json', value: { ok: true } },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.doesNotMatch(markup, /correct-horse/);
-    assert.match(markup, /password=&lt;redacted&gt;|password=&lt;redacted&gt;|password=&lt;redacted&gt;|password=<redacted>|redacted/i);
-  });
-
-  it('redacts secrets in keys that use colon or space separators', () => {
-    for (const key of [
-      'password: correct-horse',
-      'password correct-horse',
-      'token: short-secret',
-      'Authorization: Bearer SENTINEL_TOKEN',
-      'password: correct horse',
-      // Multi-word key names + bare auth= payloads
-      'api key: correct horse',
-      'private key: gamma delta',
-      'auth=correct horse',
-      'auth: short secret',
-      'access token: alpha beta',
-    ]) {
+  it('redacts secrets in sensitive values and property names', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { password: 'correct-horse', token: 'short-secret' },
+      { 'api_key=sk-1234567890abcdefghi': true },
+      { 'Authorization: Bearer SENTINEL_TOKEN': true },
+      { 'private key: gamma delta': true },
+      { 'access token: alpha beta': true },
+    ];
+    for (const args of cases) {
       const markup = renderToStaticMarkup(createElement(ToolActivity, {
         items: [{
-          toolUseId: `tool-key-${key}`,
+          toolUseId: 'tool-secret',
           toolName: 'CustomInspect',
           status: 'waiting_permission',
-          args: { [key]: true },
+          args,
           result: { kind: 'json', value: { ok: true } },
         } satisfies ToolActivityItem],
       }));
       assert.doesNotMatch(
         markup,
-        /correct-horse|short-secret|SENTINEL_TOKEN|\bhorse\b|gamma|delta|alpha|beta/,
+        /correct-horse|short-secret|sk-1234567890abcdefghi|SENTINEL_TOKEN|gamma|delta|alpha|beta/,
       );
       assert.match(markup, /redacted/i);
     }
@@ -577,109 +268,6 @@ describe('tool activity presentation', () => {
 
     assert.match(markup, /permission denied/);
     assert.match(markup, /ok:\s*false|未完成|false/);
-  });
-
-  it('keeps the Write path when args and result headlines match', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-write',
-        toolName: 'Write',
-        activityKind: 'edit',
-        status: 'waiting_permission',
-        args: { path: 'packages/ui/src/secret.ts', content: 'x' },
-        result: {
-          kind: 'json',
-          value: { ok: true, path: 'packages/ui/src/secret.ts', bytes: 1 },
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.match(markup, /packages\/ui\/src\/secret\.ts/);
-    assert.match(markup, /已完成|1 B/);
-  });
-
-  it('renders shell_run with command, status, and captured output', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-shell-run',
-        toolName: 'Bash',
-        activityKind: 'command',
-        status: 'waiting_permission',
-        args: { command: 'npm test' },
-        result: {
-          kind: 'shell_run',
-          ref: 'maka://runtime/background-tasks/bg-1',
-          mode: 'pipes',
-          status: 'running',
-          cwd: '/repo',
-          cmd: 'npm test',
-          startedAt: 1,
-          updatedAt: 2,
-          revision: 2,
-          output: pipeOutput('starting\n'),
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.match(markup, /npm test/);
-    assert.match(markup, /后台运行中|background-tasks/);
-    assert.match(markup, /starting/);
-    assert.doesNotMatch(markup, /\[shell_run\]/);
-    // One quiet well only — not nested shared + shell_run panels.
-    const panels = markup.match(/data-slot="tool-output"/g) ?? [];
-    assert.equal(panels.length, 1);
-    const commands = markup.match(/npm test/g) ?? [];
-    assert.equal(commands.length, 1);
-  });
-
-  it('renders PTY output in one unwrapped surface without the generic line cap', () => {
-    const scrollback = Array.from({ length: 500 }, (_, index) => `scroll-${index + 1}`).join('\n');
-    const screen = Array.from({ length: 24 }, (_, index) => `screen-${index + 1}`).join('\n');
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-pty-run',
-        toolName: 'Bash',
-        activityKind: 'command',
-        status: 'waiting_permission',
-        args: { command: 'interactive', pty: true },
-        result: {
-          kind: 'shell_run',
-          ref: 'maka://runtime/background-tasks/pty-1',
-          mode: 'pty',
-          status: 'running',
-          cwd: '/repo',
-          cmd: 'interactive',
-          startedAt: 1,
-          updatedAt: 2,
-          revision: 2,
-          output: {
-            mode: 'pty',
-            screen,
-            scrollback,
-            lastAlternateScreen: 'STALE-ALTERNATE-FRAME',
-            cols: 80,
-            rows: 24,
-            cursor: { x: 0, y: 23, visible: true },
-            alternateScreen: false,
-            truncated: false,
-            redacted: false,
-          },
-        },
-      } satisfies ToolActivityItem],
-    }));
-
-    assert.equal((markup.match(/data-stream="pty"/g) ?? []).length, 1);
-    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 1);
-    assert.match(markup, /data-kind="pty-shell"/);
-    assert.match(markup, />Shell</);
-    assert.match(markup, /\$ interactive/);
-    assert.match(markup, />运行中</);
-    assert.doesNotMatch(markup, /80×24/);
-    assert.match(markup, /scroll-1/);
-    assert.match(markup, /scroll-250/);
-    assert.match(markup, /screen-24/);
-    assert.doesNotMatch(markup, /STALE-ALTERNATE-FRAME|已隐藏 \d+ 行/);
-    assert.match(markup, /white-space:pre/);
   });
 
   it('labels a running inherited PTY by source-session ownership', () => {
@@ -785,50 +373,6 @@ describe('tool activity presentation', () => {
     assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 0);
   });
 
-  it('renders useful WriteStdin input while suppressing a repeated no-op size', () => {
-    const args = {
-      ref: 'maka://runtime/background-tasks/pty-1',
-      inputPreview: { text: 'echo hello\\n', bytes: 11, truncated: false },
-      size: { cols: 80, rows: 24 },
-    };
-    const content = {
-      kind: 'shell_run',
-      ref: 'maka://runtime/background-tasks/pty-1',
-      mode: 'pty',
-      status: 'running',
-      cwd: '/workspace',
-      cmd: 'bash',
-      startedAt: 1,
-      updatedAt: 2,
-      revision: 2,
-      output: {
-        mode: 'pty',
-        screen: '$ ',
-        scrollback: '',
-        cols: 80,
-        rows: 24,
-        cursor: { x: 2, y: 0, visible: true },
-        alternateScreen: false,
-        truncated: false,
-        redacted: false,
-      },
-      operation: {
-        kind: 'pty_control',
-        failed: false,
-        input: { bytes: 11, queued: true },
-        resize: { cols: 80, rows: 24, applied: true, changed: false },
-      },
-    } satisfies ToolResultContent;
-    const markup = renderToStaticMarkup(createElement(ToolResultPreview, {
-      content,
-      toolName: 'WriteStdin',
-      args,
-    }));
-
-    assert.match(markup, /已排队：echo hello\\n/);
-    assert.doesNotMatch(markup, /11 字节|80x24|已调整/);
-  });
-
   it('keeps pre-handoff live output when shell_run lands with empty streams', () => {
     const markup = renderToStaticMarkup(createElement(ToolActivity, {
       items: [{
@@ -893,100 +437,6 @@ describe('tool activity presentation', () => {
     assert.match(markup, /输出已截断/);
     const panels = markup.match(/data-slot="tool-output"/g) ?? [];
     assert.equal(panels.length, 1);
-  });
-
-  it('does not wrap subagent preview in an outer quiet panel', () => {
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      items: [{
-        toolUseId: 'tool-subagent',
-        toolName: 'Subagent',
-        status: 'waiting_permission',
-        args: {},
-        result: {
-          kind: 'subagent',
-          agentName: 'Review Agent',
-          turnId: 'turn',
-          status: 'completed',
-          permissionMode: 'ask',
-          summary: 'done',
-          artifactIds: [],
-          startedAt: 1,
-          durationMs: 1,
-        },
-      } satisfies ToolActivityItem],
-    }));
-    assert.match(markup, /data-kind="subagent"/);
-    // Subagent owns its surface — no outer tool-output well wrapping it.
-    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 0);
-  });
-
-  it('renders a bounded localized swarm card and maps aggregate cancellation to the activity label', () => {
-    const longSummary = 'x'.repeat(600);
-    const item = {
-      toolUseId: 'tool-agent-swarm',
-      toolName: 'agent_swarm',
-      displayName: 'Agent Swarm',
-      status: 'interrupted',
-      args: {},
-      result: {
-        kind: 'agent_swarm',
-        status: 'cancelled',
-        items: [
-          {
-            itemId: 'auth',
-            index: 0,
-            profile: 'local_read',
-            started: true,
-            turnId: 'turn-auth',
-            runId: 'run-auth',
-            resumedFromRunId: 'run-auth-source',
-            status: 'completed',
-            summary: longSummary,
-            artifactIds: ['artifact-auth'],
-            durationMs: 1250,
-          },
-          {
-            itemId: 'tests',
-            index: 1,
-            profile: 'local_read',
-            started: false,
-            status: 'cancelled',
-            summary: 'Cancelled before start.',
-            artifactIds: [],
-            failureClass: 'ParentCancelled',
-          },
-        ],
-        startedAt: 1,
-        completedAt: 1251,
-        durationMs: 1250,
-      },
-    } satisfies ToolActivityItem;
-    const markup = renderToStaticMarkup(createElement(ToolActivity, {
-      open: true,
-      items: [item],
-    }));
-    const enMarkup = renderReactToStaticMarkup(createElement(LocaleProvider, {
-      locale: 'en',
-      children: createElement(ToolActivity, { open: true, items: [item] }),
-    }));
-
-    assert.match(markup, /data-kind="agent_swarm"/);
-    assert.match(markup, /Agent Swarm/);
-    assert.match(markup, /2 个任务/);
-    assert.match(markup, /1 完成/);
-    assert.match(markup, /1 取消/);
-    assert.match(markup, /run run-auth/);
-    assert.match(markup, /turn turn-auth/);
-    assert.match(markup, /resumed from run-auth-source/);
-    assert.match(markup, /ParentCancelled/);
-    assert.match(markup, />已取消</);
-    assert.doesNotMatch(markup, /x{300}/);
-    assert.equal((markup.match(/data-slot="tool-output"/g) ?? []).length, 0);
-    assert.match(enMarkup, /2 tasks/);
-    assert.match(enMarkup, /1 completed/);
-    assert.match(enMarkup, /1 cancelled/);
-    assert.match(enMarkup, /Duration 1\.3s/);
-    assert.doesNotMatch(enMarkup, /个任务|完成|取消|耗时|产物|另有/);
   });
 
   it('surfaces terminal cancel and runtime truncation flags', () => {

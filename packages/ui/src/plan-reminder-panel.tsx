@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { useToast } from './toast.js';
 import {
@@ -105,20 +105,11 @@ export function PlanReminderPanel(props: {
   const refreshPendingRef = useRef(false);
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const pendingReminderMenuIntentRef = useRef<((trigger?: HTMLButtonElement) => void) | null>(null);
-  // A reminder row's menu trigger button, keyed by reminder id. When a
-  // deferred menu intent (edit/duplicate/clear-runs/delete) opens a dialog
-  // after the menu closes, Astryx Dialog restores focus on Esc to whatever
-  // was `document.activeElement` when it opened. The menu's own close-focus-
-  // return and the deferred dialog open sit across animation frames, so on a
-  // loaded runner the captured element can land on <body> instead of the
-  // trigger and Esc strands focus away from the row. The trigger is passed to
-  // the deferred dialog intent and focused in the same frame that opens the
-  // dialog, making Astryx Dialog's own capture deterministic. See the
-  // plan-reminders E2E.
   const reminderMenuTriggerRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const formDialogTriggerRef = useRef<HTMLButtonElement | null>(null);
   // Issue #1044: all create/edit form fields + submit moved into
   // PlanReminderFormDialog. The panel owns its open state and seed;
-  // `formNonce` remounts a closed form session before Astryx opens it.
+  // `formNonce` gives Astryx a fresh native dialog for each form session.
   const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [openReminderMenuId, setOpenReminderMenuId] = useState<string | null>(null);
   const [formSeed, setFormSeed] = useState<PlanReminderFormSeed>(() => createPlanReminderFormSeed());
@@ -176,6 +167,15 @@ export function PlanReminderPanel(props: {
     };
   }, []);
 
+  // Put the product action that opened the form back in focus before Astryx
+  // Dialog's passive effect captures its opener. Astryx still owns opening,
+  // Escape handling, trapping, and focus restoration on close.
+  useLayoutEffect(() => {
+    if (!formDialogOpen) return;
+    formDialogTriggerRef.current?.focus();
+    formDialogTriggerRef.current = null;
+  }, [formDialogOpen, formNonce]);
+
   // Re-sync the switch to the persisted snapshot when it changes (external
   // edit, relaunch), unless a local write is mid-flight — the optimistic
   // value wins until the write settles.
@@ -210,14 +210,10 @@ export function PlanReminderPanel(props: {
   }
 
   function openReminderDialog(seed: PlanReminderFormSeed, trigger?: HTMLButtonElement) {
-    setFormDialogOpen(false);
+    formDialogTriggerRef.current = trigger ?? null;
     setFormSeed(seed);
     setFormNonce((nonce) => nonce + 1);
-    window.requestAnimationFrame(() => {
-      if (!planReminderMountedRef.current) return;
-      trigger?.focus();
-      setFormDialogOpen(true);
-    });
+    setFormDialogOpen(true);
   }
 
   function openCreateReminderDialog() {
@@ -340,11 +336,10 @@ export function PlanReminderPanel(props: {
                 if (value === 'tasks' || value === 'runs') setPlanView(value);
               }}
               hasDivider
-              className="maka-plan-tabs-list"
               aria-label={copy.page.viewsAriaLabel}
             >
-              <Tab className="maka-plan-tab" value="tasks" label={copy.page.tasks} />
-              <Tab className="maka-plan-tab" value="runs" label={copy.page.runs} />
+              <Tab value="tasks" label={copy.page.tasks} />
+              <Tab value="runs" label={copy.page.runs} />
             </TabList>
             {planView === 'tasks' ? (
               showListControls ? (

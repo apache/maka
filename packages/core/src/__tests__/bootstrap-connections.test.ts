@@ -18,38 +18,26 @@ import { describe, it } from 'node:test';
 import { resolveBootstrapConnections } from '../bootstrap-connections.js';
 
 describe('resolveBootstrapConnections — zero-credential default seed', () => {
-  it('seeds opencode-free as the default when no env provider key is present', () => {
-    const seeds = resolveBootstrapConnections({});
-    const free = seeds.find((s) => s.slug === 'opencode-free');
-    assert.ok(free, 'opencode-free must always be seeded');
-    assert.equal(free?.providerType, 'opencode-free');
-    assert.equal(free?.defaultModel, 'big-pickle');
-    assert.equal(seeds.filter((s) => s.isDefault).length, 1, 'exactly one default');
-    assert.equal(seeds.find((s) => s.isDefault)?.slug, 'opencode-free');
-  });
+  it('selects one default while keeping the credential-free fallback', () => {
+    const cases = [
+      [{}, 'opencode-free', false],
+      [{ ANTHROPIC_API_KEY: 'sk-x' }, 'env-anthropic', false],
+      [{ OPENAI_API_KEY: 'sk-y' }, 'env-openai', false],
+      [{ ANTHROPIC_API_KEY: 'sk-x', OPENAI_API_KEY: 'sk-y' }, 'env-anthropic', true],
+    ] as const;
 
-  it('defaults to the Anthropic env connection when ANTHROPIC_API_KEY is set, keeping opencode-free seeded', () => {
-    const seeds = resolveBootstrapConnections({ ANTHROPIC_API_KEY: 'sk-x' });
-    assert.ok(
-      seeds.some((s) => s.slug === 'opencode-free'),
-      'opencode-free stays seeded as a fallback',
-    );
-    assert.ok(!seeds.find((s) => s.slug === 'opencode-free')?.isDefault);
-    assert.equal(seeds.find((s) => s.isDefault)?.slug, 'env-anthropic');
-    assert.equal(seeds.find((s) => s.slug === 'env-anthropic')?.providerType, 'anthropic');
-  });
-
-  it('does not seed the OpenAI env connection when Anthropic is already present', () => {
-    const seeds = resolveBootstrapConnections({
-      ANTHROPIC_API_KEY: 'sk-x',
-      OPENAI_API_KEY: 'sk-y',
-    });
-    assert.ok(!seeds.some((s) => s.slug === 'env-openai'));
-  });
-
-  it('defaults to the OpenAI env connection when only OPENAI_API_KEY is set', () => {
-    const seeds = resolveBootstrapConnections({ OPENAI_API_KEY: 'sk-y' });
-    assert.ok(seeds.some((s) => s.slug === 'opencode-free'));
-    assert.equal(seeds.find((s) => s.isDefault)?.slug, 'env-openai');
+    for (const [env, defaultSlug, excludesOpenAi] of cases) {
+      const seeds = resolveBootstrapConnections(env);
+      const free = seeds.find((seed) => seed.slug === 'opencode-free');
+      assert.equal(free?.defaultModel, 'big-pickle');
+      assert.deepEqual(
+        seeds.filter((seed) => seed.isDefault).map((seed) => seed.slug),
+        [defaultSlug],
+      );
+      assert.equal(
+        seeds.some((seed) => seed.slug === 'env-openai'),
+        !excludesOpenAi && 'OPENAI_API_KEY' in env,
+      );
+    }
   });
 });

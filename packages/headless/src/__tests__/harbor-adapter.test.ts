@@ -3885,6 +3885,10 @@ try:
         assert "--variant=max" in deepseek_command, deepseek_command
         assert deepseek_env["DEEPSEEK_API_KEY"] == "ephemeral-deepseek-token", deepseek_env
         assert deepseek_env["DEEPSEEK_BASE_URL"] == "http://host.docker.internal:43210", deepseek_env
+        assert benchmark_config["provider"]["deepseek"]["options"] == {
+            "apiKey": "{env:DEEPSEEK_API_KEY}",
+            "baseURL": "{env:DEEPSEEK_BASE_URL}",
+        }, benchmark_config
         assert "KIMI_API_KEY" not in deepseek_env, deepseek_env
         assert environment.uploaded_files == [], environment.uploaded_files
         assert 'cat --' not in command, command
