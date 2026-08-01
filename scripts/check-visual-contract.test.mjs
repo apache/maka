@@ -81,12 +81,17 @@ test('repeatable scopes stay bounded per root and in total', () => {
     [{ scope: 'item', claimed: 90, total: 100 }],
   );
 
-  const leafRoots = Array.from({ length: 100 }, (_, index) =>
+  const leafRoots = Array.from({ length: 60 }, (_, index) =>
     record(`leaf${index}`, { scope: 'item', scopeRoot: true }),
   );
-  assert.deepEqual(checkScopeCoverage(leafRoots, undefined, scope), [
-    { scope: 'item', claimed: 100, total: 100 },
-  ]);
+  assert.deepEqual(
+    checkScopeCoverage(
+      [...leafRoots, ...Array.from({ length: 40 }, (_, index) => record(`outside${index}`))],
+      undefined,
+      scope,
+    ),
+    [{ scope: 'item', claimed: 60, total: 100 }],
+  );
 });
 
 test('salvaged anchors require an exact current capture hook', () => {
