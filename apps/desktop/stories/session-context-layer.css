@@ -1,7 +1,9 @@
 .maka-session-context-review-board,
 .maka-session-context-responsive-board {
+  height: 100vh;
   min-height: 100vh;
   box-sizing: border-box;
+  overflow-y: auto;
   background: var(--surface-canvas);
 }
 
