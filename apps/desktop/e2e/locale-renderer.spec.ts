@@ -17,8 +17,11 @@ test('English e2e-fixture renderer uses the resolved locale', async ({ enLocaleW
 test('locale switching, persistence, and Follow system need no reload', async ({ localeSwitchWindow: page }) => {
   await page.getByRole('button', { name: /展开侧边栏|Expand sidebar/ }).click();
   await page.getByRole('button', { name: /设置|Settings/ }).click();
+  const settingsNavigation = page.getByRole('navigation', {
+    name: /设置分组|Settings sections/,
+  });
   const settings = page.getByRole('main', { name: /设置内容|Settings content/ });
-  await settings.getByRole('button', { name: /通用|General/, exact: true }).click();
+  await settingsNavigation.getByRole('button', { name: /通用|General/, exact: true }).click();
 
   await page.evaluate(() => { (window as unknown as { __localeE2eMarker: string }).__localeE2eMarker = 'alive'; });
   let language = settings.getByRole('radiogroup', { name: /界面语言|Interface language/ });
