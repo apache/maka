@@ -282,7 +282,6 @@ describe('tool activity presentation', () => {
       open: true,
     }));
 
-    // Failure detail is CodeBlock only — no Maka "工具调用失败" Alert, not sandbox.
     assert.match(markup, /astryx-codeblock/);
     assert.match(markup, /Filesystem access was denied/);
     assert.doesNotMatch(markup, /工具调用失败/);
@@ -334,14 +333,12 @@ describe('tool activity presentation', () => {
       open: true,
     }));
 
-    // Command without shell prompt; no cwd / exit-code footer (failure is on the row).
     assert.match(markup, /npm run -w @maka\/ui test/);
     assert.doesNotMatch(markup, /\$\s*npm run -w @maka\/ui test/);
     assert.doesNotMatch(markup, /\/tmp\/maka/);
     assert.doesNotMatch(markup, /实时输出/);
     assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
     assert.match(markup, /Error: boom/);
-    // Astryx CodeBlock well (or the product data-slot wrapper around it).
     assert.match(markup, /astryx-codeblock|data-slot="tool-output"/);
     assert.doesNotMatch(markup, /复制研读提示/);
   });

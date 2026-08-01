@@ -58,18 +58,8 @@ export type ReadAttachmentBytes = (
 ) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
 
 /**
- * Renders an individual chat message body.
- *
- * - `user` messages stay verbatim (whitespace + line breaks preserved); the
- *   user's literal input shouldn't be reinterpreted as markdown.
- * - `assistant` / `system` (and anything else) flow through the markdown
- *   renderer so code fences, lists, tables, and links display natively.
- *
- * Assistant answer actions (copy / regenerate / branch) live on
- * ChatMessageMetadata, matching Astryx's message composition pattern.
- *
- * Memoized because chat scroll re-renders the whole list on every streaming
- * delta; this keeps already-final bubbles from re-parsing markdown.
+ * One chat message body: user verbatim; assistant/system via Markdown.
+ * Memoized so streaming list re-renders do not re-parse settled bubbles.
  */
 function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
   const copy = getConversationCopy(useUiLocale()).messages;
@@ -149,10 +139,6 @@ const MessageBody = memo(function MessageBody(props: {
     const editActionLabel = props.editDisabled
       ? (props.editDisabledReason ?? copyText.editMessageDisabledRunning)
       : copyText.editMessage;
-    // User turn: Astryx ChatMessageBubble + ChatMessageMetadata. Absolute
-    // HH:mm time sits in `timestamp`; copy / edit sit in `footer`. #642 keeps
-    // the whole metadata row hover-gated on `group/usermsg` (product
-    // interaction — Astryx does not forbid it).
     const userMetadata = (
       <ChatMessageMetadata
         className="maka-message-meta opacity-0 [transition:opacity_var(--duration-quick)_var(--ease-out-strong)] group-hover/usermsg:opacity-100 focus-within:opacity-100"
@@ -223,9 +209,6 @@ const MessageBody = memo(function MessageBody(props: {
       </ChatMessageBubble>
     );
   }
-  // Assistant / system body: ghost bubble (open prose). Per-turn meta (model ·
-  // duration · cost) lives in the ChatMessageMetadata info tooltip; copy + the
-  // other actions live in that same metadata footer.
   return (
     <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-with-actions">
       <Markdown text={props.text} />
@@ -233,7 +216,7 @@ const MessageBody = memo(function MessageBody(props: {
   );
 });
 
-/** Icon-only copy for ChatMessageMetadata footers (user + assistant). */
+
 function MessageCopyButton(props: { text: string }) {
   const copyText = getConversationCopy(useUiLocale()).messages;
   const copyFeedback = useClipboardCopyFeedback(1400, { redact: false });
@@ -489,22 +472,12 @@ export const TurnView = memo(function TurnView(props: {
           className="maka-chat-message group/answer"
         >
           <div className="flex min-w-0 w-full flex-col gap-2">
-            {/* PR109d-c: aborted turn gets a muted "(已中断)" marker + Ban icon
-                so the user sees this turn was cancelled without it looking like
-                a fault state (reserved for `failed`). Rendered as its own row so
-                per-segment Copy buttons still yank clean answer text. */}
             {turn.status === 'aborted' && (
               <Marker variant="aborted" role="status">
                 <Ban size={12} aria-hidden="true" />
                 <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
               </Marker>
             )}
-            {/* PR109e-d: failed turn AlertOctagon banner with generalized
-                Chinese copy (no raw `errorClass` leak per @kenji gate #3).
-                Caller passes the pre-translated `failedReasonLabel` —
-                @maka/ui doesn't know how to translate the runtime enum;
-                that mapping lives in `session-status-presentation.ts`
-                via `describeTurnErrorClass()`. */}
             {turn.status === 'failed' && props.failedReasonLabel && (
               <Marker variant="failed-banner" role="alert">
                 <Marker as="span" variant="failed-icon" aria-hidden="true">
@@ -597,19 +570,6 @@ export const TurnView = memo(function TurnView(props: {
   );
 });
 
-/**
- * Assistant ChatMessageMetadata footer. Renders icon-only buttons
- * (regenerate / branch / copy, plus an optional info action whose tooltip
- * carries the turn meta) driven by the pure helper's enabled matrix.
- * Disabled buttons stay rendered so the user can see what actions exist;
- * click handlers no-op when disabled (#546: retry merged into regenerate).
- *
- * Structure matches Astryx: actions live in ChatMessageMetadata.footer.
- * #642 hover-gate (opacity via Marker `footer` variant) is product
- * interaction layered on that slot.
- *
- * Copy is handled locally (clipboard). Other actions bubble via `onAction`.
- */
 export interface TurnFooterActionMeta {
   id: 'regenerate' | 'branch' | 'copy' | 'info';
   label: string;
@@ -706,12 +666,7 @@ function TurnFooterActions(props: {
       footer={
         <>
           {props.actions.map((action) => {
-            // Per @kenji review: pending state must keep the original button
-            // label visible (not a spinner-only) so screen readers can hear
-            // which action is processing. `data-pending` + `aria-busy="true"`
-            // are the signals — the `footer-action` marker shell renders as a
-            // bare `quiet` button in every state, so pending never keys off the
-            // Button `variant`, and no presentation-priority hook is emitted.
+            // Keep the action label under pending (a11y); do not swap to spinner-only.
             const isPending = action.tooltip === copy.processing;
             const isCopyAction = action.id === 'copy';
             const copyIsPending = isCopyAction && copyPhase === 'pending';
@@ -723,9 +678,6 @@ function TurnFooterActions(props: {
                   ? copy.copyFailed
                   : action.label;
             const isActionPending = isPending || copyIsPending;
-            // Copy's tooltip comes from the helper (enabled affordance vs disabled
-            // reason). Only while clipboard feedback is active do we surface that
-            // transient state; otherwise the helper's tooltip wins.
             const tooltipText = isCopyAction
               ? (copyPhase ? copyFeedbackLabel : (action.tooltip ?? action.label))
               : (action.tooltip ?? action.label);
@@ -763,35 +715,6 @@ const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
   info: <Info size={12} aria-hidden="true" />,
 };
 
-/**
- * PR-UI-RENDER-1 — streaming assistant bubble.
- *
- * Wraps the live `streamingText` in `useSmoothStreamContent` so the
- * visible text grows at the EMA-tracked arrival CPS instead of
- * lurching with each network chunk. On `text_complete`, the parent keeps
- * the bubble mounted with `live=false` so the smoother can drain the final
- * tail before settled history takes over. Abort / error still unmount
- * immediately.
- *
- * `live=false` after `text_complete`: keep the bubble mounted until
- * the smoother catches up, then notify the parent to hand off to history.
- */
-/**
- * #642 single render path: the live 深度思考 + streaming answer, rendered as the
- * trailing entries of the active tail turn. Shared by `TurnView` (the normal
- * path — injected into the committed tail turn's timeline) and the ChatView
- * fallback (rare: streaming began before the optimistic user turn materialized).
- * Thinking renders above the answer (it always precedes it) and is `live` only
- * until the answer text starts; the answer bubble fires `onStreamingSettled`
- * once it finishes catching up.
- */
-/**
- * #646: the "正在处理…" row — the model is being awaited with nothing streaming
- * yet. Same row language as a tool trow / 深度思考 (16px icon + `TextShimmer`
- * label, muted, base tier); a neutral spinner (not Brain — this isn't reasoning)
- * carries the "working" affordance. The 200ms appearance delay lives upstream in
- * `useDelayedFlag`, so by the time this renders the wait is already worth showing.
- */
 export function ModelProcessingIndicator() {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
@@ -806,15 +729,6 @@ export function ModelProcessingIndicator() {
   );
 }
 
-/**
- * #646: the calm "继续中…" hint — a mid-turn step-to-step lull after the turn has
- * already produced content (a tool settled / a step's text finished) while the
- * model works on the next step. Deliberately quieter than
- * `ModelProcessingIndicator`: muted + dimmed static text, no spinner and no
- * shimmer (both read as "actively working" and, fired after every step, made the
- * live thinking look swallowed — the regression this split fixes). A plain
- * whitelisted fade-in is the only motion; reduced-motion neutralizes it globally.
- */
 export function ModelContinuingIndicator() {
   const copy = getConversationCopy(useUiLocale()).messages;
   return (
@@ -852,23 +766,7 @@ export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }
 
 function StreamingAssistantBubble(props: { text: string; live: boolean; truncated?: boolean; onSettled?: () => void }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  // PR-UI-C1 review fixup (@kenji msg fbb8f119): the smoother
-  // typewriters PREFIXES of its input string. If the raw text
-  // contains a mid-delta secret like `Authorization: Bearer sk-...`,
-  // prefixes such as `Authorization: Bearer s` don't match any
-  // redaction pattern by themselves and would leak to the DOM for
-  // a frame or two before the downstream Markdown redactor sees
-  // the full token. `prepareSmoothStreamText` runs `redactSecrets`
-  // on the FULL raw text BEFORE the smoother sees it, so every
-  // displayed prefix is guaranteed secret-free.
-  //
-  // PR-UI-Cx (@kenji msg cd09bcac): `props.text` is already the
-  // post-redaction post-cap output of `applyAssistantDelta` (parent
-  // ran the chokepoint before updating the live-turn projection),
-  // so the smoother only sees safe text. `prepareSmoothStreamText`
-  // here is defense-in-depth — `redactSecrets` is idempotent on
-  // already-masked text, and the gate guarantees the smoother
-  // contract holds even if a future caller forgets the chokepoint.
+  // Redact before smoother so typewriter prefixes never leak mid-token.
   const snap = useStreamSnap();
   const safeText = prepareSmoothStreamText(props.text);
   const { displayed, catchingUp } = useSmoothStreamContent(safeText, {
@@ -904,14 +802,7 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; truncate
   );
 }
 
-/**
- * Stable key for a timeline entry. Thinking/text keys use the source step's
- * messageId (one thinking + one text per step, so kind+messageId is unique
- * across the turn); tools use the first tool's id (unique per merged group).
- * No index component: a semantic key survives a group being inserted or
- * re-positioned mid-timeline without remounting — and thereby collapsing —
- * the disclosures after it.
- */
+// Semantic keys (no index) so mid-timeline inserts do not remount/collapse disclosures.
 function timelineEntryKey(item: TurnTimelineItem, index: number): string {
   if (item.kind === 'tools') return `tools-${item.items[0]?.toolUseId ?? index}`;
   return `${item.kind}-${item.messageId}`;
@@ -940,11 +831,6 @@ function TurnTimelineEntry(props: {
   return <MessageBody role="assistant" text={item.text} ts={item.ts} />;
 }
 
-/**
- * A folded reasoning/tool run keeps its original timeline order but adds no
- * visual chrome of its own. DeepThinking and Astryx ChatToolCalls each own
- * their native disclosures directly, avoiding a duplicate Processing layer.
- */
 function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   const { entries } = props;
   return (
@@ -956,19 +842,10 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   );
 }
 
-/**
- * "深度思考" is Astryx ChatReasoning only — no product chrome around it.
- * Astryx owns disclosure geometry, keyboard, streaming shimmer, collapsed
- * preview, and expanded prose. Maka owns only data prep: stream pacing,
- * redaction/capping, and the localized label (incl. truncation notice).
- *
- * `props.text` is the already-redacted-and-capped buffer (C0 chokepoint);
- * `prepareSmoothStreamText` re-runs `redactSecrets` (idempotent) as
- * defense-in-depth so the smoother never sees a raw secret.
- */
 function DeepThinking(props: { text: string; live: boolean; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const snap = useStreamSnap();
+  // Defense-in-depth: redact before smoother so prefixes never leak mid-token.
   const safeText = prepareSmoothStreamText(props.text);
   const { displayed } = useSmoothStreamContent(safeText, { streaming: props.live, snap });
   const visibleText = props.live ? displayed : safeText;
@@ -986,31 +863,13 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
   );
 }
 
-/**
- * PR-UI-RENDER-1 — reduced-motion / e2e-fixture probe for the
- * streaming smoother.
- *
- * Three triggers force the smoother to snap (mirroring the rule in
- * `apps/desktop/src/renderer/scroll-motion-policy.ts`):
- *
- *   1. `data-maka-reduced-motion="true"` — set by the PR-IR-04
- *      reduced variant of the e2e-fixture fixture.
- *   2. `data-maka-e2e-fixture="true"` — set by ANY e2e-fixture
- *      capture so screenshots see the final text on the first paint.
- *   3. OS-level `prefers-reduced-motion: reduce`.
- *
- * The hook reads the dataset attributes once on mount (they're set
- * pre-React in main.tsx and don't toggle during a session) but
- * subscribes to `matchMedia` for the OS preference so a mid-session
- * toggle reaches the running stream.
- */
+/** Snap streaming smoother under reduced-motion / e2e-fixture / OS preference. */
 function useStreamSnap(): boolean {
   const [snap, setSnap] = useState(() => readStreamSnap());
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
     const onChange = () => setSnap(readStreamSnap());
-    // Initial read (in case dataset attrs landed after first paint).
     setSnap(readStreamSnap());
     if (typeof mq.addEventListener === 'function') {
       mq.addEventListener('change', onChange);

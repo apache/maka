@@ -207,11 +207,7 @@ export function ToolActivity(props: {
 
 function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; open?: boolean }) {
   const locale = useUiLocale();
-  // Ordinary work stays summarized. A new permission prompt opens the
-  // diagnostics (it is actionable); an errored tool stays collapsed — the
-  // failure signal lives on the summary line. An explicit user toggle survives
-  // later ordinary status changes. Keep this controlled: an Astryx
-  // `defaultIsOpen` would lose that product-level state transition.
+  // Controlled disclosure: product open-on-permission state, not Astryx defaultIsOpen.
   const presentation = deriveToolActivityPresentation(item, locale);
   const disclosure = useToolDisclosure(presentation);
   const open = openProp ?? disclosure.open;
@@ -244,40 +240,23 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
   );
 }
 
-/**
- * The tool detail body — Astryx CodeBlock wells for ordinary text output,
- * live stream, and structured results. Shared by the boxed
- * `ToolActivityCard`, Astryx ChatToolCalls `resultDetail`, and product trow
- * rows. Ordinary failures share the same wells (row already carries
- * status=error); only sandbox denial keeps a product warning banner.
- * Rich kinds (terminal/shell_run/subagent/…) keep product cards via
- * ToolResultPreview.
- */
 function ToolCardBody({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
   const cancelled = isCancelledToolResult(item.result);
   const sandboxBlocked = isSandboxDeniedTool(item);
-  // Cancel maps to interrupted at materialize/live-projection; keep defensive
-  // checks so a stale errored+cancelled item still does not look like failure.
+  // Cancel is not a failure; stale errored+cancelled must not paint as failed.
   const failedOutcome = item.status === 'errored' && !cancelled;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = item.status === 'running' || item.status === 'pending';
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
-  // Rich kinds + tool-specific cards own their chrome — never nest in the shared well.
   const ownsPanel = resultOwnsOwnPanel(item);
-  // Ordinary failure is Astryx dialect: ChatToolCalls status=error + errorMessage
-  // on the row, resultDetail = CodeBlock/panel. Do not stack Maka Alert
-  // "工具调用失败". Sandbox denial stays product-owned (warning banner).
+  // Sandbox only — ordinary failures use ChatToolCalls status=error on the row.
   const showSandboxBanner = sandboxBlocked && failedOutcome && !ptyControlResult;
-  // Every tool: human invocation line from args — never pretty-printed JSON.
-  // Skip when the result panel already prints the command (terminal/shell_run).
+  // Skip invocation when the owned panel already prints the command.
   const invocationLine = !permissionDenied && !ownsPanel
     ? formatToolInvocationLine(item, locale)
     : undefined;
-  // While running the live stream is the output; once a structured result
-  // preview exists it is the single quiet output block — never render both.
-  // Owned terminal/shell_run panels absorb an empty-body handoff via
-  // withLiveStreamFallback (never a second live panel).
+  // Live stream or settled result — never both (owned panels use withLiveStreamFallback).
   const showLiveStream = !!item.outputChunks
     && item.outputChunks.length > 0
     && !ownsPanel
@@ -293,18 +272,12 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
     displayResult?.kind === 'json'
       ? formatQuietJsonValue(displayResult.value, locale)
       : undefined;
-  // Keep the invocation line whenever args yield one. Only add a result
-  // headline when it says something different (avoids dropping Write/Edit paths
-  // when path === path).
+  // Drop headline when it duplicates the invocation (e.g. Write path === path).
   const showInvocation = invocationLine !== undefined;
   const resultHeadline = quietJson?.headline
     && quietJson.headline !== invocationLine
     ? quietJson.headline
     : undefined;
-  // Owned-panel kinds render alone. Failures share the same well as success
-  // (CodeBlock / ToolResultPreview) — no nested "raw diagnostics" disclosure.
-  // CodeBlock maxHeight already bounds a long failure so it cannot dominate
-  // the turn (supersedes the old banner + ToolErrorDetails collapse).
   const hasSharedPanelContent =
     !ownsPanel && (
       showInvocation
@@ -351,7 +324,6 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
             </>
           )}
           {!showLiveStream && (() => {
-            // Args-only fallback when there is no invocation line and no result yet.
             const argsBody = !showInvocation && !resultHeadline && item.args !== undefined
               && !permissionDenied && !showResult
               ? formatQuietJsonValue(item.args, locale).body
@@ -362,16 +334,13 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
               return (
                 <ToolCodeBlock
                   code={body}
-                  // Quiet bodies are already plain text (match lines, etc.); only
-                  // raw args dumps are real JSON.
+                  // Only raw args dumps are JSON; quiet bodies stay untokenized.
                   language={argsBody ? 'json' : undefined}
                   title={title}
                 />
               );
             }
             if (showInvocation && invocationLine && !showResult) {
-              // No language: shell one-liners stay contiguous text (tokenizer
-              // would otherwise wrap keywords like `test` in spans).
               return <ToolCodeBlock code={invocationLine} />;
             }
             if (showResult && !ownsPanel && displayResult) {
@@ -407,24 +376,10 @@ export function ToolKindIcon({ kind, ...props }: LucideProps & { kind: TrowActiv
   return <Icon {...props} />;
 }
 
-// #646 run→done seam: the one-shot settle "landing" for the group summary line.
-// Reuses the whitelisted `maka-stream-fade-in` keyframe (opacity 0→1, one-shot
-// `both`) — no new keyframe (design-406 governance) — and rides
-// `var(--duration-emphasized)` / `var(--ease-out-strong)` so it converges with
-// the motion tokens. Applied only when the group was seen running here and
-// just settled, so a replayed transcript's summary stays static. Auto-frozen
-// under reduced-motion / e2e-fixture by the global rules in styles/base.css.
-// The per-row seam is a light-band stop (no opacity fade) so parallel tools
-// finishing together don't stack N fades (#tool-jitter).
+// Group settle landing; only when the group was seen running this session.
 export const SETTLE_FADE = '[animation:maka-stream-fade-in_var(--duration-emphasized)_var(--ease-out-strong)_both]';
 
-/**
- * Ordinary tool activity is rendered by Astryx ChatToolCalls, including its
- * native single-row/group geometry, status icons, keyboard disclosure, and
- * detail placement. Maka keeps a product-owned disclosure only for states the
- * Astryx status model cannot express: permission prompts, sandbox denials, and
- * interrupted calls.
- */
+/** Astryx ChatToolCalls for ordinary tools; product trow for permission/sandbox/interrupted. */
 export function ToolTrow({
   items,
   variant = 'group',
@@ -491,20 +446,9 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
   const locale = useUiLocale();
   const running = isTrowRunning(items);
   const attention = trowNeedsAttention(items);
-  // The group's presentation follows the first item (the first-seen bucket the
-  // summary clauses and icon use). The active-tool lookup is gone: a multi-tool
-  // running group shows the whole-group aggregation, a single-tool group's
-  // active tool is items[0] anyway, and disclosure attention is overridden by
-  // the whole-group trowNeedsAttention below.
   const firstPresentation = deriveToolActivityPresentation(items[0]!, locale);
-  // Groups share the same disclosure state as a single row: ordinary work is
-  // summarized; a new permission prompt opens diagnostics (errors stay
-  // collapsed — the summary line carries the failure signal); manual choice
-  // survives ordinary status changes.
   const disclosure = useToolDisclosure({ ...firstPresentation, needsAttention: attention });
-  // #646: a group settles when all its tools do; the settle fade plays only if
-  // the group was ever seen running here (not a replayed transcript). The
-  // delayed shimmer de-flickers a group whose tools all finish sub-second.
+  // Settle fade only if this session saw the group running (not a replayed transcript).
   const everRunningRef = useRef(false);
   if (running) everRunningRef.current = true;
   const settled = !running;
@@ -518,15 +462,7 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
     : hasSandboxBlocked
       ? 'text-[color:var(--warning-text,var(--info-text))]'
       : 'text-[color:var(--muted-foreground)]';
-  // #tool-jitter: the group icon stays on the first bucket's kind (the same
-  // first-seen order the summary clauses use), not the active tool's kind — so
-  // a mixed-kind group's icon doesn't flip as the active tool changes mid-run.
-  // Multi-tool running group shows the whole-group bucket aggregation with a
-  // "正在" prefix instead of the active tool's description, so the summary line
-  // stops cycling through each tool's intent as tools start/finish in
-  // parallel (the 1234567 jitter). Single-tool rows keep the tool's own
-  // description — the "what exactly is running" signal is useful when there is
-  // only one, and it is locked by existing tests.
+  // Icon + multi-tool summary stay first-bucket stable so parallel tools don't jitter.
   const summary = running
     ? (items.length > 1 ? summarizeTrowTools(items, { live: true, locale }) : firstPresentation.summary)
     : summarizeTrowTools(items, { locale });
@@ -567,37 +503,21 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
   );
 }
 
-/**
- * A single flat, borderless tool row inside a multi-tool trow. Ordinary work
- * is collapsed; permission prompts open for attention (errors stay collapsed —
- * the summary line carries the failure signal), and a user's manual choice
- * survives later ordinary status changes. No card frame
- * (`toolVariants({item})`), per the flat trow visual language.
- */
 function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
   const presentation = deriveToolActivityPresentation(item, locale);
   const disclosure = useToolDisclosure(presentation);
   const duration = formatDuration(item.durationMs);
-  // #tool-jitter: a row settles by its shimmer stopping — the same seam as the
-  // 深度思考 disclosure title (light band → static muted text), with no opacity
-  // fade. Parallel tools finishing together each just drop their light band
-  // instead of stacking N opacity-0→1 fades, so a batch settle no longer 1234567.
   const running = isToolRowRunning(item.status);
   const settled = isToolRowSettled(item.status);
   const sandboxBlocked = isSandboxDeniedTool(item);
   const errored = item.status === 'errored' && !sandboxBlocked;
-  // One row language with the multi-tool summary row: a kind icon + a
-  // user-language phrase, never the old status-dot + mono tool-name + status
-  // word. Running shimmers the model's intent (or the friendly tool name);
-  // settled prefers the intent, falls back to the display name.
   const summaryTone = errored
     ? 'text-[color:var(--destructive)]'
     : sandboxBlocked
       ? 'text-[color:var(--warning-text,var(--info-text))]'
       : 'text-[color:var(--muted-foreground)]';
-  // Settled attention states stay collapsed, so tint alone is not enough:
-  // spell out whether the operation failed or the sandbox blocked it.
+  // Collapsed rows still need a word for fail/block; tint alone is not enough.
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
     <AstryxCollapsible
@@ -643,17 +563,6 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   );
 }
 
-/**
- * Live stdout/stderr body for the unified tool-output panel.
- *
- * No second card shell and no "实时输出" header — the parent panel is the
- * only chrome. Chunks keep stream tags so stderr can tint destructive.
- * Redacted chunks still surface an inline "[已脱敏]" hint. Truncation is a
- * quiet footer note, not a flag row.
- *
- * Auto-scroll: while `live` is true, anchor to the bottom on every chunk
- * update; stop once the tool settles so the user can scroll history.
- */
 function ToolOutputStream(props: {
   chunks: ToolOutputChunk[];
   live: boolean;
@@ -698,9 +607,6 @@ function ToolOutputStream(props: {
   );
 }
 
-// Preserve the retired `.maka-tool-error*` leaf utilities onto Alert (#332 PR3c) —
-// Alert owns the shell; these are the few declarations it doesn't set, kept arbitrary
-// so they map 1:1 to the old CSS (`[align-self:start]`, not Tailwind's `flex-start`).
 function ToolErrorBanner(props: {
   result: ToolActivityItem['result'];
   sandboxBlocked?: boolean;
@@ -708,10 +614,7 @@ function ToolErrorBanner(props: {
   const locale = useUiLocale();
   const copyText = getToolActivityCopy(locale);
   const bannerCopy = props.sandboxBlocked ? copyText.sandboxBlocked : copyText.error;
-  // Tool stderr / raw provider errors occasionally slip credential paths,
-  // bearer tokens, or API keys through main-side redaction. Apply a
-  // defensive UI-level mask before display *and* before clipboard copy so
-  // the user can't accidentally paste a credential into a bug report.
+  // UI-level mask before display and copy (main-side redaction can miss paths).
   const errorText = formatUserVisibleToolText(redactSecrets(extractErrorText(props.result, locale)), locale);
   const copyFeedback = useClipboardCopyFeedback();
   const copyPhase = copyFeedback.phaseFor('tool-error');
@@ -770,13 +673,7 @@ function ToolErrorBanner(props: {
   );
 }
 
-/**
- * @deprecated Ordinary failures no longer nest raw diagnostics under a second
- * disclosure — Astryx ChatToolCalls exposes status=error + errorMessage on the
- * row, and resultDetail is the CodeBlock/panel directly (maxHeight-bounded).
- * Kept exported so older contract fixtures / imports still resolve; new UI
- * should not call this.
- */
+/** @deprecated No production callers; ordinary failures use resultDetail wells. */
 export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
   children: ReactNode;
   open?: boolean;

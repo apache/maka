@@ -1,11 +1,6 @@
 /**
- * Tool failure dialect (Astryx-aligned, supersedes issue #741 banner path):
- *
- * Ordinary tool failures no longer render a Maka Alert "工具调用失败" card or a
- * nested "显示原始诊断" disclosure. Expanded detail is the same CodeBlock /
- * result panel as success (maxHeight-bounded). Chat rows still expose
- * status=error + errorMessage via ChatToolCalls (covered in packages/ui
- * presentation tests). Sandbox denials remain product-owned warning banners.
+ * Ordinary tool failures: no Maka "工具调用失败" Alert or nested raw disclosure.
+ * Detail is the same CodeBlock/panel as success (maxHeight-bounded).
  */
 
 import { strict as assert } from 'node:assert';
@@ -23,8 +18,7 @@ function renderWithLocale(child: ReactNode): string {
   );
 }
 
-// Long, natural-language error. Varied prose so redactSecrets does not
-// collapse it to <redacted>.
+// Varied prose so redactSecrets does not collapse the whole string.
 const LONG_ERROR = 'Validation failed: ' + Array.from({ length: 15 }, (_, i) => `field ${i} invalid; `).join('') + TAIL_MARKER;
 
 function erroredItem(errorText: string): ToolActivityItem {
@@ -45,7 +39,7 @@ function renderExpanded(errorText: string): string {
   return renderWithLocale(createElement(ToolActivity, { items: [erroredItem(errorText)], open: true }));
 }
 
-describe('tool failure detail contract (Astryx dialect)', () => {
+describe('tool failure detail contract', () => {
   it('keeps the errored card collapsed by default with the failure signal on the row', () => {
     const markup = renderErrored(LONG_ERROR);
     assert.match(markup, /aria-expanded="false"/);
@@ -59,7 +53,7 @@ describe('tool failure detail contract (Astryx dialect)', () => {
     const markup = renderExpanded(LONG_ERROR);
     assert.match(markup, /astryx-codeblock|data-slot="tool-output"/);
     assert.match(markup, /Validation failed:/);
-    assert.match(markup, new RegExp(TAIL_MARKER), 'full error text is in the detail well');
+    assert.match(markup, new RegExp(TAIL_MARKER));
     assert.doesNotMatch(markup, /工具调用失败/);
     assert.doesNotMatch(markup, /显示原始诊断/);
     assert.doesNotMatch(markup, /data-slot="alert"/);

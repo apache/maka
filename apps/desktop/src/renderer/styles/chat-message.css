@@ -50,30 +50,21 @@
   gap: var(--space-1);
 }
 
-/* Chat activity disclosure dialect
-   ----------------------------------------------------------------------------
-   Reasoning, tool calls, and the product trow fallback share one trigger
-   language inside a turn body. Keep Astryx overlay-hover wash; pin default
-   cursor (native-cursor convention — hand reserved for links). Supporting
-   size / medium weight / 24px row / body label stay. Do not invent a third
-   component.
-
-   !important: StyleX atoms ship as `.x*:not(#\#)…` (often unlayered). Same
-   seam as sidebar.css when product must win a single dialect property. */
+/* Chat activity disclosure: one trigger dialect for reasoning / tool rows /
+   product trow. !important beats StyleX `.x*:not(#\#)` atoms (see sidebar.css). */
 .maka-turn .astryx-chat-tool-calls [role="button"],
 .maka-turn .astryx-chat-reasoning [role="button"],
 .maka-turn [data-trow] .astryx-collapsible-trigger {
+  /* Hand reserved for links (native-cursor convention). */
   cursor: default !important;
 }
 
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  /* callName is mono in core; chat-body labels stay body like 深度思考. */
   font-family: var(--font-family-body) !important;
 }
 
 .maka-turn .astryx-chat-reasoning [role="button"] > span:last-child,
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:last-child {
-  /* ChatToolCalls chevron box is 14px; glyph is Icon xsm (0.75rem). */
   width: 14px !important;
   height: 14px !important;
   margin-inline-start: auto;
@@ -87,8 +78,6 @@
 }
 
 @media (hover: hover) {
-  /* Group headers / reasoning / product trow lack lab callRowClickable;
-     detail rows already set the same bg via StyleX. Unify the wash. */
   .maka-turn .astryx-chat-tool-calls [role="button"]:hover,
   .maka-turn .astryx-chat-reasoning [role="button"]:hover,
   .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
@@ -97,8 +86,7 @@
   }
 }
 
-/* Product-owned permission / sandbox / interrupted trow (Astryx Collapsible).
-   Collapsible defaults to large/semibold section headers — pin to supporting. */
+/* Product trow (permission / sandbox / interrupted): Collapsible defaults large. */
 .maka-turn [data-trow] .astryx-collapsible-trigger {
   min-height: 24px;
   gap: var(--spacing-1-5, 6px);
@@ -121,9 +109,7 @@
   height: 0.75rem !important;
 }
 
-/* Tool row detail enter — Astryx ChatToolCalls group + ChatReasoning use
-   grid-template-rows 0fr→1fr over --duration-medium; row-level resultDetail
-   mounts with no transition. Product shell restores the same motion. */
+/* Row detail open: same 0fr→1fr medium motion as group/reasoning. */
 @keyframes maka-chat-tool-detail-open {
   from { grid-template-rows: 0fr; }
   to { grid-template-rows: 1fr; }

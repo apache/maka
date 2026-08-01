@@ -19,7 +19,6 @@ describe('ToolActivity result preview contract', () => {
           paths: ['packages/ui/src/tool-activity.tsx'],
           diff: ['diff --git a/a b/a', '@@ -1 +1 @@', `-${SECRET}`, '+visible line'].join('\n'),
         },
-        // Astryx CodeBlock (language=diff) owns the well; product keeps data-kind.
         expected: [/data-kind="file_diff"/, /astryx-codeblock/, /data-language="diff"/, /\+visible line/],
       },
       {
@@ -67,7 +66,7 @@ describe('ToolActivity result preview contract', () => {
             redacted: false,
           },
         },
-        expected: [/data-kind="terminal"/, /失败 · 退出码 1/, /stdout 已隐藏 1 行/, /输出已截断/],
+        expected: [/data-kind="terminal"/, /astryx-codeblock/, /stdout 已隐藏 1 行/, /输出已截断/],
       },
       {
         kind: 'rive_workflow',

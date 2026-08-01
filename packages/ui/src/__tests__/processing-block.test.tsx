@@ -74,7 +74,6 @@ describe('deep-thinking disclosure', () => {
     assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
     assert.match(markup, /private reasoning/);
     assert.doesNotMatch(markup, /data-slot="reasoning-trigger"/);
-    // No Maka product chrome around reasoning (no secondary copy button).
     assert.doesNotMatch(markup, /复制思考过程/);
     assert.doesNotMatch(markup, /data-slot="reasoning-disclosure"/);
   });

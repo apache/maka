@@ -12,10 +12,8 @@
  * StyleX atoms below are the official component; only the build-time StyleX
  * call has already been compiled, matching the published package output.
  *
- * Product dialect (chat body): chevron size / edge align with ChatToolCalls.
- * Overlay-hover wash stays (chat-message.css); cursor is default arrow only
- * (native-cursor convention — hand reserved for links). Glyph stays lab's
- * ThinkingIcon; margin-inline-start:auto ships in core atoms.
+ * Product dialect lives in chat-message.css (cursor default, hover wash,
+ * chevron size). This file keeps the ejected lab DOM/behavior.
  */
 import { useCallback, useState, type HTMLAttributes, type ReactNode } from 'react';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';

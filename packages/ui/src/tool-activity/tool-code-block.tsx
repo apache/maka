@@ -1,14 +1,7 @@
 import type { ReactNode } from 'react';
 import { CodeBlock } from '@astryxdesign/core';
 
-/**
- * Astryx CodeBlock for tool result bodies in chat.
- *
- * ChatToolCalls docs / InteractiveToolCalls examples put diffs and shell
- * output in CodeBlock via `resultDetail`. Product still owns live streams,
- * permission chrome, and rich cards (web search, subagent, PTY) — this is
- * only the code/text well.
- */
+/** Quiet code/text well for tool resultDetail. */
 export function ToolCodeBlock(props: {
   code: string;
   language?: string;
@@ -29,11 +22,7 @@ export function ToolCodeBlock(props: {
   );
 }
 
-/**
- * Enter animation for tool row detail / product trow body.
- * Matches ChatToolCalls group + ChatReasoning: grid 0fr→1fr over medium.
- * Astryx mounts row detail without that transition; product closes the gap.
- */
+/** Grid 0fr→1fr enter for tool detail (matches group/reasoning motion). */
 export function ToolDetailReveal(props: { children: ReactNode }) {
   return (
     <div className="maka-chat-tool-detail">

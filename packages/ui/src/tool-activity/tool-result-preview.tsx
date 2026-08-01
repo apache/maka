@@ -103,8 +103,7 @@ export function ToolResultPreview(props: {
   }
 
   if (content.kind === 'json') {
-    // Never pretty-print JSON with escaped newlines — quiet plain text only.
-    // Leave language unset so match lines / plain quiet text stay contiguous.
+    // No language: quiet text must stay contiguous (tokenizer splits words).
     const quiet = formatQuietJsonValue(content.value, locale);
     return (
       <div data-kind="json">
@@ -189,7 +188,6 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
   // 10k-line diff create 10k React elements.
   const { body, capped } = capLines(redactSecrets(props.diff));
   const code = capped > 0 ? `${body}\n\n${copy.hiddenLines(capped)}` : body;
-  // Astryx InteractiveToolCalls: resultDetail = CodeBlock language=typescript/diff.
   return (
     <div data-kind="file_diff">
       <ToolCodeBlock
@@ -201,10 +199,6 @@ function FileDiffPreview(props: { diff: string; paths: string[] }) {
   );
 }
 
-/**
- * Terminal output preview — quiet single well: command (no $) + stdout/stderr.
- * Honors runtime `status` and stream truncated flags (not only UI line caps).
- */
 function TerminalPreview(props: {
   cwd: string;
   cmd: string;
@@ -219,13 +213,7 @@ function TerminalPreview(props: {
   const cancelled = isCancelledStatus(props.status);
   const timedOut = props.status === 'timed_out';
   const succeeded = props.status === 'completed';
-  // The cmd line is also user-runtime text — don't echo a `--api-key=...`
-  // arg into the chat without masking it.
   const safeCmd = redactSecrets(props.cmd);
-  // Ordinary failure is already on the ChatToolCalls row (status=error).
-  // Keep only notes Astryx cannot express: cancel, timeout, sandbox, and an
-  // explicit runtime failureMessage. No "失败 · 退出码 N" footers, no
-  // destructive CodeBlock border — CodeBlock stays the lab neutral card.
 
   return (
     <div
@@ -477,8 +465,7 @@ function ShellOutputBody(props: {
       {!hasOutput && !props.title && <p className={TOOL_OUTPUT_NOTE_CLASS}>{copy.noOutput}</p>}
       {(hasOutput || props.title) && (
         <ToolCodeBlock
-          // Leave language unset so stream text is not token-split in markup
-          // (tests and copy selection keep contiguous shell lines).
+          // No language: shell streams stay contiguous under the tokenizer.
           code={code || props.title || ''}
           title={code && props.title ? props.title : undefined}
         />
