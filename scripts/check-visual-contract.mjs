@@ -319,8 +319,7 @@ const captureExpr = (scopes = []) => `(() => {
     // content is attributed the same way: a portal root that carries the
     // scope's identity hook claims its whole subtree, even though that
     // subtree is nowhere near the trigger in the DOM.
-    const matchedScope = scopeOf(el);
-    const ownScope = matchedScope ?? scope;
+    const ownScope = scopeOf(el) ?? scope;
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     // Opacity multiplies down the tree and is not inherited: every descendant
@@ -365,7 +364,6 @@ const captureExpr = (scopes = []) => `(() => {
       const contract = el.getAttribute(CONTRACT_HOOK);
       if (contract) record.contract = contract;
       if (ownScope) record.scope = ownScope;
-      if (matchedScope) record.scopeRoot = true;
       writeStyles(style, record, inherited);
       out.push(record);
       // Painted pseudo-elements. A cascade migration can flip a decoration
@@ -733,7 +731,7 @@ export function diffRecords(baseline, current) {
   // Harness bookkeeping, not visual properties: `contract` names the hook,
   // `scope` names the migration scope that claimed the element. Adding a hook
   // or declaring a scope must never itself read as a visual diff.
-  const BOOKKEEPING = new Set(['path', 'contract', 'scope', 'scopeRoot']);
+  const BOOKKEEPING = new Set(['path', 'contract', 'scope']);
   for (const [path, record] of before) {
     const next = after.get(path);
     if (!next) {
@@ -806,17 +804,13 @@ export const SCOPE_COVERAGE_LIMIT = 0.5;
 export function checkScopeCoverage(records, limit = SCOPE_COVERAGE_LIMIT) {
   if (records.length === 0) return [];
   const claimed = new Map();
-  const roots = new Map();
   for (const record of records) {
     if (!record.scope) continue;
     claimed.set(record.scope, (claimed.get(record.scope) ?? 0) + 1);
-    if (record.scopeRoot) roots.set(record.scope, (roots.get(record.scope) ?? 0) + 1);
   }
   const violations = [];
   for (const [scope, count] of claimed) {
-    const rootCount = roots.get(scope) ?? 0;
-    const repeatedComponentScope = rootCount > 1 && rootCount <= records.length * limit;
-    if (count > records.length * limit && !repeatedComponentScope) {
+    if (count > records.length * limit) {
       violations.push({ scope, claimed: count, total: records.length });
     }
   }

@@ -113,17 +113,14 @@ describe('DeepResearchEmptyHero', () => {
       </LocaleProvider>,
     );
 
+    const buttons = markup.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [];
     for (const suggestion of copy.starters) {
       const promptPreview = suggestion.prompt.slice(0, 60);
-      const button = markup.match(
-        new RegExp(`<button[^>]*>[\\s\\S]*?${escapeRegExp(suggestion.label)}[\\s\\S]*?${escapeRegExp(promptPreview)}[\\s\\S]*?</button>`),
-      )?.[0] ?? '';
+      const button = buttons.find((candidate) =>
+        candidate.includes(suggestion.label) && candidate.includes(promptPreview)
+      ) ?? '';
       assert.notEqual(button, '', `missing accessible starter for ${suggestion.label}`);
       assert.doesNotMatch(button, /aria-label=/, 'visible label and description must own the accessible name');
     }
   });
 });
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}

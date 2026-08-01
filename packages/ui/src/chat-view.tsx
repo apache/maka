@@ -478,19 +478,19 @@ export function ChatView(props: {
           >
           {chat.length === 0 && !streamingActive && (
             props.messageLoading ? null : props.messageLoadError ? (
-              <div role="alert" aria-busy={props.messageLoadRetryPending ? 'true' : undefined}>
-                <EmptyState
-                  icon={<AlertTriangle />}
-                  title={copy.loadFailed}
-                  description={props.messageLoadError}
-                  actions={props.onRetryMessages ? <Button
-                    label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad}
-                    variant="primary"
-                    onClick={props.onRetryMessages}
-                    isDisabled={props.messageLoadRetryPending}
-                  /> : undefined}
-                />
-              </div>
+              <EmptyState
+                role="alert"
+                aria-busy={props.messageLoadRetryPending ? 'true' : undefined}
+                icon={<AlertTriangle />}
+                title={copy.loadFailed}
+                description={props.messageLoadError}
+                actions={props.onRetryMessages ? <Button
+                  label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad}
+                  variant="primary"
+                  onClick={props.onRetryMessages}
+                  isDisabled={props.messageLoadRetryPending}
+                /> : undefined}
+              />
             ) : props.emptyOverride ?? (
               deepResearchActive ? (
                 <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />

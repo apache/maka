@@ -77,3 +77,13 @@ test('product CSS does not restyle Astryx Banner internals', async () => {
   assert.doesNotMatch(artifactErrorRule, /display|grid-template|padding|border|background|color/);
   assert.doesNotMatch(css, /\.maka-artifact-list-error\s+(?:svg|strong|p)\b/);
 });
+
+test('command palette presents navigation keys as alternatives, not a chord', async () => {
+  const source = await readFile(
+    resolve(REPO_ROOT, 'apps/desktop/src/renderer/command-palette.tsx'),
+    'utf8',
+  );
+
+  assert.doesNotMatch(source, /<Kbd keys="up\+down"\s*\/>/);
+  assert.match(source, /<Kbd keys="up"\s*\/>\s*<Kbd keys="down"\s*\/>/);
+});

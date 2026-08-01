@@ -7,6 +7,7 @@ import {
   TabList,
   Table,
   type TableColumn,
+  type TablePlugin,
   pixel,
   proportional,
 } from '@astryxdesign/core';
@@ -432,6 +433,19 @@ interface UsageColumn {
   grow?: boolean;
 }
 
+type UsageTableRow = Record<string, unknown> & {
+  id: number;
+  cells: Array<ReactNode>;
+};
+
+const usageTablePlugins = {
+  rowHeader: {
+    transformBodyCell: (cell, _column, _row, columnIndex) => columnIndex === 0
+      ? { ...cell, htmlProps: { ...cell.htmlProps, role: 'rowheader' } }
+      : cell,
+  },
+} satisfies Record<string, TablePlugin<UsageTableRow>>;
+
 interface UsageEmpty {
   /** A lucide icon (same shape EmptyState accepts). */
   Icon: typeof Search;
@@ -455,11 +469,6 @@ function UsageStatsTable(props: {
       />
     );
   }
-  type UsageTableRow = Record<string, unknown> & {
-    id: number;
-    cells: Array<ReactNode>;
-  };
-
   const data: UsageTableRow[] = props.rows.map((cells, id) => ({ id, cells }));
   const columns: Array<TableColumn<UsageTableRow>> = props.columns.map((column, index) => ({
     key: `cell-${index}`,
@@ -483,6 +492,7 @@ function UsageStatsTable(props: {
         density="compact"
         dividers="rows"
         textOverflow="truncate"
+        plugins={usageTablePlugins}
       />
     </div>
   );

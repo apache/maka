@@ -1,9 +1,0 @@
-{
-  "slice": "issue-1565-final-convergence",
-  "scopes": [
-    {
-      "name": "onboarding-provider-items",
-      "selectors": [".maka-firstrun-list > ul > li"]
-    }
-  ]
-}

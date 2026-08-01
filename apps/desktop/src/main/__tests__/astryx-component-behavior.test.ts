@@ -4,7 +4,13 @@ import { pathToFileURL } from 'node:url';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it } from 'node:test';
-import type { ArtifactRecord, BotChannelSettings, OnboardingState } from '@maka/core';
+import type {
+  AppSettings,
+  ArtifactRecord,
+  BotChannelSettings,
+  OnboardingState,
+  UsageStats,
+} from '@maka/core';
 import { build } from 'esbuild';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
@@ -25,6 +31,12 @@ type RendererComponents = {
     onBrowseProviders(): void;
   }): ReactNode;
   ToastProvider(props: { children: ReactNode }): ReactNode;
+  UsageSettingsPage(props: {
+    settings: AppSettings;
+    stats: UsageStats;
+    onUpdate(): Promise<never>;
+    onReload(): Promise<void>;
+  }): ReactNode;
 };
 
 function renderWithLocale(
@@ -112,6 +124,46 @@ describe('Astryx component behavior', () => {
     assert.match(renderFields(channel), /aria-expanded="false"/);
     assert.match(renderFields({ ...channel, appId: 'existing-app' }), /aria-expanded="true"/);
   });
+
+  it('exposes the first usage cell in each body row as its row header', async () => {
+    const { UsageSettingsPage } = await importRendererComponents();
+    const settings = {
+      usage: {
+        range: '7d',
+        status: 'all',
+        modelFilter: '',
+        showDetails: false,
+        activeTab: 'providers',
+      },
+    } as AppSettings;
+    const stats: UsageStats = {
+      summary: {
+        totalRequests: 1,
+        totalCostUsd: 0,
+        totalTokens: 1,
+        inputTokens: 1,
+        outputTokens: 0,
+        cacheTokens: 0,
+        cacheMiss: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+        reasoning: 0,
+      },
+      logs: [],
+      byProvider: [{ provider: 'OpenAI', requests: 1, tokens: 1, costUsd: 0 }],
+      byModel: [],
+      byTool: [],
+      pricing: [],
+    };
+    const markup = renderToStaticMarkup(createElement(UsageSettingsPage, {
+      settings,
+      stats,
+      onUpdate: async () => { throw new Error('not called during render'); },
+      onReload: async () => undefined,
+    }));
+
+    assert.equal(markup.match(/<td\b[^>]*role="rowheader"/g)?.length, 1);
+  });
 });
 
 async function importRendererComponents(): Promise<RendererComponents> {
@@ -126,6 +178,7 @@ async function importRendererComponents(): Promise<RendererComponents> {
         "export { BotWeChatFields } from './apps/desktop/src/renderer/settings/bot-wechat-login.tsx';",
         "export { KeyboardHelpModal } from './apps/desktop/src/renderer/keyboard-help.tsx';",
         "export { OnboardingHero } from './apps/desktop/src/renderer/OnboardingHero.tsx';",
+        "export { UsageSettingsPage } from './apps/desktop/src/renderer/settings/usage-settings-page.tsx';",
         "export { LocaleProvider } from './packages/ui/dist/locale-context.js';",
         "export { ToastProvider } from './packages/ui/dist/toast.js';",
       ].join('\n'),
