@@ -59,8 +59,14 @@ const REQUEST: UserQuestionRequestEvent = {
   ],
 };
 
-// Real path: chat → the agent calls AskUserQuestion → ChatComposerRegion hides the
-// composer and the prompt takes over its slot, on the first of three questions.
+// Real path: chat → the agent calls AskUserQuestion → the prompt appears in the
+// composer's place, on the first of three questions.
+//
+// Scope: the prompt, not the takeover. ChatComposerRegion is what hides the
+// Composer while an interaction owns the slot, and this story does not mount it,
+// so nothing here would fail if the prompt and the Composer rendered together.
+// That host contract has no coverage today; it belongs to a region-level test,
+// not to a story about how the prompt itself reads.
 export const PendingDecisions: Story = {
   args: {
     request: REQUEST,

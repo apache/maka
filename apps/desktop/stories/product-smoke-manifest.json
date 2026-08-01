@@ -85,12 +85,13 @@
       "productionHost": "AppShell > ChatView",
       "state": "Goal, branch, revision and memory metadata above the transcript",
       "viewports": ["wide", "compact", "floor"],
-      "colorSchemes": ["light", "dark"]
+      "colorSchemes": ["light", "dark"],
+      "checks": ["session-context-layer"]
     },
     "askUserQuestion": {
       "storyId": "product-ask-user-question--pending-decisions",
-      "productionHost": "ChatComposerRegion > UserQuestionPrompt",
-      "state": "Prompt owns the composer slot on the first of three questions",
+      "productionHost": "UserQuestionPrompt (the ChatComposerRegion takeover is out of scope)",
+      "state": "First of three questions, at the composer's position",
       "viewports": ["wide", "compact", "floor"],
       "colorSchemes": ["light"]
     },

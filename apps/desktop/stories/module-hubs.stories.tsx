@@ -436,10 +436,10 @@ export const ScheduledPlanReminders: Story = {
 // Real path: sidebar → 定时任务 → 计划提醒, with recurring, paused, completed and
 // delivery-blocked reminders in one list.
 //
-// 保持系统唤醒 has no story: it is persisted page state that the page never
-// renders — plan-reminder-panel.test.tsx asserts the enabled page stays visually
-// identical and keeps the state inside the settings menu, so a story for it
-// would smoke the same pixels as this one at every viewport.
+// 保持系统唤醒 has no story: it is persisted page state the page itself never
+// renders, so a story for it would smoke pixels identical to this one at every
+// viewport. The state lives on the settings menu item, and
+// plan-reminder-panel.test.tsx asserts its aria-checked in both directions.
 export const ScheduledPlanRemindersConfigured: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
 };

@@ -18,7 +18,7 @@ const REQUIRED_PRODUCT_SURFACES = Object.freeze([
   'dailyReview',
 ]);
 
-const PRODUCT_CHECKS = new Set(['plan-reminder-row']);
+const PRODUCT_CHECKS = new Set(['plan-reminder-row', 'session-context-layer']);
 
 function fail(message) {
   throw new Error(`Product Storybook manifest: ${message}`);
@@ -233,6 +233,30 @@ async function smokeStory(page, baseUrl, job, options = {}) {
             getComputedStyle(document.documentElement).colorScheme !== 'dark')
         ) {
           failures.push('dark color scheme was not applied to the production root');
+        }
+        // The context layer is built from the production derive helpers, which
+        // return undefined unless the story's session list really establishes
+        // the lineage. Without this the surface would still pass while showing
+        // no banner and no revision counter at all — the story would be a lie
+        // that renders. The layer must also survive the narrow viewports, which
+        // is the reason it is smoked at three of them.
+        if (checks.includes('session-context-layer')) {
+          const layer = document.querySelector('.maka-session-context');
+          if (!layer) {
+            failures.push('session context layer is missing');
+          } else {
+            if (!layer.querySelector('.maka-session-context__breadcrumbs')) {
+              failures.push('branch breadcrumbs are missing — deriveBranchBanner returned nothing');
+            }
+            if (!layer.querySelector('.maka-session-context__revision')) {
+              failures.push('revision navigation is missing — the revision family did not resolve');
+            }
+            if (layer.scrollWidth > layer.clientWidth + 1) {
+              failures.push(
+                `session context layer overflows horizontally (${layer.scrollWidth} > ${layer.clientWidth})`,
+              );
+            }
+          }
         }
         if (checks.includes('plan-reminder-row')) {
           if (document.documentElement.scrollWidth > document.documentElement.clientWidth) {

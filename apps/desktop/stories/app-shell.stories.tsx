@@ -5,6 +5,10 @@ import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
 import { ChatSurfaceLayout, ChatView, Composer, SessionListPanel } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
+import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
+import { deriveAppShellTurnViewModel } from '../src/renderer/app-shell-turn-view-model';
+import { deriveBranchBanner } from '../src/renderer/branch-banner';
+import { deriveSessionRevisionNavigation } from '../src/renderer/session-revisions';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 
@@ -161,6 +165,9 @@ const baseComposerProps: ComposerProps = {
   activeModel: 'claude-sonnet-4-5',
   activeModelLabel: 'Claude Sonnet 4.5',
   modelChoices,
+  // Production always wires this (app-shell.tsx); without it ChatModelSwitcher
+  // renders disabled, so every shell story understated the composer.
+  onModelChange: noop,
   permissionMode: 'ask',
   onPermissionModeChange: noop,
   // Fidelity: production app-shell always wires these (app-shell.tsx
@@ -219,26 +226,49 @@ function ComposedShell(props: {
    * what state the active session is in (review P2: stories used to patch
    * each region independently and drifted). `streaming` additionally marks
    * the active session as live-streaming and flips the composer into its
-   * streaming state.
+   * streaming state. `id` is excluded: the sidebar row, the header and the
+   * composer are all located by the fixed active id, so overriding it would
+   * desynchronize exactly what this projection exists to keep together.
    */
-  session?: Partial<SessionSummary> & { streaming?: boolean };
+  session?: Omit<Partial<SessionSummary>, 'id'> & { streaming?: boolean };
   chat?: Partial<ChatViewProps>;
   composer?: Partial<ComposerProps>;
   detailChildren?: ReactNode;
   motionEnabled?: boolean;
+  /**
+   * Extra sessions the sidebar shows alongside the fixed catalog. Lineage
+   * states need them: production derives the branch banner and the revision
+   * navigation from the visible session list, so a story asks for the state by
+   * supplying the relatives, not by hand-writing what the helpers would return.
+   */
+  relatedSessions?: SessionSummary[];
 }) {
   const [collapsed, setCollapsed] = useState(props.sidebarCollapsed ?? false);
   const sidebarHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
   const [viewMode, setViewMode] = useState<SessionViewMode>(props.initialViewMode ?? 'conversation');
   const sidebarWidth = 260;
   const { streaming: sessionStreaming, ...sessionOverrides } = props.session ?? {};
-  const sessions = sidebarSessions.map((s) =>
-    s.id === activeSession.id ? { ...s, ...sessionOverrides } : s,
-  );
+  const sessions = [
+    ...sidebarSessions.map((s) => (s.id === activeSession.id ? { ...s, ...sessionOverrides } : s)),
+    ...(props.relatedSessions ?? []),
+  ];
   const active = sessions.find((s) => s.id === activeSession.id) ?? activeSession;
   const streamingIds = new Set(
     sessionStreaming ? ['session-running', active.id] : ['session-running'],
   );
+  // Same helpers the renderer calls (app-shell.tsx). Deriving here rather than
+  // letting a story pass a banner or a footer-action list keeps a story from
+  // showing lineage the production rules would not produce for its sessions.
+  const branchBanner = deriveBranchBanner(active, sessions);
+  const revisionNavigation = deriveSessionRevisionNavigation(sessions, active.id);
+  const messages = props.chat?.messages ?? baseChatProps.messages;
+  const { turnFooterActionsByTurn } = deriveAppShellTurnViewModel({
+    activeId: active.id,
+    messages,
+    pendingTurnActions: new Set<string>(),
+    uiLocale: 'zh',
+    pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
+  });
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,
     label: item.name,
@@ -300,31 +330,39 @@ function ComposedShell(props: {
           />
         }
       >
-        <div
-          className="maka-panel maka-panel-detail agents-parchment-paper-surface"
+        <AppShellDetailPanel
           data-sidebar-state={collapsed ? 'collapsed' : 'expanded'}
-          data-agents-view="im_hub"
-          style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}
+          agentsView="im_hub"
         >
           {props.detailChildren ?? (
-            <div style={{ display: 'flex', minHeight: 0, width: '100%', flexDirection: 'column', flex: 1 }}>
+            // Same two wrappers the renderer puts between the detail panel and
+            // the chat column (app-shell.tsx). `.mainColumn` owns composer
+            // padding, so a story without it measures its own box.
+            <div className="maka-detail-with-artifacts">
+              <div className="mainColumn">
               <ChatSurfaceLayout
                 composer={
-                  <div style={{ padding: '0 16px 16px' }}>
-                    <Composer
-                      {...baseComposerProps}
-                      activeSession={active}
-                      streaming={sessionStreaming ?? false}
-                      {...props.composer}
-                    />
-                  </div>
+                  <Composer
+                    {...baseComposerProps}
+                    activeSession={active}
+                    streaming={sessionStreaming ?? false}
+                    {...props.composer}
+                  />
                 }
               >
-                <ChatView {...baseChatProps} activeSession={active} {...props.chat} />
+                <ChatView
+                  {...baseChatProps}
+                  activeSession={active}
+                  turnFooterActionsByTurn={turnFooterActionsByTurn}
+                  {...props.chat}
+                  branchBanner={branchBanner}
+                  revisionNavigation={revisionNavigation}
+                />
               </ChatSurfaceLayout>
+              </div>
             </div>
           )}
-        </div>
+        </AppShellDetailPanel>
       </AstryxAppShell>
     </ShellFrame>
   );
@@ -542,10 +580,6 @@ export const NativeConversation: Story = {
           },
         ],
         onRemoveAttachment: noop,
-        activeThinkingLevels: ['off', 'low', 'medium', 'high'],
-        activeThinkingLevel: 'medium',
-        onThinkingLevelChange: noop,
-        onGraphModeChange: noop,
         onToggleVoiceCapture: noop,
         onToggleRealtimeVoice: noop,
         voiceProviderLabel: '系统语音',
@@ -554,19 +588,48 @@ export const NativeConversation: Story = {
   ),
 };
 
+// The relatives that make the active session a branch AND revision 2 of 3.
+// ComposedShell feeds them to the production derive helpers, so the banner and
+// the revision counter appear only if the real rules still produce them.
+const LINEAGE_SESSIONS: SessionSummary[] = [
+  makeSession({
+    id: 'session-parent',
+    name: 'UI polish 主线评审与跨会话来源追踪的完整上下文',
+    lastMessageAt: NOW - 90 * 60_000,
+  }),
+  {
+    ...makeSession({ id: 'session-active-revision-1', name: 'Session Context Layer 收敛（初版）' }),
+    revisionRootSessionId: 'session-active',
+    revisionIndex: 1,
+  },
+  {
+    ...makeSession({ id: 'session-active-revision-3', name: 'Session Context Layer 收敛（第三版）' }),
+    revisionRootSessionId: 'session-active',
+    revisionIndex: 3,
+  },
+];
+
 // Real path: open a derived revision that is running an autonomous goal with
 // local memory and Deep Research enabled. Session metadata stays in one context
 // layer above the transcript instead of splitting across header pills and
 // standalone branch/revision rows. The long session name is the point: it is
 // what forces that layer to collapse rather than wrap.
+//
+// The banner reads 分自 without 从中断前: deriveBranchBanner only adds that hint
+// when the caller supplies it, and the renderer deliberately does not until
+// parent-message preloading lands (app-shell.tsx). A story that showed it would
+// be showing a screen the app cannot currently produce.
 export const SessionContextLayer: Story = {
   render: () => (
     <ComposedShell
+      relatedSessions={LINEAGE_SESSIONS}
       session={{
         name: 'Chat Surface 会话上下文在极窄窗口中的响应式收敛与信息优先级验证',
         labels: ['mode:deep_research'],
         parentSessionId: 'session-parent',
         branchOfTurnId: 'turn-1',
+        revisionRootSessionId: 'session-active',
+        revisionIndex: 2,
       }}
       chat={{
         memoryActive: true,
@@ -578,18 +641,7 @@ export const SessionContextLayer: Story = {
           maxIterations: 12,
           onClear: noop,
         },
-        branchBanner: {
-          parentSessionId: 'session-parent',
-          parentSessionName: 'UI polish 主线评审与跨会话来源追踪的完整上下文',
-          fromAbortedTurn: true,
-        },
         onBranchBannerClick: noop,
-        revisionNavigation: {
-          current: 2,
-          total: 3,
-          previousSessionId: 'session-context-revision-1',
-          nextSessionId: 'session-context-revision-3',
-        },
         onRevisionNavigate: noop,
       }}
     />
