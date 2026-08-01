@@ -73,7 +73,7 @@ export function AboutSettingsPage() {
     return (
       <div className="settingsStructuredPage">
         <Banner
-          status={'info'}
+          status="info"
           role="alert"
           title={copy.unavailable}
           description={infoError} />
@@ -150,7 +150,7 @@ export function AboutSettingsPage() {
       <section className="settingsPrivacyBlock" aria-label={copy.privacyLabel}>
         <SectionHeader as="h3" title={copy.privacyTitle} />
         <Banner
-          status={'info'}
+          status="info"
           title={<ul className="settingsPrivacyPoints">
             {copy.privacyPoints.map((point) => <li key={point}>{point}</li>)}
           </ul>} />

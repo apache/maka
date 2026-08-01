@@ -57,37 +57,6 @@
   box-sizing: border-box;
 }
 
-.maka-boundary-unreadable-notice-action,
-.maka-session-health-notice-action {
-  appearance: none;
-  border: var(--border-width-hairline) solid oklch(from var(--border) l c h / 0.9);
-  background: var(--background-elevated);
-  color: var(--foreground);
-  border-radius: var(--radius-surface);
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  white-space: nowrap;
-  cursor: default;
-}
-
-.maka-boundary-unreadable-notice-action:hover:not(:disabled),
-.maka-session-health-notice-action:hover {
-  background: var(--state-hover-bg);
-}
-
-.maka-boundary-unreadable-notice-action:focus-visible,
-.maka-session-health-notice-action:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-/* Only the boundary notice's action has a pending state: it re-reads in place,
-   where the health notice's action navigates away. */
-.maka-boundary-unreadable-notice-action:disabled {
-  opacity: var(--opacity-disabled);
-}
-
 /* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
    browser-style session tab + the duplicate "新建对话" plus button at
    the top-left of the chat header are removed. ~95 LOC of .maka-chat-tab*

@@ -168,7 +168,12 @@ function ImageArtifactPreview(props: {
   if (result.state === 'loading') {
     return (
       <div className="maka-artifact-preview-loading" role="status" aria-live="polite">
-        <Spinner className="maka-artifact-preview-spinner" aria-label={copy.registry.loadingImage} />
+        <Spinner
+          className="maka-artifact-preview-spinner"
+          size="sm"
+          aria-hidden="true"
+          role="presentation"
+        />
         <span>{copy.registry.loadingImage}</span>
       </div>
     );

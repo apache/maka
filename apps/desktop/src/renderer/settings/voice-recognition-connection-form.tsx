@@ -128,7 +128,7 @@ export function VoiceRecognitionConnectionForm(props: {
         />
       </FormLayout>
       {error?.field === 'form' ? (
-        <Banner status={'error'} title={error.message} />
+        <Banner status="error" title={error.message} />
       ) : null}
       <div className="providerActions">
         <Button

@@ -80,7 +80,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <Text type="supporting">{copy.empty}</Text>
+            <Text as="p" type="supporting">{copy.empty}</Text>
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible

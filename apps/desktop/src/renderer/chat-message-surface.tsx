@@ -106,7 +106,6 @@ export function ChatMessageSurface({
               label={goToModelsLabel}
               variant="ghost"
               size="sm"
-              className="maka-session-health-notice-action"
               onClick={sessionHealthNotice.onClick}
             />} />
         </div>

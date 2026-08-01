@@ -496,7 +496,7 @@ export function VoiceModelsSettingsPage(props: {
         />
       </div>
       {recognitionTest ? (
-        <Banner status={'info'} role="status" title={recognitionTest} />
+        <Banner status="info" role="status" title={recognitionTest} />
       ) : null}
       {recognitionDialog?.kind === 'create' ? (
         <ProviderConnectionDialog

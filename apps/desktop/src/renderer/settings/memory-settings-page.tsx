@@ -373,7 +373,7 @@ export function MemorySettingsPage(props: {
         width="100%"
       />
       {effective.reason && (
-        <Banner status={'info'} role="status" title={effective.reason} />
+        <Banner status="info" role="status" title={effective.reason} />
       )}
       <div className="settingsActionRow" role="group" aria-label={copy.text.fileActionsAria}>
         <Button variant="primary" className="min-w-[3.5rem]" isDisabled={memoryControlsDisabled || !effective.enabled || !memoryDraftDirty} onClick={() => void save()} label={pendingMemoryWriteAction === 'save' ? copy.text.saving : memoryDraftDirty ? copy.text.save : copy.text.saved} />

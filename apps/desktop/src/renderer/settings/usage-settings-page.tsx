@@ -245,7 +245,7 @@ function UsageRequestsPanel(props: {
   if (!props.showDetails) {
     return (
       <Banner
-        status={'info'}
+        status="info"
         title={props.copy.summaryOnly}
         endContent={<Button variant="secondary" size="sm" onClick={props.onEnableDetails} label={props.copy.showDetails} />} />
     );

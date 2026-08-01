@@ -183,7 +183,12 @@ function PdfPreview(props: { record: ArtifactRecord; copy: ArtifactCopy }) {
 function PreviewLoading(props: { label: string }) {
   return (
     <div className="maka-artifact-preview-loading" role="status" aria-live="polite">
-      <Spinner className="maka-artifact-preview-spinner" aria-label={props.label} />
+      <Spinner
+        className="maka-artifact-preview-spinner"
+        size="sm"
+        aria-hidden="true"
+        role="presentation"
+      />
       <span>{props.label}</span>
     </div>
   );

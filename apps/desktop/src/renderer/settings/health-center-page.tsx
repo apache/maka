@@ -66,7 +66,7 @@ export function HealthCenterPage() {
     return (
       <div className="settingsHealthPage">
         <Banner
-          status={'error'}
+          status="error"
           title={copy.readFailed}
           description={error ?? copy.noData}
           endContent={<Button variant="primary" onClick={() => setRefreshTick((tick) => tick + 1)} label={copy.readAgain} />} />

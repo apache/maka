@@ -16,6 +16,20 @@ import {
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { getShellCopy } from './locales/shell-copy';
 
+const ASTRYX_KEY_TOKENS: Readonly<Record<string, string>> = {
+  '⌘': 'mod',
+  '↑': 'up',
+  '↓': 'down',
+  '←': 'left',
+  '→': 'right',
+  esc: 'escape',
+};
+
+function toAstryxKeyToken(key: string): string {
+  const normalized = key.toLowerCase();
+  return ASTRYX_KEY_TOKENS[key] ?? ASTRYX_KEY_TOKENS[normalized] ?? normalized;
+}
+
 /**
  * Manages the global key listener that opens and closes the help modal.
  * Returned tuple gives callers the current open state and an imperative
@@ -102,7 +116,7 @@ export function KeyboardHelpModal(props: {
                               +
                             </span>
                           )}
-                          <Kbd keys={key === 'Esc' ? 'escape' : key} />
+                          <Kbd keys={toAstryxKeyToken(key)} />
                         </span>
                       ))}
                     </dd>

@@ -226,9 +226,9 @@ export function DataSettingsPage() {
           label={isDataActionPending('input-history:clear') ? copy.clearing : copy.clearHistory}
         />
       </div>
-      <Banner status={'info'} title={copy.backupNotice} />
+      <Banner status="info" title={copy.backupNotice} />
       {infoError && (
-        <Banner status={'info'} role="alert" title={copy.pathLoadFailed(infoError)} />
+        <Banner status="info" role="alert" title={copy.pathLoadFailed(infoError)} />
       )}
       <section className="settingsConfigSection" aria-label={copy.configAria}>
         <SectionHeader as="h3" title={copy.configTitle} subtitle={copy.configHelp} />

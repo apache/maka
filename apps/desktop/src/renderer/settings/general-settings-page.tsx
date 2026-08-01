@@ -362,7 +362,7 @@ function NetworkProxySection(props: {
           </div>
 
           <Banner
-            status={'info'}
+            status="info"
             title={copy.autoBypass(proxyDraft.autoBypassDomains.length)} />
 
           <div className="settingsActionRow">

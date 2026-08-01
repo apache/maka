@@ -357,10 +357,6 @@
   padding: var(--space-1-5) var(--space-2-5);
 }
 
-/* .maka-plan-run-status is now the Chip primitive (squared status label);
-   its tone→alpha comes from chip.tsx and the triggered/blocked/failed mapping
-   from planRunStatusChipTone in plan-reminder-panel.tsx. No bespoke CSS. */
-
 .maka-plan-run-main {
   display: grid;
   gap: 1px;

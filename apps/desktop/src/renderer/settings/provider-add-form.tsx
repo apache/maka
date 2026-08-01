@@ -191,7 +191,7 @@ export function AddProviderForm(props: {
           hasAutoFocus
         />
         {error?.field === 'form' && (
-          <Banner status={'error'} title={error.message} />
+          <Banner status="error" title={error.message} />
         )}
         <div className="providerKeyDialogActions">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
@@ -208,7 +208,7 @@ export function AddProviderForm(props: {
       </div>
       {isExperimental && (
         <Banner
-          status={'info'}
+          status="info"
           title={isWiredOAuth ? copy.wiredTitle : copy.unwiredTitle}
           description={isWiredOAuth
             ? copy.wiredDetail
@@ -311,7 +311,7 @@ export function AddProviderForm(props: {
         )}
       </FormLayout>
       {error?.field === 'form' && (
-        <Banner status={'error'} title={error.message} />
+        <Banner status="error" title={error.message} />
       )}
       <div className="providerActions">
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />

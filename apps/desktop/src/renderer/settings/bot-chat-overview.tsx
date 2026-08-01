@@ -60,7 +60,7 @@ export function BotChatOverview(props: {
     <div className="settingsRemoteAccessOverview">
       {props.statusLoadError && (
         <Banner
-          status={'error'}
+          status="error"
           title={copy.loadFailed}
           description={props.statusLoadError}
           endContent={<Button variant="secondary" onClick={() => void props.onRefreshStatuses()} label={copy.reload} />} />

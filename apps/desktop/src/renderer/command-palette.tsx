@@ -185,7 +185,7 @@ export function CommandPalette(props: {
         footer={(
           <CommandPaletteFooter>
             <span className="maka-palette-footer-hint">
-              <Kbd keys="↑+↓" />
+              <Kbd keys="up+down" />
               <span>{copy.selectHint}</span>
             </span>
             <span className="maka-palette-footer-hint">

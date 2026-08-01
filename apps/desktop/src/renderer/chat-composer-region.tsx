@@ -1,5 +1,5 @@
 import type { ComponentProps, Ref } from 'react';
-import { Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
+import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
 
 /**
@@ -72,21 +72,20 @@ export function ChatComposerRegion({
         {boundaryUnreadableNotice && active && !activeInteraction && (
           <div className="maka-boundary-unreadable-notice">
             <Banner
-              status={'warning'}
+              status="warning"
               className="maka-boundary-unreadable-notice-alert"
               role="status"
               title={boundaryUnreadableNotice.title}
               description={boundaryUnreadableNotice.detail}
-              endContent={<button
-                type="button"
-                className="maka-boundary-unreadable-notice-action"
-                disabled={boundaryUnreadableNotice.retryPending}
-                onClick={boundaryUnreadableNotice.onRetry}
-              >
-                {boundaryUnreadableNotice.retryPending
+              endContent={<Button
+                variant="secondary"
+                size="sm"
+                label={boundaryUnreadableNotice.retryPending
                   ? boundaryUnreadableNotice.retryPendingLabel
                   : boundaryUnreadableNotice.retryLabel}
-              </button>} />
+                isDisabled={boundaryUnreadableNotice.retryPending}
+                onClick={boundaryUnreadableNotice.onRetry}
+              />} />
           </div>
         )}
         {activeSandboxBoundary && (

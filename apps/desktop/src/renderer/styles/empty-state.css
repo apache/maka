@@ -5,10 +5,4 @@
   width: calc(100% - 42px);
   top: 34%;
   transform: translate(-50%, -50%);
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-  color: var(--muted-foreground);
 }

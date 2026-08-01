@@ -687,7 +687,7 @@ const withUsagePopulatedBridge = withScopedMakaBridge({
 
 /** #1364 review follow-up: empty stats alone are not the empty BASELINE —
  *  with default settings (`showDetails: false`) the first render is the
- *  summary-only Alert and the EmptyState never mounts. Reuse the details-on
+ *  summary-only Banner and the EmptyState never mounts. Reuse the details-on
  *  requests-tab settings so the story opens on the actual empty state. */
 const withUsageEmptyBridge = withScopedMakaBridge({
   ...makaBridge,
@@ -1107,7 +1107,7 @@ export const Usage: Story = {
  * #1364: the requests Astryx Table with hostile-width content (dated preview
  * model ids, namespaced MCP tool names). No story rendered a table at
  * all before this — `logs` was `[]` and the requests tab defaulted to its
- * summary-only Alert.
+ * summary-only Banner.
  */
 // Real path: 设置 → 使用统计 → 详情记录 on → 请求日志, with recorded traffic.
 export const UsageRequestsPopulated: Story = {

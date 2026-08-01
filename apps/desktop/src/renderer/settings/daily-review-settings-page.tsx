@@ -156,7 +156,7 @@ export function DailyReviewSettingsPage(props: { connections: readonly LlmConnec
       )}
       {loadError ? (
         <Banner
-          status={'error'}
+          status="error"
           className="settingsSurfaceAlert"
           title={copy.loadFailed(loadError)} />
       ) : null}

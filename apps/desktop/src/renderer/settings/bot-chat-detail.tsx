@@ -250,21 +250,25 @@ export function BotChatChannelDetail(props: {
 
         {props.statusLoadError && (
           <Banner
-            status={'error'}
+            status="error"
             title={detailCopy.statusRefreshFailed}
             description={props.statusLoadError} />
         )}
         {status?.reason && channel.enabled && !viewState.liveOperational && (
           <Banner
-            status={'warning'}
+            status="warning"
             title={botStatusDetail(status, locale)}
             description={readinessCopy.detail} />
         )}
         {viewState.currentError && support !== 'planned' && (
           <Banner
-            status={'error'}
+            status="error"
             title={detailCopy.latestFailure}
-            description={locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail} />
+            description={(
+              <span className="settingsBotBannerDescription">
+                {locale === 'zh' ? viewState.currentError : detailCopy.latestFailureDetail}
+              </span>
+            )} />
         )}
 
         <div className="settingsBotConfigurationHeader">
@@ -342,7 +346,7 @@ export function BotChatChannelDetail(props: {
         )}
 
         {support === 'planned' && (
-          <Banner status={'info'} title={detailCopy.planned} />
+          <Banner status="info" title={detailCopy.planned} />
         )}
 
         {/* WeChat keeps scan login as a first-class action, separate from
@@ -526,7 +530,7 @@ function BotCredentialFields(props: {
               />
             );
           case 'notice':
-            return <Banner status={'info'} key={`notice-${index}`} title={field.text} />;
+            return <Banner status="info" key={`notice-${index}`} title={field.text} />;
         }
       })}
     </FormLayout>

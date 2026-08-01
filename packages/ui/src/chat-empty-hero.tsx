@@ -24,7 +24,7 @@
  */
 
 import { Sparkles } from './icons.js';
-import { Button } from '@astryxdesign/core/Button';
+import { Item } from '@astryxdesign/core/Item';
 
 import { MakaWordmark } from './maka-wordmark.js';
 import { useUiLocale } from './locale-context.js';
@@ -167,16 +167,14 @@ export function DeepResearchEmptyHero(props: { onPromptSuggestion?(prompt: strin
         <ul className="maka-prompt-suggestions" aria-label={copy.startersAriaLabel}>
           {copy.starters.map((suggestion) => (
             <li key={suggestion.label}>
-              <Button
-                type="button"
+              <Item
                 label={suggestion.label}
-                variant="secondary"
+                description={`${suggestion.prompt.slice(0, 60)}…`}
+                density="spacious"
+                align="start"
                 className="maka-prompt-chip"
                 onClick={() => props.onPromptSuggestion?.(suggestion.prompt)}
-              >
-                <span className="maka-prompt-chip-label">{suggestion.label}</span>
-                <span className="maka-prompt-chip-hint">{suggestion.prompt.slice(0, 60)}…</span>
-              </Button>
+              />
             </li>
           ))}
         </ul>

@@ -66,7 +66,7 @@ export function BotWeChatFields(props: {
               placeholder={copy.appSecretPlaceholder}
               label={copy.appSecret}
             />
-            <Banner status={'info'} title={copy.advancedNotice} />
+            <Banner status="info" title={copy.advancedNotice} />
           </FormLayout>
       </Collapsible>
     </FormLayout>

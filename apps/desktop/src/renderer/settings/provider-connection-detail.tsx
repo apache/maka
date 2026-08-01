@@ -190,7 +190,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           />
         ) : (
           <Banner
-            status={'info'}
+            status="info"
             title={hasSecret === true
               ? copy.oauthLoggedIn
               : hasSecret === 'loading'
@@ -333,7 +333,7 @@ function GitHubCopilotReloginNotice(props: {
 
   return (
     <Banner
-      status={'info'}
+      status="info"
       title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
       description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
       endContent={!loading ? (
@@ -379,7 +379,7 @@ function OAuthReloginNotice(props: {
         : copy.oauthStartDetail;
   return (
     <Banner
-      status={'info'}
+      status="info"
       title={title}
       description={detail}
       endContent={!loading ? (
