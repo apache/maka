@@ -197,70 +197,70 @@ test('a hermetic or unlabeled report cannot satisfy real-provider readiness', as
   }
 });
 
-for (const [label, patch, pattern] of [
-  ['inconclusive status', { status: 'inconclusive' }, /status must be pass/],
-  ['wrong provider', { provider: 'claude' }, /provider mismatch/],
-  ['wrong model', { model: 'other' }, /model mismatch/],
-  [
-    'bad terminal',
-    { terminal: { type: 'complete', stopReason: 'max_tokens' } },
-    /complete\/end_turn/,
-  ],
-  [
-    'wrong target',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 99,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: false,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /PID\/window trace evidence/,
-  ],
-  ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
-  ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
-  ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
-  ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
-  ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
-  [
-    'broken observation lineage',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'unknown-observation',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /observation lineage/,
-  ],
-]) {
-  test(`real report rejects ${label}`, async () => {
+test('real reports reject invalid readiness, identity, provenance, and lineage', async () => {
+  for (const [label, patch, pattern] of [
+    ['inconclusive status', { status: 'inconclusive' }, /status must be pass/],
+    ['wrong provider', { provider: 'claude' }, /provider mismatch/],
+    ['wrong model', { model: 'other' }, /model mismatch/],
+    [
+      'bad terminal',
+      { terminal: { type: 'complete', stopReason: 'max_tokens' } },
+      /complete\/end_turn/,
+    ],
+    [
+      'wrong target',
+      {
+        actions: [
+          {
+            type: 'observe',
+            resultObservationId: 'observation-1',
+            targetPid: 99,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: false,
+          },
+          {
+            type: 'click_element',
+            sourceObservationId: 'observation-1',
+            targetPid: 42,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: true,
+          },
+        ],
+      },
+      /PID\/window trace evidence/,
+    ],
+    ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
+    ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
+    ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
+    ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
+    ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
+    [
+      'broken observation lineage',
+      {
+        actions: [
+          {
+            type: 'observe',
+            resultObservationId: 'observation-1',
+            targetPid: 42,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: true,
+          },
+          {
+            type: 'click_element',
+            sourceObservationId: 'unknown-observation',
+            targetPid: 42,
+            targetWindowId: 7,
+            success: true,
+            targetOwned: true,
+          },
+        ],
+      },
+      /observation lineage/,
+    ],
+  ]) {
     const report = realReport(patch);
     Object.assign(report, withLedgerCounts(report));
     const matrix = await buildProviderMatrix({
@@ -276,10 +276,10 @@ for (const [label, patch, pattern] of [
       ],
       loadReport: async () => report,
     });
-    assert.equal(matrix.rows[0].status, 'invalid-report');
-    assert.match(matrix.rows[0].reportError, pattern);
-  });
-}
+    assert.equal(matrix.rows[0].status, 'invalid-report', label);
+    assert.match(matrix.rows[0].reportError, pattern, label);
+  }
+});
 
 test('an explicit action sequence is checked exactly', async () => {
   const orderedScenario = scenario({

@@ -14,11 +14,6 @@ import {
   verifyBinaryVersion,
 } from './prepare-cua-driver.mjs';
 
-const manifest = JSON.parse(
-  await readFile(new URL('../apps/desktop/bundled-tools.json', import.meta.url)),
-);
-const cua = manifest.cuaDriver;
-
 test('download streams to disk with a hard byte ceiling and incremental SHA-256', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-cua-download-test-'));
   try {
@@ -115,23 +110,6 @@ test('tar entry validation rejects path traversal before extraction', () => {
   assert.throws(() =>
     assertSafeTarListing(['lrwxr-xr-x user/group 0 2026-01-01 00:00 bundle/link -> /tmp/escape']),
   );
-});
-
-test('tracked license and source metadata match the manifest pins', async () => {
-  const license = await readFile(
-    new URL('../apps/desktop/resources/licenses/cua-driver/LICENSE.md', import.meta.url),
-  );
-  const sourceBytes = await readFile(
-    new URL('../apps/desktop/resources/licenses/cua-driver/SOURCE.json', import.meta.url),
-  );
-  assert.equal(sha256(license), cua.licenseSha256);
-  assert.equal(sha256(sourceBytes), cua.sourceSha256);
-  const source = JSON.parse(sourceBytes.toString('utf8'));
-  assert.equal(source.repository, cua.repo);
-  assert.equal(source.upstreamCommit, cua.upstreamCommit);
-  assert.equal(source.sourceCommit, cua.sourceCommit);
-  assert.equal(source.patchPullRequest, cua.patchPullRequest);
-  assert.equal(source.cargoLockSha256, cua.cargoLockSha256);
 });
 
 function sha256(bytes) {

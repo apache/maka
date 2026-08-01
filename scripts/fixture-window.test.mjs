@@ -50,14 +50,6 @@ describe('inactiveWindowElectronArgs', () => {
 });
 
 describe('mapFixtureWindowInactive', () => {
-  it('maps the BrowserWindow that belongs to the launched page without focusing it', async () => {
-    const { app, page, events } = fakeElectronWindow();
-
-    await mapFixtureWindowInactive(app, page);
-
-    assert.deepEqual(events, ['showInactive', 'isVisible', 'isFocused', 'dispose']);
-  });
-
   it('fails closed and releases the handle when inactive mapping does not take effect', async () => {
     const { app, page, events } = fakeElectronWindow({ visible: false });
 

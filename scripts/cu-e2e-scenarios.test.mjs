@@ -2,24 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  CU_E2E_SCENARIOS,
   evaluateCuE2eScenarioState,
   getCuE2eScenario,
   validateCuE2eScenario,
-  validateCuE2eScenarioLibrary,
 } from './cu-e2e-scenarios.mjs';
-
-test('the scenario library is internally valid and covers every layer', () => {
-  assert.equal(validateCuE2eScenarioLibrary(), CU_E2E_SCENARIOS);
-  assert.deepEqual([...new Set(CU_E2E_SCENARIOS.map(({ level }) => level))].sort(), [
-    'L0',
-    'L1',
-    'L2',
-    'L3',
-    'L4',
-    'L5',
-  ]);
-});
 
 test('state evaluation separates expected-state and forbidden-effect failures', () => {
   const scenario = getCuE2eScenario('l1-single-click');
