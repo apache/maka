@@ -129,7 +129,12 @@ const projectRowActions: NonNullable<SessionListPanelProps['projectActions']> = 
 
 const activeSession = sidebarSessions[1];
 
-function user(id: string, turnId: string, minutesAgo: number, text: string): StoredMessage {
+function user(
+  id: string,
+  turnId: string,
+  minutesAgo: number,
+  text: string,
+): Extract<StoredMessage, { type: 'user' }> {
   return { type: 'user', id, turnId, ts: NOW - minutesAgo * 60_000, text };
 }
 
@@ -590,16 +595,34 @@ const multiStepConversation: StoredMessage[] = [
   },
 ];
 
+// A scheduled automation injects this turn; the transcript marks that
+// provenance above the user bubble instead of impersonating typed input.
+// Migrated here from the deleted chat-surface catalog (#1853): the marker is a
+// transcript detail, and rendering an eighth shell around it would be the
+// duplication this PR removes. That story carried a `play` assertion on the
+// marker's line height; play functions never execute in this Storybook (no test
+// addon is configured — a deliberately throwing `play` still ships green), so
+// the assertion was inert. The provenance contract now lives where it runs, in
+// packages/ui/src/__tests__/host-origin-presentation.test.tsx.
+const automationTurn: StoredMessage[] = [
+  {
+    ...user('msg-user-automation', 'turn-automation', 6, '生成今日项目回顾'),
+    origin: { kind: 'automation', automationId: 'daily-review' },
+  },
+  assistant('msg-assistant-automation', 'turn-automation', 5, '今日项目回顾已生成。'),
+];
+
 // Real path: a long session that has accumulated reasoning, several native
-// Astryx tool calls and long prose, with an image staged in the composer and
-// thinking set to medium. Each part is individually reachable; they are stacked
-// into one screen on purpose, as the canonical visual-acceptance scaffold for
-// the transcript. Open this first, then the focused stories above.
+// Astryx tool calls and long prose, an automation-triggered turn, with an image
+// staged in the composer and thinking set to medium. Each part is individually
+// reachable; they are stacked into one screen on purpose, as the canonical
+// visual-acceptance scaffold for the transcript. Open this first, then the
+// focused stories above.
 export const NativeConversation: Story = {
   render: () => (
     <ComposedShell
       chat={{
-        messages: [...longConversation, ...multiStepConversation],
+        messages: [...longConversation, ...multiStepConversation, ...automationTurn],
         memoryActive: true,
         onOpenMemorySettings: noop,
       }}
