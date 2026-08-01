@@ -48,6 +48,7 @@ import {
   isSessionStatus,
   normalizeUserSessionName,
   subagentSessionRuntimeSummary,
+  WORKSPACE_AUTHORITY_SESSION_ID,
 } from '@maka/core';
 import { syncDirectoryChain, syncFile } from './stable-storage.js';
 import type {
@@ -1569,7 +1570,7 @@ export function assertSafeSessionId(sessionId: string): void {
 }
 
 export function isSafeSessionId(sessionId: string): boolean {
-  return SESSION_ID_PATTERN.test(sessionId);
+  return SESSION_ID_PATTERN.test(sessionId) && sessionId !== WORKSPACE_AUTHORITY_SESSION_ID;
 }
 
 type StoredSessionHeader = Omit<

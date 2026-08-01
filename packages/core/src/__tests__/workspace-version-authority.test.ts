@@ -129,7 +129,7 @@ describe('workspace version authority contract', () => {
     const second = buildWorkspaceBaselineAuthorityEvents(
       baselineInput({
         epochOpenedEventId: 'workspace-epoch-event-2',
-        versionAcceptedEventId: 'workspace-version-event-2',
+        baselineAcceptedEventId: 'workspace-version-event-2',
         epoch: {
           ...baselineInput().epoch,
           workspaceEpochId: 'epoch_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -179,7 +179,7 @@ function baselineInput(
 ): WorkspaceBaselineAuthorityInput {
   const base: WorkspaceBaselineAuthorityInput = {
     epochOpenedEventId: 'workspace-epoch-event-1',
-    versionAcceptedEventId: 'workspace-version-event-1',
+    baselineAcceptedEventId: 'workspace-version-event-1',
     committedAt: 1_700_000_000_000,
     epoch: {
       repositoryId: 'repository_11111111111111111111111111111111',

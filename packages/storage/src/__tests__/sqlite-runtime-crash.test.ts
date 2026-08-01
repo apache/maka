@@ -118,10 +118,7 @@ if (childMode) {
     }, async () => {
       await withKilledChild('inside_workspace_baseline', async (store) => {
         assert.equal(
-          await store.readWorkspaceHead(
-            `workspace_${'2'.repeat(32)}`,
-            `epoch_${'3'.repeat(32)}`,
-          ),
+          await store.readWorkspaceHead(`workspace_${'2'.repeat(32)}`, `epoch_${'3'.repeat(32)}`),
           undefined,
         );
       });
@@ -132,12 +129,8 @@ if (childMode) {
     }, async () => {
       await withKilledChild('after_workspace_baseline_commit', async (store) => {
         assert.equal(
-          (
-            await store.readWorkspaceHead(
-              `workspace_${'2'.repeat(32)}`,
-              `epoch_${'3'.repeat(32)}`,
-            )
-          )?.workspaceVersionId,
+          (await store.readWorkspaceHead(`workspace_${'2'.repeat(32)}`, `epoch_${'3'.repeat(32)}`))
+            ?.workspaceVersionId,
           `version_${'5'.repeat(32)}`,
         );
       });
@@ -220,10 +213,7 @@ async function runCrashChild(mode: string): Promise<void> {
     if (point === 'after_recovery_decision' && mode === 'inside_recovery_decision') {
       blockUntilKilled();
     }
-    if (
-      point === 'after_workspace_version_event_insert' &&
-      mode === 'inside_workspace_baseline'
-    ) {
+    if (point === 'after_workspace_version_event_insert' && mode === 'inside_workspace_baseline') {
       blockUntilKilled();
     }
   };
@@ -277,7 +267,7 @@ function preparedCommit() {
 function workspaceBaselineInput(): WorkspaceBaselineAuthorityInput {
   return {
     epochOpenedEventId: 'workspace-epoch-event-1',
-    versionAcceptedEventId: 'workspace-version-event-1',
+    baselineAcceptedEventId: 'workspace-version-event-1',
     committedAt: 1_700_000_000_000,
     epoch: {
       repositoryId: `repository_${'1'.repeat(32)}`,

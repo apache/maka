@@ -1,6 +1,6 @@
 # Workspace Version Authority v1：Baseline 事实权威
 
-- 状态：M0 implementation slice
+- 状态：Draft foundation；在 durable verified baseline receipt 接入前不得标记 Ready
 - 更新日期：2026-08-01
 - 主要不变量：经专用 writer 提交的一个 workspace epoch，其 baseline canonical facts 与三个 SQLite projection 对外只能全可见或全不可见
 - 事实权威：immutable RuntimeEvents
@@ -30,6 +30,12 @@ projection，公开 reader 会 fail closed，直到显式 rebuild；这种损坏
 
 本切片只接受 baseline，不接受 mutation。它不创建 internal repository、不创建 worktree、不调用工具，
 也不改变 Desktop/CLI 行为。这种收缩是刻意的：一个 PR 只证明一个主要不变量。
+
+当前分支只证明事实合同、SQLite 原子写入与 projection 可重建性，**尚未证明 supplied Git object
+真实存在**。因此 `commitWorkspaceBaseline()` 不能拥有生产 caller，本 PR 也不能独立合并为可用的
+“accepted workspace”能力。Ready 的硬门槛是后续 Baseline Open slice 提供一份由
+`GitWorkspaceService` 持久化、可重读、可重新验证的 receipt，并让唯一 composition owner 在验证
+receipt 后调用本 writer。裸 OID、TypeScript brand 或 caller 自报的 `verified: true` 都不能跨过该门槛。
 
 ## 2. Owner、边界、失败状态与回滚
 
@@ -101,10 +107,10 @@ stream。这个例外只由专用 writer 创建，不能成为 generic append �
 
 ```ts
 {
-  kind: 'maka.workspace.version_accepted',
+  kind: 'maka.workspace.baseline_accepted',
   version: 1,
   payload: {
-    protocol: 'workspace_version_accepted_v1',
+    protocol: 'workspace_baseline_accepted_v1',
     repositoryId,
     workspaceId,
     workspaceEpochId,
@@ -178,7 +184,7 @@ sequenceDiagram
 
   G->>G: 验证 source repository、commit/tree、fixed materialization profile
   G->>G: 导入并验证 internal baseline commit/tree
-  G->>S: commitWorkspaceBaseline(typed facts)
+  G->>S: verify durable receipt, then commitWorkspaceBaseline(receipt identity)
   S->>S: BEGIN IMMEDIATE
   S->>S: 扫描全部 canonical workspace facts
   alt exact bundle 已存在
@@ -197,7 +203,9 @@ sequenceDiagram
 ```
 
 Git 验证与 tree-delta 计算故意不放进 SQLite transaction。后续 Baseline Open Bundle 负责在调用
-writer 前证明 artifact；SQLite writer 负责冻结已验证 identity，并保证 facts/projections 原子提交。
+writer 前读取并重新验证 durable receipt；SQLite writer 负责冻结已验证 identity，并保证
+facts/projections 原子提交。在该 composition 存在前，当前 typed input 只是 foundation test seam，不能
+成为 Desktop、CLI、tool 或自动恢复的生产入口。
 `treeDeltaDigest` 必须是 canonical empty-tree → baseline-tree delta 的摘要，不能由 caller 随意填写。
 
 ## 7. Schema 7 与 projection

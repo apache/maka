@@ -855,7 +855,7 @@ export class SqliteRuntimeStore
           !isDeepStrictEqual(
             [
               this.readRequiredRuntimeEvent(existing.epochOpenedEventId),
-              this.readRequiredRuntimeEvent(existing.versionAcceptedEventId),
+              this.readRequiredRuntimeEvent(existing.baselineAcceptedEventId),
             ],
             [events.epochOpenedEvent, events.baselineAcceptedEvent],
           )
@@ -959,7 +959,7 @@ export class SqliteRuntimeStore
       for (const baseline of baselines) {
         const committedAt = Math.max(
           this.runtimeEventCommittedAt(baseline.epochOpenedEventId),
-          this.runtimeEventCommittedAt(baseline.versionAcceptedEventId),
+          this.runtimeEventCommittedAt(baseline.baselineAcceptedEventId),
         );
         this.insertWorkspaceEpochProjection(baseline, committedAt);
         this.insertWorkspaceVersionProjection(baseline, committedAt);
@@ -1018,13 +1018,9 @@ export class SqliteRuntimeStore
           OR (session_id = ? AND turn_id = ?)
         LIMIT 1
       `)
-      .get(
-        event.invocationId,
-        event.sessionId,
-        event.runId,
-        event.sessionId,
-        event.turnId,
-      ) as { event_id: string } | undefined;
+      .get(event.invocationId, event.sessionId, event.runId, event.sessionId, event.turnId) as
+      | { event_id: string }
+      | undefined;
     if (row) throw new Error('Workspace baseline authority conflict');
   }
 
@@ -1119,7 +1115,7 @@ export class SqliteRuntimeStore
         baseline.treeDeltaDigest,
         baseline.changedFileCount,
         baseline.deletedFileCount,
-        accepted.versionAcceptedEventId,
+        accepted.baselineAcceptedEventId,
         committedAt,
       );
   }
@@ -1146,7 +1142,7 @@ export class SqliteRuntimeStore
         head.workspaceEpochId,
         head.repositoryId,
         head.workspaceVersionId,
-        head.versionAcceptedEventId,
+        head.baselineAcceptedEventId,
         head.commitOid,
         head.treeOid,
         head.revision,
@@ -1156,13 +1152,16 @@ export class SqliteRuntimeStore
   private assertWorkspaceProjectionsMatchSync(
     baselines: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'],
   ): void {
-    const expectedEpochs = baselines.map(workspaceEpochProjectionRow).sort(compareWorkspaceEpochRow);
+    const expectedEpochs = baselines
+      .map(workspaceEpochProjectionRow)
+      .sort(compareWorkspaceEpochRow);
     const expectedVersions = baselines
       .map(workspaceVersionProjectionRow)
       .sort(compareWorkspaceVersionRow);
     const expectedHeads = baselines.map(workspaceHeadProjectionRow).sort(compareWorkspaceHeadRow);
-    const epochs = (this.db
-      .prepare(`
+    const epochs = (
+      this.db
+        .prepare(`
         SELECT
           workspace_id,
           workspace_epoch_id,
@@ -1186,11 +1185,13 @@ export class SqliteRuntimeStore
         FROM runtime_workspace_epochs
         ORDER BY workspace_id ASC, workspace_epoch_id ASC
       `)
-      .all() as unknown as WorkspaceEpochProjectionRow[])
+        .all() as unknown as WorkspaceEpochProjectionRow[]
+    )
       .map((row) => ({ ...row }))
       .sort(compareWorkspaceEpochRow);
-    const versions = (this.db
-      .prepare(`
+    const versions = (
+      this.db
+        .prepare(`
         SELECT
           workspace_version_id,
           repository_id,
@@ -1212,11 +1213,13 @@ export class SqliteRuntimeStore
         FROM runtime_workspace_versions
         ORDER BY workspace_version_id ASC
       `)
-      .all() as unknown as WorkspaceVersionProjectionRow[])
+        .all() as unknown as WorkspaceVersionProjectionRow[]
+    )
       .map((row) => ({ ...row }))
       .sort(compareWorkspaceVersionRow);
-    const heads = (this.db
-      .prepare(`
+    const heads = (
+      this.db
+        .prepare(`
         SELECT
           workspace_id,
           workspace_epoch_id,
@@ -1229,7 +1232,8 @@ export class SqliteRuntimeStore
         FROM runtime_workspace_heads
         ORDER BY workspace_id ASC, workspace_epoch_id ASC
       `)
-      .all() as unknown as WorkspaceHeadProjectionRow[])
+        .all() as unknown as WorkspaceHeadProjectionRow[]
+    )
       .map((row) => ({ ...row }))
       .sort(compareWorkspaceHeadRow);
     if (
@@ -2766,9 +2770,7 @@ interface RuntimeEventStorageRow {
 function assertWorkspaceVersionAuthorityCapability(db: DatabaseSync): void {
   const row = db
     .prepare('SELECT version FROM runtime_capabilities WHERE capability = ?')
-    .get(RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY) as
-    | { version?: unknown }
-    | undefined;
+    .get(RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY) as { version?: unknown } | undefined;
   if (row?.version !== RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION) {
     throw new Error(
       `SQLite runtime workspace capability ${RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY}@${RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION} is unavailable`,
@@ -2845,20 +2847,18 @@ function workspaceVersionRecord(
 ): WorkspaceVersionRecordV1 {
   return {
     ...authority.baseline,
-    versionAcceptedEventId: authority.versionAcceptedEventId,
-    committedAt: authority.versionAcceptedAt,
+    baselineAcceptedEventId: authority.baselineAcceptedEventId,
+    committedAt: authority.baselineAcceptedAt,
   };
 }
 
-function workspaceHeadRecord(
-  authority: ScannedWorkspaceBaselineAuthority,
-): WorkspaceHeadRecordV1 {
+function workspaceHeadRecord(authority: ScannedWorkspaceBaselineAuthority): WorkspaceHeadRecordV1 {
   return {
     repositoryId: authority.epoch.repositoryId,
     workspaceId: authority.epoch.workspaceId,
     workspaceEpochId: authority.epoch.workspaceEpochId,
     workspaceVersionId: authority.baseline.workspaceVersionId,
-    versionAcceptedEventId: authority.versionAcceptedEventId,
+    baselineAcceptedEventId: authority.baselineAcceptedEventId,
     commitOid: authority.baseline.commitOid,
     treeOid: authority.baseline.treeOid,
     revision: 1,
@@ -2911,7 +2911,7 @@ function workspaceVersionProjectionRow(
     tree_delta_digest: record.treeDeltaDigest,
     changed_file_count: record.changedFileCount,
     deleted_file_count: record.deletedFileCount,
-    accepted_event_id: record.versionAcceptedEventId,
+    accepted_event_id: record.baselineAcceptedEventId,
     protocol_version: 1,
     committed_at: record.committedAt,
   };
@@ -2926,7 +2926,7 @@ function workspaceHeadProjectionRow(
     workspace_epoch_id: record.workspaceEpochId,
     repository_id: record.repositoryId,
     workspace_version_id: record.workspaceVersionId,
-    accepted_event_id: record.versionAcceptedEventId,
+    accepted_event_id: record.baselineAcceptedEventId,
     commit_oid: record.commitOid,
     tree_oid: record.treeOid,
     revision: record.revision,

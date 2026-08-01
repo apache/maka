@@ -1,7 +1,7 @@
 import type { RuntimeEvent } from './runtime-event.js';
 
 export const WORKSPACE_EPOCH_OPENED_FACT_KIND = 'maka.workspace.epoch_opened' as const;
-export const WORKSPACE_VERSION_ACCEPTED_FACT_KIND = 'maka.workspace.version_accepted' as const;
+export const WORKSPACE_BASELINE_ACCEPTED_FACT_KIND = 'maka.workspace.baseline_accepted' as const;
 export const WORKSPACE_FACT_VERSION = 1 as const;
 export const WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1 =
   'runtime_workspace_version_authority_v1' as const;
@@ -39,8 +39,8 @@ export interface WorkspaceEpochOpenedV1 extends WorkspaceEpochDescriptorV1 {
   initialWorkspaceVersionId: string;
 }
 
-export interface WorkspaceBaselineVersionAcceptedV1 extends WorkspaceBaselineDescriptorV1 {
-  protocol: 'workspace_version_accepted_v1';
+export interface WorkspaceBaselineAcceptedV1 extends WorkspaceBaselineDescriptorV1 {
+  protocol: 'workspace_baseline_accepted_v1';
   repositoryId: string;
   workspaceId: string;
   workspaceEpochId: string;
@@ -60,14 +60,14 @@ export type RuntimeEventWorkspaceFactEnvelope =
       payload: WorkspaceEpochOpenedV1;
     }
   | {
-      kind: typeof WORKSPACE_VERSION_ACCEPTED_FACT_KIND;
+      kind: typeof WORKSPACE_BASELINE_ACCEPTED_FACT_KIND;
       version: typeof WORKSPACE_FACT_VERSION;
-      payload: WorkspaceBaselineVersionAcceptedV1;
+      payload: WorkspaceBaselineAcceptedV1;
     };
 
 export interface WorkspaceBaselineAuthorityInput {
   epochOpenedEventId: string;
-  versionAcceptedEventId: string;
+  baselineAcceptedEventId: string;
   committedAt: number;
   epoch: WorkspaceEpochDescriptorV1;
   baseline: WorkspaceBaselineDescriptorV1;
@@ -92,11 +92,11 @@ export interface WorkspaceAuthorityLedgerRow {
 
 export interface ScannedWorkspaceBaselineAuthority {
   epoch: WorkspaceEpochOpenedV1;
-  baseline: WorkspaceBaselineVersionAcceptedV1;
+  baseline: WorkspaceBaselineAcceptedV1;
   epochOpenedEventId: string;
-  versionAcceptedEventId: string;
+  baselineAcceptedEventId: string;
   epochOpenedAt: number;
-  versionAcceptedAt: number;
+  baselineAcceptedAt: number;
   authority: WorkspaceAuthorityIdentity;
 }
 
@@ -106,8 +106,8 @@ export interface WorkspaceEpochRecordV1 extends WorkspaceEpochOpenedV1 {
   committedAt: number;
 }
 
-export interface WorkspaceVersionRecordV1 extends WorkspaceBaselineVersionAcceptedV1 {
-  versionAcceptedEventId: string;
+export interface WorkspaceVersionRecordV1 extends WorkspaceBaselineAcceptedV1 {
+  baselineAcceptedEventId: string;
   committedAt: number;
 }
 
@@ -116,7 +116,7 @@ export interface WorkspaceHeadRecordV1 {
   workspaceId: string;
   workspaceEpochId: string;
   workspaceVersionId: string;
-  versionAcceptedEventId: string;
+  baselineAcceptedEventId: string;
   commitOid: string;
   treeOid: string;
   revision: number;
@@ -194,8 +194,8 @@ export function buildWorkspaceBaselineAuthorityEvents(
     ...input.epoch,
     initialWorkspaceVersionId: input.baseline.workspaceVersionId,
   };
-  const baselinePayload: WorkspaceBaselineVersionAcceptedV1 = {
-    protocol: 'workspace_version_accepted_v1',
+  const baselinePayload: WorkspaceBaselineAcceptedV1 = {
+    protocol: 'workspace_baseline_accepted_v1',
     repositoryId: input.epoch.repositoryId,
     workspaceId: input.epoch.workspaceId,
     workspaceEpochId: input.epoch.workspaceEpochId,
@@ -226,7 +226,7 @@ export function buildWorkspaceBaselineAuthorityEvents(
     },
   };
   const baselineAcceptedEvent: RuntimeEvent = {
-    id: input.versionAcceptedEventId,
+    id: input.baselineAcceptedEventId,
     ...identity,
     ts: input.committedAt,
     partial: false,
@@ -234,7 +234,7 @@ export function buildWorkspaceBaselineAuthorityEvents(
     author: 'system',
     actions: {
       workspaceFact: {
-        kind: WORKSPACE_VERSION_ACCEPTED_FACT_KIND,
+        kind: WORKSPACE_BASELINE_ACCEPTED_FACT_KIND,
         version: WORKSPACE_FACT_VERSION,
         payload: baselinePayload,
       },
@@ -256,8 +256,8 @@ export function isRuntimeEventWorkspaceFactEnvelope(
   if (value.kind === WORKSPACE_EPOCH_OPENED_FACT_KIND) {
     return isWorkspaceEpochOpenedV1(value.payload);
   }
-  if (value.kind === WORKSPACE_VERSION_ACCEPTED_FACT_KIND) {
-    return isWorkspaceBaselineVersionAcceptedV1(value.payload);
+  if (value.kind === WORKSPACE_BASELINE_ACCEPTED_FACT_KIND) {
+    return isWorkspaceBaselineAcceptedV1(value.payload);
   }
   return false;
 }
@@ -437,7 +437,7 @@ function assertWorkspaceBaselineAuthorityPair(input: {
     !epochLane.ok ||
     !baselineLane.ok ||
     epochFact?.kind !== WORKSPACE_EPOCH_OPENED_FACT_KIND ||
-    baselineFact?.kind !== WORKSPACE_VERSION_ACCEPTED_FACT_KIND
+    baselineFact?.kind !== WORKSPACE_BASELINE_ACCEPTED_FACT_KIND
   ) {
     throw new WorkspaceAuthorityContractError(
       'baseline_contract_conflict',
@@ -477,9 +477,9 @@ function assertWorkspaceBaselineAuthorityPair(input: {
     epoch,
     baseline,
     epochOpenedEventId: input.epochOpenedEvent.id,
-    versionAcceptedEventId: input.baselineAcceptedEvent.id,
+    baselineAcceptedEventId: input.baselineAcceptedEvent.id,
     epochOpenedAt: input.epochOpenedEvent.ts,
-    versionAcceptedAt: input.baselineAcceptedEvent.ts,
+    baselineAcceptedAt: input.baselineAcceptedEvent.ts,
     authority: workspaceAuthorityIdentity(epoch.workspaceEpochId),
   };
 }
@@ -487,8 +487,8 @@ function assertWorkspaceBaselineAuthorityPair(input: {
 function assertWorkspaceBaselineAuthorityInput(input: WorkspaceBaselineAuthorityInput): void {
   if (
     !EVENT_ID_PATTERN.test(input.epochOpenedEventId) ||
-    !EVENT_ID_PATTERN.test(input.versionAcceptedEventId) ||
-    input.epochOpenedEventId === input.versionAcceptedEventId ||
+    !EVENT_ID_PATTERN.test(input.baselineAcceptedEventId) ||
+    input.epochOpenedEventId === input.baselineAcceptedEventId ||
     !Number.isSafeInteger(input.committedAt) ||
     input.committedAt < 0 ||
     !isWorkspaceEpochDescriptor(input.epoch) ||
@@ -539,9 +539,7 @@ function isWorkspaceEpochDescriptor(value: unknown): value is WorkspaceEpochDesc
   );
 }
 
-function isWorkspaceBaselineVersionAcceptedV1(
-  value: unknown,
-): value is WorkspaceBaselineVersionAcceptedV1 {
+function isWorkspaceBaselineAcceptedV1(value: unknown): value is WorkspaceBaselineAcceptedV1 {
   if (
     !hasExactKeys(value, [
       'protocol',
@@ -559,7 +557,7 @@ function isWorkspaceBaselineVersionAcceptedV1(
       'changedFileCount',
       'deletedFileCount',
     ]) ||
-    value.protocol !== 'workspace_version_accepted_v1' ||
+    value.protocol !== 'workspace_baseline_accepted_v1' ||
     !isIdentifier(value.repositoryId, 'repositoryId') ||
     !isIdentifier(value.workspaceId, 'workspaceId') ||
     !isIdentifier(value.workspaceEpochId, 'workspaceEpochId') ||

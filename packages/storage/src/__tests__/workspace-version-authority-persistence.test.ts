@@ -93,7 +93,7 @@ describe('workspace version persistence authority', () => {
       assert.deepEqual(retry, { ...first, created: false });
 
       const conflict = baselineInput({
-        versionAcceptedEventId: 'workspace-version-event-conflict',
+        baselineAcceptedEventId: 'workspace-version-event-conflict',
         baseline: {
           ...input.baseline,
           workspaceVersionId: 'version_99999999999999999999999999999999',
@@ -210,7 +210,7 @@ describe('workspace version persistence authority', () => {
           | undefined;
         assert.deepEqual(head && { ...head }, {
           workspace_version_id: committed.head.workspaceVersionId,
-          accepted_event_id: committed.head.versionAcceptedEventId,
+          accepted_event_id: committed.head.baselineAcceptedEventId,
         });
       } finally {
         afterFailedRebuild.close();
@@ -448,7 +448,7 @@ function baselineInput(
 ): WorkspaceBaselineAuthorityInput {
   const base: WorkspaceBaselineAuthorityInput = {
     epochOpenedEventId: 'workspace-epoch-event-1',
-    versionAcceptedEventId: 'workspace-version-event-1',
+    baselineAcceptedEventId: 'workspace-version-event-1',
     committedAt: 1_700_000_000_000,
     epoch: {
       repositoryId: 'repository_11111111111111111111111111111111',

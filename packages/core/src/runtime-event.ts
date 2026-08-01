@@ -719,9 +719,9 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
     (value.toolRecovery === undefined || isToolRecoveryFactEnvelope(value.toolRecovery)) &&
     (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol)) &&
-    (value.continuationStart === undefined || isRuntimeContinuationStart(value.continuationStart)) &&
-    (value.workspaceFact === undefined ||
-      isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact))
+    (value.continuationStart === undefined ||
+      isRuntimeContinuationStart(value.continuationStart)) &&
+    (value.workspaceFact === undefined || isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact))
   );
 }
 

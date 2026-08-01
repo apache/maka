@@ -260,9 +260,7 @@ function workspaceBaselineInput(variant: 'a' | 'b'): WorkspaceBaselineAuthorityI
   const alternate = variant === 'b';
   return {
     epochOpenedEventId: alternate ? 'workspace-epoch-event-b' : 'workspace-epoch-event-a',
-    versionAcceptedEventId: alternate
-      ? 'workspace-version-event-b'
-      : 'workspace-version-event-a',
+    baselineAcceptedEventId: alternate ? 'workspace-version-event-b' : 'workspace-version-event-a',
     committedAt: 1_700_000_000_000,
     epoch: {
       repositoryId: `repository_${'1'.repeat(32)}`,

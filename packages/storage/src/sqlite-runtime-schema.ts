@@ -5,8 +5,7 @@ export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION = 1;
-export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY =
-  'runtime_workspace_version_authority';
+export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY = 'runtime_workspace_version_authority';
 export const RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION = 1;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
