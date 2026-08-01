@@ -149,77 +149,58 @@ test('matrix generation never executes provider command templates', async () => 
   }
 });
 
-test('a real report from another scenario is invalid instead of a fixture failure', async () => {
-  const matrix = await buildProviderMatrix({
-    scenarios: [scenario({ id: 'l0-observe-only' })],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'report.json',
-      },
+test('real reports reject invalid identity, provenance, and lineage', () => {
+  for (const [label, patch, reportScenario, patterns] of [
+    [
+      'scenario mismatch',
+      { scenarioId: 'l1-single-click' },
+      scenario({ id: 'l0-observe-only' }),
+      [/scenarioId mismatch/],
     ],
-    loadReport: async () => realReport({ scenarioId: 'l1-single-click' }),
-  });
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /scenarioId mismatch/);
-});
-
-test('a hermetic or unlabeled report cannot satisfy real-provider readiness', async () => {
-  for (const evidenceClass of [undefined, 'hermetic-protocol']) {
-    const matrix = await buildProviderMatrix({
-      scenarios: [scenario()],
-      providers: [
-        {
-          id: 'openai',
-          readiness: 'real',
-          producer: 'cu-real-model-launcher',
-          model: 'gpt-5.4',
-          report: 'report.json',
-        },
-      ],
-      loadReport: async () => realReport({ evidenceClass }),
-    });
-    assert.equal(matrix.rows[0].status, 'invalid-report');
-    assert.match(matrix.rows[0].reportError, /real-runtime/);
-  }
-});
-
-test('real reports reject invalid readiness, identity, provenance, and lineage', async () => {
-  for (const [label, patch, pattern] of [
-    ['inconclusive status', { status: 'inconclusive' }, /status must be pass/],
-    ['wrong provider', { provider: 'claude' }, /provider mismatch/],
-    ['wrong model', { model: 'other' }, /model mismatch/],
+    ['missing evidence class', { evidenceClass: undefined }, scenario(), [/real-runtime/]],
+    ['hermetic evidence', { evidenceClass: 'hermetic-protocol' }, scenario(), [/real-runtime/]],
+    ['inconclusive status', { status: 'inconclusive' }, scenario(), [/status must be pass/]],
+    ['wrong provider', { provider: 'claude' }, scenario(), [/provider mismatch/]],
+    ['wrong model', { model: 'other' }, scenario(), [/model mismatch/]],
     [
       'bad terminal',
       { terminal: { type: 'complete', stopReason: 'max_tokens' } },
-      /complete\/end_turn/,
+      scenario(),
+      [/complete\/end_turn/],
     ],
-    ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
-    ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
-    ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
-    ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
-    ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
+    [
+      'unknown producer',
+      { producer: 'legacy-runner' },
+      scenario(),
+      [/producer missing or unknown/],
+    ],
+    [
+      'missing policy provenance',
+      { policyMode: undefined },
+      scenario(),
+      [/policyMode missing or unknown/],
+    ],
+    ['unknown transport provenance', { transportClass: 'unknown' }, scenario(), [/live-network/]],
+    [
+      'ineligible qualification',
+      { qualificationEligible: false },
+      scenario(),
+      [/qualificationEligible/],
+    ],
+    ['deprecated report', { deprecated: true }, scenario(), [/deprecated reports cannot qualify/]],
+    [
+      'broken content lineage',
+      { gitRevision: 'bad', contentLineage: undefined },
+      scenario(),
+      [/gitRevision/, /contentLineage/],
+    ],
   ]) {
-    const report = realReport(patch);
-    Object.assign(report, withLedgerCounts(report));
-    const matrix = await buildProviderMatrix({
-      scenarios: [scenario()],
-      providers: [
-        {
-          id: 'openai',
-          readiness: 'real',
-          producer: 'cu-real-model-launcher',
-          model: 'gpt-5.4',
-          report: 'report.json',
-        },
-      ],
-      loadReport: async () => report,
-    });
-    assert.equal(matrix.rows[0].status, 'invalid-report', label);
-    assert.match(matrix.rows[0].reportError, pattern, label);
+    const errors = validateRealReport(
+      realReport(patch),
+      { id: 'openai', producer: 'cu-real-model-launcher', model: 'gpt-5.4' },
+      reportScenario,
+    ).join('; ');
+    for (const pattern of patterns) assert.match(errors, pattern, label);
   }
 });
 
@@ -595,22 +576,4 @@ test('restart recovery requires target_missing then fresh observation and AX set
     validateRealReport(complete, provider, restartScenario).join('; '),
     /restart recovery requires/,
   );
-});
-
-test('real reports require matching run and content lineage', () => {
-  const errors = validateRealReport(
-    realReport({
-      gitRevision: 'bad',
-      contentLineage: undefined,
-    }),
-    {
-      id: 'openai',
-      producer: 'cu-real-model-launcher',
-      model: 'gpt-5.4',
-    },
-    scenario(),
-  );
-
-  assert.match(errors.join('; '), /gitRevision/);
-  assert.match(errors.join('; '), /contentLineage/);
 });
