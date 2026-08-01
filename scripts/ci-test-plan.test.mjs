@@ -11,15 +11,29 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
-  assert.equal(ui.storybook, true);
+  // Product UI work is not a Storybook catalog change — typecheck/unit/e2e own it.
+  assert.equal(ui.storybook, false);
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
-  // .storybook/preview.tsx reads THEME_PALETTES from @maka/core — Storybook
-  // must re-run, but Electron e2e must not (core is not a desktop cold-start).
-  const core = planTests(['packages/core/src/settings.ts'], { graph });
-  assert.equal(core.storybook, true);
-  assert.equal(core.e2e, false);
+  // Ordinary desktop product files must not drag Storybook Chromium.
+  assert.equal(planTests(['apps/desktop/src/main/main.ts'], { graph }).storybook, false);
+  assert.equal(planTests(['apps/desktop/e2e/settings.spec.ts'], { graph }).storybook, false);
+
+  // Catalog + harness only.
+  assert.equal(
+    planTests(['apps/desktop/stories/app-shell.stories.tsx'], { graph }).storybook,
+    true,
+  );
+  assert.equal(planTests(['apps/desktop/.storybook/preview.tsx'], { graph }).storybook, true);
+  assert.equal(planTests(['packages/ui/stories/composer.stories.tsx'], { graph }).storybook, true);
+
+  // .storybook/preview.tsx reads THEME_PALETTES from this one core module.
+  // Other core paths must not force Storybook.
+  const coreSettings = planTests(['packages/core/src/settings.ts'], { graph });
+  assert.equal(coreSettings.storybook, true);
+  assert.equal(coreSettings.e2e, false);
+  assert.equal(planTests(['packages/core/src/index.ts'], { graph }).storybook, false);
 
   // A script the Storybook job RUNS must re-run Storybook, not Electron e2e.
   const smoke = planTests(['scripts/storybook-visual-smoke.mjs'], { graph });
