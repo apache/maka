@@ -13,7 +13,8 @@ import { createShellRunStore } from '../shell-run-store.js';
 describe('ShellRunStore', () => {
   it('enforces the canonical provider tool-call identity bound on create', async () => {
     await withStore(async (store) => {
-      const maximum = 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES);
+      const maximum = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
+      assert.equal(Buffer.byteLength(maximum, 'utf8'), SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES);
       const created = await store.createShellRun(
         record({ shellRunId: 'shell-max-id', sourceToolCallId: maximum }),
       );

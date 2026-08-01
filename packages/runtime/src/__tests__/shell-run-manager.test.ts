@@ -37,6 +37,11 @@ describe('ShellRunProcessManager', () => {
     const store = createLegacyShellRunStoreForTest(cwd);
     const manager = createManager(store);
     const completions: boolean[] = [];
+    const maximumMultibyteId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
+    assert.equal(
+      Buffer.byteLength(maximumMultibyteId, 'utf8'),
+      SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+    );
 
     await assert.rejects(
       () =>
@@ -44,7 +49,7 @@ describe('ShellRunProcessManager', () => {
           shellInput({
             cwd,
             command: 'printf should-not-run',
-            sourceToolCallId: 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES + 1),
+            sourceToolCallId: `${maximumMultibyteId}x`,
             onCompletion: ({ successful }) => completions.push(successful),
           }),
         ),

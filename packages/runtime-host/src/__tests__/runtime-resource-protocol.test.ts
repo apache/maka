@@ -137,7 +137,11 @@ describe('Runtime Resource protocol', () => {
   });
 
   test('enforces cursor, sequence, PTY control, item, and encoded result bounds', () => {
-    const maximumToolCallId = 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES);
+    const maximumToolCallId = '😀'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES / 4);
+    assert.equal(
+      Buffer.byteLength(maximumToolCallId, 'utf8'),
+      SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+    );
     const maximumIdentity = {
       kind: 'resource' as const,
       sessionId: 'session-1',

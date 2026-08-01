@@ -118,7 +118,7 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(output?.mode === 'pipes' && output.stdoutTruncated, true);
   });
 
-  test('keeps an invalid stored projection scoped to its query instead of draining the Host', async () => {
+  test('drains for canonical state failure but keeps projection failure scoped to its query', async () => {
     const harness = createHarness();
     harness.updates = [
       resourceUpdate(0, {
@@ -134,6 +134,17 @@ describe('Host Runtime Resource coordinator', () => {
     assert.equal(result.ok, false);
     assert.equal(!result.ok && result.error.code, 'internal_failure');
     assert.equal(harness.drainCount, 0);
+    assert.equal(harness.terminateCount, 0);
+
+    harness.updates = [resourceUpdate(0)];
+    harness.stateReadFailure = new Error('canonical state unavailable');
+    const unavailable = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'list_start', sessionId: SESSION_ID },
+      connection('connection-1'),
+    );
+    assert.equal(unavailable.ok, false);
+    assert.equal(!unavailable.ok && unavailable.error.code, 'internal_failure');
+    assert.equal(harness.drainCount, 1);
     assert.equal(harness.terminateCount, 0);
   });
 
@@ -315,6 +326,7 @@ function createHarness() {
     stopCount: 0,
     terminateCount: 0,
     drainCount: 0,
+    stateReadFailure: undefined as Error | undefined,
     activeResidencies: 0,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
@@ -384,7 +396,10 @@ function createHarness() {
   const coordinator = new HostRuntimeResourceCoordinator({
     manager,
     sessions: {
-      listShellRunUpdates: async () => structuredClone(state.updates),
+      listShellRunUpdates: async () => {
+        if (state.stateReadFailure) throw state.stateReadFailure;
+        return structuredClone(state.updates);
+      },
     },
     sessionHeaders: {
       readHeader: async (sessionId) => {
