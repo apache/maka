@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { CreateConnectionInput, LlmConnection, UpdateConnectionInput } from '@maka/core';
 import { registerConnectionsIpc } from '../connections-ipc-main.js';
 
-type Handler = (...args: any[]) => Promise<any>;
+type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
 
 function registerHandlers(
   overrides: Record<string, unknown> = {},
 ): Map<string, Handler> {
   const handlers = new Map<string, Handler>();
   const deps = {
+    ipcMain: {
+      handle(channel: string, handler: Handler) {
+        handlers.set(channel, handler);
+      },
+    },
     connectionStore: {
-      create: async (input: any) => ({
+      create: async (input: CreateConnectionInput) => ({
         ...input,
         defaultModel: input.defaultModel ?? 'test-model',
         enabled: true,
@@ -33,11 +39,7 @@ function registerHandlers(
     ...overrides,
   } as unknown as Parameters<typeof registerConnectionsIpc>[0];
 
-  registerConnectionsIpc(deps, {
-    handle(channel, handler) {
-      handlers.set(channel, handler as Handler);
-    },
-  });
+  registerConnectionsIpc(deps);
   return handlers;
 }
 
@@ -60,15 +62,59 @@ describe('connection IPC credential boundary', () => {
 
     const create = handlers.get('connections:create');
     assert.ok(create);
-    await assert.rejects(
-      create({}, {
-        slug: '../escape',
-        name: 'Invalid',
-        providerType: 'openai',
-        apiKey: 'safe-test-value',
-      }),
-      /connection slug/,
-    );
+    for (const slug of [
+      42,
+      '',
+      'a'.repeat(65),
+      'line\nbreak',
+      'path/segment',
+      'path\\segment',
+      'path:segment',
+      'white space',
+      'a..b',
+    ]) {
+      await assert.rejects(
+        create({}, {
+          slug,
+          name: 'Invalid',
+          providerType: 'openai',
+          apiKey: 'safe-test-value',
+        }),
+        /connection slug/,
+      );
+    }
+    assert.deepEqual(sideEffects, []);
+  });
+
+  test('create rejects non-string and oversized API keys before persistence', async () => {
+    const sideEffects: string[] = [];
+    const handlers = registerHandlers({
+      connectionStore: {
+        create: async () => {
+          sideEffects.push('connection');
+          throw new Error('must not persist');
+        },
+      },
+      credentialStore: {
+        setSecret: async () => {
+          sideEffects.push('credential');
+        },
+      },
+    });
+
+    const create = handlers.get('connections:create');
+    assert.ok(create);
+    for (const apiKey of [42, 'x'.repeat(4097)]) {
+      await assert.rejects(
+        create({}, {
+          slug: 'openai-main',
+          name: 'OpenAI',
+          providerType: 'openai',
+          apiKey,
+        }),
+        /apiKey/,
+      );
+    }
     assert.deepEqual(sideEffects, []);
   });
 
@@ -165,11 +211,42 @@ describe('connection IPC credential boundary', () => {
     assert.deepEqual(sideEffects, []);
   });
 
-  test('create forces the canonical OAuth base URL', async () => {
-    let persistedInput: any;
+  test('update rejects non-string and oversized API keys before reading persistence', async () => {
+    const sideEffects: string[] = [];
     const handlers = registerHandlers({
       connectionStore: {
-        create: async (input: any) => {
+        get: async () => {
+          sideEffects.push('read');
+          return null;
+        },
+        update: async () => {
+          sideEffects.push('connection');
+          return null;
+        },
+      },
+      credentialStore: {
+        setSecret: async () => {
+          sideEffects.push('credential');
+        },
+        deleteSecret: async () => {
+          sideEffects.push('credential');
+        },
+      },
+    });
+
+    const update = handlers.get('connections:update');
+    assert.ok(update);
+    for (const apiKey of [42, 'x'.repeat(4097)]) {
+      await assert.rejects(update({}, 'openai-main', { apiKey }), /apiKey/);
+    }
+    assert.deepEqual(sideEffects, []);
+  });
+
+  test('create forces the canonical OAuth base URL', async () => {
+    let persistedInput: CreateConnectionInput | undefined;
+    const handlers = registerHandlers({
+      connectionStore: {
+        create: async (input: CreateConnectionInput) => {
           persistedInput = input;
           return {
             ...input,
@@ -191,12 +268,12 @@ describe('connection IPC credential boundary', () => {
       providerType: 'openai-codex',
       baseUrl: 'https://attacker.example',
     });
-    assert.equal(persistedInput.baseUrl, 'https://chatgpt.com/backend-api/codex');
+    assert.equal(persistedInput?.baseUrl, 'https://chatgpt.com/backend-api/codex');
   });
 
   test('update preserves the canonical OAuth base URL', async () => {
-    let persistedPatch: any;
-    const existing = {
+    let persistedPatch: UpdateConnectionInput | undefined;
+    const existing: LlmConnection = {
       slug: 'openai-codex',
       name: 'OpenAI OAuth',
       providerType: 'openai-codex',
@@ -209,7 +286,7 @@ describe('connection IPC credential boundary', () => {
     const handlers = registerHandlers({
       connectionStore: {
         get: async () => existing,
-        update: async (_slug: string, patch: any) => {
+        update: async (_slug: string, patch: UpdateConnectionInput) => {
           persistedPatch = patch;
           return { ...existing, ...patch };
         },
@@ -219,7 +296,7 @@ describe('connection IPC credential boundary', () => {
     const update = handlers.get('connections:update');
     assert.ok(update);
     await update({}, existing.slug, { baseUrl: 'https://attacker.example' });
-    assert.equal(persistedPatch.baseUrl, 'https://chatgpt.com/backend-api/codex');
+    assert.equal(persistedPatch?.baseUrl, 'https://chatgpt.com/backend-api/codex');
   });
 
   test('hasSecret uses the read-only credential probe', async () => {

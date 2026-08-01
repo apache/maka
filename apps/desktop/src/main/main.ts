@@ -1130,6 +1130,7 @@ function registerIpc(): void {
   registerWebSearchIpc({ settingsStore, getWorkspacePrivacyContext });
   registerBrowserIpc({ mainWindowController });
   registerConnectionsIpc({
+    ipcMain,
     connectionStore,
     credentialStore,
     syncOAuthModelConnections,

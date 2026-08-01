@@ -1,4 +1,4 @@
-import electron, { type IpcMain } from 'electron';
+import type { IpcMain } from 'electron';
 import {
   buildConnectionModelCatalogEntries,
   generalizedErrorMessageChinese,
@@ -30,6 +30,7 @@ interface ConnectionInputNormalizerDeps {
 }
 
 interface ConnectionsIpcDeps extends ConnectionInputNormalizerDeps {
+  ipcMain: Pick<IpcMain, 'handle'>;
   credentialStore: CredentialStore;
   syncOAuthModelConnections: () => Promise<void>;
   resolveConnectionSecret: (slug: string) => Promise<string | null>;
@@ -135,11 +136,9 @@ async function normalizeUpdateConnectionInput(
   return { ...normalizedPatch, baseUrl: result.value };
 }
 
-export function registerConnectionsIpc(
-  deps: ConnectionsIpcDeps,
-  registrar: Pick<IpcMain, 'handle'> = electron.ipcMain,
-): void {
+export function registerConnectionsIpc(deps: ConnectionsIpcDeps): void {
   const {
+    ipcMain,
     connectionStore,
     credentialStore,
     syncOAuthModelConnections,
@@ -150,12 +149,12 @@ export function registerConnectionsIpc(
     fetchModels,
   } = deps;
 
-  registrar.handle('connections:list', async () => {
+  ipcMain.handle('connections:list', async () => {
     await syncOAuthModelConnections();
     return connectionStore.list();
   });
-  registrar.handle('connections:getDefault', () => connectionStore.getDefault());
-  registrar.handle('connections:setDefault', async (_event, slug: string | null) => {
+  ipcMain.handle('connections:getDefault', () => connectionStore.getDefault());
+  ipcMain.handle('connections:setDefault', async (_event, slug: string | null) => {
     const normalizedSlug = slug === null ? null : normalizeConnectionSlugForIpc(slug, 'connection slug');
     if (normalizedSlug && !(await connectionStore.get(normalizedSlug))) {
       throw new Error(`No such connection: ${normalizedSlug}`);
@@ -163,7 +162,7 @@ export function registerConnectionsIpc(
     await connectionStore.setDefault(normalizedSlug);
     emitConnectionListChanged();
   });
-  registrar.handle('connections:setDefaultModel', async (_event, input: { slug: string; model: string } | null) => {
+  ipcMain.handle('connections:setDefaultModel', async (_event, input: { slug: string; model: string } | null) => {
     if (input === null) {
       await connectionStore.setDefault(null);
       emitConnectionListChanged();
@@ -189,7 +188,7 @@ export function registerConnectionsIpc(
     await connectionStore.setDefault(slug);
     emitConnectionListChanged();
   });
-  registrar.handle('connections:create', async (_event, input: CreateConnectionInput) => {
+  ipcMain.handle('connections:create', async (_event, input: CreateConnectionInput) => {
     // baseUrl is a credentials-exfiltration boundary. Normalize before any
     // store or credential write; OAuth-token providers must keep their
     // canonical provider endpoint.
@@ -198,7 +197,7 @@ export function registerConnectionsIpc(
     emitConnectionListChanged();
     return connection;
   });
-  registrar.handle('connections:update', async (_event, slug: string, patch: UpdateConnectionInput) => {
+  ipcMain.handle('connections:update', async (_event, slug: string, patch: UpdateConnectionInput) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
     const normalizedPatch = await normalizeUpdateConnectionInput(deps, slug, patch);
     const connection = await connectionStore.update(slug, normalizedPatch);
@@ -209,7 +208,7 @@ export function registerConnectionsIpc(
     emitConnectionListChanged();
     return connection;
   });
-  registrar.handle('connections:delete', async (_event, slug: string) => {
+  ipcMain.handle('connections:delete', async (_event, slug: string) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
     await deleteConnectionWithCredential(
       { connectionStore, credentialStore, disconnectManagedOAuthConnection },
@@ -217,7 +216,7 @@ export function registerConnectionsIpc(
     );
     emitConnectionListChanged();
   });
-  registrar.handle('connections:test', async (_event, slug: string, opts?: { model?: string }) => {
+  ipcMain.handle('connections:test', async (_event, slug: string, opts?: { model?: string }) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
     const connection = await connectionStore.get(slug);
     if (!connection) return { ok: false, errorMessage: `找不到模型连接：${slug}` };
@@ -236,7 +235,7 @@ export function registerConnectionsIpc(
     emitConnectionListChanged();
     return result;
   });
-  registrar.handle('connections:fetchModels', async (_event, slug: string) => {
+  ipcMain.handle('connections:fetchModels', async (_event, slug: string) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
     try {
       const result = await discoverConnectionModels({
@@ -251,7 +250,7 @@ export function registerConnectionsIpc(
       throw new Error(generalizedErrorMessageChinese(error, '拉取模型列表失败'));
     }
   });
-  registrar.handle('connections:hasSecret', async (_event, slug: string) => {
+  ipcMain.handle('connections:hasSecret', async (_event, slug: string) => {
     slug = normalizeConnectionSlugForIpc(slug, 'connection slug');
     // Read-only status probe (session health notice): must use the
     // read-only hasConnectionSecret, never resolveConnectionSecret —
