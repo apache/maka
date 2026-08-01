@@ -2,7 +2,9 @@ import { constants as osConstants } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import {
   isActiveShellRunStatus,
+  isShellRunSourceToolCallId,
   isTerminalShellRunStatus,
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   type ShellMode,
   type ShellOutput,
   type ShellRunPatch,
@@ -218,6 +220,7 @@ export class ShellRunProcessManager
     const onCompletion = onceShellRunCompletion(input.onCompletion);
     const ownedInput = onCompletion ? { ...input, onCompletion } : input;
     try {
+      validateSourceToolCallId(input.sourceToolCallId);
       return await this.withPendingStartup(input.sessionId, async () => {
         if (input.abortSignal?.aborted)
           throw abortError('Command aborted before shell process started');
@@ -249,6 +252,7 @@ export class ShellRunProcessManager
     const onCompletion = onceShellRunCompletion(input.onCompletion);
     const ownedInput = onCompletion ? { ...input, onCompletion } : input;
     try {
+      validateSourceToolCallId(input.sourceToolCallId);
       return await this.withPendingStartup(input.sessionId, async () => {
         if (input.pty)
           throw new Error('Foreground Bash does not support PTY mode; set run_in_background=true');
@@ -1843,6 +1847,14 @@ function normalizeBackgroundTimeoutMs(value: number | undefined): number | undef
     throw new Error(`Background Bash timeout must be between 1 and ${MAX_SHELL_RUN_TIMEOUT_MS}ms`);
   }
   return value;
+}
+
+function validateSourceToolCallId(value: string): void {
+  if (!isShellRunSourceToolCallId(value)) {
+    throw new Error(
+      `ShellRun source tool-call ID must be non-empty and at most ${SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES} UTF-8 bytes`,
+    );
+  }
 }
 
 function requireProgram(argv: readonly string[]): string {

@@ -226,10 +226,15 @@ export class HostRuntimeResourceCoordinator
       );
     }
     return this.#sessionAdmission.run(input.sessionId, async () => {
+      let updates: ShellRunUpdate[];
       try {
-        const resources = canonicalRuntimeResources(
-          await this.#sessions.listShellRunUpdates(input.sessionId),
-        );
+        updates = await this.#sessions.listShellRunUpdates(input.sessionId);
+      } catch {
+        this.#requestDrain();
+        return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
+      }
+      try {
+        const resources = canonicalRuntimeResources(updates);
         const revision = runtimeResourceRevision(resources);
         if (input.kind === 'get') {
           return {
@@ -262,7 +267,6 @@ export class HostRuntimeResourceCoordinator
           result: createRuntimeResourcePage(input.sessionId, revision, resources, offset),
         };
       } catch {
-        this.#requestDrain();
         return queryFailure('internal_failure', 'Runtime Resource projection is unavailable');
       }
     });

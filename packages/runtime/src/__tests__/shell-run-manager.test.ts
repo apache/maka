@@ -8,7 +8,13 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test, type TestContext } from 'node:test';
-import type { ShellRunRecord, ShellRunStore, ShellRunUpdate, ToolResultContent } from '@maka/core';
+import {
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  type ShellRunRecord,
+  type ShellRunStore,
+  type ShellRunUpdate,
+  type ToolResultContent,
+} from '@maka/core';
 import { createLegacyShellRunStoreForTest } from '@maka/storage/legacy-execution-test-support';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
@@ -26,6 +32,29 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
+  test('rejects unprojectable provider tool-call identities before durable admission', async () => {
+    const cwd = await workspace();
+    const store = createLegacyShellRunStoreForTest(cwd);
+    const manager = createManager(store);
+    const completions: boolean[] = [];
+
+    await assert.rejects(
+      () =>
+        manager.runBackgroundBash(
+          shellInput({
+            cwd,
+            command: 'printf should-not-run',
+            sourceToolCallId: 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES + 1),
+            onCompletion: ({ successful }) => completions.push(successful),
+          }),
+        ),
+      /ShellRun source tool-call ID must be non-empty/,
+    );
+
+    assert.deepEqual(await store.listSessionShellRuns('session-1'), []);
+    assert.deepEqual(completions, [false]);
+  });
+
   test('keeps the default pipe path separated, durable, redacted, and observed', async () => {
     const cwd = await workspace();
     const store = createLegacyShellRunStoreForTest(cwd);
@@ -2193,13 +2222,14 @@ function shellInput(input: {
   abortSignal?: AbortSignal;
   emitOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
   shell?: ShellPlan;
+  sourceToolCallId?: string;
   onCompletion?: (outcome: { successful: boolean }) => void;
 }) {
   return {
     sessionId: 'session-1',
     sourceRunId: 'run-1',
     sourceTurnId: 'turn-1',
-    sourceToolCallId: 'tool-1',
+    sourceToolCallId: input.sourceToolCallId ?? 'tool-1',
     cwd: input.cwd,
     command: input.command,
     ...(input.argv !== undefined ? { argv: input.argv } : {}),

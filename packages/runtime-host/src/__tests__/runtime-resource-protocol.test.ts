@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core';
+import {
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  type ShellRunSnapshotResult,
+  type ShellRunUpdate,
+} from '@maka/core';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
   decodeRuntimeResourceControllerAcquireInput,
@@ -133,6 +137,27 @@ describe('Runtime Resource protocol', () => {
   });
 
   test('enforces cursor, sequence, PTY control, item, and encoded result bounds', () => {
+    const maximumToolCallId = 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES);
+    const maximumIdentity = {
+      kind: 'resource' as const,
+      sessionId: 'session-1',
+      revision,
+      resource: resourceUpdate({ sourceToolCallId: maximumToolCallId }),
+    };
+    const decodedMaximumIdentity = decodeRuntimeResourceQueryResult(maximumIdentity);
+    assert.equal(
+      decodedMaximumIdentity.kind === 'resource'
+        ? decodedMaximumIdentity.resource?.sourceToolCallId
+        : undefined,
+      maximumToolCallId,
+    );
+    assertInvalid(() =>
+      decodeRuntimeResourceQueryResult({
+        ...maximumIdentity,
+        resource: resourceUpdate({ sourceToolCallId: `${maximumToolCallId}x` }),
+      }),
+    );
+
     for (const cursor of ['', '界'.repeat(Math.floor(RUNTIME_RESOURCE_CURSOR_MAX_BYTES / 3) + 1)]) {
       assertInvalid(() =>
         decodeRuntimeResourceQueryInput({

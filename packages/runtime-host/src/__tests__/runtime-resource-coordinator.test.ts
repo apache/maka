@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { ShellRunSnapshotResult, ShellRunStateResult, ShellRunUpdate } from '@maka/core';
+import {
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  type ShellRunSnapshotResult,
+  type ShellRunStateResult,
+  type ShellRunUpdate,
+} from '@maka/core';
 import type { ShellRunBashInput, ShellRunWriteInput } from '@maka/runtime';
 import { SessionNotFoundError } from '@maka/storage';
 import { RUNTIME_RESOURCE_RESULT_MAX_BYTES } from '../protocol/runtime-resource.js';
@@ -111,6 +116,25 @@ describe('Host Runtime Resource coordinator', () => {
     const output = heavy.result.resource?.result.output;
     assert.equal(output?.mode, 'pipes');
     assert.equal(output?.mode === 'pipes' && output.stdoutTruncated, true);
+  });
+
+  test('keeps an invalid stored projection scoped to its query instead of draining the Host', async () => {
+    const harness = createHarness();
+    harness.updates = [
+      resourceUpdate(0, {
+        sourceToolCallId: 'x'.repeat(SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES + 1),
+      }),
+    ];
+
+    const result = await harness.coordinator.handlers['runtime.resource.query'](
+      { kind: 'list_start', sessionId: SESSION_ID },
+      connection('connection-1'),
+    );
+
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.error.code, 'internal_failure');
+    assert.equal(harness.drainCount, 0);
+    assert.equal(harness.terminateCount, 0);
   });
 
   test('fences PTY control by connection and retains only exact sequence retries', async () => {
@@ -290,6 +314,7 @@ function createHarness() {
     writeCount: 0,
     stopCount: 0,
     terminateCount: 0,
+    drainCount: 0,
     activeResidencies: 0,
   };
   const manager: HostRuntimeResourceCoordinatorInput['manager'] = {
@@ -382,7 +407,9 @@ function createHarness() {
         },
       };
     },
-    requestDrain: () => {},
+    requestDrain: () => {
+      state.drainCount += 1;
+    },
   });
   return Object.assign(state, {
     coordinator,

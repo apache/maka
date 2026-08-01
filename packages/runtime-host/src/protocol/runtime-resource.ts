@@ -1,7 +1,8 @@
-import type {
-  ShellRunSnapshotResult,
-  ShellRunUpdate,
-  ShellRunUpdateOwnership,
+import {
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+  type ShellRunSnapshotResult,
+  type ShellRunUpdate,
+  type ShellRunUpdateOwnership,
 } from '@maka/core/events';
 import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
 import {
@@ -407,7 +408,11 @@ export function decodeRuntimeResourceUpdate(value: unknown): ShellRunUpdate {
     sessionId: requireEntityId(update.sessionId, 'sessionId'),
     ownership: decodeOwnership(update.ownership),
     sourceTurnId: requireEntityId(update.sourceTurnId, 'sourceTurnId'),
-    sourceToolCallId: requireId(update.sourceToolCallId, 'sourceToolCallId'),
+    sourceToolCallId: requireUtf8String(
+      update.sourceToolCallId,
+      'sourceToolCallId',
+      SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
+    ),
     result: decodeRuntimeResourceState(update.result),
   };
 }
