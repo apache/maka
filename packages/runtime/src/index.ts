@@ -1055,7 +1055,11 @@ export { materializeSession, applyAppendedMessage, setToolStatus } from './mater
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
 
 export { AsyncEventQueue } from './async-queue.js';
-export { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from './fake-backend.js';
+export {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
+  FakeBackend,
+} from './fake-backend.js';
 
 export {
   BUILTIN_PRICING,

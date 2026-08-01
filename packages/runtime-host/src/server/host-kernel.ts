@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { inspect } from 'node:util';
 import { createServer, type Server, type Socket } from 'node:net';
 import {
   assertInteractiveRootOwner,
@@ -594,16 +593,10 @@ export class RuntimeHostKernel {
     await this.#options.owner.close().catch((error: unknown) => errors.push(error));
     this.#assertShutdownCanContinue();
     if (errors.length > 0) {
-      const aggregate = new AggregateError(
+      throw new AggregateError(
         errors,
         'Runtime Host shutdown did not cleanly close every resource',
       );
-      // The default uncaught-error printer truncates nested AggregateErrors to
-      // `[errors]: [Array]`, which leaves the actual resource failure
-      // undiagnosable. Print the full structure so the failing close step is
-      // visible in Host stderr.
-      console.error('Runtime Host shutdown failure:', inspect(aggregate, { depth: null }));
-      throw aggregate;
     }
   }
 
