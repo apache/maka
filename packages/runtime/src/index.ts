@@ -571,6 +571,14 @@ export type {
   ShellRunWriteInput,
 } from './shell-run-contract.js';
 export { ShellRunProcessManager } from './shell-run-manager.js';
+export {
+  ShellRunCompletionWakeCoordinator,
+  renderShellRunCompletionWakePrompt,
+} from './shell-run-completion-wake.js';
+export type {
+  ShellRunCompletionTurnStatus,
+  ShellRunCompletionWakeInput,
+} from './shell-run-completion-wake.js';
 export type { ShellRunUpdate } from '@maka/core';
 export {
   LOCAL_WORKSPACE_EXECUTOR_FACTS,

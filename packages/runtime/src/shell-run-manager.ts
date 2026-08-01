@@ -511,7 +511,8 @@ export class ShellRunProcessManager
       ...visible.map((record) => {
         const completed =
           record.completedAt !== undefined ? ` completedAt=${record.completedAt}` : '';
-        return `- ref=${shellRunResourceRef(record.shellRunId)} mode=${record.output.mode} status=${record.status} cwd=${record.cwd} updatedAt=${record.updatedAt}${completed} command=${JSON.stringify(record.command)}`;
+        const notification = record.notifyOnComplete === true ? ' notifyOnComplete=true' : '';
+        return `- ref=${shellRunResourceRef(record.shellRunId)} mode=${record.output.mode} status=${record.status} cwd=${record.cwd} updatedAt=${record.updatedAt}${completed}${notification} command=${JSON.stringify(record.command)}`;
       }),
     ];
     const overflow = records.length - visible.length;
@@ -526,6 +527,13 @@ export class ShellRunProcessManager
         ? 'Use Read on a ref for its bounded output snapshot; use WriteStdin to control a running PTY task.'
         : 'Use Read on a ref for its bounded output snapshot.',
     );
+    if (
+      records.some((record) => isActiveShellRunStatus(record.status) && record.notifyOnComplete)
+    ) {
+      lines.push(
+        'A running task with notifyOnComplete=true will resume this session at terminal completion. Do not sleep or poll its ref.',
+      );
+    }
     return lines.join('\n');
   }
 
@@ -837,6 +845,7 @@ export class ShellRunProcessManager
       sessionId: input.sessionId,
       mode,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(input.notifyOnComplete === true ? { notifyOnComplete: true as const } : {}),
       record,
       visibleRef: false,
       pendingStops: new Set(),

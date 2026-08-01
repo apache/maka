@@ -158,12 +158,14 @@ export function buildManagedBashTool(
       withShellGuidance('Run a shell command in the session cwd.', shell) +
       ` Foreground is the default (timeout ${DEFAULT_BASH_TIMEOUT_MS}ms, maximum ${MAX_FOREGROUND_BASH_TIMEOUT_MS}ms).` +
       ` Set run_in_background=true only when the command should continue as a tracked runtime background task; background commands have no default timeout (maximum explicit timeout ${MAX_SHELL_RUN_TIMEOUT_MS}ms).` +
+      ' When a background result is required, also set notify_on_complete=true: the host ends this turn and resumes the session once at terminal completion, so do not sleep or poll the returned ref.' +
       ' Set pty=true together with run_in_background=true only for terminal semantics or later input; use the returned ref with Read or WriteStdin. Enforced by the current session sandbox boundary.',
     parameters: z
       .object({
         command: z.string().describe('The shell command to execute'),
         timeout_ms: z.number().int().positive().max(MAX_SHELL_RUN_TIMEOUT_MS).optional(),
         run_in_background: z.boolean().optional(),
+        notify_on_complete: z.boolean().optional(),
         pty: z.boolean().optional(),
         required_boundary: sandboxBoundaryExpansionSchema
           .optional()
@@ -172,7 +174,7 @@ export function buildManagedBashTool(
           ),
       })
       .strict()
-      .superRefine(({ timeout_ms, run_in_background, pty }, ctx) => {
+      .superRefine(({ timeout_ms, run_in_background, notify_on_complete, pty }, ctx) => {
         if (
           !run_in_background &&
           timeout_ms !== undefined &&
@@ -194,10 +196,20 @@ export function buildManagedBashTool(
             message: 'PTY Bash requires run_in_background=true',
           });
         }
+        if (notify_on_complete && !run_in_background) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['notify_on_complete'],
+            message: 'Completion notification requires run_in_background=true',
+          });
+        }
       }),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     ...(options.executionFacts ? { executionFacts: options.executionFacts } : {}),
-    impl: async ({ command, timeout_ms, run_in_background, pty, required_boundary }, ctx) => {
+    impl: async (
+      { command, timeout_ms, run_in_background, notify_on_complete, pty, required_boundary },
+      ctx,
+    ) => {
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
         required_boundary,
         ctx,
@@ -220,6 +232,7 @@ export function buildManagedBashTool(
           cwd: transformed?.cwd ?? ctx.cwd,
           command,
           ...(pty !== undefined ? { pty } : {}),
+          ...(notify_on_complete === true ? { notifyOnComplete: true } : {}),
           ...(transformed?.argv ? { argv: transformed.argv } : { shell }),
           ...(transformed?.env ? { env: transformed.env } : {}),
           ...(transformed?.fdInputs ? { fdInputs: transformed.fdInputs } : {}),

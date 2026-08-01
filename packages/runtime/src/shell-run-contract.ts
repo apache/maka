@@ -70,6 +70,8 @@ export interface ShellRunBashInput {
   /** Binary payloads exposed to pipe-mode children on inherited descriptors. */
   fdInputs?: readonly ChildFdInput[];
   pty?: boolean;
+  /** Resume the owning Agent session once when a detached run becomes terminal. */
+  notifyOnComplete?: boolean;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   emitOutput: (stream: 'stdout' | 'stderr', chunk: string) => void;

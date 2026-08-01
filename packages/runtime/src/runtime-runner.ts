@@ -380,7 +380,12 @@ export class RuntimeRunner {
 
     let status: InvocationResultStatus = failure ? 'failed' : 'completed';
     const finalOutput = status === 'completed' ? finalOutputFromEvents(events) : undefined;
-    if (status === 'completed' && finalOutput === undefined && !graphYielded) {
+    if (
+      status === 'completed' &&
+      finalOutput === undefined &&
+      !graphYielded &&
+      !hasCompletedBackgroundTaskWait(events)
+    ) {
       status = 'failed';
       failure = {
         class: 'missing_final_output',
@@ -424,6 +429,16 @@ export class RuntimeRunner {
       finishedAt: args.finishedAt,
     };
   }
+}
+
+function hasCompletedBackgroundTaskWait(events: readonly RuntimeEvent[]): boolean {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event && isTerminalRuntimeEvent(event)) {
+      return event.actions?.stateDelta?.stopReason === 'background_task_wait';
+    }
+  }
+  return false;
 }
 
 /**

@@ -20,6 +20,7 @@ describe('failureClassFromCompleteStopReason', () => {
     expect(failureClassFromCompleteStopReason('end_turn')).toBe(undefined);
     expect(failureClassFromCompleteStopReason('max_tokens')).toBe(undefined);
     expect(failureClassFromCompleteStopReason('plan_handoff')).toBe(undefined);
+    expect(failureClassFromCompleteStopReason('background_task_wait')).toBe(undefined);
     expect(failureClassFromCompleteStopReason('permission_handoff')).toBe(undefined);
     expect(failureClassFromCompleteStopReason('user_stop')).toBe(undefined);
     expect(failureClassFromCompleteStopReason('context_budget_exhausted')).toBe(

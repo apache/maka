@@ -291,6 +291,28 @@ describe('RuntimeRunner', () => {
     expect(result.failure?.class).toBe('missing_final_output');
   });
 
+  test('background completion wait may finish without model text while the process is pending', async () => {
+    const providers = makeProviders();
+    const flow = new ScriptFlow((ctx) => [
+      {
+        ...flowTerminalEvent(ctx, 'completed'),
+        role: 'system',
+        author: 'system',
+        actions: {
+          endInvocation: true,
+          stateDelta: { stopReason: 'background_task_wait' },
+        },
+      },
+    ]);
+    const runner = new RuntimeRunner({ flow, providers });
+
+    const result = await runner.run(makeRequest());
+
+    expect(result.status).toBe('completed');
+    expect(result.finalOutput).toBeUndefined();
+    expect(result.failure).toBeUndefined();
+  });
+
   test('caller-provided invocationId and runId are used across result, user event, and flow', async () => {
     const providers = makeProviders();
     const flow = new ScriptFlow((ctx) => [

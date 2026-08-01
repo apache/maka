@@ -25,6 +25,7 @@ const SHELL_RUN_PATCH_KEYS = new Set([
   'completedAt',
   'observedAt',
   'output',
+  'completionWake',
 ]);
 const SHELL_RUN_RECORD_KEYS = new Set([
   'shellRunId',
@@ -39,6 +40,8 @@ const SHELL_RUN_RECORD_KEYS = new Set([
   'updatedAt',
   'completedAt',
   'timeoutMs',
+  'notifyOnComplete',
+  'completionWake',
   'exitCode',
   'failureMessage',
   'sandboxExecution',
@@ -215,6 +218,8 @@ function normalizeShellRunRecord(
     (record.timeoutMs === undefined || isFiniteNumber(record.timeoutMs)) &&
     (record.exitCode === undefined || isFiniteNumber(record.exitCode)) &&
     (record.observedAt === undefined || isFiniteNumber(record.observedAt)) &&
+    (record.notifyOnComplete === undefined || record.notifyOnComplete === true) &&
+    isCompletionWake(record.completionWake, record.notifyOnComplete, record.status) &&
     isSandboxExecution(record.sandboxExecution) &&
     isSandboxEscalation(record.sandboxEscalation, record.sandboxExecution) &&
     optionalStrings.every((item) => item === undefined || typeof item === 'string');
@@ -254,6 +259,24 @@ function isSandboxExecution(value: unknown): boolean {
     typeof execution.enforced === 'boolean' &&
     execution.enforced === (execution.type !== 'none')
   );
+}
+
+function isCompletionWake(value: unknown, notifyOnComplete: unknown, status: unknown): boolean {
+  if (value === undefined) return true;
+  if (notifyOnComplete !== true || !hasOnlyKeys(value, new Set(['attemptTurnId', 'deliveredAt']))) {
+    return false;
+  }
+  const wake = value as Record<string, unknown>;
+  if (
+    wake.attemptTurnId !== undefined &&
+    (typeof wake.attemptTurnId !== 'string' || wake.attemptTurnId.length === 0)
+  ) {
+    return false;
+  }
+  if (wake.deliveredAt !== undefined) {
+    if (!isFiniteNumber(wake.deliveredAt) || typeof wake.attemptTurnId !== 'string') return false;
+  }
+  return isTerminalShellRunStatus(status as ShellRunRecord['status']);
 }
 
 function isSandboxEscalation(value: unknown, execution: unknown): boolean {
@@ -311,6 +334,19 @@ function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
     updatedAt: record.updatedAt,
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs } : {}),
+    ...(record.notifyOnComplete === true ? { notifyOnComplete: true as const } : {}),
+    ...(record.completionWake !== undefined
+      ? {
+          completionWake: {
+            ...(record.completionWake.attemptTurnId !== undefined
+              ? { attemptTurnId: record.completionWake.attemptTurnId }
+              : {}),
+            ...(record.completionWake.deliveredAt !== undefined
+              ? { deliveredAt: record.completionWake.deliveredAt }
+              : {}),
+          },
+        }
+      : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
     ...(record.sandboxExecution !== undefined

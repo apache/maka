@@ -42,6 +42,26 @@ describe('Bash tool description declares the executing shell', () => {
     assert.match(tool.description, /PowerShell 7 \(pwsh\)/);
     assert.match(tool.description, /git ls-files/);
     assert.match(tool.description, /run_in_background=true/);
+    assert.match(tool.description, /notify_on_complete=true/);
+    assert.match(tool.description, /do not sleep or poll/);
+  });
+
+  test('completion notification is accepted only for background commands', () => {
+    const parameters = buildManagedBashTool(fakeShellRuns()).parameters as {
+      safeParse(input: unknown): { success: boolean };
+    };
+    assert.equal(
+      parameters.safeParse({
+        command: 'cargo build',
+        run_in_background: true,
+        notify_on_complete: true,
+      }).success,
+      true,
+    );
+    assert.equal(
+      parameters.safeParse({ command: 'cargo build', notify_on_complete: true }).success,
+      false,
+    );
   });
 });
 
@@ -87,6 +107,41 @@ describe('Bash tool shell is threaded through to execution, not just the descrip
     const tool = buildManagedBashTool(controller, { shell: pwshPlan });
     await tool.impl({ command: 'echo hi', run_in_background: true }, fakeToolContext());
     assert.deepEqual((captured[0] as { shell?: unknown }).shell, pwshPlan);
+  });
+
+  test('background tool persists the model completion-notification subscription', async () => {
+    const captured: unknown[] = [];
+    const controller: ShellRunLauncher = {
+      runForegroundBash: () => Promise.reject(new Error('not used')),
+      runBackgroundBash: (input) => {
+        captured.push(input);
+        return Promise.resolve({
+          kind: 'shell_run',
+          ref: 'maka://runtime/background-tasks/sr_test',
+          mode: 'pipes',
+          status: 'running',
+          cwd: '.',
+          cmd: 'cargo build',
+          notifyOnComplete: true,
+          startedAt: 1,
+          updatedAt: 1,
+          revision: 1,
+        });
+      },
+    };
+    const tool = buildManagedBashTool(controller);
+
+    const result = await tool.impl(
+      {
+        command: 'cargo build',
+        run_in_background: true,
+        notify_on_complete: true,
+      },
+      fakeToolContext(),
+    );
+
+    assert.equal((captured[0] as { notifyOnComplete?: boolean }).notifyOnComplete, true);
+    assert.equal((result as { notifyOnComplete?: boolean }).notifyOnComplete, true);
   });
 
   test('managed completion callback remains exactly-once when the launcher settles it', async () => {

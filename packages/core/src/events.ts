@@ -543,6 +543,8 @@ type ShellRunResultMetadata = {
   failureMessage?: string;
   revision: number;
   timeoutMs?: number;
+  /** The host will resume the owning session once when this run becomes terminal. */
+  notifyOnComplete?: true;
   sandboxDenial?: SandboxDenialSignal | SandboxDenialRecovery;
 };
 
@@ -1034,6 +1036,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'error'
     | 'plan_handoff'
     | 'graph_yield'
+    | 'background_task_wait'
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens'

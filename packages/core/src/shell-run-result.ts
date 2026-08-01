@@ -96,6 +96,7 @@ const CURRENT_SHELL_RUN_RESULT_SHAPE = defineObjectShape<ShellRunToolResultRecor
     'exitCode',
     'failureMessage',
     'timeoutMs',
+    'notifyOnComplete',
     'output',
     'operation',
     'sandboxDenial',
@@ -267,6 +268,7 @@ function currentShellRunResult(value: Record<string, unknown>): ShellRunToolResu
     !isOptionalFiniteNumber(value.completedAt) ||
     !isOptionalFiniteNumber(value.exitCode) ||
     !isOptionalFiniteNumber(value.timeoutMs) ||
+    (value.notifyOnComplete !== undefined && value.notifyOnComplete !== true) ||
     !isOptionalString(value.failureMessage) ||
     !isOptionalSandboxDenial(value.sandboxDenial) ||
     (value.output !== undefined &&
@@ -700,6 +702,7 @@ function sameMetadata(left: ShellRunStateResult, right: ShellRunStateResult): bo
     left.updatedAt === right.updatedAt &&
     left.completedAt === right.completedAt &&
     left.timeoutMs === right.timeoutMs &&
+    left.notifyOnComplete === right.notifyOnComplete &&
     left.exitCode === right.exitCode &&
     left.failureMessage === right.failureMessage &&
     left.revision === right.revision

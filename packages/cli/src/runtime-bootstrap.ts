@@ -11,6 +11,7 @@ import {
   GoalManager,
   RuntimeReadModel,
   SessionManager,
+  ShellRunCompletionWakeCoordinator,
   ShellRunProcessManager,
   buildAutomationTool,
   buildAskUserQuestionTool,

@@ -119,6 +119,7 @@ function shellRunStateContent(record: ShellRunRecord): ShellRunCompactResult {
     updatedAt: record.updatedAt,
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs } : {}),
+    ...(record.notifyOnComplete === true ? { notifyOnComplete: true as const } : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.failureMessage !== undefined ? { failureMessage: record.failureMessage } : {}),
     revision: record.revision,
