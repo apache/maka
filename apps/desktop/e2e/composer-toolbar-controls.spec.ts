@@ -9,13 +9,17 @@ test('the plus menu exposes attach, skills, and collaboration modes', async ({
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator('.maka-composer-astryx');
-  const plus = composer.getByRole('button', { name: '添加上下文' });
+  // exact: permission's "权限模式：…" must not count as a retired "模式" toolbar.
+  const plus = composer.locator('.maka-composer-plus-menu').getByRole('button', {
+    name: '添加上下文',
+    exact: true,
+  });
   await expect(plus).toBeVisible();
 
   // Retired standalone toolbar triggers must not linger.
-  await expect(composer.getByRole('button', { name: '添加文件或目录' })).toHaveCount(0);
-  await expect(composer.getByRole('button', { name: '模式' })).toHaveCount(0);
-  await expect(composer.getByRole('button', { name: '技能' })).toHaveCount(0);
+  await expect(composer.getByRole('button', { name: '添加文件或目录', exact: true })).toHaveCount(0);
+  await expect(composer.getByRole('button', { name: '模式', exact: true })).toHaveCount(0);
+  await expect(composer.getByRole('button', { name: '技能', exact: true })).toHaveCount(0);
 
   await plus.click();
   await expect(page.getByRole('menuitem', { name: '添加文件或目录' })).toBeVisible();
@@ -31,7 +35,11 @@ test('the Skills entry from plus writes the same tokens the slash popup does', a
   invocableSkillsWindow: page,
 }) => {
   const composer = page.locator('.maka-composer-astryx');
-  const plus = composer.getByRole('button', { name: '添加上下文' });
+  // Scope to the ＋ opener — drawer collapse also carries "添加上下文" in its name.
+  const plus = composer.locator('.maka-composer-plus-menu').getByRole('button', {
+    name: '添加上下文',
+    exact: true,
+  });
   await plus.click();
   await page.getByRole('menuitem', { name: '选择技能' }).click();
 

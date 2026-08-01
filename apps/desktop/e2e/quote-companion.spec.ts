@@ -35,10 +35,13 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
 
   const panel = page.locator('.maka-quote-companion');
   await expect(panel).toBeVisible();
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toHaveCount(2);
-  await panel.getByRole('button', { name: '移除引用' }).first().click();
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toHaveCount(1);
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toContainText(
+  // Quiet composer stages quotes as drawer Tokens (not the retired quote chip).
+  const quoteTokens = panel.locator('.maka-composer .maka-composer-quote-token');
+  await expect(quoteTokens).toHaveCount(2);
+  // Astryx Token remove control: "Remove {label}".
+  await quoteTokens.first().getByRole('button', { name: /^Remove / }).click();
+  await expect(quoteTokens).toHaveCount(1);
+  await expect(quoteTokens).toContainText(
     'Fake backend received: quote companion source two',
   );
   await expect(
@@ -56,7 +59,7 @@ test('quote companion removes one staged quote, forks, answers, and cleans up on
   await companionComposer.fill('explain this quote');
   await companionComposer.press('Enter');
   await expect(panel.getByText(/Fake backend received: explain this quote/)).toBeVisible();
-  await expect(panel.locator('.maka-composer .maka-quote-chip')).toHaveCount(0);
+  await expect(quoteTokens).toHaveCount(0);
 
   await expect
     .poll(async () => (await page.evaluate(() => window.maka.sessions.list())).length)

@@ -1,6 +1,8 @@
 import { expect, test } from './fixtures';
 
 const READ_ONLY_HINT = '只读搜索，不写文件、不上网；需要时先问你。';
+// Icon trigger tooltip is "label — hint"; accessible description follows tooltip.
+const READ_ONLY_DESCRIPTION = `只读 — ${READ_ONLY_HINT}`;
 
 /**
  * #1611 + #1616: the composer's permission control is the only place a user
@@ -14,7 +16,8 @@ test('a read-only session names its boundary and can still be raised to full acc
     .locator('.maka-composer-left-controls .permissionModeIcon')
     .getByRole('button');
   await expect(trigger).toHaveAccessibleName('权限模式：只读');
-  await expect(trigger).toHaveAccessibleDescription(READ_ONLY_HINT);
+  await expect(trigger).toHaveAccessibleDescription(READ_ONLY_DESCRIPTION);
+  await expect(trigger).toHaveAttribute('aria-description', READ_ONLY_HINT);
 
   await trigger.click();
   const radios = page.getByRole('menuitemradio');
