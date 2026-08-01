@@ -49,6 +49,11 @@ export interface GoalEvaluatorDeps {
   clearTimeout?: (handle: unknown) => void;
 }
 
+export interface GoalEvaluatorResource extends GoalEvaluatorDeps {
+  /** Wait until every accepted physical evaluation and its cleanup have settled. */
+  close(): Promise<void>;
+}
+
 export interface GoalEvaluationModelInput {
   readonly model: unknown;
   readonly prompt: string;

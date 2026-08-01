@@ -38,6 +38,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
       evaluator: {
         evaluate: async () =>
           '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"continue"}',
+        close: async () => {},
       },
       admitTurn: (_sessionId, text) => {
         admittedText = text;
@@ -132,7 +133,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     coordinator.beginDrain();
     assert.equal(released, 2);
     assert.equal(coordinator.readProjection(session.id), null);
-    coordinator.close();
+    await coordinator.close();
     assert.equal(released, 2, 'close must not release Goal residency twice');
   } finally {
     await owner.close();

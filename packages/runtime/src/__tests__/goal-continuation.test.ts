@@ -42,6 +42,10 @@ function controlledCall<T>() {
       return result.promise;
     },
     started,
+    settled: result.promise.then(
+      () => undefined,
+      () => undefined,
+    ),
     resolve: result.resolve,
     reject: result.reject,
   };
@@ -142,6 +146,7 @@ function setup(opts?: {
         const next = { ...defaultEvaluation, ...evaluationQueue.shift() };
         return JSON.stringify(next);
       },
+      close: async () => {},
     },
     getRecentContext: async () => 'recent context',
     getTokenCount: opts?.tokenCount !== undefined ? () => opts.tokenCount! : undefined,
@@ -833,6 +838,34 @@ describe('GoalContinuationCoordinator settlement', () => {
       '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"late"}',
     );
 
+    await pending;
+    assert.equal(manager.get(SESSION)?.iterations, 0);
+    assert.equal(admitted.length, 0);
+  });
+
+  test('close waits for accepted evaluator resource cleanup', async () => {
+    const { manager, coordinator, deps, admitted } = setup();
+    const evaluation = controlledCall<string>();
+    deps.evaluator.evaluate = evaluation.invoke;
+    deps.evaluator.close = () => evaluation.settled;
+    manager.create(SESSION, 'ship');
+
+    const pending = settleExternal(coordinator, SESSION, {
+      kind: 'completed',
+      turnId: 'turn-1',
+    });
+    await evaluation.started;
+    let closeSettled = false;
+    const closing = coordinator.close().then(() => {
+      closeSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(closeSettled, false);
+
+    evaluation.resolve(
+      '{"met":false,"impossible":false,"progress":true,"waiting":false,"reason":"late"}',
+    );
+    await closing;
     await pending;
     assert.equal(manager.get(SESSION)?.iterations, 0);
     assert.equal(admitted.length, 0);

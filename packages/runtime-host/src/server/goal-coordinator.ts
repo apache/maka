@@ -7,7 +7,7 @@ import {
   TERMINAL_GOAL_STATUSES,
   buildGoalTools,
   truncateGoalText,
-  type GoalEvaluatorDeps,
+  type GoalEvaluatorResource,
   type GoalCheckpoint,
   type GoalControlLease,
   type GoalExternalTurnStart,
@@ -28,7 +28,7 @@ type GoalStores = Pick<ExecutionStoresWriter<'interactive'>, 'sessionStore' | 'a
 export interface HostGoalCoordinatorOptions {
   readonly stores: GoalStores;
   readonly sessionAdmission: SessionAdmissionGate;
-  readonly evaluator: GoalEvaluatorDeps;
+  readonly evaluator: GoalEvaluatorResource;
   readonly admitTurn: (
     sessionId: string,
     text: string,
@@ -129,8 +129,9 @@ export class HostGoalCoordinator {
     this.#residencies.clear();
   }
 
-  close(): void {
+  close(): Promise<void> {
     this.beginDrain();
+    return this.continuation.close();
   }
 
   #query(sessionId: string): Promise<OperationOutcome<'goal.query'>> {

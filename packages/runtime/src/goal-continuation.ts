@@ -6,7 +6,12 @@
  * an in-memory backoff instead of immediately spending another turn.
  */
 
-import { evaluateGoal, type GoalEvaluation, type GoalEvaluatorDeps } from './goal-evaluator.js';
+import {
+  evaluateGoal,
+  type GoalEvaluation,
+  type GoalEvaluatorDeps,
+  type GoalEvaluatorResource,
+} from './goal-evaluator.js';
 import {
   goalCheckpoint,
   type GoalControlLease,
@@ -50,7 +55,7 @@ export interface GoalContinuationScheduler {
 
 export interface GoalContinuationDeps {
   goalManager: GoalManager;
-  evaluator: GoalEvaluatorDeps;
+  evaluator: GoalEvaluatorDeps & Partial<Pick<GoalEvaluatorResource, 'close'>>;
   /** Summarized recent conversation (last ~5 messages) for the evaluator. */
   getRecentContext: (sessionId: string) => Promise<string>;
   /** Current cumulative token count for the session (for budget tracking). */
@@ -119,10 +124,12 @@ export type GoalExternalTurnStart =
 
 export class GoalContinuationCoordinator {
   private readonly lanes = new Map<string, SessionLane>();
+  private readonly activeDrains = new Set<Promise<void>>();
   private readonly sessionCloseFence: GoalSessionCloseFence;
   private readonly taskGatePolicy: GoalTaskGatePolicy;
   private readonly scheduler: GoalContinuationScheduler;
   private disposed = false;
+  private closeTask?: Promise<void>;
 
   constructor(private readonly deps: GoalContinuationDeps) {
     this.scheduler = deps.scheduler ?? defaultScheduler;
@@ -311,6 +318,15 @@ export class GoalContinuationCoordinator {
     this.sessionCloseFence.dispose();
   }
 
+  close(): Promise<void> {
+    this.dispose();
+    this.closeTask ??= Promise.all([
+      ...this.activeDrains,
+      Promise.resolve().then(() => this.deps.evaluator.close?.()),
+    ]).then(() => undefined);
+    return this.closeTask;
+  }
+
   private enqueueTurn(
     outcome: GoalTurnOutcome,
     controlLease: GoalControlLease,
@@ -388,10 +404,12 @@ export class GoalContinuationCoordinator {
 
   private scheduleDrain(lane: SessionLane): void {
     if (!this.isCurrent(lane) || lane.draining) return;
-    void this.drainLane(lane).catch((error) => {
+    const task = this.drainLane(lane).catch((error) => {
       if (!this.isCurrent(lane)) return;
       this.pauseCurrentGoal(lane, `Goal continuation coordinator failed: ${errorMessage(error)}`);
     });
+    this.activeDrains.add(task);
+    void task.finally(() => this.activeDrains.delete(task));
   }
 
   private async drainLane(lane: SessionLane): Promise<void> {

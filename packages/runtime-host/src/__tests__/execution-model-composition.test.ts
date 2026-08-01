@@ -760,7 +760,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   }
 });
 
-test('Host Goal evaluator meters provider usage and aborts its physical request', async () => {
+test('Host Goal evaluator meters provider usage and aborts its physical request', {
+  timeout: 10_000,
+}, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
   const provider = await startProvider();
   const capability = await resolveStorageRoot({
@@ -833,22 +835,21 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
     assert.equal(recorded.inputTokens, 7);
     assert.equal(recorded.outputTokens, 3);
     assert.equal(recorded.status, 'success');
+    await evaluator.close();
 
     let providerSignal: AbortSignal | undefined;
     let transportCloses = 0;
+    const providerDispatched = deferred<void>();
+    const providerRelease = deferred<void>();
     const stalled = createHostGoalEvaluator({
       ...evaluatorInput,
       newId: () => 'call-2',
       createFetchTransport: () => ({
         fetch: async (_request, init) => {
           providerSignal = init?.signal ?? undefined;
-          return await new Promise<Response>((_resolve, reject) => {
-            providerSignal?.addEventListener(
-              'abort',
-              () => reject(providerSignal?.reason ?? new DOMException('Aborted', 'AbortError')),
-              { once: true },
-            );
-          });
+          providerDispatched.resolve();
+          await providerRelease.promise;
+          throw providerSignal?.reason ?? new DOMException('Aborted', 'AbortError');
         },
         close: async () => {
           transportCloses += 1;
@@ -857,17 +858,37 @@ test('Host Goal evaluator meters provider usage and aborts its physical request'
     });
     const abort = new AbortController();
     const pending = stalled.evaluate('Wait forever.', session.id, abort.signal);
-    await waitForCondition(() => providerSignal !== undefined, 'Goal evaluator did not dispatch');
-    abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
-    await assert.rejects(settleWithin(pending));
-    assert.equal(providerSignal?.aborted, true);
-    assert.equal(transportCloses, 1);
-    const abortedLogs = await usage.telemetry.logs({ range: 'all' });
-    assert.ok(
-      abortedLogs.rows.some(
-        (row) => row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
-      ),
-    );
+    try {
+      await settleWithin(providerDispatched.promise);
+      abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
+      assert.equal(providerSignal?.aborted, true);
+      let closeSettled = false;
+      const closing = stalled.close().then(() => {
+        closeSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false);
+
+      providerRelease.resolve();
+      await assert.rejects(settleWithin(pending), (error: unknown) => {
+        assert.notEqual(error instanceof Error ? error.message : undefined, SETTLE_TIMEOUT_MESSAGE);
+        return true;
+      });
+      await closing;
+      assert.equal(transportCloses, 1);
+      const abortedLogs = await usage.telemetry.logs({ range: 'all' });
+      assert.ok(
+        abortedLogs.rows.some(
+          (row) =>
+            row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
+        ),
+      );
+    } finally {
+      abort.abort(new DOMException('Goal evaluator test cleanup', 'AbortError'));
+      providerRelease.resolve();
+      await stalled.close();
+      await pending.catch(() => undefined);
+    }
   } finally {
     await usage.close();
     await execution.sessionStore.close?.();
@@ -1359,10 +1380,7 @@ function readyExecutionConnection(baseUrl?: string) {
 async function settleWithin<T>(pending: Promise<T>): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error('Backend creation did not settle after abort')),
-      250,
-    );
+    timeout = setTimeout(() => reject(new Error(SETTLE_TIMEOUT_MESSAGE)), 5_000);
   });
   try {
     return await Promise.race([pending, deadline]);
@@ -1371,12 +1389,16 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
   }
 }
 
-async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  throw new Error(message);
+const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
+    resolve = next;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 function controlledOAuthTransports(): {

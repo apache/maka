@@ -474,7 +474,7 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          goal?.close();
+          await goal?.close();
         } catch (error) {
           errors.push(error);
         }

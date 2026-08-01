@@ -1453,6 +1453,7 @@ export type {
   GoalEvaluationModelInput,
   GoalEvaluationModelResult,
   GoalEvaluatorDeps,
+  GoalEvaluatorResource,
 } from './goal-evaluator.js';
 export {
   buildGoalTools,

@@ -38,7 +38,7 @@ import {
   SkillShadowSelectionTracker,
   type BackendFactoryContext,
   type BuildBuiltinToolsOptions,
-  type GoalEvaluatorDeps,
+  type GoalEvaluatorResource,
   type MakaTool,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
@@ -231,7 +231,7 @@ export interface HostGoalEvaluatorInput {
 }
 
 /** Creates a tool-free Goal judge on the Session's canonical connection and model. */
-export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEvaluatorDeps {
+export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEvaluatorResource {
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const now = input.now ?? Date.now;
   const newId = input.newId ?? randomUUID;
@@ -251,7 +251,7 @@ export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEval
       }
     },
   };
-  return {
+  return createOwnedGoalEvaluator({
     evaluate: async (prompt, sessionId, signal) => {
       const header = await readDuringBackendCreation(
         () => input.readSessionHeader(sessionId),
@@ -352,6 +352,32 @@ export function createHostGoalEvaluator(input: HostGoalEvaluatorInput): GoalEval
       } finally {
         await transport.close();
       }
+    },
+  });
+}
+
+function createOwnedGoalEvaluator(
+  evaluator: Pick<GoalEvaluatorResource, 'evaluate'>,
+): GoalEvaluatorResource {
+  const active = new Set<Promise<void>>();
+  let closing = false;
+  let closeTask: Promise<void> | undefined;
+  return {
+    evaluate: (prompt, sessionId, signal) => {
+      if (closing) return Promise.reject(new Error('Goal evaluator is closing'));
+      const task = evaluator.evaluate(prompt, sessionId, signal);
+      const settled = task.then(
+        () => undefined,
+        () => undefined,
+      );
+      active.add(settled);
+      void settled.finally(() => active.delete(settled));
+      return task;
+    },
+    close: () => {
+      closing = true;
+      closeTask ??= Promise.all([...active]).then(() => undefined);
+      return closeTask;
     },
   };
 }

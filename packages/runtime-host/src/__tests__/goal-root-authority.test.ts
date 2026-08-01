@@ -392,6 +392,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     evaluator: {
       evaluate: async () =>
         '{"met":true,"impossible":false,"progress":true,"waiting":false,"reason":"verified"}',
+      close: async () => {},
     },
     admitTurn: (sessionId, text, checkpoint, controlLease) =>
       rootCoordinator.admitGoalTurn(sessionId, checkpoint, controlLease, text),
@@ -416,6 +417,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     async close() {
       goalCoordinator.beginDrain();
       rootCoordinator.beginDrain();
+      await goalCoordinator.close();
       await rootCoordinator.close();
       await messages.close();
       await interactions.close();
