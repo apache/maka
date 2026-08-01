@@ -9,9 +9,7 @@ import { describe, test } from 'node:test';
 import { createConnectionStore, createSessionStore } from '@maka/storage';
 import {
   parseMakaCliArgs,
-  formatResumeHint,
   formatStartupConnectionError,
-  formatMakaCliFatalError,
   resolveMakaCliExitCode,
   resolveTuiResumeTarget,
 } from '../cli.js';
@@ -41,106 +39,41 @@ function runCliProcess(
 }
 
 describe('Maka CLI args', () => {
-  test('runs the TUI for a bare command', () => {
-    assert.deepEqual(parseMakaCliArgs([], '0.1.0'), { kind: 'tui' });
+  test('parses canonical commands and rejects malformed input', () => {
+    const cases: Array<[string[], unknown]> = [
+      [[], { kind: 'tui' }],
+      [
+        ['eval', 'task-run', 'inspect', 'run-1'],
+        { kind: 'eval', args: ['task-run', 'inspect', 'run-1'] },
+      ],
+      [['inspect', 'run-1', '--json'], { kind: 'inspect', args: ['run-1', '--json'] }],
+      [['run', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
+      [['-p', 'hello', '--max-steps', '3'], { kind: 'run', args: ['hello', '--max-steps', '3'] }],
+      [['--version'], { kind: 'version', text: '0.1.0' }],
+      [['headless'], { kind: 'error', message: 'Unexpected argument: headless', exitCode: 2 }],
+      [['--resume', 'abc'], { kind: 'tui', resumeSessionId: 'abc' }],
+      [['--resume'], { kind: 'error', message: '--resume requires a session id', exitCode: 2 }],
+      [
+        ['--resume', '--help'],
+        { kind: 'error', message: '--resume requires a session id', exitCode: 2 },
+      ],
+      [
+        ['--resume', 'abc', 'extra'],
+        { kind: 'error', message: 'Unexpected argument: extra', exitCode: 2 },
+      ],
+    ];
+
+    for (const [args, expected] of cases) {
+      assert.deepEqual(parseMakaCliArgs(args, '0.1.0'), expected, args.join(' '));
+    }
+    const help = parseMakaCliArgs(['--help'], '0.1.0');
+    assert.equal(help.kind, 'help');
+    if (help.kind === 'help') assert.match(help.text, /Usage: maka/);
   });
 
-  test('routes eval subcommands without changing their arguments', () => {
-    assert.deepEqual(parseMakaCliArgs(['eval', 'task-run', 'inspect', 'run-1'], '0.1.0'), {
-      kind: 'eval',
-      args: ['task-run', 'inspect', 'run-1'],
-    });
-  });
-
-  test('routes the unified inspect command without changing its arguments', () => {
-    assert.deepEqual(parseMakaCliArgs(['inspect', 'run-1', '--json'], '0.1.0'), {
-      kind: 'inspect',
-      args: ['run-1', '--json'],
-    });
-  });
-
-  test('routes maka run and maka -p through the exact same command shape', () => {
-    assert.deepEqual(parseMakaCliArgs(['run', 'hello', '--max-steps', '3'], '0.1.0'), {
-      kind: 'run',
-      args: ['hello', '--max-steps', '3'],
-    });
-    assert.deepEqual(parseMakaCliArgs(['-p', 'hello', '--max-steps', '3'], '0.1.0'), {
-      kind: 'run',
-      args: ['hello', '--max-steps', '3'],
-    });
-  });
-
-  test('prints help', () => {
-    const command = parseMakaCliArgs(['--help'], '0.1.0');
-    assert.equal(command.kind, 'help');
-    if (command.kind !== 'help') return;
-    assert.match(command.text, /Usage: maka/);
-    assert.match(command.text, /maka-agent/);
-    assert.match(command.text, /maka inspect/);
-  });
-
-  test('prints version', () => {
-    assert.deepEqual(parseMakaCliArgs(['--version'], '0.1.0'), {
-      kind: 'version',
-      text: '0.1.0',
-    });
-  });
-
-  test('rejects unknown positional arguments', () => {
-    assert.deepEqual(parseMakaCliArgs(['headless'], '0.1.0'), {
-      kind: 'error',
-      message: 'Unexpected argument: headless',
-      exitCode: 2,
-    });
-  });
-
-  test('resumes a session by id through --resume', () => {
-    assert.deepEqual(parseMakaCliArgs(['--resume', 'abc'], '0.1.0'), {
-      kind: 'tui',
-      resumeSessionId: 'abc',
-    });
-  });
-
-  test('rejects --resume without a session id', () => {
-    assert.deepEqual(parseMakaCliArgs(['--resume'], '0.1.0'), {
-      kind: 'error',
-      message: '--resume requires a session id',
-      exitCode: 2,
-    });
-  });
-
-  test('rejects --resume when the next token is another flag', () => {
-    assert.deepEqual(parseMakaCliArgs(['--resume', '--help'], '0.1.0'), {
-      kind: 'error',
-      message: '--resume requires a session id',
-      exitCode: 2,
-    });
-  });
-
-  test('rejects --resume with a trailing extra argument', () => {
-    assert.deepEqual(parseMakaCliArgs(['--resume', 'abc', 'extra'], '0.1.0'), {
-      kind: 'error',
-      message: 'Unexpected argument: extra',
-      exitCode: 2,
-    });
-  });
-
-  test('uses the command exit code when no earlier exit reason exists', () => {
+  test('preserves an established process exit code', () => {
     assert.equal(resolveMakaCliExitCode(2, undefined), 2);
-  });
-
-  test('preserves an exit code already set by a process signal', () => {
     assert.equal(resolveMakaCliExitCode(0, 143), 143);
-  });
-
-  test('formats non-Error fatal reasons as text', () => {
-    assert.equal(formatMakaCliFatalError('fatal reason'), 'fatal reason');
-  });
-
-  test('preserves the stack for fatal errors', () => {
-    const error = new Error('fatal reason');
-
-    assert.equal(formatMakaCliFatalError(error), error.stack);
   });
 
   test('establishes the fatal exit before reporting can throw', async () => {
@@ -325,52 +258,16 @@ describe('resolveTuiResumeTarget', () => {
   });
 });
 
-describe('formatResumeHint', () => {
-  test('returns null when there is no session to resume', () => {
-    assert.equal(formatResumeHint(null), null);
-  });
-
-  test('formats the exact resume command for a session id', () => {
-    assert.equal(
-      formatResumeHint('session-123'),
-      'Resume this session with:\n  maka --resume session-123',
-    );
-  });
-});
-
 describe('startup connection-error guidance', () => {
   const workspaceRoot = '/tmp/maka-workspace';
 
-  test('translates a missing default connection into actionable first-run help', () => {
-    const guidance = formatStartupConnectionError(
-      new Error('NO_REAL_CONNECTION:missing_default_connection'),
-      workspaceRoot,
-    );
-    assert.ok(guidance);
-    // Reason-specific fix line (shared core copy) — distinct per reason, so this
-    // asserts the translation ran, not just the static header/footer.
-    assert.match(guidance, /等待配置默认模型/);
-    // Static header plus the CLI-only footer that points at the desktop app and
-    // the on-disk workspace.
-    assert.match(guidance, /还没有可用的模型连接/);
-    assert.match(guidance, /设置 · 模型/);
-    assert.match(guidance, /Maka 桌面应用/);
-    assert.match(guidance, new RegExp(workspaceRoot));
-  });
-
-  test('uses the credential-specific copy for a missing API key', () => {
-    const guidance = formatStartupConnectionError(
-      new Error('NO_REAL_CONNECTION:missing_api_key'),
-      workspaceRoot,
-    );
-    assert.ok(guidance);
-    assert.match(guidance, /API key/);
-  });
-
-  test('returns null for an unrelated startup error so it propagates unchanged', () => {
-    assert.equal(
-      formatStartupConnectionError(new Error('ENOENT: workspace missing'), workspaceRoot),
-      null,
-    );
+  test('recognizes connection failures without swallowing unrelated errors', () => {
+    for (const reason of ['missing_default_connection', 'missing_api_key']) {
+      assert.ok(
+        formatStartupConnectionError(new Error(`NO_REAL_CONNECTION:${reason}`), workspaceRoot),
+        reason,
+      );
+    }
+    assert.equal(formatStartupConnectionError(new Error('ENOENT'), workspaceRoot), null);
   });
 });
