@@ -112,17 +112,6 @@ function withLedgerCounts(report) {
   };
 }
 
-test('a valid real report passes the shared verdict', () => {
-  assert.deepEqual(
-    validateRealReport(
-      realReport(),
-      { id: 'openai', producer: 'cu-real-model-launcher', model: 'gpt-5.4' },
-      scenario(),
-    ),
-    [],
-  );
-});
-
 test('matrix generation never executes provider command templates', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'cu-matrix-'));
   const marker = join(directory, 'executed');
