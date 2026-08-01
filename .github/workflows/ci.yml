@@ -20,6 +20,7 @@ jobs:
       runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
       script_mode: ${{ steps.plan.outputs.script_mode }}
       storage_stress: ${{ steps.plan.outputs.storage_stress }}
+      storybook: ${{ steps.plan.outputs.storybook }}
       unit: ${{ steps.plan.outputs.unit }}
       workspaces: ${{ steps.plan.outputs.workspaces }}
     steps:
@@ -161,15 +162,22 @@ jobs:
       # e2e step just built; same xvfb pattern.
       - name: Alignment audit
         run: xvfb-run -a node scripts/audit-alignment.mjs
-      # Storybook is where pixel work happens (see stories/FIDELITY.md), but
-      # nothing verified that it still renders: story typechecking rides along
-      # in `typecheck`, while the static build and the render/play smoke ran
-      # only if someone remembered to run them locally.
-      #
-      # The E2E suite above drives Electron through `_electron.launch`, which
-      # uses Electron's own binary — it never downloads a browser. The smoke
-      # calls `chromium.launch()`, so the Chromium build must be fetched here
-      # explicitly; without it the step fails on a missing executable.
+
+  # Storybook build + render smoke. Independent of Electron e2e: the smoke
+  # launches Playwright Chromium, not `_electron.launch`, so it does not
+  # need xvfb or the desktop cold-start suite. See stories/FIDELITY.md.
+  storybook:
+    needs: changes
+    if: needs.changes.outputs.storybook == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # The smoke calls `chromium.launch()`; Electron's binary is irrelevant.
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Build Storybook

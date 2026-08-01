@@ -11,23 +11,32 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
+  assert.equal(ui.storybook, true);
   assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
-  // .storybook/preview.tsx reads THEME_PALETTES from @maka/core, and the e2e
-  // job now builds and smokes Storybook, so a core change must reach it.
-  assert.equal(planTests(['packages/core/src/settings.ts'], { graph }).e2e, true);
+  // .storybook/preview.tsx reads THEME_PALETTES from @maka/core — Storybook
+  // must re-run, but Electron e2e must not (core is not a desktop cold-start).
+  const core = planTests(['packages/core/src/settings.ts'], { graph });
+  assert.equal(core.storybook, true);
+  assert.equal(core.e2e, false);
 
-  // A script the e2e job RUNS must re-run it; a script it does not stays off.
-  // Otherwise the smoke runner is the one file that can stop guarding without
-  // the guard ever running against the change.
+  // A script the Storybook job RUNS must re-run Storybook, not Electron e2e.
   const smoke = planTests(['scripts/storybook-visual-smoke.mjs'], { graph });
-  assert.equal(smoke.e2e, true);
+  assert.equal(smoke.storybook, true);
+  assert.equal(smoke.e2e, false);
   assert.equal(smoke.scriptMode, 'fast');
   assert.equal(planTests(['scripts/check-story-annotations.mjs'], { graph }).e2e, false);
+  assert.equal(planTests(['scripts/check-story-annotations.mjs'], { graph }).storybook, false);
+
+  // Alignment auditor drives the e2e job (not Storybook).
+  const alignment = planTests(['scripts/audit-alignment.mjs'], { graph });
+  assert.equal(alignment.e2e, true);
+  assert.equal(alignment.storybook, false);
 
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
   assert.equal(backend.e2e, false);
+  assert.equal(backend.storybook, false);
   for (const workspace of ['packages/storage', 'packages/runtime', 'apps/desktop']) {
     assert.ok(backend.workspaces.includes(workspace));
   }
@@ -71,6 +80,7 @@ test('global and unknown production changes fail safe to the complete suite', ()
     const plan = planTests([path], { graph });
     assert.equal(plan.full, true);
     assert.equal(plan.e2e, true);
+    assert.equal(plan.storybook, true);
     assert.deepEqual(plan.workspaces, graph.dirs);
   }
 });
