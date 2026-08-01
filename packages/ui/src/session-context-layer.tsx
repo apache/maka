@@ -157,7 +157,9 @@ export function SessionContextLayer(props: {
         <Token
           size="sm"
           color="blue"
-          label={copy.deepResearch}
+          label={copy.deepResearchAriaLabel}
+          isLabelHidden
+          endContent={copy.deepResearch}
           description={copy.deepResearchTitle}
           icon={<Icon icon="search" size="xsm" />}
         />
@@ -177,7 +179,9 @@ export function SessionContextLayer(props: {
         <Token
           size="sm"
           color="default"
-          label={copy.memory}
+          label={copy.memoryAriaLabel}
+          isLabelHidden
+          endContent={copy.memory}
           description={copy.memoryTitle}
           icon={<Icon icon="check" size="xsm" />}
           onClick={props.onOpenMemorySettings}
