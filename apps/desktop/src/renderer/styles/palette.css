@@ -1,6 +1,43 @@
 /* Astryx owns the command palette surface, input, listbox, rows, states, and
  * footer. Maka styles only product content rendered inside those slots. */
 
+/* Match the elevated modal treatment established by the keyboard-shortcuts
+ * dialog. The native Windows titlebar controls are synchronized separately in
+ * theme.ts because a CSS ::backdrop cannot cover Electron's native overlay. */
+.maka-command-palette {
+  overflow: clip;
+  border: 1px solid var(--border-strong);
+  border-radius: calc(var(--radius-modal) + var(--space-1));
+  background: var(--background-elevated);
+  box-shadow:
+    var(--shadow-modal),
+    0 24px 72px -24px oklch(from var(--foreground) l c h / 0.26);
+}
+
+.maka-command-palette::backdrop {
+  background: oklch(from var(--foreground) l c h / 0.3);
+  backdrop-filter: blur(8px) saturate(0.82);
+}
+
+/* The input is auto-focused when the palette opens. Replace the global
+ * element-sized focus box with a quiet full-row cue so the search field does
+ * not look like a second rectangular control nested inside the header. */
+.maka-command-palette .astryx-command-palette-input:focus-within {
+  background: oklch(from var(--focus-ring) l c h / 0.025);
+  box-shadow: inset 0 -1px 0 oklch(from var(--focus-ring) l c h / 0.28);
+}
+
+.maka-command-palette input[role="combobox"],
+.maka-command-palette input[role="combobox"]:focus,
+.maka-command-palette input[role="combobox"]:focus-visible {
+  appearance: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
 .maka-palette-icon {
   display: grid;
   place-items: center;

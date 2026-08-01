@@ -138,6 +138,7 @@ export function CommandPalette(props: {
   return (
     <AstryxLocaleProvider overrides={astryxOverrides}>
       <AstryxCommandPalette
+        className="maka-command-palette"
         isOpen={props.isOpen}
         onOpenChange={props.onOpenChange}
         searchSource={searchSource}
@@ -146,6 +147,14 @@ export function CommandPalette(props: {
         maxHeight="min(620px, 68vh)"
         input={(
           <CommandPaletteInput
+            className="maka-command-palette-search"
+            style={{
+              appearance: 'none',
+              border: 0,
+              outline: 0,
+              background: 'transparent',
+              boxShadow: 'none',
+            }}
             placeholder={copy.placeholder}
             label={copy.searchLabel}
           />

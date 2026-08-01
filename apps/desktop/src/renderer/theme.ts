@@ -11,6 +11,8 @@ import { safeLocalStorageSet } from './browser-storage';
 const DARK_CLASS = 'dark';
 
 let unsubscribeMediaQuery: (() => void) | null = null;
+let titleBarOverlayObserver: MutationObserver | null = null;
+let titleBarOverlayFrame: number | null = null;
 
 /**
  * Apply a theme preference to <html>. Returns an unsubscribe function for the
@@ -83,13 +85,15 @@ export function applyThemePalette(palette: ThemePalette): void {
 }
 
 function syncTitleBarOverlay(root: HTMLElement): void {
+  observeModalBackdrops(root);
   // The native Windows overlay sits on top of the renderer's content surface.
   // Sample the actual resolved --background color instead of approximating it
   // with one hard-coded light and dark pair; this also follows every palette.
-  const backgroundColor = cssColorToHex(
+  const baseColor = cssColorToHex(
     getComputedStyle(root).getPropertyValue('--background'),
     root.classList.contains(DARK_CLASS) ? '#1c1d21' : '#ffffff',
   );
+  const backgroundColor = compositeActiveModalBackdrop(baseColor);
   void window.maka?.appWindow
     ?.setTitleBarOverlayTheme?.({
       isDark: root.classList.contains(DARK_CLASS),
@@ -98,19 +102,89 @@ function syncTitleBarOverlay(root: HTMLElement): void {
     .catch(() => {});
 }
 
+/**
+ * Native Windows caption controls live above Chromium, so a dialog's
+ * `::backdrop` cannot dim their titlebar strip. Watch the native dialog open
+ * state and re-sync that strip to the same composited backdrop color.
+ */
+function observeModalBackdrops(root: HTMLElement): void {
+  if (titleBarOverlayObserver || typeof MutationObserver === 'undefined') return;
+
+  titleBarOverlayObserver = new MutationObserver((mutations) => {
+    const modalStateChanged = mutations.some((mutation) => {
+      if (mutation.type === 'attributes') return true;
+      return [...mutation.addedNodes, ...mutation.removedNodes].some(
+        (node) =>
+          node instanceof Element &&
+          (node.matches('dialog[open]') || node.querySelector('dialog[open]')),
+      );
+    });
+    if (!modalStateChanged || titleBarOverlayFrame !== null) return;
+    titleBarOverlayFrame = window.requestAnimationFrame(() => {
+      titleBarOverlayFrame = null;
+      syncTitleBarOverlay(root);
+    });
+  });
+  titleBarOverlayObserver.observe(root, {
+    attributes: true,
+    attributeFilter: ['open'],
+    childList: true,
+    subtree: true,
+  });
+}
+
+function compositeActiveModalBackdrop(baseColor: string): string {
+  const openDialogs = document.querySelectorAll<HTMLDialogElement>('dialog[open]');
+  const activeDialog = openDialogs.item(openDialogs.length - 1);
+  if (!activeDialog) return baseColor;
+
+  const backdropStyle = getComputedStyle(activeDialog, '::backdrop');
+  const backdrop = cssColorToRgba(backdropStyle.backgroundColor);
+  const base = cssColorToRgba(baseColor);
+  if (!backdrop || !base) return baseColor;
+
+  const backdropOpacity = Number.parseFloat(backdropStyle.opacity);
+  const alpha = backdrop.alpha *
+    (Number.isFinite(backdropOpacity) ? backdropOpacity : 1);
+  return rgbaToHex({
+    red: backdrop.red * alpha + base.red * (1 - alpha),
+    green: backdrop.green * alpha + base.green * (1 - alpha),
+    blue: backdrop.blue * alpha + base.blue * (1 - alpha),
+    alpha: 1,
+  });
+}
+
+type RgbaColor = {
+  red: number;
+  green: number;
+  blue: number;
+  alpha: number;
+};
+
 function cssColorToHex(value: string, fallback: string): string {
+  const rgba = cssColorToRgba(value);
+  if (!rgba || rgba.alpha !== 1) return fallback;
+  return rgbaToHex(rgba);
+}
+
+function cssColorToRgba(value: string): RgbaColor | null {
   const color = value.trim();
-  if (!color || !CSS.supports('color', color)) return fallback;
+  if (!color || !CSS.supports('color', color)) return null;
 
   const canvas = document.createElement('canvas');
   canvas.width = 1;
   canvas.height = 1;
   const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) return fallback;
+  if (!context) return null;
 
   context.fillStyle = color;
   context.fillRect(0, 0, 1, 1);
   const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
-  if (alpha !== 255) return fallback;
-  return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+  return { red, green, blue, alpha: alpha / 255 };
+}
+
+function rgbaToHex(color: RgbaColor): string {
+  return `#${[color.red, color.green, color.blue]
+    .map((channel) => Math.round(channel).toString(16).padStart(2, '0'))
+    .join('')}`;
 }
