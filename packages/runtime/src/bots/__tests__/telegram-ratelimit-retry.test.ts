@@ -5,93 +5,44 @@ import { __TEST__ } from '../simple-bridge.js';
 
 const { classifyTelegramSendResponse, TELEGRAM_RETRY_MIN_MS, TELEGRAM_RETRY_MAX_MS } = __TEST__;
 
-describe('classifyTelegramSendResponse (PR-BOT-RATELIMIT-RETRY-0)', () => {
-  it('returns ok with the message id on a successful response', () => {
-    const result = classifyTelegramSendResponse({
-      ok: true,
-      result: { message_id: 12345 },
+describe('classifyTelegramSendResponse', () => {
+  it('returns the optional message id on successful responses', () => {
+    assert.deepEqual(classifyTelegramSendResponse({ ok: true, result: { message_id: 12345 } }), {
+      kind: 'ok',
+      messageId: '12345',
     });
-    assert.deepEqual(result, { kind: 'ok', messageId: '12345' });
+    assert.deepEqual(classifyTelegramSendResponse({ ok: true, result: {} }), {
+      kind: 'ok',
+      messageId: null,
+    });
   });
 
-  it('returns ok with null id when the success response has no message_id', () => {
-    const result = classifyTelegramSendResponse({ ok: true, result: {} });
-    assert.deepEqual(result, { kind: 'ok', messageId: null });
-  });
-
-  it('returns retry with the Telegram-provided backoff on 429', () => {
-    const result = classifyTelegramSendResponse({
-      ok: false,
-      error_code: 429,
-      description: 'Too Many Requests: retry after 5',
-      parameters: { retry_after: 5 },
-    });
-    assert.equal(result.kind, 'retry');
-    if (result.kind === 'retry') {
-      assert.equal(result.delayMs, 5_000);
+  it('clamps Telegram retry hints to the bounded retry window', () => {
+    for (const [retryAfter, expected] of [
+      [5, 5_000],
+      [0, TELEGRAM_RETRY_MIN_MS],
+      [3600, TELEGRAM_RETRY_MAX_MS],
+      ['wat', TELEGRAM_RETRY_MIN_MS],
+    ] as const) {
+      const result = classifyTelegramSendResponse({
+        ok: false,
+        error_code: 429,
+        parameters: { retry_after: retryAfter },
+      });
+      assert.equal(result.kind, 'retry');
+      if (result.kind === 'retry') assert.equal(result.delayMs, expected, String(retryAfter));
     }
   });
 
-  it('floors the retry delay at the minimum even when Telegram reports 0', () => {
-    const result = classifyTelegramSendResponse({
-      ok: false,
-      error_code: 429,
-      parameters: { retry_after: 0 },
-    });
-    assert.equal(result.kind, 'retry');
-    if (result.kind === 'retry') {
-      assert.equal(result.delayMs, TELEGRAM_RETRY_MIN_MS);
-    }
-  });
-
-  it('caps the retry delay at the maximum so an inflated retry_after cannot stall the bridge', () => {
-    const result = classifyTelegramSendResponse({
-      ok: false,
-      error_code: 429,
-      parameters: { retry_after: 3600 }, // 1 hour
-    });
-    assert.equal(result.kind, 'retry');
-    if (result.kind === 'retry') {
-      assert.equal(result.delayMs, TELEGRAM_RETRY_MAX_MS);
-    }
-  });
-
-  it('returns fatal for permanent 4xx errors', () => {
-    const result = classifyTelegramSendResponse({
-      ok: false,
-      error_code: 400,
-      description: 'Bad Request: chat not found',
-    });
-    assert.deepEqual(result, { kind: 'fatal', description: 'Bad Request: chat not found' });
-  });
-
-  it('returns fatal for 5xx so the bridge does not loop on a Telegram outage', () => {
-    const result = classifyTelegramSendResponse({
-      ok: false,
-      error_code: 502,
-      description: 'Bad Gateway',
-    });
-    assert.deepEqual(result, { kind: 'fatal', description: 'Bad Gateway' });
-  });
-
-  it('returns fatal with a stable description when the response shape is unexpected', () => {
-    const result = classifyTelegramSendResponse(null);
-    assert.deepEqual(result, { kind: 'fatal', description: 'send-failed' });
-
-    const noBody = classifyTelegramSendResponse({});
-    assert.deepEqual(noBody, { kind: 'fatal', description: 'send-failed' });
-  });
-
-  it('treats a non-numeric retry_after as the floor delay', () => {
-    // Defense-in-depth: malformed parameters payload should not crash.
-    const result = classifyTelegramSendResponse({
-      ok: false,
-      error_code: 429,
-      parameters: { retry_after: 'wat' },
-    });
-    assert.equal(result.kind, 'retry');
-    if (result.kind === 'retry') {
-      assert.equal(result.delayMs, TELEGRAM_RETRY_MIN_MS);
+  it('classifies permanent and malformed failures with stable descriptions', () => {
+    const cases: Array<[unknown, string]> = [
+      [{ ok: false, error_code: 400, description: 'Bad Request' }, 'Bad Request'],
+      [{ ok: false, error_code: 502, description: 'Bad Gateway' }, 'Bad Gateway'],
+      [null, 'send-failed'],
+      [{}, 'send-failed'],
+    ];
+    for (const [payload, description] of cases) {
+      assert.deepEqual(classifyTelegramSendResponse(payload), { kind: 'fatal', description });
     }
   });
 });
