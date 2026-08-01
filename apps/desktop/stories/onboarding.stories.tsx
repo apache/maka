@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
-import { ChatView } from '@maka/ui';
+import { ChatSurfaceLayout, ChatView } from '@maka/ui';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -75,11 +75,13 @@ function DetailPane(props: { children: ReactNode }) {
       >
         <div className="maka-detail-with-artifacts">
           <div className="mainColumn" data-home-surface="true">
-            <ChatView
-              messages={[]}
-              onNew={() => undefined}
-              emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
-            />
+            <ChatSurfaceLayout composer={null}>
+              <ChatView
+                messages={[]}
+                onNew={() => undefined}
+                emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
+              />
+            </ChatSurfaceLayout>
           </div>
         </div>
       </div>

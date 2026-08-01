@@ -30,6 +30,7 @@ import {
 import {
   AutomationsPage,
   DailyReviewPage,
+  ChatSurfaceLayout,
   type ComposerHandle,
   type MakaUriDest,
   MakaUriContext,
@@ -2178,8 +2179,216 @@ function AppShellContent({
                   onAppendMarkdown={appendDailyReviewMarkdown}
                   onSaveMarkdown={(input) => saveDailyReviewMarkdown(input, { shouldShowFeedback: isDailyReviewSurfaceActive })}
                 />
-              ) : (
-              <ChatMessageSurface
+              ) : null}
+              <ChatSurfaceLayout
+                hidden={navSelection.section !== 'sessions'}
+                composer={
+                  <ChatComposerRegion
+                  composerRef={composerRef}
+                  active={navSelection.section === 'sessions'}
+                  onboardingComposerHidden={
+                    onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
+                  }
+                  boundaryUnreadableNotice={boundaryUnreadableNotice}
+                  activeInteraction={activeInteraction}
+                  activeId={activeId}
+                  stopPendingBySession={stopPendingBySession}
+                  activeSandboxBoundary={activeSandboxBoundary}
+                  respondToSandboxBoundary={respondToSandboxBoundary}
+                  activeQuestion={activeQuestion}
+                  respondToUserQuestion={respondToUserQuestion}
+                  stop={stop}
+                  // #646: Stop must be available for the WHOLE turn - the moment the
+                  // user most wants to interrupt is a long wait with nothing on
+                  // screen (first token, or a slow provider's step-to-step lull).
+                  // Drive Stop off `turnInFlight` (armed at send, cleared at the
+                  // terminal event), not the wait indicators, so it never blinks out
+                  // in a mid-turn gap. But `turnInFlight` alone goes STALE: the event
+                  // stream only follows `activeId`, so a session whose turn completes
+                  // while backgrounded never receives its terminal event and keeps its
+                  // arm. Gate on `sessionAwaitingModel` (status === 'running', kept
+                  // truthful for backgrounded sessions by sessions:changed and made
+                  // synchronous at send by markSessionRunningOptimistic) so returning
+                  // to such a session shows Send, not a stuck Stop that hides it.
+                  // `activeStreamingLive` is folded in defensively for the rare replay
+                  // where the arm was over-cleared.
+                  streaming={(sessionAwaitingModel && turnInFlight) || activeStreamingLive}
+                  // #646: in the first-token wait (Stop up, nothing streams yet) the
+                  // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
+                  // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
+                  processing={showProcessingIndicator && !activeStreamingLive}
+                  continuing={showContinuingIndicator && !activeStreamingLive}
+                  voiceCaptureState={voiceInput.captureState}
+                  realtimeVoiceState={voiceInput.realtimeState}
+                  voiceProviderLabel={voiceInput.providerLabel}
+                  onToggleVoiceCapture={voiceInput.toggleCapture}
+                  onCancelVoiceCapture={voiceInput.cancelCapture}
+                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
+                  onSend={sendWithAttachments}
+                  onStop={stop}
+                  revisionNotice={
+                    revisionDraft && activeId === revisionDraft.draftSessionId
+                      ? {
+                          title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
+                          detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
+                          cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
+                          onCancel: () => { void cancelRevisionDraft(); },
+                        }
+                      : undefined
+                  }
+                  mentionSkills={mentionSkills}
+                  onSearchMentionFiles={searchMentionFiles}
+                  pendingAttachments={pendingAttachments}
+                  onRemoveAttachment={removeAttachment}
+                  pendingQuotes={pendingQuotes}
+                  onRemoveQuote={removeQuote}
+                  onPasteAsQuote={addQuote}
+                  onPickAttachments={
+                    revisionDraft && activeId === revisionDraft.draftSessionId
+                      ? undefined
+                      : pickAttachments
+                  }
+                  onAttachFilePaths={
+                    revisionDraft && activeId === revisionDraft.draftSessionId
+                      ? undefined
+                      : attachFilePaths
+                  }
+                  modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
+                  activeSession={activeSessionForView}
+                  activeConnectionLabel={activeConnectionLabel}
+                  activeModel={activeModel}
+                  activeModelLabel={activeModelLabel}
+                  activeProviderType={activeConnection?.providerType}
+                  modelChoices={chatModelChoices}
+                  renderProviderMark={(type) => <ProviderBrandMark type={type} />}
+                  modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
+                  onModelChange={(input) => setSessionModel(input)}
+                  activeThinkingLevels={activeThinkingLevels}
+                  activeThinkingLevel={activeThinkingLevel}
+                  onThinkingLevelChange={(level) => setSessionThinkingLevel(level)}
+                  newChatModel={newChatModel}
+                  newChatProviderType={newChatProviderType}
+                  onPickNewChatModel={(input) => {
+                    setPendingNewChatModel(input);
+                    saveComposerDefaults({ model: input });
+                  }}
+                  newChatThinkingLevels={newChatThinkingLevels}
+                  newChatThinkingLevel={newChatThinkingLevel}
+                  onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
+                  onOpenModelSettings={() => openSettingsSection('models')}
+                  noModelConnection={connections.length === 0}
+                  workspacePicker={{
+                    label:
+                      currentProject?.name ??
+                      (currentProjectId === null
+                        ? getConversationCopy(uiLocale).workspace.noProject
+                        : undefined),
+                    branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
+                    pending: projectPickerPending,
+                    projects: projects.filter((project) => project.archivedAt === undefined),
+                    selectedProjectId: currentProjectId,
+                    onAdd: () => {
+                      void addProject();
+                    },
+                    onSelectProject: (projectId: string) => {
+                      void selectProject(projectId);
+                    },
+                    onRelink: (projectId: string) => {
+                      void relinkProject(projectId, true);
+                    },
+                    onSelectNoProject: selectNoProject,
+                  }}
+                  branchPicker={
+                    currentProjectId !== null && projectInfo?.projectGit.isGitRepo
+                      ? {
+                          branch: projectInfo.projectGit.branch ?? null,
+                          pending: branchPending,
+                          branches: branchList?.branches ?? [],
+                          onOpen: () => {
+                            void listGitBranches(activeId);
+                          },
+                          onSelect: (branch: string) => {
+                            void checkoutGitBranch(branch, activeId);
+                          },
+                        }
+                      : undefined
+                  }
+                  permissionMode={activePermissionMode}
+                  permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
+                  permissionModeDisabledReason={
+                    activeId && pendingPermissionModeBySession[activeId] === true
+                        ? shellCopy.permissionModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.permissionModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.permissionModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.permissionModeWaiting
+                            : undefined
+                  }
+                  onPermissionModeChange={
+                    activeBoundarySurface.localInteractionAvailable
+                      ? (mode) => setPermissionMode(mode)
+                      : undefined
+                  }
+                  planModeActive={activeId
+                    ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
+                    : newChatPlanModeActive}
+                  planModePending={activeId ? pendingCollaborationModeBySession[activeId] === true : false}
+                  planModeDisabledReason={
+                    activeId && pendingCollaborationModeBySession[activeId] === true
+                      ? shellCopy.planModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.planModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.planModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.planModeWaiting
+                            : undefined
+                  }
+                  onPlanModeChange={setPlanMode}
+                  swarmModeActive={activeId
+                    ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
+                    : newChatSwarmModeActive}
+                  swarmModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
+                  swarmModeDisabledReason={
+                    activeId && pendingOrchestrationModeBySession[activeId] === true
+                      ? shellCopy.swarmModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.swarmModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.swarmModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.swarmModeWaiting
+                            : undefined
+                  }
+                  onSwarmModeChange={(active) => {
+                    void setSwarmMode(active);
+                  }}
+                  graphModeActive={activeId
+                    ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
+                    : newChatGraphModeActive}
+                  graphModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
+                  graphModeDisabledReason={
+                    activeId && pendingOrchestrationModeBySession[activeId] === true
+                      ? shellCopy.graphModeChanging
+                      : activeStreamingLive
+                          ? shellCopy.graphModeStreaming
+                        : activeId && activeSessionForView?.status === 'running'
+                            ? shellCopy.graphModeRunning
+                          : activeId && activeSessionForView?.status === 'waiting_for_user'
+                              ? shellCopy.graphModeWaiting
+                            : undefined
+                  }
+                  onGraphModeChange={(active) => {
+                    void setGraphMode(active);
+                  }}
+                  />
+                }
+              >
+                {navSelection.section === 'sessions' ? (
+                  <>
+                    <ChatMessageSurface
                 messages={messages}
                 liveTurn={activeLiveTurn}
                 shellRunUpdates={activeShellRunUpdates}
@@ -2305,223 +2514,19 @@ function AppShellContent({
                   }
                 }}
                 conversationItems={planConversationItems}
-              />
-              )}
-              {navSelection.section === 'sessions' &&
-              activeId &&
-              activeSessionForView &&
-              !activeSessionForView.subagentParent ? (
-                <AgentGraphPanel
-                  rootSessionId={activeId}
-                  enabled={(activeSessionForView?.orchestrationMode ?? 'default') === 'graph'}
-                  locale={uiLocale}
-                  onOpenSession={openSessionInChat}
-                />
-              ) : null}
-              {navSelection.section === 'sessions' && (
-                <PlanExecutionPanel planMode={planMode} />
-              )}
-              <ChatComposerRegion
-                composerRef={composerRef}
-                active={navSelection.section === 'sessions'}
-                onboardingComposerHidden={
-                  onboardingComposerHidden || !activeBoundarySurface.localInteractionAvailable
-                }
-                boundaryUnreadableNotice={boundaryUnreadableNotice}
-                activeInteraction={activeInteraction}
-                activeId={activeId}
-                stopPendingBySession={stopPendingBySession}
-                activeSandboxBoundary={activeSandboxBoundary}
-                respondToSandboxBoundary={respondToSandboxBoundary}
-                activeQuestion={activeQuestion}
-                respondToUserQuestion={respondToUserQuestion}
-                stop={stop}
-                // #646: Stop must be available for the WHOLE turn - the moment the
-                // user most wants to interrupt is a long wait with nothing on
-                // screen (first token, or a slow provider's step-to-step lull).
-                // Drive Stop off `turnInFlight` (armed at send, cleared at the
-                // terminal event), not the wait indicators, so it never blinks out
-                // in a mid-turn gap. But `turnInFlight` alone goes STALE: the event
-                // stream only follows `activeId`, so a session whose turn completes
-                // while backgrounded never receives its terminal event and keeps its
-                // arm. Gate on `sessionAwaitingModel` (status === 'running', kept
-                // truthful for backgrounded sessions by sessions:changed and made
-                // synchronous at send by markSessionRunningOptimistic) so returning
-                // to such a session shows Send, not a stuck Stop that hides it.
-                // `activeStreamingLive` is folded in defensively for the rare replay
-                // where the arm was over-cleared.
-                streaming={(sessionAwaitingModel && turnInFlight) || activeStreamingLive}
-                // #646: in the first-token wait (Stop up, nothing streams yet) the
-                // hint reads "Maka 正在处理…"; in a mid-turn lull it reads the calm
-                // "Maka 继续中…". Both are mutually exclusive with activeStreamingLive.
-                processing={showProcessingIndicator && !activeStreamingLive}
-                continuing={showContinuingIndicator && !activeStreamingLive}
-                voiceCaptureState={voiceInput.captureState}
-                realtimeVoiceState={voiceInput.realtimeState}
-                voiceProviderLabel={voiceInput.providerLabel}
-                onToggleVoiceCapture={voiceInput.toggleCapture}
-                onCancelVoiceCapture={voiceInput.cancelCapture}
-                onToggleRealtimeVoice={voiceInput.toggleRealtime}
-                onSend={sendWithAttachments}
-                onStop={stop}
-                revisionNotice={
-                  revisionDraft && activeId === revisionDraft.draftSessionId
-                    ? {
-                        title: getDesktopConversationCopy(uiLocale).actions.revisionBannerTitle,
-                        detail: getDesktopConversationCopy(uiLocale).actions.revisionBannerDetail,
-                        cancelLabel: getDesktopConversationCopy(uiLocale).actions.revisionCancelLabel,
-                        onCancel: () => { void cancelRevisionDraft(); },
-                      }
-                    : undefined
-                }
-                mentionSkills={mentionSkills}
-                onSearchMentionFiles={searchMentionFiles}
-                pendingAttachments={pendingAttachments}
-                onRemoveAttachment={removeAttachment}
-                pendingQuotes={pendingQuotes}
-                onRemoveQuote={removeQuote}
-                onPasteAsQuote={addQuote}
-                onPickAttachments={
-                  revisionDraft && activeId === revisionDraft.draftSessionId
-                    ? undefined
-                    : pickAttachments
-                }
-                onAttachFilePaths={
-                  revisionDraft && activeId === revisionDraft.draftSessionId
-                    ? undefined
-                    : attachFilePaths
-                }
-                modelLabel={activeModelLabel ?? newChatModelLabel ?? undefined}
-                activeSession={activeSessionForView}
-                activeConnectionLabel={activeConnectionLabel}
-                activeModel={activeModel}
-                activeModelLabel={activeModelLabel}
-                activeProviderType={activeConnection?.providerType}
-                modelChoices={chatModelChoices}
-                renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-                modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
-                onModelChange={(input) => setSessionModel(input)}
-                activeThinkingLevels={activeThinkingLevels}
-                activeThinkingLevel={activeThinkingLevel}
-                onThinkingLevelChange={(level) => setSessionThinkingLevel(level)}
-                newChatModel={newChatModel}
-                newChatProviderType={newChatProviderType}
-                onPickNewChatModel={(input) => {
-                  setPendingNewChatModel(input);
-                  saveComposerDefaults({ model: input });
-                }}
-                newChatThinkingLevels={newChatThinkingLevels}
-                newChatThinkingLevel={newChatThinkingLevel}
-                onNewChatThinkingLevelChange={(level) => setPendingNewChatThinkingLevel(level ?? null)}
-                onOpenModelSettings={() => openSettingsSection('models')}
-                noModelConnection={connections.length === 0}
-                workspacePicker={{
-                  label:
-                    currentProject?.name ??
-                    (currentProjectId === null
-                      ? getConversationCopy(uiLocale).workspace.noProject
-                      : undefined),
-                  branch: currentProjectId === null ? null : projectInfo?.projectGit.branch,
-                  pending: projectPickerPending,
-                  projects: projects.filter((project) => project.archivedAt === undefined),
-                  selectedProjectId: currentProjectId,
-                  onAdd: () => {
-                    void addProject();
-                  },
-                  onSelectProject: (projectId: string) => {
-                    void selectProject(projectId);
-                  },
-                  onRelink: (projectId: string) => {
-                    void relinkProject(projectId, true);
-                  },
-                  onSelectNoProject: selectNoProject,
-                }}
-                branchPicker={
-                  currentProjectId !== null && projectInfo?.projectGit.isGitRepo
-                    ? {
-                        branch: projectInfo.projectGit.branch ?? null,
-                        pending: branchPending,
-                        branches: branchList?.branches ?? [],
-                        onOpen: () => {
-                          void listGitBranches(activeId);
-                        },
-                        onSelect: (branch: string) => {
-                          void checkoutGitBranch(branch, activeId);
-                        },
-                      }
-                    : undefined
-                }
-                permissionMode={activePermissionMode}
-                permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
-                permissionModeDisabledReason={
-                  activeId && pendingPermissionModeBySession[activeId] === true
-                      ? shellCopy.permissionModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.permissionModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.permissionModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.permissionModeWaiting
-                          : undefined
-                }
-                onPermissionModeChange={
-                  activeBoundarySurface.localInteractionAvailable
-                    ? (mode) => setPermissionMode(mode)
-                    : undefined
-                }
-                planModeActive={activeId
-                  ? (activeSessionForView?.collaborationMode ?? 'agent') === 'plan'
-                  : newChatPlanModeActive}
-                planModePending={activeId ? pendingCollaborationModeBySession[activeId] === true : false}
-                planModeDisabledReason={
-                  activeId && pendingCollaborationModeBySession[activeId] === true
-                    ? shellCopy.planModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.planModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.planModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.planModeWaiting
-                          : undefined
-                }
-                onPlanModeChange={setPlanMode}
-                swarmModeActive={activeId
-                  ? (activeSessionForView?.orchestrationMode ?? 'default') === 'swarm'
-                  : newChatSwarmModeActive}
-                swarmModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
-                swarmModeDisabledReason={
-                  activeId && pendingOrchestrationModeBySession[activeId] === true
-                    ? shellCopy.swarmModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.swarmModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.swarmModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.swarmModeWaiting
-                          : undefined
-                }
-                onSwarmModeChange={(active) => {
-                  void setSwarmMode(active);
-                }}
-                graphModeActive={activeId
-                  ? (activeSessionForView?.orchestrationMode ?? 'default') === 'graph'
-                  : newChatGraphModeActive}
-                graphModePending={activeId ? pendingOrchestrationModeBySession[activeId] === true : false}
-                graphModeDisabledReason={
-                  activeId && pendingOrchestrationModeBySession[activeId] === true
-                    ? shellCopy.graphModeChanging
-                    : activeStreamingLive
-                        ? shellCopy.graphModeStreaming
-                      : activeId && activeSessionForView?.status === 'running'
-                          ? shellCopy.graphModeRunning
-                        : activeId && activeSessionForView?.status === 'waiting_for_user'
-                            ? shellCopy.graphModeWaiting
-                          : undefined
-                }
-                onGraphModeChange={(active) => {
-                  void setGraphMode(active);
-                }}
-              />
+                    />
+                    {activeId && activeSessionForView && !activeSessionForView.subagentParent ? (
+                      <AgentGraphPanel
+                        rootSessionId={activeId}
+                        enabled={(activeSessionForView?.orchestrationMode ?? 'default') === 'graph'}
+                        locale={uiLocale}
+                        onOpenSession={openSessionInChat}
+                      />
+                    ) : null}
+                    <PlanExecutionPanel planMode={planMode} />
+                  </>
+                ) : null}
+              </ChatSurfaceLayout>
             </div>
             {navSelection.section === 'sessions' && activeId && !workbarCollapsed && (
               <ChatWorkbar

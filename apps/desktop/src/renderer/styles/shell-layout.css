@@ -114,36 +114,15 @@
   min-width: 0;
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: transparent;
 }
 
 .mainColumn[data-home-surface="true"] {
-  grid-template-rows: minmax(0, 1fr) auto;
   align-content: stretch;
   padding-bottom: 0;
-}
-
-.mainColumn[data-home-surface="true"] .maka-main,
-.mainColumn[data-home-surface="true"] .maka-chat-shell,
-.mainColumn[data-home-surface="true"] .messages {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.mainColumn[data-home-surface="true"] .maka-chatViewport {
-  height: 100%;
-}
-
-.mainColumn[data-home-surface="true"] .maka-chatContent {
-  min-height: 100%;
-  box-sizing: border-box;
-  padding: clamp(var(--space-16), 10vh, 116px) 0 clamp(var(--space-5), 4vh, var(--space-10));
-  display: grid;
-  gap: 0;
-  align-content: center;
 }
 
 /* Right-hand cluster of the titlebar row. `margin-left: auto` is the whole

@@ -30,13 +30,6 @@
 /* Bundled Geist fallbacks; maka-tokens.css owns the product font stacks. */
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
-/* overlayscrollbars must share maka.legacy with the product CSS: the two
-   trade wins by specificity in both directions (e.g. the library's
-   viewport reset vs .maka-chatViewport height rules), so splitting them
-   across layer boundaries changes outcomes. Same layer preserves the
-   intra-layer specificity and source-order contests exactly. */
-@import "overlayscrollbars/overlayscrollbars.css" layer(maka.legacy);
-
 /* maka-tokens.css stays unlayered: it declares its own @layer base/
    utilities/components blocks that must keep merging into the top-level
    Tailwind layers. Wrapping the import would nest them under maka.legacy

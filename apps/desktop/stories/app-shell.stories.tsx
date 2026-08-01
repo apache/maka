@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useRef, useState, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord, SessionSummary, StoredMessage } from '@maka/core';
-import { ChatView, Composer, SessionListPanel } from '@maka/ui';
+import { ChatSurfaceLayout, ChatView, Composer, SessionListPanel } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode } from '@maka/ui';
 import { AppShellTopbarActions, AppShellWorkspaceTopActions } from '../src/renderer/app-shell-chrome-actions';
 import { AppShell as AstryxAppShell } from '@astryxdesign/core/AppShell';
@@ -335,15 +335,20 @@ function ComposedShell(props: {
         >
           {props.detailChildren ?? (
             <div style={{ display: 'flex', minHeight: 0, width: '100%', flexDirection: 'column', flex: 1 }}>
-              <ChatView {...baseChatProps} activeSession={active} {...props.chat} />
-              <div style={{ padding: '0 24px 24px' }}>
-                <Composer
-                  {...baseComposerProps}
-                  activeSession={active}
-                  streaming={props.session?.streaming ?? false}
-                  {...props.composer}
-                />
-              </div>
+              <ChatSurfaceLayout
+                composer={
+                  <div style={{ padding: '0 16px 16px' }}>
+                    <Composer
+                      {...baseComposerProps}
+                      activeSession={active}
+                      streaming={props.session?.streaming ?? false}
+                      {...props.composer}
+                    />
+                  </div>
+                }
+              >
+                <ChatView {...baseChatProps} activeSession={active} {...props.chat} />
+              </ChatSurfaceLayout>
             </div>
           )}
         </div>

@@ -7,17 +7,6 @@
     min-height: 0;
     overflow: hidden;
   }
-.maka-overlay-scrollarea {
-    min-width: 0;
-    min-height: 0;
-  }
-.maka-overlay-scrollarea-viewport {
-    min-width: 0;
-    min-height: 0;
-  }
-.maka-overlay-scrollarea-content {
-    min-width: 0;
-  }
 .maka-lazy-fallback {
     min-width: 0;
     min-height: 72px;
@@ -39,33 +28,6 @@
 .maka-lazy-fallback[data-surface="module"] {
     align-self: stretch;
     min-height: min(280px, 45vh);
-  }
-.os-theme-maka {
-    /* local: OverlayScrollbars theme overrides */
-    --os-size: 8px;
-    --os-padding-perpendicular: 1px;
-    --os-padding-axis: 2px;
-    --os-track-border-radius: var(--radius-surface);
-    --os-track-bg: transparent;
-    --os-track-bg-hover: transparent;
-    --os-track-bg-active: transparent;
-    --os-handle-border-radius: var(--radius-control);
-    --os-handle-bg: var(--border);
-    --os-handle-bg-hover: oklch(from var(--foreground) l c h / 0.22);
-    --os-handle-bg-active: oklch(from var(--foreground) l c h / 0.30);
-    --os-handle-interactive-area-offset: 6px;
-    --os-handle-min-size: 40px;
-    box-sizing: border-box;
-  }
-.os-theme-maka.os-scrollbar-vertical {
-    width: var(--os-size);
-  }
-.os-theme-maka.os-scrollbar-horizontal {
-    height: var(--os-size);
-  }
-.maka-overlay-scrollarea-viewport:focus-visible {
-    outline: none;
-    box-shadow: none;
   }
 /* Form-control font inheritance is Tailwind preflight's job (`@layer base`:
    button/input/select/textarea { font: inherit }). Do NOT re-declare it here:

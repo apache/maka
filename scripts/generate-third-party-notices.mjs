@@ -66,7 +66,6 @@ const MIT_COPYRIGHT_OVERRIDES = new Map([
   ['agent-base@6.0.2', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['https-proxy-agent@5.0.1', 'Copyright (c) 2013 Nathan Rajlich <nathan@tootallnate.net>'],
   ['lazy-val@1.0.5', 'Copyright (c) Vladimir Krivosheev'],
-  ['overlayscrollbars@2.16.0', 'Copyright (c) 2022 Rene Haas'],
 ]);
 
 const MIT_TEXT = (copyrightNotice) => `MIT License

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core';
-import { build, type Plugin } from 'esbuild';
+import { build } from 'esbuild';
 import { act, createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
@@ -212,25 +212,8 @@ async function importSessionHistoryList(): Promise<SessionHistoryModule> {
     format: 'esm',
     target: 'node20',
     logLevel: 'silent',
-    plugins: [mockOverlayScrollbars()],
   });
   return await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`) as SessionHistoryModule;
-}
-
-function mockOverlayScrollbars(): Plugin {
-  return {
-    name: 'mock-overlayscrollbars',
-    setup(buildApi) {
-      buildApi.onResolve({ filter: /^overlayscrollbars$/ }, () => ({
-        path: 'overlayscrollbars-mock',
-        namespace: 'memo-test',
-      }));
-      buildApi.onLoad({ filter: /^overlayscrollbars-mock$/, namespace: 'memo-test' }, () => ({
-        loader: 'js',
-        contents: 'export function OverlayScrollbars() { return { destroy() {}, options() {} }; }',
-      }));
-    },
-  };
 }
 
 function installReactRenderer(): Root {

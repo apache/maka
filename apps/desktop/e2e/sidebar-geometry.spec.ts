@@ -27,7 +27,7 @@ import type { Page } from '@playwright/test';
  *     and does not assert rendered footer-visibility geometry. The two layers
  *     deliberately lock different declarations.
  *   - `scroll-geometry.spec.ts` boots `long-transcript` and probes
- *     `.maka-chatViewport`, not the sidebar.
+ *     Astryx `ChatLayout`, not the sidebar.
  *
  * This spec is the rendered-geometry lock. It boots the `sidebar-long-sessions`
  * fixture and asserts, against the live desktop shell:
@@ -48,7 +48,7 @@ import type { Page } from '@playwright/test';
  */
 
 const LIST_CONTENT = '.maka-session-list';
-const CHAT_VIEWPORT = '.maka-chatViewport';
+const CHAT_VIEWPORT = '[data-chat-scroll-container="true"]';
 
 interface ScrollerMetrics {
   scrollTop: number;
@@ -90,7 +90,7 @@ async function readGeometry(page: Page): Promise<Geometry> {
       panel: rect(document.querySelector('.maka-session-panel')),
       viewport: { width: window.innerWidth, height: window.innerHeight },
       list: scroller(document.querySelector(listContentSelector)?.parentElement ?? null),
-      chat: scroller(document.querySelector('.maka-chatViewport')),
+      chat: scroller(document.querySelector('[data-chat-scroll-container="true"]')),
     };
   }, LIST_CONTENT);
 }
@@ -167,6 +167,17 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
   await expect(page.locator(LIST_CONTENT)).toHaveCount(1);
   await expect(page.locator(CHAT_VIEWPORT)).toHaveCount(1);
 
+  // Astryx owns the chat's initial fill and follows transcript geometry
+  // asynchronously. Establish its terminal pinned position before using the
+  // chat scrollTop as the sidebar-independence control value.
+  await expect(page.locator(`${CHAT_VIEWPORT}[data-turn-warmup="settled"]`)).toBeAttached();
+  await expect.poll(async () => {
+    const geometry = await readGeometry(page);
+    return geometry.chat
+      ? Math.round(geometry.chat.scrollHeight - geometry.chat.scrollTop - geometry.chat.clientHeight)
+      : Number.POSITIVE_INFINITY;
+  }).toBeLessThanOrEqual(1);
+
   // (1a) The sidebar list scroller actually overflows its constrained grid
   // row — this is what makes it an independent scroll container. If the panel
   // loses its constrained height, the row grows to content height and this
@@ -199,8 +210,8 @@ test('sidebar list scrolls independently and keeps the footer in view with 60 se
 
   // The sidebar's own scrollTop moved...
   expect(after.list?.scrollTop ?? -1, afterDiag).toBeGreaterThan(listScrollTopBefore);
-  // ...while the chat viewport's scrollTop is unaffected (short transcript →
-  // stays pinned at 0). This is the scroll-independence lock for this seed.
+  // ...while the already-settled chat viewport's scrollTop is unaffected.
+  // This is the scroll-independence lock for this seed.
   expect(after.chat?.scrollTop ?? -1, afterDiag).toBe(chatScrollTopBefore);
 
   // (b) Footer still fully inside the panel and the window after scrolling the

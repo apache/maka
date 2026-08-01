@@ -1,13 +1,11 @@
 import { Fragment, useCallback, useMemo, useRef, type ReactNode } from 'react';
 import {
   AlertTriangle,
-  ArrowDown,
   ArrowRight,
   TextQuote,
 } from './icons.js';
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
-import { OverlayScrollArea } from './overlay-scroll-area.js';
 import { PromptAnchorRail } from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type {
@@ -18,7 +16,8 @@ import type {
   StoredMessage,
 } from '@maka/core';
 import { isDeepResearchSession } from '@maka/core';
-import { Button, ChatMessage, ChatMessageList, EmptyState, IconButton } from '@astryxdesign/core';
+import { Button, ChatMessage, ChatMessageList, EmptyState } from '@astryxdesign/core';
+import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { materializeChat, materializeTurns, overlayLiveTurn, overlayShellRunUpdates } from './materialize.js';
 import type { LiveTurnProjection } from './live-turn-projection.js';
 import {
@@ -328,13 +327,11 @@ export function ChatView(props: {
     return items;
   }, [props.conversationItems]);
   const turnIds = useMemo(() => new Set(turns.map((turn) => turn.turnId)), [turns]);
-  const {
-    highlightedTurnId,
-    onScroll,
-    pinnedToBottom,
-    scrollToBottom,
-    viewportRef: scrollRef,
-  } = useChatScroll({
+  const chatLayout = useChatLayoutContext();
+  const standaloneScrollRef = useRef<HTMLElement>(null);
+  const scrollRef = chatLayout?.scrollContainerRef ?? standaloneScrollRef;
+  const { highlightedTurnId } = useChatScroll({
+    scrollRef,
     sessionId: props.activeSession?.id,
     hasTurns: turns.length > 0,
     messages: props.messages,
@@ -347,8 +344,12 @@ export function ChatView(props: {
   );
 
   if (!props.activeSession) {
+    const conversationItems = props.conversationItems ?? [];
+    const emptyContent = props.emptyOverride ?? (
+      <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
+    );
     return (
-      <main className="maka-main detailPane agents-chat-panel agents-chat-view-root">
+      <main className="maka-main agents-chat-panel agents-chat-view-root">
         {/* PR-REMOVE-CHAT-TAB (WAWQAQ msg d401938d 2026-06-23): the
             browser-style session tab + the duplicate "新建对话" plus
             button were removed. The session name lives in the sidebar;
@@ -364,22 +365,56 @@ export function ChatView(props: {
             header used to be rendered here anyway, holding a lone spacer, to
             occupy the window titlebar line — which the shell's titlebar row now
             owns. */}
-        <OverlayScrollArea
-          className="maka-chat messages"
-          viewportClassName="maka-chatViewport"
-          contentClassName="maka-chatContent"
+        <ChatMessageList
+          className="maka-chat-message-list maka-chatContent"
+          density="compact"
+          gap={4}
+          emptyState={conversationItems.length === 0 ? emptyContent : undefined}
         >
-          {props.emptyOverride ?? <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />}
-          {props.conversationItems?.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
-        </OverlayScrollArea>
+          {conversationItems.length > 0 ? (
+            <>
+              {emptyContent}
+              {conversationItems.map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+            </>
+          ) : null}
+        </ChatMessageList>
       </main>
     );
   }
 
   const deepResearchActive = isDeepResearchSession(props.activeSession.labels);
+  const conversationItems = props.conversationItems ?? [];
+  const showEmptyState = chat.length === 0 && !streamingActive && conversationItems.length === 0;
+  const emptyContent = props.messageLoading
+    ? undefined
+    : props.messageLoadError
+      ? (
+          <EmptyState
+            role="alert"
+            aria-busy={props.messageLoadRetryPending ? 'true' : undefined}
+            icon={<AlertTriangle />}
+            title={copy.loadFailed}
+            description={props.messageLoadError}
+            actions={props.onRetryMessages ? (
+              <Button
+                label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad}
+                variant="primary"
+                onClick={props.onRetryMessages}
+                isDisabled={props.messageLoadRetryPending}
+              />
+            ) : undefined}
+          />
+        )
+      : props.emptyOverride ?? (
+          deepResearchActive ? (
+            <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
+          ) : (
+            <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
+          )
+        );
 
   return (
-    <main className="maka-main detailPane agents-chat-panel agents-chat-view-root">
+    <main className="maka-main agents-chat-panel agents-chat-view-root">
       <SessionContextLayer
         sessionName={props.activeSession.name}
         branch={props.branchBanner}
@@ -399,126 +434,85 @@ export function ChatView(props: {
         />
       )}
       <div className="maka-chat-shell">
-        <OverlayScrollArea
-          ref={scrollRef}
-          className="maka-chat messages"
-          viewportClassName="maka-chatViewport"
-          contentClassName="maka-chatContent"
-          onScroll={onScroll}
+        <ChatMessageList
+          className="maka-chat-message-list maka-chatContent"
+          density="compact"
+          gap={4}
+          isStreaming={streamingActive}
+          emptyState={showEmptyState ? emptyContent : undefined}
         >
-          <ChatMessageList
-            className="maka-chat-message-list"
-            density="compact"
-            gap={4}
-            isStreaming={streamingActive}
-          >
-          {chat.length === 0 && !streamingActive && (
-            props.messageLoading ? null : props.messageLoadError ? (
-              <EmptyState
-                role="alert"
-                aria-busy={props.messageLoadRetryPending ? 'true' : undefined}
-                icon={<AlertTriangle />}
-                title={copy.loadFailed}
-                description={props.messageLoadError}
-                actions={props.onRetryMessages ? <Button
-                  label={props.messageLoadRetryPending ? copy.loading : copy.retryLoad}
-                  variant="primary"
-                  onClick={props.onRetryMessages}
-                  isDisabled={props.messageLoadRetryPending}
-                /> : undefined}
-              />
-            ) : props.emptyOverride ?? (
-              deepResearchActive ? (
-                <DeepResearchEmptyHero onPromptSuggestion={props.onPromptSuggestion} />
-              ) : (
-                <EmptyChatHero onPromptSuggestion={props.onPromptSuggestion} userLabel={props.userLabel} />
-              )
-            )
+          {showEmptyState ? null : (
+            <>
+              {chat.length === 0 && !streamingActive ? emptyContent : null}
+              {turns.map((turn) => {
+                return (
+                  <Fragment key={turn.turnId}>
+                    <TurnView
+                      turn={turn}
+                      userLabel={props.userLabel}
+                      footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
+                      onFooterAction={stableTurnFooterAction}
+                      onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
+                      editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
+                      editUserMessageDisabled={
+                        streamingActive || props.activeSession?.status === 'running'
+                      }
+                      failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
+                      failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
+                      safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
+                        ? props.safeResumeAction
+                        : undefined}
+                      lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
+                      onLineageBadgeClick={stableLineageBadgeClick}
+                      onReadAttachmentBytes={props.onReadAttachmentBytes}
+                      searchHighlighted={highlightedTurnId === turn.turnId}
+                      liveStreaming={
+                        turn.turnId === tailTurnId
+                          ? {
+                              onStreamingSettled: props.onStreamingSettled,
+                              processingIndicator: props.processingIndicator,
+                              continuingIndicator: props.continuingIndicator,
+                              providerRetry: props.liveTurn?.providerRetry,
+                            }
+                          : undefined
+                      }
+                    />
+                    {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
+                      <Fragment key={item.id}>{item.content}</Fragment>
+                    ))}
+                  </Fragment>
+                );
+              })}
+              {/* #642 fallback: streaming began before the optimistic user turn
+                  materialized (rare — e.g. an event replay while messages are still
+                  loading), so there is no tail turn to inject into. Render the live
+                  answer in a bare `.maka-turn` so it isn't dropped. Mutually
+                  exclusive with the tail injection above (only fires when
+                  `tailTurnId` is undefined), so the answer never double-renders. */}
+              {streamingActive && !tailTurnId && (
+                <section className="maka-turn" data-live-streaming="true">
+                  <ChatMessage sender="assistant" className="maka-chat-message group/answer">
+                    <div className="flex flex-col gap-2">
+                      {props.liveTurn?.providerRetry ? (
+                        <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
+                      ) : (
+                        <>
+                          {props.processingIndicator && <ModelProcessingIndicator />}
+                          {props.continuingIndicator && !props.processingIndicator && <ModelContinuingIndicator />}
+                        </>
+                      )}
+                    </div>
+                    <div aria-hidden="true" className="mt-0.5 h-8" />
+                  </ChatMessage>
+                </section>
+              )}
+              {conversationItems
+                .filter((item) => !turnIds.has(item.afterTurnId))
+                .map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
+            </>
           )}
-          {turns.map((turn) => {
-            return (
-              <Fragment key={turn.turnId}>
-                <TurnView
-                  turn={turn}
-                  userLabel={props.userLabel}
-                  footerActions={props.turnFooterActionsByTurn?.[turn.turnId]}
-                  onFooterAction={stableTurnFooterAction}
-                  onEditUserMessage={props.onEditUserMessage ? stableEditUserMessage : undefined}
-                  editUserMessageTransformed={transformedUserTurnIds.has(turn.turnId)}
-                  editUserMessageDisabled={
-                    streamingActive || props.activeSession?.status === 'running'
-                  }
-                  failedReasonLabel={props.turnFailedReasonLabels?.[turn.turnId]}
-                  failedRecoveryLabel={props.turnFailedRecoveryLabels?.[turn.turnId]}
-                  safeResumeAction={props.safeResumeAction?.turnId === turn.turnId
-                    ? props.safeResumeAction
-                    : undefined}
-                  lineageBadges={props.turnLineageBadgesByTurn?.[turn.turnId]}
-                  onLineageBadgeClick={stableLineageBadgeClick}
-                  onReadAttachmentBytes={props.onReadAttachmentBytes}
-                  searchHighlighted={highlightedTurnId === turn.turnId}
-                  liveStreaming={
-                    turn.turnId === tailTurnId
-                      ? {
-                          onStreamingSettled: props.onStreamingSettled,
-                          processingIndicator: props.processingIndicator,
-                          continuingIndicator: props.continuingIndicator,
-                          providerRetry: props.liveTurn?.providerRetry,
-                        }
-                      : undefined
-                  }
-                />
-                {conversationItemsByTurn.get(turn.turnId)?.map((item) => (
-                  <Fragment key={item.id}>{item.content}</Fragment>
-                ))}
-              </Fragment>
-            );
-          })}
-          {/* #642 fallback: streaming began before the optimistic user turn
-              materialized (rare — e.g. an event replay while messages are still
-              loading), so there is no tail turn to inject into. Render the live
-              answer in a bare `.maka-turn` so it isn't dropped. Mutually
-              exclusive with the tail injection above (only fires when
-              `tailTurnId` is undefined), so the answer never double-renders. */}
-          {streamingActive && !tailTurnId && (
-            <section className="maka-turn" data-live-streaming="true">
-              <ChatMessage sender="assistant" className="maka-chat-message group/answer">
-                <div className="flex flex-col gap-2">
-                  {props.liveTurn?.providerRetry ? (
-                    <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
-                  ) : (
-                    <>
-                      {props.processingIndicator && <ModelProcessingIndicator />}
-                      {props.continuingIndicator && !props.processingIndicator && <ModelContinuingIndicator />}
-                    </>
-                  )}
-                </div>
-                <div aria-hidden="true" className="mt-0.5 h-8" />
-              </ChatMessage>
-            </section>
-          )}
-          {props.conversationItems
-            ?.filter((item) => !turnIds.has(item.afterTurnId))
-            .map((item) => <Fragment key={item.id}>{item.content}</Fragment>)}
-          {/* Defensive: if any tool ended up outside a turn (e.g. legacy
-              sessions without turnId), render those at the very end so they
-              still appear instead of vanishing. materializeTurns already
-              folds these into the `__loose` turn, so this is normally a
-              no-op. */}
-          </ChatMessageList>
-        </OverlayScrollArea>
+        </ChatMessageList>
         <PromptAnchorRail turns={promptRailTurns} scrollRef={scrollRef} />
-        {!pinnedToBottom && (
-          <IconButton
-            type="button"
-            label={copy.jumpLatest}
-            icon={<ArrowDown size={16} aria-hidden="true" />}
-            variant="secondary"
-            elevation="med"
-            className="maka-chat-jump-bottom"
-            onClick={scrollToBottom}
-          />
-        )}
         {selectionQuote && (props.onQuoteSelection || props.onAskAboutSelection) ? (
           <div
             className="maka-quote-actions"

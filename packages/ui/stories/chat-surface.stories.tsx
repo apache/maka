@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { ComponentProps, ReactNode } from 'react';
 import type { SessionSummary, StoredMessage } from '@maka/core';
-import { ChatView, Composer, type TurnFooterActionMeta } from '../src/components.js';
+import { ChatSurfaceLayout, ChatView, Composer, type TurnFooterActionMeta } from '../src/components.js';
 import type { ChatModelChoice } from '../src/chat-model-helpers.js';
 
 const NOW = Date.UTC(2026, 6, 1, 9, 30, 0);
@@ -174,20 +174,16 @@ function ChatSurface(props: {
   );
   return (
     <SurfaceFrame narrow={props.narrow} width={props.width}>
-      <div
-        style={{
-          display: 'flex',
-          minHeight: 0,
-          width: '100%',
-          flexDirection: 'column',
-          background: 'var(--background)',
-        }}
+      <ChatSurfaceLayout
+        style={{ width: '100%' }}
+        composer={
+          <div style={{ padding: '0 16px 16px' }}>
+            <Composer {...baseComposerProps} {...props.composer} />
+          </div>
+        }
       >
         <ChatView {...baseChatProps} turnFooterActionsByTurn={turnFooterActionsByTurn} {...props.chat} />
-        <div style={{ padding: '0 24px 24px' }}>
-          <Composer {...baseComposerProps} {...props.composer} />
-        </div>
-      </div>
+      </ChatSurfaceLayout>
     </SurfaceFrame>
   );
 }
@@ -530,6 +526,19 @@ export const EmptyChat: Story = {
         },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
+      }}
+    />
+  ),
+};
+
+// Real path: a session already exists but has not produced its first turn yet.
+// This locks the Astryx ChatMessageList empty-state path separately from 新任务.
+export const ActiveEmptyChat: Story = {
+  render: () => (
+    <ChatSurface
+      chat={{
+        activeSession: session({ name: '尚未开始的会话' }),
+        messages: [],
       }}
     />
   ),

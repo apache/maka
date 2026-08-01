@@ -271,7 +271,7 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: '.maka-chatViewport:has(.maka-turn):not(:has(.maka-markdown-pending))',
+        readinessSelector: '[data-chat-scroll-container="true"]:has(.maka-turn):not(:has(.maka-markdown-pending))',
         e2eFixtureScenario: 'long-transcript',
         locale: 'zh',
       },

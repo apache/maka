@@ -34,7 +34,6 @@ export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
 export * from './redact.js';
-export * from './overlay-scroll-area.js';
 export * from './smooth-stream.js';
 export * from './thinking-stream.js';
 export * from './task-ledger-panel.js';

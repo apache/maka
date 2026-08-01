@@ -90,3 +90,28 @@ describe('ChatView session context', () => {
     assert.match(markup, /Version 2 of 3/);
   });
 });
+
+describe('ChatView system notices', () => {
+  it('renders visible runtime notices with the Astryx system-message primitive', () => {
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <ChatView
+          messages={[
+            {
+              type: 'system_note',
+              id: 'note-1',
+              turnId: 'turn-1',
+              ts: 1,
+              kind: 'context_compacted',
+            },
+          ]}
+          activeSession={activeSession}
+          onNew={() => undefined}
+        />
+      </LocaleProvider>,
+    );
+
+    assert.match(markup, /class="[^"]*astryx-chat-system-message[^"]*"/);
+    assert.match(markup, /Context compacted to keep this session within the model window\./);
+  });
+});

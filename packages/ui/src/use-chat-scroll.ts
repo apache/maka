@@ -1,84 +1,51 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core';
-import { createPinnedBottomFollower, resolvePinnedBottomScroll } from './pinned-bottom.js';
 import { createTurnSizeWarmup } from './turn-size-warmup.js';
 
-const SCROLL_BOTTOM_THRESHOLD = 64;
-
 export function useChatScroll(input: {
+  scrollRef: RefObject<HTMLElement | null>;
   sessionId?: string;
   hasTurns: boolean;
   messages: readonly StoredMessage[];
   target?: { turnId: string; nonce: number };
   behavior?: ScrollBehavior;
 }) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const [pinnedToBottom, setPinnedToBottom] = useState(true);
-  const pinnedToBottomRef = useRef(true);
-  const lastFollowedScrollTopRef = useRef<number | undefined>(undefined);
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
 
-  // A session owns one transcript DOM. Reset its initial position to latest.
+  // ChatLayout owns steady-state following. A session change is product
+  // navigation rather than content growth, so position the shared Astryx
+  // scroller at the new transcript's latest turn immediately.
   useEffect(() => {
-    pinnedToBottomRef.current = true;
-    setPinnedToBottom(true);
-    const viewport = viewportRef.current;
+    const viewport = input.scrollRef.current;
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight;
-      lastFollowedScrollTopRef.current = viewport.scrollTop;
     }
-  }, [input.sessionId]);
+  }, [input.sessionId, input.scrollRef]);
 
-  // Follow the content's actual layout clock. Smooth streaming reveals text on
-  // later RAF frames, so a state-driven scroll effect runs too early.
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    const content = viewport?.querySelector(':scope > [data-overlayscrollbars-content]');
-    if (!viewport || !content) return;
-    const stop = createPinnedBottomFollower({
-      viewport,
-      content,
-      isPinned: () => pinnedToBottomRef.current,
-      onFollow: (scrollTop) => {
-        lastFollowedScrollTopRef.current = scrollTop;
-      },
-    });
-    return () => {
-      lastFollowedScrollTopRef.current = undefined;
-      stop();
-    };
-  }, [input.sessionId]);
-
-  // Replace content-visibility placeholders with final-layout remembered sizes.
-  // ChatView itself unmounts outside sessions, so every rebuilt transcript gets
-  // a fresh hook lifecycle without depending on navigation state.
-  //
-  // A LAYOUT effect, only for the sake of the marker below. The scroller can
-  // outlive a transcript — switching sessions empties `messages` and refills it
-  // asynchronously on the same element — so `settled` has to be withdrawn in
-  // the same commit that puts a different transcript on screen. A passive
-  // effect withdraws it one paint too late, leaving a window in which the
-  // marker vouches for geometry that has already been replaced. The body
-  // itself only writes an attribute and schedules async work.
+  // Withdraw a previous transcript's terminal marker in the same commit that
+  // changes the session. ChatLayout owns the DOM ref, so on the first mount its
+  // root can still be unavailable to this child layout effect; the passive
+  // warm-up effect below publishes `running` once that parent ref is attached.
   useLayoutEffect(() => {
-    const root = viewportRef.current;
+    const root = input.scrollRef.current;
     if (!root) return;
-    // Publish the walk's phase on the scroller. Until the markdown pipeline
-    // has landed and the warm-up has walked the turns it started with, this
-    // scroller's geometry is still a placeholder-scale estimate, and nothing
-    // outside can tell that apart from a pause between chunks. `settled` is
-    // therefore about the transcript the walk was handed, not about turns that
-    // stream in after it — those arrive already rendered.
-    //
-    // Claimed before the `hasTurns` bail and dropped on teardown, so the only
-    // states this element can be observed in are `running`, a `settled` that
-    // belongs to the transcript currently mounted, and absent.
     root.dataset.turnWarmup = 'running';
-    const forget = () => { delete root.dataset.turnWarmup; };
-    if (!input.hasTurns) return forget;
+    return () => { delete root.dataset.turnWarmup; };
+  }, [input.sessionId, input.hasTurns, input.scrollRef]);
+
+  // Replace content-visibility placeholders with final-layout remembered
+  // sizes. ChatLayout's ResizeObserver follows each height change while its
+  // scroll lock is active.
+  useEffect(() => {
+    const root = input.scrollRef.current;
+    if (!root) return;
+    root.dataset.turnWarmup = 'running';
+    if (!input.hasTurns) return;
     let disposed = false;
     let cancelWarmup: (() => void) | undefined;
     let pollTimer: number | undefined;
+    let settleTimer: number | undefined;
+    let settleAttempts = 0;
     const warmOnceSettled = () => {
       if (disposed) return;
       if (root.querySelector('.maka-markdown-pending')) {
@@ -88,7 +55,24 @@ export function useChatScroll(input: {
       cancelWarmup = createTurnSizeWarmup({
         turns: () => root.querySelectorAll<HTMLElement>('.maka-turn'),
         onSettled: () => {
-          if (!disposed) root.dataset.turnWarmup = 'settled';
+          if (disposed) return;
+          root.dataset.turnWarmup = 'settled';
+          // Astryx follows each ResizeObserver update while locked. Chromium
+          // can leave the final content-visibility release a few sub-pixels
+          // short of the exact maximum; finish only when the user is still
+          // inside Astryx's own 10px lock threshold, never after they read up.
+          const finishPinnedWarmup = () => {
+            const distanceFromBottom = root.scrollHeight - root.scrollTop - root.clientHeight;
+            if (distanceFromBottom <= 10) {
+              root.scrollTop = root.scrollHeight;
+              return;
+            }
+            settleAttempts += 1;
+            if (settleAttempts < 50) {
+              settleTimer = window.setTimeout(finishPinnedWarmup, 100);
+            }
+          };
+          settleTimer = window.setTimeout(finishPinnedWarmup, 100);
         },
       });
     };
@@ -97,17 +81,17 @@ export function useChatScroll(input: {
     void fontsReady.then(warmOnceSettled);
     return () => {
       disposed = true;
-      forget();
       window.clearTimeout(pollTimer);
+      window.clearTimeout(settleTimer);
       cancelWarmup?.();
     };
-  }, [input.sessionId, input.hasTurns]);
+  }, [input.sessionId, input.hasTurns, input.scrollRef]);
 
   useEffect(() => {
     const target = input.target;
     if (!target?.turnId) return;
     const frame = window.requestAnimationFrame(() => {
-      const root = viewportRef.current;
+      const root = input.scrollRef.current;
       if (!root) return;
       const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
       if (!element || !('scrollIntoView' in element)) return;
@@ -118,8 +102,6 @@ export function useChatScroll(input: {
         block: 'center',
       });
       targetElement.focus({ preventScroll: true });
-      pinnedToBottomRef.current = false;
-      setPinnedToBottom(false);
       setHighlightedTurnId(target.turnId);
     });
     const clear = window.setTimeout(() => {
@@ -129,45 +111,9 @@ export function useChatScroll(input: {
       window.cancelAnimationFrame(frame);
       window.clearTimeout(clear);
     };
-  }, [input.target?.turnId, input.target?.nonce, input.behavior, input.sessionId, input.messages]);
-
-  function onScroll() {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const lastFollowedScrollTop = lastFollowedScrollTopRef.current;
-    const movedFromLastFollow =
-      lastFollowedScrollTop !== undefined &&
-      Math.abs(viewport.scrollTop - lastFollowedScrollTop) > 1;
-    const { pinned, shouldFollow } = resolvePinnedBottomScroll({
-      scrollTop: viewport.scrollTop,
-      scrollHeight: viewport.scrollHeight,
-      clientHeight: viewport.clientHeight,
-      threshold: SCROLL_BOTTOM_THRESHOLD,
-      wasPinned: pinnedToBottomRef.current,
-      lastFollowedScrollTop,
-    });
-    if (movedFromLastFollow || !pinned) lastFollowedScrollTopRef.current = undefined;
-    if (shouldFollow) {
-      viewport.scrollTop = viewport.scrollHeight;
-      lastFollowedScrollTopRef.current = viewport.scrollTop;
-    }
-    pinnedToBottomRef.current = pinned;
-    setPinnedToBottom(pinned);
-  }
-
-  function scrollToBottom() {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    viewport.scrollTo({ top: viewport.scrollHeight, behavior: input.behavior ?? 'smooth' });
-    pinnedToBottomRef.current = true;
-    setPinnedToBottom(true);
-  }
+  }, [input.target?.turnId, input.target?.nonce, input.behavior, input.sessionId, input.messages, input.scrollRef]);
 
   return {
     highlightedTurnId,
-    onScroll,
-    pinnedToBottom,
-    scrollToBottom,
-    viewportRef,
   };
 }

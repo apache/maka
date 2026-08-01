@@ -6,8 +6,8 @@
    error.css, hero.css. The composer streaming top-sweep moved to
    composer.css. What remains is the unified session context layer, the #1032
    composer-adjacent health notice, and the chat shell layout
-   (`.maka-chat-shell` / `.maka-chatViewport` / `.maka-chatContent` /
-   `.maka-chat-jump-bottom`). The header status cluster was removed.     */
+   (`.maka-chat-shell` / `.maka-chatContent`). Astryx ChatLayout owns the
+   scroll container, dock, blur layer, and scroll-to-bottom control. */
 
 
 /* #1032: hard-block session health notice sits above the composer,
@@ -130,64 +130,24 @@
   }
 }
 
-.messages {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-.maka-chatViewport {
-    height: 100%;
-    overscroll-behavior: contain;
-  }
-
 .maka-chatContent {
-    position: relative;
-    min-height: 100%;
-    padding-inline: clamp(var(--space-6), 4vw, var(--space-10));
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+  padding-inline: clamp(var(--space-3), 4vw, var(--space-10));
+}
+
+.maka-chat-layout {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  overscroll-behavior: contain;
+}
 
 .maka-chat-shell {
-    position: relative;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    overflow: hidden;
-  }
-
-.maka-chat-jump-bottom {
-    position: absolute;
-    bottom: 10px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: var(--h-control-md);
-    height: var(--h-control-md);
-    display: grid;
-    place-items: center;
-    border: var(--border-width-hairline) solid var(--border-strong);
-    border-radius: var(--radius-pill);
-    background: var(--background);
-    color: var(--foreground-secondary);
-  box-shadow: var(--shadow-medium);
-  opacity: 1;
-  transition:
-    transform var(--duration-emphasized) var(--ease-out-strong),
-    opacity var(--duration-emphasized) var(--ease-out-strong),
-    background var(--duration-quick) var(--ease-out-strong);
-  }
-
-.maka-chat-jump-bottom:hover {
-    color: var(--foreground);
-    background: var(--state-hover-bg);
-    transform: translateX(-50%) translateY(var(--lift-hover));
-  }
-
-.maka-chat-jump-bottom:active {
-    transform: translateX(-50%);
-    background: var(--state-selected-bg);
-  }
+  position: relative;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}

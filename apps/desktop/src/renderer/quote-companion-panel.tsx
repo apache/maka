@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import {
   ChatView,
+  ChatSurfaceLayout,
   Button,
   Composer,
   SandboxBoundaryPrompt,
@@ -69,75 +70,82 @@ export function QuoteCompanionPanel(props: {
 
   return (
     <div className="maka-quote-companion">
-      <ChatView
-        messages={companion.messages}
-        liveTurn={companion.liveTurn}
-        processingIndicator={companion.processing}
-        activeSession={companion.companionSession}
-        emptyOverride={
-          <div className="maka-quote-companion-intro">
-            {props.quotes.map((quote) => (
-              <blockquote key={quote.id} className="maka-quote-panel-quote">
-                {quote.value.text}
-              </blockquote>
-            ))}
-            <p className="maka-quote-panel-hint">{copy.hint}</p>
-          </div>
-        }
-        onNew={() => {}}
-      />
-      {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}
-      {(companion.activeSandboxBoundary || companion.activeQuestion) && (
-        <div className="maka-composer-interaction-slot">
-          {companion.activeSandboxBoundary && (
-            <SandboxBoundaryPrompt
-              request={companion.activeSandboxBoundary}
-              onRespond={companion.respondToSandboxBoundary}
-            />
-          )}
-          {companion.activeQuestion && (
-            <UserQuestionPrompt
-              request={companion.activeQuestion}
-              onRespond={companion.respondToUserQuestion}
+      <ChatSurfaceLayout
+        composer={
+          <>
+            {companion.error && <div className="maka-quote-companion-error">{companion.error}</div>}
+            {(companion.activeSandboxBoundary || companion.activeQuestion) && (
+              <div className="maka-composer-interaction-slot">
+                {companion.activeSandboxBoundary && (
+                  <SandboxBoundaryPrompt
+                    request={companion.activeSandboxBoundary}
+                    onRespond={companion.respondToSandboxBoundary}
+                  />
+                )}
+                {companion.activeQuestion && (
+                  <UserQuestionPrompt
+                    request={companion.activeQuestion}
+                    onRespond={companion.respondToUserQuestion}
+                    onStop={() => void companion.stop()}
+                  />
+                )}
+              </div>
+            )}
+            <Composer
+              ref={composerRef}
+              onSend={(text) => companion.send(text)}
               onStop={() => void companion.stop()}
+              hidden={Boolean(activeInteraction)}
+              streaming={companion.streaming}
+              processing={companion.processing}
+              draftKey={companion.companionSession?.id ?? `quote-companion:${props.sourceSession?.id ?? 'none'}`}
+              disabled={!props.sourceSession}
+              pendingQuotes={props.quotes.map((quote) => quote.value)}
+              onRemoveQuote={(index) => {
+                const quote = props.quotes[index];
+                if (quote) {
+                  props.onRemoveQuote?.({
+                    panelId: props.panelId,
+                    quoteId: quote.id,
+                  });
+                }
+              }}
+              // No activeSession / onModelChange → the model shows as a read-only chip
+              // (the companion has no independent picker; it inherits the source model).
+              modelLabel={activeModelLabel}
             />
-          )}
-        </div>
-      )}
-      <Composer
-        ref={composerRef}
-        onSend={(text) => companion.send(text)}
-        onStop={() => void companion.stop()}
-        hidden={Boolean(activeInteraction)}
-        streaming={companion.streaming}
-        processing={companion.processing}
-        draftKey={companion.companionSession?.id ?? `quote-companion:${props.sourceSession?.id ?? 'none'}`}
-        disabled={!props.sourceSession}
-        pendingQuotes={props.quotes.map((quote) => quote.value)}
-        onRemoveQuote={(index) => {
-          const quote = props.quotes[index];
-          if (quote) {
-            props.onRemoveQuote?.({
-              panelId: props.panelId,
-              quoteId: quote.id,
-            });
+            {props.onClear && (
+              <div className="maka-quote-companion-actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="maka-quote-panel-clear"
+                  label={copy.exit}
+                  onClick={props.onClear}
+                />
+              </div>
+            )}
+          </>
+        }
+      >
+        <ChatView
+          messages={companion.messages}
+          liveTurn={companion.liveTurn}
+          processingIndicator={companion.processing}
+          activeSession={companion.companionSession}
+          emptyOverride={
+            <div className="maka-quote-companion-intro">
+              {props.quotes.map((quote) => (
+                <blockquote key={quote.id} className="maka-quote-panel-quote">
+                  {quote.value.text}
+                </blockquote>
+              ))}
+              <p className="maka-quote-panel-hint">{copy.hint}</p>
+            </div>
           }
-        }}
-        // No activeSession / onModelChange → the model shows as a read-only chip
-        // (the companion has no independent picker; it inherits the source model).
-        modelLabel={activeModelLabel}
-      />
-      {props.onClear && (
-        <div className="maka-quote-companion-actions">
-          <Button
-            variant="secondary"
-            size="sm"
-            className="maka-quote-panel-clear"
-            label={copy.exit}
-            onClick={props.onClear}
-          />
-        </div>
-      )}
+          onNew={() => {}}
+        />
+      </ChatSurfaceLayout>
     </div>
   );
 }

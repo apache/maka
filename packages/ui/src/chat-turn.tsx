@@ -10,6 +10,7 @@ import {
   ChatMessage,
   ChatMessageBubble,
   ChatMessageMetadata,
+  ChatSystemMessage,
   IconButton as UiIconButton,
 } from '@astryxdesign/core';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
@@ -455,14 +456,13 @@ export const TurnView = memo(function TurnView(props: {
         </LocalizedChatMessage>
       )}
       {turn.notes.map((note) => (
-        <LocalizedChatMessage
-          accessibleLabel={copy.systemAriaLabel}
+        <ChatSystemMessage
           key={note.id}
-          sender="system"
-          className="maka-chat-message"
+          className="maka-chat-system-message"
+          aria-label={copy.systemAriaLabel}
         >
-          <MessageBody role="system" text={note.text} ts={note.ts} />
-        </LocalizedChatMessage>
+          {note.text}
+        </ChatSystemMessage>
       ))}
       {showAssistantMessage && (
         <LocalizedChatMessage

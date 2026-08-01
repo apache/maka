@@ -17,7 +17,7 @@ import { test, expect } from './fixtures';
  */
 
 const probeScroller = `(() => {
-  const scroller = document.querySelector('.maka-chatViewport');
+  const scroller = document.querySelector('[data-chat-scroll-container="true"]');
   return {
     scrollHeight: scroller.scrollHeight,
     clientHeight: scroller.clientHeight,
@@ -45,8 +45,8 @@ type ColumnGeometry = {
 
 async function probeColumnGeometry(page: import('@playwright/test').Page): Promise<ColumnGeometry> {
   return await page.evaluate(() => {
-    const host = document.querySelector<HTMLElement>('.maka-chat.messages');
-    const viewport = document.querySelector<HTMLElement>('.maka-chatViewport');
+    const host = document.querySelector<HTMLElement>('.maka-chat-layout');
+    const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
     const turn = document.querySelector<HTMLElement>('.maka-turn');
     const composer = document.querySelector<HTMLElement>('.composer .maka-composer-astryx');
     if (!host || !viewport || !turn || !composer) {
@@ -91,7 +91,7 @@ async function probeColumnGeometry(page: import('@playwright/test').Page): Promi
  * done, so ask it.
  */
 async function settleGeometry(page: import('@playwright/test').Page, options: { pinned: boolean }): Promise<void> {
-  await expect(page.locator('.maka-chatViewport[data-turn-warmup="settled"]')).toBeAttached({ timeout: 15_000 });
+  await expect(page.locator('[data-chat-scroll-container="true"][data-turn-warmup="settled"]')).toBeAttached({ timeout: 15_000 });
   const settled = await page.evaluate(probeScroller) as { scrollHeight: number };
   expect(settled.scrollHeight, JSON.stringify(settled)).toBeGreaterThan(WARMED_HEIGHT_FLOOR);
   // The last chunk's inflation reaches the pinned follower through a
@@ -116,15 +116,15 @@ test('chat viewport and message column share the composer centerline', async ({ 
   }
 });
 
-test('empty chat keeps its grid content flush with the viewport', async ({ window: page }) => {
+test('empty chat keeps the Astryx message list flush with the viewport', async ({ window: page }) => {
   const content = page.locator('.mainColumn[data-home-surface="true"] .maka-chatContent');
   await expect(content).toBeVisible();
 
   for (const width of [900, 1180, 1440]) {
     await page.setViewportSize({ width, height: 760 });
     const geometry = await page.evaluate(() => {
-      const host = document.querySelector<HTMLElement>('.maka-chat.messages');
-      const viewport = document.querySelector<HTMLElement>('.maka-chatViewport');
+      const host = document.querySelector<HTMLElement>('.maka-chat-layout');
+      const viewport = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
       const content = document.querySelector<HTMLElement>('.maka-chatContent');
       if (!host || !viewport || !content) throw new Error('Expected the empty chat scroll surface');
       const hostRect = host.getBoundingClientRect();
@@ -138,8 +138,7 @@ test('empty chat keeps its grid content flush with the viewport', async ({ windo
     });
     const diagnostics = JSON.stringify({ width, ...geometry });
     expect(Math.abs(geometry.hostViewportLeftDelta), diagnostics).toBeLessThanOrEqual(1);
-    expect(geometry.contentDisplay, diagnostics).toBe('grid');
-    expect(geometry.contentGap, diagnostics).toBe('0px');
+    expect(geometry.contentDisplay, diagnostics).toBe('flex');
   }
 });
 
@@ -160,7 +159,7 @@ test('long session opens pinned to bottom and stays pinned while geometry settle
 
 async function climbToTop(page: import('@playwright/test').Page) {
   return await page.evaluate(async () => {
-    const scroller = document.querySelector('.maka-chatViewport') as HTMLElement;
+    const scroller = document.querySelector('[data-chat-scroll-container="true"]') as HTMLElement;
     const started = performance.now();
     // Self-imposed deadline well under the 60s test timeout: a stalled or
     // crawling compositor must produce a diagnosable assertion failure with

@@ -16,6 +16,8 @@ export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolD
 export { formatBytes, ToolActivity, ToolTrow } from './tool-activity.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
+export { ChatSurfaceLayout } from './chat-surface-layout.js';
+export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
 export { ChatView } from './chat-view.js';
 export type { TurnFooterActionMeta, TurnLineageBadge } from './chat-turn.js';
 export { AutomationsPage, DailyReviewPage, SkillsPage } from './module-pages.js';
