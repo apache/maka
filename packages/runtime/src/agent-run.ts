@@ -9,6 +9,10 @@ import type {
 import { DurableStoreWriteError, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
+import {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import type {
   SessionBlockedReason,
   SessionHeader,
@@ -329,6 +333,38 @@ export class AgentRun {
         ts: attempt.completedAt,
         data: { ...attempt },
       });
+    });
+  }
+
+  /**
+   * Canonical accounting record for one physical provider request (#1679).
+   *
+   * Durable, unlike the diagnostic attempt append above: this is the metering
+   * source of truth, and a record lost to a crashed flush is spend nothing else
+   * can reconstruct.
+   *
+   * It still resolves on failure. Settlement runs inside the model stream's
+   * `pull` handler, so raising here would fail a response that already
+   * completed and was already billed. A failed append surfaces as
+   * `trace_write_failed`, which is what marks the run's accounting incomplete.
+   */
+  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void> {
+    if (!this.input.runStore) return Promise.resolve();
+    return this.enqueueReportedRunStoreWrite('append model call attempt', async () => {
+      await this.input.runStore?.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          id: attempt.attemptId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: attempt.turnId,
+          ts: attempt.completedAt,
+          data: { ...attempt },
+        },
+        { durable: true },
+      );
     });
   }
 
@@ -1428,10 +1464,23 @@ export class AgentRun {
    * provider dispatch.
    */
   private enqueueBestEffortProviderAttempt(label: string, operation: () => Promise<void>): void {
+    void this.enqueueReportedRunStoreWrite(label, operation);
+  }
+
+  /**
+   * Serialize an append whose failure is reported rather than raised: the
+   * returned promise resolves either way, and a failure surfaces as
+   * `trace_write_failed` without touching the best-effort latch.
+   */
+  private enqueueReportedRunStoreWrite(
+    label: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
     const next = this.traceQueue
       .then(operation, operation)
       .catch((error) => this.enqueueTraceWriteFailure(error, label));
     this.traceQueue = next.catch(() => {});
+    return next;
   }
 
   /**

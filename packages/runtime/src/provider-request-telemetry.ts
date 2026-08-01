@@ -114,6 +114,19 @@ export interface ModelCallAccountingInput {
   sessionId: string;
   /** Resolved per send: one tracker does not outlive a single run. */
   resolveRunId: () => string | undefined;
+  /**
+   * The connection the request was dispatched over. Without it a record is
+   * attributable to a provider and model but not to the configured connection,
+   * which is what the Usage surface filters and groups by.
+   */
+  connectionSlug?: string;
+  /**
+   * The connection's provider type, which is the vocabulary the Usage surface
+   * groups by. The diagnostic record carries the SDK's own provider id instead
+   * (`moonshot.chat` where this says `moonshot`); metering must not split one
+   * provider across two bucket keys, so accounting uses this when given.
+   */
+  providerId?: string;
   callKind: ModelCallKind;
   record: (attempt: ModelCallAttempt) => void | Promise<void>;
   /** Resolves cost at settlement time; absent means the price is unknown. */
@@ -452,12 +465,15 @@ export class ProviderRequestTracker {
       sessionId: accounting.sessionId,
       runId,
       turnId: record.turnId,
+      ...(accounting.connectionSlug !== undefined
+        ? { connectionSlug: accounting.connectionSlug }
+        : {}),
       // The physical ordinals are one-based on the diagnostic record; the
       // canonical record counts retries from zero.
       step: Math.max(0, record.step),
       attempt: Math.max(0, record.attempt - 1),
       callKind: accounting.callKind,
-      providerId: record.providerId,
+      providerId: accounting.providerId ?? record.providerId,
       modelId: record.modelId,
       ...(context.contextWindow !== undefined ? { contextWindow: context.contextWindow } : {}),
       ...(record.captureArtifactId !== undefined

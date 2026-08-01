@@ -14490,7 +14490,7 @@ describe('SessionManager permission mode updates', () => {
     expect(run?.status).toBe('completed');
     const events = await runStore.readEvents(session.id, run!.runId);
     expect(events.map((event) => event.type)).toContain('model_stream_started');
-    expect(events.map((event) => event.type)).toContain('usage_recorded');
+    expect(events.map((event) => event.type)).toContain('model_stream_completed');
     expect(events.map((event) => event.type)).toContain('run_completed');
     expect(JSON.stringify(events).includes('sk-live-secret-token-value')).toBe(false);
   });
@@ -19636,10 +19636,10 @@ class TraceBackend implements AgentBackend {
       sessionId: this.sessionId,
       turnId: input.turnId,
       ts: 3,
-      phase: 'usage',
-      type: 'usage_recorded',
-      message: 'Token usage recorded',
-      data: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      phase: 'model',
+      type: 'model_stream_completed',
+      message: 'Model stream completed',
+      data: { finishReason: 'stop' },
     });
     yield {
       type: 'complete',

@@ -72,6 +72,7 @@ import {
   createSessionStore,
   createSettingsStore,
   createMcpConfigStore,
+  createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -290,6 +291,10 @@ function ensureMcpReady(): Promise<void> {
   return mcpStartup;
 }
 const telemetryRepo = createSqliteTelemetryRepo(workspaceRoot);
+// Canonical model-call accounting ledger (#1679). Separate store, same
+// operational database: `telemetryRepo` is now a frozen historical projection
+// for LLM calls, and every model call dispatched from here settles into this.
+const modelCallLedger = createSqliteModelCallLedger(workspaceRoot);
 const dailyReviewArchiveStore = createDailyReviewArchiveStore(workspaceRoot);
 const artifactStore = createSqliteArtifactStore(workspaceRoot);
 const deepResearchStore = createSqliteDeepResearchStore(workspaceRoot);
@@ -820,6 +825,7 @@ backends.register('ai-sdk', createAiSdkBackendFactory({
   buildSubscriptionModelFetch,
   systemPromptService,
   telemetryRepo,
+  modelCallLedger,
   ensureUsageReady,
   artifactStore,
   desktopSessionSkillHosts,
@@ -984,6 +990,7 @@ const dailyReview = createDailyReviewMainService({
   archiveStore: dailyReviewArchiveStore,
   connectionStore,
   telemetryRepo,
+  modelCallLedger,
   ensureUsageReady,
   listSessions: async () => collapseSessionRevisions(await runtime.listSessions()),
   resolveConnectionSecret,
@@ -1161,6 +1168,7 @@ function registerIpc(): void {
     settingsStore,
     connectionStore,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     botRegistry,
     getComputerUseCapabilityInput: computerUseCapabilityInput,
@@ -1203,6 +1211,7 @@ function registerIpc(): void {
     ipcMain,
     settingsStore,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     refreshPricingLookup: () => {
       lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());
@@ -1414,6 +1423,7 @@ wireAppLifecycle({
   settingsStore,
   telemetryRepo,
   artifactStore,
+  modelCallLedger,
   ensureUsageReady,
   keepSystemAwake,
   botRegistry,

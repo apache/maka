@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart, LanguageModelV4Usage } from '@ai-sdk/provider';
 import type { LlmConnection, SessionEvent, SessionHeader } from '@maka/core';
-import type { LlmCallRecord } from '@maka/core/usage-stats/types';
+import type { RunTraceEvent } from '../run-trace.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
@@ -71,10 +71,18 @@ function tools(implCalls: string[]): MakaTool[] {
   ];
 }
 
+interface SendDiagnostics {
+  promptSegments?: readonly { kind: string; chars?: number }[];
+  contextBudget?: Record<string, unknown>;
+  requestShapeHash?: string;
+  requestShapeChangeReason?: string;
+}
+
 interface BackendOpts {
   /** Override the availability config (pass `null` to omit it ⇒ full surface). */
   toolAvailability?: ToolAvailabilityConfig | null;
-  recordLlmCall?: (record: LlmCallRecord) => void;
+  /** Terminal send diagnostics, read off the run trace (#1679). */
+  recordSendDiagnostics?: (record: SendDiagnostics) => void;
   durable?: ReturnType<typeof createDurableTurnHarness>;
   extraTools?: readonly MakaTool[];
 }
@@ -97,7 +105,15 @@ function backend(
     tools: tools(implCalls),
     ...(opts.durable ? { loadTurnRuntimeEvents: opts.durable.loadTurnRuntimeEvents } : {}),
     ...(resolved ? { toolAvailability: resolved } : {}),
-    ...(opts.recordLlmCall ? { recordLlmCall: opts.recordLlmCall } : {}),
+    ...(opts.recordSendDiagnostics
+      ? {
+          recordRunTrace: (event: RunTraceEvent) => {
+            if (event.type === 'send_diagnostics_recorded') {
+              opts.recordSendDiagnostics?.(event.data as SendDiagnostics);
+            }
+          },
+        }
+      : {}),
     newId: () => `id-${++n}`,
     now: () => 1,
   });
@@ -140,7 +156,15 @@ function agentBackend(
     },
     listChildAgents: async () => ({ definitions: [], runs: [] }),
     readChildAgentOutput: async (input) => ({ requested: input }),
-    ...(opts.recordLlmCall ? { recordLlmCall: opts.recordLlmCall } : {}),
+    ...(opts.recordSendDiagnostics
+      ? {
+          recordRunTrace: (event: RunTraceEvent) => {
+            if (event.type === 'send_diagnostics_recorded') {
+              opts.recordSendDiagnostics?.(event.data as SendDiagnostics);
+            }
+          },
+        }
+      : {}),
     newId: () => `id-${++n}`,
     now: () => 1,
   });
@@ -204,19 +228,19 @@ describe('AiSdkBackend deferred tool loading', () => {
       turnId: 'turn-1',
       text: 'load browser',
     });
-    const records: LlmCallRecord[] = [];
+    const records: SendDiagnostics[] = [];
     const implCalls: string[] = [];
     // Step 0 loads browser; browser_click activates in request 1.
     await drainWithDurableTurn(
       backend(loadBrowserThenFinishModel(), implCalls, {
-        recordLlmCall: (r) => records.push(r),
+        recordSendDiagnostics: (r) => records.push(r),
         durable,
       }).send(durable.sendInput()),
       durable,
     );
 
     assert.equal(records.length, 1, 'exactly one llm-call cost record for the turn');
-    const toolSeg = records[0].promptSegments?.find((s) => s.kind === 'tool_schema');
+    const toolSeg = records[0]?.promptSegments?.find((s) => s.kind === 'tool_schema');
     assert.ok(toolSeg, 'a tool_schema prompt segment was recorded');
 
     // The recorded cost must reflect the FINAL active set (Read + load_tools +
@@ -239,17 +263,17 @@ describe('AiSdkBackend deferred tool loading', () => {
       'recorded tool-schema chars include the loaded browser_click',
     );
     assert.equal(
-      records[0].requestShapeChangeReason,
+      records[0]?.requestShapeChangeReason,
       'first_turn',
       'first turn establishes the baseline; the expansion sets the durable prefix for next turn',
     );
   });
 
   test('high-water "after" hash stays consistent with the final recorded requestShapeHash across a same-turn load', async () => {
-    const records: LlmCallRecord[] = [];
+    const records: SendDiagnostics[] = [];
     const implCalls: string[] = [];
     const be = backend(loadBrowserThenFinishModel(), implCalls, {
-      recordLlmCall: (r) => records.push(r),
+      recordSendDiagnostics: (r) => records.push(r),
     });
     // Real high-water reasons only arise from the synthesis-cache subsystem
     // (selectSynthesisCacheForReplay needs valid cache blocks + matching
@@ -274,13 +298,13 @@ describe('AiSdkBackend deferred tool loading', () => {
     await drain(be.send({ turnId: 'turn-1', text: 'load browser', context: [] }));
 
     assert.equal(records.length, 1, 'one llm-call record for the turn');
-    const cb = records[0].contextBudget;
+    const cb = records[0]?.contextBudget;
     assert.ok(cb?.highWaterRequestShapeHashAfter, 'a high-water "after" hash was recorded');
     // The same-turn load makes the final active set differ from step-0, so this
     // equality fails if "after" is left at the step-0 hash (the bug).
     assert.equal(
       cb.highWaterRequestShapeHashAfter,
-      records[0].requestShapeHash,
+      records[0]?.requestShapeHash,
       'high-water "after" must equal the final recorded requestShapeHash',
     );
     assert.equal(

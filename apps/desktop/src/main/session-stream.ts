@@ -30,6 +30,7 @@ import type {
   ToolResultArchiveRecorderInput,
   buildPricingLookup,
 } from '@maka/runtime';
+import type { createSqliteModelCallLedger } from '@maka/storage';
 import {
   type ArtifactStore,
   createAttachmentByteReader,
@@ -54,6 +55,7 @@ type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
+type ModelCallLedger = ReturnType<typeof createSqliteModelCallLedger>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];
 const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
@@ -62,6 +64,7 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
   telemetryRepo: TelemetryRepo;
+  modelCallLedger: ModelCallLedger;
   ensureUsageReady: () => Promise<void>;
   artifactStore: ArtifactStore;
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
@@ -90,6 +93,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
     buildSubscriptionModelFetch,
     systemPromptService,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     artifactStore,
     desktopSessionSkillHosts,
@@ -278,6 +282,15 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       shellRunContextSummary: ctx.shellRunContextSummary,
       lookupPricing: getLookupPricing(),
       recordLlmCall: (event: LlmCallRecord) => recordLlmCall({ repo: telemetryRepo, lookupPricing: getLookupPricing() }, event),
+      // One canonical record, two sinks (#1679): the AgentRun stream is the
+      // durable log of record, the ledger is the read model the Usage surface
+      // queries. Settlement runs after the provider call completed and billed,
+      // so neither sink may fail the turn.
+      recordModelCallAttempt: (attempt) =>
+        Promise.allSettled([
+          ctx.recordModelCallAttempt?.(attempt) ?? Promise.resolve(),
+          modelCallLedger.record(attempt),
+        ]).then(() => undefined),
       recordToolInvocation: (event: ToolInvocationRecord) =>
         recordToolInvocation(
           { repo: telemetryRepo },

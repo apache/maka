@@ -4,7 +4,16 @@ import type {
   ToolInvocationRecord,
   UsageBucket,
   UsageLogRow,
+  UsageQuery,
 } from '@maka/core/usage-stats/types';
+import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
+import {
+  mergeUsageBuckets,
+  mergeUsageLogs,
+  mergeUsageSummary,
+  type CanonicalUsageSource,
+  type UsageProvenance,
+} from '@maka/core/usage-ledger-merge';
 import {
   authenticateInteractiveUsageStoresWriter,
   classifyInteractiveUsageStoresFailure,
@@ -58,26 +67,61 @@ export class HostUsagePricingCoordinator {
     this.#onCommittedPricingMutation = onCommittedPricingMutation;
   }
 
+  /**
+   * Reads the canonical ledger for the window a query addresses (#1679). The
+   * range is resolved once here so both sources answer the same window.
+   */
+  async #canonicalUsage(query: UsageQuery, now: number): Promise<CanonicalUsageSource> {
+    const page = await this.#stores.modelCalls.modelCallAttempts(
+      resolveUsageRange(query.range, now),
+    );
+    return { attempts: page.attempts, unreadableRecords: page.unreadableRecords };
+  }
+
   async #queryUsage(input: UsageQueryInput): Promise<OperationOutcome<'usage.query'>> {
     try {
+      const now = Date.now();
       if (input.kind === 'summary') {
+        const merged = mergeUsageSummary(
+          await this.#stores.telemetry.summary(input.query),
+          await this.#canonicalUsage(input.query, now),
+          input.query,
+          now,
+        );
+        const { provenance, ...summary } = merged;
         return {
           ok: true,
-          result: encodeUsageQueryResult({
-            kind: 'summary',
-            summary: await this.#stores.telemetry.summary(input.query),
-          }),
+          result: encodeUsageQueryResult({ kind: 'summary', summary, provenance }),
         };
       }
       if (input.kind === 'buckets') {
         const offset = input.offset ?? 0;
         const limit = input.limit ?? USAGE_PAGE_MAX_ITEMS;
-        const buckets = await this.#stores.telemetry.buckets(input.query, input.groupBy);
-        if (offset > buckets.length) return invalidUsageOffset();
+        const legacy = await this.#stores.telemetry.buckets(input.query, input.groupBy);
+        // Tool buckets group tool invocations, which the model-call ledger does
+        // not describe; there is nothing canonical to merge into them.
+        const merged =
+          input.groupBy === 'tool'
+            ? { buckets: [...legacy], provenance: EMPTY_PROVENANCE }
+            : mergeUsageBuckets(
+                legacy,
+                await this.#canonicalUsage(input.query, now),
+                input.query,
+                input.groupBy,
+                now,
+              );
+        if (offset > merged.buckets.length) return invalidUsageOffset();
         return {
           ok: true,
           result: encodeUsageQueryResult(
-            usagePage('buckets', buckets.map(projectUsageBucket), buckets.length, offset, limit),
+            usagePage(
+              'buckets',
+              merged.buckets.map(projectUsageBucket),
+              merged.buckets.length,
+              offset,
+              limit,
+              merged.provenance,
+            ),
           ),
         };
       }
@@ -93,12 +137,29 @@ export class HostUsagePricingCoordinator {
           ),
         };
       }
-      const page = await this.#stores.telemetry.logs(input.query, offset, limit);
-      if (offset > page.total) return invalidUsageOffset();
+      // Both sources are newest-first, so the merged page can only be drawn
+      // from each source's own first `offset + limit` rows.
+      const legacy = await this.#stores.telemetry.logs(input.query, 0, offset + limit);
+      const merged = mergeUsageLogs(
+        legacy,
+        await this.#canonicalUsage(input.query, now),
+        input.query,
+        now,
+        offset,
+        limit,
+      );
+      if (offset > merged.total) return invalidUsageOffset();
       return {
         ok: true,
         result: encodeUsageQueryResult(
-          usageLogPage('llm', page.rows.map(projectUsageLog), page.total, offset, limit),
+          usageLogPage(
+            'llm',
+            merged.rows.map(projectUsageLog),
+            merged.total,
+            offset,
+            limit,
+            merged.provenance,
+          ),
         ),
       };
     } catch (error) {
@@ -255,6 +316,20 @@ export class HostUsagePricingCoordinator {
   }
 }
 
+/** Provenance of a result the model-call ledger has nothing to say about. */
+const EMPTY_PROVENANCE: UsageProvenance = {
+  coverage: {
+    attempts: 0,
+    pricedAttempts: 0,
+    unpricedAttempts: 0,
+    usageReportedAttempts: 0,
+    usagePartialAttempts: 0,
+    usageMissingAttempts: 0,
+  },
+  legacyRecords: 0,
+  unreadableRecords: 0,
+};
+
 function invalidUsageOffset(): OperationOutcome<'usage.query'> {
   return {
     ok: false,
@@ -305,13 +380,7 @@ function usagePage(
   total: number,
   offset: number,
   limit: number,
-): Extract<UsageQueryResult, { kind: 'buckets' }>;
-function usagePage(
-  kind: 'buckets',
-  allItems: readonly UsageBucket[],
-  total: number,
-  offset: number,
-  limit: number,
+  provenance: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
   const source = allItems.slice(offset, offset + limit);
   const items: UsageBucket[] = [];
@@ -320,7 +389,13 @@ function usagePage(
     const nextOffset = offset + candidate.length;
     if (
       jsonBytes(
-        bucketPageResult(candidate, total, offset, nextOffset < total ? nextOffset : null),
+        bucketPageResult(
+          candidate,
+          total,
+          offset,
+          nextOffset < total ? nextOffset : null,
+          provenance,
+        ),
       ) > USAGE_PAGE_MAX_BYTES
     ) {
       break;
@@ -331,7 +406,7 @@ function usagePage(
     throw new Error('Canonical usage item exceeds the wire page limit');
   }
   const nextOffset = offset + items.length;
-  return bucketPageResult(items, total, offset, nextOffset < total ? nextOffset : null);
+  return bucketPageResult(items, total, offset, nextOffset < total ? nextOffset : null, provenance);
 }
 
 function bucketPageResult(
@@ -339,8 +414,9 @@ function bucketPageResult(
   total: number,
   offset: number,
   nextOffset: number | null,
+  provenance: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'buckets' }> {
-  return { kind: 'buckets', buckets: items, offset, total, nextOffset };
+  return { kind: 'buckets', buckets: items, offset, total, nextOffset, provenance };
 }
 
 function usageLogPage(
@@ -349,6 +425,7 @@ function usageLogPage(
   total: number,
   offset: number,
   limit: number,
+  provenance: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>;
 function usageLogPage(
   source: 'tool',
@@ -363,6 +440,7 @@ function usageLogPage(
   total: number,
   offset: number,
   limit: number,
+  provenance?: UsageProvenance,
 ): Extract<UsageQueryResult, { kind: 'logs' }> {
   const items: UsageLogProjection[] = [];
   for (const item of allItems.slice(0, limit)) {
@@ -370,7 +448,14 @@ function usageLogPage(
     const nextOffset = offset + candidate.length;
     if (
       jsonBytes(
-        logPageResult(source, candidate, total, offset, nextOffset < total ? nextOffset : null),
+        logPageResult(
+          source,
+          candidate,
+          total,
+          offset,
+          nextOffset < total ? nextOffset : null,
+          provenance,
+        ),
       ) > USAGE_PAGE_MAX_BYTES
     ) {
       break;
@@ -381,7 +466,14 @@ function usageLogPage(
     throw new Error('Canonical usage item exceeds the wire page limit');
   }
   const nextOffset = offset + items.length;
-  return logPageResult(source, items, total, offset, nextOffset < total ? nextOffset : null);
+  return logPageResult(
+    source,
+    items,
+    total,
+    offset,
+    nextOffset < total ? nextOffset : null,
+    provenance,
+  );
 }
 
 function logPageResult(
@@ -390,11 +482,17 @@ function logPageResult(
   total: number,
   offset: number,
   nextOffset: number | null,
+  provenance: UsageProvenance | undefined,
 ): Extract<UsageQueryResult, { kind: 'logs' }> {
-  return { kind: 'logs', source, rows, offset, total, nextOffset } as Extract<
-    UsageQueryResult,
-    { kind: 'logs' }
-  >;
+  return {
+    kind: 'logs',
+    source,
+    rows,
+    offset,
+    total,
+    nextOffset,
+    ...(provenance ? { provenance } : {}),
+  } as Extract<UsageQueryResult, { kind: 'logs' }>;
 }
 
 function projectUsageBucket(bucket: UsageBucket): UsageBucket {

@@ -29,6 +29,7 @@
     "./automation": "./dist/automation.js",
     "./model-call-attempt": "./dist/model-call-attempt.js",
     "./model-call-usage-projection": "./dist/model-call-usage-projection.js",
+    "./usage-ledger-merge": "./dist/usage-ledger-merge.js",
     "./shell-run": "./dist/shell-run.js",
     "./shell-run-result": "./dist/shell-run-result.js",
     "./browser": "./dist/browser.js",

@@ -14,6 +14,7 @@ import type {
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
 import { MODEL_CALL_KINDS } from '@maka/core/usage-stats/types';
+import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 import { requireCount, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
@@ -199,13 +200,18 @@ export type UsageQueryInput =
     };
 
 export type UsageQueryResult =
-  | { readonly kind: 'summary'; readonly summary: UsageSummaryV2 }
+  | {
+      readonly kind: 'summary';
+      readonly summary: UsageSummaryV2;
+      readonly provenance: UsageProvenance;
+    }
   | {
       readonly kind: 'buckets';
       readonly buckets: readonly UsageBucket[];
       readonly offset: number;
       readonly total: number;
       readonly nextOffset: number | null;
+      readonly provenance: UsageProvenance;
     }
   | {
       readonly kind: 'logs';
@@ -214,6 +220,7 @@ export type UsageQueryResult =
       readonly offset: number;
       readonly total: number;
       readonly nextOffset: number | null;
+      readonly provenance: UsageProvenance;
     }
   | {
       readonly kind: 'logs';
@@ -349,8 +356,16 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   const result = requireRecord(value, 'usage query result');
   if (result.kind === 'summary') {
-    const exact = requireExactRecord(result, 'usage summary result', ['kind', 'summary']);
-    return { kind: 'summary', summary: decodeUsageSummary(exact.summary) };
+    const exact = requireExactRecord(result, 'usage summary result', [
+      'kind',
+      'summary',
+      'provenance',
+    ]);
+    return {
+      kind: 'summary',
+      summary: decodeUsageSummary(exact.summary),
+      provenance: decodeUsageProvenance(exact.provenance),
+    };
   }
   if (result.kind === 'buckets') {
     const exact = requireExactRecord(result, 'usage buckets result', [
@@ -359,22 +374,34 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
       'offset',
       'total',
       'nextOffset',
+      'provenance',
     ]);
     return decodeUsagePage('buckets', exact, decodeUsageBucket);
   }
   if (result.kind === 'logs') {
-    const exact = requireExactRecord(result, 'usage logs result', [
-      'kind',
-      'source',
-      'rows',
-      'offset',
-      'total',
-      'nextOffset',
-    ]);
-    if (exact.source === 'llm') {
+    // Only LLM logs are drawn from the model-call ledger, so only they carry
+    // provenance; tool logs have no canonical source to qualify.
+    if (result.source === 'llm') {
+      const exact = requireExactRecord(result, 'usage llm logs result', [
+        'kind',
+        'source',
+        'rows',
+        'offset',
+        'total',
+        'nextOffset',
+        'provenance',
+      ]);
       return decodeUsageLogPage('llm', exact, decodeLlmUsageLog);
     }
-    if (exact.source === 'tool') {
+    if (result.source === 'tool') {
+      const exact = requireExactRecord(result, 'usage tool logs result', [
+        'kind',
+        'source',
+        'rows',
+        'offset',
+        'total',
+        'nextOffset',
+      ]);
       return decodeUsageLogPage('tool', exact, decodeToolUsageLog);
     }
     throw invalidProtocolFrame('Invalid usage log source');
@@ -653,7 +680,12 @@ function decodeUsagePage(
   }
   const items = rawItems.map(decodeItem);
   const page = decodeUsagePagePosition(result, items.length);
-  const decoded = { kind, buckets: items, ...page } as const;
+  const decoded = {
+    kind,
+    buckets: items,
+    ...page,
+    provenance: decodeUsageProvenance(result.provenance),
+  } as const;
   assertJsonBytes(decoded, USAGE_PAGE_MAX_BYTES, 'Usage page');
   return decoded;
 }
@@ -679,10 +711,13 @@ function decodeUsageLogPage(
   }
   const items = rawItems.map(decodeItem);
   const page = decodeUsagePagePosition(result, items.length);
-  const decoded = { kind: 'logs', source, rows: items, ...page } as Extract<
-    UsageQueryResult,
-    { kind: 'logs' }
-  >;
+  const decoded = {
+    kind: 'logs',
+    source,
+    rows: items,
+    ...page,
+    ...(source === 'llm' ? { provenance: decodeUsageProvenance(result.provenance) } : {}),
+  } as Extract<UsageQueryResult, { kind: 'logs' }>;
   assertJsonBytes(decoded, USAGE_PAGE_MAX_BYTES, 'Usage page');
   return decoded;
 }
@@ -748,6 +783,52 @@ function decodeUsageSummary(value: unknown): UsageSummaryV2 {
     cacheHitRequests: requireCount(summary.cacheHitRequests, 'usage cache hit requests'),
     cacheCreateRequests: requireCount(summary.cacheCreateRequests, 'usage cache create requests'),
     errorRequests: requireCount(summary.errorRequests, 'usage error requests'),
+  };
+}
+
+/**
+ * What qualifies the numbers in a usage result (#1679): how the canonical
+ * records behind it were classified, how many rows still come from the frozen
+ * pre-cutover table, and how many stored records could not be read. A total
+ * crossing the wire without this cannot be presented honestly.
+ */
+function decodeUsageProvenance(value: unknown): UsageProvenance {
+  const provenance = requireExactRecord(value, 'usage provenance', [
+    'coverage',
+    'legacyRecords',
+    'unreadableRecords',
+  ]);
+  const coverage = requireExactRecord(provenance.coverage, 'usage provenance coverage', [
+    'attempts',
+    'pricedAttempts',
+    'unpricedAttempts',
+    'usageReportedAttempts',
+    'usagePartialAttempts',
+    'usageMissingAttempts',
+  ]);
+  return {
+    coverage: {
+      attempts: requireCount(coverage.attempts, 'usage coverage attempts'),
+      pricedAttempts: requireCount(coverage.pricedAttempts, 'usage coverage priced attempts'),
+      unpricedAttempts: requireCount(coverage.unpricedAttempts, 'usage coverage unpriced attempts'),
+      usageReportedAttempts: requireCount(
+        coverage.usageReportedAttempts,
+        'usage coverage reported attempts',
+      ),
+      usagePartialAttempts: requireCount(
+        coverage.usagePartialAttempts,
+        'usage coverage partial attempts',
+      ),
+      usageMissingAttempts: requireCount(
+        coverage.usageMissingAttempts,
+        'usage coverage missing attempts',
+      ),
+    },
+    legacyRecords: requireCount(provenance.legacyRecords, 'usage provenance legacy records'),
+    unreadableRecords: requireCount(
+      provenance.unreadableRecords,
+      'usage provenance unreadable records',
+    ),
   };
 }
 

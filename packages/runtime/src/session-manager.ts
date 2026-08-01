@@ -133,6 +133,7 @@ import {
 import type { AgentBackend, BackendStopMode } from '@maka/core/backend-types';
 import type { MakaTool } from './tool-runtime.js';
 import type { RunTraceRecorder } from './run-trace.js';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureLedgerRecord,
@@ -661,6 +662,12 @@ export interface BackendFactoryContext {
   recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
   /** Best-effort AgentRun row for one physical provider call. */
   recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void;
+  /**
+   * Durable AgentRun row carrying the canonical accounting record for one
+   * physical provider call. Distinct from the diagnostic row above: this one is
+   * the metering source of truth (#1679).
+   */
+  recordModelCallAttempt?: (attempt: ModelCallAttempt) => Promise<void>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,

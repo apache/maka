@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { PROVIDER_DEFAULTS, type RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
 import type { SessionHeader } from '@maka/core/session';
 import {
@@ -487,6 +488,27 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   const recordLlmUsage = (event: Parameters<typeof recordLlmCall>[1]) => {
     void recordLlmCall({ repo: telemetry, lookupPricing: pricing }, event);
   };
+  /**
+   * One canonical record, two sinks (#1679). The AgentRun stream is the durable
+   * log of record; the usage ledger is the read model the Usage authority
+   * queries, since no Usage question is shaped per-run. Neither may fail the
+   * turn — settlement runs after the provider call has completed and billed.
+   */
+  const recordModelCallAttempt = (attempt: ModelCallAttempt): Promise<void> =>
+    Promise.allSettled([
+      input.context.recordModelCallAttempt?.(attempt) ?? Promise.resolve(),
+      persistTelemetry(() => input.usage.modelCalls.recordModelCallAttempt(attempt)),
+    ]).then(() => undefined);
+  /**
+   * Fail-closed pre-dispatch gate. Once an accounting write has failed hard
+   * enough to request a drain, further dispatches would produce spend this host
+   * cannot record, so the send fails before the provider is called.
+   */
+  const assertModelCallAccountingReady = (): void => {
+    if (telemetryDrainRequested) {
+      throw new Error('Canonical model-call accounting is unavailable on this host');
+    }
+  };
   let artifactDrainRequested = false;
   const providerRequestCapture = input.context.recordProviderRequestCapture
     ? createProviderRequestCaptureRecorder({
@@ -595,6 +617,8 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         shellRunContextSummary: input.context.shellRunContextSummary,
         lookupPricing: pricing,
         recordLlmCall: recordLlmUsage,
+        recordModelCallAttempt,
+        assertModelCallAccountingReady,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
         ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
         ...(providerRequestCapture
