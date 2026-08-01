@@ -114,6 +114,27 @@ export function createComputerUseHost(input: {
   }
 }
 
+/** Adapt the Desktop's system-idle signal to the host's physical-input guard. */
+export function createDesktopComputerUseHost(
+  input: Omit<
+    Parameters<typeof createComputerUseHost>[0],
+    'physicalInputRecentlyActive'
+  > & {
+    getSystemIdleTime: () => number;
+    createHost?: typeof createComputerUseHost;
+  },
+): ComputerUseHostState {
+  const {
+    getSystemIdleTime,
+    createHost = createComputerUseHost,
+    ...hostInput
+  } = input;
+  return createHost({
+    ...hostInput,
+    physicalInputRecentlyActive: () => getSystemIdleTime() < 1,
+  });
+}
+
 export function computerUseServiceHealth(
   backendId: SelectedComputerUseBackend['backendId'],
   state: {
