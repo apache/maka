@@ -60,16 +60,12 @@
   inset-inline-start: 0;
 }
 
-.maka-composer-context-drawer,
-.maka-composer-context-items {
+.maka-composer-context-drawer {
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: var(--space-1-5);
-}
-
-.maka-composer-context-drawer {
   flex-direction: column;
   padding: var(--space-1) var(--space-3) var(--space-2);
 }

@@ -55,6 +55,11 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   'astryx-button',
   'astryx-badge',
   'astryx-resize-handle-pill',
+  // Selector / MultiSelector trigger shell (themeProps class on the outer
+  // field). native-cursor.css and model-switcher.css target these so the
+  // multi-node hit target (label button + sibling chevron) stays one cursor.
+  'astryx-selector',
+  'astryx-multi-selector',
   // Rendered by Astryx's own Collapsible; chat-message.css targets it to give
   // reasoning/tool disclosures one trigger dialect inside the turn body (#1768).
   'astryx-collapsible-trigger',
