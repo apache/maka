@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { describe, test } from 'node:test';
 import type { CreateConnectionInput, LlmConnection, UpdateConnectionInput } from '@maka/core';
 import { registerConnectionsIpc } from '../connections-ipc-main.js';
@@ -378,5 +379,80 @@ describe('connection IPC credential boundary', () => {
     assert.ok(hasSecret);
     assert.equal(await hasSecret({}, connection.slug), true);
     assert.equal(probedConnection, connection);
+  });
+
+  test('fetchModels allows LocalAI without an API key', async () => {
+    const connection: LlmConnection = {
+      slug: 'localai',
+      name: 'LocalAI',
+      providerType: 'localai',
+      baseUrl: 'http://127.0.0.1:8080/v1',
+      defaultModel: 'qwen3-8b',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    let receivedApiKey: string | undefined;
+    const handlers = registerHandlers({
+      connectionStore: {
+        get: async () => connection,
+        update: async () => connection,
+      },
+      resolveConnectionSecret: async () => null,
+      fetchModels: async (_candidate: LlmConnection, apiKey: string) => {
+        receivedApiKey = apiKey;
+        return [{ id: 'qwen3-8b' }];
+      },
+    });
+
+    const fetchModels = handlers.get('connections:fetchModels');
+    assert.ok(fetchModels);
+    const result = await fetchModels({}, connection.slug);
+
+    assert.equal(receivedApiKey, '');
+    assert.deepEqual((result as { models: unknown }).models, [{ id: 'qwen3-8b' }]);
+  });
+
+  test('test allows LocalAI without an API key or Authorization header', async () => {
+    let authorization: string | undefined;
+    const server = createServer((request, response) => {
+      authorization = request.headers.authorization;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+
+    const connection: LlmConnection = {
+      slug: 'localai',
+      name: 'LocalAI',
+      providerType: 'localai',
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      defaultModel: 'qwen3-8b',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const handlers = registerHandlers({
+      connectionStore: {
+        get: async () => connection,
+        update: async () => connection,
+      },
+      resolveConnectionSecret: async () => null,
+    });
+
+    try {
+      const testConnection = handlers.get('connections:test');
+      assert.ok(testConnection);
+      const result = await testConnection({}, connection.slug);
+
+      assert.equal((result as { ok: boolean }).ok, true);
+      assert.equal(authorization, undefined);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 });
