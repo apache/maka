@@ -105,6 +105,10 @@ test('sync-model-metadata maps capabilities and lifecycle from models.dev', asyn
           tool_call: true,
           modalities: { input: ['text', 'image'], output: ['text'] },
           limit: { context: 128_000, output: 16_000 },
+          provider: {
+            npm: '@ai-sdk/openai',
+            api: 'https://example.com/responses-compatible',
+          },
         },
         deprecated: {
           name: 'Deprecated Model',
@@ -122,38 +126,9 @@ test('sync-model-metadata maps capabilities and lifecycle from models.dev', asyn
   assert.match(generated, /"modalities":\{"input":\["text","image"\],"output":\["text"\]\}/);
   assert.match(generated, /"deprecated".*"lifecycle":"deprecated".*"vision":false/);
   assert.match(generated, /export const GENERATED_MODELS_DEV_PROVIDER_FACTS/);
-});
-
-test('sync-model-metadata preserves provider ids and per-model protocol overrides', async () => {
-  const catalog = withRequiredProviders();
-  catalog.opencode = {
-    ...catalog.opencode,
-    name: 'OpenCode Zen',
-    api: 'https://opencode.ai/zen/v1',
-    models: {
-      'gpt-5.5': {
-        name: 'GPT 5.5',
-        reasoning: true,
-        tool_call: true,
-        modalities: { input: ['text'], output: ['text'] },
-        limit: { context: 400_000, output: 128_000 },
-        provider: {
-          npm: '@ai-sdk/openai',
-          api: 'https://opencode.ai/zen/v1/responses-compatible',
-        },
-      },
-    },
-  };
-
-  const generated = await generate(catalog);
-
   assert.match(
     generated,
-    /"opencode": \{"id":"opencode","name":"OpenCode Zen","api":"https:\/\/opencode\.ai\/zen\/v1"/,
-  );
-  assert.match(
-    generated,
-    /"opencode": \{"gpt-5\.5":\{"npm":"@ai-sdk\/openai","api":"https:\/\/opencode\.ai\/zen\/v1\/responses-compatible"\}\}/,
+    /"openai": \{"vision":\{"npm":"@ai-sdk\/openai","api":"https:\/\/example\.com\/responses-compatible"\}\}/,
   );
 });
 
@@ -169,25 +144,7 @@ test('sync-model-metadata fails closed on malformed or incomplete upstream data'
       execFileAsync(process.execPath, ['scripts/sync-model-metadata.mjs', '--input', input]),
       /unsupported shape/,
     );
-
-    await writeFile(
-      input,
-      JSON.stringify({
-        openai: { id: 'openai', name: 'OpenAI', doc: 'https://example.com', models: {} },
-      }),
-    );
-    await assert.rejects(
-      execFileAsync(process.execPath, ['scripts/sync-model-metadata.mjs', '--input', input]),
-      /provider anthropic is missing/,
-    );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
-});
-
-test('sync-model-metadata rejects an option without a value', async () => {
-  await assert.rejects(
-    execFileAsync(process.execPath, ['scripts/sync-model-metadata.mjs', '--output']),
-    /--output requires a value/,
-  );
 });

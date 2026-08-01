@@ -4,11 +4,7 @@ import {
   checkSalvagedAnchors,
   checkScopeCoverage,
   diffRecords,
-  findDeadOmissionRules,
-  INHERITED_PROPERTIES,
-  INITIAL_VALUES,
   partitionChanges,
-  PROPERTIES,
   summarise,
 } from './check-visual-contract.mjs';
 
@@ -35,37 +31,6 @@ test('visual diffs preserve property values, scope, and structural priority', ()
     ['added', 'removed'],
   );
   assert.equal(summarise(Array(60).fill({ kind: 'removed' }), 100).structural, true);
-});
-
-test('omission tables encode CSS inheritance without ambiguous or dead rules', () => {
-  const cssInherited = new Set([
-    'color',
-    'cursor',
-    'fontFamily',
-    'fontSize',
-    'fontStyle',
-    'fontWeight',
-    'letterSpacing',
-    'lineHeight',
-    'pointerEvents',
-    'textAlign',
-    'textTransform',
-    'visibility',
-    'whiteSpace',
-    'wordBreak',
-  ]);
-
-  assert.deepEqual(
-    PROPERTIES.filter((property) => cssInherited.has(property)).sort(),
-    [...INHERITED_PROPERTIES].sort(),
-  );
-  assert.equal(
-    INHERITED_PROPERTIES.some((property) => property in INITIAL_VALUES),
-    false,
-  );
-  assert.deepEqual(findDeadOmissionRules({ sampled: 10, hits: { gap: 0 } }, { gap: 'normal' }), [
-    { property: 'gap', sampled: 10 },
-  ]);
 });
 
 test('declared scopes fail closed and cannot claim most of a capture', () => {

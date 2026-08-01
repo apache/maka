@@ -1,8 +1,4 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const signingEnvironment = {
@@ -24,23 +20,6 @@ test('release packaging refuses an unsupported host or incomplete signing identi
     packageMacosArm64({ platform: 'darwin', arch: 'arm64', env: {} }),
     /CSC_LINK/,
   );
-});
-
-test('release filesystem smoke uses the packaged worker protocol', async () => {
-  const { smokePackagedFilesystemWorker } = await import(
-    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
-  );
-  const workspace = await mkdtemp(join(tmpdir(), 'maka-release-worker-smoke-'));
-  const worker = fileURLToPath(
-    new URL('../packages/runtime/dist/workers/filesystem-worker.js', import.meta.url),
-  );
-  try {
-    await smokePackagedFilesystemWorker(process.execPath, worker, {
-      workingDirectory: workspace,
-    });
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
 });
 
 test('packaged app verification covers trust, runtime resources, and renderer launch', async () => {

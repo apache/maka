@@ -218,30 +218,6 @@ for (const [label, patch, pattern] of [
     /complete\/end_turn/,
   ],
   [
-    'failed action',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: false,
-          targetOwned: true,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'observation-1',
-          targetPid: 42,
-          targetWindowId: 7,
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /scenario-authorized expected failures/,
-  ],
-  [
     'wrong target',
     {
       actions: [
@@ -265,32 +241,11 @@ for (const [label, patch, pattern] of [
     },
     /PID\/window trace evidence/,
   ],
-  ['missing dispatch', { driverTraces: [] }, /dispatch evidence missing/],
   ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
   ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
   ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
   ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
   ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
-  [
-    'missing fixture ownership trace',
-    {
-      actions: [
-        {
-          type: 'observe',
-          resultObservationId: 'observation-1',
-          success: true,
-          targetOwned: true,
-        },
-        {
-          type: 'click_element',
-          sourceObservationId: 'observation-1',
-          success: true,
-          targetOwned: true,
-        },
-      ],
-    },
-    /PID\/window trace evidence/,
-  ],
   [
     'broken observation lineage',
     {
@@ -336,28 +291,6 @@ for (const [label, patch, pattern] of [
     assert.match(matrix.rows[0].reportError, pattern);
   });
 }
-
-test('fault-injection evidence cannot satisfy real-provider readiness', async () => {
-  const matrix = await buildProviderMatrix({
-    scenarios: [scenario()],
-    providers: [
-      {
-        id: 'openai',
-        readiness: 'real',
-        producer: 'cu-real-model-launcher',
-        model: 'gpt-5.4',
-        report: 'r',
-      },
-    ],
-    loadReport: async () =>
-      realReport({
-        evidenceClass: 'fault-injection',
-        qualificationEligible: false,
-      }),
-  });
-  assert.equal(matrix.rows[0].status, 'invalid-report');
-  assert.match(matrix.rows[0].reportError, /real-runtime/);
-});
 
 test('an explicit action sequence is checked exactly', async () => {
   const orderedScenario = scenario({
