@@ -12,10 +12,10 @@
  * StyleX atoms below are the official component; only the build-time StyleX
  * call has already been compiled, matching the published package output.
  *
- * Product dialect (chat body): trigger hover / chevron size / chevron edge
- * align with core ChatToolCalls so reasoning and tools share one disclosure
- * language. Glyph stays lab's ThinkingIcon; StyleX atoms for hover and
- * margin-inline-start:auto already ship in core's atom sheet.
+ * Product dialect (chat body): chevron size / edge align with ChatToolCalls.
+ * No pointer / overlay hover — chat-message.css pins default cursor and kills
+ * lab wash so reasoning and tools share a document-feel disclosure. Glyph
+ * stays lab's ThinkingIcon; margin-inline-start:auto ships in core atoms.
  */
 import { useCallback, useState, type HTMLAttributes, type ReactNode } from 'react';
 import { mergeProps, themeProps } from '@astryxdesign/core/utils';
@@ -55,10 +55,6 @@ function ChevronDownIcon() {
     </svg>
   );
 }
-
-// ChatToolCalls callRowClickable atoms — already in core astryx.css.
-const TRIGGER_HOVER =
-  'xh6dtrn x7a5moj xtedp8i xe9uy6x';
 
 export function ChatReasoning(props: ChatReasoningProps) {
   const {
@@ -107,7 +103,7 @@ export function ChatReasoning(props: ChatReasoningProps) {
             toggle();
           }
         }}
-        className={`x78zum5 x6s0dn4 x1s4dlld x1ypdohk x87ps6o xjwf9q1 x13f7esw ${TRIGGER_HOVER}`}
+        className="x78zum5 x6s0dn4 x1s4dlld x1ypdohk x87ps6o xjwf9q1 x13f7esw"
       >
         <span className="x3nfvp2 x6s0dn4 xl56j7k x2lah0s x1kky2od xlup9mm xv1l7n4">
           <ThinkingIcon />

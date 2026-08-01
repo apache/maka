@@ -334,17 +334,15 @@ describe('tool activity presentation', () => {
       open: true,
     }));
 
-    // Command without shell prompt; no cwd / success-style exit badge bar.
+    // Command without shell prompt; no cwd / exit-code footer (failure is on the row).
     assert.match(markup, /npm run -w @maka\/ui test/);
     assert.doesNotMatch(markup, /\$\s*npm run -w @maka\/ui test/);
     assert.doesNotMatch(markup, /\/tmp\/maka/);
     assert.doesNotMatch(markup, /实时输出/);
-    // Failure note, not a permanent exit-code chrome row for successes.
-    assert.match(markup, /失败 · 退出码 1|失败.*退出码 1/);
+    assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
     assert.match(markup, /Error: boom/);
     // Astryx CodeBlock well (or the product data-slot wrapper around it).
     assert.match(markup, /astryx-codeblock|data-slot="tool-output"/);
-    // No always-on copy control on the output well (error banner may still copy).
     assert.doesNotMatch(markup, /复制研读提示/);
   });
 
@@ -369,7 +367,7 @@ describe('tool activity presentation', () => {
 
     assert.match(markup, /npm test/);
     assert.match(markup, /终端输出不可用/);
-    assert.match(markup, /失败 · 退出码 1|失败.*退出码 1/);
+    assert.doesNotMatch(markup, /失败 · 退出码|退出码 1/);
   });
 
   it('keeps live tool output in the same quiet panel language when open', () => {

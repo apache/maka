@@ -222,18 +222,16 @@ function TerminalPreview(props: {
   // The cmd line is also user-runtime text — don't echo a `--api-key=...`
   // arg into the chat without masking it.
   const safeCmd = redactSecrets(props.cmd);
-  const attention = !succeeded || cancelled || timedOut;
+  // Ordinary failure is already on the ChatToolCalls row (status=error).
+  // Keep only notes Astryx cannot express: cancel, timeout, sandbox, and an
+  // explicit runtime failureMessage. No "失败 · 退出码 N" footers, no
+  // destructive CodeBlock border — CodeBlock stays the lab neutral card.
 
   return (
     <div
       data-slot="tool-output"
       data-kind="terminal"
-      className={cn(
-        'mt-1 flex min-w-0 flex-col gap-1.5',
-        attention && (props.sandboxBlocked
-          ? '[&_.astryx-codeblock]:border-[oklch(from_var(--warning)_l_c_h_/_0.32)]'
-          : '[&_.astryx-codeblock]:border-[oklch(from_var(--destructive)_l_c_h_/_0.28)]'),
-      )}
+      className="mt-1 flex min-w-0 flex-col gap-1.5"
     >
       {props.output ? (
         <ShellOutputBody
@@ -267,11 +265,6 @@ function TerminalPreview(props: {
           {props.exitCode !== undefined
             ? `${activityCopy.status.sandboxBlocked} · ${copy.exitCode(props.exitCode)}`
             : activityCopy.status.sandboxBlocked}
-        </p>
-      )}
-      {!succeeded && !cancelled && !timedOut && !props.sandboxBlocked && (
-        <p className={cn(TOOL_OUTPUT_NOTE_CLASS, 'text-[color:var(--destructive)]')}>
-          {props.exitCode !== undefined ? `${copy.failed} · ${copy.exitCode(props.exitCode)}` : copy.failed}
         </p>
       )}
     </div>

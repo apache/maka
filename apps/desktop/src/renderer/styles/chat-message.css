@@ -53,12 +53,19 @@
 /* Chat activity disclosure dialect
    ----------------------------------------------------------------------------
    Reasoning, tool calls, and the product trow fallback share one trigger
-   language inside a turn body. Authority is Astryx ChatToolCalls (supporting
-   size / medium weight / 24px row / overlay-hover / body label). Product only
-   closes the deltas StyleX leaves open — do not invent a third component.
+   language inside a turn body. Lab ChatToolCalls uses pointer + overlay-hover;
+   product chat keeps a document feel: default arrow (native-cursor convention
+   — hand reserved for links), no hover wash. Supporting size / medium weight /
+   24px row / body label stay. Do not invent a third component.
 
    !important: StyleX atoms ship as `.x*:not(#\#)…` (often unlayered). Same
    seam as sidebar.css when product must win a single dialect property. */
+.maka-turn .astryx-chat-tool-calls [role="button"],
+.maka-turn .astryx-chat-reasoning [role="button"],
+.maka-turn [data-trow] .astryx-collapsible-trigger {
+  cursor: default !important;
+}
+
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
   /* callName is mono in core; chat-body labels stay body like 深度思考. */
   font-family: var(--font-family-body) !important;
@@ -80,10 +87,11 @@
 }
 
 @media (hover: hover) {
-  /* Group headers lack callRowClickable; detail rows already set the same bg. */
-  .maka-turn .astryx-chat-tool-calls > [role="button"]:hover {
-    background-color: var(--color-overlay-hover);
-    border-radius: var(--radius-element);
+  /* Kill lab callRowClickable / group-header overlay wash inside chat. */
+  .maka-turn .astryx-chat-tool-calls [role="button"]:hover,
+  .maka-turn .astryx-chat-reasoning [role="button"]:hover,
+  .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
+    background-color: transparent !important;
   }
 }
 
@@ -109,12 +117,6 @@
 .maka-turn [data-trow] .astryx-collapsible-trigger > span:last-child > * {
   width: 0.75rem !important;
   height: 0.75rem !important;
-}
-
-@media (hover: hover) {
-  .maka-turn [data-trow] .astryx-collapsible-trigger:hover {
-    background-color: var(--color-overlay-hover);
-  }
 }
 
 /* Tool row detail enter — Astryx ChatToolCalls group + ChatReasoning use
