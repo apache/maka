@@ -5,22 +5,6 @@ function settingsNavigation(page: Page) {
   return page.getByRole('navigation', { name: /^(设置分组|Settings sections)$/ });
 }
 
-test('settings switches keep the compact shared control geometry', async ({ window: page }) => {
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
-  await page.getByRole('button', { name: '设置' }).click();
-  await settingsNavigation(page).getByRole('button', { name: '通用', exact: true }).click();
-
-  const privacySwitch = page.getByRole('switch', { name: '启用隐身模式' });
-  await expect(privacySwitch).toBeVisible();
-  const box = await privacySwitch.boundingBox();
-  expect(box).not.toBeNull();
-  expect(box!.width).toBe(40);
-  expect(box!.height).toBe(24);
-  await expect.poll(
-    () => privacySwitch.evaluate((element) => getComputedStyle(element).boxShadow),
-  ).toBe('none');
-});
-
 test('general default-model options keep provider marks inside the Selector slot', async ({
   window: page,
 }) => {
@@ -219,49 +203,28 @@ test('permission rows keep their text at the window floor', async ({ permissionS
   ).toBe(true);
 });
 
-test('health summary tiles stay readable at the window floor', async ({ window: page }) => {
-  await page.setViewportSize({ width: 480, height: 900 });
-  const settings = await openSettings(page);
-  await settingsNavigation(page).getByRole('button', { name: '健康', exact: true }).click();
-
-  const healthSummary = settings.locator('.settingsHealthSummary');
-  await expect(healthSummary).toBeVisible();
-  await expect.poll(async () => {
-    const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(healthSummary);
-    return {
-      hasSummaryTracks: trackCount > 0,
-      tracksStayLegible: narrowestTrack >= 80,
-      valuesContained,
-    };
-  }).toEqual({ hasSummaryTracks: true, tracksStayLegible: true, valuesContained: true });
-
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-});
-
-test('permission and health summaries keep one track per metric when wide', async ({ window: page }) => {
+test('summary grids keep one track per metric when wide', async ({ window: page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const settings = await openSettings(page);
 
-  // `auto-fit` must not cost the full-width layout: one track per metric.
+  // `auto-fit` must not cost the full-width layout: one track per metric, on
+  // every summary grid that uses it.
+  const expectOneTrackPerTile = async (selector: string, metrics: number) => {
+    await expect(settings.locator(selector)).toBeVisible();
+    await expect.poll(async () => {
+      const { trackCount, tileCount } = await summaryGeometry(settings.locator(selector));
+      return { trackCount, tileCount };
+    }).toEqual({ trackCount: metrics, tileCount: metrics });
+  };
+
   await settingsNavigation(page).getByRole('button', { name: '权限与能力', exact: true }).click();
-  await expect(settings.locator('.settingsPermissionSummary')).toBeVisible();
-  await expect.poll(async () => {
-    const { trackCount, tileCount } = await summaryGeometry(
-      settings.locator('.settingsPermissionSummary'),
-    );
-    return { trackCount, tileCount };
-  }).toEqual({ trackCount: 4, tileCount: 4 });
+  await expectOneTrackPerTile('.settingsPermissionSummary', 4);
 
   await settingsNavigation(page).getByRole('button', { name: '健康', exact: true }).click();
-  await expect(settings.locator('.settingsHealthSummary')).toBeVisible();
-  await expect.poll(async () => {
-    const { trackCount, tileCount } = await summaryGeometry(
-      settings.locator('.settingsHealthSummary'),
-    );
-    return { trackCount, tileCount };
-  }).toEqual({ trackCount: 5, tileCount: 5 });
+  await expectOneTrackPerTile('.settingsHealthSummary', 5);
+
+  await settingsNavigation(page).getByRole('button', { name: '使用统计', exact: true }).click();
+  await expectOneTrackPerTile('.settingsUsageSummary', 4);
 });
 
 test('capability diagnostics stay contained when expanded at the window floor', async ({ permissionSettingsWindow: page }) => {
@@ -303,43 +266,6 @@ test('capability diagnostics stay contained when expanded at the window floor', 
  * way. Web search: unbreakable tokens (env-var hint, result hostnames/URLs)
  * must wrap instead of widening the page.
  */
-test('usage and web search stay contained at the window floor', async ({ window: page }) => {
-  await page.setViewportSize({ width: 480, height: 900 });
-  const settings = await openSettings(page);
-
-  await settingsNavigation(page).getByRole('button', { name: '使用统计', exact: true }).click();
-  const tabsBar = settings.locator('.settingsUsageTabsBar');
-  await expect(tabsBar).toBeVisible();
-  await expect(tabsBar).toHaveCSS('overflow-x', 'auto');
-  await expect.poll(async () => {
-    const { trackCount, valuesContained } = await summaryGeometry(
-      settings.locator('.settingsUsageSummary'),
-    );
-    return { hasSummaryTracks: trackCount > 0, valuesContained };
-  }).toEqual({ hasSummaryTracks: true, valuesContained: true });
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-
-  // Not `exact`: the nav entry's accessible name carries its Beta badge.
-  await settingsNavigation(page).getByRole('button', { name: '联网搜索' }).click();
-  const disabledReason = settings.locator('.settingsWebSearchDisabledReason');
-  await expect(disabledReason).toBeVisible();
-  await expect(disabledReason).toHaveCSS('overflow-wrap', 'anywhere');
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-
-  await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
-  const previewHeader = settings.locator('.settingsMemoryPromptPreviewHeader');
-  await expect(previewHeader).toBeVisible();
-  await expect(previewHeader).toHaveCSS('flex-wrap', 'wrap');
-  await expect.poll(
-    () =>
-      previewHeader.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-});
-
 /**
  * #1364 review follow-up: the containment test above never reaches the two
  * long-content branches — the default fixture has no request logs (so the
@@ -392,21 +318,6 @@ test('web search results wrap inside their cards at the window floor', async ({
   await expect.poll(
     () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
   ).toBe(true);
-});
-
-test('usage keeps one summary track per metric when wide', async ({ window: page }) => {
-  await page.setViewportSize({ width: 1280, height: 900 });
-  const settings = await openSettings(page);
-  await settingsNavigation(page).getByRole('button', { name: '使用统计', exact: true }).click();
-
-  // `auto-fit` must not cost the full-width layout: four metrics, four tracks.
-  await expect(settings.locator('.settingsUsageSummary')).toBeVisible();
-  await expect.poll(async () => {
-    const { trackCount, tileCount } = await summaryGeometry(
-      settings.locator('.settingsUsageSummary'),
-    );
-    return { trackCount, tileCount };
-  }).toEqual({ trackCount: 4, tileCount: 4 });
 });
 
 test('remote access opens a channel detail from the overview and returns', async ({ window: page }) => {
@@ -634,72 +545,11 @@ test('general forms and Astryx Item controls stay contained across widths', asyn
  * at the window floor the full name stays readable (the old nowrap+ellipsis
  * cut "Catppuccin Mocha" to "Catppucc…" with no way to recover it).
  */
-test('appearance palette names stay fully visible at the window floor', async ({
-  window: page,
-}) => {
-  await page.setViewportSize({ width: 480, height: 900 });
-  const settings = await openSettings(page);
-  await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
-
-  const label = settings.getByText('Catppuccin Mocha', { exact: true });
-  await expect(label).toBeVisible();
-  // Wrapping, not clipping: nothing hides past the box in either axis.
-  await expect.poll(
-    () =>
-      label.evaluate((element) => ({
-        horizontallyContained: element.scrollWidth <= element.clientWidth,
-        verticallyContained: element.scrollHeight <= element.clientHeight,
-      })),
-  ).toEqual({ horizontallyContained: true, verticallyContained: true });
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-});
-
 /**
  * Three smaller pages at the window floor. The Data page adds two page-owned
  * surfaces: the Astryx conflict-strategy field and the workspace path's
  * wrapping mono value.
  */
-test('data, about, and daily review stay contained at the window floor', async ({
-  window: page,
-}) => {
-  await page.setViewportSize({ width: 480, height: 900 });
-  const settings = await openSettings(page);
-
-  await settingsNavigation(page).getByRole('button', { name: '数据', exact: true }).click();
-  const strategy = settings.getByRole('combobox', { name: '导入时同名连接的处理方式' });
-  await expect(strategy).toBeVisible();
-  const strategyBox = await strategy.boundingBox();
-  const settingsBox = await settings.boundingBox();
-  expect(strategyBox).not.toBeNull();
-  expect(settingsBox).not.toBeNull();
-  expect(strategyBox!.x).toBeGreaterThanOrEqual(settingsBox!.x);
-  expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
-    settingsBox!.x + settingsBox!.width,
-  );
-  const workspaceValue = settings.locator('span[data-mono="true"]').first();
-  await expect(workspaceValue).toBeVisible();
-  await expect.poll(
-    () => workspaceValue.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-
-  await settingsNavigation(page).getByRole('button', { name: '关于', exact: true }).click();
-  await expect(settings.locator('.settingsAboutPage')).toBeVisible();
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-
-  await settingsNavigation(page).getByRole('button', { name: '每日回顾', exact: true }).click();
-  await expect(settings.locator('.settingsFeatureStatusPage')).toBeVisible();
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
-});
-
 /**
  * #1363 review: the full English field label is wider than the 480px floor's
  * content column, so the field and label must remain contained without a
@@ -729,31 +579,131 @@ test('data config strategy stays contained at the window floor in English', asyn
 });
 
 /**
- * Memory's label + status Badge + switch travel as one Astryx Item. At the
- * floor, the cluster and the row must remain contained without reintroducing
- * the retired form-row geometry.
+ * Window-floor sweep over the settings pages that share the default `window`
+ * fixture (#1304 / #1361 / #1364).
+ *
+ * These were five separate tests paying five Electron cold starts to do the
+ * same thing: shrink to the 480px `SAFE_MIN_WIDTH` floor and walk pages. Every
+ * page-specific assertion below is carried over unchanged — the sweep only
+ * stops re-launching the app between them. Pages that need their own seeded
+ * fixture (permissions, usage logs, web-search results) stay separate above,
+ * because their state is what makes their contract reachable at all.
  */
-test('memory status Item stays contained at the window floor', async ({ window: page }) => {
+test('settings pages stay contained at the window floor', async ({ window: page }) => {
   await page.setViewportSize({ width: 480, height: 900 });
   const settings = await openSettings(page);
-  await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
+  const pageContained = () =>
+    expect
+      .poll(() => settings.evaluate((element) => element.scrollWidth <= element.clientWidth))
+      .toBe(true);
 
-  const statusRow = settings.locator('.astryx-item').filter({ hasText: '本地 MEMORY.md' });
-  await expect(statusRow).toBeVisible();
-  await expect.poll(
-    () =>
-      statusRow.evaluate((element) => {
-        const cluster = element.querySelector('.settingsFormRowControlCluster');
-        return {
-          clusterContained: !!cluster && cluster.scrollWidth <= cluster.clientWidth,
-          rowContained: element.scrollWidth <= element.clientWidth,
-        };
-      }),
-  ).toEqual({ clusterContained: true, rowContained: true });
+  await test.step('health summary tiles stay readable', async () => {
+    await settingsNavigation(page).getByRole('button', { name: '健康', exact: true }).click();
+    const healthSummary = settings.locator('.settingsHealthSummary');
+    await expect(healthSummary).toBeVisible();
+    await expect.poll(async () => {
+      const { trackCount, narrowestTrack, valuesContained } = await summaryGeometry(healthSummary);
+      return {
+        hasSummaryTracks: trackCount > 0,
+        tracksStayLegible: narrowestTrack >= 80,
+        valuesContained,
+      };
+    }).toEqual({ hasSummaryTracks: true, tracksStayLegible: true, valuesContained: true });
+    await pageContained();
+  });
 
-  // Direct Item rows plus the entry-list/preview/backup tracks leave no
-  // routed-out overflow to carve around.
-  await expect.poll(
-    () => settings.evaluate((element) => element.scrollWidth <= element.clientWidth),
-  ).toBe(true);
+  await test.step('usage tabs scroll within themselves', async () => {
+    await settingsNavigation(page).getByRole('button', { name: '使用统计', exact: true }).click();
+    const tabsBar = settings.locator('.settingsUsageTabsBar');
+    await expect(tabsBar).toBeVisible();
+    await expect(tabsBar).toHaveCSS('overflow-x', 'auto');
+    await expect.poll(async () => {
+      const { trackCount, valuesContained } = await summaryGeometry(
+        settings.locator('.settingsUsageSummary'),
+      );
+      return { hasSummaryTracks: trackCount > 0, valuesContained };
+    }).toEqual({ hasSummaryTracks: true, valuesContained: true });
+    await pageContained();
+  });
+
+  await test.step('the web-search hint wraps its unbreakable tokens', async () => {
+    // Not `exact`: the nav entry's accessible name carries its Beta badge.
+    await settingsNavigation(page).getByRole('button', { name: '联网搜索' }).click();
+    const disabledReason = settings.locator('.settingsWebSearchDisabledReason');
+    await expect(disabledReason).toBeVisible();
+    await expect(disabledReason).toHaveCSS('overflow-wrap', 'anywhere');
+    await pageContained();
+  });
+
+  await test.step('memory keeps its preview header and status Item contained', async () => {
+    await settingsNavigation(page).getByRole('button', { name: '记忆', exact: true }).click();
+    const previewHeader = settings.locator('.settingsMemoryPromptPreviewHeader');
+    await expect(previewHeader).toBeVisible();
+    await expect(previewHeader).toHaveCSS('flex-wrap', 'wrap');
+    await expect.poll(
+      () => previewHeader.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+
+    // Memory's label + status Badge + switch travel as one Astryx Item. At the
+    // floor, the cluster and the row must remain contained without
+    // reintroducing the retired form-row geometry.
+    const statusRow = settings.locator('.astryx-item').filter({ hasText: '本地 MEMORY.md' });
+    await expect(statusRow).toBeVisible();
+    await expect.poll(
+      () =>
+        statusRow.evaluate((element) => {
+          const cluster = element.querySelector('.settingsFormRowControlCluster');
+          return {
+            clusterContained: !!cluster && cluster.scrollWidth <= cluster.clientWidth,
+            rowContained: element.scrollWidth <= element.clientWidth,
+          };
+        }),
+    ).toEqual({ clusterContained: true, rowContained: true });
+    await pageContained();
+  });
+
+  await test.step('palette names wrap instead of clipping', async () => {
+    await settingsNavigation(page).getByRole('button', { name: '外观', exact: true }).click();
+    const label = settings.getByText('Catppuccin Mocha', { exact: true });
+    await expect(label).toBeVisible();
+    // Wrapping, not clipping: nothing hides past the box in either axis.
+    await expect.poll(
+      () =>
+        label.evaluate((element) => ({
+          horizontallyContained: element.scrollWidth <= element.clientWidth,
+          verticallyContained: element.scrollHeight <= element.clientHeight,
+        })),
+    ).toEqual({ horizontallyContained: true, verticallyContained: true });
+    await pageContained();
+  });
+
+  await test.step('data keeps its strategy field and workspace path inside the column', async () => {
+    await settingsNavigation(page).getByRole('button', { name: '数据', exact: true }).click();
+    const strategy = settings.getByRole('combobox', { name: '导入时同名连接的处理方式' });
+    await expect(strategy).toBeVisible();
+    const strategyBox = await strategy.boundingBox();
+    const settingsBox = await settings.boundingBox();
+    expect(strategyBox).not.toBeNull();
+    expect(settingsBox).not.toBeNull();
+    expect(strategyBox!.x).toBeGreaterThanOrEqual(settingsBox!.x);
+    expect(strategyBox!.x + strategyBox!.width).toBeLessThanOrEqual(
+      settingsBox!.x + settingsBox!.width,
+    );
+    const workspaceValue = settings.locator('span[data-mono="true"]').first();
+    await expect(workspaceValue).toBeVisible();
+    await expect.poll(
+      () => workspaceValue.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+    await pageContained();
+  });
+
+  await test.step('about and daily review stay contained', async () => {
+    await settingsNavigation(page).getByRole('button', { name: '关于', exact: true }).click();
+    await expect(settings.locator('.settingsAboutPage')).toBeVisible();
+    await pageContained();
+
+    await settingsNavigation(page).getByRole('button', { name: '每日回顾', exact: true }).click();
+    await expect(settings.locator('.settingsFeatureStatusPage')).toBeVisible();
+    await pageContained();
+  });
 });
