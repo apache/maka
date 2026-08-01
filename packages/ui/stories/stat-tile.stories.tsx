@@ -14,25 +14,6 @@ type Story = StoryObj<typeof meta>;
 
 const TONES: StatTileTone[] = ['neutral', 'info', 'success', 'warning', 'destructive'];
 
-export const LongUnbrokenValue: Story = {
-  render: () => (
-    <div style={{ display: 'grid', gap: 16, width: 180 }}>
-      <StatTile
-        emphasis="filled"
-        label="Listen address"
-        value="http://127.0.0.1:3939"
-        detail="Local only"
-      />
-      <StatTile
-        emphasis="outline"
-        label="Access token"
-        value="maka_live_token_4f61127a1e66b49c97a1d1c45b0df9f6b28df69c"
-        detail="Long unbroken strings wrap inside the tile"
-      />
-    </div>
-  ),
-};
-
 export const ToneAndEmphasisMatrix: Story = {
   render: () => (
     <div style={{ display: 'grid', gap: 16 }}>

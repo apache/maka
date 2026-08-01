@@ -5,9 +5,6 @@ import type { ToolActivityItem } from '../src/materialize.js';
 import {
   denseMixedResultItems,
   errorsAndPermissionDeniedItems,
-  statusOverviewItems,
-  subagentAndExploreItems,
-  terminalAndLiveOutputItems,
 } from './tool-activity.fixtures.js';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -92,26 +89,6 @@ function ToolActivityBoard(props: {
     </div>
   );
 }
-
-// Real path: any turn where the agent calls tools — this is the row's status set
-// (running / done / failed), collected side by side for review.
-export const StatusOverview: Story = {
-  args: { items: statusOverviewItems },
-  render: (args) => <ToolActivityBoard items={args.items} width={860} />,
-};
-
-// Real path: the agent runs a shell command → the terminal row streams its output live.
-export const TerminalAndLiveOutput: Story = {
-  args: { items: terminalAndLiveOutputItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
-};
-
-// Real path: the agent dispatches a subagent or an explore task → the nested activity
-// rows.
-export const SubagentAndExplore: Story = {
-  args: { items: subagentAndExploreItems },
-  render: (args) => <ToolActivityBoard items={args.items} expandAll />,
-};
 
 // Real path: a tool call fails, or the user denies it in the permission prompt → the
 // failed and denied rows.

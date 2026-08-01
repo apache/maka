@@ -128,34 +128,6 @@ function StoryFrame(props: {
   );
 }
 
-const coreSessions = [
-  makeSession({
-    id: 'session-running',
-    name: '生成本周 benchmark 对比表',
-    status: 'running',
-    lastMessageAt: NOW - 2 * 60 * 1000,
-  }),
-  makeSession({
-    id: 'session-active',
-    name: 'Harbor adapter metadata 对齐',
-    lastMessageAt: NOW - 18 * 60 * 1000,
-    hasUnread: true,
-  }),
-  makeSession({
-    id: 'session-stale',
-    name: '旧连接里的模型选择',
-    lastMessageAt: NOW - 42 * 60 * 1000,
-    backend: 'fake',
-    llmConnectionSlug: 'removed-connection',
-  }),
-  makeSession({
-    id: 'session-pinned',
-    name: 'PR #390 Storybook polish tracking',
-    lastMessageAt: NOW - 76 * 60 * 1000,
-    isFlagged: true,
-  }),
-];
-
 const statusSessions = [
   makeSession({
     id: 'status-running',
@@ -203,23 +175,6 @@ const statusSessions = [
   }),
 ];
 
-const longListSessions = Array.from({ length: 36 }, (_, index) => makeSession({
-  id: `long-list-${index + 1}`,
-  name: `${index % 6 === 0 ? '已置顶 ' : ''}会话 ${String(index + 1).padStart(2, '0')} · ${
-    [
-      '整理发布前检查项',
-      '跟进 UI 回归截图',
-      '复盘运行时工具输出',
-      '确认 provider 配置',
-      '收敛 PR body',
-      '处理 review 反馈',
-    ][index % 6]
-  }`,
-  lastMessageAt: NOW - index * 47 * 60 * 1000,
-  isFlagged: index === 0 || index === 6,
-  hasUnread: index === 4 || index === 17,
-}));
-
 const longTitleSessions = [
   makeSession({
     id: 'long-title-active',
@@ -251,18 +206,6 @@ export const Empty: Story = {
   ),
 };
 
-// Real path: a workspace with enough history that the conversation list scrolls.
-export const LongList: Story = {
-  render: () => (
-    <StoryFrame>
-      <SessionListPanel {...panelProps({
-        sessions: longListSessions,
-        activeId: 'long-list-4',
-      })} />
-    </StoryFrame>
-  ),
-};
-
 // Real path: the same list once its rows carry lifecycle state (running / waiting /
 // failed), which the row shows as an indicator rather than a bucket (#1459).
 export const ConversationStates: Story = {
@@ -273,54 +216,6 @@ export const ConversationStates: Story = {
         activeId: 'status-waiting',
         streamingSessionIds: new Set(['status-running']),
         staleSessionIds: new Set(['status-blocked']),
-      })} />
-    </StoryFrame>
-  ),
-};
-
-// Real path: sidebar → 扩展 — the list keeps the conversation heading and view switch
-// while a non-conversation module is selected (#1458).
-export const ExtensionSelected: Story = {
-  render: () => (
-    <StoryFrame>
-      <SessionListPanel
-        {...panelProps({
-          sessions: coreSessions,
-          activeId: 'session-active',
-          streamingSessionIds: new Set(['session-running']),
-          staleSessionIds: new Set(['session-stale']),
-        })}
-        selection={{ section: 'extensions', module: 'skills' }}
-        viewMode="conversation"
-        onViewModeChange={noop}
-      />
-    </StoryFrame>
-  ),
-};
-
-// Real path: hover a conversation row → its inline actions appear.
-export const RowActions: Story = {
-  render: () => (
-    <StoryFrame focusActiveRow>
-      <SessionListPanel {...panelProps({
-        sessions: coreSessions,
-        activeId: 'session-active',
-        streamingSessionIds: new Set(['session-running']),
-        staleSessionIds: new Set(['session-stale']),
-      })} />
-    </StoryFrame>
-  ),
-};
-
-// Real path: hover a conversation row → ⋯ → the row menu is open.
-export const RowMenuOpen: Story = {
-  render: () => (
-    <StoryFrame openActiveRowMenu>
-      <SessionListPanel {...panelProps({
-        sessions: coreSessions,
-        activeId: 'session-active',
-        streamingSessionIds: new Set(['session-running']),
-        staleSessionIds: new Set(['session-stale']),
       })} />
     </StoryFrame>
   ),

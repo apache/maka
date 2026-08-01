@@ -4,7 +4,6 @@ import type { ProviderType, ThinkingLevel } from '@maka/core';
 import { NewChatModelPicker } from '../src/chat-model-switcher.js';
 import {
   modelChoiceValue,
-  modelMenuGroups,
   type ChatModelChoice,
 } from '../src/chat-model-helpers.js';
 import { ModelPicker } from '../src/model-picker.js';
@@ -77,11 +76,6 @@ export const Default: Story = {
   render: () => <ModelPickerFrame />,
 };
 
-// Real path: an existing session whose persisted model left the live catalog.
-export const UnknownCurrent: Story = {
-  render: () => <ModelPickerFrame initialValue="legacy:model-that-is-no-longer-listed" />,
-};
-
 // Real path: Settings → 通用 before any provider exposes a model choice.
 export const EmptyCatalog: Story = {
   render: () => (
@@ -97,7 +91,3 @@ export const EmptyCatalog: Story = {
   ),
 };
 
-// Real path: composer footer with model and thinking-level responsibilities adjacent.
-export const ThinkingLevelAdjacent: Story = {
-  render: () => <ModelPickerFrame thinking />,
-};

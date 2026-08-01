@@ -245,25 +245,6 @@ const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
 
 type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
 
-const withMcpBridge = withScopedMakaBridge({
-  mcp: {
-    getConfig: async () => ({ version: 1, mcpServers: {} }),
-    listStatuses: async () => [],
-    setConfig: async (config: unknown) => config,
-    upsert: async () => ({ version: 1, mcpServers: {} }),
-    install: async () => ({ version: 1, mcpServers: {} }),
-    remove: async () => ({ version: 1, mcpServers: {} }),
-    cancelInstall: async () => ({ version: 1, mcpServers: {} }),
-    test: async () => {
-      throw new Error('The empty MCP baseline does not test a server');
-    },
-    reconnect: async () => {
-      throw new Error('The empty MCP baseline does not reconnect a server');
-    },
-    subscribeChanges: () => () => {},
-  },
-});
-
 const configuredMcpConfig: McpConfigFile = {
   version: 1,
   mcpServers: {
@@ -456,18 +437,9 @@ async function assertKeepAwakeStoryState(canvasElement: HTMLElement) {
   throw new Error('Keep-awake story did not expose a checked contextual control');
 }
 
-// Real path: sidebar → 扩展 → 技能, on a fresh install.
-export const ExtensionsSkills: Story = { render: () => <ExtensionsSkillsSurface /> };
-
 // Real path: sidebar → 扩展 → 技能, with several installed skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
-};
-
-// Real path: sidebar → 扩展 → MCP, before any server is installed.
-export const ExtensionsMcp: Story = {
-  decorators: [withMcpBridge],
-  render: () => <ExtensionsMcpSurface />,
 };
 
 // Real path: sidebar → 扩展 → MCP, with one healthy server and one actionable failure.
@@ -524,24 +496,3 @@ export const ScheduledDailyReview: Story = {
   ),
 };
 
-// Real path: same page while the review is still being generated or fetched.
-export const ScheduledDailyReviewLoading: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{ fetchDay: async () => new Promise<DailyReviewSummary>(() => {}) }}
-    />
-  ),
-};
-
-// Real path: same page when the main-process bridge fails to return the review.
-export const ScheduledDailyReviewLoadError: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{
-        fetchDay: async () => {
-          throw new Error('每日回顾暂时不可用，请稍后重试。');
-        },
-      }}
-    />
-  ),
-};

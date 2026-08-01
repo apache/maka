@@ -363,21 +363,6 @@ function ProviderStory(props: {
   return <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />;
 }
 
-// Real path: 设置 → 模型, while the connection list is still loading.
-export const Loading: Story = {
-  render: () => <ProviderStory bridge={createBridge({ loading: true })} />,
-};
-
-// Real path: same page when the connection list fails to load.
-export const LoadError: Story = {
-  render: () => <ProviderStory bridge={createBridge({ failLoad: true })} />,
-};
-
-// Real path: same page on a fresh install, with no connection configured yet.
-export const Empty: Story = {
-  render: () => <ProviderStory bridge={createBridge({ connections: [], defaultSlug: null })} />,
-};
-
 // Real path: same page with several healthy connections and one of them set as default.
 export const ConfiguredProviders: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })} />,
@@ -387,16 +372,6 @@ export const ConfiguredProviders: Story = {
 // probe, or an expired OAuth session.
 export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
-};
-
-// Real path: 设置 → 模型 → click a connection → its detail panel.
-export const SelectedDetail: Story = {
-  render: () => (
-    <ProviderStory
-      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
-      autoOpen="detail"
-    />
-  ),
 };
 
 // Real path: 设置 → 模型 → 添加 → the provider catalog and the add form.
@@ -409,24 +384,3 @@ export const AddProvider: Story = {
   ),
 };
 
-// Real path: 设置 → 模型 → the OAuth subscription cards, shown here in their needs-attention
-// state.
-export const OAuthCards: Story = {
-  render: () => (
-    <ProviderStory
-      bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })}
-      autoOpen="oauth"
-    />
-  ),
-};
-
-// Real path: 设置 → 模型 → 账号 → xAI Grok → 登录, while the RFC 8628
-// device flow waits for the user to enter the displayed code in the browser.
-export const XaiDeviceAuthorization: Story = {
-  render: () => (
-    <ProviderStory
-      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
-      autoOpen="xai-device"
-    />
-  ),
-};
