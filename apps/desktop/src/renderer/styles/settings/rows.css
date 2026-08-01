@@ -35,13 +35,8 @@
 
 .settingsRows > .settingsFormLayout,
 .settingsRows > .settingsProxyBypassField,
-.settingsRows > .settingsActionRow,
-.settingsRows > [data-slot="alert"] {
+.settingsRows > .settingsActionRow {
   margin: var(--space-3);
-}
-
-.settingsRows > [data-slot="alert"] {
-  width: auto;
 }
 
 @container settings-rows (max-width: 460px) {

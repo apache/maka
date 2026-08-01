@@ -45,6 +45,44 @@ test('declared scopes fail closed and cannot claim most of a capture', () => {
   );
 });
 
+test('repeatable scopes stay bounded per root and in total', () => {
+  const scope = [{ name: 'item', repeatable: true }];
+  const smallRoots = Array.from({ length: 10 }, (_, root) => [
+    record(`p${root}`, { scope: 'item', scopeRoot: true }),
+    record(`p${root}>span`, { scope: 'item' }),
+  ]).flat();
+  assert.deepEqual(
+    checkScopeCoverage(
+      [...smallRoots, ...Array.from({ length: 15 }, (_, index) => record(`outside${index}`))],
+      undefined,
+      scope,
+    ),
+    [],
+  );
+
+  const broadRoots = [0, 1].flatMap((root) => [
+    record(`b${root}`, { scope: 'item', scopeRoot: true }),
+    ...Array.from({ length: 44 }, (_, index) =>
+      record(`b${root}>span:${index}`, { scope: 'item' }),
+    ),
+  ]);
+  assert.deepEqual(
+    checkScopeCoverage(
+      [...broadRoots, ...Array.from({ length: 10 }, (_, index) => record(`outside${index}`))],
+      undefined,
+      scope,
+    ),
+    [{ scope: 'item', claimed: 90, total: 100 }],
+  );
+
+  const leafRoots = Array.from({ length: 100 }, (_, index) =>
+    record(`leaf${index}`, { scope: 'item', scopeRoot: true })
+  );
+  assert.deepEqual(checkScopeCoverage(leafRoots, undefined, scope), [
+    { scope: 'item', claimed: 100, total: 100 },
+  ]);
+});
+
 test('salvaged anchors require an exact current capture hook', () => {
   const anchors = [{ commit: 'abc', regression: 'r', route: 'chat', anchor: 'list-row' }];
   const captures = new Map([['chat.light.darwin', [record('a', { contract: 'list-row-meta' })]]]);

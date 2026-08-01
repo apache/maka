@@ -126,7 +126,7 @@ describe('Astryx component behavior', () => {
   });
 
   it('exposes the first usage cell in each body row as its row header', async () => {
-    const { UsageSettingsPage } = await importRendererComponents();
+    const { LocaleProvider, ToastProvider, UsageSettingsPage } = await importRendererComponents();
     const settings = {
       usage: {
         range: '7d',
@@ -155,12 +155,16 @@ describe('Astryx component behavior', () => {
       byTool: [],
       pricing: [],
     };
-    const markup = renderToStaticMarkup(createElement(UsageSettingsPage, {
-      settings,
-      stats,
-      onUpdate: async () => { throw new Error('not called during render'); },
-      onReload: async () => undefined,
-    }));
+    const markup = renderWithLocale(
+      LocaleProvider,
+      createElement(UsageSettingsPage, {
+        settings,
+        stats,
+        onUpdate: async () => { throw new Error('not called during render'); },
+        onReload: async () => undefined,
+      }),
+      ToastProvider,
+    );
 
     assert.equal(markup.match(/<td\b[^>]*role="rowheader"/g)?.length, 1);
   });
