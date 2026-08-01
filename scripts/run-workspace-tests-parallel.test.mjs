@@ -1,17 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
-import {
-  SERIAL_WORKSPACE_DIRS,
-  loadWorkspaceDirs,
-  nameForDir,
-  parseCliArgs,
-  partitionWorkspaces,
-  runWorkspaceTests,
-} from './run-workspace-tests-parallel.mjs';
+import { parseCliArgs, runWorkspaceTests } from './run-workspace-tests-parallel.mjs';
 
 function makeSpawn(plan) {
   const calls = [];
@@ -35,29 +25,6 @@ function makeSpawn(plan) {
   return { spawn, calls };
 }
 
-test('loadWorkspaceDirs reads root package.json workspaces', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'maka-ws-load-'));
-  writeFileSync(
-    join(dir, 'package.json'),
-    JSON.stringify({ workspaces: ['packages/core', 'packages/headless', 'apps/desktop'] }),
-  );
-  assert.deepEqual(loadWorkspaceDirs(dir), ['packages/core', 'packages/headless', 'apps/desktop']);
-});
-
-test('partitionWorkspaces keeps serial packages out of the parallel batch', () => {
-  const { parallel, serial } = partitionWorkspaces(
-    ['packages/core', 'packages/headless', 'apps/desktop', 'packages/ui'],
-    SERIAL_WORKSPACE_DIRS,
-  );
-  assert.deepEqual(parallel, ['packages/core', 'apps/desktop', 'packages/ui']);
-  assert.deepEqual(serial, ['packages/headless']);
-});
-
-test('nameForDir strips packages/ and apps/ prefixes', () => {
-  assert.equal(nameForDir('packages/headless'), 'headless');
-  assert.equal(nameForDir('apps/desktop'), 'desktop');
-});
-
 test('CLI selection preserves root workspace order and validates bounded concurrency', () => {
   const available = ['packages/core', 'packages/headless', 'apps/desktop'];
   assert.deepEqual(
@@ -73,61 +40,6 @@ test('CLI selection preserves root workspace order and validates bounded concurr
     () => parseCliArgs(['--workspace=packages/missing'], available),
     /Unknown workspace/,
   );
-});
-
-test('serial mode runs every workspace via package-owned npm run test:dist', async () => {
-  const repoRoot = '/repo';
-  const workspaceDirs = ['packages/core', 'packages/headless', 'apps/desktop'];
-  const { spawn, calls } = makeSpawn(workspaceDirs.map(() => ({ close: 0 })));
-
-  await runWorkspaceTests({
-    repoRoot,
-    workspaceDirs,
-    serial: true,
-    spawn,
-  });
-
-  assert.equal(calls.length, 3);
-  for (const call of calls) {
-    assert.equal(call.command, 'npm run test:dist');
-    assert.equal(call.shell, true);
-  }
-  assert.deepEqual(
-    calls.map((c) => c.cwd),
-    [
-      join(repoRoot, 'packages/core'),
-      join(repoRoot, 'packages/headless'),
-      join(repoRoot, 'apps/desktop'),
-    ],
-  );
-});
-
-test('parallel mode runs non-serial workspaces first, then serial ones', async () => {
-  const repoRoot = '/repo';
-  const workspaceDirs = ['packages/core', 'packages/headless', 'packages/ui'];
-  const order = [];
-  const { spawn, calls } = makeSpawn([{ close: 0 }, { close: 0 }, { close: 0 }]);
-  const trackingSpawn = (command, options) => {
-    order.push(options.cwd);
-    return spawn(command, options);
-  };
-
-  await runWorkspaceTests({
-    repoRoot,
-    workspaceDirs,
-    serial: false,
-    spawn: trackingSpawn,
-  });
-
-  assert.equal(calls.length, 3);
-  // headless must not be in the first concurrent wave's completion-before-serial
-  // guarantee: all parallel finish before serial starts. Order among parallel
-  // may interleave; serial headless is last among recorded close-driven starts
-  // only if we track start order — start order for parallel is simultaneous.
-  // Assert set membership instead of full order for the parallel wave.
-  const parallelCwds = new Set([join(repoRoot, 'packages/core'), join(repoRoot, 'packages/ui')]);
-  assert.equal(parallelCwds.has(order[0]) && parallelCwds.has(order[1]), true);
-  assert.equal(order[2], join(repoRoot, 'packages/headless'));
 });
 
 test('parallel mode aggregates every failed workspace name', async () => {

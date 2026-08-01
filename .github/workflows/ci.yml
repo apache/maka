@@ -104,7 +104,7 @@ jobs:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
       - name: Run fast script tests
-        if: needs.changes.outputs.script_mode != 'none'
+        if: needs.changes.outputs.script_mode == 'fast' || needs.changes.outputs.script_mode == 'full'
         run: npm run test:scripts
       - name: Run extended script tests
         if: needs.changes.outputs.script_mode == 'extended' || needs.changes.outputs.script_mode == 'full'

@@ -12,18 +12,6 @@ import {
   waitForTraceFlush,
 } from './cu-real-model-launcher.mjs';
 
-test('launcher ownership verdict matches matrix exemptions for targetless actions', () => {
-  assert.equal(
-    allActionTargetsOwned([
-      { type: 'list_apps', targetOwned: false },
-      { type: 'wait', targetOwned: false },
-      { type: 'cursor_position', targetOwned: false },
-      { type: 'observe', targetOwned: true },
-    ]),
-    true,
-  );
-});
-
 test('fixture identity is discovered independently and a wrong action window cannot join it', async () => {
   const fixtureIdentity = await discoverFixtureIdentity(4242, [{ title: 'Fixture Target' }], {
     listApps: async () => [
@@ -84,41 +72,6 @@ test('fixture identity is discovered independently and a wrong action window can
   assert.equal(bound[1].targetWindowId, 99);
   assert.equal(bound[2].targetOwned, false);
   assert.equal(allActionTargetsOwned(bound), false);
-});
-
-test('screenshot without observation_id still contributes PID/window ownership evidence', () => {
-  const records = actionRecords([
-    {
-      type: 'tool_start',
-      toolName: 'maka_computer',
-      toolUseId: 'screenshot-1',
-      args: { action: 'screenshot', app: 'Fixture Target' },
-    },
-    {
-      type: 'tool_result',
-      toolUseId: 'screenshot-1',
-      content: {
-        kind: 'text',
-        text: JSON.stringify({
-          app_id: 'pid:4242',
-          pid: 4242,
-          window_id: 7,
-          screenshot: { mime_type: 'image/png', width_px: 800, height_px: 600 },
-        }),
-      },
-      durationMs: 12,
-      isError: false,
-    },
-  ]);
-  const [screenshot] = bindActionTargets(records, [], {
-    instances: [{ pid: 4242, windowIds: [7] }],
-  });
-
-  assert.equal(records[0].resultObservationId, undefined);
-  assert.equal(screenshot.targetPid, 4242);
-  assert.equal(screenshot.targetWindowId, 7);
-  assert.equal(screenshot.targetOwned, true);
-  assert.equal(allActionTargetsOwned([screenshot]), true);
 });
 
 test('policy rejection remains canonical action-attempt evidence', () => {

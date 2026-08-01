@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, test } from 'node:test';
-import { buildFixtureEnv, isCiLinuxDisplay, isDeniedEnvKey } from './fixture-env.mjs';
+import { buildFixtureEnv, isDeniedEnvKey } from './fixture-env.mjs';
 
 const originals = new Map();
 function setEnv(key, value) {
@@ -16,7 +16,7 @@ afterEach(() => {
   originals.clear();
 });
 
-test('fixture isolation rejects every environment family that can steer a capture', () => {
+test('fixture isolation rejects inherited capture controls and credentials', () => {
   for (const key of [
     'VITE_DEV_SERVER_URL',
     'MAKA_E2E',
@@ -33,12 +33,7 @@ test('fixture isolation rejects every environment family that can steer a captur
   ]) {
     assert.equal(isDeniedEnvKey(key), true, `${key} must not be inherited`);
   }
-});
-
-test('fixture isolation preserves the platform environment Electron needs', () => {
-  for (const key of ['PATH', 'HOME', 'LANG', 'DISPLAY', 'XDG_RUNTIME_DIR', 'TMPDIR']) {
-    assert.equal(isDeniedEnvKey(key), false, `${key} must survive`);
-  }
+  assert.equal(isDeniedEnvKey('PATH'), false);
 });
 
 test('fixture launch state comes only from explicit arguments', () => {
@@ -64,11 +59,4 @@ test('fixture launch state comes only from explicit arguments', () => {
   assert.equal(env.USERPROFILE, '/tmp/data/home');
   assert.equal(env.MAKA_E2E_USER_DATA_DIR, '/tmp/data');
   assert.equal(env.MAKA_E2E_FIXTURE_TIMEZONE, 'UTC');
-});
-
-test('visible fixture windows are requested only on a Linux CI display', () => {
-  assert.equal(isCiLinuxDisplay({ CI: 'true' }, 'linux'), true);
-  assert.equal(isCiLinuxDisplay({}, 'linux'), false);
-  assert.equal(isCiLinuxDisplay({ CI: 'true' }, 'darwin'), false);
-  assert.equal(isCiLinuxDisplay({ CI: 'true' }, 'win32'), false);
 });

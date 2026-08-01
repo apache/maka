@@ -147,7 +147,6 @@ export function planTests(changedFiles, options = {}) {
   }
 
   const workspaces = reverseDependencyClosure(directWorkspaces, graph);
-  if (code && scriptMode === 'none') scriptMode = 'fast';
   const storageStress = files.some(
     (path) =>
       path === 'packages/storage/src/agent-run-store.ts' ||

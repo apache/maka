@@ -11,6 +11,7 @@ test('impact planning distinguishes docs, UI, and backend changes', () => {
 
   const ui = planTests(['packages/ui/src/button.tsx'], { graph });
   assert.equal(ui.e2e, true);
+  assert.equal(ui.scriptMode, 'none');
   assert.deepEqual(ui.workspaces, ['packages/ui', 'apps/desktop']);
 
   const backend = planTests(['packages/storage/src/session-store.ts'], { graph });
@@ -41,8 +42,18 @@ test('global and unknown production changes fail safe to the complete suite', ()
 });
 
 test('GitHub outputs stay scalar and shell-safe', () => {
-  const output = formatGitHubOutputs(planTests(['packages/ui/src/button.tsx'], { graph }));
-  assert.match(output, /^code=true$/m);
-  assert.match(output, /^unit=true$/m);
-  assert.match(output, /^workspaces=packages\/ui,apps\/desktop$/m);
+  assert.equal(
+    formatGitHubOutputs(planTests(['README.md'], { graph })),
+    [
+      'code=false',
+      'e2e=false',
+      'full=false',
+      'headless=false',
+      'runtime_sandbox=false',
+      'script_mode=none',
+      'storage_stress=false',
+      'unit=false',
+      'workspaces=',
+    ].join('\n'),
+  );
 });
