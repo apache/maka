@@ -65,7 +65,7 @@ const connections: LlmConnection[] = [
 function DetailPane(props: { children: ReactNode }) {
   return (
     <div
-      className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
+      className="maka-panel maka-panel-detail agents-content-area agents-parchment-paper-surface"
       data-sidebar-state="expanded"
       data-agents-view="im_hub"
       style={{ background: 'var(--surface-canvas)', height: '100%', minHeight: 560 }}

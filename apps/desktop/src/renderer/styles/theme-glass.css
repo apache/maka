@@ -26,18 +26,6 @@ html[data-os="darwin"],
      reference-atlas `light-glass` / `dark-glass` mode that we documented
      but never wired all the way through. */
 
-/* Maintainer 2026-07-18 (user verdict: the Settings rail color is the
-   correct one): the darwin overrides that forced .appFrame and
-   .maka-shell-2col transparent made the native vibrancy material the
-   rail's effective color (~white over a light desktop) while the
-   Settings page kept its opaque --agents-layout-bg backplate — the two
-   sidebars visibly disagreed. The backplate now paints the shared token
-   on every platform; the BrowserWindow vibrancy stays configured but no
-   longer shows through the shell. */
-html[data-os="darwin"] .maka-shell-2col {
-    background: transparent;
-  }
-
 html[data-os="darwin"] .maka-session-panel {
     /* PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): flat base only —
        no gradient, no 1px border. The 4px gap around the floating
@@ -104,14 +92,6 @@ html[data-os="darwin"] .maka-session-panel-footer {
     border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.05);
     background: oklch(from var(--surface-canvas) l c h / 0.15);
   }
-
-  /* (dead rule removed) `html[data-os="darwin"] .maka-panel-detail
-     { background: var(--background) }` never applied — the unlayered
-     `.maka-panel-detail.maka-floating-panel.agents-content-area` rule in
-     reference-shell.css wins on specificity (0,3,0 vs 0,2,1), so the
-     panel has always painted `--agents-content-area-bg`. Its intent
-     (solid white chat) survived only via `.maka-main`, which is exactly
-     what produced the three-color-band bug fixed alongside this. */
 
 /* =============================================================================
      Compact glass details

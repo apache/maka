@@ -76,15 +76,6 @@
   font-size: var(--font-size-caption);
 }
 
-.maka-empty-state-code {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  padding: 1px var(--space-1);
-  border-radius: var(--radius-control);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-}
-
 .maka-empty-state-actions {
   margin-top: var(--space-1);
   display: grid;
@@ -95,4 +86,3 @@
 .maka-empty-state-cta {
   min-width: 88px;
 }
-

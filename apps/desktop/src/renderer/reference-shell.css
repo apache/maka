@@ -72,37 +72,9 @@
   transition: margin-left var(--duration-base) var(--ease-out-strong);
 }
 
-/* PR-SETTINGS-RESTORE-SURFACE-0 (WAWQAQ msg `c8dc03e4`): main chat
-   pane was rendering with a 1px border that read as a seam between
-   sidebar and content. Drop the border on the floating panel
-   variant; keep the surface plate (bg + radius + margin) so content
-   still reads as its own canvas. */
-.maka-panel-detail.maka-floating-panel.agents-content-area {
-  position: relative;
-  /* PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `486b5611`): symmetric margin
-     so the floating card has a left gap too — see the matching
-     change in `styles.css` `.maka-panel-detail.maka-floating-panel`. */
-  margin: var(--agents-content-area-gap);
-  border: 0;
-  border-radius: var(--radius-modal);
-  background: var(--agents-content-area-bg);
-  box-shadow: none;
-}
-
-/* Designer audit P1-6: in dark mode the canvas (l≈0.14) and the content
-   card (l≈0.24) sit close enough that the floating-card edge disappears —
-   the light theme's whole surface hierarchy collapsed to one murk. A 1px
-   inner top-light hairline gives the eye a physical edge without pushing
-   the canvas darker. Light mode keeps box-shadow: none (the lightness gap
-   already reads there). */
-.dark .maka-panel-detail.maka-floating-panel.agents-content-area {
-  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.07);
-}
-
 /* `.agents-parchment-paper-surface` is reused by the composer body. The bare
-   class drops its border so the content area doesn't double up with the
-   floating-panel rule above; the composer re-establishes its own card chrome
-   on top (see `.composer .maka-composer-inner` in styles/composer.css). */
+   class drops its border; the composer re-establishes its own card chrome on
+   top (see `.composer .maka-composer-inner` in styles/composer.css). */
 .agents-parchment-paper-surface {
   border: 0;
   background-color: var(--agents-content-area-bg);

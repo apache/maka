@@ -106,16 +106,6 @@
   outline-offset: var(--focus-ring-offset);
 }
 
-/* Color intentionally not declared: nav glyphs are tinted by the
-   navRowVariants utilities (80%-ink base, foreground when active) and the
-   settings gear inherits its button's text color — an unlayered color
-   here would silently beat those utilities. */
-.maka-nav-icon {
-  width: var(--icon-size);
-  height: var(--icon-size);
-  justify-self: center;
-}
-
 /* PR-PARCHMENT-HOME-9 (WAWQAQ msg `781852eb` 2026-06-20): module nav
    styles restored, then tightened after task #98 so active rows read
    as slim target-layout like nav rows instead of full-width pills. */
@@ -153,11 +143,6 @@
 .maka-list-stack {
   min-height: 0;
   overflow: hidden;
-}
-
-.maka-list-stackViewport {
-  height: 100%;
-  overscroll-behavior: contain;
 }
 
 .maka-list-stackContent {
@@ -277,35 +262,6 @@
   box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--focus-ring) 24%, transparent);
 }
 
-.maka-list-archived-projects {
-  margin-top: var(--space-3);
-  padding-top: var(--space-2);
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.maka-list-archived-projects-heading {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  width: 100%;
-  min-height: var(--h-control-lg);
-  padding: 0 var(--space-1-5);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  text-align: left;
-}
-
-.maka-list-archived-projects-heading .maka-list-project-count {
-  margin-left: auto;
-}
-
-.maka-list-archived-projects-heading[aria-expanded="true"] > svg {
-  transform: rotate(90deg);
-}
-
 .maka-list-row-worktree-icon {
   flex: 0 0 auto;
   color: var(--muted-foreground);
@@ -318,19 +274,6 @@
   flex: 0 0 auto;
 }
 
-
-.maka-list-project-more {
-  min-height: var(--h-control-lg);
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  border: 0;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  padding: 0 var(--space-1-5) 0 var(--space-8);
-  text-align: left;
-}
 
 
 /* PR-SIDEBAR-IA-0 Phase 3 (WAWQAQ msgs `14ed98b5`, `761141c5` —
@@ -708,29 +651,29 @@
   animation: none;
 }
 
-:is(.maka-list-project-heading, .maka-list-project-more) {
+.maka-list-project-heading {
   transition:
     background-color var(--duration-base) var(--ease-out-strong),
     color var(--duration-base) var(--ease-out-strong),
     opacity var(--duration-base) var(--ease-out-strong);
 }
-:is(.maka-list-project-heading, .maka-list-project-more):hover {
+.maka-list-project-heading:hover {
   background: var(--state-hover-bg);
   color: var(--foreground);
 }
-:is(.maka-list-project-heading, .maka-list-project-more):active {
+.maka-list-project-heading:active {
   background: var(--state-selected-bg);
 }
-:is(.maka-list-project-heading, .maka-list-project-more):focus-visible {
+.maka-list-project-heading:focus-visible {
   outline: var(--focus-ring-width) solid var(--focus-ring);
   outline-offset: var(--focus-ring-offset);
   border-radius: var(--radius-control);
 }
-:is(.maka-list-project-heading, .maka-list-project-more):disabled {
+.maka-list-project-heading:disabled {
   cursor: not-allowed;
   opacity: var(--opacity-disabled);
 }
-:is(.maka-list-project-heading, .maka-list-project-more):disabled:hover {
+.maka-list-project-heading:disabled:hover {
   background: transparent;
   color: var(--muted-foreground);
 }

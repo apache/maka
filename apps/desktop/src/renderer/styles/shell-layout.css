@@ -1,4 +1,4 @@
-/* Shell layout — app frame, 2-col shell, panels, topbar rail, resize handle, main column, workspace top actions. Relocated from sidebar.css — issue #546 PR3. */
+/* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
 .appFrame {
   height: 100dvh;
   width: 100%;
@@ -15,14 +15,8 @@
      frame always spans the window regardless of inner content's
      max-content. The preload centering is unaffected (it's the only
      child at that point and still centers). */
-  /* PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): the appFrame root
-     was the LAST place still painting the 172deg "上面灰下面白"
-     gradient — round-0 only killed the gradient on
-     `.maka-shell-2col`, and the macOS rule put `shell` to
-     `transparent`, so the appFrame gradient bled through and
-     revived the visual WAWQAQ explicitly rejected. Keep this flat:
-     the shell/backplate is neutral, while `.maka-panel-detail`
-     paints the white content surface. */
+  /* Keep the shell/backplate flat and neutral; the detail panel paints the
+     content surface. */
   background: var(--surface-canvas);
   color: var(--foreground);
   font-size: var(--font-size-base);
@@ -52,107 +46,10 @@
   background: var(--background);
 }
 
-.maka-shell-2col {
-  --maka-sidebar-exit-offset: calc(var(--space-2) * -1);
-  position: relative;
-  display: grid;
-  /* The titlebar is a ROW, not an overlay. Everything else lives in row 2, so
-     no panel needs a ruler telling it where the titlebar ends: content cannot
-     reach into a row it is not in. This replaced four separate titlebar-
-     avoidance paddings and two hand-summed "how wide is my sibling" insets,
-     one of which had drifted 12px out of sync with the button size it claimed
-     to add up. `--h-titlebar` is the one height: main-window.ts hands the same
-     number to the native `titleBarOverlay`, and a contract test fails if the
-     two drift. */
-  grid-template-rows: var(--h-titlebar) minmax(0, 1fr);
-  align-items: stretch;
-  gap: 0;
-  overflow: hidden;
-  transition: grid-template-columns var(--duration-large) var(--ease-drawer);
-  /* PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `1e693dee` + `486b5611`):
-     the shell used to carry a 172deg gradient from `--foreground-3`
-     to `--background`. The session sidebar is transparent and
-     showed the gradient through, so users saw "gray top, white
-     bottom" on the sidebar — distracting, and also produced a
-     visible seam where the gradient met the flat-white floating
-     detail panel. Keep the shell flat neutral; no gradient or
-     divider line. */
-  background: var(--surface-canvas);
-}
-
-.app.maka-shell-2col {
-  grid-template-columns:
-    var(--maka-session-list-expanded-width)
-    var(--maka-resize-handle-width, 0px)
-    minmax(0, 1fr);
-}
-
-.app.maka-shell-2col[data-sidebar-state="collapsed"] {
-  grid-template-columns:
-    0px
-    var(--maka-resize-handle-width, 0px)
-    minmax(0, 1fr);
-}
-
 .maka-panel {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-}
-
-.maka-floating-panel {
-  border: 0;
-  border-radius: 0;
-  background: var(--background);
-  box-shadow: none;
-}
-
-.maka-panel-list.maka-floating-panel {
-  border-right: 0;
-  background: transparent;
-  opacity: 1;
-  transform: translateX(0);
-  transition:
-    opacity var(--duration-quick) var(--ease-out-strong),
-    transform var(--duration-large) var(--ease-drawer);
-}
-
-.maka-shell-2col .maka-panel-list > .maka-session-panel {
-  width: var(--maka-session-list-expanded-width);
-}
-
-.maka-panel-detail.maka-floating-panel {
-  /* Right column = the workspace content surface (chat / module /
-     artifact panes share it). Border and box-shadow already null'd by
-     the base `.maka-floating-panel` rule above; only the geometry and
-     layout-mode bits live here.
-     PR-CHAT-CHROME-FIX-0 (WAWQAQ msg `486b5611`): symmetric `margin:
-     4px` so all four sides have a gap and the radius reads as a real
-     floating-card edge — was `4px 4px 4px 0` before.
-     PR-CHAT-CHROME-FIX-1 (WAWQAQ msg `4a1b8c13`): "圆盘感觉不对劲，
-     很不明显，尤其是下面的看都看不到" — 6px radius + 4px margin on
-     a same-color surface had no visual handle for the eye. Bumped
-     radius to 12px (matches reference's surface plate), added a soft
-     drop-shadow so the curved edge actually reads against the sidebar
-     translucent backdrop and the bottom corners are visible. The
-     window's outer rounded chrome on macOS is ~10–12px; matching that
-     reads as "card inside chrome" rather than "rectangle bleeding off
-     the bottom". */
-  margin: var(--space-1);
-  border-radius: var(--radius-modal);
-  background: var(--background);
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  box-shadow:
-    0 1px 3px oklch(from var(--foreground) l c h / 0.06),
-    0 8px 24px oklch(from var(--foreground) l c h / 0.08);
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-panel-list.maka-floating-panel {
-  border-right: 0;
-  opacity: 0;
-  transform: translateX(var(--maka-sidebar-exit-offset));
 }
 
 /* The window's only drag surface, and the only `-webkit-app-region: drag` in
@@ -211,70 +108,6 @@
     opacity var(--duration-quick) var(--ease-out-strong),
     transform var(--duration-base) var(--ease-out-strong);
   -webkit-app-region: no-drag;
-}
-
-.maka-resize-handle {
-  position: relative;
-  width: var(--maka-resize-handle-width, 0px);
-  box-sizing: content-box;
-  padding-inline: var(--space-1);
-  margin-inline: calc(var(--space-1) * -1);
-  outline: none;
-  cursor: col-resize;
-  user-select: none;
-  touch-action: none;
-  background: transparent;
-  /* No `no-drag` needed: the handle spans row 2 only. It used to run the full
-     window height and overlap the drag band, escaping it only because the
-     sidebar's drag strip happened to end 2px to its left. */
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-resize-handle {
-  pointer-events: none;
-  cursor: default;
-}
-
-.maka-shell-2col[data-sidebar-state="collapsed"] .maka-resize-handle::after {
-  display: none;
-}
-
-.maka-resize-handle::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 14px;
-  bottom: 14px;
-  width: 1px;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  transition: background var(--duration-quick) var(--ease-out-strong);
-}
-
-.maka-resize-handle:hover::after,
-.isResizingColumns .maka-resize-handle::after {
-  background: color-mix(in oklch, var(--foreground) 20%, var(--background));
-}
-
-/* Keyboard-focused separator: replace the suppressed native outline with a
-   visible accent ring on the pseudo-element. Hover styling intentionally
-   overrides via cascade order. */
-.maka-resize-handle:focus-visible::after {
-  background: var(--ring);
-  width: 1px;
-  left: 4px;
-}
-
-.isResizingColumns {
-  cursor: col-resize;
-  user-select: none;
-}
-
-.isResizingColumns .maka-shell-2col {
-  transition: none;
-}
-
-.maka-shell-2col:has(> .maka-resize-handle:focus) {
-  transition: none;
 }
 
 .mainColumn {

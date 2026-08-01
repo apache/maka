@@ -405,22 +405,3 @@
   font-size: var(--font-size-caption);
   line-height: var(--leading-normal);
 }
-
-/* Round 11: SettingRow optional per-row action (gateway endpoint copy-curl).
-   Value + action share the right rail; the action never wraps the value. */
-.settingsRowValueGroup {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.settingsRowValueGroup > span {
-  min-width: 0;
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-  text-align: right;
-}

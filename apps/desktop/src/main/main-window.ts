@@ -570,7 +570,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
         bodyTextSample: document.body?.innerText?.trim().slice(0, 240) ?? '',
         stylesheetCount: document.styleSheets.length,
         rootChildren: document.getElementById('root')?.children.length ?? 0,
-        elements: ['body', '#root', '.appFrame', '.app', '.maka-panel-list', '.maka-panel-detail', '.mainColumn', '.maka-onboarding-loading'].map((selector) => {
+        elements: ['body', '#root', '.appFrame', '.app', '.maka-panel-detail', '.mainColumn', '.maka-onboarding-loading'].map((selector) => {
           const element = document.querySelector(selector);
           if (!element) return { selector, present: false };
           const rect = element.getBoundingClientRect();
