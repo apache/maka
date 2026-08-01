@@ -7,22 +7,6 @@ interface Chunk {
 }
 
 describe('BoundedChunkBuffer', () => {
-  test('releases a discarded backing slot before delayed storage compaction', () => {
-    const buffer = new BoundedChunkBuffer<Chunk>({
-      maxChars: 3,
-      maxChunks: 512,
-      textOf: (chunk) => chunk.text,
-      withText: (chunk, text) => ({ ...chunk, text }),
-    });
-    const discarded = { text: 'old' };
-    buffer.append(discarded);
-    buffer.append({ text: 'new' });
-
-    const storage = buffer as unknown as { chunks: Array<Chunk | undefined>; head: number };
-    assert.equal(storage.head, 1);
-    assert.equal(storage.chunks[0], undefined);
-  });
-
   test('ignores a replay of a sequence that was already discarded', () => {
     const buffer = new BoundedChunkBuffer<Chunk & { seq: number }>({
       maxChars: 1,

@@ -65,10 +65,6 @@ describe('goal tools', () => {
     );
   });
 
-  test('all tools are permission-free', () => {
-    const { tools } = makeTools();
-  });
-
   test('GoalSet creates a goal with custom limits', async () => {
     const { mgr, tools } = makeTools();
     const set = findTool(tools, GOAL_SET_TOOL_NAME);

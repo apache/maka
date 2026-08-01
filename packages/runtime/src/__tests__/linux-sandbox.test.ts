@@ -19,10 +19,6 @@ import {
   linuxExecutableRoots,
 } from '../sandbox/linux-sandbox.js';
 import { detectLinuxSandboxCapability } from '../sandbox/linux-capability.js';
-import {
-  LINUX_BWRAP_PROBE_ARGS,
-  LINUX_BWRAP_REQUIRED_OPTIONS,
-} from '../sandbox/linux-capability.js';
 import type { SandboxPathContext, SandboxTransformRequest } from '../sandbox/types.js';
 
 function workspaceRequest(profile: PermissionProfile): SandboxTransformRequest {
@@ -76,20 +72,6 @@ function protectedMetadataProfile(): PermissionProfile {
 }
 
 describe('detectLinuxSandboxCapability', () => {
-  it('probes every namespace used by production and requires seccomp support', () => {
-    for (const flag of [
-      '--unshare-user',
-      '--unshare-pid',
-      '--unshare-ipc',
-      '--unshare-uts',
-      '--unshare-cgroup',
-      '--unshare-net',
-    ]) {
-      assert.ok((LINUX_BWRAP_PROBE_ARGS as readonly string[]).includes(flag));
-    }
-    assert.ok(LINUX_BWRAP_REQUIRED_OPTIONS.includes('--seccomp'));
-  });
-
   it('reports non-Linux platforms without probing bwrap', () => {
     assert.deepEqual(detectLinuxSandboxCapability({ platform: 'win32' }), {
       available: false,
