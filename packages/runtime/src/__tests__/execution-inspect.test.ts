@@ -10,8 +10,6 @@ import {
   createLegacyRuntimeEventStoreForTest,
 } from '@maka/storage/legacy-execution-test-support';
 import {
-  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
-  SESSION_INSPECT_DOCUMENT_VERSION,
   inspectAgentRunDocument,
   inspectSessionDocument,
   renderAgentRunInspectTree,
@@ -64,7 +62,7 @@ describe('versioned execution inspect documents', () => {
         agentRunId: RUN_ID,
       });
 
-      assert.equal(document.schemaVersion, AGENT_RUN_INSPECT_DOCUMENT_VERSION);
+      assert.equal(document.schemaVersion, 'maka.agent_run_inspect.v1');
       assert.deepEqual(document.tools.callsWithoutResponse, [
         {
           toolCallId: 'tool-pending',
@@ -126,7 +124,7 @@ describe('versioned execution inspect documents', () => {
         session.id,
       );
 
-      assert.equal(document.schemaVersion, SESSION_INSPECT_DOCUMENT_VERSION);
+      assert.equal(document.schemaVersion, 'maka.session_inspect.v1');
       assert.equal(document.session.name, 'Inspectable session');
       assert.equal(document.session.revisionRootSessionId, 'root-session');
       assert.equal(document.session.revisionParentSessionId, 'previous-version');

@@ -14,12 +14,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { generateText } from 'ai';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core';
+import type { LlmConnection } from '@maka/core';
 import { getAIModel } from '@maka/runtime';
 
 describe('opencode-free anonymous runtime', () => {
   test('omits Authorization and posts to zen/v1 with the model id (empty key, no secret)', async () => {
-    const baseUrl = PROVIDER_DEFAULTS['opencode-free'].baseUrl;
+    const baseUrl = 'https://opencode.ai/zen/v1';
     const connection: LlmConnection = {
       slug: 'opencode-free',
       name: 'OpenCode Free',
@@ -74,7 +74,7 @@ describe('opencode-free anonymous runtime', () => {
       null,
       'opencode-free must send NO Authorization header (anonymous free tier)',
     );
-    assert.equal(captured?.url, `${baseUrl}/chat/completions`);
+    assert.equal(captured?.url, 'https://opencode.ai/zen/v1/chat/completions');
     assert.equal(captured?.model, 'big-pickle');
     assert.equal(result.text, 'ok');
   });

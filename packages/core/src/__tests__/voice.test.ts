@@ -4,7 +4,6 @@ import {
   VOICE_MAX_AUDIO_BYTES,
   VOICE_MAX_CAPTURE_DURATION_MS,
   defaultVoicePrivacyFlags,
-  defaultVoiceSettings,
   normalizeVoiceCoordinatorToolCall,
   normalizeVoiceInputMode,
   normalizeVoiceSettings,
@@ -169,7 +168,19 @@ describe('voice route resolver', () => {
 
 describe('voice settings and coordinator input', () => {
   it('normalizes settings and admits only bounded coordinator tools', () => {
-    assert.deepEqual(normalizeVoiceSettings(undefined), defaultVoiceSettings());
+    assert.deepEqual(normalizeVoiceSettings(undefined), {
+      recognition: {
+        connectionSlug: '',
+        model: '',
+        language: '',
+        prompt: '',
+      },
+      realtime: {
+        connectionSlug: '',
+        model: '',
+        voice: 'marin',
+      },
+    });
     const normalized = normalizeVoiceSettings({
       recognition: { connectionSlug: ' openai ', model: ' transcribe ', language: ' zh ' },
       realtime: { connectionSlug: ' openai ', model: ' realtime ', voice: '' },
