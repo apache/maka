@@ -1485,6 +1485,8 @@ test('steering becomes durable and ordered followups automatically start the nex
     const host = await fixture.startHost();
     const first = await connectClient(fixture.root, 'desktop');
     const second = await connectClient(fixture.root, 'tui');
+    const subscription = await second.openSessionSubscription({ sessionId: fixture.sessionId });
+    const subscriptionProbe = new SubscriptionProbe(subscription);
     const firstTurnId = randomUUID();
     await first.startTurn({
       sessionId: fixture.sessionId,
@@ -1558,6 +1560,21 @@ test('steering becomes durable and ordered followups automatically start the nex
       content: { text: 'deliberately different durable identity probe' },
       placement: 'next_turn',
     });
+    const successor = await subscriptionProbe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn !== null &&
+        frame.snapshot.rootTurn.turnId !== firstTurnId,
+      'ordered follow-ups did not start the successor root',
+    );
+    assert.equal(successor.kind, 'subscription.session_projection');
+    if (successor.kind !== 'subscription.session_projection' || !successor.snapshot.rootTurn) {
+      return;
+    }
+    const successorTurnId = successor.snapshot.rootTurn.turnId;
+    await waitForTerminalTurn(second, fixture.sessionId, successorTurnId);
+    await subscription.close();
+    await subscriptionProbe.done;
     await first.close();
     await second.close();
     await fixture.stopHost(host);
@@ -1595,6 +1612,7 @@ test('steering becomes durable and ordered followups automatically start the nex
     });
     const followupTurnId = chain[1]?.turnId;
     assert.ok(followupTurnId);
+    assert.equal(followupTurnId, successorTurnId);
     const followupLedger = await fixture.readTurn(followupTurnId);
     const expectedQuotes = followupSources.flatMap((source) => source.content.quotes ?? []);
     assert.equal(followupLedger.userMessages.length, 1);
@@ -2444,14 +2462,18 @@ async function withExecutionRoot(run: (fixture: ExecutionFixture) => Promise<voi
   let sessionId: string;
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const session = await stores.sessionStore.create({
-      cwd: root,
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-    });
-    sessionId = session.id;
+    try {
+      const session = await stores.sessionStore.create({
+        cwd: root,
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      sessionId = session.id;
+    } finally {
+      await stores.sessionStore.close?.();
+    }
   } finally {
     await owner.close();
   }
