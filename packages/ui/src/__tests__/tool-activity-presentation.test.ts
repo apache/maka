@@ -265,7 +265,7 @@ describe('tool activity presentation', () => {
     assert.doesNotMatch(markup, /工具调用失败/);
   });
 
-  it('keeps an ordinary filesystem permission error in the generic failure state', () => {
+  it('keeps an ordinary filesystem permission error as Astryx error detail, not a sandbox block', () => {
     const markup = renderToStaticMarkup(createElement(ToolActivity, {
       items: [{
         toolUseId: 'tool-filesystem-denied',
@@ -282,7 +282,10 @@ describe('tool activity presentation', () => {
       open: true,
     }));
 
-    assert.match(markup, /工具调用失败/);
+    // Failure detail is CodeBlock only — no Maka "工具调用失败" Alert, not sandbox.
+    assert.match(markup, /astryx-codeblock/);
+    assert.match(markup, /Filesystem access was denied/);
+    assert.doesNotMatch(markup, /工具调用失败/);
     assert.doesNotMatch(markup, /可能被沙箱阻止/);
   });
 

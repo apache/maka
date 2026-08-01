@@ -245,12 +245,13 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
 }
 
 /**
- * The tool detail body — error banner + Astryx CodeBlock for ordinary text
- * output, live stream, and structured results. Shared by the boxed
- * `ToolActivityCard` and flat trow rows. Args/results route through
- * quiet formatters (tool-args-redaction-contract / quiet-panel contracts).
+ * The tool detail body — Astryx CodeBlock wells for ordinary text output,
+ * live stream, and structured results. Shared by the boxed
+ * `ToolActivityCard`, Astryx ChatToolCalls `resultDetail`, and product trow
+ * rows. Ordinary failures share the same wells (row already carries
+ * status=error); only sandbox denial keeps a product warning banner.
  * Rich kinds (terminal/shell_run/subagent/…) keep product cards via
- * ToolResultPreview; code/text wells use CodeBlock per Astryx guidance.
+ * ToolResultPreview.
  */
 function ToolCardBody({ item }: { item: ToolActivityItem }) {
   const locale = useUiLocale();
@@ -259,13 +260,15 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
   // Cancel maps to interrupted at materialize/live-projection; keep defensive
   // checks so a stale errored+cancelled item still does not look like failure.
   const failedOutcome = item.status === 'errored' && !cancelled;
-  const errored = failedOutcome && !sandboxBlocked;
   const permissionDenied = isPermissionDeniedToolResult(item.result);
   const running = item.status === 'running' || item.status === 'pending';
   const ptyControlResult = item.toolName === 'WriteStdin' && item.result?.kind === 'shell_run';
   // Rich kinds + tool-specific cards own their chrome — never nest in the shared well.
   const ownsPanel = resultOwnsOwnPanel(item);
-  const showErrorBanner = failedOutcome && !ptyControlResult;
+  // Ordinary failure is Astryx dialect: ChatToolCalls status=error + errorMessage
+  // on the row, resultDetail = CodeBlock/panel. Do not stack Maka Alert
+  // "工具调用失败". Sandbox denial stays product-owned (warning banner).
+  const showSandboxBanner = sandboxBlocked && failedOutcome && !ptyControlResult;
   // Every tool: human invocation line from args — never pretty-printed JSON.
   // Skip when the result panel already prints the command (terminal/shell_run).
   const invocationLine = !permissionDenied && !ownsPanel
@@ -298,22 +301,25 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
     && quietJson.headline !== invocationLine
     ? quietJson.headline
     : undefined;
-  // Owned-panel kinds render alone. Everything else shares one quiet well.
+  // Owned-panel kinds render alone. Failures share the same well as success
+  // (CodeBlock / ToolResultPreview) — no nested "raw diagnostics" disclosure.
+  // CodeBlock maxHeight already bounds a long failure so it cannot dominate
+  // the turn (supersedes the old banner + ToolErrorDetails collapse).
   const hasSharedPanelContent =
     !ownsPanel && (
       showInvocation
       || !!resultHeadline
       || showLiveStream
-      || (showResult && !failedOutcome)
+      || showResult
       || (!!item.args && !permissionDenied && !invocationLine && !showResult && !showLiveStream)
     );
 
   return (
     <div className="mt-1 flex flex-col gap-1.5">
-      {showErrorBanner && (
+      {showSandboxBanner && (
         <ToolErrorBanner
           result={displayResult ?? item.result}
-          sandboxBlocked={sandboxBlocked}
+          sandboxBlocked
         />
       )}
       {showResult && ownsPanel && displayResult && (
@@ -363,26 +369,20 @@ function ToolCardBody({ item }: { item: ToolActivityItem }) {
                 />
               );
             }
-            if (showInvocation && invocationLine) {
+            if (showInvocation && invocationLine && !showResult) {
               // No language: shell one-liners stay contiguous text (tokenizer
               // would otherwise wrap keywords like `test` in spans).
               return <ToolCodeBlock code={invocationLine} />;
             }
-            if (showResult && !ownsPanel && displayResult && !errored) {
+            if (showResult && !ownsPanel && displayResult) {
               return <ToolResultPreview content={displayResult} toolName={item.toolName} />;
+            }
+            if (showInvocation && invocationLine) {
+              return <ToolCodeBlock code={invocationLine} />;
             }
             return null;
           })()}
         </div>
-      )}
-      {errored && showResult && displayResult && !ownsPanel && (
-        <ToolErrorDetails>
-          {quietJson ? (
-            <ToolCodeBlock code={quietJson.body} />
-          ) : (
-            <ToolResultPreview content={displayResult} />
-          )}
-        </ToolErrorDetails>
       )}
     </div>
   );
@@ -771,28 +771,20 @@ function ToolErrorBanner(props: {
 }
 
 /**
- * Raw diagnostic details for an errored tool, collapsed by default so a verbose
- * validation/runtime failure cannot dominate the conversation. The ToolErrorBanner
- * already shows the first 240px of the error text + a copy action; this disclosure
- * owns the full raw payload (quiet JSON body / structured ToolResultPreview) so it
- * is reachable but not loud. Astryx owns the keyboard-accessible trigger;
- * secret redaction + size caps stay enforced upstream (redactSecrets,
- * the banner's 240px truncation, and the result preview's own caps).
+ * @deprecated Ordinary failures no longer nest raw diagnostics under a second
+ * disclosure — Astryx ChatToolCalls exposes status=error + errorMessage on the
+ * row, and resultDetail is the CodeBlock/panel directly (maxHeight-bounded).
+ * Kept exported so older contract fixtures / imports still resolve; new UI
+ * should not call this.
  */
 export function ToolErrorDetails({ children, open: openProp, onOpenChange }: {
   children: ReactNode;
-  /** Controlled open state. When omitted the disclosure manages its own state
-   *  (collapsed by default). Passed by tests to render the expanded state in
-   *  static markup; production callers leave it uncontrolled. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
   const copy = getToolActivityCopy(useUiLocale()).output;
   const [internalOpen, setInternalOpen] = useState(false);
   const open = openProp ?? internalOpen;
-  // Always update internalOpen so an onOpenChange-only caller still sees the
-  // panel toggle (the old `onOpenChange ?? setInternalOpen` left internalOpen
-  // stuck closed when only the callback was passed).
   const setOpen = (next: boolean) => {
     setInternalOpen(next);
     onOpenChange?.(next);
