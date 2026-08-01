@@ -1231,9 +1231,18 @@ html[data-os="darwin"].dark {
     content-visibility: visible;
   }
 
-  /* Tools now render inline via the flat `ToolTrow`; reasoning uses Astryx
-     Collapsible through `DeepThinking`. Product text and shimmer remain local,
-     while disclosure focus, keyboard behavior, chevron, and chrome are Astryx-owned. */
+  /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
+     Core's atom sheet already contains every compiled StyleX atom except the
+     five shimmer declarations below; these are copied verbatim from lab.css. */
+  @keyframes x1ofn8cw-B {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
+  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
+  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
+  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
+  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
 
   /* ---- Tool activity ---------------------------------------------- */
 

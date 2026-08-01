@@ -56,7 +56,7 @@ describe('ProcessingBlock disclosure wiring (#1307)', () => {
 });
 
 describe('deep-thinking disclosure', () => {
-  it('starts collapsed with the same compact activity-row structure as Astryx tool calls', () => {
+  it('renders through official Astryx ChatReasoning with its native collapsed preview', () => {
     const markup = renderToStaticMarkup(createElement(TurnView, {
       turn: {
         turnId: 'thinking-turn',
@@ -69,13 +69,35 @@ describe('deep-thinking disclosure', () => {
       },
     }));
 
-    assert.match(markup, /data-slot="reasoning-disclosure"/);
-    assert.match(markup, /<button[^>]*data-slot="reasoning-trigger"[^>]*aria-expanded="false"[^>]*aria-controls="[^"]+"/);
-    const trigger = markup.match(/(<button[^>]*data-slot="reasoning-trigger"[\s\S]*?<\/button>)/)?.[1];
-    assert.ok(trigger, 'deep-thinking disclosure must expose a collapsed trigger');
-    assert.match(trigger, /lucide-chevron-down/);
-    assert.match(trigger, /min-h-6/);
-    assert.match(trigger, /class="[^"]*astryx-text supporting[^"]*"/);
-    assert.doesNotMatch(markup, /private reasoning/);
+    assert.match(markup, /class="[^"]*astryx-chat-reasoning[^"]*min-w-0[^"]*"/);
+    assert.match(markup, /class="flex min-w-0 w-full flex-col gap-2"/);
+    assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
+    assert.match(markup, /private reasoning/);
+    assert.doesNotMatch(markup, /data-slot="reasoning-trigger"/);
+  });
+
+  it('keeps redaction and truncation product behavior outside the Astryx disclosure', () => {
+    const secret = 'sk-abcdefghijklmnopqrstuvwxyz123456';
+    const markup = renderToStaticMarkup(createElement(TurnView, {
+      turn: {
+        turnId: 'safe-thinking-turn',
+        status: 'completed',
+        partialOutputRetained: false,
+        tools: [],
+        notes: [],
+        timeline: [{
+          kind: 'thinking',
+          text: `api_key=${secret}`,
+          truncated: true,
+          messageId: 'thinking-2',
+        }],
+        startedAt: 1,
+      },
+    }));
+
+    assert.match(markup, /深度思考 · 已截断/);
+    assert.match(markup, /&lt;redacted&gt;/);
+    assert.doesNotMatch(markup, new RegExp(secret));
+    assert.doesNotMatch(markup, /data-truncated="true"/);
   });
 });
