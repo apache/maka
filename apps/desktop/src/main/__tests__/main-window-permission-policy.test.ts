@@ -9,7 +9,7 @@ import {
 } from '../main-window-permission-policy.js';
 
 describe('main window Chromium permission policy', () => {
-  it('allows only top-level microphone audio from the product renderer', () => {
+  it('allows top-level microphone audio and clipboard writes from the product renderer', () => {
     assert.equal(allowsMainWindowPermissionCheck({
       ownerMatches: true,
       rendererUrlMatches: true,
@@ -24,6 +24,20 @@ describe('main window Chromium permission policy', () => {
       isMainFrame: true,
       mediaTypes: ['audio'],
     }), true);
+    for (const permission of ['clipboard-sanitized-write', 'clipboard-write']) {
+      assert.equal(allowsMainWindowPermissionCheck({
+        ownerMatches: true,
+        rendererUrlMatches: true,
+        permission,
+        isMainFrame: true,
+      }), true);
+      assert.equal(allowsMainWindowPermissionRequest({
+        ownerMatches: true,
+        rendererUrlMatches: true,
+        permission,
+        isMainFrame: true,
+      }), true);
+    }
   });
 
   it('denies camera, mixed media, subframes, auxiliary windows, and unrelated permissions', () => {
@@ -72,6 +86,49 @@ describe('main window Chromium permission policy', () => {
       ownerMatches: true,
       rendererUrlMatches: true,
       permission: 'media',
+      isMainFrame: true,
+    }), false);
+  });
+
+  it('keeps clipboard writes gated to the trusted top-level renderer frame', () => {
+    // Wrong frame.
+    assert.equal(allowsMainWindowPermissionCheck({
+      ownerMatches: true,
+      rendererUrlMatches: true,
+      permission: 'clipboard-sanitized-write',
+      isMainFrame: false,
+    }), false);
+    assert.equal(allowsMainWindowPermissionRequest({
+      ownerMatches: true,
+      rendererUrlMatches: true,
+      permission: 'clipboard-sanitized-write',
+      isMainFrame: false,
+    }), false);
+    // Not our window.
+    assert.equal(allowsMainWindowPermissionRequest({
+      ownerMatches: false,
+      rendererUrlMatches: true,
+      permission: 'clipboard-write',
+      isMainFrame: true,
+    }), false);
+    // Untrusted URL.
+    assert.equal(allowsMainWindowPermissionRequest({
+      ownerMatches: true,
+      rendererUrlMatches: false,
+      permission: 'clipboard-write',
+      isMainFrame: true,
+    }), false);
+    // Reading from the clipboard stays denied.
+    assert.equal(allowsMainWindowPermissionCheck({
+      ownerMatches: true,
+      rendererUrlMatches: true,
+      permission: 'clipboard-read',
+      isMainFrame: true,
+    }), false);
+    assert.equal(allowsMainWindowPermissionRequest({
+      ownerMatches: true,
+      rendererUrlMatches: true,
+      permission: 'clipboard-read',
       isMainFrame: true,
     }), false);
   });
@@ -144,6 +201,10 @@ describe('main window Chromium permission policy', () => {
       mediaType: 'audio',
       requestingUrl: 'file:///Applications/Maka.app/index.html',
     }), false);
+    assert.equal(checkHandler(owner, 'clipboard-sanitized-write', 'file://', {
+      isMainFrame: true,
+      requestingUrl: 'file:///Applications/Maka.app/index.html',
+    }), true);
 
     let granted: boolean | undefined;
     requestHandler(owner, 'media', (next) => {
@@ -154,5 +215,14 @@ describe('main window Chromium permission policy', () => {
       requestingUrl: 'file:///Applications/Maka.app/index.html',
     });
     assert.equal(granted, true);
+
+    let clipboardGranted: boolean | undefined;
+    requestHandler(owner, 'clipboard-sanitized-write', (next) => {
+      clipboardGranted = next;
+    }, {
+      isMainFrame: true,
+      requestingUrl: 'file:///Applications/Maka.app/index.html',
+    });
+    assert.equal(clipboardGranted, true);
   });
 });
