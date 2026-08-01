@@ -1001,7 +1001,7 @@ function ProcessingBlock(props: { entries: FoldedTimelineChild[] }) {
   const summary = summarizeProcessing(entries, { live: running, locale });
   return (
     <AstryxCollapsible
-      className="flex flex-col"
+      className="maka-chat-disclosure flex flex-col"
       data-processing="block"
       data-settled={settled ? 'true' : undefined}
       isOpen={disclosure.open}
@@ -1075,7 +1075,7 @@ function DeepThinking(props: { text: string; live: boolean; truncated?: boolean 
   }, [displayed, props.live, open]);
   return (
     <AstryxCollapsible
-      className="flex flex-col"
+      className="maka-chat-disclosure flex flex-col"
       data-deep-thinking={props.live ? 'live' : undefined}
       isOpen={open}
       onOpenChange={setOpen}

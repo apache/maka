@@ -466,7 +466,7 @@ function ToolTrowGroup({ items }: { items: ToolActivityItem[] }) {
     : summarizeTrowTools(items, { locale });
   return (
     <AstryxCollapsible
-      className="flex flex-col"
+      className="maka-chat-disclosure flex flex-col"
       data-trow="group"
       data-settled={settled ? 'true' : undefined}
       isOpen={disclosure.open}
@@ -531,7 +531,7 @@ function ToolTrowRow({ item }: { item: ToolActivityItem }) {
   const rowLabel = item.intent ? formatToolIntent(item.intent) : resolveToolDisplayName(item, locale);
   return (
     <AstryxCollapsible
-      className="flex flex-col"
+      className="maka-chat-disclosure flex flex-col"
       data-trow="row"
       data-status={sandboxBlocked ? 'blocked' : item.status}
       data-settled={settled ? 'true' : undefined}

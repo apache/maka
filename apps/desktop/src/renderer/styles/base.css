@@ -2,6 +2,14 @@
   body {
     margin: 0;
   }
+  /* Chat disclosures already pair their full-row trigger with a semantic
+     activity icon and aria-expanded. Astryx's trailing chevron lands at the
+     far edge of the reading column, where repeated rows look like a stray
+     vertical control rail. Keep the disclosure interaction and semantics,
+     but suppress that redundant decorative indicator on chat rows only. */
+  .maka-chat-disclosure > button > span:last-child {
+    display: none;
+  }
 .detailPane {
     min-width: 0;
     min-height: 0;
