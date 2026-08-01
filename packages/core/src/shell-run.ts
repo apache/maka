@@ -119,8 +119,12 @@ export interface ShellRunRecord {
   notifyOnComplete?: true;
   /** Durable delivery facts for the completion wake. */
   completionWake?: {
+    /** Total model-turn attempts admitted for this notification across restarts. */
+    attemptCount?: number;
     attemptTurnId?: string;
+    lastFailure?: string;
     deliveredAt?: number;
+    exhaustedAt?: number;
   };
   revision: number;
   observedAt?: number;

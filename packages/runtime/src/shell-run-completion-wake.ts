@@ -14,6 +14,7 @@ import {
 import { parseShellRunResourceRef } from './shell-run-contract.js';
 
 const DEFAULT_MAX_DELIVERY_ATTEMPTS = 3;
+const DEFAULT_ACTIVE_TURN_CHECK_INTERVAL_MS = 1_000;
 
 export type ShellRunCompletionTurnStatus = 'active' | 'completed' | 'failed' | 'missing';
 
@@ -31,6 +32,7 @@ export interface ShellRunCompletionWakeInput {
   newId(): string;
   now(): number;
   maxDeliveryAttempts?: number;
+  activeTurnCheckIntervalMs?: number;
   onError?(sessionId: string, error: unknown): void | Promise<void>;
 }
 
@@ -50,13 +52,22 @@ export class ShellRunCompletionWakeCoordinator {
   readonly #pending = new Set<string>();
   readonly #abortController = new AbortController();
   readonly #maxDeliveryAttempts: number;
+  readonly #activeTurnCheckIntervalMs: number;
   #closed = false;
 
   constructor(input: ShellRunCompletionWakeInput) {
     this.#input = input;
     this.#maxDeliveryAttempts = input.maxDeliveryAttempts ?? DEFAULT_MAX_DELIVERY_ATTEMPTS;
+    this.#activeTurnCheckIntervalMs =
+      input.activeTurnCheckIntervalMs ?? DEFAULT_ACTIVE_TURN_CHECK_INTERVAL_MS;
     if (!Number.isSafeInteger(this.#maxDeliveryAttempts) || this.#maxDeliveryAttempts < 1) {
       throw new Error('ShellRun completion wake attempts must be a positive safe integer');
+    }
+    if (
+      !Number.isSafeInteger(this.#activeTurnCheckIntervalMs) ||
+      this.#activeTurnCheckIntervalMs < 1
+    ) {
+      throw new Error('ShellRun completion wake active-turn interval must be positive');
     }
   }
 
@@ -115,8 +126,7 @@ export class ShellRunCompletionWakeCoordinator {
   }
 
   async #deliver(sessionId: string, shellRunId: string): Promise<void> {
-    let lastFailure = 'unknown failure';
-    for (let attempt = 0; attempt < this.#maxDeliveryAttempts; attempt += 1) {
+    for (;;) {
       const activity = await this.#input.activityRegistry.acquire(
         sessionId,
         this.#abortController.signal,
@@ -137,12 +147,30 @@ export class ShellRunCompletionWakeCoordinator {
             await this.#markDelivered(record, previousTurnId);
             return;
           }
-          if (previous === 'active') return;
+          if (previous === 'active') {
+            // A recovered attempt may still be owned by another live stream.
+            // Release the session lane while watching its durable AgentRun so a
+            // later failure cannot strand this subscription until another host
+            // restart or recovery pass.
+            activity.release();
+            await this.#waitForActiveTurn(sessionId, previousTurnId);
+            continue;
+          }
         }
 
+        const attemptCount = durableAttemptCount(record);
+        if (attemptCount >= this.#maxDeliveryAttempts) {
+          const failure = record.completionWake?.lastFailure ?? 'previous attempt did not complete';
+          await this.#markExhausted(record, failure);
+          throw deliveryExhaustedError(shellRunId, this.#maxDeliveryAttempts, failure);
+        }
         const turnId = this.#input.newId();
         record = await this.#input.store.updateShellRun(sessionId, shellRunId, {
-          completionWake: { attemptTurnId: turnId },
+          completionWake: {
+            ...record.completionWake,
+            attemptCount: attemptCount + 1,
+            attemptTurnId: turnId,
+          },
           updatedAt: this.#input.now(),
         });
         let outcome: GoalTurnOutcome;
@@ -158,31 +186,75 @@ export class ShellRunCompletionWakeCoordinator {
             this.#abortController.signal,
           );
         } catch (error) {
-          lastFailure = errorMessage(error);
+          const failure = boundedFailure(errorMessage(error));
+          record = await this.#markAttemptFailed(record, failure);
+          if (durableAttemptCount(record) >= this.#maxDeliveryAttempts) {
+            await this.#markExhausted(record, failure);
+            throw deliveryExhaustedError(shellRunId, this.#maxDeliveryAttempts, failure);
+          }
           continue;
         }
         if (outcome.kind === 'completed' || outcome.kind === 'suspended') {
           await this.#markDelivered(record, turnId);
           return;
         }
-        lastFailure = outcome.kind === 'errored' ? outcome.reason : outcome.kind;
+        const failure = boundedFailure(outcome.kind === 'errored' ? outcome.reason : outcome.kind);
+        record = await this.#markAttemptFailed(record, failure);
+        if (durableAttemptCount(record) >= this.#maxDeliveryAttempts) {
+          await this.#markExhausted(record, failure);
+          throw deliveryExhaustedError(shellRunId, this.#maxDeliveryAttempts, failure);
+        }
       } finally {
         activity.release();
       }
       if (this.#closed) return;
     }
-    throw new Error(
-      `ShellRun completion wake ${shellRunId} was not delivered after ${this.#maxDeliveryAttempts} attempts: ${lastFailure}`,
-    );
   }
 
   async #markDelivered(record: ShellRunRecord, attemptTurnId: string): Promise<void> {
     const deliveredAt = this.#input.now();
     await this.#input.store.updateShellRun(record.sessionId, record.shellRunId, {
-      completionWake: { attemptTurnId, deliveredAt },
+      completionWake: {
+        ...record.completionWake,
+        attemptCount: durableAttemptCount(record),
+        attemptTurnId,
+        deliveredAt,
+      },
       observedAt: deliveredAt,
       updatedAt: deliveredAt,
     });
+  }
+
+  async #markAttemptFailed(record: ShellRunRecord, lastFailure: string): Promise<ShellRunRecord> {
+    return this.#input.store.updateShellRun(record.sessionId, record.shellRunId, {
+      completionWake: {
+        ...record.completionWake,
+        attemptCount: durableAttemptCount(record),
+        lastFailure,
+      },
+      updatedAt: this.#input.now(),
+    });
+  }
+
+  async #markExhausted(record: ShellRunRecord, failure: string): Promise<void> {
+    if (record.completionWake?.exhaustedAt !== undefined) return;
+    const exhaustedAt = this.#input.now();
+    await this.#input.store.updateShellRun(record.sessionId, record.shellRunId, {
+      completionWake: {
+        ...record.completionWake,
+        attemptCount: durableAttemptCount(record),
+        lastFailure: boundedFailure(failure),
+        exhaustedAt,
+      },
+      updatedAt: exhaustedAt,
+    });
+  }
+
+  async #waitForActiveTurn(sessionId: string, turnId: string): Promise<void> {
+    for (;;) {
+      await waitForAbortableDelay(this.#activeTurnCheckIntervalMs, this.#abortController.signal);
+      if ((await this.#input.inspectTurn(sessionId, turnId)) !== 'active') return;
+    }
   }
 }
 
@@ -209,8 +281,47 @@ function isWakeEligible(record: ShellRunRecord): boolean {
   return (
     record.notifyOnComplete === true &&
     isTerminalShellRunStatus(record.status) &&
-    record.completionWake?.deliveredAt === undefined
+    record.observedAt === undefined &&
+    record.completionWake?.deliveredAt === undefined &&
+    record.completionWake?.exhaustedAt === undefined
   );
+}
+
+function durableAttemptCount(record: ShellRunRecord): number {
+  return (
+    record.completionWake?.attemptCount ??
+    (record.completionWake?.attemptTurnId === undefined ? 0 : 1)
+  );
+}
+
+function boundedFailure(failure: string): string {
+  return failure.slice(0, 4_000) || 'unknown failure';
+}
+
+function deliveryExhaustedError(shellRunId: string, maxAttempts: number, failure: string): Error {
+  return new Error(
+    `ShellRun completion wake ${shellRunId} was not delivered after ${maxAttempts} attempts: ${failure}`,
+  );
+}
+
+async function waitForAbortableDelay(delayMs: number, abortSignal: AbortSignal): Promise<void> {
+  abortSignal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException('ShellRun completion wake was aborted', 'AbortError'));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      abortSignal.removeEventListener('abort', onAbort);
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    if (abortSignal.aborted) onAbort();
+  });
 }
 
 function isAbortError(error: unknown): boolean {

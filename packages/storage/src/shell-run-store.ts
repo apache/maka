@@ -263,10 +263,22 @@ function isSandboxExecution(value: unknown): boolean {
 
 function isCompletionWake(value: unknown, notifyOnComplete: unknown, status: unknown): boolean {
   if (value === undefined) return true;
-  if (notifyOnComplete !== true || !hasOnlyKeys(value, new Set(['attemptTurnId', 'deliveredAt']))) {
+  if (
+    notifyOnComplete !== true ||
+    !hasOnlyKeys(
+      value,
+      new Set(['attemptCount', 'attemptTurnId', 'lastFailure', 'deliveredAt', 'exhaustedAt']),
+    )
+  ) {
     return false;
   }
   const wake = value as Record<string, unknown>;
+  if (
+    wake.attemptCount !== undefined &&
+    (!Number.isSafeInteger(wake.attemptCount) || (wake.attemptCount as number) < 0)
+  ) {
+    return false;
+  }
   if (
     wake.attemptTurnId !== undefined &&
     (typeof wake.attemptTurnId !== 'string' || wake.attemptTurnId.length === 0)
@@ -275,6 +287,25 @@ function isCompletionWake(value: unknown, notifyOnComplete: unknown, status: unk
   }
   if (wake.deliveredAt !== undefined) {
     if (!isFiniteNumber(wake.deliveredAt) || typeof wake.attemptTurnId !== 'string') return false;
+  }
+  if (
+    wake.lastFailure !== undefined &&
+    (typeof wake.lastFailure !== 'string' ||
+      wake.lastFailure.length === 0 ||
+      wake.lastFailure.length > 4_000)
+  ) {
+    return false;
+  }
+  if (wake.exhaustedAt !== undefined) {
+    if (!isFiniteNumber(wake.exhaustedAt) || typeof wake.lastFailure !== 'string') return false;
+  }
+  if (wake.deliveredAt !== undefined && wake.exhaustedAt !== undefined) return false;
+  if (
+    (wake.deliveredAt !== undefined || wake.exhaustedAt !== undefined) &&
+    wake.attemptCount !== undefined &&
+    (wake.attemptCount as number) < 1
+  ) {
+    return false;
   }
   return isTerminalShellRunStatus(status as ShellRunRecord['status']);
 }
@@ -313,6 +344,23 @@ function assertShellRunTransition(current: ShellRunRecord, candidate: ShellRunRe
   ) {
     throw new Error(`ShellRun terminal outcome is immutable: ${current.status}`);
   }
+  const currentAttempts = current.completionWake?.attemptCount ?? 0;
+  const candidateAttempts = candidate.completionWake?.attemptCount ?? 0;
+  if (candidateAttempts < currentAttempts) {
+    throw new Error('ShellRun completion wake attempt count is monotonic');
+  }
+  if (
+    current.completionWake?.deliveredAt !== undefined &&
+    candidate.completionWake?.deliveredAt !== current.completionWake.deliveredAt
+  ) {
+    throw new Error('ShellRun completion wake delivery is immutable');
+  }
+  if (
+    current.completionWake?.exhaustedAt !== undefined &&
+    candidate.completionWake?.exhaustedAt !== current.completionWake.exhaustedAt
+  ) {
+    throw new Error('ShellRun completion wake exhaustion is immutable');
+  }
 }
 
 function hasOnlyKeys(value: unknown, allowed: ReadonlySet<string>): boolean {
@@ -338,11 +386,20 @@ function canonicalShellRunRecord(record: ShellRunRecord): ShellRunRecord {
     ...(record.completionWake !== undefined
       ? {
           completionWake: {
+            ...(record.completionWake.attemptCount !== undefined
+              ? { attemptCount: record.completionWake.attemptCount }
+              : {}),
             ...(record.completionWake.attemptTurnId !== undefined
               ? { attemptTurnId: record.completionWake.attemptTurnId }
               : {}),
+            ...(record.completionWake.lastFailure !== undefined
+              ? { lastFailure: record.completionWake.lastFailure }
+              : {}),
             ...(record.completionWake.deliveredAt !== undefined
               ? { deliveredAt: record.completionWake.deliveredAt }
+              : {}),
+            ...(record.completionWake.exhaustedAt !== undefined
+              ? { exhaustedAt: record.completionWake.exhaustedAt }
               : {}),
           },
         }

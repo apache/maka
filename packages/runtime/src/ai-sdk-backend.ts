@@ -1696,6 +1696,7 @@ export class AiSdkBackend implements AgentBackend {
               if (outcome.status === 'rejected') throw outcome.reason;
               return outcome.value;
             });
+            let backgroundCompletionSubscribed = false;
             for (let index = 0; index < settlements.length; index += 1) {
               const settlement = settlements[index]!;
               const toolCall = returnedToolCalls[index];
@@ -1709,13 +1710,13 @@ export class AiSdkBackend implements AgentBackend {
               ) {
                 this.handleAgentGraphYieldToolResult(scope, settlement.result);
               }
-              if (
-                returnedToolCalls.length === 1 &&
-                isBackgroundCompletionSubscriptionResult(settlement.result)
-              ) {
-                scope.loopStopReason = 'background_task_wait';
-                scope.loopStopRequested = true;
-              }
+              backgroundCompletionSubscribed ||= isBackgroundCompletionSubscriptionResult(
+                settlement.result,
+              );
+            }
+            if (backgroundCompletionSubscribed) {
+              scope.loopStopReason = 'background_task_wait';
+              scope.loopStopRequested = true;
             }
             await queue.waitUntilConsumedThroughCurrent();
             for (let index = 0; index < returnedToolCalls.length; index += 1) {
