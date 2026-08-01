@@ -75,13 +75,13 @@ describe('BotRegistry', () => {
     });
 
     await Promise.all([
-      registry.applySettings(settingsWith({ wecom: { enabled: true, token: 'old-token' } })),
-      registry.applySettings(settingsWith({ wecom: { enabled: false, token: 'old-token' } })),
-      registry.applySettings(settingsWith({ wecom: { enabled: true, token: 'new-token' } })),
+      registry.applySettings(settingsWith({ wecom: { enabled: true } })),
+      registry.applySettings(settingsWith({ wecom: { enabled: true } })),
+      registry.applySettings(settingsWith({ wecom: { enabled: false } })),
     ]);
 
     assert.equal(registry.getStatus('wecom').running, false);
-    assert.equal(registry.getStatus('wecom').reason, 'no-credentials');
+    assert.equal(registry.getStatus('wecom').reason, 'disabled');
     assert.equal(registry.getStatus('wecom').readiness, 'scaffolded');
   });
 
