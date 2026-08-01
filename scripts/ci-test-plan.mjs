@@ -101,7 +101,7 @@ export function planTests(changedFiles, options = {}) {
       e2e: true,
       full: true,
       headless: graph.dirs.includes('packages/headless'),
-      runtimeSandbox: graph.dirs.includes('packages/runtime'),
+      runtimeSandbox: graph.dirs.includes('packages/cli'),
       scriptMode: 'full',
       storageStress: graph.dirs.includes('packages/storage'),
       workspaces: [...graph.dirs],
@@ -159,12 +159,11 @@ export function planTests(changedFiles, options = {}) {
     e2e: directWorkspaces.has('apps/desktop') || directWorkspaces.has('packages/ui'),
     full: false,
     headless: workspaces.includes('packages/headless'),
-    runtimeSandbox:
-      directWorkspaces.has('packages/runtime') ||
-      // runtime-bootstrap.test.ts (packages/cli) executes real sandboxed shell
-      // tools, so it needs the bubblewrap + user-namespace setup even though
-      // the change is scoped to the cli workspace.
-      files.some((path) => path === 'packages/cli/src/__tests__/runtime-bootstrap.test.ts'),
+    // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
+    // shell tools, so the bubblewrap + user-namespace setup is required whenever
+    // the cli workspace runs in the dependency closure, not only for direct
+    // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
+    runtimeSandbox: workspaces.includes('packages/cli'),
     scriptMode,
     storageStress,
     workspaces,

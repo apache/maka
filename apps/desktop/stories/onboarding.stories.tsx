@@ -51,7 +51,7 @@ const connections: LlmConnection[] = [
  * #1433, second pass: the replacement claimed to be the app's chain "class for
  * class" and was not — it nested `.mainColumn` OUTSIDE `.maka-panel-detail`
  * (the app nests it inside), and dropped `.maka-detail-with-artifacts`,
- * ChatView's 32px `header.maka-chat-header`, and the scroll viewport. Writing
+ * ChatView's session-owned chrome, and the scroll viewport. Writing
  * a chain out by hand is the same mistake one level down.
  *
  * So only the part that cannot be imported is written out: app-shell.tsx owns

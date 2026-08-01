@@ -7,7 +7,7 @@ type ToastApi = {
 };
 
 /**
- * Owns the chat-header memory-visibility pill (issue #1043): the `memoryActive`
+ * Owns the session-context memory state (issue #1043): the `memoryActive`
  * flag surfaced when xuan's MEMORY.md is injected into the agent's system
  * prompt, plus the fire-and-forget `refreshMemoryActive` that re-reads
  * `window.maka.memory.getState()`.

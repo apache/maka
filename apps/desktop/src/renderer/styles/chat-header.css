@@ -4,30 +4,11 @@
    #546 PR2 (relocate — zero visual change) split the overlay surfaces that
    used to live here into their own files: palette.css, help.css,
    error.css, hero.css. The composer streaming top-sweep moved to
-   composer.css. What remains is the header bar (`.maka-chat-header`), the
-   #1032 composer-adjacent health notice, and the chat shell layout
+   composer.css. What remains is the unified session context layer, the #1032
+   composer-adjacent health notice, and the chat shell layout
    (`.maka-chat-shell` / `.maka-chatViewport` / `.maka-chatContent` /
    `.maka-chat-jump-bottom`). The header status cluster was removed.     */
 
-
-/* A right-aligned strip of per-session status chips (memory / deep-research /
-   goal), each rendered only when that state is active — so most of the time the
-   row is empty, and takes no space.
-   It carried three rulers until the shell grew a real titlebar row: a
-   `margin-right` reserving the workspace toolbar's hand-summed width, a
-   collapsed-state `margin-left` reserving the topbar rail's, and the transition
-   animating the latter. The strip now sits in the content row, below the
-   titlebar, where neither cluster can reach it. No fixed height either: an empty
-   status strip should take no vertical space, so the height follows the chips. */
-.maka-chat-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-  gap: var(--space-1);
-  padding: 0 var(--space-2-5);
-  background: transparent;
-  border-bottom: 0;
-}
 
 /* #1032: hard-block session health notice sits above the composer,
    outside the message scroll area (sibling of maka-composer-interaction-slot).
@@ -63,70 +44,90 @@
    rules came out with them. Session name + model live in the sidebar;
    create-session lives in the sidebar new-task button. */
 
-/* PR-MEMORY-VISIBILITY-INDICATOR-0: small clickable pill that fires
-   when local MEMORY.md is being injected into the agent's system
-   prompt. Tone matches the existing info badge family. */
-.maka-chat-header-memory-pill {
-  appearance: none;
-  background: oklch(from var(--nav-active) l c h / 0.10);
-  border: var(--border-width-hairline) solid oklch(from var(--nav-active) l c h / 0.25);
-  color: var(--nav-active);
-  border-radius: var(--radius-pill);
+/* Session lineage, revisions, modes, and autonomous-goal state share one
+   structural layer. The layer is omitted when no extra context exists. */
+.maka-session-context {
+  flex: 0 0 auto;
+  min-width: 0;
+  background: var(--background);
+  container-type: inline-size;
+  -webkit-app-region: no-drag;
+}
+
+.maka-session-context__inner {
+  min-width: 0;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1-5) var(--space-3);
+}
+
+.maka-session-context__lineage,
+.maka-session-context__cluster {
+  min-width: 0;
+}
+
+.maka-session-context__breadcrumbs {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.maka-session-context__breadcrumbs > ol {
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.maka-session-context__breadcrumbs > ol > li {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.maka-session-context__breadcrumb-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-session-context__cluster {
+  width: min(100%, 560px);
+  justify-self: end;
+}
+
+.maka-session-context__item,
+.maka-session-context__revision,
+.maka-session-context__goal {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
+}
+
+.maka-session-context__revision,
+.maka-session-context__goal {
   gap: var(--space-1);
-  padding: 1px var(--space-1-5);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  -webkit-app-region: no-drag;
-  margin-right: var(--space-1);
-  margin-bottom: var(--space-0-5);
   white-space: nowrap;
-  flex: 0 0 auto;
 }
 
-.maka-chat-header-memory-pill:hover {
-  background: oklch(from var(--nav-active) l c h / 0.18);
+@container (max-width: 620px) {
+  .maka-session-context__inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+
+  .maka-session-context__cluster {
+    width: 100%;
+    justify-self: stretch;
+  }
 }
 
-.maka-chat-header-memory-pill:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-chat-header-mode-pill {
-  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.32);
-  background: oklch(from var(--info) l c h / 0.10);
-  color: var(--info-text);
-  border-radius: var(--radius-pill);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 1px var(--space-1-5);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  -webkit-app-region: no-drag;
-  margin-right: var(--space-1);
-  margin-bottom: var(--space-0-5);
-  white-space: nowrap;
-  flex: 0 0 auto;
-}
-
-.maka-chat-header-mode-pill svg {
-  flex: 0 0 auto;
-}
-
-/* Goal kill-switch pill: an active autonomous loop is warning-tinted (not the
-   neutral info tone of the deep-research pill) and clears the goal on click.
-   No `cursor: pointer` — native convention reserves the hand for links; the
-   pill is a UiButton and uses the default arrow like every other control. */
-.maka-chat-header-mode-pill[data-mode="goal"] {
-  border-color: oklch(from var(--warning) l c h / 0.38);
-  background: oklch(from var(--warning) l c h / 0.12);
-  color: var(--warning-text);
-}
-.maka-chat-header-mode-pill[data-mode="goal"]:hover {
-  background: oklch(from var(--warning) l c h / 0.18);
+@container (max-width: 420px) {
+  .maka-session-context__inner {
+    padding-inline: var(--space-2);
+  }
 }
 
 .messages {
