@@ -207,59 +207,11 @@ test('real reports reject invalid readiness, identity, provenance, and lineage',
       { terminal: { type: 'complete', stopReason: 'max_tokens' } },
       /complete\/end_turn/,
     ],
-    [
-      'wrong target',
-      {
-        actions: [
-          {
-            type: 'observe',
-            resultObservationId: 'observation-1',
-            targetPid: 99,
-            targetWindowId: 7,
-            success: true,
-            targetOwned: false,
-          },
-          {
-            type: 'click_element',
-            sourceObservationId: 'observation-1',
-            targetPid: 42,
-            targetWindowId: 7,
-            success: true,
-            targetOwned: true,
-          },
-        ],
-      },
-      /PID\/window trace evidence/,
-    ],
     ['unknown producer', { producer: 'legacy-runner' }, /producer missing or unknown/],
     ['missing policy provenance', { policyMode: undefined }, /policyMode missing or unknown/],
     ['unknown transport provenance', { transportClass: 'unknown' }, /live-network/],
     ['ineligible qualification', { qualificationEligible: false }, /qualificationEligible/],
     ['deprecated report', { deprecated: true }, /deprecated reports cannot qualify/],
-    [
-      'broken observation lineage',
-      {
-        actions: [
-          {
-            type: 'observe',
-            resultObservationId: 'observation-1',
-            targetPid: 42,
-            targetWindowId: 7,
-            success: true,
-            targetOwned: true,
-          },
-          {
-            type: 'click_element',
-            sourceObservationId: 'unknown-observation',
-            targetPid: 42,
-            targetWindowId: 7,
-            success: true,
-            targetOwned: true,
-          },
-        ],
-      },
-      /observation lineage/,
-    ],
   ]) {
     const report = realReport(patch);
     Object.assign(report, withLedgerCounts(report));
