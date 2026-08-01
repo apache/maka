@@ -13,9 +13,7 @@ const FULL_SUITE_FILES = new Set([
   'package-lock.json',
   'package.json',
   'scripts/ci-test-plan.mjs',
-  'scripts/ci-test-plan.test.mjs',
   'scripts/run-workspace-tests-parallel.mjs',
-  'scripts/run-workspace-tests-parallel.test.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([

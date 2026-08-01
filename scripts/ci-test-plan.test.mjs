@@ -26,7 +26,15 @@ test('stress and specialized script checks run only for their owning surfaces', 
     planTests(['packages/storage/src/agent-run-store.ts'], { graph }).storageStress,
     true,
   );
-  assert.equal(planTests(['scripts/fixture-env.mjs'], { graph }).scriptMode, 'fast');
+  for (const path of [
+    'scripts/fixture-env.mjs',
+    'scripts/ci-test-plan.test.mjs',
+    'scripts/run-workspace-tests-parallel.test.mjs',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.scriptMode, 'fast', path);
+  }
   const measurement = planTests(['scripts/measure-session-bundle.mjs'], { graph });
   assert.equal(measurement.scriptMode, 'extended');
   assert.deepEqual(measurement.workspaces, []);
