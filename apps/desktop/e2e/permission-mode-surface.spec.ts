@@ -2,11 +2,13 @@ import { expect, test } from './fixtures';
 
 /**
  * #1611 + #1616: cross-boundary permission journeys only.
- * Quiet chrome shape (icon menu, labels, no sandbox wording in options) is
- * covered by packages/ui permission-mode-menu unit tests — do not re-lock
- * tooltip / aria-description copy here.
+ * Quiet chrome shape (icon menu, option set) is unit-covered — do not re-lock
+ * tooltip copy or menu structure here.
+ *
+ * Auto transition from a live boundary is covered by the sandbox-expansion
+ * test below; this case only locks the full-access confirm cancel path.
  */
-test('a read-only session can open full-access confirm and still choose Auto', async ({
+test('full access from a read-only session requires confirm; cancel keeps the boundary', async ({
   readOnlyBoundaryWindow: page,
 }) => {
   const trigger = page
@@ -14,21 +16,15 @@ test('a read-only session can open full-access confirm and still choose Auto', a
     .getByRole('button');
   await expect(trigger).toHaveAccessibleName('权限模式：只读');
 
-  // Full access still requires confirmation; cancel leaves the boundary.
   await trigger.click();
   const menu = page.getByRole('menu');
   await expect(menu).toBeVisible();
   await menu.getByRole('menuitemradio', { name: /完全权限/ }).click();
+
   await expect(page.locator('.maka-confirm-modal')).toHaveCount(1);
   await page.getByRole('button', { name: '保持自动' }).click();
   await expect(page.locator('.maka-confirm-modal')).toHaveCount(0);
   await expect(trigger).toHaveAccessibleName('权限模式：只读');
-
-  // Choosing Auto is a real permission change against the session boundary.
-  await trigger.click();
-  await expect(menu).toBeVisible();
-  await menu.getByRole('menuitemradio', { name: /自动/ }).click();
-  await expect(trigger).toHaveAccessibleName('权限模式：自动');
 });
 
 test('approving an expansion updates the permission label at once and after a reload', async ({
