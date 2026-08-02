@@ -333,11 +333,30 @@ test('keeps each settled row to its own field on a provider that has two', async
   await endpointInput.fill('https://relay.example.com/v2');
   await connectionSection.getByRole('button', { name: '保存', exact: true }).click();
   await expect(connectionSection.getByText('https://relay.example.com/v2')).toBeVisible();
+  // The credential is untouched by the endpoint's save. A both-fields patch
+  // would have sent the blanked key, which the IPC boundary reads as "delete
+  // this secret" — so the row would report 尚未设置 instead.
+  await expect(connectionSection.getByText('已设置', { exact: true })).toBeVisible();
 
   // And the abandoned key is gone rather than waiting in state for the next
   // time the user opens its row.
   await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
   await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveValue('');
+
+  // The same rule in the other direction, and the one the store can answer:
+  // abandon an ENDPOINT draft, then save the key row. The address the user
+  // never confirmed must not ride along with it.
+  await connectionSection.getByRole('button', { name: '编辑', exact: true }).click();
+  await endpointInput.fill('https://relay.example.com/never-confirmed');
+  await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
+  await connectionSection.getByRole('textbox', { name: /模型密钥/ }).fill('sk-e2e-relay-replacement');
+  await connectionSection.getByRole('button', { name: '保存', exact: true }).click();
+  await expect
+    .poll(async () => page.evaluate(async () => {
+      const list = await window.maka.connections.list();
+      return list.find((entry) => entry.providerType === 'openai-compatible')?.baseUrl ?? null;
+    }))
+    .toBe('https://relay.example.com/v2');
 });
 
 test('carries keyboard focus down and back up every level', async ({ window: page }) => {

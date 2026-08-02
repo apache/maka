@@ -146,34 +146,90 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('an emptied selection survives an OAuth account resync', async () => {
+  test('half a default target is unreachable from every write path', async () => {
     await withConnectionStore(async (store) => {
-      const created = await store.create({
-        slug: 'claude-subscription',
-        name: 'Claude OAuth',
-        providerType: 'claude-subscription',
-      });
-      await store.update(created.slug, { enabledModelIds: [] });
+      // Created with no default model at all — the four providers that ship no
+      // `fallbackModels`. It used to claim the vacant workspace default on the
+      // way in, which showed a 默认 badge over a picker reading 未设置.
+      await store.create({ slug: 'lmstudio-local', name: 'LM Studio', providerType: 'lm-studio' });
+      assert.equal(await store.getDefault(), null);
 
-      // What `syncClaudeSubscriptionConnection` writes, verbatim in shape: a
-      // full snapshot whose default is re-derived from the provider fallbacks
-      // because '' is falsy. `connections:list` runs that sync before every
-      // read, so this ran inside the same interaction that emptied the list —
-      // the detail page's own reload used to undo its own write.
-      const existing = (await store.get(created.slug))!;
-      const fallback = PROVIDER_DEFAULTS['claude-subscription'].fallbackModels[0]!;
+      const openai = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o',
+      });
+      assert.equal(await store.getDefault(), openai.slug);
+
+      await store.update(openai.slug, { enabledModelIds: [] });
+      assert.equal(await store.getDefault(), null);
+      // And it cannot be handed back: update() cleared the slug, so setDefault()
+      // has to refuse the same state rather than restore it.
+      await assert.rejects(
+        () => store.setDefault(openai.slug),
+        /Connection has no default model: openai-main/,
+      );
+    });
+  });
+
+  test('a default slug already on disk without a model reads back as unset', async () => {
+    await withConnectionStore(async (store, dir) => {
+      await writeFile(
+        join(dir, 'llm-connections.json'),
+        JSON.stringify({
+          defaultSlug: 'openai-main',
+          connections: [
+            {
+              slug: 'openai-main',
+              name: 'OpenAI',
+              providerType: 'openai',
+              defaultModel: '',
+              enabled: true,
+              enabledModelIds: [],
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+        }),
+        'utf8',
+      );
+
+      assert.equal(await store.getDefault(), null);
+    });
+  });
+
+  test('a saved snapshot keeps the default its caller reconciled', async () => {
+    await withConnectionStore(async (store) => {
+      await store.save({
+        slug: 'github-copilot',
+        name: 'GitHub Copilot',
+        providerType: 'github-copilot',
+        defaultModel: 'gpt-4.1',
+        enabled: true,
+        enabledModelIds: ['gpt-4.1'],
+        models: [{ id: 'gpt-4.1' }],
+        modelSource: 'fetched',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+
+      // The provider retires gpt-4.1. The account sync reconciles against the
+      // live catalog and hands back a repaired default. save() sees only a
+      // snapshot, so it cannot tell that from a selection the user just stated
+      // — treating it as one threw the repair away and left the connection
+      // pointing at a model that no longer exists.
+      const existing = (await store.get('github-copilot'))!;
       const synced = await store.save({
         ...existing,
-        defaultModel: existing.defaultModel || fallback,
-        enabledModelIds: existing.enabledModelIds,
-        enabled: true,
-        models: [{ id: fallback }],
-        modelSource: 'fallback',
+        defaultModel: 'gpt-5',
+        enabledModelIds: ['gpt-5'],
+        models: [{ id: 'gpt-5' }],
       });
 
-      assert.deepEqual(synced.enabledModelIds, []);
-      assert.equal(synced.defaultModel, '');
-      assert.equal(await store.getDefault(), null);
+      assert.equal(synced.defaultModel, 'gpt-5');
+      assert.deepEqual(synced.enabledModelIds, ['gpt-5']);
+      assert.equal(await store.getDefault(), 'github-copilot');
     });
   });
 

@@ -146,10 +146,12 @@ export function connectionEnabledModelIds(connection: {
  * **`defaultModel` is either absent, or a member of `enabledModelIds`.**
  *
  * Applied when the user states a new enabled set. Dropping a model that
- * happens to be the default drops the default with it — a connection may
- * legitimately enable nothing at all, and "enable nothing" has no model for a
- * chat to start on. That is exactly what the readiness gate's
- * `empty_model_list` already reports, so no state is lost by saying it.
+ * happens to be the default drops the default with it, rather than moving the
+ * default to some other member of the set: which model a new chat starts on is
+ * 设置 · 通用's one control, and picking a replacement here would answer that
+ * question on the user's behalf from a page that no longer asks it. The
+ * connection is then simply not the workspace default — the readiness gate
+ * reports `missing_model` for it, which is what it is.
  *
  * The old behavior merged the default back into every write, which made
  * unchecking the default a silent no-op: the recomputed list equalled the
@@ -185,13 +187,18 @@ export function reconcileConnectionAfterEnabledModelsChange(
  * the connection breaks" regression. Prefer an already-enabled id that is
  * still live; otherwise take the first discovered id.
  *
- * Bootstrapping a default from the inventory is an affordance for a connection
- * that has never had models to choose from, not a repair. Four providers ship
- * no `fallbackModels` (LM Studio and the three *-compatible ones), so for them
- * discovery is the only place a default can come from. Once the connection has
- * a non-empty inventory — fetched or a cached fallback catalog, since either
- * one is a list the user could pick from — an empty selection is their answer,
- * and re-seeding it would undo the choice on the next refresh.
+ * Repair is all this does for a default that is set. An ABSENT default is not
+ * a stale one, so there is nothing here to repair: the user cleared it by
+ * unchecking that model, and picking a replacement — the first still-enabled
+ * id, or the first live one — would re-assert the choice they withdrew on
+ * every refresh.
+ *
+ * The single exception is a connection that has never had models to choose
+ * from: four providers ship no `fallbackModels` (LM Studio and the three
+ * *-compatible ones), so for them discovery is the only place a first default
+ * can come from. `hasModelInventory` marks that case and nothing else — a
+ * non-empty inventory, fetched or a cached fallback catalog, means the user
+ * has had a list in front of them.
  */
 export function reconcileConnectionAfterModelFetch(
   connection: {
@@ -230,14 +237,20 @@ export function reconcileConnectionAfterModelFetch(
     };
   }
 
-  // No enabled models and no default on a connection that already had a list
-  // to choose from is a stated choice, not a gap to fill.
-  if (connection.hasModelInventory && previousEnabled.length === 0 && !previousDefault) {
-    return { defaultModel: '', enabledModelIds: [] };
+  if (!previousDefault) {
+    // Nothing to repair. Seed one only for a connection that has never had a
+    // list to pick from; otherwise the absence is the user's answer.
+    if (connection.hasModelInventory || previousEnabled.length > 0) {
+      return {
+        defaultModel: '',
+        enabledModelIds: previousEnabled.filter((id) => live.has(id)),
+      };
+    }
+    return { defaultModel: liveIds[0]!, enabledModelIds: [liveIds[0]!] };
   }
 
   const defaultModel =
-    (previousDefault && live.has(previousDefault) ? previousDefault : undefined) ??
+    (live.has(previousDefault) ? previousDefault : undefined) ??
     previousEnabled.find((id) => live.has(id)) ??
     liveIds[0]!;
 
