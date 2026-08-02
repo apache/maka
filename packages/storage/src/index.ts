@@ -125,6 +125,8 @@ export * from './project-catalog.js';
 export * from './project-session-backfill.js';
 export * from './git-worktree-child-executor.js';
 export * from './git-workspace-service.js';
+export * from './managed-workspace-owner.js';
+export * from './project-session-migration.js';
 export * from './session-bundle-policy.js';
 export * from './session-bundle-contract.js';
 export * from './session-bundle-manifest.js';

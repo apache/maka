@@ -12,6 +12,7 @@ import {
   SQLITE_RUNTIME_SCHEMA_VERSION,
   createSqliteRuntimeStore,
 } from '../sqlite-runtime-store.js';
+import { bindWorkspaceBaselineAuthorityStoreRootInternal } from '../workspace-version-authority-internal.js';
 
 const WORKER_READY_TIMEOUT_MS = 15_000;
 const WORKER_EXECUTION_TIMEOUT_MS = 30_000;
@@ -295,6 +296,7 @@ async function withPreparedDatabase(
   const startPath = join(root, 'start');
   const store = createSqliteRuntimeStore(dbPath);
   try {
+    bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
     await store.commitToolPrepared(preparedCommit());
     await store.appendRuntimeEvent('session-1', 'continuation-source-run', {
       id: 'continuation-source-user',
