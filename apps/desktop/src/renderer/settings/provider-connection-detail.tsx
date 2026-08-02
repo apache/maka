@@ -138,9 +138,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     <VStack gap={8}>
       <DetailSection
         title={copy.credentials}
-        description={supportsApiKey
-          ? (showsEndpoint ? copy.credentialsHelp : copy.credentialsHelpKeyOnly)
-          : (showsEndpoint ? copy.credentialsHelpEndpointOnly : copy.credentialsHelpAccount)}
+        /* One claim, not four phrasings of it: the credential never leaves this
+           machine. The endpoint is not a secret, so it did not need a variant. */
+        description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
       >
         {issue && (
           <Banner
@@ -250,7 +250,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   value={baseUrl}
                   onChange={setBaseUrl}
                   placeholder={defaults.baseUrl}
-                  description={copy.advancedHelp}
                   isDisabled={detailActionBusy}
                 />
               </SettingRow>
@@ -281,10 +280,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           no quiet action next to the destructive one for a mis-aimed cursor. */}
       <DetailSection title={copy.dangerZone} description={copy.deleteRowHelp}>
         <HStack>
-          {/* The destructive button names what it destroys; a bare 删除 next
-              to a heading is one glance away from being read as 删除 something
-              else on the page. */}
-          <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
+          {/* The heading beside it already says 删除连接; repeating it on the
+              button was the same three words twice in one row. */}
+          <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.delete} />
         </HStack>
       </DetailSection>
     </VStack>

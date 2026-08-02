@@ -137,7 +137,7 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     // A settled credential is a row, not a form: it reports its state and
     // carries one link. The input only exists while the user is changing it.
     const connectionSection = detail.getByRole('region', { name: '连接' });
-    await expect(connectionSection.getByText('已设置，粘贴新值可替换')).toBeVisible();
+    await expect(connectionSection.getByText('已设置', { exact: true })).toBeVisible();
     await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveCount(0);
 
     await connectionSection.getByRole('link', { name: '更换', exact: true }).click();
@@ -207,7 +207,7 @@ test('adds a catalog provider through the canonical API-key setup page', async (
       mobile: false,
     });
 
-    const deleteButton = detail.getByRole('button', { name: '删除连接', exact: true });
+    const deleteButton = detail.getByRole('button', { name: '删除', exact: true });
     await deleteButton.scrollIntoViewIfNeeded();
     await expect(deleteButton).toBeInViewport();
     await deleteButton.click();
@@ -266,7 +266,7 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
   // endpoint row at all — a derived address is nobody's to type.
   const connectionSection = detail.getByRole('region', { name: '连接' });
   await expect(connectionSection.getByText('服务地址', { exact: true })).toHaveCount(0);
-  await expect(connectionSection.getByText('已设置，粘贴新值可替换')).toBeVisible();
+  await expect(connectionSection.getByText('已设置', { exact: true })).toBeVisible();
   // It is still the address the connection was saved with.
   const savedBaseUrl = await page.evaluate(async () => {
     const list = await window.maka.connections.list();

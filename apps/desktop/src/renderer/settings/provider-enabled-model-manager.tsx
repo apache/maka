@@ -47,6 +47,10 @@ export function EnabledModelManager(props: {
   return (
     <MultiSelector
       label={copy.enabledModels}
+      // The section is already headed 模型 and says what the list is for; a
+      // visible field label repeated it in a third type style. Kept as the
+      // accessible name so the trigger still announces what it selects.
+      isLabelHidden
       options={options}
       value={props.enabledModelIds}
       onChange={props.onChange}
