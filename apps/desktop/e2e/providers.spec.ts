@@ -178,7 +178,6 @@ test('adds a catalog provider through the canonical API-key setup page', async (
   });
 
   await test.step('deletion stays reachable and reversible in a short viewport', async () => {
-    await detail.getByText('高级设置', { exact: true }).click();
     // Short-viewport invariant: the detail is a page, so the settings content
     // area owns the scrolling and the trailing action stays reachable. The test
     // asserts reachability, not which node scrolls.
@@ -245,7 +244,8 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
 
   const detail = connectionDetail(page);
   await expect(detail).toBeVisible();
-  await detail.getByText('高级设置', { exact: true }).click();
+  // The endpoint is a plain section, not something folded away: nothing to
+  // expand before reading it.
   await expect(detail.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
   await expect(detail.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
 });

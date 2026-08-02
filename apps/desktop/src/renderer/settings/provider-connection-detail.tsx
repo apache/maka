@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Banner, Collapsible, Divider, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
+import { useState, type ReactNode } from 'react';
+import { Banner, Divider, Grid, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Button,
@@ -134,15 +134,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     });
   }
 
-  const canSetDefault = !props.isDefault && connection.enabled;
-
   return (
-    /* Sections, not cards. The page draws its hierarchy the way the
-       settings-sidebar template does — a heading, a rule, then rows — so the
-       only boxes on the page are the inputs themselves. */
+    /* The `settings` template's form language, verbatim: a section is a
+       heading with a sentence under it beside its controls, and one Divider
+       BETWEEN sections. No rule under each heading, no box around anything,
+       nothing folded away — the template has no Collapsible, and Astryx's own
+       guidance says not to hide required content behind one or to reach for
+       one to cover a single short field. */
     <VStack gap={8}>
-      <VStack as="section" gap={4} aria-label={copy.credentials}>
-        <SectionRule title={copy.credentials} />
+      <DetailSection
+        title={copy.credentials}
+        description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
+      >
         {supportsApiKey && (
           <VStack gap={2}>
             <PasswordInput
@@ -222,9 +225,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               : copy.credentialUnknownDetail}
           />
         )}
-      </VStack>
-      <VStack as="section" gap={4} aria-label={copy.modelManagement}>
-        <SectionRule title={copy.modelManagement} />
+      </DetailSection>
+      <Divider />
+      <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <Selector
           label={copy.connectionDefaultModel}
           description={copy.connectionDefaultModelHelp}
@@ -249,56 +252,92 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           {supportsRemoteDiscovery && (
             <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
           )}
-          {canSetDefault && (
-            <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
-          )}
         </HStack>
-      </VStack>
-      <VStack gap={0}>
-        <Collapsible defaultIsOpen={false} trigger={copy.advanced}>
-          <VStack gap={2} paddingBlock={3}>
-            <ConnectionEndpointField
-              baseUrl={baseUrl}
-              defaultsBaseUrl={defaults.baseUrl}
-              fixedOAuth={hasFixedOAuthBaseUrl}
-              disabled={detailActionBusy}
+      </DetailSection>
+      {/* Only where there is something to do. Once this connection IS the
+          default the section had nothing but a sentence saying so — and the
+          page header already says it, with a badge. */}
+      {!props.isDefault && (
+        <>
+          <Divider />
+          <DetailSection title={copy.defaultConnection} description={copy.defaultConnectionHelp}>
+            {connection.enabled ? (
+              <HStack>
+                <Button
+                  variant="primary"
+                  isDisabled={detailActionBusy}
+                  onClick={setAsDefault}
+                  label={settingDefault ? copy.setting : copy.setDefault}
+                />
+              </HStack>
+            ) : (
+              <Text type="supporting" color="secondary">{copy.connectionDisabledDetail}</Text>
+            )}
+          </DetailSection>
+        </>
+      )}
+      {/* The endpoint section only exists where the endpoint can actually be
+          changed. An OAuth connection's endpoint is fixed by the provider, so
+          showing it was a permanently read-only field explaining why it is
+          read-only — a row that answers a question nobody asked. */}
+      {!hasFixedOAuthBaseUrl && (
+        <>
+          <Divider />
+          {/* Named for the one field it holds, not "高级设置": a category name
+              with a single member is an extra door in front of one room. The
+              heading names it, so the field does not repeat the name. */}
+          <DetailSection title={copy.endpoint} description={copy.advancedHelp}>
+            <TextInput
+              label={copy.endpoint}
+              isLabelHidden
+              value={baseUrl}
               onChange={setBaseUrl}
+              placeholder={defaults.baseUrl}
+              isDisabled={detailActionBusy}
             />
             {/* Persistent button (disabled until the endpoint is edited) so the
-                advanced settings body height stays constant while typing. An
-                OAuth-fixed endpoint is readOnly with no dirty path — no jitter
-                risk — so it renders no permanently-disabled Save at all. */}
-            {!hasFixedOAuthBaseUrl && (
-              <HStack hAlign="end">
-                <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
-              </HStack>
-            )}
-          </VStack>
-        </Collapsible>
-        <Divider />
-      </VStack>
-      {/* Deletion is its own section at the trailing edge, and 设为默认 moved
-          up beside the other model actions — so nothing quiet sits next to the
-          destructive button for a mis-aimed cursor to hit. */}
-      <VStack as="section" gap={4} aria-label={copy.dangerZone}>
-        <SectionRule title={copy.dangerZone} />
-        <HStack gap={4} hAlign="between" vAlign="start">
-          <Text type="supporting" color="secondary">{copy.deleteRowHelp}</Text>
+                section height stays constant while typing. */}
+            <HStack>
+              <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
+            </HStack>
+          </DetailSection>
+        </>
+      )}
+      <Divider />
+      {/* Deletion is last, and the only thing beside it is its own warning —
+          no quiet action next to the destructive one for a mis-aimed cursor. */}
+      <DetailSection title={copy.dangerZone} description={copy.deleteRowHelp}>
+        <HStack>
+          {/* The destructive button names what it destroys; a bare 删除 next
+              to a heading is one glance away from being read as 删除 something
+              else on the page. */}
           <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
         </HStack>
-      </VStack>
+      </DetailSection>
     </VStack>
   );
 }
 
-/** A section title with the rule under it — the template's `Heading level={3}`
- * followed by `<Divider/>`, named once so every section spells it the same. */
-function SectionRule(props: { title: string }) {
+/**
+ * One section of the form, in the `settings` template's shape: the heading and
+ * its one-sentence explanation in the first grid cell, the controls in the
+ * second. At the settings column's width the grid is one column, so it reads
+ * as heading → sentence → controls; it splits into two columns for free if the
+ * shell ever widens.
+ */
+function DetailSection(props: { title: string; description: string; children: ReactNode }) {
   return (
-    <VStack gap={2}>
-      <Heading level={3}>{props.title}</Heading>
-      <Divider />
-    </VStack>
+    /* `columnGap`, not `gap`: the template's 10 is the gutter BETWEEN the two
+       columns. At this column's width the grid is one column, and a 10-step
+       row gap there reads as a hole between a heading and the thing it
+       labels. */
+    <Grid columns={{ minWidth: 320 }} columnGap={10} rowGap={4} role="region" aria-label={props.title}>
+      <VStack gap={1}>
+        <Heading level={3}>{props.title}</Heading>
+        <Text type="supporting" color="secondary">{props.description}</Text>
+      </VStack>
+      <VStack gap={4}>{props.children}</VStack>
+    </Grid>
   );
 }
 
@@ -309,27 +348,6 @@ function connectionIssueStatus(tone: StatusTone): 'error' | 'success' | 'info' {
   if (tone === 'destructive') return 'error';
   if (tone === 'success') return 'success';
   return 'info';
-}
-
-function ConnectionEndpointField(props: {
-  baseUrl: string;
-  defaultsBaseUrl: string | undefined;
-  fixedOAuth: boolean;
-  disabled: boolean;
-  onChange(value: string): void;
-}) {
-  const copy = getProviderSettingsCopy(useUiLocale()).detail;
-  return (
-    <TextInput
-      label={copy.endpoint}
-      description={props.fixedOAuth ? copy.oauthFixed : undefined}
-      value={props.baseUrl}
-      onChange={(value) => props.onChange(value)}
-      placeholder={props.defaultsBaseUrl}
-      isDisabled={props.disabled || props.fixedOAuth}
-      disabledMessage={props.fixedOAuth ? copy.oauthFixed : undefined}
-    />
-  );
 }
 
 function GitHubCopilotReloginNotice(props: {
