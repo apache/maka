@@ -162,6 +162,7 @@ import {
 } from './project-context-root.js';
 import { isComputerUseRealModelE2e, isE2e, isIsolatedE2e } from './startup-context.js';
 import { resolveDesktopStorageRoot } from './storage-root-startup.js';
+import { startupStep } from './startup-step.js';
 import { openDesktopExecutionStoreWiring } from './execution-store-wiring.js';
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
@@ -204,9 +205,12 @@ if (e2eFixture) {
   console.log(`[e2e-fixture] scenario=${e2eFixture.scenario} workspace=${workspaceRoot}`);
   await seedE2eFixture({ workspaceRoot, fixture: e2eFixture, credentialStore });
 } else {
-  const storageRoot = await resolveDesktopStorageRoot(workspaceRoot, {
-    confirmRepair: confirmDesktopStorageRootRepair,
-  });
+  const storageRoot = await startupStep(
+    'storage root',
+    resolveDesktopStorageRoot(workspaceRoot, {
+      confirmRepair: confirmDesktopStorageRootRepair,
+    }),
+  );
   if (!storageRoot) {
     app.exit(0);
     await new Promise<never>(() => {});
@@ -252,9 +256,12 @@ const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: work
 const planStore = createSqlitePlanStore(workspaceRoot);
 const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
 const { runStore, shellRunStore } = executionStoreWiring;
-const runtimePersistence = await openRuntimeEventPersistence({
-  workspaceRoot,
-});
+const runtimePersistence = await startupStep(
+  'runtime event persistence',
+  openRuntimeEventPersistence({
+    workspaceRoot,
+  }),
+);
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
 const connectionStore = createConnectionStore(workspaceRoot);
 const settingsStore = createSettingsStore(workspaceRoot);

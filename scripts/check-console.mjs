@@ -43,6 +43,10 @@ const ALLOW = new Map([
     'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
   ],
   [
+    'apps/desktop/src/main/startup-step.ts',
+    'names a startup step that has not come back, before any window exists to show it in; a step name and no secrets.',
+  ],
+  [
     'apps/desktop/src/main/app-lifecycle.ts',
     'startup/shutdown diagnostics (dock icon, credential migration, e2e-fixture marker, cleanup failures); no secrets (moved from main.ts, arch R6).',
   ],
