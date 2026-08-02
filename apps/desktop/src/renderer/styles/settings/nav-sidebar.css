@@ -79,30 +79,6 @@
   margin: 0;
 }
 
-/* PR daily-review-bundled (WAWQAQ msg `afbe542d` 2026-06-25 +
-   @kenji audit finding #6): the Daily Review settings page used to
-   stack a banner + intro hero card + settings rows + "try it now"
-   hero card — too much promo chrome for a workbench settings
-   surface. The unified `.settingsPageFooterActions` is a single
-   right-aligned action row that the page renders below the rows
-   (open Daily Review · generate now · deep). Keep the action set
-   visible and uniform regardless of how many ops the page exposes. */
-.settingsPageFooterActions {
-  display: flex;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-
-/* PR audit2-bundled (@kenji audit #5 msg `e4cfbfb0`): names for the
-   inline `style={{ marginTop: N }}` patches that were sprinkled around
-   settings surfaces. Keeps the spacing decision discoverable + locked
-   in the design token surface instead of buried in JSX. */
-.settingsSurfaceAlert {
-  margin-top: var(--space-3);
-}
-
 .settingsLoadingSkeleton {
   padding: var(--space-2) 0;
   max-width: 540px;

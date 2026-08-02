@@ -876,6 +876,25 @@ export const DailyReview: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="daily-review" />,
 };
+
+// Real path at a narrow desktop window.
+export const DailyReviewNarrow: Story = {
+  ...DailyReview,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path with the Astryx model selector expanded.
+export const DailyReviewModelSelectorOpen: Story = {
+  decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="daily-review" />,
+  play: async ({ canvasElement }) => {
+    const selector = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('跟随对话默认') === true,
+    );
+    selector.click();
+  },
+};
 // Real path: 设置 → 数据.
 export const Data: Story = {
   decorators: [withSettingsBridge],

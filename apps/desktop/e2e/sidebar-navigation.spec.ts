@@ -177,6 +177,10 @@ test('scheduled-task hub restores the last selected child module', async ({ wind
   await expect(selector).toHaveAccessibleName('定时任务内容：计划提醒');
   await selector.getByRole('button', { name: '每日回顾' }).click();
   await expect(selector).toHaveAccessibleName('定时任务内容：每日回顾');
+  await expect(page.getByRole('radiogroup', { name: '时间范围切换' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '生成分析' })).toBeVisible();
+  await expect(page.getByText('模型使用', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('工具调用', { exact: true })).toHaveCount(0);
 
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();
   await scheduledTasks.click();

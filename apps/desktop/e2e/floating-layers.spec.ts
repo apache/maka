@@ -43,7 +43,7 @@ test('daily review uses the canonical time field and persists its value', async 
   const settings = page.getByRole('main', { name: '设置内容' });
   await settingsNavigation.getByRole('button', { name: '每日回顾', exact: true }).click();
 
-  const time = settings.getByRole('textbox', { name: '每日回顾执行时间' });
+  const time = settings.getByRole('textbox', { name: '执行时间' });
   await expect(time).toHaveValue('08:00');
   await time.fill('08:05');
   await time.blur();
@@ -52,7 +52,7 @@ test('daily review uses the canonical time field and persists its value', async 
   await settingsNavigation.getByRole('button', { name: '通用', exact: true }).click();
   await settingsNavigation.getByRole('button', { name: '每日回顾', exact: true }).click();
   const persistedTime = settings.getByRole('textbox', {
-    name: '每日回顾执行时间',
+    name: '执行时间',
   });
   await expect(persistedTime).toHaveValue('08:05');
 
@@ -66,7 +66,7 @@ test('daily review uses the canonical time field and persists its value', async 
   await settingsNavigation.getByRole('button', { name: '通用', exact: true }).click();
   await settingsNavigation.getByRole('button', { name: '每日回顾', exact: true }).click();
   await expect(
-    settings.getByRole('textbox', { name: '每日回顾执行时间' }),
+    settings.getByRole('textbox', { name: '执行时间' }),
   ).toHaveValue('08:05');
 });
 

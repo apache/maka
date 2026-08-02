@@ -275,9 +275,9 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
   const dayFromMs = Date.UTC(2026, 4, 21, 0, 0, 0);
   const dayToMs = Date.UTC(2026, 4, 22, 0, 0, 0);
   const daily: DailyReviewArchive = {
-    id: '2026-05-21-daily',
+    id: '2026-05-21-1d',
     day: { fromMs: dayFromMs, toMs: dayToMs },
-    mode: 'daily',
+    range: 1,
     status: 'ok',
     generatedAt: now - 10 * 60_000,
     trigger: 'manual',
@@ -298,8 +298,9 @@ export async function writeDailyReviewArchives(workspaceRoot: string, now: numbe
   };
   const deep: DailyReviewArchive = {
     ...daily,
-    id: '2026-05-21-deep',
-    mode: 'deep',
+    id: '2026-05-15-7d',
+    day: { fromMs: Date.UTC(2026, 4, 15, 0, 0, 0), toMs: dayToMs },
+    range: 7,
     generatedAt: now - 5 * 60_000,
     trigger: 'cron',
     totals: {

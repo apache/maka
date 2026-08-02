@@ -424,8 +424,8 @@
      vertically (column / align-items: flex-end / 6px gap), which read
      as "two separate options" rather than a primary + secondary pair.
      Lay them out horizontally with the primary "请求授权" on the right
-     so the eye-tracking matches `.settingsPageFooterActions` and the
-     reference Settings rows elsewhere. The two buttons share size="sm"
+     so the eye-tracking matches the reference Settings rows elsewhere.
+     The two buttons share size="sm"
      so the row height stays flush; the secondary "前往系统设置" uses
      `variant="ghost"` (less competing chrome) so the primary visibly
      anchors the row. */

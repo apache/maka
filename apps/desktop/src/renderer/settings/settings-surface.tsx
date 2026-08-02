@@ -463,7 +463,7 @@ function SettingsPage(props: {
         />
       );
     case 'daily-review':
-      return <DailyReviewSettingsPage connections={props.connections} onOpenDailyReview={props.onOpenDailyReview} />;
+      return <DailyReviewSettingsPage connections={props.connections} />;
     case 'voice':
       return (
         <VoiceModelsSettingsPage

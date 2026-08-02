@@ -2,13 +2,11 @@ import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
   DailyReviewConfig,
-  DailyReviewMode,
+  DailyReviewRange,
   DailyReviewSummary,
-  DailyReviewTopEntry,
   PlanReminderDeliveryTarget,
   PlanReminderRecurrence,
 } from '@maka/core';
-import type { SelectorOptionData } from '@astryxdesign/core/Selector';
 
 export interface SkillEntry {
   kind?: 'skill' | 'discovery_diagnostic';
@@ -163,8 +161,7 @@ export interface DailyReviewBridge {
    * for presence before exposing the matching UI. When undefined, the
    * panel still works as the MVP telemetry view.
    */
-  runOnce?(opts: { mode: DailyReviewMode; modelKey?: string }): Promise<{ archiveId: string }>;
-  modelOptions?: SelectorOptionData[];
+  runOnce?(opts: { range: DailyReviewRange; offsetDays?: number }): Promise<{ archiveId: string }>;
   listArchives?(): Promise<DailyReviewArchiveSummary[]>;
   getArchive?(archiveId: string): Promise<DailyReviewArchive>;
   deleteArchive?(archiveId: string): Promise<void>;

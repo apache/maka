@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import type { DailyReviewSummary, PlanReminder } from '@maka/core';
+import type { DailyReviewArchive, DailyReviewSummary, PlanReminder } from '@maka/core';
 import type { McpConfigFile, McpServerStatus } from '@maka/core/mcp';
 import {
   AutomationsPage,
@@ -244,6 +244,23 @@ const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
   ],
 };
 
+const DAILY_REVIEW_ARCHIVE: DailyReviewArchive = {
+  id: '2026-07-01-1d',
+  day: DAILY_REVIEW_SUMMARY.day,
+  range: 1,
+  status: 'ok',
+  generatedAt: NOW - 5 * 60_000,
+  trigger: 'manual',
+  modelKey: 'openai::gpt-5',
+  totals: DAILY_REVIEW_SUMMARY.totals,
+  sections: {
+    summary: '今天聚焦 Daily Review 的信息架构和页面重构，完成了时间范围、活动概览与报告详情的职责拆分。',
+    gaps: '报告导出仍需在真实桌面环境验证文件保存路径。',
+    usage: '共完成 42 次模型请求，主要活动集中在六个对话中。',
+    code: '继续让设置页只承载持久配置，把即时动作留在功能主页面。',
+  },
+};
+
 type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
 
 const configuredMcpConfig: McpConfigFile = {
@@ -411,6 +428,18 @@ function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
   );
 }
 
+async function waitForStoryButton(
+  canvasElement: HTMLElement,
+  predicate: (button: HTMLButtonElement) => boolean,
+): Promise<HTMLButtonElement> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const button = Array.from(canvasElement.querySelectorAll<HTMLButtonElement>('button')).find(predicate);
+    if (button) return button;
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  }
+  throw new Error('Story action button did not render');
+}
+
 // Real path: sidebar → 扩展 → 技能, with several installed skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
@@ -453,8 +482,48 @@ export const ScheduledPlanRemindersLongContent: Story = {
 export const ScheduledDailyReview: Story = {
   render: () => (
     <ScheduledDailyReviewSurface
-      bridge={{ fetchDay: async () => DAILY_REVIEW_SUMMARY }}
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
     />
   ),
 };
 
+// Real path at a narrow desktop window. The metrics collapse to two columns
+// while the Astryx controls keep their native wrapping behavior.
+export const ScheduledDailyReviewNarrow: Story = {
+  ...ScheduledDailyReview,
+  parameters: { viewport: { defaultViewport: 'mobile2' } },
+};
+
+// Real path after an analysis exists and the user opens its dedicated detail route.
+export const ScheduledDailyReviewReport: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async () => DAILY_REVIEW_SUMMARY,
+        listArchives: async () => [{
+          id: DAILY_REVIEW_ARCHIVE.id,
+          day: DAILY_REVIEW_ARCHIVE.day,
+          range: DAILY_REVIEW_ARCHIVE.range,
+          status: DAILY_REVIEW_ARCHIVE.status,
+          generatedAt: DAILY_REVIEW_ARCHIVE.generatedAt,
+          trigger: DAILY_REVIEW_ARCHIVE.trigger,
+          modelKey: DAILY_REVIEW_ARCHIVE.modelKey,
+          totals: DAILY_REVIEW_ARCHIVE.totals,
+        }],
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('查看分析') === true,
+    );
+    button.click();
+  },
+};

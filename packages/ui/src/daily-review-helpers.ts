@@ -20,14 +20,12 @@
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSummary,
+  DailyReviewRange,
   DailyReviewSummary,
   UiLocale,
 } from '@maka/core';
 import { generalizedErrorMessage, generalizedErrorMessageChinese, uiLocaleToIntlLocale } from '@maka/core';
 import { getDailyReviewCopy } from './daily-review-copy.js';
-
-/** Visible day-range options on the Daily Review panel. */
-export type DailyReviewRange = 1 | 7 | 30;
 
 export function dailyReviewScopeKey(offsetDays: number, range: DailyReviewRange): string {
   return `${offsetDays}:${range}`;
@@ -44,10 +42,11 @@ export function formatDailyReviewArchiveTitle(
   archive: DailyReviewArchive | DailyReviewArchiveSummary,
   locale: UiLocale,
 ): string {
-  const copy = getDailyReviewCopy(locale).archive;
+  const copy = getDailyReviewCopy(locale);
   const d = new Date(archive.day.fromMs);
   const date = d.toLocaleDateString(uiLocaleToIntlLocale(locale), { month: '2-digit', day: '2-digit' });
-  return copy.title(date, archive.mode === 'deep' ? copy.mode.deep : copy.mode.daily);
+  const rangeLabel = copy.archive.range[archive.range];
+  return copy.archive.title(date, rangeLabel);
 }
 
 export function formatDailyReviewArchiveGeneratedAt(generatedAt: number, locale: UiLocale): string {
