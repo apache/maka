@@ -144,6 +144,21 @@ export interface CuOverlayHookContext {
   sessionId: string;
   toolCallId: string;
   presentationScreenPoint?: CuPoint;
+  /**
+   * The window this action is bound to, so a resting cursor can be ordered
+   * directly above it. Absent when the action names no window, in which case
+   * the cursor rests at a fixed level instead.
+   */
+  targetWindowId?: number;
+  /**
+   * What the last observation saw stacked over the target.
+   *
+   * Codex keeps its cursor above every other window while the target app is
+   * frontmost or the cursor is in flight, and only lets it sink into the
+   * target's own layer once the target is genuinely the window underneath.
+   * A covered target is therefore a reason to stay elevated, not to disappear.
+   */
+  targetStacking?: { frontmost: boolean; destinationCovered: boolean };
 }
 
 export interface CuOverlayHook {

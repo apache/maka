@@ -1,5 +1,5 @@
 import type { CuAction, CuPoint } from '@maka/core';
-import type { CuOverlayHook, CuPresentationFence } from '@maka/runtime';
+import type { CuOverlayHook, CuOverlayHookContext, CuPresentationFence } from '@maka/runtime';
 
 export type CursorActionKind = 'move' | 'click' | 'drag' | 'scroll';
 
@@ -11,6 +11,20 @@ export interface CursorMoveInput {
   kind: CursorActionKind;
   pressed?: boolean;
   instant?: boolean;
+  /**
+   * Keep the cursor at its top window level once this motion settles, instead
+   * of letting it sink toward the target's own layer. Only an explicit `false`
+   * lets it sink: a caller that says nothing has offered no evidence that the
+   * target is exposed, and an unseen cursor is the worse failure.
+   */
+  keepElevated?: boolean;
+  /**
+   * The window a resting cursor should be ordered directly above.
+   *
+   * Absent when the action is not bound to a window, in which case the cursor
+   * falls back to resting at a fixed level.
+   */
+  targetWindowId?: number;
 }
 
 export interface CursorCompleteInput extends CursorMoveInput {
@@ -90,6 +104,32 @@ function kindOf(action: CuAction): CursorActionKind {
   }
 }
 
+/**
+ * Codex keeps its cursor above every other window while any of two reasons
+ * holds — the target app is frontmost (or has a menu open), and the cursor has
+ * just been launched to a new position — and only lets it sink into the
+ * target's own layer once the target is genuinely the window under the cursor.
+ * A covered target is therefore a reason to stay HIGH, not to disappear: while
+ * the cursor is travelling it is deliberately drawn on top of whatever covers
+ * the target.
+ *
+ * The launch half is the sink's own business (the presentation layer is what
+ * knows when a motion settles). This is the observation half: stay elevated
+ * unless the target is both stacked under something and exposed at the point
+ * the cursor is heading for. With no stacking evidence at all, stay elevated —
+ * an unseen cursor is the failure this whole path exists to avoid.
+ */
+function keepElevated(context: CuOverlayHookContext): boolean {
+  // With a window to order against, the level is not what decides visibility
+  // any more — position in the z-order is, exactly as it is for Codex. Staying
+  // elevated on top of that would put the cursor back over the user's own
+  // windows, which is the thing being fixed.
+  if (context.targetWindowId !== undefined) return false;
+  const stacking = context.targetStacking;
+  if (!stacking) return true;
+  return stacking.frontmost || stacking.destinationCovered;
+}
+
 export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuOverlayHook {
   return {
     onActionBegin(action, context) {
@@ -106,6 +146,8 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         screenY: screenPoint.y,
         kind: kindOf(action),
         instant: action.type !== 'mouse_move',
+        keepElevated: keepElevated(context),
+        ...(context.targetWindowId !== undefined ? { targetWindowId: context.targetWindowId } : {}),
       });
     },
     onActionEnd(action, result, context) {
@@ -117,7 +159,20 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         });
         return;
       }
-      const screenPoint = result?.resolvedScreenPoint;
+      // Where the executor says the pointer ended, and failing that, where the
+      // cursor was sent.
+      //
+      // Only the coordinate paths report a landing point; `runSemantic` returns
+      // none, because an element action never resolves to a pointer position at
+      // all. Requiring one meant every semantic action — the whole accessibility
+      // path, which is the only path Maka dispatches on by default — ended in
+      // `cancel()`. The cursor flew to the control and was then wiped instead of
+      // landing on it, so what a person saw was an arrow crossing the screen and
+      // vanishing, never touching anything.
+      //
+      // The fallback is not a guess: `presentationScreenPoint` is the point this
+      // same action was addressed to, computed from the element's own frame.
+      const screenPoint = result.resolvedScreenPoint ?? context.presentationScreenPoint;
       if (!screenPoint) {
         controller.cancel({
           actionId: context.toolCallId,
@@ -133,6 +188,9 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         screenY: screenPoint.y,
         kind,
         pulse: result.outcome.ok && (kind === 'click' || kind === 'drag'),
+        // `complete` raises the cursor for the landing, so it has to know
+        // where to come back down to.
+        ...(context.targetWindowId !== undefined ? { targetWindowId: context.targetWindowId } : {}),
       });
     },
   };

@@ -49,11 +49,80 @@ test('presentation starts from the Runtime-bound screen point', () => {
       screenY: 151,
       kind: 'click',
       instant: true,
+      keepElevated: true,
     },
   ]);
 });
 
-test('completion uses only the executor-resolved point', () => {
+test('a window to order against replaces the level as what keeps the cursor visible', () => {
+  // Elevation was the only tool available while ordering relative to a foreign
+  // window looked impossible. It is not: with a target id the cursor sits
+  // directly above that window, and staying elevated on top of that would put
+  // it back over the user's own windows — the thing being fixed.
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetWindowId: 4321,
+      targetStacking: { frontmost: true, destinationCovered: true },
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+  assert.equal((moves[0] as { targetWindowId?: number }).targetWindowId, 4321);
+});
+
+test('a covered destination keeps the cursor elevated instead of hiding it', () => {
+  const { controller, moves, ensured } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetStacking: { frontmost: false, destinationCovered: true },
+    },
+  );
+  assert.equal(moves.length, 1, 'the cursor is still drawn over the covering window');
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+  assert.deepEqual(ensured, []);
+});
+
+test('the cursor may sink only when the target is exposed under it and behind something else', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetStacking: { frontmost: false, destinationCovered: false },
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, false);
+});
+
+test('a frontmost target stays elevated so the cursor clears its open menus', () => {
+  const { controller, moves } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionBegin(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 201, y: 151 },
+      targetStacking: { frontmost: true, destinationCovered: false },
+    },
+  );
+  assert.equal((moves[0] as { keepElevated: boolean }).keepElevated, true);
+});
+
+test('the executor-resolved point wins when there is one', () => {
   const { controller, completions } = fakeController();
   const hook = createComputerUseOverlayHook(controller as never);
   hook.onActionEnd?.(
@@ -74,6 +143,47 @@ test('completion uses only the executor-resolved point', () => {
       pulse: true,
     },
   ]);
+});
+
+test('a semantic action lands on the point it was sent to, instead of being wiped', () => {
+  // `runSemantic` reports no landing point — an element action resolves to an
+  // element, never to a pointer position. Requiring one made every action on
+  // the accessibility path, the only path Maka dispatches on by default, end in
+  // `cancel()`: the cursor flew to the control and was erased on arrival.
+  const { controller, completions, cancellations } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionEnd?.(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { outcome: { ok: true, tier: 'ax', verified: false } },
+    {
+      sessionId: 's1',
+      toolCallId: 'a1',
+      presentationScreenPoint: { x: 1362, y: 397 },
+    },
+  );
+  assert.deepEqual(cancellations, []);
+  assert.deepEqual(completions, [
+    {
+      actionId: 'a1',
+      sessionId: 's1',
+      screenX: 1362,
+      screenY: 397,
+      kind: 'click',
+      pulse: true,
+    },
+  ]);
+});
+
+test('a successful action with no point anywhere still cancels', () => {
+  const { controller, completions, cancellations } = fakeController();
+  const hook = createComputerUseOverlayHook(controller as never);
+  hook.onActionEnd?.(
+    { type: 'left_click', coordinate: { x: 400, y: 300 } },
+    { outcome: { ok: true, tier: 'ax', verified: false } },
+    { sessionId: 's1', toolCallId: 'a1' },
+  );
+  assert.deepEqual(completions, []);
+  assert.deepEqual(cancellations, [{ actionId: 'a1', sessionId: 's1' }]);
 });
 
 test('failed pointer action without a resolved point cancels presentation', () => {
