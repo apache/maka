@@ -183,6 +183,11 @@ export const CU_SEMANTIC_ACTION_TYPES = [
   'set_value',
   'select_text',
   'secondary_action',
+  'scroll_element',
+  'window_action',
+  // Dispatched step by step through `runSemantic` like the rest, so it belongs
+  // on this side of the partition even though one call carries several steps.
+  'element_sequence',
   'press_key',
 ] as const;
 export type CuSemanticActionType = (typeof CU_SEMANTIC_ACTION_TYPES)[number];
@@ -206,12 +211,15 @@ export type CuSemanticActionType = (typeof CU_SEMANTIC_ACTION_TYPES)[number];
  * `computer-use-schema-parity.test.ts` (@maka/runtime, which can import the
  * schema; this package cannot) compares the two lists in both directions.
  *
- * It is no longer hand-written: the two openers are named here and the rest is
- * spliced from `CU_SEMANTIC_ACTION_TYPES`, so there is one place to add a
- * semantic action rather than two that must agree.
+ * It is no longer hand-written: the three openers are named here and the rest
+ * is spliced from `CU_SEMANTIC_ACTION_TYPES`, so there is one place to add a
+ * semantic action rather than two that must agree. `launch_app` is an opener
+ * rather than a semantic action because it names an application, not an
+ * element: there is no observation for it to be bound to.
  */
 export const COMPUTER_USE_SEMANTIC_ACTIONS = [
   'list_apps',
+  'launch_app',
   'observe',
   ...CU_SEMANTIC_ACTION_TYPES,
 ] as const;
@@ -341,6 +349,26 @@ export type ComputerUseActionOutcome =
       ok: false;
       error: ComputerUseErrorCode;
       message: string;
+      /**
+       * The message may be shown to the model.
+       *
+       * Set only by a backend that guarantees its diagnostics carry no text
+       * belonging to the observed application. `maka.cu/2` §1.2 makes that a
+       * protocol rule: `error.message` is a fixed sentence chosen by
+       * `error.code`, and application text is confined to the declared
+       * observation fields. cua-driver made no such promise, which is why the
+       * message was withheld from every backend alike.
+       *
+       * Withholding it costs more than it protects. The executor writes "say
+       * Backspace or ForwardDelete rather than delete"; the model was handed
+       * `unsupported_action` alone, and the tool description tells it that code
+       * means keyboard input is off in this build. One mistyped key name taught
+       * it that the keyboard does not work.
+       *
+       * Absent means withheld, so a backend that forgets this flag is quiet
+       * rather than leaky.
+       */
+      messageIsAppTextFree?: boolean;
       evidence?: ComputerUseDispatchEvidence;
       completedSubSteps?: number;
     };
@@ -571,7 +599,23 @@ const POINTER_ACTIONS = new Set([
 ]);
 
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
-const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
+const SEMANTIC_ACTIONS = new Set([
+  'click_element',
+  'set_value',
+  'select_text',
+  'secondary_action',
+  // Scrolling an element moves what is on screen without changing any value.
+  // It is still a mutation of the target's state, and it is the semantic twin
+  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
+  'scroll_element',
+  // A sequence of element actions is still element actions: same class, same
+  // approval, one call.
+  'element_sequence',
+  // Starting an app changes what is on screen. It touches no element, but it
+  // is not a read, and letting it fall through to the default would have
+  // classified it correctly by accident rather than on purpose.
+  'launch_app',
+]);
 
 // Exactly the wire vocabulary, derived rather than restated: an action the tool
 // accepts is an action a person can be asked to approve.
@@ -675,4 +719,40 @@ function ownDataProperty(record: Record<string, unknown>, key: string): unknown 
     throw new Error(`Computer Use approval requires ${key} to be a plain data property`);
   }
   return descriptor.value;
+}
+
+/**
+ * Whether the model may drive the machine at all.
+ *
+ * Computer Use is gated by the tool, not by the application it is pointed at.
+ * That is how everything else in Maka is gated — `load_tools` admits tools,
+ * plan mode strips them, the tool surface is assembled per turn — and adding an
+ * application axis would be a second dimension nothing else has, paid for with
+ * a per-app grant store and a revocation screen, to ask a question ("allow Maka
+ * to use 词典?") that a person cannot weigh and will answer yes to.
+ *
+ * It also is not a substitute for the macOS grants. Accessibility and Screen
+ * Recording are what actually let anything happen; this decides whether Maka
+ * offers the capability to the model in the first place.
+ *
+ * Off by default. Turning on a capability that reads the screen and presses
+ * buttons is a decision, not a migration.
+ */
+export interface ComputerUseSettings {
+  readonly enabled: boolean;
+}
+
+export type ComputerUseSettingsPatch = Partial<{ enabled: boolean }>;
+
+export function defaultComputerUseSettings(): ComputerUseSettings {
+  return { enabled: false };
+}
+
+export function mergeComputerUseSettings(
+  current: ComputerUseSettings | undefined,
+  patch: ComputerUseSettingsPatch | undefined,
+): ComputerUseSettings {
+  const base = current ?? defaultComputerUseSettings();
+  if (!patch) return base;
+  return { enabled: typeof patch.enabled === 'boolean' ? patch.enabled : base.enabled };
 }
