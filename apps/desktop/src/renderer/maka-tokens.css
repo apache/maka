@@ -347,6 +347,58 @@
      which fails as `line-height: <invalid>` rather than as a visible break. */
   --maka-line-body: calc(var(--text-body-size) * var(--text-body-leading));
 
+  /* === text roles ===
+     A text style is one role, not four independent picks. Every call site in
+     the renderer names one of the tokens below and declares nothing else about
+     type; `font-size`, `line-height`, `font-weight` and `font-family` do not
+     appear at a call site at all, which is what type-scale-contract.test.ts
+     now checks. #1857 converged the sizes and #1878 the leadings; both removed
+     the divergence of the day without removing the ability to diverge again,
+     because the four properties stayed four separate choices per site.
+
+     The `font:` shorthand is the only mechanism CSS has that makes them
+     inseparable, and its reset semantics are the reason it works here rather
+     than a hazard to work around: it resets weight, style, variant and family,
+     and the role token supplies them, so no site can move one and leave the
+     others. #1878 banned the shorthand outright because an ad-hoc `font:`
+     hides a leading in its `/` slot from every longhand scan. That ban is
+     tightened rather than lifted — the only legal value is one of these
+     tokens.
+
+     Composed from Astryx's generated atoms only, never from literals: the
+     ladder stays a pure function of `typography.scale` in makaTheme.ts, so an
+     Astryx scale change moves these with it. There are no product roles. The
+     42 blocks whose measured values had no Astryx equivalent were hand-rolled
+     picks the ladder never offered — every Astryx heading is 600, yet 10
+     blocks used 700; the 12px tier offers 400 and 600, yet 11 used 500.
+
+     Family is NOT part of the triplet at the call site. `font:` requires a
+     family slot, and any literal there would override the one monospace
+     authority in this file (`:where(code, kbd, samp, pre)` below, which
+     `:where()` gives zero specificity). So the slot reads --maka-font-family,
+     rebound on that same selector and inherited from there — the only two
+     places in the renderer that name a font stack. Astryx's own model agrees:
+     Text has no family prop, family follows the element and the `code` role.
+
+     Substitution is lazy, which is what keeps the transcript's role rebinding
+     working: `var(--text-supporting-size)` inside a role token resolves
+     against the element that uses the token, not against :root, so
+     chat-message.css can retune a subtree by rebinding the role's own atoms
+     and every `font: var(--maka-text-supporting)` under it follows. Measured
+     in e2e/type-scale.spec.ts, not assumed. */
+  --maka-font-family: var(--font-family-body);
+
+  --maka-text-body: var(--text-body-weight) var(--text-body-size)/var(--text-body-leading) var(--maka-font-family);
+  --maka-text-label: var(--text-label-weight) var(--text-label-size)/var(--text-label-leading) var(--maka-font-family);
+  --maka-text-supporting: var(--text-supporting-weight) var(--text-supporting-size)/var(--text-supporting-leading) var(--maka-font-family);
+  --maka-text-heading-1: var(--text-heading-1-weight) var(--text-heading-1-size)/var(--text-heading-1-leading) var(--maka-font-family);
+  --maka-text-heading-2: var(--text-heading-2-weight) var(--text-heading-2-size)/var(--text-heading-2-leading) var(--maka-font-family);
+  --maka-text-heading-3: var(--text-heading-3-weight) var(--text-heading-3-size)/var(--text-heading-3-leading) var(--maka-font-family);
+  --maka-text-heading-4: var(--text-heading-4-weight) var(--text-heading-4-size)/var(--text-heading-4-leading) var(--maka-font-family);
+  --maka-text-heading-5: var(--text-heading-5-weight) var(--text-heading-5-size)/var(--text-heading-5-leading) var(--maka-font-family);
+  --maka-text-display-2: var(--text-display-2-weight) var(--text-display-2-size)/var(--text-display-2-leading) var(--maka-font-family);
+  --maka-text-display-3: var(--text-display-3-weight) var(--text-display-3-size)/var(--text-display-3-leading) var(--maka-font-family);
+
   /* === line-height ===
      There is no product leading vocabulary. The four semantic tiers that used
      to live here (none 1 / tight 1.25 / snug 1.375 / normal 1.5) are gone, and
@@ -990,22 +1042,49 @@ html[data-os="darwin"].dark {
      Markdown code blocks included — silently opted out of the theme and out
      of the Geist Mono the app bundles. Point them back at the token; :where()
      has zero specificity and reset is the lowest layer, so this is the whole
-     fix. Last of the parallel typography authorities. */
+     fix. Last of the parallel typography authorities.
+
+     Two declarations, and they are not duplicates — they serve the two kinds
+     of element this selector reaches, which is the distinction the first
+     revision of this branch got wrong by shipping only the rebind (measured:
+     a bare <code> fell back to the UA monospace stack, not Geist Mono).
+
+     The rebind serves elements that DO name a role: `font:` carries a
+     mandatory family slot, so a call site's shorthand would otherwise win over
+     this zero-specificity rule and hand a <pre> back to the sans stack. Every
+     role token reads the slot from --maka-font-family, which this rule sets
+     for the element and its subtree. That is what let the 17 monospace class
+     selectors become <code>/<pre> markup instead of product roles.
+
+     The longhand serves elements that do NOT name a role — a bare <code>
+     inside migrated prose. Inheritance passes computed values, not variables,
+     so such an element inherits the parent's resolved sans stack and no rebind
+     can reach it. It keeps its inherited SIZE, which is why this is a
+     font-family and not `font: var(--maka-text-body)`: Astryx's code role is
+     body-sized, and applying it here would move every inline <code> inside
+     12px supporting text up to 14px.
+
+     These are the only two declarations in the renderer that name a font
+     stack, and the only raw font longhand outside the role table — the
+     call-site ban in type-scale-contract.test.ts scopes around this file for
+     exactly that reason, and asserts the shape of these lines instead. */
   :where(code, kbd, samp, pre) {
+    --maka-font-family: var(--font-mono);
     font-family: var(--font-mono);
   }
 
   body {
-    font-size: var(--font-size-base);
-    /* The document's default leading, and the one site where declaring it
+    /* The document's default text role, and the one site where declaring it
        matters most: Astryx's reset puts `line-height: 1.5` on `:where(html)`,
        so before this line every element that did not declare a leading of its
        own inherited that ratio — measured 21px at the 14px body tier, off the
        grid, on hundreds of nodes no stylesheet in this repo names. Declared
-       here rather than on `html` because the size it pairs with is declared
-       here; the root stays free of typography, per the contract above. */
-    line-height: var(--text-body-leading);
-    font-family: var(--font-default);
+       here rather than on `html` because the role it names is the document's,
+       not the root's; the root stays free of typography, per the contract
+       above. Naming the role here is also what makes the deletions in this
+       branch safe: 78 blocks measured redundant against what they inherit are
+       inheriting it from this line. */
+    font: var(--maka-text-body);
     background: var(--background);
     color: var(--foreground);
     -webkit-font-smoothing: antialiased;
