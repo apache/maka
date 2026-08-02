@@ -4,11 +4,17 @@ import {
   isCanonicalAttachmentRef,
   type MessageContent,
 } from '@maka/core/events';
+import {
+  isOrchestrationMode,
+  isTurnOrchestrationSource,
+  type TurnOrchestration,
+} from '@maka/core/orchestration';
 import { invalidProtocolFrame } from './errors.js';
 import {
   assertExactKeys,
   requireEntityId,
   requireExactRecord,
+  requireShapedRecord,
   requireId,
   requireRecord,
   requireString,
@@ -19,6 +25,7 @@ export interface TurnStartInput {
   sessionId: string;
   turnId: string;
   content: MessageContent;
+  turnOrchestration?: TurnOrchestration;
 }
 
 export type { MessageContent };
@@ -121,12 +128,28 @@ export const TURN_OPERATION_SPECS = {
 } as const;
 
 function decodeTurnStartInput(value: unknown): TurnStartInput {
-  const record = requireExactRecord(value, 'turn.start input', ['sessionId', 'turnId', 'content']);
+  const record = requireShapedRecord(
+    value,
+    'turn.start input',
+    ['sessionId', 'turnId', 'content'],
+    ['turnOrchestration'],
+  );
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
     content: decodeMessageContent(record.content),
+    ...(record.turnOrchestration !== undefined
+      ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
+      : {}),
   };
+}
+
+function decodeTurnOrchestration(value: unknown): TurnOrchestration {
+  const record = requireExactRecord(value, 'Turn orchestration', ['mode', 'source']);
+  if (!isOrchestrationMode(record.mode) || !isTurnOrchestrationSource(record.source)) {
+    throw invalidProtocolFrame('Invalid Turn orchestration');
+  }
+  return { mode: record.mode, source: record.source };
 }
 
 export function decodeMessageContent(value: unknown): MessageContent {

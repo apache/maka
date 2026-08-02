@@ -63,6 +63,48 @@ describe('subagent tools', () => {
     ]);
   });
 
+  test('parent tools advertise only definitions runnable in their composition', () => {
+    const tools = buildParentAgentTools({ definitions: [LOCAL_READ_AGENT_DEFINITION] });
+    const spawn = tools.find((tool) => tool.name === AGENT_SPAWN_TOOL_NAME);
+    const swarm = tools.find((tool) => tool.name === AGENT_SWARM_TOOL_NAME);
+    expect(spawn).toBeDefined();
+    expect(swarm).toBeDefined();
+    const spawnSchema = spawn!.parameters as {
+      safeParse(input: unknown): { success: boolean };
+    };
+    const swarmSchema = swarm!.parameters as {
+      safeParse(input: unknown): { success: boolean };
+    };
+
+    expect(
+      spawnSchema.safeParse({ profile: LOCAL_READ_AGENT_PROFILE, task: 'Inspect the repo.' })
+        .success,
+    ).toBe(true);
+    expect(
+      spawnSchema.safeParse({ profile: WEB_RESEARCH_AGENT_PROFILE, task: 'Search the web.' })
+        .success,
+    ).toBe(false);
+    expect(
+      spawnSchema.safeParse({ profile: IMPLEMENTATION_AGENT_PROFILE, task: 'Change a file.' })
+        .success,
+    ).toBe(false);
+    expect(
+      swarmSchema.safeParse({
+        items: [{ item_id: 'local', profile: LOCAL_READ_AGENT_PROFILE, task: 'Inspect it.' }],
+      }).success,
+    ).toBe(true);
+    expect(
+      swarmSchema.safeParse({
+        items: [{ item_id: 'web', profile: WEB_RESEARCH_AGENT_PROFILE, task: 'Search it.' }],
+      }).success,
+    ).toBe(false);
+
+    expect(buildParentAgentTools({ definitions: [] }).map((tool) => tool.name)).toEqual([
+      AGENT_LIST_TOOL_NAME,
+      AGENT_OUTPUT_TOOL_NAME,
+    ]);
+  });
+
   test('agent_spawn advertises task_id only when task binding is available', async () => {
     const advertisedProperties = async (tool: MakaTool) => {
       const schema = (await zodSchema(tool.parameters as never).jsonSchema) as {
@@ -485,6 +527,7 @@ describe('subagent tools', () => {
             content: { kind: 'text', text: 'secret body' },
           });
           return {
+            profile: input.agentProfile,
             childSessionId: 'child-session',
             agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
             agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
@@ -494,6 +537,7 @@ describe('subagent tools', () => {
             permissionMode: 'explore',
             summary: 'done',
             artifactIds: [],
+            internalField: 'must not cross the tool result boundary',
           };
         },
       },

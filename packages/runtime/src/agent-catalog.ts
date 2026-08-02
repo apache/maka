@@ -198,6 +198,29 @@ export function getBuiltinAgentDefinitionByProfile(profile: string): AgentDefini
   return BUILTIN_AGENT_DEFINITIONS.find((definition) => definition.profile === profile);
 }
 
+export function agentProfilesForDefinitions(
+  definitions: readonly AgentDefinition[],
+): [AgentProfile, ...AgentProfile[]] {
+  const profiles = definitions.map((definition) => definition.profile);
+  if (profiles.length === 0) throw new Error('At least one agent definition is required');
+  if (new Set(profiles).size !== profiles.length) {
+    throw new Error('Agent definitions must have unique profiles');
+  }
+  return profiles as [AgentProfile, ...AgentProfile[]];
+}
+
+export function requireAgentDefinitionByProfile(
+  definitions: readonly AgentDefinition[],
+  profile: string,
+): AgentDefinition {
+  const definition = definitions.find((candidate) => candidate.profile === profile);
+  if (!definition) {
+    const available = definitions.map((candidate) => candidate.profile).join(', ');
+    throw new Error(`Unknown agent profile "${profile}". Available profiles: ${available}.`);
+  }
+  return definition;
+}
+
 export function requireBuiltinAgentDefinition(id: string): AgentDefinition {
   const definition = getBuiltinAgentDefinition(id);
   if (!definition) {
@@ -208,12 +231,20 @@ export function requireBuiltinAgentDefinition(id: string): AgentDefinition {
 }
 
 export function requireBuiltinAgentDefinitionByProfile(profile: string): AgentDefinition {
-  const definition = getBuiltinAgentDefinitionByProfile(profile);
-  if (!definition) {
-    const available = BUILTIN_AGENT_DEFINITIONS.map((agent) => agent.profile).join(', ');
-    throw new Error(`Unknown agent profile "${profile}". Available profiles: ${available}.`);
-  }
-  return definition;
+  return requireAgentDefinitionByProfile(BUILTIN_AGENT_DEFINITIONS, profile);
+}
+
+export function listRunnableBuiltinAgentDefinitions(
+  options: AgentDefinitionListOptions,
+): AgentDefinition[] {
+  return BUILTIN_AGENT_DEFINITIONS.filter(
+    (definition) =>
+      evaluateAgentDefinitionAvailability({
+        definition,
+        tools: options.tools ?? [],
+        worktreeChildExecutorAvailable: options.worktreeChildExecutorAvailable,
+      }).status === 'available',
+  );
 }
 
 export function evaluateAgentDefinitionToolAccess(

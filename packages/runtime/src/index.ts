@@ -699,6 +699,7 @@ export {
   getBuiltinAgentDefinition,
   getBuiltinAgentDefinitionByProfile,
   listBuiltinAgentDefinitions,
+  listRunnableBuiltinAgentDefinitions,
   requireBuiltinAgentDefinition,
   requireBuiltinAgentDefinitionByProfile,
 } from './agent-catalog.js';

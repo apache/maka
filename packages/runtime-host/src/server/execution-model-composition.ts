@@ -71,6 +71,7 @@ import {
   type HostOAuthExecutionAuthority,
   type HostOAuthExecutionBinding,
 } from './oauth-execution-authority.js';
+import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 
 const CHILD_INSTRUCTION_BOUNDARY = [
   'A child agent inherits the current session permission, privacy, workspace, and skill constraints.',
@@ -108,6 +109,7 @@ export interface HostExecutionModelCompositionInput {
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
+  readonly parentAgentTools?: readonly MakaTool[];
 }
 
 /** Composes one Host-owned prompt and pure tool surface from canonical authorities. */
@@ -123,6 +125,7 @@ export function createHostExecutionModelComposition(
         input.builtinTools,
         input.automationTool,
         input.goalTools,
+        input.parentAgentTools,
       );
   const productSurface = projectEffectiveProductToolSurface({
     host: 'runtime-host',
@@ -216,6 +219,8 @@ export interface HostAiSdkBackendInput {
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
+  readonly parentAgentTools?: readonly MakaTool[];
+  readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -451,6 +456,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
+      ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
       skillBudget: {
         contextWindow: resolveSelectedModelContextWindow(target.connection, target.model),
       },
@@ -591,6 +597,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         modelFactory,
         tools: [...modelComposition.tools],
         toolAvailability: modelComposition.toolAvailability,
+        ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
         contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
           name: 'runtime-host-default-history-budget',
@@ -834,6 +841,7 @@ function buildDefaultHostTools(
   builtinOptions?: BuildBuiltinToolsOptions,
   automationTool?: MakaTool,
   goalTools: readonly MakaTool[] = [],
+  parentAgentTools: readonly MakaTool[] = [],
 ): MakaTool[] {
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
@@ -846,6 +854,7 @@ function buildDefaultHostTools(
     ...taskTools.map((tool) => tool.name),
     ...(automationTool ? [automationTool.name] : []),
     ...goalTools.map((tool) => tool.name),
+    ...parentAgentTools.map((tool) => tool.name),
   ];
   const skillHost = buildHostCapabilitiesFromBinding(toolNames);
   const shadowTracker = new SkillShadowSelectionTracker();
@@ -861,6 +870,7 @@ function buildDefaultHostTools(
     ...taskTools,
     ...(automationTool ? [automationTool] : []),
     ...goalTools,
+    ...parentAgentTools,
   ];
 }
 

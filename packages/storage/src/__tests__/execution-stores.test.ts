@@ -298,6 +298,7 @@ describe('execution stores', () => {
             displayText: 'hello',
             attachments: [mutableAttachment, notesAttachment],
           },
+          turnOrchestration: { mode: 'swarm', source: 'host_api' },
           sourceMessages: [
             {
               messageId: 'source-1',
@@ -316,6 +317,11 @@ describe('execution stores', () => {
         mutableAttachment.name = 'mutated.png';
         assert.equal(first.admission.normalizedInput.attachments?.[0]?.name, 'chart.png');
         assert.equal(Object.isFrozen(first.admission), true);
+        assert.deepEqual(first.admission.turnOrchestration, {
+          mode: 'swarm',
+          source: 'host_api',
+        });
+        assert.equal(Object.isFrozen(first.admission.turnOrchestration), true);
         assert.equal(Object.isFrozen(first.admission.normalizedInput.attachments?.[0]?.ref), true);
         assert.deepEqual(await stores.agentRunStore.listSessionRuns(session.id), []);
 
@@ -331,6 +337,7 @@ describe('execution stores', () => {
             displayText: 'hello',
             attachments: [chartAttachment, notesAttachment],
           },
+          turnOrchestration: { mode: 'swarm', source: 'host_api' },
           sourceMessages: [
             {
               messageId: 'source-1',
@@ -353,6 +360,35 @@ describe('execution stores', () => {
           chartAttachment,
           notesAttachment,
         ]);
+
+        const orchestrationConflict = await stores.agentRunStore.admitRootTurn({
+          sessionId: session.id,
+          turnId: 'turn-1',
+          proposedRunId: 'run-never-used',
+          proposedUserMessageId: 'message-never-used',
+          execution: { kind: 'external_message' },
+          previousRootTurnId: null,
+          normalizedInput: {
+            text: '<model>hello</model>',
+            displayText: 'hello',
+            attachments: [chartAttachment, notesAttachment],
+          },
+          turnOrchestration: { mode: 'default', source: 'host_api' },
+          sourceMessages: [
+            {
+              messageId: 'source-1',
+              content: {
+                text: '<model>hello</model>',
+                displayText: 'hello',
+                attachments: [chartAttachment, notesAttachment],
+              },
+              placement: 'current_turn',
+              disposition: 'steering',
+            },
+          ],
+          admittedAt: 20,
+        });
+        assert.equal(orchestrationConflict.kind, 'conflict');
 
         const stored = await stores.agentRunStore.readRootTurnAdmission(session.id, 'turn-1');
         assert.deepEqual(stored, first.admission);
@@ -696,6 +732,17 @@ describe('execution stores', () => {
           sourceMessages: [turnStartedSource],
         },
         {
+          name: 'child-with-turn-orchestration',
+          userMessageId: 'message-1',
+          execution: {
+            kind: 'linked_child_initial' as const,
+            agentId: 'agent',
+            agentName: 'Agent',
+          },
+          turnOrchestration: { mode: 'swarm' as const, source: 'host_api' as const },
+          sourceMessages: [],
+        },
+        {
           name: 'resume-self-source',
           userMessageId: 'message-1',
           execution: {
@@ -740,6 +787,9 @@ describe('execution stores', () => {
               execution: invalid.execution,
               previousRootTurnId: null,
               normalizedInput,
+              ...('turnOrchestration' in invalid
+                ? { turnOrchestration: invalid.turnOrchestration }
+                : {}),
               sourceMessages: invalid.sourceMessages,
               admittedAt: 10,
             }),
@@ -760,6 +810,9 @@ describe('execution stores', () => {
             execution: invalid.execution,
             previousRootTurnId: null,
             normalizedInput,
+            ...('turnOrchestration' in invalid
+              ? { turnOrchestration: invalid.turnOrchestration }
+              : {}),
             sourceMessages: invalid.sourceMessages,
             admittedAt: 10,
           })}\n`,
@@ -1128,6 +1181,7 @@ describe('execution stores', () => {
         execution: { kind: 'external_message' },
         previousRootTurnId: null,
         normalizedInput: { text: 'hello' },
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
         sourceMessages: [],
         admittedAt: 10,
       });
@@ -1136,6 +1190,7 @@ describe('execution stores', () => {
       const path = join(root, 'sessions', 'session-schema', 'turn-admissions', 'turn-1.json');
       const v1 = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
       assert.equal(v1.schemaVersion, 1);
+      assert.deepEqual(v1.turnOrchestration, { mode: 'graph', source: 'host_api' });
       assert.deepEqual(
         await createAgentRunStore(root).readRootTurnAdmission('session-schema', 'turn-1'),
         admitted.admission,

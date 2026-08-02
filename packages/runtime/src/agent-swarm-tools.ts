@@ -11,8 +11,9 @@ import {
   AGENT_WORKSPACE_WORKTREE,
   AGENT_WRITE_BACK_PATCH,
   AGENT_WRITE_BACK_SUMMARY,
-  BUILTIN_AGENT_PROFILES,
-  requireBuiltinAgentDefinitionByProfile,
+  BUILTIN_AGENT_DEFINITIONS,
+  agentProfilesForDefinitions,
+  requireAgentDefinitionByProfile,
   type AgentDefinition,
 } from './agent-catalog.js';
 import {
@@ -114,9 +115,12 @@ export function buildAgentSwarmTool(
     now?: () => number;
     adaptiveSwarmPolicy?: AdaptiveSwarmPolicy;
     itemTimeoutMs?: number;
+    definitions?: readonly AgentDefinition[];
   } = {},
 ): MakaTool<AgentSwarmToolInput, AgentSwarmToolResult> {
   const now = deps.now ?? Date.now;
+  const definitions = deps.definitions ?? BUILTIN_AGENT_DEFINITIONS;
+  const profiles = agentProfilesForDefinitions(definitions);
   const itemTimeoutMs = normalizeItemTimeoutMs(
     deps.itemTimeoutMs ?? AGENT_SWARM_DEFAULT_ITEM_TIMEOUT_MS,
   );
@@ -129,11 +133,11 @@ export function buildAgentSwarmTool(
       'Use resume_run_ids to continue terminal child AgentRuns by runId; resumed children are ordered before new items.',
       'Use this only when every item can run independently. Results return in input order; you remain responsible for semantic synthesis.',
     ].join(' '),
-    parameters: agentSwarmInputSchema(),
+    parameters: agentSwarmInputSchema(definitions, profiles),
     executionSemantics: 'exclusive_step',
     categoryHint: 'subagent',
     impl: async (input, ctx) => {
-      const prepared = await prepareAgentSwarmInput(input, ctx);
+      const prepared = await prepareAgentSwarmInput(input, ctx, definitions);
       if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildSession) {
         throw new Error('spawnChildSession capability is unavailable in this runtime context');
       }
@@ -407,7 +411,10 @@ function traceAgentSwarm(
   });
 }
 
-function agentSwarmInputSchema() {
+function agentSwarmInputSchema(
+  definitions: readonly AgentDefinition[],
+  profiles: ReturnType<typeof agentProfilesForDefinitions>,
+) {
   const itemSchema = z
     .object({
       item_id: z
@@ -416,7 +423,7 @@ function agentSwarmInputSchema() {
         .max(TASK_ID_MAX_CHARS)
         .refine(isSafeTaskId)
         .describe('Stable item id (letters, digits, dot, underscore, colon, or dash).'),
-      profile: z.enum(BUILTIN_AGENT_PROFILES).describe('Child agent profile.'),
+      profile: z.enum(profiles).describe('Child agent profile.'),
       task: z
         .string()
         .min(1)
@@ -432,7 +439,7 @@ function agentSwarmInputSchema() {
         .describe('Requested child workspace isolation.'),
     })
     .superRefine((input, ctx) => {
-      addAgentContractIssues(input, ctx);
+      addAgentContractIssues(input, ctx, definitions);
     });
 
   const explicitItemsSchema = z
@@ -468,7 +475,7 @@ function agentSwarmInputSchema() {
           `Shared task template for string items; every ${AGENT_SWARM_PROMPT_TEMPLATE_PLACEHOLDER} occurrence is replaced.`,
         ),
       profile: z
-        .enum(BUILTIN_AGENT_PROFILES)
+        .enum(profiles)
         .optional()
         .describe('Shared child profile for prompt_template string items.'),
       resume_run_ids: z
@@ -584,8 +591,12 @@ function agentSwarmInputSchema() {
     });
 }
 
-function addAgentContractIssues(input: AgentSwarmExplicitItemInput, ctx: z.RefinementCtx): void {
-  const definition = requireBuiltinAgentDefinitionByProfile(input.profile);
+function addAgentContractIssues(
+  input: AgentSwarmExplicitItemInput,
+  ctx: z.RefinementCtx,
+  definitions: readonly AgentDefinition[],
+): void {
+  const definition = requireAgentDefinitionByProfile(definitions, input.profile);
   const writeBack = input.write_back ?? definition.contract.defaultWriteBack;
   if (!definition.contract.supportedWriteBack.some((mode) => mode === writeBack)) {
     ctx.addIssue({
@@ -607,11 +618,12 @@ function addAgentContractIssues(input: AgentSwarmExplicitItemInput, ctx: z.Refin
 async function prepareAgentSwarmInput(
   input: AgentSwarmToolInput,
   ctx: MakaToolContext,
+  definitions: readonly AgentDefinition[],
 ): Promise<{
   readonly items: readonly PreparedAgentSwarmItem[];
   readonly maxConcurrency: number;
 }> {
-  const preflight = preflightAgentSwarmInput(input);
+  const preflight = preflightAgentSwarmInput(input, definitions);
   if (preflight.items.length > 0 && !ctx.spawnChildSession) {
     throw new Error('spawnChildSession capability is unavailable in this runtime context');
   }
@@ -624,7 +636,7 @@ async function prepareAgentSwarmInput(
       if (prepared.sourceRunId !== item.sourceRunId) {
         throw new Error(`Child AgentRun resume identity changed for ${item.sourceRunId}`);
       }
-      const definition = requireBuiltinAgentDefinitionByProfile(prepared.profile);
+      const definition = requireAgentDefinitionByProfile(definitions, prepared.profile);
       if (definition.id !== prepared.agentId || definition.name !== prepared.agentName) {
         throw new Error(`Child AgentRun resume profile changed for ${item.sourceRunId}`);
       }
@@ -656,7 +668,10 @@ async function prepareAgentSwarmInput(
   };
 }
 
-function preflightAgentSwarmInput(input: AgentSwarmToolInput): {
+function preflightAgentSwarmInput(
+  input: AgentSwarmToolInput,
+  definitions: readonly AgentDefinition[],
+): {
   readonly items: readonly PreparedAgentSwarmItem[];
   readonly resumes: readonly PendingAgentSwarmResume[];
   readonly maxConcurrency: number;
@@ -716,7 +731,7 @@ function preflightAgentSwarmInput(input: AgentSwarmToolInput): {
       throw new Error(`Agent swarm item "${item.item_id}" has an invalid task.`);
     }
 
-    const definition = requireBuiltinAgentDefinitionByProfile(item.profile);
+    const definition = requireAgentDefinitionByProfile(definitions, item.profile);
     const writeBack = item.write_back ?? definition.contract.defaultWriteBack;
     if (!definition.contract.supportedWriteBack.some((mode) => mode === writeBack)) {
       throw new Error(

@@ -99,6 +99,7 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
     left.runId === right.runId &&
     left.userMessageId === right.userMessageId &&
     isDeepStrictEqual(left.execution, right.execution) &&
+    isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     left.previousRootTurnId === right.previousRootTurnId &&
     messageContentsEqual(left.normalizedInput, right.normalizedInput) &&
     left.sourceMessages.length === right.sourceMessages.length &&
@@ -127,6 +128,9 @@ function snapshotAdmission(admission: RootTurnAdmission): RootTurnAdmission {
   return Object.freeze({
     ...admission,
     execution: Object.freeze({ ...admission.execution }),
+    ...(admission.turnOrchestration
+      ? { turnOrchestration: Object.freeze({ ...admission.turnOrchestration }) }
+      : {}),
     normalizedInput: snapshotMessageContent(admission.normalizedInput),
     sourceMessages: Object.freeze(sourceMessages),
   });

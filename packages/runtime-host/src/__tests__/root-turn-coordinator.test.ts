@@ -55,6 +55,54 @@ const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
   matchesActive: () => false,
 };
 
+test('turn.start durably applies one exact per-Turn orchestration override', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    turnId: 'turn-hosted-swarm-override',
+    content: { text: 'Use the hosted swarm override.' },
+    turnOrchestration: { mode: 'swarm' as const, source: 'host_api' as const },
+  };
+  try {
+    const started = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, started.result.runId);
+    assert.equal(run.orchestrationMode, 'swarm');
+    assert.equal(run.orchestrationSource, 'turn_override');
+    assert.equal(run.agentSwarmAuthorization, 'turn_override');
+    assert.deepEqual(
+      (await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, input.turnId))
+        ?.turnOrchestration,
+      input.turnOrchestration,
+    );
+
+    const exactRetry = await fixture.coordinator.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(exactRetry.ok, true);
+
+    const conflict = await fixture.coordinator.handlers['turn.start'](
+      {
+        ...input,
+        turnOrchestration: { mode: 'default', source: 'host_api' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(conflict.ok, false);
+    if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test('hosted Automation roots preserve one admission, UserMessage, and AgentRun identity', async () => {
   let recoveryValidationCount = 0;
   const fixture = await createFailureFixture({

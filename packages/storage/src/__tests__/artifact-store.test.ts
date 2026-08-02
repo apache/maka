@@ -80,6 +80,35 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('lists only live Artifacts committed by one exact Turn', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({ ...artifactInput('turn-a-new', 'new', 30), turnId: 'turn-a' });
+      await store.create({ ...artifactInput('turn-b', 'other turn', 20), turnId: 'turn-b' });
+      await store.create({
+        ...artifactInput('turn-a-old', 'old', 10),
+        turnId: 'turn-a',
+      });
+      await store.create({
+        ...artifactInput('other-session', 'other session', 40),
+        sessionId: 'session-2',
+        turnId: 'turn-a',
+      });
+
+      assert.deepEqual(
+        (await store.listTurnArtifacts('session-1', 'turn-a')).map((record) => record.id),
+        ['turn-a-new', 'turn-a-old'],
+      );
+      await store.deleteUserArtifactInSession('session-1', 'turn-a-new');
+      assert.deepEqual(
+        (await store.listTurnArtifacts('session-1', 'turn-a')).map((record) => record.id),
+        ['turn-a-old'],
+      );
+    });
+  });
+
   test('persists and reopens bounded synthetic turn keys', async () => {
     await withWorkspace(async (root) => {
       for (const [id, turnId] of [

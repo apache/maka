@@ -364,6 +364,9 @@ export class RootTurnCoordinator {
         sessionId,
         turnId: admission.turnId,
         content: normalizeMessageContent(admission.normalizedInput),
+        ...(admission.turnOrchestration
+          ? { turnOrchestration: { ...admission.turnOrchestration } }
+          : {}),
       };
       const disposition = await this.sessionAdmission.run(sessionId, (lease) =>
         this.prepareAdmittedTurn(input, admission, this.acquireRecoveryResidency, lease),
@@ -962,6 +965,7 @@ export class RootTurnCoordinator {
       const canonicalInput: TurnStartInput = {
         ...input,
         content: normalizeMessageContent(input.content),
+        ...(input.turnOrchestration ? { turnOrchestration: { ...input.turnOrchestration } } : {}),
       };
       const activeAtEntry = this.#activeBySession.has(input.sessionId);
       let reservation = activeAtEntry ? undefined : this.reserveRootTurn(input.sessionId);
@@ -982,6 +986,7 @@ export class RootTurnCoordinator {
           }
           if (
             !messageContentsEqual(existing.normalizedInput, canonicalInput.content) ||
+            !isDeepStrictEqual(existing.turnOrchestration, canonicalInput.turnOrchestration) ||
             existing.sourceMessages.length !== 0
           ) {
             return completedStart(
@@ -1057,6 +1062,9 @@ export class RootTurnCoordinator {
           proposedUserMessageId: randomUUID(),
           execution: { kind: 'external_message' },
           normalizedInput: canonicalInput.content,
+          ...(canonicalInput.turnOrchestration
+            ? { turnOrchestration: canonicalInput.turnOrchestration }
+            : {}),
           sourceMessages: [],
           admittedAt: Date.now(),
         });
@@ -1067,6 +1075,10 @@ export class RootTurnCoordinator {
         }
         if (
           !messageContentsEqual(admission.admission.normalizedInput, canonicalInput.content) ||
+          !isDeepStrictEqual(
+            admission.admission.turnOrchestration,
+            canonicalInput.turnOrchestration,
+          ) ||
           admission.admission.sourceMessages.length !== 0
         ) {
           return completedStart(
@@ -1214,6 +1226,14 @@ export class RootTurnCoordinator {
   ): Promise<TurnStartDisposition> {
     if (admission.sessionId !== input.sessionId || admission.turnId !== input.turnId) {
       throw new Error('Root Turn admission identity does not match its input');
+    }
+    if (
+      !messageContentsEqual(admission.normalizedInput, input.content) ||
+      !isDeepStrictEqual(admission.turnOrchestration, input.turnOrchestration)
+    ) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Root Turn admission payload does not match its input',
+      );
     }
     const { runId } = admission;
     const existingRun = await this.readRunIfPresent(input.sessionId, runId);
@@ -1380,6 +1400,7 @@ export class RootTurnCoordinator {
             {
               turnId: input.turnId,
               ...normalizeMessageContent(input.content),
+              ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
               ...(messageOrigin ? { origin: messageOrigin } : {}),
             },
             {

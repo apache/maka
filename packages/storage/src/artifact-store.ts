@@ -185,6 +185,7 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     sessionId: string,
     options: { offset: number; limit: number },
   ): Promise<ArtifactListPage>;
+  listTurnArtifacts(sessionId: string, turnId: string): Promise<ArtifactRecord[]>;
   getInSession(sessionId: string, artifactId: string): Promise<ArtifactSessionEntry>;
   readTextInSession(
     sessionId: string,
@@ -608,6 +609,18 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
         records: snapshot.records.slice(offset, offset + limit).map((record) => ({ ...record })),
         total: snapshot.records.length,
       };
+    });
+  }
+
+  async listTurnArtifacts(sessionId: string, turnId: string): Promise<ArtifactRecord[]> {
+    assertCanonicalArtifactEntityId(sessionId, 'sessionId');
+    assertArtifactTurnKey(turnId);
+    return this.enqueue(async () => {
+      await this.load();
+      const snapshot = this.sessionSnapshots.get(sessionId) ?? EMPTY_SESSION_SNAPSHOT;
+      return snapshot.records
+        .filter((record) => record.turnId === turnId && record.status !== 'deleted')
+        .map((record) => ({ ...record }));
     });
   }
 

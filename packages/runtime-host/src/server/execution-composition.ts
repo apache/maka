@@ -31,6 +31,10 @@ import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledge
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
+import {
+  bindHostChildAgentBackend,
+  createHostChildAgentToolComposition,
+} from './child-agent-composition.js';
 import { HostCanonicalPermissionOutcomeReader } from './canonical-permission-outcome-reader.js';
 import { HostArtifactCoordinator } from './artifact-coordinator.js';
 import { HostAutomationCoordinator } from './automation-coordinator.js';
@@ -101,6 +105,7 @@ export async function createExecutionRuntimeHostComposition(
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
     const sessionAdmission = new SessionAdmissionGate();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
+    let manager: SessionManager | undefined;
     const shellRuns = new ShellRunProcessManager({
       store: openedShellRunStore,
       newId: randomUUID,
@@ -128,6 +133,30 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       stores.sessionStore,
     );
+    runtimeResources = new HostRuntimeResourceCoordinator({
+      manager: shellRuns,
+      sessions: {
+        listShellRunUpdates: (sessionId) =>
+          requireSessionManager(manager).listShellRunUpdates(sessionId),
+      },
+      sessionHeaders: stores.sessionStore,
+      sessionAdmission,
+      acquireResidency: context.acquireResidency,
+      requestDrain: context.requestDrain,
+    });
+    const builtinTools = {
+      shellRuns: runtimeResources,
+      runtimeResources,
+      backgroundTasks: runtimeResources,
+      ptyControls: runtimeResources,
+      snapshotImage: createReadImageSnapshotter(openedArtifactStore),
+      ...(sandboxManager ? { sandboxManager } : {}),
+      ...(filesystemWorker ? { filesystemWorker } : {}),
+    };
+    const childAgentTools = createHostChildAgentToolComposition({
+      taskLedger,
+      builtinTools,
+    });
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
     );
@@ -254,15 +283,12 @@ export async function createExecutionRuntimeHostComposition(
         clientCapabilities: requireClientCapabilities(clientCapabilities),
         automationTool: requireAutomationCoordinator(automations).modelTool,
         goalTools: requireGoal(goal).tools,
-        builtinTools: {
-          shellRuns: requireRuntimeResources(runtimeResources),
-          runtimeResources: requireRuntimeResources(runtimeResources),
-          backgroundTasks: requireRuntimeResources(runtimeResources),
-          ptyControls: requireRuntimeResources(runtimeResources),
-          snapshotImage: createReadImageSnapshotter(openedArtifactStore),
-          ...(sandboxManager ? { sandboxManager } : {}),
-          ...(filesystemWorker ? { filesystemWorker } : {}),
-        },
+        builtinTools,
+        parentAgentTools: childAgentTools.parentTools,
+        childAgents: bindHostChildAgentBackend(
+          requireSessionManager(manager),
+          backendContext.sessionId,
+        ),
         runtimeCommitSink: stores.runtimeEventStore,
         requestDrain: context.requestDrain,
       }),
@@ -275,7 +301,7 @@ export async function createExecutionRuntimeHostComposition(
       stopSession: (sessionId, input) =>
         requireRootCoordinator(rootCoordinator).stopSession(sessionId, input),
     };
-    const manager = new SessionManager({
+    manager = new SessionManager({
       store: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
@@ -298,14 +324,9 @@ export async function createExecutionRuntimeHostComposition(
       interactionAuthority: interactions,
       canonicalPermissionOutcomes,
       shellRuns,
-    });
-    runtimeResources = new HostRuntimeResourceCoordinator({
-      manager: shellRuns,
-      sessions: manager,
-      sessionHeaders: stores.sessionStore,
-      sessionAdmission,
-      acquireResidency: context.acquireResidency,
-      requestDrain: context.requestDrain,
+      childTools: childAgentTools.childTools,
+      listArtifactsForTurn: (sessionId, turnId) =>
+        openedArtifactStore.listTurnArtifacts(sessionId, turnId),
     });
     const graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
@@ -751,11 +772,9 @@ function requireAutomationCoordinator(
   return coordinator;
 }
 
-function requireRuntimeResources(
-  coordinator: HostRuntimeResourceCoordinator | undefined,
-): HostRuntimeResourceCoordinator {
-  if (!coordinator) throw new Error('Runtime Host Runtime Resource coordinator is not composed');
-  return coordinator;
+function requireSessionManager(manager: SessionManager | undefined): SessionManager {
+  if (!manager) throw new Error('Runtime Host SessionManager is not composed');
+  return manager;
 }
 
 function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoordinator {

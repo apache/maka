@@ -1,0 +1,84 @@
+import type { TaskLedgerStore } from '@maka/core/task-ledger';
+import {
+  AiSdkBackend,
+  buildBuiltinTools,
+  buildChildAgentTools,
+  buildParentAgentTools,
+  listRunnableBuiltinAgentDefinitions,
+  type BuildBuiltinToolsOptions,
+  type MakaTool,
+  type SessionManager,
+} from '@maka/runtime';
+
+type ChildAgentAuthority = Pick<
+  SessionManager,
+  | 'spawnChildAgent'
+  | 'spawnChildSession'
+  | 'prepareChildAgentResume'
+  | 'resumeChildAgent'
+  | 'retryChildAgent'
+  | 'listChildAgents'
+  | 'readChildAgentOutput'
+>;
+
+export type HostChildAgentBackendCapabilities = Pick<
+  ConstructorParameters<typeof AiSdkBackend>[0],
+  | 'spawnChildAgent'
+  | 'spawnChildSession'
+  | 'prepareChildAgentResume'
+  | 'resumeChildAgent'
+  | 'retryChildAgent'
+  | 'listChildAgents'
+  | 'readChildAgentOutput'
+>;
+
+export interface HostChildAgentToolComposition {
+  readonly parentTools: readonly MakaTool[];
+  readonly childTools: readonly MakaTool[];
+}
+
+/** Composes the parent control tools and the exact catalog-child capability union. */
+export function createHostChildAgentToolComposition(input: {
+  readonly taskLedger: TaskLedgerStore;
+  readonly builtinTools: BuildBuiltinToolsOptions;
+}): HostChildAgentToolComposition {
+  const builtinTools = buildBuiltinTools(input.builtinTools);
+  const childTools = buildChildAgentTools(builtinTools);
+  const definitions = listRunnableBuiltinAgentDefinitions({ tools: childTools });
+  return Object.freeze({
+    parentTools: Object.freeze(
+      buildParentAgentTools({ taskLedger: input.taskLedger, definitions }),
+    ),
+    childTools: Object.freeze(childTools),
+  });
+}
+
+/** Binds one root backend to the child authority of its owning Session. */
+export function bindHostChildAgentBackend(
+  authority: ChildAgentAuthority,
+  parentSessionId: string,
+): HostChildAgentBackendCapabilities {
+  return {
+    spawnChildAgent: (input) => authority.spawnChildAgent(parentSessionId, input),
+    spawnChildSession: (input) =>
+      authority.spawnChildSession(parentSessionId, {
+        spawnedBy: {
+          parentRunId: input.parentRunId,
+          parentTurnId: input.parentTurnId,
+          toolCallId: input.toolCallId,
+        },
+        agentProfile: input.agentProfile,
+        prompt: input.prompt,
+        ...(input.swarm ? { swarm: input.swarm } : {}),
+        abortSignal: input.abortSignal,
+        ...(input.onReady ? { onReady: input.onReady } : {}),
+        ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      }),
+    prepareChildAgentResume: (sourceRunId) =>
+      authority.prepareChildAgentResume(parentSessionId, sourceRunId),
+    resumeChildAgent: (input) => authority.resumeChildAgent(parentSessionId, input),
+    retryChildAgent: (input) => authority.retryChildAgent(parentSessionId, input),
+    listChildAgents: () => authority.listChildAgents(parentSessionId),
+    readChildAgentOutput: (input) => authority.readChildAgentOutput(parentSessionId, input),
+  };
+}

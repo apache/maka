@@ -700,6 +700,7 @@ describe('Runtime Host bootstrap protocol', () => {
           attachments: [attachment],
           quotes,
         },
+        turnOrchestration: { mode: 'swarm', source: 'host_api' } as const,
       },
     };
     const start = decodeClientFrame(JSON.parse(encodeProtocolFrame(startWire).toString('utf8')));
@@ -710,6 +711,7 @@ describe('Runtime Host bootstrap protocol', () => {
         sessionId: 'session-1',
         turnId: 'turn-1',
         content: { text: 'model text', attachments: [attachment], quotes },
+        turnOrchestration: { mode: 'swarm', source: 'host_api' },
       },
     });
     assert.notEqual(start.input.content.quotes, quotes);
@@ -735,6 +737,32 @@ describe('Runtime Host bootstrap protocol', () => {
           requestId: 'legacy-start',
           operation: 'turn.start',
           input: { sessionId: 'session-1', turnId: 'turn-1', text: 'legacy' },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...startWire,
+          input: {
+            ...startWire.input,
+            turnOrchestration: { mode: 'parallel', source: 'host_api' },
+          },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...startWire,
+          input: {
+            ...startWire.input,
+            turnOrchestration: {
+              mode: 'swarm',
+              source: 'host_api',
+              inherited: true,
+            },
+          },
         }),
       isInvalidFrame,
     );

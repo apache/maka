@@ -62,6 +62,11 @@ import {
   type RuntimeEvent,
   type RuntimeEventStore,
 } from '@maka/core';
+import {
+  isOrchestrationMode,
+  isTurnOrchestrationSource,
+  type TurnOrchestration,
+} from '@maka/core/orchestration';
 
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const EXCLUSIVE_TEMP_SUFFIX_PATTERN =
@@ -90,6 +95,7 @@ export interface RootTurnAdmission {
   execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
   normalizedInput: MessageContent;
+  turnOrchestration?: TurnOrchestration;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
 }
@@ -102,6 +108,7 @@ export interface AdmitRootTurnInput {
   execution: RootExecutionDescriptor;
   previousRootTurnId: string | null;
   normalizedInput: MessageContent;
+  turnOrchestration?: TurnOrchestration;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
 }
@@ -678,6 +685,7 @@ class FileAgentRunStore implements DurableAgentRunStore {
       input.normalizedInput,
       input.sourceMessages,
     );
+    const turnOrchestration = normalizeTurnOrchestration(input.turnOrchestration);
     if (!Number.isSafeInteger(input.admittedAt) || input.admittedAt < 0) {
       throw new Error('Invalid root turn admission timestamp');
     }
@@ -690,6 +698,7 @@ class FileAgentRunStore implements DurableAgentRunStore {
       execution: normalizeRootExecutionDescriptor(input.execution),
       previousRootTurnId: input.previousRootTurnId,
       normalizedInput,
+      ...(turnOrchestration ? { turnOrchestration } : {}),
       sourceMessages,
       admittedAt: input.admittedAt,
     };
@@ -1754,6 +1763,7 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     input.normalizedInput,
     input.sourceMessages,
   );
+  const turnOrchestration = normalizeTurnOrchestration(input.turnOrchestration);
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId: input.sessionId,
@@ -1763,6 +1773,7 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     execution: normalizeRootExecutionDescriptor(input.execution),
     previousRootTurnId: input.previousRootTurnId,
     normalizedInput,
+    ...(turnOrchestration ? { turnOrchestration } : {}),
     sourceMessages,
     admittedAt: input.admittedAt,
   };
@@ -2840,18 +2851,7 @@ function normalizeRootTurnAdmission(
         record.previousRootTurnId !== turnId)) &&
     Number.isSafeInteger(record.admittedAt) &&
     (record.admittedAt as number) >= 0 &&
-    hasExactKeys(record, [
-      'schemaVersion',
-      'sessionId',
-      'turnId',
-      'runId',
-      'userMessageId',
-      'execution',
-      'previousRootTurnId',
-      'normalizedInput',
-      'sourceMessages',
-      'admittedAt',
-    ]);
+    hasRootTurnAdmissionKeys(record);
   if (!valid) {
     throw new Error(`Invalid root turn admission for turn ${turnId}: malformed fields`);
   }
@@ -2859,6 +2859,7 @@ function normalizeRootTurnAdmission(
     record.normalizedInput,
     record.sourceMessages,
   );
+  const turnOrchestration = normalizeTurnOrchestration(record.turnOrchestration);
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId,
@@ -2868,6 +2869,7 @@ function normalizeRootTurnAdmission(
     execution: normalizeRootExecutionDescriptor(record.execution),
     previousRootTurnId: record.previousRootTurnId as string | null,
     normalizedInput,
+    ...(turnOrchestration ? { turnOrchestration } : {}),
     sourceMessages,
     admittedAt: record.admittedAt as number,
   };
@@ -3077,6 +3079,7 @@ function rootTurnAdmissionPayloadsEqual(
 ): boolean {
   return (
     isDeepStrictEqual(left.execution, right.execution) &&
+    isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     messageContentsEqual(left.normalizedInput, right.normalizedInput) &&
     left.sourceMessages.length === right.sourceMessages.length &&
     left.sourceMessages.every((source, index) => {
@@ -3105,6 +3108,11 @@ function assertRootTurnAdmissionSerializedSize(serialized: string): void {
 function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const execution = admission.execution;
   const providerRetry = execution.kind === 'linked_child_provider_retry';
+  if (admission.turnOrchestration && execution.kind !== 'external_message') {
+    throw new Error(
+      'Invalid root turn admission contract: only external messages may override orchestration',
+    );
+  }
   if ((admission.userMessageId === null) !== providerRetry) {
     throw new Error(
       'Invalid root turn admission contract: only linked child provider retry omits UserMessage',
@@ -3158,6 +3166,7 @@ function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmi
     Object.freeze(admission.execution.claim);
   }
   Object.freeze(admission.execution);
+  if (admission.turnOrchestration) Object.freeze(admission.turnOrchestration);
   deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
     deepFreezeRootTurnMessageContent(sourceMessage.content);
@@ -3165,6 +3174,35 @@ function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmi
   }
   Object.freeze(admission.sourceMessages);
   return Object.freeze(admission);
+}
+
+function normalizeTurnOrchestration(value: unknown): TurnOrchestration | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, ['mode', 'source']) ||
+    !isOrchestrationMode(value.mode) ||
+    !isTurnOrchestrationSource(value.source)
+  ) {
+    throw new Error('Invalid root turn orchestration');
+  }
+  return Object.freeze({ mode: value.mode, source: value.source });
+}
+
+function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boolean {
+  const keys = [
+    'schemaVersion',
+    'sessionId',
+    'turnId',
+    'runId',
+    'userMessageId',
+    'execution',
+    'previousRootTurnId',
+    'normalizedInput',
+    'sourceMessages',
+    'admittedAt',
+  ];
+  return hasExactKeys(record, keys) || hasExactKeys(record, [...keys, 'turnOrchestration']);
 }
 
 function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescriptor {
