@@ -48,13 +48,16 @@
 .maka-stat-tile-border-warning { border-color: oklch(from var(--warning) l c h / 0.28); }
 .maka-stat-tile-border-destructive { border-color: oklch(from var(--destructive) l c h / 0.3); }
 .maka-stat-tile-empty { opacity: var(--opacity-disabled); }
+.maka-stat-tile-value-outline { font: var(--maka-text-heading-1); }
+.maka-stat-tile-value-filled { font: var(--maka-text-heading-4); }
+/* After the two role rules, not before them. The `font:` shorthand resets
+   `font-variant-numeric` along with the four axes the role names, and both
+   modifiers land on this same element — so declared first, the tabular figures
+   these tiles exist to align were being reset away by the role. Ordering is
+   the fix rather than repeating the declaration on each modifier: it is one
+   authority, and it is the general rule for any sub-property the roles do not
+   carry. */
 .maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
-.maka-stat-tile-value-outline {
-  font: var(--maka-text-heading-1);
- }
-.maka-stat-tile-value-filled {
-  font: var(--maka-text-heading-4);
- }
 .maka-stat-tile-value-info { color: var(--info-text); }
 .maka-stat-tile-value-success { color: var(--success-text); }
 .maka-stat-tile-value-warning { color: var(--warning-text); }

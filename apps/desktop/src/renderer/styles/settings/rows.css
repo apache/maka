@@ -25,8 +25,14 @@
   gap: var(--space-2);
 }
 
-.settingsReadOnlyValue[data-mono="true"] {
+code.settingsReadOnlyValue {
   font: var(--maka-text-supporting);
+  /* Restated because the shorthand above resets it: the base rule's
+     tabular-nums is a sub-property `font:` does not carry, and this selector
+     outranks it. Harmless in practice — the value is a <code> in Geist Mono,
+     whose digits are already fixed-width — but the rule is that a role and a
+     font sub-property may not be split across selectors without saying so. */
+  font-variant-numeric: tabular-nums;
   text-align: start;
   word-break: break-all;
 }

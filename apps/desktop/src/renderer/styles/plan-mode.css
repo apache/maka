@@ -42,18 +42,19 @@
   overflow-wrap: anywhere;
 }
 
-.plan-proposal-kicker,
-.plan-proposal-revision {
-  font: var(--maka-text-supporting);
+/* The eyebrow above the proposal title. 12px/500 on main, which the 12px tier
+   does not offer — it has 400 and 600 — and this is a section label sitting
+   over a heading, so it takes the 600. Grouping it with the revision chip and
+   then overriding the role one rule later left the group's role dead and moved
+   the eyebrow up a size tier; a role is not a base to override. */
+.plan-proposal-kicker {
+  font: var(--maka-text-heading-5);
   color: var(--muted-foreground);
 }
 
-.plan-proposal-kicker {
-  font: var(--maka-text-label);
-}
-
 .plan-proposal-revision {
   font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
   padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-pill);
   background: var(--foreground-5);
