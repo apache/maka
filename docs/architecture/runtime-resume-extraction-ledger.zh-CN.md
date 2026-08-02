@@ -450,7 +450,7 @@ Schema 8 进一步要求该 authority stream 在首次写入前绑定 authentica
 - SQLite/JSONL/tool/recovery/continuation/copy writer bypass；
 - 两进程 exact/conflicting baseline arbitration；
 - 两进程 schema 6/7→8 migration；
-- DB rootId exact binding、跨 root 单文件复制拒绝、whole-root import/adopt 与 unbound operational data fail closed；
+- DB rootId exact binding、跨 root 单文件复制拒绝、whole-root storage authority import/adopt 与 unbound operational data fail closed；既有 managed worktree relocation 和 legacy DB binding 仍是独立维护协议，不由 M0 baseline open 暗中完成；
 - Linux/macOS process-kill crash harness；
 - workspace fact 不进入 UI/provider message projection。
 

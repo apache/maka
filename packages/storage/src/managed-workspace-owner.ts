@@ -56,7 +56,8 @@ export interface OpenManagedWorkspaceOwnerInput {
 export type ManagedWorkspaceOwnerFailpoint =
   | GitWorkspaceServiceFailpoint
   | 'after_initial_store_root_validation'
-  | 'after_baseline_authority_commit';
+  | 'after_baseline_authority_commit'
+  | 'after_post_commit_artifact_verification';
 
 export type OpenManagedWorkspaceBaselineInput = CreateManagedWorkspaceFromSourceInput;
 
@@ -209,6 +210,11 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       // Reverify after the SQLite transaction so post-accept artifact loss is
       // reported fail-closed instead of returning a usable workspace head.
       await this.receiptAuthority.verify(durableReceipt);
+      await this.failpoint?.('after_post_commit_artifact_verification');
+      // The root marker is mutable host state and is not covered by receipt
+      // verification. Re-authenticate the lifecycle owner at the final return
+      // gate so a concurrently replaced marker cannot publish a usable cwd.
+      await assertInteractiveRootOwner(this.rootOwner);
       return { ...committed, binding, receipt: durableReceipt };
     });
   }

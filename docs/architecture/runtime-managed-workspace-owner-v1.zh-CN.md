@@ -63,8 +63,9 @@ owner 的 public surface 只开放一个 workspace admission 操作：
 
 artifact-only create/open 和 `GitWorkspaceService` factory 不从 package root 导出。调用者不能在 SQLite
 acceptance 前取得 `worktreePath` 或裸 `ManagedWorkspaceBinding`。入口返回前必须验证 worktree、index、
-HEAD、tree、ownership lock、canonical `runtime.sqlite` pathname/inode 与 durable receipt；任何失败都不能把
-cwd 交给工具。
+HEAD、tree、ownership lock、canonical `runtime.sqlite` pathname/inode、durable receipt，以及最终时刻的
+`InteractiveRootOwner`/root marker identity；任何失败都不能把 cwd 交给工具。SQLite 已提交而最终 owner
+复验失败时，canonical history 保留，但本次调用不得发布 usable workspace。
 
 本切片不扫描目录来猜测 workspace identity。Baseline Open Bundle 通过 Git artifact owner 的 durable
 receipt 与 canonical workspace authority 绑定 exact identity；未接受 Git artifact 属于 orphan GC 范畴。
@@ -78,6 +79,7 @@ receipt 与 canonical workspace authority 绑定 exact identity；未接受 Git 
 | operation admission 后 close | close 等待 operation；新 operation 被拒绝 |
 | root owner 同时 close | root close 与 managed close 都等待同一 lease-bound operation |
 | external drift 后 reopen | receipt/artifact 复验 fail closed；若发生在复验与 reopen 之间则 durable quarantine |
+| post-commit artifact 复验后 root marker 被替换 | 最终 `assertInteractiveRootOwner` 拒绝；保留 canonical head，不发布 cwd |
 | repeated close | exact no-op，不重复释放外层 root owner |
 
 Git artifact create/quarantine 的进程崩溃矩阵继续由 `GitWorkspaceService` 负责；本 owner 不复制第二套
@@ -101,6 +103,9 @@ reopen/repair，最后才允许 baseline authority read”的组合顺序。
 - candidate refs、mutation repair、GC、replication outbox；
 - ignored dependencies、build/test environment provisioning；
 - Durable Write、workspace-bound continuation 与自动 resume。
+- whole-root import 后既有 linked worktree 的 relocation/adoption；
+- 非空 legacy database 的显式备份与 root-binding migration 工具。
 
-这些能力不能借 owner lifecycle PR 顺手接入。下一个 M0 slice 是 Baseline Open Bundle：它会成为本
-owner 的第一个 canonical-fact consumer，并证明 Git baseline 与 RuntimeEvent baseline 不会只成功一半。
+这些能力不能借 owner lifecycle PR 顺手接入。Baseline Open Bundle 已作为本 owner 的第一个
+canonical-fact consumer 完成组合，证明 Git baseline 与 RuntimeEvent baseline 不会只成功一半；后续
+M1 execution admission 仍必须从该 bundle 成功返回的结果进入，不能重新开放 artifact-only 旁路。

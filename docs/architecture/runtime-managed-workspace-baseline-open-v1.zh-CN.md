@@ -162,11 +162,14 @@ sequenceDiagram
   O->>S: revalidate exact durable storage-root ID
   O->>G: post-commit reverify exact receipt and Git artifacts
   G-->>O: verified
+  O->>O: re-authenticate root owner and durable root marker
   O-->>C: usable canonical baseline
 ```
 
 只有最后一步成功返回以后，调用者才得到可用的 managed baseline。SQLite commit 后的 reverify 失败
 不会撤销 canonical history；它阻止当前 instance 被交给后续工具，并要求 repair/quarantine 流程处理。
+最终 root-owner 复验与 Git receipt 复验是两个独立闸门：receipt 证明 managed artifact，root-owner
+复验证明返回瞬间的 marker、lease、database binding 仍属于同一个 authenticated storage root。
 
 ## 6. Crash 与并发矩阵
 
@@ -184,9 +187,11 @@ sequenceDiagram
 | owner 传入另一 storage root 的 DB | 不写 receipt | 不写错误 DB | admission 前拒绝 |
 | 两个 storage root 以 hard link 共享 `runtime.sqlite` inode | 不写 receipt | 不接受共享 DB；拒绝 `nlink != 1` | fail closed，避免 WAL/SHM 跨目录分裂 |
 | 单独复制或移动已绑定的 `runtime.sqlite` 到另一 root | 不写/不读取错误 root 的 receipt | DB rootId 与 owner rootId 冲突 | fail closed；必须使用 whole-root import/adopt 协议 |
-| 正式复制整个 storage root 后 adopt | receipt 与 Git artifact 随 root 保留 | DB rootId 与 marker rootId 保持一致 | `adoptStorageRootOnImport` 只更新 host-local dev/ino，继续 exact open |
-| unbound DB 已含 Session、RuntimeEvent、claim 或 workspace fact 等逻辑数据 | 不生成新 receipt | 禁止静默认领 | 要求显式 adoption 或清理实验 DB；仅 metadata-only 新库可首次绑定 |
+| 正式复制整个 storage root 后 adopt | storage-root marker 与 DB 随 root 保留 | DB rootId 与 marker rootId 保持一致 | `adoptStorageRootOnImport` 只恢复 storage-root identity；不证明旧路径下已 materialize 的 linked worktree 可迁移 |
+| imported root 含既有 managed workspace instance | binding 与 Git admin metadata 可能仍引用旧绝对路径 | canonical history 保留 | fail closed；首版必须显式 relocation/adoption 或重新 materialize 新 instance，不能直接返回旧 cwd |
+| unbound DB 已含 Session、RuntimeEvent、claim 或 workspace fact 等逻辑数据 | 不生成新 receipt | 禁止静默认领 | 要求独立、显式、可备份和可审计的 legacy root-binding adoption；M0 baseline open 不承担迁移 |
 | 初次 DB identity 检查后 canonical pathname 被替换 | receipt 可能成为 orphan | 已打开连接的提交视为 detached，不返回 usable baseline | post-commit DB identity 复验拒绝；新 canonical DB 不获得错误 head |
+| post-commit artifact 复验后 root marker 被替换 | exact receipt 与 accepted head 保留 | canonical history 不回滚 | 最终 root-owner identity 复验拒绝；不返回 usable baseline |
 | owned quarantine/instance parent 被替换为 symlink | physical layout revalidation 拒绝 | canonical history 不变 | fail closed，不读取外部 control record、不移动到外部目录 |
 
 真实进程 crash harness 分别覆盖 receipt durable 后、SQLite authority 前，以及 SQLite COMMIT 后、
@@ -215,6 +220,8 @@ Windows 上不虚构 POSIX directory fsync 承诺。M0 保证进程崩溃后的�
 - mutation candidate ref、T1/T2 + workspace version 原子接受、conditional redo；
 - continuation 绑定 workspace version 与自动 resume；
 - orphan receipt/ref/object GC；
+- whole-root import 后既有 managed worktree 的 relocation/adoption 或重新 materialize；
+- 非空 legacy DB 的显式备份、授权、root-binding adoption 与完整重扫维护入口；
 - replication、跨端同步、publish、undo 与 multi-agent merge。
 
 这些能力必须分别由后续 PR 证明自己的 owner、原子边界、失败状态与回滚方式。M0 完成只代表系统拥有
@@ -226,6 +233,7 @@ Windows 上不虚构 POSIX directory fsync 承诺。M0 保证进程崩溃后的�
 - receipt-after-write crash 与 SQLite rollback 都能 exact retry；
 - SQLite COMMIT 后、post-verify 前真实进程 crash 返回 exact existing；
 - accepted 后 receipt missing/tampered fail closed；
+- post-commit Git 复验后 root marker 变化时，保留 canonical head 但拒绝返回 usable workspace；
 - lease 伪 path、同 root 第二 DB、memory DB、DB symlink 与文件 identity 变化均在 admission 前拒绝；
 - public Git service 无 receipt issuer，canonical policy/hash 与 deterministic IDs 有 literal/篡改测试；
 - raw path digest 使用字节编码，非 UTF-8 source path fail closed；

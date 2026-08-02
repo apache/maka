@@ -591,6 +591,46 @@ test('rejects an authenticated owner after its durable root marker id is replace
   }
 });
 
+test('rejects final admission when the root marker changes after post-commit artifact verification', async () => {
+  const root = await temporaryRoot();
+  const storageRoot = join(root, 'storage');
+  const sourceRoot = await createEligibleSource(join(root, 'source'));
+  const request = openRequest(sourceRoot);
+  const capability = await resolveStorageRoot({ path: storageRoot, kind: 'interactive' });
+  const rootOwner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(rootOwner);
+  const runtimeStore = createSqliteRuntimeStore(join(storageRoot, 'runtime.sqlite'));
+  const markerPath = join(storageRoot, STORAGE_ROOT_MARKER_FILE);
+  const originalMarker = await readFile(markerPath, 'utf8');
+  let replaceOnce = true;
+  const owner = await openManagedWorkspaceOwner({
+    rootOwner,
+    gitRuntime: {
+      executablePath: gitExecutablePath,
+      expectedSha256: gitExecutableSha256,
+    },
+    async failpoint(point) {
+      if ((point as string) !== 'after_post_commit_artifact_verification' || !replaceOnce) return;
+      replaceOnce = false;
+      const marker = JSON.parse(originalMarker) as { rootId: string };
+      marker.rootId = `${marker.rootId.startsWith('0') ? '1' : '0'}${marker.rootId.slice(1)}`;
+      await writeFile(markerPath, `${JSON.stringify(marker)}\n`, 'utf8');
+    },
+  });
+  try {
+    await assert.rejects(
+      owner.openManagedWorkspaceBaseline(runtimeStore, request),
+      /storage root|root identity|marker/u,
+    );
+    assert.ok(await runtimeStore.readWorkspaceHead(request.workspaceId, request.workspaceEpochId));
+  } finally {
+    await writeFile(markerPath, originalMarker, 'utf8');
+    await owner.close();
+    runtimeStore.close();
+    await rootOwner.close();
+  }
+});
+
 test('rejects an authority database whose file identity changes after registration', {
   skip: process.platform === 'win32',
 }, async () => {
@@ -664,12 +704,11 @@ test('does not return an accepted baseline when runtime.sqlite is replaced after
     rm(`${databasePath}-wal`, { force: true }),
     rm(`${databasePath}-shm`, { force: true }),
   ]);
-  const detachedStore = createSqliteRuntimeStore(`${databasePath}.detached`);
-  try {
-    assert.ok(await detachedStore.readWorkspaceHead(request.workspaceId, request.workspaceEpochId));
-  } finally {
-    detachedStore.close();
-  }
+  // SQLite may keep the accepted transaction in a WAL that remains associated
+  // with the original pathname, so the detached main file is not a portable
+  // authority read after this adversarial rename. The safety invariant is that
+  // the replacement canonical database never receives that head and no usable
+  // baseline was returned above.
   const replacementStore = createSqliteRuntimeStore(databasePath);
   try {
     assert.equal(
