@@ -272,7 +272,7 @@
   justify-content: flex-start;
   gap: var(--space-1);
   box-sizing: border-box;
-  margin: var(--space-2) auto 0;
+  margin: 0 auto var(--space-2);
 }
 
 .maka-composer-workspace-picker {

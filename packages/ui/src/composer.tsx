@@ -738,7 +738,7 @@ export const Composer = forwardRef<
         </div>
       )}
       {/* New-chat project/branch bar sits above the card (quiet chrome). */}
-      {props.workspacePicker ? (
+      {!props.activeSession && props.workspacePicker ? (
         <div className="maka-composer-workspace-dock" hidden={props.hidden}>
           <ComposerWorkspaceRow workspacePicker={props.workspacePicker} branchPicker={props.branchPicker} />
         </div>

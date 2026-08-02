@@ -146,4 +146,43 @@ describe('composer quiet chrome', () => {
     const formIdx = markup.indexOf('maka-composer composer');
     assert.ok(dockIdx >= 0 && formIdx > dockIdx);
   });
+
+  /**
+   * The project and branch decide where a NEW chat starts; once a session
+   * exists they no longer move it. Leaving the row on screen in an open chat
+   * reads as "you can still change this session's context here", which is
+   * false — so the same wired picker must render nothing.
+   */
+  it('drops the workspace picker once a session is active', () => {
+    const workspacePicker = {
+      projects: [],
+      onAdd: () => {},
+      onSelectProject: () => {},
+      onRelink: () => {},
+      onSelectNoProject: () => {},
+    };
+    const markup = render(
+      <Composer
+        onSend={() => true}
+        onStop={() => {}}
+        modelLabel="demo"
+        workspacePicker={workspacePicker}
+        activeSession={{
+          id: 'session-1',
+          name: 'Test',
+          isFlagged: false,
+          isArchived: false,
+          labels: [],
+          hasUnread: false,
+          status: 'done',
+          backend: 'fake',
+          llmConnectionSlug: 'fake',
+          connectionLocked: false,
+          model: 'fake',
+          permissionMode: 'ask',
+        }}
+      />,
+    );
+    assert.doesNotMatch(markup, /maka-composer-workspace-dock/);
+  });
 });
