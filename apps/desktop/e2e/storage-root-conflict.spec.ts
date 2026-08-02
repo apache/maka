@@ -60,16 +60,22 @@ test('parks at the storage-root repair dialog and writes nothing before the answ
   await mkdir(homeDir, { recursive: true });
   let app;
   try {
-    // Seed a real interactive marker, then corrupt its device id so startup
-    // must stop at the repair dialog (mirrors the disk-identity drift that
-    // triggers root_identity_collision).
+    // Seed a real interactive marker, then corrupt its inode so startup must
+    // stop at the repair dialog (mirrors a workspace copied from elsewhere,
+    // which is the drift that triggers root_identity_collision).
+    //
+    // The inode and not the device id: a device number changes on its own
+    // whenever the volume is mounted again, so the desktop repairs that case
+    // without asking. Staling `dev` here would take the auto-repair path, the
+    // dialog would never open, and this test would wait for a gate signal that
+    // is never printed.
     const workspaceRoot = join(userDataDir, 'workspaces', 'default');
     await resolveStorageRoot({ path: workspaceRoot, kind: 'interactive' });
     const markerPath = join(workspaceRoot, STORAGE_ROOT_MARKER_FILE);
     const marker = JSON.parse(await readFile(markerPath, 'utf8')) as {
-      rootIdentity: { dev: string };
+      rootIdentity: { ino: string };
     };
-    marker.rootIdentity.dev = (BigInt(marker.rootIdentity.dev) + 1n).toString();
+    marker.rootIdentity.ino = (BigInt(marker.rootIdentity.ino) + 1n).toString();
     const conflictingMarker = `${JSON.stringify(marker)}\n`;
     await writeFile(markerPath, conflictingMarker);
 

@@ -77,10 +77,27 @@ export interface ResolveExistingStorageRootInput<K extends StorageRootKind>
 export type AdoptStorageRootOnImportInput<K extends StorageRootKind> =
   ResolveExistingStorageRootInput<K>;
 
+/**
+ * Why the recorded identity no longer matches what the filesystem reports.
+ *
+ * `remounted` is the one answer a person cannot help with: the kernel hands
+ * out a device number per mount, so an unmoved directory reports a different
+ * `dev` after its volume is mounted again while keeping the inode it always
+ * had. Anything else — a different inode, or a marker this layer cannot read
+ * as a comparison — is `unknown`, because a copied workspace and a remount
+ * must not be told apart by guessing.
+ *
+ * Decided here from the marker this candidate was prepared against, not
+ * re-derived by a caller: a second read is a second answer, and the two can
+ * disagree if the marker is swapped in between.
+ */
+export type StorageRootIdentityDrift = 'remounted' | 'unknown';
+
 export interface StorageRootIdentityRepairCandidate<K extends StorageRootKind = StorageRootKind> {
   readonly kind: K;
   readonly canonicalPath: string;
   readonly rootId: string;
+  readonly drift: StorageRootIdentityDrift;
   readonly [repairBrand]: true;
 }
 
@@ -335,6 +352,7 @@ export async function prepareStorageRootIdentityRepair<K extends StorageRootKind
         kind: record.kind,
         canonicalPath: record.canonicalPath,
         rootId: record.rootId,
+        drift: identityDrift(marker, identity),
       }) as StorageRootIdentityRepairCandidate<K>;
       storageRootIdentityRepairs.set(candidate, record);
       return candidate;
@@ -1217,6 +1235,20 @@ function isMarkerRootIdentity(value: unknown): value is RootMarker['rootIdentity
     typeof identity.ino === 'string' &&
     /^\d+$/.test(identity.ino)
   );
+}
+
+/**
+ * Same inode, different device: the volume was mounted again.
+ *
+ * Inode equality alone does not prove it — inode numbers are unique within one
+ * mounted filesystem, so a workspace copied to another volume can report the
+ * same root-directory inode. That case is `unknown` here and stays a question
+ * for the person, which is why this returns a reason rather than a boolean.
+ */
+function identityDrift(marker: RootMarker, identity: RootIdentity): StorageRootIdentityDrift {
+  const sameInode = marker.rootIdentity.ino === identity.ino.toString();
+  const movedDevice = marker.rootIdentity.dev !== identity.dev.toString();
+  return sameInode && movedDevice ? 'remounted' : 'unknown';
 }
 
 function markerMatchesIdentity(marker: RootMarker, identity: RootIdentity): boolean {
