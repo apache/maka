@@ -194,9 +194,17 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     );
 
     if (connection.slug !== previousSnapshot.slug || (apiKey.length === 0 && localStillSynced)) {
-      setBaseUrl(nextSnapshot.baseUrl);
-      setModels(nextSnapshot.models);
-      setModelSource(nextSnapshot.modelSource);
+      // Only when the draft actually differs. `connectionDetailSnapshot` builds
+      // `connection.models ?? []` fresh every call, so for a connection with no
+      // models array this wrote a new-but-equal array on every pass — a new
+      // identity for the `models` dep, which re-ran the effect, which wrote
+      // another one. The page never settled; React cut it off at the update
+      // depth limit and the whole panel unmounted.
+      if (!localAlreadyMatchesNext) {
+        setBaseUrl(nextSnapshot.baseUrl);
+        setModels(nextSnapshot.models);
+        setModelSource(nextSnapshot.modelSource);
+      }
       syncedConnectionSnapshotRef.current = nextSnapshot;
       return;
     }
