@@ -151,13 +151,6 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     await connectionSection.getByRole('button', { name: '取消', exact: true }).click();
     await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveCount(0);
 
-    // An abandoned draft does not survive leaving the row. It used to sit in
-    // state until the next save carried it along — reopening the row showed a
-    // key the user never confirmed.
-    await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
-    await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveValue('');
-    await connectionSection.getByRole('button', { name: '取消', exact: true }).click();
-
     const modelSection = detail.getByRole('region', { name: '模型' });
     await expect(modelSection).toBeVisible();
 
@@ -301,6 +294,50 @@ test('adds a no-auth local runtime with no key field and a currentColor mask mar
   await expect(detailMark).toBeVisible();
   expect(await detailMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
   await expect(detail.getByLabel(/LM Studio 模型密钥/)).toHaveCount(0);
+});
+
+// Distinct detail behavior: the only providers with BOTH settled rows are the
+// ones whose address is genuinely the user's. One row is a form at a time, so
+// these two are also the only place the cross-row rules can be observed — a
+// single-row provider (Cerebras, Cloudflare) cannot show them at all.
+test('keeps each settled row to its own field on a provider that has two', async ({ window: page }) => {
+  await openModelsPage(page);
+  await openCatalog(page, { category: '聚合服务', search: '自定义中转站' });
+  await page.getByRole('button', { name: /添加模型供应商：自定义中转站（OpenAI Chat）/ }).click();
+
+  const setup = providerSetup(page);
+  await setup.getByRole('textbox', { name: /服务地址/ }).fill('https://relay.example.com/v1');
+  await setup.getByRole('textbox', { name: /API Key/ }).fill('e2e-relay-key');
+  await setup.getByRole('textbox', { name: /默认模型/ }).fill('relay-model');
+  await page.getByRole('button', { name: '保存供应商', exact: true }).click();
+
+  const detail = connectionDetail(page);
+  await expect(detail).toBeVisible();
+  const connectionSection = detail.getByRole('region', { name: '连接' });
+  // A relay publishes no endpoint, so the address is the user's to type and the
+  // row exists. `gemini-cli` used to reach this branch too — it is OAuth with an
+  // empty baseUrl, and keying the row off "OAuth with a fixed URL" let it past.
+  await expect(connectionSection.getByText('服务地址', { exact: true })).toBeVisible();
+  await expect(connectionSection.getByText('https://relay.example.com/v1')).toBeVisible();
+
+  // Abandon a key draft by opening the OTHER row rather than cancelling it.
+  await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
+  await connectionSection.getByRole('textbox', { name: /模型密钥/ }).fill('sk-never-confirmed');
+  await connectionSection.getByRole('button', { name: '编辑', exact: true }).click();
+
+  // The endpoint row opens on the saved address, and saving it writes only the
+  // address: the patch used to carry both fields whichever row asked for it, so
+  // the key the user never confirmed rode along with it.
+  const endpointInput = connectionSection.getByRole('textbox', { name: '服务地址', exact: true });
+  await expect(endpointInput).toHaveValue('https://relay.example.com/v1');
+  await endpointInput.fill('https://relay.example.com/v2');
+  await connectionSection.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(connectionSection.getByText('https://relay.example.com/v2')).toBeVisible();
+
+  // And the abandoned key is gone rather than waiting in state for the next
+  // time the user opens its row.
+  await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
+  await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveValue('');
 });
 
 test('carries keyboard focus down and back up every level', async ({ window: page }) => {
