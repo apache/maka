@@ -148,13 +148,6 @@ export function CommandPalette(props: {
         input={(
           <CommandPaletteInput
             className="maka-command-palette-search"
-            style={{
-              appearance: 'none',
-              border: 0,
-              outline: 0,
-              background: 'transparent',
-              boxShadow: 'none',
-            }}
             placeholder={copy.placeholder}
             label={copy.searchLabel}
           />

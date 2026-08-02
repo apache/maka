@@ -112,10 +112,14 @@ function observeModalBackdrops(root: HTMLElement): void {
 
   titleBarOverlayObserver = new MutationObserver((mutations) => {
     const modalStateChanged = mutations.some((mutation) => {
-      if (mutation.type === 'attributes') return true;
+      if (mutation.type === 'attributes') {
+        // `<details open>` toggles also land here; only dialogs matter.
+        return mutation.target instanceof Element && mutation.target.nodeName === 'DIALOG';
+      }
       return [...mutation.addedNodes, ...mutation.removedNodes].some(
         (node) =>
           node instanceof Element &&
+          node.nodeName === 'DIALOG' &&
           (node.matches('dialog[open]') || node.querySelector('dialog[open]')),
       );
     });
