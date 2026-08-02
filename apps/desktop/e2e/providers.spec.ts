@@ -247,11 +247,17 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
 
   const detail = connectionDetail(page);
   await expect(detail).toBeVisible();
-  // The derived endpoint is readable at a glance from the row itself; the
-  // input only appears once the user asks to edit it.
+  // Cloudflare derives its endpoint from the account id, so the detail offers no
+  // endpoint row at all — a derived address is nobody's to type.
   const connectionSection = detail.getByRole('region', { name: '连接' });
-  await expect(connectionSection.getByText(baseUrl, { exact: true })).toBeVisible();
+  await expect(connectionSection.getByText('服务地址', { exact: true })).toHaveCount(0);
   await expect(connectionSection.getByText('已设置，粘贴新值可替换')).toBeVisible();
+  // It is still the address the connection was saved with.
+  const savedBaseUrl = await page.evaluate(async () => {
+    const list = await window.maka.connections.list();
+    return list.find((entry) => entry.providerType === 'cloudflare-workers-ai')?.baseUrl;
+  });
+  expect(savedBaseUrl).toBe(baseUrl);
 });
 
 // Distinct form behavior: a no-auth local runtime shows no API-key field at all

@@ -23,8 +23,11 @@ const zhCopy = {
     updateModels: '更新模型目录', endpoint: '服务地址',
     credentials: '连接', dangerZone: '删除连接', deleteRowHelp: '删除后需要重新添加才能再次使用；此操作不可撤销。',
     credentialsHelp: '密钥和服务地址都只保存在本机。',
+    credentialsHelpKeyOnly: '这个连接调用模型时使用的密钥，只保存在本机。',
+    credentialsHelpEndpointOnly: '这个连接请求的地址，只保存在本机。',
     credentialsHelpAccount: '这个连接用账号登录授权，令牌只保存在本机。',
     modelManagementHelp: '选择哪些模型出现在模型选择器里，以及新对话默认用哪个。',
+    modelManagementHelpSingle: '选择哪些模型出现在模型选择器里。',
     // Row affordances (settings-sidebar 的 InfoRow / ExpandableRow 语言)：一行
     // 只报状态，改的时候才展开成输入框。
     change: '更换', set: '设置', edit: '编辑', save: '保存',
@@ -171,8 +174,11 @@ const enCopy: ProviderSettingsCopy = {
     updateModels: 'Update model catalog', endpoint: 'Service URL',
     credentials: 'Connection', dangerZone: 'Delete connection', deleteRowHelp: 'You will need to add it again to use it; this cannot be undone.',
     credentialsHelp: 'The key and the service URL both stay on this machine.',
+    credentialsHelpKeyOnly: 'The key this connection calls models with. It stays on this machine.',
+    credentialsHelpEndpointOnly: 'The address this connection calls. It stays on this machine.',
     credentialsHelpAccount: 'This connection is authorized by an account sign-in. The token stays on this machine.',
     modelManagementHelp: 'Choose which models appear in the model picker, and which one new chats start on.',
+    modelManagementHelpSingle: 'Choose which models appear in the model picker.',
     change: 'Change', set: 'Set', edit: 'Edit', save: 'Save',
     endpointDefault: 'The provider default',
     advancedHelp: 'Calls go to the provider by default; change this for a proxy or a self-hosted service.',

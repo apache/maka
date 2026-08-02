@@ -119,8 +119,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   } = useConnectionDetail(props);
   // One row is a form at a time, the way the settings-sidebar template does it.
   const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
+  // The default is one OF the enabled models, so the two fields read as one
+  // question and its refinement rather than two parallel model pickers. Listing
+  // every catalog model here let the user pick a default they had not enabled —
+  // saving it silently enabled it, which is the page changing an answer the
+  // user gave one field up.
+  const enabledSet = new Set(enabledModelIds);
   const defaultModelOptions = modelChoices
-    .filter((entry) => entry.canUseAsChatDefault)
+    .filter((entry) => entry.canUseAsChatDefault && enabledSet.has(entry.id))
     .map((entry) => ({
       value: entry.id,
       label: entry.displayName?.trim() || entry.id,
@@ -134,6 +140,20 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       label: connection.defaultModel,
     });
   }
+  // With one enabled model there is nothing to choose: the default IS that
+  // model, and a select with a single locked option is a field that only
+  // restates the field above it.
+  const showsDefaultModel = defaultModelOptions.length > 1;
+
+  // 52 of the 60 providers publish a fixed endpoint; editing it there can only
+  // break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in a
+  // per-connection URL. So the row exists only where the address is genuinely
+  // the user's: a service with no published endpoint (the *-compatible ones), or
+  // a local runtime whose port is a convention rather than a fact. A derived
+  // endpoint (Cloudflare builds one from the account id) is nobody's to type.
+  const showsEndpoint = !hasFixedOAuthBaseUrl
+    && !defaults.baseUrlTemplate
+    && (!defaults.baseUrl || defaults.category === 'local');
 
   return (
     /* Three sections, each a heading with a sentence beside its controls, one
@@ -147,7 +167,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     <VStack gap={8}>
       <DetailSection
         title={copy.credentials}
-        description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
+        description={supportsApiKey
+          ? (showsEndpoint ? copy.credentialsHelp : copy.credentialsHelpKeyOnly)
+          : (showsEndpoint ? copy.credentialsHelpEndpointOnly : copy.credentialsHelpAccount)}
       >
         {issue && (
           <Banner
@@ -200,7 +222,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               : copy.credentialUnknownDetail}
           />
         )}
-        {(supportsApiKey || !hasFixedOAuthBaseUrl) && (
+        {(supportsApiKey || showsEndpoint) && (
           <VStack gap={0}>
             <Divider />
             {supportsApiKey && (
@@ -237,11 +259,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 )}
               </SettingRow>
             )}
-            {/* Only where the endpoint can actually be changed. An OAuth
-                connection's endpoint is fixed by the provider, so showing it
-                was a permanently read-only row answering a question nobody
-                asked. */}
-            {!hasFixedOAuthBaseUrl && (
+            {showsEndpoint && (
               <SettingRow
                 label={copy.endpoint}
                 value={savedBaseUrl || copy.endpointDefault}
@@ -272,8 +290,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
       {/* The rows draw the closing rule themselves; without them the section
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}
-      {!supportsApiKey && hasFixedOAuthBaseUrl && <Divider />}
-      <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
+      {!supportsApiKey && !showsEndpoint && <Divider />}
+      <DetailSection
+        title={copy.modelManagement}
+        description={showsDefaultModel ? copy.modelManagementHelp : copy.modelManagementHelpSingle}
+      >
         <EnabledModelManager
           modelChoices={modelChoices}
           enabledModelIds={enabledModelIds}
@@ -281,17 +302,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
-        <Selector
-          label={copy.connectionDefaultModel}
-          options={defaultModelOptions}
-          value={connection.defaultModel}
-          onChange={(model) => void updateDefaultModel(model)}
-          isDisabled={detailActionBusy || defaultModelOptions.length === 0}
-          disabledMessage={defaultModelOptions.length === 0 ? copy.noModels : undefined}
-          isLoading={settingDefaultModel}
-          placeholder={copy.noModels}
-          width="100%"
-        />
+        {showsDefaultModel && (
+          <Selector
+            label={copy.connectionDefaultModel}
+            options={defaultModelOptions}
+            value={connection.defaultModel}
+            onChange={(model) => void updateDefaultModel(model)}
+            isDisabled={detailActionBusy}
+            isLoading={settingDefaultModel}
+            width="100%"
+          />
+        )}
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
           {supportsRemoteDiscovery && (
