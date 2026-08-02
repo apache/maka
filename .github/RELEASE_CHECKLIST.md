@@ -17,7 +17,7 @@ Create a GitHub Environment named `release`. Add required reviewers if the repos
 1. Confirm the intended commit is on `main`, CI is green, and `apps/desktop/package.json` contains a version that has never been released.
 2. In GitHub Actions, run `Release macOS arm64` against `main`.
 3. Confirm every workflow step passes and a draft release named `v<version>` exists.
-4. Confirm the draft records the intended commit SHA and contains the DMG, CLI/TUI tarball, both `.sha256` files, the ZIP, and `latest-mac.yml`.
+4. Confirm the draft records the intended commit SHA and contains the DMG, signed and notarized CLI/TUI ZIP, both `.sha256` files, the desktop ZIP, and `latest-mac.yml`.
 
 ## Acceptance on another Apple Silicon Mac
 
@@ -33,10 +33,10 @@ Download the DMG and its `.sha256` file through the GitHub UI. This download pat
 
 ## CLI/TUI acceptance on another Apple Silicon Mac
 
-Download `Maka-<version>-cli-mac-arm64.tar.gz` and its `.sha256` file through the GitHub UI.
+Download `Maka-<version>-cli-mac-arm64.zip` and its `.sha256` file through the GitHub UI. This browser-download path applies quarantine metadata and must exercise the signed native addons.
 
-1. Run `shasum -a 256 -c Maka-<version>-cli-mac-arm64.tar.gz.sha256`.
-2. Extract the tarball and add its `bin` directory to `PATH` without installing the desktop app.
+1. Run `shasum -a 256 -c Maka-<version>-cli-mac-arm64.zip.sha256`.
+2. Extract the ZIP and add its `bin` directory to `PATH` without installing the desktop app.
 3. Confirm `maka --version` matches the desktop version and `maka-agent --version` reports the same value.
 4. Confirm `maka --help` lists `run`, `eval`, and `inspect`.
 5. Run `maka`, complete or cancel the first-run setup, and confirm the TUI renders correctly.
