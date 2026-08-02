@@ -50,6 +50,7 @@ export type {
   RuntimePolicyOperationCoordinator,
   RuntimePolicyOperationSecretMaterial,
   ResolveExecutionConnectionResult,
+  ResolveWebSearchExecutionResult,
   UnavailableProviderActionAvailability,
 } from './runtime-policy/operations.js';
 
@@ -202,6 +203,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
     operations: {
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
+      resolveWebSearchExecution: () => coordinator.resolveWebSearchExecution(),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       beginInteractiveOAuthLogin: (connectionId) =>
         coordinator.beginInteractiveOAuthLogin(connectionId),

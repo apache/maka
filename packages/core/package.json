@@ -28,6 +28,7 @@
     "./orchestration": "./dist/orchestration.js",
     "./plan": "./dist/plan.js",
     "./agent-run": "./dist/agent-run.js",
+    "./subagent-workspace": "./dist/subagent-workspace.js",
     "./automation": "./dist/automation.js",
     "./model-call-attempt": "./dist/model-call-attempt.js",
     "./model-call-usage-projection": "./dist/model-call-usage-projection.js",

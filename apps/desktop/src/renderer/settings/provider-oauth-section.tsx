@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { HStack, Text, VStack } from '@astryxdesign/core';
 import { type ProviderType } from '@maka/core';
 import {
+  Badge,
   Button,
   useMountedRef,
   useUiLocale,

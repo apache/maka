@@ -195,10 +195,19 @@
   -webkit-line-clamp: 2;
 }
 
+/* #1879: was a bare 34px square — one of the off-ruler literals
+   (22/26/30/34/38) the control ruler exists to end, named as such in
+   maka-tokens.css. It is the install branch of a slot whose other branch
+   renders `<Button size="sm">` (mcp-page.tsx), i.e. an Astryx control at
+   `--size-element-sm` = 28px, so the row changed height depending on whether
+   a server was installed. `--h-control-md` resolves to that same
+   `--size-element-sm`: the two branches now agree by deriving from one token
+   rather than by two rules happening to match. Square icon control, so width
+   and height take the same tier. */
 .maka-mcp-install-button {
   position: relative;
-  width: 34px;
-  height: 34px;
+  width: var(--h-control-md);
+  height: var(--h-control-md);
   display: grid;
   flex: 0 0 auto;
   place-items: center;

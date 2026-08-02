@@ -15,6 +15,7 @@ import {
   stripCssComments,
   assertCssRuleDecls,
   cssMediaBody,
+  cssRuleBody,
 } from './css-test-helpers.js';
 
 const STYLES = resolve(REPO_ROOT, 'apps/desktop/src/renderer/styles');
@@ -28,6 +29,45 @@ async function readCss(name: string): Promise<string> {
 }
 
 describe('chat shell layout contracts', () => {
+  /**
+   * #1897 / #1910. The mode marks' entire visual contract lives in this one
+   * rule, and nothing else can see it: the `@maka/ui` SSR tests never load a
+   * stylesheet, and dead-CSS only asks whether the class is referenced. Delete
+   * the rule and an ON mode becomes indistinguishable from the inert ＋ beside
+   * it, with every other check still green — so pin the rule here.
+   *
+   * `background-color`, not `background`: composer.css is in the last cascade
+   * layer, so the shorthand's implicit `background-image: none` would beat the
+   * ghost button's own :hover / :active overlays from `astryx-components` and
+   * strip all pointer feedback from the one control that leaves a mode. The
+   * voice button carries the same pair for the same reason.
+   */
+  it('draws active-mode and voice marks in one accent without killing ghost feedback', async () => {
+    const css = await readCss('composer.css');
+    assertCssRuleDecls(
+      css,
+      '.maka-composer-mode-button',
+      [
+        /color:\s*var\(--accent\)/,
+        /background-color:\s*color-mix\([^;]*currentColor/,
+      ],
+      'every mode mark draws in the single product accent over a currentColor wash',
+    );
+    for (const selector of [
+      '.maka-composer-mode-button',
+      '.maka-composer-voice-button[data-state="recording"]',
+      '.maka-composer-voice-button[data-state="native_ready"]',
+    ]) {
+      const body = cssRuleBody(css, selector);
+      assert.ok(body != null, `${selector} must exist`);
+      assert.doesNotMatch(
+        body!,
+        /(^|[;{]\s*)background\s*:/,
+        `${selector} must not use the background shorthand — it suppresses the ghost hover overlay`,
+      );
+    }
+  });
+
   it('keeps ChatLayout flex contracts that kill the phantom dock range', async () => {
     const css = await readCss('chat-header.css');
     assertCssRuleDecls(

@@ -72,19 +72,10 @@ export interface ConversationCopy {
     dropToImport: string;
     addingAttachment: string;
     addFileOrDirectory: string;
-    /** Skills panel opened from ＋ (title, search, bulk actions). */
-    skillPicker: {
-      label: string;
-      title: string;
-      panelAriaLabel: string;
-      searchPlaceholder: string;
-      autoHint: string;
-      selectAll: string;
-      clearAll: string;
-      empty: string;
-      noMatches: string;
-      selectedCount: (count: number) => string;
-    };
+    /** The ＋ menu entry that opens the `/` Skill menu. */
+    chooseSkill: string;
+    /** Why that entry is unavailable: the catalog is empty. */
+    noSkillsAvailable: string;
     switchDisabledStreaming: string;
     switchDisabledRunning: string;
     switchDisabledPermission: string;
@@ -275,8 +266,6 @@ export interface ConversationCopy {
     blockedReason: Record<SessionBlockedReason, string>;
     listAriaLabel: string;
     title: string;
-    emptyTitle: string;
-    emptyBody: string;
     showMore: string;
     showMoreAriaLabel: (count: number) => string;
     renameAriaLabel: string;
@@ -338,12 +327,7 @@ const CONVERSATION_COPY = {
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文',
       selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
-      skillPicker: {
-        label: '技能', title: '选择技能', panelAriaLabel: '技能选择', searchPlaceholder: '搜索技能…',
-        autoHint: '不选择时，Maka 自动匹配相关技能', selectAll: '全选', clearAll: '清除全部',
-        empty: '当前没有可用技能', noMatches: '没有匹配的技能',
-        selectedCount: (count) => `已选 ${count} 个技能`,
-      },
+      chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       switchDisabledStreaming: '当前对话正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前对话正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
       planModeLabel: 'Plan', enablePlanMode: '开启 Plan Mode', disablePlanMode: '退出 Plan Mode',
       planModeOnTitle: 'Plan 模式已启用，点击关闭',
@@ -433,7 +417,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', review: '待审核', done: '已完成', archived: '已归档', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '对话列表', title: '会话', emptyTitle: '等待开始对话', emptyBody: '和 Maka 的对话会出现在这里。', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多对话`, renameAriaLabel: '重命名对话', respondingAriaLabel: '正在响应', respondingTitle: '对话正在流式响应中', staleTitle: '此会话使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '会话已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: '对话操作', pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', recent: '最近', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '会话分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
+      listAriaLabel: '对话列表', title: '会话', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多对话`, renameAriaLabel: '重命名对话', respondingAriaLabel: '正在响应', respondingTitle: '对话正在流式响应中', staleTitle: '此会话使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '会话已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: '对话操作', pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', recent: '最近', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '会话分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
     },
   },
   en: {
@@ -487,12 +471,7 @@ const CONVERSATION_COPY = {
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context',
       selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
-      skillPicker: {
-        label: 'Skills', title: 'Choose skills', panelAriaLabel: 'Skill selection', searchPlaceholder: 'Search skills…',
-        autoHint: 'Leave empty and Maka picks the relevant skills', selectAll: 'Select all', clearAll: 'Clear all',
-        empty: 'No skills available', noMatches: 'No matching skills',
-        selectedCount: (count) => `${count} skill${count === 1 ? '' : 's'} selected`,
-      },
+      chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
       planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
       planModeOnTitle: 'Plan mode is on — click to turn off',
@@ -580,7 +559,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', review: 'Review', done: 'Done', archived: 'Archived', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Conversation list', title: 'Conversations', emptyTitle: 'Start a conversation', emptyBody: 'Your conversations with Maka will appear here.', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more conversations`, renameAriaLabel: 'Rename conversation', respondingAriaLabel: 'Responding', respondingTitle: 'This conversation is streaming a response', staleTitle: 'This conversation\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale conversation', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: 'Conversation actions', pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Conversation grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
+      listAriaLabel: 'Conversation list', title: 'Conversations', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more conversations`, renameAriaLabel: 'Rename conversation', respondingAriaLabel: 'Responding', respondingTitle: 'This conversation is streaming a response', staleTitle: 'This conversation\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale conversation', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: 'Conversation actions', pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Conversation grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

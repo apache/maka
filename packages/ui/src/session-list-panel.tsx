@@ -122,18 +122,17 @@ export function SessionListPanel(props: {
           onWidthChange,
         }}
         // Permanent chrome stays sticky via SideNav topContent; only history
-        // scrolls in children (Astryx five-zone model). Not a titled section —
-        // the rail landmark already names the whole panel.
+        // scrolls in children (Astryx five-zone model). The section inside owns
+        // the rows' rhythm; its title is hidden because the rail landmark
+        // already names the panel on screen, and stays for assistive tech.
         topContent={
-          <div className="maka-session-panel-top">
-            <SessionSidebarNav
-              selection={props.selection}
-              planReminders={props.planReminders}
-              moduleMemory={props.moduleMemory}
-              onSelect={props.onSelect}
-              onNew={props.onNew}
-            />
-          </div>
+          <SessionSidebarNav
+            selection={props.selection}
+            planReminders={props.planReminders}
+            moduleMemory={props.moduleMemory}
+            onSelect={props.onSelect}
+            onNew={props.onNew}
+          />
         }
         footer={
           <SessionSidebarFooter

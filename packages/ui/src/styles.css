@@ -71,7 +71,13 @@
 
 .maka-quote-chip { display: inline-flex; gap: 4px; padding-left: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
-.maka-quote-chip-collapsed { max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
+/* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
+   `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
+   the next time a leading moves. This is the collapsed state only; the
+   expanded twin above wraps to many lines and must keep growing. The chip's
+   type lives on `.maka-quote-chip-text`, which is why the derived scan needed
+   two arms rather than three to see it at all. */
+.maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted-foreground); }
@@ -113,9 +119,11 @@
 .maka-turn-processing-spinner { flex: 0 0 auto; animation: maka-spin 1s linear infinite; }
 .maka-turn-indicator-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .maka-turn-continuing { opacity: 0.7; animation: maka-stream-fade-in var(--duration-emphasized) var(--ease-out-strong) both; }
-.maka-turn-truncation-badge {
-  font: var(--maka-text-supporting);
- display: inline-block; margin-top: 6px; border: 1px solid oklch(from var(--warning) l c h / 0.24); border-radius: var(--radius-control); padding-inline: 4px; color: var(--warning-text, var(--info-text)); background: oklch(from var(--warning) l c h / 0.05); cursor: help; }
+/* #1879: an Astryx `Badge variant="yellow"` now — the warning tone it used to
+   draw by hand (hairline + 5% wash) is a variant, and the box comes with it.
+   Product CSS keeps only what is layout: it is a block-level note under the
+   bubble, so it needs its own line and the gap above it. */
+.maka-turn-truncation-badge { display: flex; width: fit-content; margin-top: 6px; cursor: help; }
 .maka-deep-thinking { min-width: 0; }
 
 @keyframes maka-spin { to { transform: rotate(360deg); } }
@@ -207,8 +215,6 @@
 .maka-daily-review-save { min-width: 64px; }
 .maka-daily-review-append { min-width: 80px; }
 .maka-daily-review-quick-run { min-width: 96px; }
-.maka-composer-mention-panel,
-.maka-composer-skill-panel { z-index: var(--z-overlay); border-radius: var(--radius-surface); color: var(--popover-foreground); background: var(--popover); box-shadow: var(--shadow-maka-panel); }
 .maka-agent-preview-failure { color: var(--destructive); }
 .maka-automation-result-icon { display: inline; margin-right: 4px; vertical-align: text-bottom; }
 .maka-turn-status-icon { flex: 0 0 auto; }
@@ -363,8 +369,10 @@
   font: var(--maka-text-supporting);
   display: inline-flex;
   min-width: 22px;
-  height: 18px;
+  /* #1879: was a bare 18px, below the 20px line box it renders. */
+  height: var(--h-control-xs);
   align-items: center;
+  white-space: nowrap;
   justify-content: center;
   padding-inline: var(--space-1-5);
   border-radius: var(--radius-pill);
@@ -498,9 +506,18 @@
 .maka-tool-terminal-cmd {
   font: var(--maka-text-heading-5);
  min-width: 0; flex: 1 1 auto; overflow: hidden; background: transparent; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
+/* Pinned like every other pill in the scan, even though the whole
+   `.maka-tool-terminal-*` family is currently unreachable:
+   `previewVariants({part: 'terminal-*'})` has no call site — `TerminalPreview`
+   renders `maka-tool-output-stack` / `ShellOutputBody` / `ToolCodeBlock`
+   instead — and `check-dead-css` cannot see that because the literals still
+   exist in `previewVariants`. The alternative is an exemption whose reason is
+   "nothing renders this", which is a fact about call sites recorded in a
+   stylesheet and would outlive the day someone wires the family back up.
+   Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
- padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: 0.04em; }
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: 0.04em; }
 .maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
 .maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
 .maka-tool-terminal-empty {

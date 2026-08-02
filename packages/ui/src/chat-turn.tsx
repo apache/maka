@@ -6,6 +6,7 @@ import { Markdown } from './markdown.js';
 import { formatAbsoluteTimestamp, formatClockTime, turnAbortMarkerLabel } from './chat-display-helpers.js';
 import { prepareSmoothStreamText, useSmoothStreamContent } from './smooth-stream.js';
 import {
+  Badge,
   Button as UiButton,
   ChatMessage,
   ChatMessageBubble,
@@ -796,14 +797,24 @@ function StreamingAssistantBubble(props: { text: string; live: boolean; truncate
     <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant maka-bubble-streaming">
       <Markdown text={displayed} streaming density="compact" />
       {props.truncated && (
-        <div
-          className="maka-turn-truncation-badge"
-          role="status"
-          aria-live="polite"
-          title={copy.outputTruncatedTitle}
-        >
-          {copy.truncated}
-        </div>
+        <Tooltip content={copy.outputTruncatedTitle}>
+          {/* Colour-name archive, not the semantic one: Astryx paints
+              `warning` as a solid dark-mode-invariant fill and `yellow` as a
+              tint. This note replaced a 5% wash with a hairline; a solid block
+              inside the message body would outweigh the message. */}
+          <Badge
+            variant="yellow"
+            label={copy.truncated}
+            className="maka-turn-truncation-badge"
+            role="status"
+            aria-live="polite"
+            /* Same reason as the stale pill: the Tooltip's popover is
+               `display: none` until hovered, so `aria-describedby` computes to
+               nothing and the `title` this replaced was the only description
+               this badge ever had. Announced with the reason attached. */
+            aria-label={`${copy.truncated}. ${copy.outputTruncatedTitle}`}
+          />
+        </Tooltip>
       )}
     </ChatMessageBubble>
   );

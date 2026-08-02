@@ -55,6 +55,11 @@
 
 .maka-session-workbar-count {
   font: var(--maka-text-supporting);
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
   min-width: var(--space-4);
   padding-inline: var(--space-1);
   border-radius: var(--radius-pill);

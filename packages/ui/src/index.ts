@@ -16,8 +16,6 @@ export * from './plan-reminder-copy.js';
 export * from './tool-activity/copy.js';
 export * from './tool-activity/sandbox-denial.js';
 export * from './chat-input-behavior.js';
-export * from './composer-skill-picker.js';
-export * from './use-composer-skill-draft.js';
 export * from './runtime-resume-copy.js';
 export * from './input-history.js';
 export * from './daily-review-helpers.js';

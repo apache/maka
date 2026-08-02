@@ -130,7 +130,15 @@
   gap: var(--space-2);
 }
 
+/* #1879: a count pill beside an Astryx Button, and the same shape as
+   `.maka-session-workbar-count` and `.maka-tool-count`. It declared no type of
+   its own — it inherits — which is precisely how it stayed invisible to a chip
+   scan that required a rule to name its own role. Measured 24px natural (20px
+   line box plus 2 x 2px padding); `--h-control-sm` is 24, so nothing moves. */
 .maka-deep-research-run-count {
+  height: var(--h-control-sm);
+  display: inline-flex;
+  align-items: center;
   padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-pill);
   background: oklch(from var(--focus-ring) l c h / 0.10);

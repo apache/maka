@@ -165,10 +165,12 @@ export type {
 export {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
+  recoverAgentGraphSupervisorContextOverflow,
 } from './agent-graph-supervisor-wake.js';
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,
   AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorTurnOutcome,
   AgentGraphSupervisorWakeDiagnostic,
   AgentGraphSupervisorWakeInput,
 } from './agent-graph-supervisor-wake.js';
@@ -400,6 +402,8 @@ export type {
 } from './pi-agent-backend.js';
 
 export { buildBuiltinTools } from './builtin-tools.js';
+export { queryTavily } from './tavily-search.js';
+export { buildWebSearchTool } from './web-search-tool.js';
 export type {
   BuildBuiltinToolsOptions,
   MakaTool as BuiltinMakaTool,

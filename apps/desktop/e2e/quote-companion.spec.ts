@@ -1,5 +1,69 @@
 import { test, expect, COMPOSER_INPUT } from './fixtures';
 
+test('shows text-selection actions as one raised top-layer control', async ({ window: page }) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('quote action surface');
+  await composer.press('Enter');
+
+  const reply = page.getByText(/Fake backend received: quote action surface/);
+  await expect(reply).toBeVisible();
+  await reply.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+
+  const selectionActions = page.getByRole('group', { name: '引用 / 在侧栏追问' });
+  await expect(selectionActions).toBeVisible();
+  await expect(selectionActions.locator(':scope > button')).toHaveCount(2);
+  const surface = await selectionActions.evaluate((element) => {
+    const buttons = [...element.querySelectorAll(':scope > button')];
+    const first = buttons[0]?.getBoundingClientRect();
+    const second = buttons[1]?.getBoundingClientRect();
+    return {
+      gap: first && second ? second.left - first.right : Number.NaN,
+      shadow: getComputedStyle(element).boxShadow,
+      inTopLayer: element.closest('[popover]')?.matches(':popover-open') ?? false,
+    };
+  });
+  expect(surface.gap).toBeCloseTo(0, 5);
+  expect(surface.shadow).not.toBe('none');
+  expect(surface.inTopLayer).toBe(true);
+});
+
+test('keeps a captured selection available through action activation', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('selection action activation');
+  await composer.press('Enter');
+
+  const reply = page.getByText(/Fake backend received: selection action activation/);
+  await expect(reply).toBeVisible();
+  await reply.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+
+  const askInSidebar = page.getByRole('button', { name: '在侧栏追问' });
+  await askInSidebar.focus();
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await page.evaluate(() =>
+    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true })),
+  );
+  await expect(askInSidebar).toBeVisible();
+  await askInSidebar.click();
+
+  await expect(page.locator('.maka-quote-companion')).toBeVisible();
+});
+
 /**
  * Quote companion lifecycle: stage selection → side panel → remove one staged
  * quote → fork explore session → send → exit cleans up.

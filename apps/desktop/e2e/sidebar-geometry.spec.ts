@@ -249,6 +249,34 @@ test('official SideNav resize handle updates the sidebar width from the keyboard
 });
 
 /**
+ * The nav rows' rhythm and where they sit on the rail, read from the rendered
+ * boxes. `firstTop` is part of the reading rather than an assertion of its own:
+ * the icons must not move when the rail collapses, and spacing that is only
+ * correct in one state passes every per-state check while doing exactly that.
+ *
+ * Geometry only, deliberately. Which declaration produces the space — Astryx's
+ * `SideNavSection` gap, a product margin — is not something a rendered-box test
+ * can tell apart, and pinning `row-gap` to find out only bought a second read of
+ * the same 2px plus a dependency on the section's internal child order.
+ */
+async function readNavRhythm(page: Page) {
+  return page.evaluate(() => {
+    const section = document.querySelector('.maka-session-panel-top');
+    if (!section) return null;
+    const rows = [...section.querySelectorAll('a,button')].map((item) =>
+      item.getBoundingClientRect(),
+    );
+    return {
+      heights: [...new Set(rows.map((rect) => Math.round(rect.height)))],
+      pitches: [
+        ...new Set(rows.slice(1).map((rect, index) => Math.round(rect.top - rows[index].top))),
+      ],
+      firstTop: Math.round(rows[0].top),
+    };
+  });
+}
+
+/**
  * A collapse/expand round trip must return the sidebar to a usable width, and
  * to the width the user had chosen rather than the default.
  *
@@ -331,9 +359,25 @@ test('titlebar restores the chosen SideNav width across a collapse round trip', 
     )
     .toEqual(['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)']);
 
+  const collapsedRhythm = await readNavRhythm(page);
+
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
   await expect.poll(panelWidth).toBe(chosenWidth);
+
+  // The nav rows are the SAME rows in both states — Astryx swaps each item's
+  // inner recipe on collapse, not its box — so the rhythm has to be state
+  // INDEPENDENT. The first shipped attempt at #1898 hung a collapsed-only gap
+  // off `[data-sidebar-state]`, which fixed the crowding and made the icons jump
+  // vertically on every toggle. Equality here is what rules that class of fix
+  // out; the values below are what rules out the crowding it was aimed at.
+  expect(await readNavRhythm(page)).toEqual(collapsedRhythm);
+
+  // 32px rows on a 34px pitch — the 2px between them being what a SideNavSection
+  // spends on its rows (--spacing-0-5), since that is the container the product
+  // hands to `topContent`. As a bare fragment in a product div they measured a
+  // 32px pitch, no gap at all, and at 48px the three icons read as one slab.
+  expect(collapsedRhythm).toMatchObject({ heights: [32], pitches: [34] });
   expect(chosenWidth).toBeGreaterThanOrEqual(180);
 
   // Same node, both toggles later. Moving the class back inside SideNav, or

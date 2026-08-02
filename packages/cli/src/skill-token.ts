@@ -5,11 +5,15 @@
  * produce false positives); `<name>` uses the skill id charset, and
  * resolution downstream matches by id first, then by display name.
  *
- * This module owns ONLY the token syntax: parsing for submit-time injection,
- * stripping for message composition, and the shared line pattern used by the
- * editor highlighter and autocomplete. Loading/gating/composing lives in
- * `@maka/runtime`'s skill-invocation module.
+ * This module owns the TUI's use of the token syntax: parsing for submit-time
+ * injection, stripping for message composition, and the line pattern the
+ * editor highlighter and autocomplete run per line. The grammar itself is
+ * `SKILL_INVOCATION_TOKEN_SOURCE` in `@maka/core`, shared with the Desktop
+ * composer; loading/gating/composing lives in `@maka/runtime`'s
+ * skill-invocation module.
  */
+
+import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core';
 
 export interface SkillInvocationToken {
   /** The id-or-name captured after the `/skill:` prefix, exactly as typed. */
@@ -20,13 +24,8 @@ export interface SkillInvocationToken {
   end: number;
 }
 
-/**
- * Matches one token per line evaluation. Exported for consumers that run
- * per-line (editor highlight, autocomplete prefix detection) — always
- * construct a fresh RegExp from the source when a stateful `g` flag is used
- * across calls.
- */
-export const SKILL_INVOCATION_TOKEN_SOURCE = String.raw`(?:^|(?<=\s))\/skill:([A-Za-z0-9._-]+)`;
+/** Re-exported so per-line consumers in this package keep one import site. */
+export { SKILL_INVOCATION_TOKEN_SOURCE };
 
 const TOKEN_PATTERN = new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g');
 

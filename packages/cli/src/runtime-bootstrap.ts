@@ -44,6 +44,7 @@ import {
   generateSessionTitle as generateRuntimeSessionTitle,
   loadHistoryCompactBlocksFromArtifacts,
   replayPlanItemsToModelMessages,
+  recoverAgentGraphSupervisorContextOverflow,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
   projectEffectiveProductToolSurface,
@@ -70,6 +71,7 @@ import {
   createGitWorktreeChildExecutor,
   createReadImageSnapshotter,
   createSessionStore,
+  isSessionNotFoundError,
   createSettingsStore,
   createSqliteShellRunStore,
   assertSessionBundleRootLayout,
@@ -890,7 +892,14 @@ export async function createMakaCliRuntimeContext(
       activityRegistry: goalContinuation.activities,
       wakeStore: agentGraphControlStore,
       readSnapshot: (rootSessionId) => agentGraphCoordinator!.getSnapshot(rootSessionId),
-      startTurn: async (sessionId, message, activity, abortSignal) => {
+      startTurn: async (sessionId, message, activity, abortSignal, isCurrent) => {
+        if (!(await isCurrent())) {
+          return {
+            kind: 'superseded',
+            turnId: message.turnId,
+            reason: 'Agent graph supervisor checkpoint was superseded before execution.',
+          };
+        }
         let stopPromise: Promise<void> | undefined;
         const stop = (): void => {
           stopPromise ??= runtime.stopSession(sessionId, { source: 'graph_supervisor' });
@@ -908,6 +917,15 @@ export async function createMakaCliRuntimeContext(
           await stopPromise;
         }
       },
+      isSessionDeliverable: async (sessionId) => {
+        try {
+          const header = await store.readHeader(sessionId);
+          return !header.isArchived && header.status !== 'archived';
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return false;
+          throw error;
+        }
+      },
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
         const runs = (await runStore.listSessionRuns(rootSessionId)).filter(
           (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
@@ -919,41 +937,13 @@ export async function createMakaCliRuntimeContext(
         }
         return runs[0]?.status ?? 'missing';
       },
-      recoverContextOverflow: async (rootSessionId, { abortSignal }) => {
-        abortSignal.throwIfAborted();
-        let recovery:
-          | {
-              estimatedTokensBefore?: number;
-              estimatedTokensAfter?: number;
-              droppedTurns?: number;
-              droppedEvents?: number;
-              historyCompactedEvents?: number;
-              historyCompactBlocksWritten?: number;
-            }
-          | undefined;
-        for await (const event of runtime.compactSession(rootSessionId, {
-          turnId: randomUUID(),
-          minRecentTurns: 0,
-        })) {
-          abortSignal.throwIfAborted();
-          if (event.type === 'token_usage' && event.contextBudget) {
-            const diagnostic = event.contextBudget;
-            recovery = {
-              estimatedTokensBefore: diagnostic.estimatedTokensBefore,
-              estimatedTokensAfter: diagnostic.estimatedTokensAfter,
-              droppedTurns: diagnostic.droppedTurns,
-              droppedEvents: diagnostic.droppedEvents,
-              ...(diagnostic.historyCompactedEvents !== undefined
-                ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
-                : {}),
-              ...(diagnostic.historyCompactBlocksWritten !== undefined
-                ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
-                : {}),
-            };
-          }
-        }
-        return recovery;
-      },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        recoverAgentGraphSupervisorContextOverflow({
+          rootSessionId,
+          compactTurnId: randomUUID(),
+          abortSignal,
+          compactSession: (sessionId, input) => runtime.compactSession(sessionId, input),
+        }),
       newId: randomUUID,
       onDiagnostic: (diagnostic) => {
         console.warn('[agent-graph-supervisor-wake]', JSON.stringify(diagnostic));

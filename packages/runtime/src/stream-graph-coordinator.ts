@@ -38,6 +38,7 @@ import {
 import {
   AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
   advanceMaterializedAgentGraphClientProjection,
+  buildAgentGraphClientSnapshot,
   decodeAgentGraphTerminalCursor,
   decodeMaterializedAgentGraphClientActivity,
   decodeMaterializedAgentGraphClientSnapshot,
@@ -85,6 +86,8 @@ export interface AgentGraphCoordinatorInput {
     AgentGraphTimelineMetadataStore;
   runtime: AgentGraphCoordinatorRuntime;
   newId: () => string;
+  /** Keep an external host alive while one reconciliation driver owns runtime work. */
+  acquireResidency?(rootSessionId: string): { release(): void };
   /** Restrict an attempt-local coordinator to exactly one root Session graph. */
   rootSessionId?: string;
   maxNewActivations?: number;
@@ -259,6 +262,11 @@ export class AgentGraphCoordinator {
       terminalPage.hasMore,
     );
     return snapshot;
+  }
+
+  async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
+    const snapshot = buildAgentGraphClientSnapshot(await this.#readClientModelInput(rootSessionId));
+    return snapshot.scheduleRevision > 0 && (!snapshot.closed || snapshot.status === 'closing');
   }
 
   /**
@@ -983,8 +991,10 @@ export class AgentGraphCoordinator {
   #requestDrive(driver: GraphDriver): void {
     driver.requested = true;
     if (driver.task) return;
+    const residency = this.#input.acquireResidency?.(driver.rootSessionId);
     driver.task = this.#drive(driver).finally(() => {
       driver.task = undefined;
+      residency?.release();
       if (driver.requested && !driver.paused && !driver.closed && !this.#closed) {
         this.#requestDrive(driver);
       }

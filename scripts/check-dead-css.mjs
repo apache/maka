@@ -92,6 +92,10 @@ const DYNAMIC_STYLE_HOOKS = new Set([
   // Rendered by Astryx's own Collapsible; chat-message.css targets it to give
   // reasoning/tool disclosures one trigger dialect inside the turn body (#1768).
   'astryx-collapsible-trigger',
+  // Rendered by `useTriggerMenu` for the composer's `@` / `/` menus.
+  // composer-mention.css caps its width: upstream sets a 180px floor and no
+  // ceiling, and our rows carry a non-wrapping second line.
+  'astryx-trigger-menu',
   // Appearance palette swatches — composed at runtime via
   // `settingsPaletteSwatch-${palette}` in settings/appearance-settings-page.tsx
   // (#308), so the per-palette variants never appear as string literals in

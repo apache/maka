@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { constantTimeStringEqual, parsePastedAuthorization } from '@maka/core/oauth-subscription';
-import type { RuntimePolicy } from '@maka/core/runtime-policy';
 import {
   buildOAuthLoginAuthorization,
   createProxiedFetchTransport,
@@ -10,7 +9,6 @@ import {
   pollXaiDeviceAuthorization,
   serializeOAuthSubscriptionTokens,
   startXaiDeviceAuthorization,
-  type ProxiedFetchProxy,
 } from '@maka/runtime';
 import {
   RuntimePolicyStoreError,
@@ -35,6 +33,7 @@ import {
 } from './client-capability-coordinator.js';
 import type { OAuthOperationHandlerMap } from './operation-dispatcher.js';
 import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 const CODEX_CALLBACK_HOST = '127.0.0.1';
 const CODEX_CALLBACK_PORT = 1455;
@@ -291,7 +290,7 @@ export class HostOAuthCoordinator {
     let loopback: LoopbackClaim | undefined;
     try {
       transport = createProxiedFetchTransport(
-        toProxySettings(
+        toRuntimePolicyProxy(
           attempt.ticket.networkProxy,
           attempt.ticket.secretMaterial.networkProxy?.secret,
         ),
@@ -670,21 +669,6 @@ async function withDeadline<T>(
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
   return error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown';
-}
-
-function toProxySettings(
-  proxy: RuntimePolicy['networkProxy'],
-  password: string | undefined,
-): ProxiedFetchProxy | null {
-  if (!proxy.enabled) return null;
-  return {
-    enabled: true,
-    type: proxy.protocol,
-    host: proxy.host,
-    port: proxy.port,
-    ...(proxy.authEnabled ? { username: proxy.username, password: password ?? '' } : {}),
-    bypassList: [...new Set([...proxy.bypassList, ...proxy.autoBypassDomains])],
-  };
 }
 
 function authorizationInProgress(): OperationOutcome<'oauth.login.start'> {

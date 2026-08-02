@@ -556,8 +556,7 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return {
         ...state,
         activeSessionId: TURN_SESSION_ID,
-        composerText: '请整理这次会议的行动项',
-        composerSkills: [{ id: 'meeting-followup', name: '会议跟进' }],
+        composerText: '/skill:meeting-followup 请整理这次会议的行动项',
       };
     case 'module-mcp':
       // Open the 扩展 → MCP module directly so the alignment audit reaches the

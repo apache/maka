@@ -1570,10 +1570,7 @@ function AppShellContent({
     upsertSessionSummary,
   });
 
-  async function sendWithAttachments(
-    text: string,
-    skillIds: readonly string[],
-  ): Promise<boolean | void> {
+  async function sendWithAttachments(text: string): Promise<boolean | void> {
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
       revision && activeIdRef.current === revision.draftSessionId,
@@ -1583,7 +1580,6 @@ function AppShellContent({
     if (
       revisionSend &&
       revision &&
-      skillIds.length === 0 &&
       text.trim() === revision.originalText.trim() &&
       pendingAttachments.length === 0
     ) {
@@ -1597,13 +1593,13 @@ function AppShellContent({
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
-      if ((skillIds.length === 0 && text.trim() === '/compact') || swarmCommand || graphCommand) {
+      if (text.trim() === '/compact' || swarmCommand || graphCommand) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
         return false;
       }
       if (!(await prepareRevisionSend(text))) return false;
     }
-    if (skillIds.length === 0 && text.trim() === '/compact') {
+    if (text.trim() === '/compact') {
       const sessionId = activeIdRef.current;
       if (!sessionId) return true;
       try {
@@ -1648,7 +1644,6 @@ function AppShellContent({
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
-        ...(skillIds.length > 0 ? { skillIds } : {}),
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
       });
@@ -1682,7 +1677,6 @@ function AppShellContent({
       const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
       const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
-        ...(skillIds.length > 0 ? { skillIds } : {}),
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
         ...(quotes ? { quotes } : {}),
       });
@@ -1696,7 +1690,6 @@ function AppShellContent({
       : undefined;
     const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
-      ...(skillIds.length > 0 ? { skillIds } : {}),
       ...(quotes ? { quotes } : {}),
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);

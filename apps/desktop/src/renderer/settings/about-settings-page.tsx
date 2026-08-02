@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { Card } from '@astryxdesign/core';
 import { Sparkles } from '@maka/ui/icons';
 import {
+  Badge,
   Button,
   PageHeader,
   SectionHeader,
@@ -134,14 +135,17 @@ export function AboutSettingsPage() {
         title="Maka"
         badge={
           <>
-            <code className="settingsAboutVersion">v{info.appVersion}</code>
-            <span className="settingsAboutChannel">
-              {info.buildMode === 'dev'
-                ? info.buildCommit
-                  ? `${copy.devBuild} · ${info.buildCommit}`
-                  : copy.devBuild
-                : copy.packagedBuild}
-            </span>
+            <Badge label={<code>v{info.appVersion}</code>} />
+            <Badge
+              variant="blue"
+              label={
+                info.buildMode === 'dev'
+                  ? info.buildCommit
+                    ? `${copy.devBuild} · ${info.buildCommit}`
+                    : copy.devBuild
+                  : copy.packagedBuild
+              }
+            />
           </>
         }
         subtitle={copy.subtitle}

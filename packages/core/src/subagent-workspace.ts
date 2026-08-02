@@ -34,6 +34,12 @@ export interface ProvisionSubagentWorktreeInput {
 export interface SubagentWorktreeExecutor {
   provision(input: ProvisionSubagentWorktreeInput): Promise<SubagentWorkspaceBinding>;
   ensure(binding: SubagentWorkspaceBinding): Promise<void>;
+  /** Capture the complete workspace delta relative to the durable base commit. */
+  capturePatch(binding: SubagentWorkspaceBinding): Promise<Uint8Array>;
+  /** Reconcile the private worktree root against the bindings still owned by live Sessions. */
+  recover(liveBindings: readonly SubagentWorkspaceBinding[]): Promise<void>;
+  /** Permanently release one Host-owned worktree lease. */
+  retire(binding: SubagentWorkspaceBinding): Promise<void>;
 }
 
 export function isSubagentWorkspaceBinding(value: unknown): value is SubagentWorkspaceBinding {

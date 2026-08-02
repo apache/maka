@@ -1,6 +1,6 @@
 import type { SessionSummary, StoredMessage, UiLocale } from '@maka/core';
 import { userFacingText } from '@maka/core';
-import type { ComposerHandle, ComposerSkillSelection } from '@maka/ui';
+import type { ComposerHandle } from '@maka/ui';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import {
@@ -25,10 +25,9 @@ export type TurnRevisionDraft = {
   /** Active owner of the draft. Changes to the branch child after prepare. */
   draftSessionId: string;
   originalText: string;
-  /** Composer text that was present before edit began; restored on cancel. */
+  /** Composer text that was present before edit began; restored on cancel.
+   *  Staged Skills ride along inside it as `/skill:<id>` chips. */
   previousComposerText: string;
-  /** Structured Skills that were present before edit began; restored on cancel. */
-  previousComposerSkills: ComposerSkillSelection[];
 };
 
 export interface AppShellRevisionActions {
@@ -143,7 +142,6 @@ export function createAppShellRevisionActions(deps: {
       draftSessionId: sessionId,
       originalText: prompt,
       previousComposerText: composerRef.current?.getText() ?? '',
-      previousComposerSkills: composerRef.current?.getSkills() ?? [],
     });
     composerRef.current?.setText(prompt);
     composerRef.current?.focus();
@@ -183,12 +181,6 @@ export function createAppShellRevisionActions(deps: {
     if (draft.draftSessionId !== draft.sourceSessionId) return true;
 
     const sourceSessionId = draft.sourceSessionId;
-    // Snapshot the submitted structured draft before the first async boundary.
-    // The composer remains editable while the revision session is created, so
-    // reading it after reviseBeforeTurn() could migrate a newer, unsent Skill
-    // selection instead of the one that belongs to this send attempt.
-    const submittedSkills =
-      composerRef.current?.getSkills().map((skill) => ({ ...skill })) ?? [];
     let preparedSessionId: string | undefined;
     try {
       const newSession = await window.maka.sessions.reviseBeforeTurn(sourceSessionId, {
@@ -201,7 +193,6 @@ export function createAppShellRevisionActions(deps: {
       }
 
       const prepared = { ...draft, draftSessionId: newSession.id };
-      composerRef.current?.setSkillDraft(newSession.id, submittedSkills);
       composerRef.current?.setDraft(newSession.id, text);
       commitRevisionDraft(prepared);
       upsertSessionSummary(newSession);
@@ -244,10 +235,6 @@ export function createAppShellRevisionActions(deps: {
       draft.draftSessionId !== draft.sourceSessionId ? draft.draftSessionId : undefined;
     commitRevisionDraft(null);
     composerRef.current?.setDraft(draft.sourceSessionId, draft.previousComposerText);
-    composerRef.current?.setSkillDraft(
-      draft.sourceSessionId,
-      draft.previousComposerSkills,
-    );
     if (preparedSessionId) composerRef.current?.clearDraft(preparedSessionId);
     if (activeIdRef.current !== draft.sourceSessionId) {
       openSessionInChat(draft.sourceSessionId);

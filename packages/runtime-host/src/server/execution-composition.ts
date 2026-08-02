@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
+  AgentGraphSupervisorWakeCoordinator,
   BackendRegistry,
   createBuiltinSandboxManager,
   createFilesystemWorkerLaunchSpecProvider,
@@ -10,6 +11,7 @@ import {
   isOAuthEnrollmentProviderEnabled,
   isBuiltinFilesystemWorkerSandboxAvailable,
   SessionManager,
+  SessionActivityRegistry,
   ShellRunProcessManager,
   type RuntimeHostedRootAuthority,
 } from '@maka/runtime';
@@ -19,7 +21,11 @@ import {
   openInteractiveArtifactStoreForWrite,
 } from '@maka/storage/artifact-stores';
 import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
-import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import {
+  isSessionNotFoundError,
+  openInteractiveExecutionStoresForWrite,
+} from '@maka/storage/execution-stores';
+import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import {
   type InteractiveLongTermMemoryWriter,
   openInteractiveLongTermMemoryStoreForWrite,
@@ -65,6 +71,7 @@ import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
+import { createHostWebSearchTool } from './web-search-tool.js';
 
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
@@ -99,6 +106,9 @@ export async function createExecutionRuntimeHostComposition(
     usageStores = openedUsageStores;
     const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
     shellRunStore = openedShellRunStore;
+    const worktreeChildExecutor = createGitWorktreeChildExecutor({
+      storageRoot: context.owner.capability.canonicalPath,
+    });
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
@@ -106,6 +116,9 @@ export async function createExecutionRuntimeHostComposition(
     const sessionAdmission = new SessionAdmissionGate();
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
     let manager: SessionManager | undefined;
+    let graphCoordinator: AgentGraphCoordinator | undefined;
+    let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
+    const graphWakeActivities = new SessionActivityRegistry();
     const shellRuns = new ShellRunProcessManager({
       store: openedShellRunStore,
       newId: randomUUID,
@@ -153,9 +166,12 @@ export async function createExecutionRuntimeHostComposition(
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
+    const hostTools = [createHostWebSearchTool({ policy: runtimePolicyStores.operations })];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
+      hostTools,
+      worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
@@ -284,6 +300,9 @@ export async function createExecutionRuntimeHostComposition(
         automationTool: requireAutomationCoordinator(automations).modelTool,
         goalTools: requireGoal(goal).tools,
         builtinTools,
+        hostTools,
+        resolveRootTools: (sessionId) =>
+          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
         parentAgentTools: childAgentTools.parentTools,
         childAgents: bindHostChildAgentBackend(
           requireSessionManager(manager),
@@ -325,16 +344,40 @@ export async function createExecutionRuntimeHostComposition(
       canonicalPermissionOutcomes,
       shellRuns,
       childTools: childAgentTools.childTools,
+      worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
         openedArtifactStore.listTurnArtifacts(sessionId, turnId),
+      publishChildWorkspacePatch: ({ sessionId, turnId, binding, patch }) =>
+        openedArtifactStore.create({
+          id: subagentWritebackArtifactId(sessionId, turnId),
+          sessionId,
+          turnId,
+          name: 'workspace.patch',
+          kind: 'diff',
+          content: patch,
+          mimeType: 'text/x-diff; charset=utf-8',
+          source: 'subagent_writeback',
+          summary: `Workspace changes relative to ${binding.baseCommit}.`,
+        }),
+      assertChildWorkspaceQuiescent: async (sessionId) => {
+        if (await runtimeResources!.hasLiveSessionResources(sessionId)) {
+          throw new Error(
+            `Child Session ${sessionId} still owns live Runtime Resources; patch publication requires a quiescent workspace`,
+          );
+        }
+      },
     });
-    const graphCoordinator = new AgentGraphCoordinator({
+    graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
       runStore: stores.agentRunStore,
       runtimeEventStore: stores.runtimeEventStore,
       controlStore: openedGraphControlStore,
       runtime: manager,
       newId: randomUUID,
+      acquireResidency: () => context.acquireResidency(),
+      onReconciliation: (rootSessionId, result) => {
+        void requireGraphSupervisorWake(graphSupervisorWake).notify(rootSessionId, result);
+      },
     });
     const observeBackendInvalidation = (completion: Promise<void>) => {
       void completion.catch(() => {
@@ -389,6 +432,43 @@ export async function createExecutionRuntimeHostComposition(
       (admission) => requireAutomationCoordinator(automations).assertRecoveryAdmission(admission),
     );
     const coordinator = rootCoordinator;
+    graphSupervisorWake = new AgentGraphSupervisorWakeCoordinator({
+      activityRegistry: graphWakeActivities,
+      wakeStore: openedGraphControlStore,
+      readSnapshot: (rootSessionId) =>
+        requireGraphCoordinator(graphCoordinator).getSnapshot(rootSessionId),
+      startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
+        coordinator.runAgentGraphSupervisorTurn(sessionId, input, abortSignal, isCurrent),
+      inspectAttempt: async (rootSessionId, attemptId, turnId) => {
+        const runs = (await stores.agentRunStore.listSessionRuns(rootSessionId)).filter(
+          (run) => run.agentGraphWakeAttemptId === attemptId && run.turnId === turnId,
+        );
+        if (runs.length > 1) {
+          throw new Error(
+            `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,
+          );
+        }
+        return runs[0]?.status ?? 'missing';
+      },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        coordinator.recoverAgentGraphSupervisorContextOverflow(
+          rootSessionId,
+          randomUUID(),
+          abortSignal,
+        ),
+      newId: randomUUID,
+      isSessionDeliverable: async (sessionId) => {
+        try {
+          const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+          return !header.isArchived && header.status !== 'archived';
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return false;
+          throw error;
+        }
+      },
+      acquireResidency: () => context.acquireResidency(),
+      onError: () => context.requestDrain(),
+    });
     automations = new HostAutomationCoordinator({
       store: openedAutomationStore,
       sessions: stores.sessionStore,
@@ -473,12 +553,15 @@ export async function createExecutionRuntimeHostComposition(
       goals: requireGoal(goal),
       automation: automations,
       resources: runtimeResources,
+      graph: requireGraphCoordinator(graphCoordinator),
+      graphWake: requireGraphSupervisorWake(graphSupervisorWake),
       manager,
       capabilities: clientCapabilities,
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
       taskLedger: taskLedgerStore,
       purgeOperationalState: (sessionId) => stores.purgeConversationOperationalState(sessionId),
+      worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
     });
     const artifacts = new HostArtifactCoordinator(
@@ -514,9 +597,14 @@ export async function createExecutionRuntimeHostComposition(
         await requireMemory(memory).recover();
         await skills.recover();
         await openedArtifactStore.recover();
+        const sessions = await stores.sessionStore.listForRecovery();
+        await worktreeChildExecutor.recover(
+          sessions.flatMap((session) =>
+            session.subagentWorkspace ? [session.subagentWorkspace] : [],
+          ),
+        );
         await sessionRetirement.recover();
         await sessionRevisions.recover();
-        const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
             session.id,
@@ -530,9 +618,13 @@ export async function createExecutionRuntimeHostComposition(
         await coordinator.prepareRecovery();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
-        await graphCoordinator.recover();
+        await manager.recoverChildWorkspacePatches(
+          sessions.flatMap((session) => (session.subagentWorkspace ? [session.id] : [])),
+        );
         await coordinator.recover();
         rootRecoveryCompleted = true;
+        await requireGraphSupervisorWake(graphSupervisorWake).recover();
+        await requireGraphCoordinator(graphCoordinator).recover();
         await requireAutomationCoordinator(automations).recover();
         requireAutomationCoordinator(automations).start();
       })();
@@ -558,7 +650,12 @@ export async function createExecutionRuntimeHostComposition(
           errors.push(error);
         }
         try {
-          await graphCoordinator.close();
+          await graphSupervisorWake?.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await graphCoordinator?.close();
         } catch (error) {
           errors.push(error);
         }
@@ -739,6 +836,17 @@ function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): R
   return coordinator;
 }
 
+function subagentWritebackArtifactId(sessionId: string, turnId: string): string {
+  const digest = createHash('sha256')
+    .update('maka-subagent-writeback-v1\0')
+    .update(sessionId)
+    .update('\0')
+    .update(turnId)
+    .digest('hex')
+    .slice(0, 32);
+  return `subagent_writeback_${digest}`;
+}
+
 function requireContinuity(
   continuity: SessionContinuityCoordinator | undefined,
 ): SessionContinuityCoordinator {
@@ -775,6 +883,22 @@ function requireAutomationCoordinator(
 function requireSessionManager(manager: SessionManager | undefined): SessionManager {
   if (!manager) throw new Error('Runtime Host SessionManager is not composed');
   return manager;
+}
+
+function requireGraphCoordinator(
+  coordinator: AgentGraphCoordinator | undefined,
+): AgentGraphCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Agent Graph coordinator is not composed');
+  return coordinator;
+}
+
+function requireGraphSupervisorWake(
+  coordinator: AgentGraphSupervisorWakeCoordinator | undefined,
+): AgentGraphSupervisorWakeCoordinator {
+  if (!coordinator) {
+    throw new Error('Runtime Host Agent Graph supervisor wake coordinator is not composed');
+  }
+  return coordinator;
 }
 
 function requireGoal(coordinator: HostGoalCoordinator | undefined): HostGoalCoordinator {

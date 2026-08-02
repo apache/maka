@@ -81,7 +81,6 @@ export interface AppShellChatActions {
     text: string,
     pending?: readonly PendingAttachment[],
     options?: {
-      skillIds?: readonly string[];
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
       displayText?: string;
@@ -259,7 +258,6 @@ export function createAppShellChatActions(deps: {
     text: string,
     pending?: readonly PendingAttachment[],
     options: {
-      skillIds?: readonly string[];
       turnOrchestration?: TurnOrchestration;
       quotes?: readonly QuoteRef[];
       displayText?: string;
@@ -267,7 +265,6 @@ export function createAppShellChatActions(deps: {
       onSessionResolved?: (sessionId: string) => void;
     } = {},
   ): Promise<boolean> {
-    const skillIds = options.skillIds;
     const quotes = options.quotes;
     const initialSessionId = activeIdRef.current;
     const sendOwner = captureComposerImportOwner();
@@ -328,7 +325,6 @@ export function createAppShellChatActions(deps: {
           ...(options.displayText ? { displayText: options.displayText } : {}),
           ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-          ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
           ...(attachmentItems ? { attachmentItems } : {}),
           ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
         });
@@ -381,7 +377,6 @@ export function createAppShellChatActions(deps: {
         ...(options.displayText ? { displayText: options.displayText } : {}),
         ...(options.voiceOperationId ? { voiceOperationId: options.voiceOperationId } : {}),
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        ...(skillIds && skillIds.length > 0 ? { skillIds: [...skillIds] } : {}),
         ...(attachmentItems ? { attachmentItems } : {}),
         ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
       });

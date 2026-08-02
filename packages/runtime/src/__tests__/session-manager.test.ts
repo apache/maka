@@ -33,6 +33,7 @@ import type {
   AgentRunEvent,
   AgentRunHeader,
   AgentRunStore,
+  ArtifactRecord,
   ContinuationClaimV1,
   RuntimeBoundaryDigest,
   RuntimeContinuationAuthorityStore,
@@ -78,6 +79,7 @@ import {
 } from '../history-compact-checkpoint.js';
 import {
   AGENT_WORKSPACE_WORKTREE,
+  IMPLEMENTATION_AGENT_DEFINITION,
   IMPLEMENTATION_AGENT_ID,
   LOCAL_READ_AGENT_DEFINITION,
   LOCAL_READ_AGENT_ID,
@@ -601,7 +603,15 @@ describe('SessionManager graph operator provisioning', () => {
           };
         },
         ensure: async () => {},
+        capturePatch: async () => new Uint8Array(),
+        recover: async () => {},
+        retire: async () => {},
       },
+      listArtifactsForTurn: async () => [],
+      publishChildWorkspacePatch: async () => {
+        throw new Error('Patch publication is not expected during provisioning');
+      },
+      assertChildWorkspaceQuiescent: async () => {},
       newId: nextId(),
       now: nextNow(40),
     });
@@ -650,6 +660,178 @@ describe('SessionManager graph operator provisioning', () => {
     expect(headerToSummary(result.header).subagentWorkspace).toEqual(
       result.header.subagentWorkspace,
     );
+  });
+
+  test('recovers only the latest unpublished implementation patch idempotently', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new ReverseOrderedAgentRunStore();
+    const binding = {
+      schemaVersion: 1 as const,
+      kind: 'git_worktree' as const,
+      leaseId: `subagent_worktree_${'d'.repeat(32)}`,
+      gitCommonDir: '/tmp/project/.git',
+      worktreePath: '/tmp/worktrees/implementation-recovery',
+      branch: `maka/subagent/${'d'.repeat(32)}`,
+      baseCommit: 'e'.repeat(40),
+    };
+    const parent = await store.create(makeInput({ cwd: '/tmp/project' }));
+    const { header: child } = await store.createSubagent(
+      makeInput({
+        cwd: binding.worktreePath,
+        permissionMode: 'execute',
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: parent.id,
+          spawnedBy: {
+            parentRunId: 'parent-run',
+            parentTurnId: 'parent-turn',
+            toolCallId: 'implementation-spawn',
+          },
+          lifecycle: 'foreground',
+        },
+        subagentRuntime: {
+          schemaVersion: 1,
+          definitionVersion: IMPLEMENTATION_AGENT_DEFINITION.definitionVersion,
+          agentId: IMPLEMENTATION_AGENT_ID,
+          agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+          profile: 'implementation',
+          systemPrompt: IMPLEMENTATION_AGENT_DEFINITION.systemPrompt,
+          toolNames: [...IMPLEMENTATION_AGENT_DEFINITION.tools],
+          categoryPolicy: {},
+        },
+        subagentSpawn: {
+          schemaVersion: 1,
+          requestFingerprint: 'f'.repeat(64),
+          initialTurnId: 'child-turn',
+          initialRunId: 'child-run',
+        },
+        subagentWorkspace: binding,
+      }),
+    );
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        sessionId: child.id,
+        runId: 'child-run',
+        turnId: 'child-turn',
+        status: 'completed',
+        completedAt: 20,
+        updatedAt: 20,
+        cwd: binding.worktreePath,
+        permissionMode: 'execute',
+        agentId: IMPLEMENTATION_AGENT_ID,
+        agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+      }),
+      [
+        runtimeEvent({
+          id: 'child-complete',
+          sessionId: child.id,
+          runId: 'child-run',
+          turnId: 'child-turn',
+          ts: 20,
+          status: 'completed',
+          actions: { endInvocation: true },
+        }),
+      ],
+    );
+    const artifacts = new Map<string, ArtifactRecord[]>();
+    let captures = 0;
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends: new BackendRegistry(),
+      worktreeChildExecutor: {
+        provision: async () => binding,
+        ensure: async () => {},
+        capturePatch: async () => {
+          captures += 1;
+          return new TextEncoder().encode('terminal patch');
+        },
+        recover: async () => {},
+        retire: async () => {},
+      },
+      listArtifactsForTurn: async (sessionId, turnId) =>
+        artifacts.get(`${sessionId}:${turnId}`) ?? [],
+      publishChildWorkspacePatch: async ({ sessionId, turnId, patch }) => {
+        const record: ArtifactRecord = {
+          id: 'recovered-writeback',
+          sessionId,
+          turnId,
+          createdAt: 30,
+          name: 'workspace.patch',
+          kind: 'diff',
+          relativePath: `${sessionId}/recovered-writeback-workspace.patch`,
+          sizeBytes: patch.byteLength,
+          mimeType: 'text/x-diff; charset=utf-8',
+          source: 'subagent_writeback',
+          status: 'live',
+        };
+        artifacts.set(`${sessionId}:${turnId}`, [record]);
+        return record;
+      },
+      assertChildWorkspaceQuiescent: async () => {},
+      newId: nextId(),
+      now: nextNow(40),
+    });
+
+    await manager.recoverChildWorkspacePatches([parent.id, child.id]);
+    await manager.recoverChildWorkspacePatches([child.id]);
+
+    expect(captures).toBe(1);
+    expect(artifacts.get(`${child.id}:child-turn`)?.[0]?.source).toBe('subagent_writeback');
+
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        sessionId: child.id,
+        runId: 'newer-child-run',
+        turnId: 'newer-child-turn',
+        status: 'completed',
+        createdAt: 50,
+        completedAt: 60,
+        updatedAt: 60,
+        cwd: binding.worktreePath,
+        permissionMode: 'execute',
+        agentId: IMPLEMENTATION_AGENT_ID,
+        agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+        resumedFromRunId: 'child-run',
+      }),
+      [
+        runtimeEvent({
+          id: 'newer-child-complete',
+          sessionId: child.id,
+          runId: 'newer-child-run',
+          turnId: 'newer-child-turn',
+          ts: 60,
+          status: 'completed',
+          actions: { endInvocation: true },
+        }),
+      ],
+    );
+    const oldArtifact = artifacts.get(`${child.id}:child-turn`)?.[0];
+    if (!oldArtifact) throw new Error('Recovered patch Artifact is missing');
+    artifacts.set(`${child.id}:newer-child-turn`, [
+      {
+        ...oldArtifact,
+        id: 'newer-writeback',
+        turnId: 'newer-child-turn',
+        relativePath: `${child.id}/newer-writeback-workspace.patch`,
+      },
+    ]);
+    artifacts.delete(`${child.id}:child-turn`);
+
+    await expectRejects(
+      manager.readChildAgentOutput(parent.id, {
+        execution: {
+          kind: 'child_session',
+          sessionId: child.id,
+          currentRunId: 'child-run',
+        },
+      }),
+      /cannot reconstruct the historical workspace patch/,
+    );
+    expect(captures).toBe(1);
   });
 });
 
@@ -21274,6 +21456,12 @@ class ProviderRetryProgressBackend implements AgentBackend {
   async respondToSandboxBoundary(_decision: SandboxBoundaryResponse): Promise<void> {}
 
   async dispose(): Promise<void> {}
+}
+
+class ReverseOrderedAgentRunStore extends MemoryAgentRunStore {
+  override async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
+    return (await super.listSessionRuns(sessionId)).reverse();
+  }
 }
 
 class OrderingAgentRunStore extends MemoryAgentRunStore {

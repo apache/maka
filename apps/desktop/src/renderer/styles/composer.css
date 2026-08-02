@@ -37,29 +37,6 @@
   padding-block: var(--space-1) 0;
 }
 
-/* Skill panel opened from the ＋ menu — containing block is left-controls
-   (starts at ＋), not the zero-width picker host at the end of the row. */
-.maka-composer-left-controls {
-  position: relative;
-}
-
-.maka-composer-skill-picker[data-anchored="footer"] {
-  /* Stay out of the positioning chain so the absolute panel uses left-controls. */
-  position: static;
-  width: 0;
-  height: 0;
-  overflow: visible;
-  margin: 0;
-  padding: 0;
-  border: none;
-  pointer-events: none;
-}
-
-.maka-composer-skill-picker[data-anchored="footer"] .maka-composer-skill-panel {
-  pointer-events: auto;
-  inset-inline-start: 0;
-}
-
 .maka-composer-context-drawer {
   display: flex;
   min-width: 0;
@@ -102,14 +79,19 @@
   justify-content: flex-end;
 }
 
+/* `background-color`, never the `background` shorthand: these rules sit in the
+   last cascade layer (cascade-layers.css), and the shorthand's implicit
+   `background-image: none` would beat the ghost button's own :hover / :active
+   overlay gradients from `astryx-components`, leaving the control with no
+   pointer feedback at all. */
 .maka-composer-voice-button[data-state="recording"] {
   color: var(--status-danger, var(--destructive));
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .maka-composer-voice-button[data-state="native_ready"] {
   color: var(--status-running);
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 
 /* Quiet footer: ＋ and permission are both ghost icon buttons. */
@@ -135,7 +117,16 @@
 /* Model chip (static fallback) still owns its own quiet geometry. */
 .maka-composer-model-chip {
   font: var(--maka-text-label);
-  height: 26px;
+  /* #1879: was a bare 26px. It is NOT an Astryx component — `ModelChipStatic`
+     puts this class only on its inert `<span>` branch; the `onOpenSettings`
+     branch renders a `Button size="sm"` that carries no class at all
+     (chat-model-switcher.tsx). So nothing sizes this box but this rule, and
+     unpinning it measured 22px (the label role's 20px line box plus two
+     hairlines) against the 28px Selector beside it. `--h-control-md` resolves
+     to `--size-element-sm`, which is the token that Selector's own `size="sm"`
+     reads — so the two agree by deriving from one token rather than by two
+     product rules agreeing on a literal. */
+  height: var(--h-control-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -157,14 +148,23 @@
   border-color: transparent;
 }
 
-/* Mode ON marks are drawer Tokens; wrapper only carries data-mode / title for
-   E2E and tooltips — no second pill geometry on top of Token chrome.
-   Keep a real box (not display:contents) so Playwright visibility and
-   title hover still work on the host. */
-.maka-composer-mode-indicator {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
+/* Mode ON marks sit at the tail of the footer's left controls (#1897) —
+   session state, not context staged for the next send, so they no longer live
+   in the drawer.
+
+   Maka blue is the single product accent (DESIGN.md), and an active mode is
+   exactly what it is for; which mode a mark is comes from its icon, not a hue,
+   so all three share the one accent. The wash derives from currentColor so a
+   disabled mark dims both layers together.
+
+   `background-color`, never the `background` shorthand — see the voice button
+   above: the shorthand would suppress the ghost button's hover and active
+   overlays and leave the one way out of a mode with no pointer feedback.
+   `flex: 0 0 auto` keeps a long model name from compressing the mark away. */
+.maka-composer-mode-button {
+  flex: 0 0 auto;
+  color: var(--accent);
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
 }
 /* Model + thinking pair lives in left-controls (after permission), not send. */
 .maka-composer-left-controls .maka-model-selection-controls {
@@ -395,7 +395,11 @@
   margin: 0 auto var(--space-1);
   padding: 0 var(--space-1-5);
   box-sizing: border-box;
-  height: 26px;
+  /* #1879: was `height: 26px`, an off-ruler literal. The floor is arithmetic
+     under `border-box`: a 20px supporting line box plus two hairline borders
+     needs 22px, so `--h-control-sm` (24px) is the smallest tier that holds it
+     without clipping. Loses 2px. */
+  height: var(--h-control-sm);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
@@ -423,11 +427,19 @@
   text-overflow: ellipsis;
 }
 
+/* #1879: the one site in this family where the old height was not merely
+   off-ruler but smaller than the line box it renders — measured, an 18px box
+   around a 20px line box, and `display: block` so the text was not centred
+   either. Nothing clipped (the 2px excess is half-leading, and there is no
+   `overflow: hidden` here), but a box shorter than its own line box has no
+   defensible height. `--h-control-xs` (20px) is that line box. Gains 2px. */
 .maka-composer-revision-notice-cancel {
   font: var(--maka-text-supporting);
   appearance: none;
   flex: 0 0 auto;
-  height: 18px;
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   padding: 0 var(--space-1-5);
   border: none;
   border-radius: var(--radius-pill);

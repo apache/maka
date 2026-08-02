@@ -192,9 +192,9 @@ const baseComposerProps: ComposerProps = {
   activeThinkingLevel: 'medium',
   onThinkingLevelChange: noop,
   mentionSkills: [
-    { ref: 'user:pdf', id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
-    { ref: 'user:commit', id: 'commit', name: 'Commit', description: '生成提交信息' },
-    { ref: 'project:review', id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
+    { id: 'pdf', name: 'PDF 工具', description: '读取、拆分与合并 PDF' },
+    { id: 'commit', name: 'Commit', description: '生成提交信息' },
+    { id: 'review', name: 'Code Review', description: '按仓库规范审查改动' },
   ],
   workspacePicker: {
     label: 'maka-agent',
@@ -736,6 +736,48 @@ export const SessionContextLayer: Story = {
         },
         onBranchBannerClick: noop,
         onRevisionNavigate: noop,
+      }}
+    />
+  ),
+};
+
+// Real path: 开启 Plan Mode from the ＋ menu. The mode is session-scoped — it
+// survives the send — so it reads as a mark at the tail of the composer's
+// footer controls rather than as staged context in the drawer (#1897). It
+// trails the model + thinking pair so switching it never shifts those two.
+export const PlanModeOn: Story = {
+  render: () => <ComposedShell composer={{ planModeActive: true }} />,
+};
+
+// Real path: the same for the orchestration side. All marks share the one
+// product accent, so the icon is what has to keep the modes distinguishable —
+// this story is where that carries its own weight.
+export const SwarmModeOn: Story = {
+  render: () => <ComposedShell composer={{ swarmModeActive: true }} />,
+};
+
+// Real path: Plan and Swarm are independent switches (collaborationMode vs
+// orchestrationMode), so both can be on at once. This is the widest the mode
+// tail ever gets next to a real model name.
+export const PlanAndSwarmModeOn: Story = {
+  render: () => (
+    <ComposedShell composer={{ planModeActive: true, swarmModeActive: true }} />
+  ),
+};
+
+// Real path: a mode is on AND context is staged for the next send. The point of
+// the story is the split: the drawer badge counts the two attachments only,
+// while Plan reads off the footer — the mode is not something the send consumes.
+export const ModeOnWithPendingAttachments: Story = {
+  render: () => (
+    <ComposedShell
+      composer={{
+        planModeActive: true,
+        pendingAttachments: [
+          { displayName: 'design-review.pdf', kind: 'pdf', size: 182_400 },
+          { displayName: 'composer.tsx', kind: 'code', size: 41_200 },
+        ],
+        onRemoveAttachment: noop,
       }}
     />
   ),

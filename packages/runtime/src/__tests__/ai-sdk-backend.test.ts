@@ -10010,6 +10010,45 @@ describe('AiSdkBackend tool execution', () => {
     assert.equal(JSON.stringify(telemetry).includes('correct-horse-battery-staple'), false);
   });
 
+  test('WebSearch telemetry never copies the user-derived query', async () => {
+    const telemetry: Array<{ argsSummary?: string }> = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header('bypass'),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      recordToolInvocation: (record) => {
+        telemetry.push({ argsSummary: record.argsSummary });
+      },
+    });
+    const tool: MakaTool = {
+      name: 'WebSearch',
+      description: 'search web',
+      parameters: {},
+      impl: async () => ({
+        kind: 'web_search',
+        provider: 'tavily',
+        query: 'PRIVATE_QUERY_SENTINEL',
+        rows: [],
+      }),
+    };
+    const execute = runtimeExecute(backend, tool, 'turn-1', { push: () => {} });
+
+    await execute(
+      { query: 'PRIVATE_QUERY_SENTINEL', limit: 3 },
+      { toolCallId: 'tool-web-search', abortSignal: new AbortController().signal },
+    );
+
+    assert.deepEqual(telemetry, [{ argsSummary: '{"limit":3}' }]);
+    assert.doesNotMatch(JSON.stringify(telemetry), /PRIVATE_QUERY_SENTINEL/);
+  });
+
   test('tool failure telemetry classifies and redacts generic implementation errors', async () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];

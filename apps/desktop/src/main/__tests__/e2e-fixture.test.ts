@@ -706,8 +706,9 @@ describe('e2e-fixture mode', () => {
       assert.ok(fixture);
       const state = getE2eFixtureState(fixture);
       assert.equal(state?.activeSessionId, 'e2e-fixture-turn');
-      assert.equal(state?.composerText, '请整理这次会议的行动项');
-      assert.deepEqual(state?.composerSkills, [{ id: 'meeting-followup', name: '会议跟进' }]);
+      // The staged Skill lives in the draft text now, as the same
+      // `/skill:<id>` token a user can type — there is no second channel.
+      assert.equal(state?.composerText, '/skill:meeting-followup 请整理这次会议的行动项');
       await seedE2eFixture({
         workspaceRoot,
         fixture,

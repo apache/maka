@@ -1,4 +1,8 @@
 import { sessionRevisionFamilyId } from '@maka/core/session';
+import type {
+  SubagentWorkspaceBinding,
+  SubagentWorktreeExecutor,
+} from '@maka/core/subagent-workspace';
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 import {
   isSessionNotFoundError,
@@ -55,7 +59,17 @@ type RetirementGoals = Pick<
   'beginSessionRetirement' | 'hasLiveGoal' | 'unarchiveSessions'
 >;
 type RetirementResources = Pick<HostRuntimeResourceCoordinator, 'hasLiveSessionResources'>;
-type RetirementManager = Pick<SessionManager, 'disposeSessionBackend'>;
+type RetirementGraph = {
+  hasLiveSessionState(sessionId: string): Promise<boolean>;
+};
+type RetirementGraphWake = {
+  hasLiveSessionState(sessionId: string): boolean;
+  retireSessions(sessionIds: readonly string[]): Promise<number>;
+};
+type RetirementManager = Pick<
+  SessionManager,
+  'disposeSessionBackend' | 'finalizeChildWorkspacePatches'
+>;
 type RetirementCapabilities = Pick<HostClientCapabilityCoordinator, 'retireSessions'>;
 type RetirementContinuity = Pick<
   SessionContinuityCoordinator,
@@ -73,12 +87,15 @@ export interface HostSessionRetirementCoordinatorOptions {
     beginSessionRetirement(sessionIds: readonly string[]): Promise<HostAutomationSessionRetirement>;
   };
   readonly resources: RetirementResources;
+  readonly graph: RetirementGraph;
+  readonly graphWake: RetirementGraphWake;
   readonly manager: RetirementManager;
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
+  readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
   readonly requestDrain: () => void;
 }
 
@@ -120,14 +137,18 @@ export class HostSessionRetirementCoordinator {
   readonly #goals: RetirementGoals;
   readonly #automation: HostSessionRetirementCoordinatorOptions['automation'];
   readonly #resources: RetirementResources;
+  readonly #graph: RetirementGraph;
+  readonly #graphWake: RetirementGraphWake;
   readonly #manager: RetirementManager;
   readonly #capabilities: RetirementCapabilities;
   readonly #continuity: RetirementContinuity;
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
   readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
+  readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
   readonly #requestDrain: () => void;
   readonly #cleanupQueue = new Set<string>();
+  readonly #retiredWorktrees = new Map<string, SubagentWorkspaceBinding>();
   #cleanupWorker: Promise<void> | null = null;
   #closing = false;
 
@@ -140,12 +161,15 @@ export class HostSessionRetirementCoordinator {
     this.#goals = options.goals;
     this.#automation = options.automation;
     this.#resources = options.resources;
+    this.#graph = options.graph;
+    this.#graphWake = options.graphWake;
     this.#manager = options.manager;
     this.#capabilities = options.capabilities;
     this.#continuity = options.continuity;
     this.#artifacts = options.artifacts;
     this.#taskLedger = options.taskLedger;
     this.#purgeOperationalState = options.purgeOperationalState;
+    this.#worktrees = options.worktrees;
     this.#requestDrain = options.requestDrain;
   }
 
@@ -196,6 +220,7 @@ export class HostSessionRetirementCoordinator {
         let committed = false;
         try {
           handles = await this.#prepareRetirement(family, 'archive');
+          await this.#finalizeWorkspacePatches(family.sessionIds);
           await this.#disposeBackends(family.sessionIds);
           const committable = await this.#refreshFamilyRecords(family);
           await this.#stores.setSessionsLifecycleVersioned(
@@ -205,6 +230,7 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          await this.#graphWake.retireSessions(family.sessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
           await this.#refreshFamily(family);
@@ -251,6 +277,7 @@ export class HostSessionRetirementCoordinator {
         let committed = false;
         try {
           handles = await this.#prepareRetirement(family, 'remove');
+          await this.#finalizeWorkspacePatches(family.sessionIds);
           await this.#disposeBackends(family.sessionIds);
           const committable = await this.#refreshFamilyRecords(family);
           const removedSessionIds = await this.#stores.removeSessionsVersioned(
@@ -259,6 +286,8 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          await this.#graphWake.retireSessions(family.sessionIds);
+          this.#rememberRetiredWorktrees(committable, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
@@ -343,6 +372,13 @@ export class HostSessionRetirementCoordinator {
       if (await this.#resources.hasLiveSessionResources(sessionId)) {
         throw new SessionRetirementBusyError('Session has a live Runtime Resource');
       }
+      const header = requireFamilyRecord(family, sessionId).header;
+      if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {
+        throw new SessionRetirementBusyError('Session has a live Agent Graph');
+      }
+      if (!header.subagentParent && this.#graphWake.hasLiveSessionState(sessionId)) {
+        throw new SessionRetirementBusyError('Session has an active Agent Graph supervisor wake');
+      }
     }
 
     const automation = await this.#automation.beginSessionRetirement(family.sessionIds);
@@ -367,6 +403,12 @@ export class HostSessionRetirementCoordinator {
     throw new AggregateError(failures, 'Session backend disposal failed during retirement');
   }
 
+  async #finalizeWorkspacePatches(sessionIds: readonly string[]): Promise<void> {
+    for (const sessionId of sessionIds) {
+      await this.#manager.finalizeChildWorkspacePatches(sessionId);
+    }
+  }
+
   #scheduleCleanup(sessionIds: readonly string[]): void {
     if (this.#closing) return;
     for (const sessionId of sessionIds) this.#cleanupQueue.add(sessionId);
@@ -388,6 +430,7 @@ export class HostSessionRetirementCoordinator {
   }
 
   async #cleanupRetiredSession(sessionId: string): Promise<void> {
+    const worktree = this.#retiredWorktrees.get(sessionId);
     const outcomes = await Promise.allSettled([
       this.#stores.purgeRemovedSessionTranscript(sessionId),
       purgeSessionSidecars(
@@ -398,6 +441,7 @@ export class HostSessionRetirementCoordinator {
         },
         sessionId,
       ),
+      ...(worktree && this.#worktrees ? [this.#worktrees.retire(worktree)] : []),
     ]);
     const failures = outcomes.flatMap((outcome) =>
       outcome.status === 'rejected' ? [outcome.reason] : [],
@@ -406,6 +450,14 @@ export class HostSessionRetirementCoordinator {
       throw new AggregateError(failures, `Session ${sessionId} retirement cleanup failed`);
     }
     await this.#stores.completeSessionRetirementCleanup(sessionId);
+    this.#retiredWorktrees.delete(sessionId);
+  }
+
+  #rememberRetiredWorktrees(family: StableFamily, removedSessionIds: readonly string[]): void {
+    for (const sessionId of removedSessionIds) {
+      const binding = family.records.get(sessionId)?.header.subagentWorkspace;
+      if (binding) this.#retiredWorktrees.set(sessionId, binding);
+    }
   }
 
   #finishCleanup(worker: Promise<void>): void {

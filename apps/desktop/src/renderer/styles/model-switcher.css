@@ -50,9 +50,14 @@
 .maka-new-chat-model-selector.astryx-selector,
 .maka-thinking-level-selector.astryx-selector {
   font: var(--maka-text-label);
-  height: 26px;
-  min-height: 26px;
-  box-sizing: border-box;
+  /* #1879: this rule used to force a height — 26px originally, then 24px on the
+     ruler. Both were wrong for the same reason the sidebar update button was:
+     these ARE Astryx Selectors (`size="sm"`), and Selector sizes off
+     `--size-element-sm` (28px). Forcing 24px pushed a component below its own
+     smallest tier and desynced it from `ModelChipStatic`, the inert state of
+     the same chip, which is a `Button size="sm"` at 28px — the pill changed
+     height when it became clickable. Declaring no height is what makes the two
+     states agree by derivation. */
   padding-block: 0;
   padding-inline: var(--space-2);
   border-color: transparent;

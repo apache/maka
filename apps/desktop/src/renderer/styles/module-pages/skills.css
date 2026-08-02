@@ -510,8 +510,17 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
   gap: var(--space-1);
 }
 
+/* #1879: `--h-control-sm` (24px), not `xs`. The floor is arithmetic under
+   `border-box`: a 20px line box plus 2 x var(--space-0-5) needs 24px, and at
+   `xs` the declared padding would have been squeezed out of the box entirely.
+   This one stays product CSS rather than becoming an Astryx `Badge` because it
+   truncates — `max-width` + ellipsis on a long skill name is behaviour Badge
+   does not have. */
 .maka-skill-governance-summary span {
   font: var(--maka-text-heading-5);
+  height: var(--h-control-sm);
+  display: inline-flex;
+  align-items: center;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;

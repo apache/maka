@@ -1,8 +1,0 @@
-/* The sidebar fallback remains a product layout exception around Astryx EmptyState. */
-.maka-session-list .maka-session-empty-state {
-  position: absolute;
-  left: 50%;
-  width: calc(100% - 42px);
-  top: 34%;
-  transform: translate(-50%, -50%);
-}

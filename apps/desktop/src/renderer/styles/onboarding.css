@@ -98,7 +98,15 @@
   list-style: none;
 }
 
+/* #1879: measured 29px natural — its 21px dot, not its 20px line box, is what
+   decides that today, so the defect here is latent rather than live: bump the
+   leading past 21px and the line box takes over and the stepper grows. Pinned
+   to `--h-control-lg` (32px) because that is the smallest rung that clears the
+   29px floor; `md` (28px) would clip the dot by a pixel. Costs 3px of height
+   on the hero stepper, which is the price of the box no longer being decided
+   by whichever of two children happens to be tallest. */
 .maka-firstrun-step {
+  height: var(--h-control-lg);
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -311,24 +319,12 @@
   color: var(--foreground-secondary);
 }
 
+/* #1879: an Astryx `Badge` now — box, radius, padding, caption type and the
+   per-state colour all come from the component, so the two `[data-state]`
+   overrides that used to tint it are variants at the call site. Only its place
+   in the step grid is product layout. */
 .maka-onboarding-setup-step-state {
-  font: var(--maka-text-heading-5);
   justify-self: end;
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: var(--background-elevated);
-  color: var(--foreground-secondary);
-  white-space: nowrap;
-}
-
-.maka-onboarding-setup-steps > li[data-state="active"] .maka-onboarding-setup-step-state {
-  background: oklch(from var(--nav-active) l c h / 0.12);
-  color: var(--nav-active);
-}
-
-.maka-onboarding-setup-steps > li[data-state="warning"] .maka-onboarding-setup-step-state {
-  background: oklch(from var(--destructive-text) l c h / 0.12);
-  color: var(--destructive-text);
 }
 
 @media (max-width: 620px) {

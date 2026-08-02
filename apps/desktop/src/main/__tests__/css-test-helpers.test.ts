@@ -35,7 +35,12 @@ import { join } from 'node:path';
 import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
+  findBadgeClassNames,
+  findUnreadableBadgeCallSites,
+  mergeByContext,
+  UNCONDITIONAL,
   findTextRoleOffenders,
+  mergeBySelector,
   parseCssBlocks,
   stripCssComments,
   assertCustomPropPinnedOnce,
@@ -234,7 +239,19 @@ describe('css-test-helpers', () => {
     it('keeps a parent rule’s declarations when a nested rule follows them', () => {
       const css = '.a { font-size: 18px; & span { color: red; } }';
       assert.deepEqual(props(css, '.a'), ['font-size']);
-      assert.deepEqual(props(css, '& span'), ['color']);
+      // Resolved against the parent, not emitted as the literal `& span`. The
+      // raw form is a key every nested rule in the tree collides on, and one
+      // that no scan keyed on real selectors can ever reach.
+      assert.deepEqual(props(css, '.a span'), ['color']);
+    });
+
+    it('resolves a bare nested selector as a descendant', () => {
+      assert.deepEqual(props('.a { span { color: red; } }', '.a span'), ['color']);
+    });
+
+    it('resolves `&` in every position it can take', () => {
+      assert.deepEqual(props('.a { &:hover { color: red; } }', '.a:hover'), ['color']);
+      assert.deepEqual(props('.a { .b & { color: red; } }', '.b .a'), ['color']);
     });
 
     it('keeps a parent rule’s declarations that follow the nested rule', () => {
@@ -439,6 +456,145 @@ describe('css-test-helpers', () => {
 
     it('strips comments before parsing (inline comment after value)', () => {
       assert.doesNotThrow(() => assertCustomPropPinnedOnce('--leading-none: 1;        /* single-line: kbd */', '--leading-none', '1'));
+    });
+  });
+
+  describe('mergeBySelector (one box per selector, unconditional only)', () => {
+    it('merges rules that name the same selector, in source order', () => {
+      const merged = mergeBySelector('.a { border-radius: 9999px; }\n.a { height: 20px; }');
+      assert.match(merged.get('.a') ?? '', /border-radius/);
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+    });
+
+    it('merges a selector reached through a group with one reached on its own', () => {
+      const merged = mergeBySelector('.a, .b { border-radius: 9999px; }\n.a { height: 20px; }');
+      assert.match(merged.get('.a') ?? '', /border-radius/);
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+      assert.match(merged.get('.b') ?? '', /border-radius/);
+    });
+
+    it('skips rules gated by a conditional at-rule', () => {
+      // Folding these in read a chip pinned only inside a breakpoint as pinned
+      // everywhere, and made a deliberate responsive unpin illegal. The
+      // unconditional box is what the box contracts are about.
+      const merged = mergeBySelector('.a { height: 20px; }\n@media (min-width: 900px) { .a { height: auto; } }');
+      assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
+    });
+
+    it('keeps rules inside a non-conditional at-rule', () => {
+      const merged = mergeBySelector('@layer components { .a { height: 20px; } }');
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+    });
+
+    it('does not let a nested rule collide on a global `&` key', () => {
+      const merged = mergeBySelector('.a { & { color: red; } }\n.b { & { color: blue; } }');
+      assert.equal(merged.get('&'), undefined);
+      assert.match(merged.get('.a') ?? '', /red/);
+      assert.match(merged.get('.b') ?? '', /blue/);
+    });
+
+    it('keeps a qualified override as its own key', () => {
+      // Documented limitation, asserted so it cannot change silently: this
+      // models one rule per selector, not the cascade. `.wrap .a` is a
+      // different box here, and what covers it is the Badge call-site contract
+      // and the live e2e measurement.
+      const merged = mergeBySelector('.a { height: 20px; }\n.wrap .a { height: auto; }');
+      assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
+      assert.match(merged.get('.wrap .a') ?? '', /auto/);
+    });
+  });
+
+  describe('findBadgeClassNames (a scanner that cannot quietly stop seeing a call site)', () => {
+    // A fresh dir per case: one shared root would let each case see every
+    // other case's fixture, and `deepEqual` on the whole result would then be
+    // asserting the suite's execution order rather than the scanner.
+    const dirs: string[] = [];
+    const write = async (name: string, src: string) => {
+      const dir = await mkdtemp(join(tmpdir(), 'badge-scan-'));
+      dirs.push(dir);
+      await writeFile(join(dir, name), src, 'utf8');
+      return dir;
+    };
+    after(async () => {
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    it('reads a className past a `>` inside a prop expression', async () => {
+      // `/<Badge\b[^>]*?>/` ended the tag at the `>` in the ternary, and the
+      // truncated text held neither `className="` nor `className={` — so the
+      // call site left BOTH Badge contracts while they reported green.
+      const root = await write('gt.tsx', `<Badge label={a > b ? 'x' : 'y'} className="evil" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['evil']);
+    });
+
+    it('reads a className past an apostrophe inside a prop comment', async () => {
+      // Measured on the real tree: `/* the Tooltip's popover */` inside a
+      // `<Badge>` put a quote-aware walk into string mode at the apostrophe and
+      // carried the tag end past its own `/>`. Three live call sites silently
+      // left the scan, which still reported green on the other 16.
+      const root = await write('apos.tsx', `<Badge\n  label="x"\n  /* the Tooltip's popover is display:none */\n  className="quiet"\n/>`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['quiet']);
+    });
+
+    it('reads both quote styles and whitespace around `=`', async () => {
+      const root = await write('quotes.tsx', `<Badge className = 'spaced' label="x" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['spaced']);
+    });
+
+    it('reads a className past a `>` inside a line comment', async () => {
+      // The other spelling of the comment above, and the same failure: a `//`
+      // holding a `>` ends the tag there.
+      const root = await write('line.tsx', `<Badge\n  // show this when a > b\n  className="commented"\n/>`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['commented']);
+    });
+
+    it('reports a computed className as unreadable', async () => {
+      const root = await write('dyn.tsx', `<Badge label={a > b} className={cls} />`);
+      assert.deepEqual(await findBadgeClassNames([root]), []);
+      assert.equal((await findUnreadableBadgeCallSites([root])).length, 1);
+    });
+
+    it('reports a spread call site as unreadable rather than as class-less', async () => {
+      // Legal JSX that neither scanner could read: the static one finds no
+      // `className="…"` and the computed one finds no `className={`, so the
+      // geometry contract concluded there was nothing to govern. Measured on a
+      // real call site, with a `height` added to the class it hides — green.
+      const root = await write('spread.tsx', `<Badge {...{ className: 'hidden' }} label="x" />`);
+      assert.deepEqual(await findBadgeClassNames([root]), []);
+      assert.equal((await findUnreadableBadgeCallSites([root])).length, 1);
+    });
+
+    it('does not read a spread inside a prop expression as a prop spread', async () => {
+      const root = await write('inner.tsx', `<Badge label={[...parts]} className="readable" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['readable']);
+      assert.deepEqual(await findUnreadableBadgeCallSites([root]), []);
+    });
+  });
+
+  describe('mergeByContext (one box per selector PER cascade context)', () => {
+    it('keeps mutually exclusive conditions apart', () => {
+      // Flattened, `height: auto` here and `white-space: normal` there satisfy
+      // two independent matches while applying at no viewport at all.
+      const contexts = mergeByContext(
+        '@media (max-width: 620px) { .a { height: auto; } }\n@media (min-width: 621px) { .a { white-space: normal; } }',
+      );
+      const bodies = [...(contexts.get('.a') ?? new Map<string, string>()).values()];
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies.filter((b) => /height/.test(b) && /white-space/.test(b)).length, 0);
+    });
+
+    it('keys unconditional declarations under UNCONDITIONAL', () => {
+      const contexts = mergeByContext('.a { height: 20px; }\n@media print { .a { height: auto; } }');
+      const byContext = contexts.get('.a') ?? new Map<string, string>();
+      assert.match(byContext.get(UNCONDITIONAL) ?? '', /20px/);
+      assert.match(byContext.get('@media print') ?? '', /auto/);
+    });
+
+    it('does not split one context on a cascade-only at-rule', () => {
+      // `@layer` changes how a rule cascades, not whether it applies.
+      const contexts = mergeByContext('.a { height: 20px; }\n@layer components { .a { color: red; } }');
+      const byContext = contexts.get('.a') ?? new Map<string, string>();
+      assert.deepEqual([...byContext.keys()], [UNCONDITIONAL]);
     });
   });
 });

@@ -57,6 +57,7 @@ import {
   type SessionHeader,
   type SessionListFilter,
   type SubagentSessionParent,
+  type SupersedeAgentGraphSupervisorWakesRequest,
 } from '@maka/core';
 import {
   assertSafeSessionId,
@@ -1524,7 +1525,9 @@ export class SqliteSessionMetadataStore {
       }
       const now = this.now();
       const failureReason =
-        request.status === 'retryable_failed' ? request.failureReason : undefined;
+        request.status === 'retryable_failed' || request.status === 'superseded'
+          ? request.failureReason
+          : undefined;
       const completedAt = request.status === 'waiting_permission' ? null : now;
       this.db
         .prepare(`
@@ -1557,6 +1560,47 @@ export class SqliteSessionMetadataStore {
           wake.status,
         );
       return this.requireAgentGraphSupervisorWakeSync(request.graphId, request.wakeId);
+    });
+  }
+
+  async supersedeAgentGraphSupervisorWakes(
+    request: SupersedeAgentGraphSupervisorWakesRequest,
+  ): Promise<number> {
+    this.assertOpen();
+    const sessionIds = [...new Set(request.rootSessionIds)];
+    sessionIds.forEach(assertSafeSessionId);
+    if (!request.reason.trim() || request.reason.length > 4_000) {
+      throw new Error(
+        'Agent graph supervisor wake supersession reason must be non-empty and bounded',
+      );
+    }
+    if (sessionIds.length === 0) return 0;
+    return this.transaction(() => {
+      const now = this.now();
+      const placeholders = sessionIds.map(() => '?').join(', ');
+      this.db
+        .prepare(`
+          UPDATE agent_graph_supervisor_wake_attempts
+          SET status = 'superseded', failure_reason = ?, completed_at = ?
+          WHERE status IN ('running', 'waiting_permission')
+            AND EXISTS (
+              SELECT 1
+              FROM agent_graph_supervisor_wakes wakes
+              WHERE wakes.graph_id = agent_graph_supervisor_wake_attempts.graph_id
+                AND wakes.wake_id = agent_graph_supervisor_wake_attempts.wake_id
+                AND wakes.root_session_id IN (${placeholders})
+            )
+        `)
+        .run(request.reason, now, ...sessionIds);
+      const updated = this.db
+        .prepare(`
+          UPDATE agent_graph_supervisor_wakes
+          SET status = 'superseded', failure_reason = ?, updated_at = ?
+          WHERE root_session_id IN (${placeholders})
+            AND status IN ('pending', 'running', 'waiting_permission', 'retryable_failed')
+        `)
+        .run(request.reason, now, ...sessionIds);
+      return Number(updated.changes);
     });
   }
 
@@ -3660,9 +3704,14 @@ function decodeAgentGraphSupervisorWakeRow(
 ): AgentGraphSupervisorWakeRecord {
   if (
     row.schemaVersion !== AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION ||
-    !['pending', 'running', 'waiting_permission', 'delivered', 'retryable_failed'].includes(
-      row.status,
-    ) ||
+    ![
+      'pending',
+      'running',
+      'waiting_permission',
+      'delivered',
+      'superseded',
+      'retryable_failed',
+    ].includes(row.status) ||
     !Number.isSafeInteger(row.attemptCount) ||
     row.attemptCount < 0 ||
     !Number.isSafeInteger(row.createdAt) ||
@@ -3696,7 +3745,9 @@ function decodeAgentGraphSupervisorWakeAttemptRow(
   row: AgentGraphSupervisorWakeAttemptRow,
 ): AgentGraphSupervisorWakeAttemptRecord {
   if (
-    !['running', 'waiting_permission', 'delivered', 'retryable_failed'].includes(row.status) ||
+    !['running', 'waiting_permission', 'delivered', 'superseded', 'retryable_failed'].includes(
+      row.status,
+    ) ||
     !Number.isSafeInteger(row.startedAt) ||
     row.startedAt < 0 ||
     (row.completedAt !== null && (!Number.isSafeInteger(row.completedAt) || row.completedAt < 0))
@@ -3936,12 +3987,13 @@ function assertAgentGraphSupervisorWakeCompletion(
   if (
     request.status !== 'waiting_permission' &&
     request.status !== 'delivered' &&
+    request.status !== 'superseded' &&
     request.status !== 'retryable_failed'
   ) {
     throw new Error('Invalid agent graph supervisor wake completion status');
   }
   if (
-    request.status === 'retryable_failed' &&
+    (request.status === 'retryable_failed' || request.status === 'superseded') &&
     (!request.failureReason?.trim() || request.failureReason.length > 4_000)
   ) {
     throw new Error('Agent graph supervisor wake failure reason must be non-empty and bounded');

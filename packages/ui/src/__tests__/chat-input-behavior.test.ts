@@ -9,7 +9,6 @@ import {
   mentionQueryMatches,
   skillMentionQuery,
 } from '../chat-input-behavior.js';
-import { addUniqueComposerSkillSelection } from '../use-composer-skill-draft.js';
 
 describe('shared chat input behavior', () => {
   it('strips the token anchor from the wire text without touching real spaces', () => {
@@ -119,18 +118,5 @@ describe('mention filtering', () => {
     assert.equal(skillMentionQuery('skill:wri'), 'wri');
     assert.equal(skillMentionQuery('SKILL:wri'), 'wri');
     assert.equal(skillMentionQuery('writer'), 'writer');
-  });
-});
-
-describe('structured Skill selections', () => {
-  it('deduplicates stable identities while keeping same-id selections from distinct refs', () => {
-    const alpha = { id: 'alpha', name: 'Alpha' };
-    assert.deepEqual(
-      addUniqueComposerSkillSelection([alpha], { id: 'ALPHA', name: 'Renamed Alpha' }),
-      [alpha],
-    );
-    const project = { ref: 'project:maka:writer', id: 'writer', name: 'Project Writer' };
-    const user = { ref: 'user:agents:writer', id: 'writer', name: 'User Writer' };
-    assert.deepEqual(addUniqueComposerSkillSelection([project], user), [project, user]);
   });
 });

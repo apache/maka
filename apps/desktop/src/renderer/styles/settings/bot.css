@@ -359,9 +359,14 @@
   min-width: 0;
 }
 
+/* #1879: `min-height` is not a pin — measured, the leading pushed both of
+   these from 34px to 40px, so the filters row still moved. Now a real height
+   on the tier their neighbours already measure at: the TextInput and the
+   Selector field in this same row are both 32px, i.e. `--h-control-lg`.
+   Loses 2px and lands on the row's shared centreline. */
 .settingsUsageDetailToggle {
   font: var(--maka-text-label);
-  min-height: 34px;
+  height: var(--h-control-lg);
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -370,10 +375,12 @@
   white-space: nowrap;
 }
 
+/* #1879: same `min-height` → `height` fix as the toggle above it, same
+   measured 34px → 40px leading push, same 32px neighbour tier. */
 .settingsUsageRecordCount {
   font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
-  min-height: 34px;
+  height: var(--h-control-lg);
   display: inline-flex;
   align-items: center;
   color: var(--muted-foreground);
