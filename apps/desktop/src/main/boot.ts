@@ -162,7 +162,7 @@ import {
 } from './project-context-root.js';
 import { isComputerUseRealModelE2e, isE2e, isIsolatedE2e } from './startup-context.js';
 import { resolveDesktopStorageRoot } from './storage-root-startup.js';
-import { startupStep } from './startup-step.js';
+import { startupStep, whileAwaitingPerson } from './startup-step.js';
 import { openDesktopExecutionStoreWiring } from './execution-store-wiring.js';
 
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
@@ -226,18 +226,23 @@ async function confirmDesktopStorageRootRepair(): Promise<boolean> {
   // on any platform (macOS modal loops block CDP evaluation, Linux does not).
   console.log('[storage-root] root-identity conflict; parking at repair dialog');
   const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
-  const { response } = await dialog.showMessageBox({
-    type: 'warning',
-    title: isChinese ? 'Maka 工作区需要修复' : 'Maka workspace needs repair',
-    message: isChinese ? 'Maka 无法验证这个工作区。' : 'Maka cannot verify this workspace.',
-    detail: isChinese
-      ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
-      : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
-    buttons: isChinese ? ['修复工作区', '退出'] : ['Repair Workspace', 'Exit'],
-    defaultId: 1,
-    cancelId: 1,
-    noLink: true,
-  });
+  // The person owns this delay, so the startup reporter stops narrating it —
+  // otherwise reading the dialog for four seconds prints "still waiting on
+  // storage root" at somebody who is looking straight at the reason.
+  const { response } = await whileAwaitingPerson(
+    dialog.showMessageBox({
+      type: 'warning',
+      title: isChinese ? 'Maka 工作区需要修复' : 'Maka workspace needs repair',
+      message: isChinese ? 'Maka 无法验证这个工作区。' : 'Maka cannot verify this workspace.',
+      detail: isChinese
+        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
+        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
+      buttons: isChinese ? ['修复工作区', '退出'] : ['Repair Workspace', 'Exit'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    }),
+  );
   return response === 0;
 }
 // 保持系统唤醒 (settings.system.keepSystemAwake): holds an Electron
@@ -254,7 +259,10 @@ const projectCatalog = createProjectCatalog(workspaceRoot, {
 });
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
-const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
+const executionStoreWiring = await startupStep(
+  'execution store',
+  openDesktopExecutionStoreWiring(workspaceRoot),
+);
 const { runStore, shellRunStore } = executionStoreWiring;
 const runtimePersistence = await startupStep(
   'runtime event persistence',
