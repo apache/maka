@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Banner,
@@ -25,9 +25,16 @@ import {
 import { useMountedRef, useUiLocale, useToast } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
 import { statusBadgeVariant } from './settings-status-badge';
-import { AddConnectionDialog } from './provider-add-dialog';
+import {
+  CATALOG_INITIAL_FILTER,
+  ProviderCatalogPage,
+  ProviderSetupPage,
+  type CatalogFilter,
+  type SetupTarget,
+} from './provider-catalog-page';
 import { ConnectionDetail } from './provider-connection-detail';
 import { ProviderLogo, providerDisplay } from './provider-display';
+import { oauthPanelSubtitle } from './provider-oauth-section';
 import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
@@ -35,14 +42,32 @@ export type { ConnectionsBridge } from './provider-panel-shared';
 export { ProviderLogo, providerDisplay } from './provider-display';
 
 /**
- * Where the panel is: the connection list, or one connection's detail.
+ * Where the panel is. Four levels, one container, one back affordance:
  *
- * Detail is a route rather than a dialog because Astryx says so — "Keep
- * dialogs focused on a single task; if the content grows beyond what fits,
- * consider a full page instead." Credentials, the default model, the enabled
- * model list, advanced settings and deletion are five tasks, not one.
+ *   list ─┬─ catalog ── setup(credentials | account)
+ *         └─ detail
+ *
+ * Nothing here is a Dialog. A modal exists to interrupt the current task for
+ * something short and immediately decidable while preserving the context
+ * behind it; browsing 55 providers, filling a credential form, or waiting on a
+ * browser login is none of those, and Astryx says as much — "if the content
+ * grows beyond what fits, consider a full page instead."
+ *
+ * `setup` carries its own `origin` rather than the panel keeping a history
+ * stack: the graph is this small, and the one ambiguous edge (the first-run
+ * hero jumps straight to a provider's form, skipping the catalog) is answered
+ * by the route that created it instead of by a rule somewhere else.
  */
-type PanelRoute = { kind: 'list' } | { kind: 'detail'; slug: string };
+type PanelRoute =
+  | { kind: 'list' }
+  | { kind: 'catalog' }
+  | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
+  | { kind: 'detail'; slug: string };
+
+function backTarget(route: PanelRoute): PanelRoute {
+  if (route.kind === 'setup' && route.origin === 'catalog') return { kind: 'catalog' };
+  return { kind: 'list' };
+}
 
 export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCreateProviderConsumed }: {
   bridge: ConnectionsBridge;
@@ -54,54 +79,33 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
    */
   initialConnectionSlug?: string;
   /**
-   * When set, open the add dialog straight on this provider's form once the
-   * panel has loaded. Used by the first-run hero so clicking a provider row
-   * lands directly in that provider's form. One-shot: the caller retires the
+   * When set, land straight on this provider's setup once the panel has
+   * loaded — the first-run hero's path. One-shot: the caller retires the
    * request via onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
-  /** Called once the auto-opened add dialog has been raised. */
+  /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
 }) {
   const [connections, setConnections] = useState<LlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
-  const [addDialog, setAddDialog] = useState<{ session: number; providerType?: ProviderType } | null>(null);
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  // Browsing state, not navigation state: it outlives the catalog so that
+  // backing out of a provider returns the user to the search they typed.
+  const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(CATALOG_INITIAL_FILTER);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providersPanelMountedRef = useMountedRef();
   const providersReloadTicketRef = useRef(0);
-  const addDialogLifecycleRef = useRef(0);
   const addButtonRef = useRef<HTMLButtonElement>(null);
+  // Which row the user left the list from, so returning puts focus back where
+  // they were rather than on the page's primary action.
+  const listReturnFocusRef = useRef<string | null>(null);
+  const hasNavigatedRef = useRef(false);
   const locale = useUiLocale();
   const providerCopy = getProviderSettingsCopy(locale);
   const copy = providerCopy.panel;
   const toast = useToast();
-
-  function openAddDialog(providerType?: ProviderType) {
-    const lifecycle = addDialogLifecycleRef.current + 1;
-    addDialogLifecycleRef.current = lifecycle;
-    setIsAddDialogOpen(false);
-    setAddDialog({ session: lifecycle, providerType });
-    window.requestAnimationFrame(() => {
-      if (!providersPanelMountedRef.current || addDialogLifecycleRef.current !== lifecycle) return;
-      setIsAddDialogOpen(true);
-    });
-  }
-
-  function requestAddDialogClose() {
-    addDialogLifecycleRef.current += 1;
-    setIsAddDialogOpen(false);
-  }
-
-  function handleAddDialogOpenChange(nextOpen: boolean) {
-    if (nextOpen) {
-      setIsAddDialogOpen(true);
-      return;
-    }
-    requestAddDialogClose();
-  }
 
   async function reload(): Promise<boolean> {
     const ticket = ++providersReloadTicketRef.current;
@@ -133,19 +137,15 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     });
     return () => {
       providersReloadTicketRef.current += 1;
-      addDialogLifecycleRef.current += 1;
       unsubscribe?.();
     };
   }, [bridge]);
 
-  // `initialPage: 'catalog'` used to scroll to a catalog section further down
-  // the page. The catalog is a dialog now, so the same intent is simply
-  // raising it.
   const initialCatalogOpenedRef = useRef(false);
   useEffect(() => {
     if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
     initialCatalogOpenedRef.current = true;
-    openAddDialog();
+    setRoute({ kind: 'catalog' });
   }, [initialPage, loading]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
@@ -156,18 +156,105 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'detail', slug: initialConnectionSlug });
   }, [loading, initialConnectionSlug, connections]);
 
+  const initialCreateOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || !initialCreateProviderType) return;
-    openAddDialog(initialCreateProviderType);
+    if (loading || !initialCreateProviderType || initialCreateOpenedRef.current) return;
+    initialCreateOpenedRef.current = true;
+    // Straight to the form, so `origin` is the list: the user never saw a
+    // catalog and must not be dropped into one on the way out.
+    setRoute({
+      kind: 'setup',
+      origin: 'list',
+      target: {
+        method: 'credentials',
+        providerType: initialCreateProviderType,
+        name: providerDisplay(initialCreateProviderType, locale).name,
+      },
+    });
     onInitialCreateProviderConsumed?.();
   }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
-  function backToList() {
-    setRoute({ kind: 'list' });
-    // Return focus to the page's primary action rather than the top of the
-    // document — the row the user came from may no longer exist (deletion).
-    window.requestAnimationFrame(() => addButtonRef.current?.focus());
+  function goBack() {
+    setRoute(backTarget(route));
   }
+
+  function goToList() {
+    setRoute({ kind: 'list' });
+  }
+
+  function openDetail(slug: string) {
+    listReturnFocusRef.current = slug;
+    setRoute({ kind: 'detail', slug });
+  }
+
+  function openCatalog() {
+    listReturnFocusRef.current = null;
+    setRoute({ kind: 'catalog' });
+  }
+
+  const selected = route.kind === 'detail'
+    ? connections.find((connection) => connection.slug === route.slug) ?? null
+    : null;
+
+  // A detail route whose connection vanished (deleted in another window) is an
+  // unsatisfiable route, not a state to correct: the list is what it renders
+  // as. Deriving that beats scheduling a setState from inside render.
+  const level: PanelRoute['kind'] = route.kind === 'detail' && !selected ? 'list' : route.kind;
+
+  // Focus follows the level, to its first meaningful control. Navigating
+  // without this leaves the ring on `document.body` every time a level
+  // unmounts, which costs a keyboard user their place on every move.
+  //
+  // Navigating, not arriving: the panel does not grab focus when the settings
+  // page first renders the list — the user is still in the settings nav they
+  // clicked to get here.
+  useEffect(() => {
+    if (loading) return;
+    if (!hasNavigatedRef.current) {
+      hasNavigatedRef.current = true;
+      return;
+    }
+    const frame = window.requestAnimationFrame(focusLevel);
+    return () => window.cancelAnimationFrame(frame);
+
+    function focusLevel() {
+      const find = (selector: string) => document.querySelector<HTMLElement>(selector);
+      // `preventScroll` because this is a landing, not a jump: the level just
+      // rendered at the top of the content area, and scrolling to whatever the
+      // focus target happens to be would push its own header out of view.
+      const focusFirst = (...selectors: string[]) => {
+        for (const selector of selectors) {
+          const element = find(selector);
+          if (element) return element.focus({ preventScroll: true });
+        }
+      };
+      switch (level) {
+        case 'catalog':
+          focusFirst('[data-maka-contract="provider-catalog"] input');
+          return;
+        case 'setup':
+          focusFirst('[data-maka-contract="provider-setup"] input', '[data-maka-contract="provider-setup"]');
+          return;
+        case 'detail':
+          // The region, not its back button: an IconButton opens its tooltip on
+          // focus, so focusing one on arrival would pop a tooltip at every
+          // mouse user who merely clicked a row.
+          focusFirst('[data-maka-contract="connection-detail"]');
+          return;
+        case 'list': {
+          // Consumed here and only here: the ref is set on the way down and has
+          // to survive the levels in between.
+          const returnToSlug = listReturnFocusRef.current;
+          listReturnFocusRef.current = null;
+          // The row the user came from may be gone — that is exactly what
+          // happens after a deletion — so the primary action is the fallback,
+          // not the default.
+          ((returnToSlug ? find(`[data-connection-slug="${returnToSlug}"] button`) : null)
+            ?? addButtonRef.current)?.focus({ preventScroll: true });
+        }
+      }
+    }
+  }, [level, route, loading]);
 
   if (loading) {
     return (
@@ -183,32 +270,89 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     );
   }
 
-  const selected = route.kind === 'detail'
-    ? connections.find((connection) => connection.slug === route.slug) ?? null
-    : null;
-
-  // A detail route whose connection vanished (deleted in another window, or
-  // the slug never resolved) falls back to the list rather than rendering an
-  // empty page with a back button.
-  if (route.kind === 'detail' && !selected) {
-    if (route.slug) queueMicrotask(() => setRoute({ kind: 'list' }));
-  }
-
   return (
     <VStack className="providersPanel" gap={6} data-maka-contract="providers-panel">
-      {selected ? (
-        <ConnectionDetailRoute
-          bridge={bridge}
-          connection={selected}
-          isDefault={selected.slug === defaultSlug}
-          onBack={backToList}
-          onChanged={async () => { await reload(); }}
-          onDeleted={async () => {
-            const reloaded = await reload();
-            if (!reloaded || !providersPanelMountedRef.current) return;
-            backToList();
-          }}
-        />
+      {level === 'detail' && selected ? (
+        // tabIndex -1 so a route change can land focus on the level itself —
+        // the standard SPA answer to "where does focus go when the page
+        // swaps", and it draws no ring.
+        <VStack gap={5} tabIndex={-1} className="settingsRouteLevel" data-maka-contract="connection-detail">
+          <RouteHeader
+            onBack={goToList}
+            backLabel={copy.backToList}
+            contract="connection-detail-back"
+            logo={<ProviderLogo type={selected.providerType} compact />}
+            title={selected.name}
+            badge={selected.slug === defaultSlug ? <Badge variant="neutral" label={copy.default} /> : null}
+            subtitle={connectionSubtitle(selected, locale)}
+          />
+          <ConnectionDetail
+            key={selected.slug}
+            bridge={bridge}
+            connection={selected}
+            isDefault={selected.slug === defaultSlug}
+            onChanged={async () => { await reload(); }}
+            onDeleted={async () => {
+              const reloaded = await reload();
+              if (!reloaded || !providersPanelMountedRef.current) return;
+              goToList();
+            }}
+          />
+        </VStack>
+      ) : level === 'catalog' ? (
+        <VStack gap={5}>
+          <RouteHeader
+            onBack={goToList}
+            backLabel={copy.backToList}
+            contract="catalog-back"
+            title={copy.addConnection}
+            subtitle={copy.addHelp}
+          />
+          <ProviderCatalogPage
+            filter={catalogFilter}
+            onFilterChange={setCatalogFilter}
+            onPick={(target) => setRoute({ kind: 'setup', target, origin: 'catalog' })}
+          />
+        </VStack>
+      ) : level === 'setup' && route.kind === 'setup' ? (
+        <VStack gap={5}>
+          <RouteHeader
+            onBack={goBack}
+            backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
+            contract="setup-back"
+            logo={<ProviderLogo type={route.target.providerType} compact />}
+            title={copy.connectTitle(route.target.name)}
+            subtitle={route.target.method === 'account'
+              ? oauthPanelSubtitle(route.target.cardId, providerCopy.oauthSection)
+              : copy.createSubtitle}
+          />
+          <ProviderSetupPage
+            bridge={bridge}
+            target={route.target}
+            existingSlugs={connections.map((connection) => connection.slug)}
+            onCancel={goBack}
+            onAccountChanged={async () => { await reload(); }}
+            onCreated={async (slug, modelDiscoveryError) => {
+              const reloaded = await reload();
+              if (!providersPanelMountedRef.current) return;
+              // The new connection's detail, not the list: creating it is the
+              // start of setting it up, and every next move — pick the default
+              // model, enable models, fix the endpoint the discovery error just
+              // complained about — is on that page.
+              if (reloaded) setRoute({ kind: 'detail', slug });
+              if (modelDiscoveryError) {
+                const providerName = providerDisplay(route.target.providerType, locale).name;
+                toast.error(
+                  providerCopy.detail.modelsFetchFailed(providerName),
+                  providerCopy.detail.modelsFetchFailedDetail(
+                    providerPanelActionErrorMessage(modelDiscoveryError, locale),
+                    providerCopy.detail.endpointTroubleshooting,
+                  ),
+                );
+              }
+            }}
+          />
+        </VStack>
       ) : (
         <>
           <Toolbar
@@ -227,7 +371,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                 ref={addButtonRef}
                 variant="primary"
                 label={copy.addConnection}
-                onClick={() => openAddDialog()}
+                onClick={openCatalog}
                 data-maka-contract="add-connection"
               />
             )}
@@ -243,7 +387,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             <EmptyState
               title={copy.empty}
               description={copy.emptyHelp}
-              actions={<Button variant="primary" label={copy.addConnection} onClick={() => openAddDialog()} />}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
             />
           ) : (
             <List hasDividers className="connectionList">
@@ -270,7 +414,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                         <ChevronRight size={16} aria-hidden="true" />
                       </HStack>
                     )}
-                    onClick={() => setRoute({ kind: 'detail', slug: connection.slug })}
+                    onClick={() => openDetail(connection.slug)}
                   />
                 );
               })}
@@ -294,34 +438,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           )}
         </>
       )}
-
-      {addDialog && (
-        <AddConnectionDialog
-          key={addDialog.session}
-          bridge={bridge}
-          existingSlugs={connections.map((connection) => connection.slug)}
-          isOpen={isAddDialogOpen}
-          onOpenChange={handleAddDialogOpenChange}
-          initialProviderType={addDialog.providerType}
-          onConnectionsChanged={async () => { await reload(); }}
-          onCreated={async (providerType, modelDiscoveryError) => {
-            const lifecycle = addDialogLifecycleRef.current;
-            const reloaded = await reload();
-            if (!reloaded || !providersPanelMountedRef.current || addDialogLifecycleRef.current !== lifecycle) return;
-            requestAddDialogClose();
-            if (modelDiscoveryError) {
-              const providerName = providerDisplay(providerType, locale).name;
-              toast.error(
-                providerCopy.detail.modelsFetchFailed(providerName),
-                providerCopy.detail.modelsFetchFailedDetail(
-                  providerPanelActionErrorMessage(modelDiscoveryError, locale),
-                  providerCopy.detail.endpointTroubleshooting,
-                ),
-              );
-            }
-          }}
-        />
-      )}
     </VStack>
   );
 
@@ -333,58 +449,46 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 }
 
 /**
- * The detail page's own frame: a back affordance beside the connection name,
- * then the connection's sections. Modelled on the settings-sidebar template's
- * detail view, which puts the same Toolbar inside the content area rather than
- * reaching for a second page shell.
+ * The way out of any level below the list, spelled once. Modelled on the
+ * settings-sidebar template's detail view, which puts the same Toolbar inside
+ * the content area rather than reaching for a second page shell.
  */
-function ConnectionDetailRoute(props: {
-  bridge: ConnectionsBridge;
-  connection: LlmConnection;
-  isDefault: boolean;
+function RouteHeader(props: {
   onBack(): void;
-  onChanged(): Promise<void>;
-  onDeleted(): Promise<void>;
+  backLabel: string;
+  contract: string;
+  logo?: ReactNode;
+  title: string;
+  badge?: ReactNode;
+  subtitle?: string;
 }) {
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).panel;
   return (
-    <VStack gap={5} data-maka-contract="connection-detail">
-      <Toolbar
-        label={props.connection.name}
-        gap={2}
-        startContent={(
-          <>
-            <IconButton
-              variant="ghost"
-              label={copy.backToList}
-              tooltip={copy.backToList}
-              icon={<ArrowLeft size={16} aria-hidden="true" />}
-              onClick={props.onBack}
-              data-maka-contract="connection-detail-back"
-            />
-            <ProviderLogo type={props.connection.providerType} compact />
-            <VStack gap={0}>
-              <HStack gap={2} vAlign="center">
-                <Heading level={3}>{props.connection.name}</Heading>
-                {props.isDefault && <Badge variant="neutral" label={copy.default} />}
-              </HStack>
-              <Text type="supporting" color="secondary">
-                {connectionSubtitle(props.connection, locale)}
-              </Text>
-            </VStack>
-          </>
-        )}
-      />
-      <ConnectionDetail
-        key={props.connection.slug}
-        bridge={props.bridge}
-        connection={props.connection}
-        isDefault={props.isDefault}
-        onChanged={props.onChanged}
-        onDeleted={props.onDeleted}
-      />
-    </VStack>
+    <Toolbar
+      label={props.title}
+      gap={2}
+      startContent={(
+        <>
+          <IconButton
+            variant="ghost"
+            label={props.backLabel}
+            tooltip={props.backLabel}
+            icon={<ArrowLeft size={16} aria-hidden="true" />}
+            onClick={props.onBack}
+            data-maka-contract={props.contract}
+          />
+          {props.logo}
+          <VStack gap={0}>
+            <HStack gap={2} vAlign="center">
+              <Heading level={3}>{props.title}</Heading>
+              {props.badge}
+            </HStack>
+            {props.subtitle && (
+              <Text type="supporting" color="secondary">{props.subtitle}</Text>
+            )}
+          </VStack>
+        </>
+      )}
+    />
   );
 }
 

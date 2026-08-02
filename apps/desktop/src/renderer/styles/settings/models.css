@@ -2,6 +2,17 @@
    (data-selected → --state-selected-bg), one selected-row implementation
    across the app. */
 
+/* A route level takes focus when it lands, so a keyboard user does not get
+   dropped on document.body every time the panel navigates. It is a landing
+   target, not a control — the ring belongs to whatever they Tab to next.
+   Astryx draws its focus ring with box-shadow, not outline, so both are
+   cleared — an outline-only reset leaves a 2px ring around the whole page. */
+.settingsRouteLevel:focus,
+.settingsRouteLevel:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .connectionRow[data-disabled="true"] {
   opacity: var(--opacity-muted);
 }

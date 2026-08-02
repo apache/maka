@@ -79,7 +79,7 @@ const zhCopy = {
     createSubtitle: '完成必要配置后，连接会出现在模型页上方。', defaultConnection: '默认连接', connection: '模型连接',
     count: (value: number) => `${value} 个连接`, connectTitle: (name: string) => `连接 ${name}`,
     chipAria: (name: string, provider: string, isDefault: boolean, status?: string) => `模型连接：${name}，供应商：${provider}${isDefault ? '，默认连接' : ''}${status ? `，${status}` : ''}`,
-    addConnection: '添加连接', category: '分类', back: '返回', backToList: '返回模型连接',
+    addConnection: '添加连接', category: '分类', backToList: '返回模型连接', backToCatalog: '返回服务商列表',
     defaultHintTitle: '默认连接决定新会话用哪个模型。', defaultHintBody: '每个会话仍可单独切换模型，改这里只影响新开的会话。',
   },
   catalog: {
@@ -113,7 +113,7 @@ const zhCopy = {
   oauthSection: {
     available: '可用', signedIn: '已登录', claudeDescription: 'Claude Pro / Max 订阅账号登录。', codexDescription: 'ChatGPT Plus / Pro 订阅账号登录。', xaiDescription: 'SuperGrok / X Premium 账号登录。',
     copilotDescription: '导入兼容 GitHub 凭据连接 Copilot 订阅。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
-    refreshFailed: '刷新 OAuth 登录状态失败', refreshConnectionsFailed: '刷新模型连接失败', aria: 'OAuth 登录',
+    aria: 'OAuth 登录',
     staleState: 'OAuth 登录状态暂时没刷新成功，已保留上一次状态。', claudeTitle: '连接 Claude Code', claudeSubtitle: '登录 Claude Pro / Max 后，会同步成模型连接。',
     codexDetail: '点击下方按钮打开浏览器登录，授权完成后会自动回写到本机（127.0.0.1:1455）。', xaiDetail: '点击下方按钮打开 xAI 设备授权页，并核对页面中的登录码。', deviceCode: '登录码：', stateHint: '提示：state 以', startsWith: '开头。',
     openingBrowser: '打开浏览器…', logout: '退出登录', loggingOut: '退出中…', copilotTitle: '连接 GitHub Copilot',
@@ -219,7 +219,7 @@ const enCopy: ProviderSettingsCopy = {
     createSubtitle: 'After required setup, the connection appears above on the Models page.', defaultConnection: 'Default connection', connection: 'Model connection',
     count: (value: number) => `${value} ${value === 1 ? 'connection' : 'connections'}`, connectTitle: (name: string) => `Connect ${name}`,
     chipAria: (name: string, provider: string, isDefault: boolean, status?: string) => `Model connection: ${name}; provider: ${provider}${isDefault ? '; default connection' : ''}${status ? `; ${status}` : ''}`,
-    addConnection: 'Add connection', category: 'Category', back: 'Back', backToList: 'Back to model connections',
+    addConnection: 'Add connection', category: 'Category', backToList: 'Back to model connections', backToCatalog: 'Back to the provider list',
     defaultHintTitle: 'The default connection decides which model new sessions use.',
     defaultHintBody: 'Each session can still switch models on its own; changing this only affects newly opened sessions.',
   },
@@ -254,7 +254,7 @@ const enCopy: ProviderSettingsCopy = {
   oauthSection: {
     available: 'Available', signedIn: 'Signed in', claudeDescription: 'Sign in with a Claude Pro / Max subscription.', codexDescription: 'Sign in with a ChatGPT Plus / Pro subscription.', xaiDescription: 'Sign in with SuperGrok or X Premium.',
     copilotDescription: 'Import compatible GitHub credentials to connect a Copilot subscription.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
-    refreshFailed: 'Failed to refresh OAuth sign-in status', refreshConnectionsFailed: 'Failed to refresh model connections', aria: 'OAuth sign-in',
+    aria: 'OAuth sign-in',
     staleState: 'OAuth sign-in status could not be refreshed. The last known state is preserved. ', claudeTitle: 'Connect Claude Code', claudeSubtitle: 'After Claude Pro / Max sign-in, the account is synchronized as a model connection.',
     codexDetail: 'Open the browser below to sign in. Authorization is written back locally through 127.0.0.1:1455.', xaiDetail: 'Open the xAI device page below and verify the sign-in code shown there.', deviceCode: 'Sign-in code:', stateHint: 'Tip: state begins with', startsWith: '.',
     openingBrowser: 'Opening browser…', logout: 'Sign out', loggingOut: 'Signing out…', copilotTitle: 'Connect GitHub Copilot',

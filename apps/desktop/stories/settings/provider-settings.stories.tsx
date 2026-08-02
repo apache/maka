@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider } from '@maka/ui';
 import type {
   ConnectionTestResult,
@@ -305,29 +306,49 @@ function ProviderStoryFrame(props: {
         }}
       >
         <section className="settingsMainPane" data-agents-view="settings">
-          <div className="settingsPageContent" style={{ overflow: 'auto' }}>
-            <div className="settingsPageContentInner">
-              <div className="settingsStructuredPage settingsModelsPage">
-                <ProvidersPanel bridge={props.bridge} />
-              </div>
-            </div>
-          </div>
+          {/* The same Layout settings-surface.tsx wraps every settings page in,
+              contentWidth included — without it the story renders forms at the
+              window's width and hides exactly the layout question a page-level
+              form raises. */}
+          <Layout
+            height="fill"
+            padding={0}
+            contentWidth={640}
+            header={(
+              <LayoutHeader padding={6}>
+                <div className="settingsPageHeader">
+                  <div className="settingsPageHeaderTitleStack">
+                    <h2>模型</h2>
+                  </div>
+                </div>
+              </LayoutHeader>
+            )}
+            content={(
+              <LayoutContent padding={6}>
+                <div className="settingsStructuredPage settingsModelsPage">
+                  <ProvidersPanel bridge={props.bridge} />
+                </div>
+              </LayoutContent>
+            )}
+          />
         </section>
       </div>
     </ToastProvider>
   );
 }
 
-/** The add dialog is portalled out of the story root, so its rows are found on
- *  `document`, not on `root`. */
-function addDialogRoot(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('.providerConnectionDialog');
+/** Every level is a page inside the story root now, so nothing is looked up on
+ *  `document` — the story renders what the story frame contains. */
+function catalogRoot(root: HTMLElement): HTMLElement | null {
+  return root.querySelector<HTMLElement>('[data-maka-contract="provider-catalog"]');
 }
 
-function openAddDialog(root: HTMLElement): boolean {
-  const addButton = root.querySelector<HTMLButtonElement>('button[data-maka-contract="add-connection"]');
-  addButton?.click();
-  return Boolean(addButton);
+/** Walk to the catalog level, returning it once it is on screen. */
+function reachCatalog(root: HTMLElement): HTMLElement | null {
+  const catalog = catalogRoot(root);
+  if (catalog) return catalog;
+  root.querySelector<HTMLButtonElement>('button[data-maka-contract="add-connection"]')?.click();
+  return null;
 }
 
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
@@ -340,39 +361,29 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
     return Boolean(detailButton);
   }
   if (target === 'catalog' || target === 'oauth') {
-    // Account sign-ins are rows in the add dialog now, not a tab on the page,
-    // so both targets rest on step one of the same dialog.
-    if (addDialogRoot()) return true;
-    openAddDialog(root);
-    return false;
+    // Account sign-ins are rows in the catalog, not a tab on the page, so both
+    // targets rest on the catalog level itself.
+    return Boolean(reachCatalog(root));
   }
   if (target === 'xai-device') {
-    const dialog = addDialogRoot();
-    if (!dialog) {
-      openAddDialog(root);
+    const setup = root.querySelector<HTMLElement>('[data-maka-contract="provider-setup"]');
+    if (!setup) {
+      const catalog = reachCatalog(root);
+      catalog?.querySelector<HTMLElement>('[data-card-id="xai"]')?.querySelector('button')?.click();
       return false;
     }
-    const code = dialog.querySelector('code');
+    const code = setup.querySelector('code');
     if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
-    const loginButton = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+    const loginButton = Array.from(setup.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
-    if (loginButton && !loginButton.disabled) {
-      loginButton.click();
-      return false;
-    }
-    const xaiCard = dialog.querySelector<HTMLButtonElement>('button[data-card-id="xai"]');
-    xaiCard?.click();
+    if (loginButton && !loginButton.disabled) loginButton.click();
     return false;
   }
 
-  // 'add': raise the dialog and step into one provider's form.
-  const dialog = addDialogRoot();
-  if (!dialog) {
-    openAddDialog(root);
-    return false;
-  }
-  const providerRow = dialog.querySelector<HTMLButtonElement>('.providerCatalogRow[data-provider="deepseek"] button, button.providerCatalogRow[data-provider="deepseek"]')
-    ?? dialog.querySelector<HTMLButtonElement>('[data-provider="deepseek"] button');
+  // 'add': walk to the catalog, then into one provider's form.
+  const catalog = reachCatalog(root);
+  if (!catalog) return false;
+  const providerRow = catalog.querySelector<HTMLElement>('[data-provider="deepseek"]')?.querySelector('button') ?? null;
   providerRow?.click();
   return Boolean(providerRow);
 }
@@ -405,7 +416,7 @@ export const ConnectionDetailPage: Story = {
   ),
 };
 
-// Real path: 设置 → 模型 → 添加连接 — step one of the dialog, the provider list.
+// Real path: 设置 → 模型 → 添加连接 — level two, the provider catalog.
 export const AddConnectionCatalog: Story = {
   render: () => (
     <ProviderStory
@@ -415,7 +426,7 @@ export const AddConnectionCatalog: Story = {
   ),
 };
 
-// Real path: 设置 → 模型 → 添加连接 → pick a provider — step two, its form.
+// Real path: 设置 → 模型 → 添加连接 → pick a provider — level three, its form.
 export const AddProvider: Story = {
   render: () => (
     <ProviderStory

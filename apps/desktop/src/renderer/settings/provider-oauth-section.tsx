@@ -4,7 +4,6 @@ import { type ProviderType } from '@maka/core';
 import {
   Button,
   useMountedRef,
-  useToast,
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -31,23 +30,23 @@ export interface OAuthCard {
 }
 
 /**
- * Account sign-in rows for the add-connection dialog, plus the refresh that
- * keeps their badges live.
+ * Account sign-in rows for the provider catalog, plus the refresh that keeps
+ * their badges live.
  *
  * This used to be a self-contained `ModelOAuthSection` that rendered both the
- * rows and a Dialog per service. Those Dialogs now cannot exist: the rows live
- * inside the add-connection Dialog, and Astryx's Dialog guidance is explicit —
- * "Nest dialogs inside other dialogs; restructure the flow into steps within a
- * single dialog instead." So the hook yields rows, `OAuthLoginPanel` yields the
- * body that used to sit inside each Dialog, and the add-connection Dialog
- * sequences the two as steps.
+ * rows and a Dialog per service. The rows and the login body are now two
+ * levels of the panel's own route, so the hook yields rows and
+ * `OAuthLoginPanel` yields the body — no Dialog on either side.
+ *
+ * The hook lives with the catalog page and dies with it. Coming back from a
+ * login remounts it, which re-reads every account state; that is the refresh,
+ * and it is why nothing here has to be pushed across a level boundary.
  */
-export function useOAuthCards(props: { query?: string; onConnectionsChanged(): Promise<void> }) {
+export function useOAuthCards(props: { query?: string }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const cards = modelOAuthCards(copy);
   const [claudeCatalogEnabled, setClaudeCatalogEnabled] = useState<boolean | null>(null);
-  const toast = useToast();
   const mountedRef = useMountedRef();
   const refreshTicketRef = useRef(0);
   // PR-OAUTH-CARD-LIVE-STATE-0 (WAWQAQ msg d79fd115 follow-up): before this
@@ -114,23 +113,14 @@ export function useOAuthCards(props: { query?: string; onConnectionsChanged(): P
       const message = error
         ? subscriptionActionErrorMessage(error, locale)
         : copy.serviceUnavailable;
+      // Reported once, in the Banner above the rows. This refresh runs on
+      // mount, before the user has done anything, so a toast for it would be a
+      // second report of a failure they did not ask for.
       setRefreshError(message);
-      toast.error(copy.refreshFailed, message);
       return false;
     }
     setRefreshError(null);
     return true;
-  }
-
-  async function refreshAfterOAuthChange() {
-    const refreshed = await refreshAllCards();
-    if (!mountedRef.current || !refreshed) return;
-    try {
-      await props.onConnectionsChanged();
-    } catch (error) {
-      if (!mountedRef.current) return;
-      toast.error(copy.refreshConnectionsFailed, subscriptionActionErrorMessage(error, locale));
-    }
   }
 
   useEffect(() => {
@@ -161,13 +151,13 @@ export function useOAuthCards(props: { query?: string; onConnectionsChanged(): P
       };
     });
 
-  return { cards: visibleCards, refreshError, refreshAfterOAuthChange };
+  return { cards: visibleCards, refreshError };
 }
 
 /**
- * The body of one account sign-in, with no Dialog around it. The
- * add-connection Dialog renders this as its second step; the header, the
- * back affordance and the close button all belong to that Dialog.
+ * The body of one account sign-in, with no Dialog around it. The panel renders
+ * this as its setup level; the header and the back affordance belong to that
+ * level, the same ones the catalog and the connection detail use.
  */
 export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): void | Promise<void> }) {
   if (props.cardId === 'claude') return <ClaudeSubscriptionCard />;
@@ -175,7 +165,7 @@ export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): 
   return <SubscriptionLoginPanel service={props.cardId} onLoginSuccess={props.onLoginSuccess} />;
 }
 
-/** The subtitle the Dialog header shows above each login panel. */
+/** The subtitle the setup level's header shows above each login panel. */
 export function oauthPanelSubtitle(cardId: OAuthCardId, copy: ProviderSettingsCopy['oauthSection']): string {
   if (cardId === 'claude') return copy.claudeSubtitle;
   if (cardId === 'github-copilot') return copy.copilotSubtitle;

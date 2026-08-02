@@ -1,7 +1,7 @@
 // Provider add-flow E2E — representative journeys only.
 //
 // This suite deliberately keeps a handful of journeys, NOT one clone per
-// provider. The add flow (open settings → catalog → tab → search → open →
+// provider. The add flow (open settings → catalog → category → search → open →
 // assert form defaults → save → assert detail + brand-mark render contract) is
 // identical across every catalog provider, so exercising it once proves the
 // mechanism. The per-provider *facts* it used to re-assert (label, base URL,
@@ -28,25 +28,35 @@ async function openModelsPage(page: Page) {
 }
 
 /**
- * Raise the add-connection dialog and narrow it to one provider.
+ * Walk to the catalog level and narrow it to one provider.
  *
- * The catalog is a dialog rather than a second half of the page, and its
- * category is a Selector rather than a row of tabs — so reaching a provider is
- * three named moves instead of a tab click plus a search.
+ * The catalog is a page one level below the list, and its category is a
+ * Selector rather than a row of tabs — so reaching a provider is three named
+ * moves instead of a tab click plus a search.
  */
 async function openCatalog(page: Page, options: { category: string; search: string }) {
   await page.getByRole('button', { name: '添加连接', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '添加连接' });
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole('combobox', { name: '分类', exact: true }).click();
+  const catalog = page.locator('[data-maka-contract="provider-catalog"]');
+  await expect(catalog).toBeVisible();
+  await catalog.getByRole('combobox', { name: '分类', exact: true }).click();
   await page.getByRole('option', { name: options.category, exact: true }).click();
-  await dialog.getByPlaceholder('搜索服务商').fill(options.search);
-  return dialog;
+  await catalog.getByPlaceholder('搜索服务商').fill(options.search);
+  return catalog;
 }
 
-/** The connection detail route — a page region now, not a dialog. */
+/** The provider setup level — one provider's form, or its account login. */
+function providerSetup(page: Page) {
+  return page.locator('[data-maka-contract="provider-setup"]');
+}
+
+/** The connection detail level. */
 function connectionDetail(page: Page) {
   return page.locator('[data-maka-contract="connection-detail"]');
+}
+
+/** No level on this page is a modal; the delete confirm is the only one left. */
+async function expectNoDialog(page: Page) {
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 }
 
 // Canonical API-key add journey. Cerebras is the concrete stand-in only because
@@ -54,13 +64,13 @@ function connectionDetail(page: Page) {
 // upstream <img> mark that must stay untouched in BOTH light and dark themes);
 // the assertions below validate the *flow and the colorAssetRenderContract
 // mechanism*, not Cerebras's data — that lives in the registry contract tests.
-test('adds a catalog provider through the canonical API-key dialog', async ({ window: page }) => {
+test('adds a catalog provider through the canonical API-key setup page', async ({ window: page }) => {
   // One window, five named steps. Splitting these into separate tests would buy
   // per-behavior isolation at the price of four more Electron cold starts; the
   // steps give a failing run the same "which behavior broke" answer in the
   // trace without that cost.
-  const dialog = page.getByRole('dialog', { name: '连接 Cerebras' });
-  const keyInput = dialog.getByRole('textbox', { name: /API Key/ });
+  const setup = providerSetup(page);
+  const keyInput = setup.getByRole('textbox', { name: /API Key/ });
   const detail = connectionDetail(page);
   const connection = page.getByRole('button', { name: /模型连接：Cerebras/ });
 
@@ -78,28 +88,25 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
     expect(await catalogMark.evaluate(colorAssetRenderContract)).toEqual(COLOR_ASSET_RENDER_CONTRACT);
   });
 
-  await test.step('picking a provider steps the same dialog onto its form', async () => {
+  await test.step('picking a provider navigates to its setup level', async () => {
     await page.getByRole('button', { name: /添加模型供应商：Cerebras/ }).click();
-    await expect(dialog).toBeVisible();
-    // One dialog throughout: the catalog is gone, not stacked behind a second
-    // dialog, and the way back to it is in this dialog's header.
-    await expect(page.getByRole('dialog', { name: '添加连接' })).toHaveCount(0);
-    await expect(dialog.getByRole('button', { name: '返回', exact: true })).toBeVisible();
+    await expect(setup).toBeVisible();
+    // One container throughout: the catalog is replaced, not stacked behind a
+    // modal, and the way back to it is the level's own back control.
+    await expectNoDialog(page);
+    await expect(page.locator('[data-maka-contract="provider-catalog"]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '返回服务商列表', exact: true })).toBeVisible();
     await expect(keyInput).toBeFocused();
     await expect(keyInput).toHaveAttribute('type', 'password');
-    await expect(dialog.getByText('完成必要配置后，连接会出现在模型页上方。')).toBeVisible();
+    await expect(page.getByText('完成必要配置后，连接会出现在模型页上方。')).toBeVisible();
     await expect(keyInput).toHaveAttribute('placeholder', '输入或粘贴 API Key');
-    await expect(dialog.getByLabel('连接标识', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByLabel('默认模型', { exact: true })).toHaveCount(0);
+    await expect(setup.getByLabel('连接标识', { exact: true })).toHaveCount(0);
+    await expect(setup.getByLabel('服务地址', { exact: true })).toHaveCount(0);
+    await expect(setup.getByLabel('默认模型', { exact: true })).toHaveCount(0);
 
-    await dialog.evaluate((element) =>
-      Promise.all(element.getAnimations().map((animation) => animation.finished)),
-    );
-    // A 300-character key scrolls inside the field instead of growing it or the
-    // dialog around it. The before/after values are the oracle; the dialog's
-    // own width and the brand plate's size are design tokens, not this contract.
-    const dialogBox = await dialog.boundingBox();
+    // A 300-character key scrolls inside the field instead of growing it. The
+    // before/after values are the oracle; the field's width is a design token,
+    // not this contract.
     const inputBox = await keyInput.boundingBox();
     await keyInput.fill(`sk-${'a'.repeat(300)}`);
     const longKeyLayout = await keyInput.evaluate((input) => ({
@@ -111,16 +118,15 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
     expect(longKeyLayout.scrollWidth).toBeGreaterThan(longKeyLayout.clientWidth);
     expect(longKeyLayout.scrollHeight).toBe(longKeyLayout.clientHeight);
     expect((await keyInput.boundingBox())?.height).toBe(inputBox?.height);
-    expect((await dialog.boundingBox())?.width).toBe(dialogBox?.width);
-    expect((await dialog.boundingBox())?.height).toBe(dialogBox?.height);
   });
 
-  await test.step('saving creates the connection and its row routes to the detail page', async () => {
+  await test.step('saving creates the connection and lands on its detail level', async () => {
     await keyInput.fill('e2e-cerebras-key');
-    await dialog.getByRole('button', { name: '保存供应商', exact: true }).click();
+    await page.getByRole('button', { name: '保存供应商', exact: true }).click();
 
-    await expect(dialog).toBeHidden();
-    await connection.click();
+    // Creating a connection is the start of setting it up, so the save lands on
+    // the page that owns every next move — no hunting for the new row.
+    await expect(setup).toHaveCount(0);
     await expect(detail).toBeVisible();
     const detailMark = detail.locator('.providerLogo[data-provider="cerebras"] img');
     await expect(detailMark).toBeVisible();
@@ -203,6 +209,7 @@ test('adds a catalog provider through the canonical API-key dialog', async ({ wi
     await expect(detail).toHaveCount(0);
     await expect(page.getByRole('button', { name: '添加连接', exact: true })).toBeFocused();
     await expect(connection).toHaveCount(0);
+    await expectNoDialog(page);
     await cdp.send('Emulation.clearDeviceMetricsOverride');
   });
 });
@@ -221,14 +228,14 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
   await expect(page.getByLabel('连接标识', { exact: true })).toHaveValue('cloudflare-workers-ai');
   // The plain base-URL input is replaced by the account-id field; the endpoint
   // is derived, not typed.
-  const dialog = page.getByRole('dialog', { name: '连接 Cloudflare Workers AI' });
-  const accountIdInput = dialog.getByRole('textbox', {
+  const setup = providerSetup(page);
+  const accountIdInput = setup.getByRole('textbox', {
     name: /Cloudflare Account ID/,
   });
   await expect(accountIdInput).toHaveValue('');
-  const cloudflareKey = dialog.getByRole('textbox', { name: /API Key/ });
+  const cloudflareKey = setup.getByRole('textbox', { name: /API Key/ });
   await expect(cloudflareKey).toBeVisible();
-  await expect(dialog.getByLabel('服务地址', { exact: true })).toHaveCount(0);
+  await expect(setup.getByLabel('服务地址', { exact: true })).toHaveCount(0);
   await accountIdInput.fill(accountId);
   await page.getByRole('button', { name: '保存供应商' }).click();
   await expect(page.getByRole('alert')).toHaveText('请填写 Cloudflare Workers AI API Key');
@@ -236,9 +243,8 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
   await cloudflareKey.fill('e2e-cloudflare-key');
   await page.getByRole('button', { name: '保存供应商' }).click();
 
-  const connection = page.getByRole('button', { name: /模型连接：Cloudflare Workers AI/ });
-  await connection.click();
   const detail = connectionDetail(page);
+  await expect(detail).toBeVisible();
   await detail.getByText('高级设置', { exact: true }).click();
   await expect(detail.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
   await expect(detail.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
@@ -258,57 +264,58 @@ test('adds a no-auth local runtime with no key field and a currentColor mask mar
   expect(await catalogMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
   await page.getByRole('button', { name: /添加模型供应商：LM Studio/ }).click();
 
-  const addDialog = page.getByRole('dialog', { name: '连接 LM Studio' });
-  await expect(addDialog.getByLabel('连接标识', { exact: true })).toHaveValue('lm-studio');
-  await expect(addDialog.getByLabel('服务地址', { exact: true })).toHaveValue('http://127.0.0.1:1234/v1');
-  await expect(addDialog.getByLabel('默认模型', { exact: true })).toHaveValue('');
-  await expect(addDialog.getByRole('textbox', { name: /API Key/ })).toHaveCount(0);
+  const setup = providerSetup(page);
+  await expect(setup.getByLabel('连接标识', { exact: true })).toHaveValue('lm-studio');
+  await expect(setup.getByLabel('服务地址', { exact: true })).toHaveValue('http://127.0.0.1:1234/v1');
+  await expect(setup.getByLabel('默认模型', { exact: true })).toHaveValue('');
+  await expect(setup.getByRole('textbox', { name: /API Key/ })).toHaveCount(0);
   await page.getByRole('button', { name: '保存供应商' }).click();
 
-  const connection = page.getByRole('button', { name: /模型连接：LM Studio/ });
-  await connection.click();
   const detail = connectionDetail(page);
+  await expect(detail).toBeVisible();
   const detailMark = detail.locator('.providerLogo[data-provider="lm-studio"] .providerAssetMask');
   await expect(detailMark).toBeVisible();
   expect(await detailMark.evaluate(maskRenderContract)).toEqual({ usesAssetMask: true, followsForeground: true });
   await expect(detail.getByLabel(/LM Studio 模型密钥/)).toHaveCount(0);
 });
 
-test('restores keyboard focus across provider dialogs', async ({ window: page }) => {
+test('carries keyboard focus down and back up every level', async ({ window: page }) => {
   await openModelsPage(page);
 
   const addButton = page.getByRole('button', { name: '添加连接', exact: true });
-  await addButton.click();
-  const catalog = page.getByRole('dialog', { name: '添加连接' });
-  // Step one focuses search, so the dialog opens ready to type rather than
-  // parking the focus ring on its container.
-  await expect(catalog.getByPlaceholder('搜索服务商')).toBeFocused();
-  await catalog.getByPlaceholder('搜索服务商').fill('SiliconFlow');
+  const catalog = page.locator('[data-maka-contract="provider-catalog"]');
+  const search = catalog.getByPlaceholder('搜索服务商');
 
-  const siliconFlow = page.getByRole('button', { name: /添加模型供应商：SiliconFlow/ });
-  await siliconFlow.focus();
+  await addButton.click();
+  // Every level takes focus to its own first control, so arriving anywhere
+  // leaves the ring somewhere usable instead of on document.body.
+  await expect(search).toBeFocused();
+  await search.fill('SiliconFlow');
+
+  await page.getByRole('button', { name: /添加模型供应商：SiliconFlow/ }).focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('textbox', { name: /API Key/ })).toBeFocused();
 
-  // Back returns to step one with the query intact and the caret back in it —
-  // stepping in place is what buys this over two stacked dialogs.
-  await page.getByRole('button', { name: '返回', exact: true }).click();
-  await expect(catalog.getByPlaceholder('搜索服务商')).toHaveValue('SiliconFlow');
-  await expect(catalog.getByPlaceholder('搜索服务商')).toBeFocused();
+  // Back returns to the catalog with the query intact and the caret back in
+  // it: the filter is browsing state held by the panel, so unmounting the
+  // catalog does not throw it away.
+  await page.getByRole('button', { name: '返回服务商列表', exact: true }).click();
+  await expect(search).toHaveValue('SiliconFlow');
+  await expect(search).toBeFocused();
 
-  await page.keyboard.press('Escape');
-  await expect(catalog).toBeHidden();
+  await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
+  await expect(catalog).toHaveCount(0);
   await expect(addButton).toBeFocused();
 
-  // A connection row navigates rather than opening a dialog; the back control
-  // returns to the list and re-focuses the page's primary action.
+  // A connection row navigates to its detail; leaving it puts focus back on
+  // the row the user came from, not on the page's primary action.
   const existingConnection = page.getByRole('button', { name: /模型连接：E2E/ });
   await existingConnection.focus();
   await page.keyboard.press('Enter');
   await expect(connectionDetail(page)).toBeVisible();
   await page.getByRole('button', { name: '返回模型连接', exact: true }).click();
   await expect(connectionDetail(page)).toHaveCount(0);
-  await expect(addButton).toBeFocused();
+  await expect(existingConnection).toBeFocused();
 });
 
 function maskRenderContract(element: Element): { usesAssetMask: boolean; followsForeground: boolean } {
