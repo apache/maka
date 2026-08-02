@@ -561,7 +561,9 @@ export async function createExecutionRuntimeHostComposition(
         await coordinator.prepareRecovery();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
-        await manager.recoverChildWorkspacePatches(sessions.map((session) => session.id));
+        await manager.recoverChildWorkspacePatches(
+          sessions.flatMap((session) => (session.subagentWorkspace ? [session.id] : [])),
+        );
         await graphCoordinator.recover();
         await coordinator.recover();
         rootRecoveryCompleted = true;
