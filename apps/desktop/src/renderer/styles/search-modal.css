@@ -13,6 +13,7 @@
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -23,6 +24,7 @@
   overflow: hidden;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -32,7 +34,7 @@
   overflow: hidden;
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }

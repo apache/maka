@@ -76,6 +76,7 @@
   background: var(--card-bg);
   box-shadow: var(--card-shadow);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   text-align: left;
   opacity: 0;
   pointer-events: none;

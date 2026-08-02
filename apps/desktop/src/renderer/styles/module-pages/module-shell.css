@@ -42,14 +42,14 @@
   font-size: var(--font-size-4xl);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
+  line-height: var(--text-display-2-leading);
 }
 
 .maka-module-main-header p {
   margin: var(--space-1) 0 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .maka-module-hub-heading {

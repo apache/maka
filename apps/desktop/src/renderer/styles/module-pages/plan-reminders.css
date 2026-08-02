@@ -45,6 +45,7 @@
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
 }
@@ -55,14 +56,14 @@
   font-size: var(--font-size-4xl);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
+  line-height: var(--text-display-2-leading);
 }
 
 .maka-plan-heading p:last-child {
   margin: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .maka-plan-top-actions {
@@ -197,7 +198,7 @@
   color: var(--foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
+  line-height: var(--text-body-leading);
 }
 
 .maka-plan-presets {
@@ -218,7 +219,7 @@
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-plan-search,
@@ -227,6 +228,7 @@
   gap: var(--space-1);
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -252,6 +254,7 @@
   gap: var(--space-1-5);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -274,7 +277,7 @@
   color: var(--foreground);
   font-size: var(--font-size-heading);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-large-leading);
   overflow-wrap: anywhere;
 }
 
@@ -285,7 +288,7 @@
   align-items: flex-start;
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-plan-card-run > :first-child {
@@ -306,7 +309,7 @@
   row-gap: var(--space-0-5);
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-plan-card-schedule > span {
@@ -333,13 +336,14 @@
   color: var(--foreground-secondary);
   font-weight: var(--font-weight-semibold);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   letter-spacing: var(--tracking-normal);
 }
 
 .maka-plan-card-note {
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
   margin: 0;
   padding: 0;
   overflow-wrap: anywhere;
@@ -367,6 +371,7 @@
   min-width: 0;
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -376,7 +381,7 @@
 .maka-plan-run-row time {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-plan-run-row time {

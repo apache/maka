@@ -11,6 +11,7 @@
   max-width: min(320px, 45cqi);
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
   text-align: end;
@@ -28,7 +29,7 @@
 .settingsReadOnlyValue[data-mono="true"] {
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
   text-align: start;
   word-break: break-all;
 }

@@ -59,6 +59,7 @@
     gap: var(--space-1-5);
     color: var(--brand-deep);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     font-weight: var(--font-weight-bold);
     letter-spacing: var(--tracking-widest);
     text-transform: uppercase;
@@ -69,8 +70,8 @@
     /* Hero typography uses
        `.welcome-title` with `Instrument Sans` variable font at wght:500
        for hero. Maka uses the system stack; the heading takes the top rung
-       of the type scale with semibold weight + tight leading
-       (PR-FONT-WEIGHT-CONVERGE-0 / PR-LEADING-CONVERGE-0, #520 PR1).
+       of the type scale with semibold weight, and its leading from the role
+       that shares that rung (display-1, measured 40px at 28px).
        This was `2.1333em` until the type-scale convergence: an em multiplier
        hand-derived from a 15px body, which then silently rendered 27.7px
        once the body became 13px — the comment still claimed 32px. That is
@@ -84,7 +85,7 @@
     font-size: var(--font-size-5xl);
     font-weight: var(--font-weight-semibold);
     letter-spacing: var(--tracking-normal);
-    line-height: var(--leading-tight);
+    line-height: var(--text-display-1-leading);
     text-wrap: balance;
   }
 .maka-hero p {
@@ -92,7 +93,7 @@
     max-width: 54ch;
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
     text-wrap: pretty;
   }
 /* #1433: the daily empty chat is a returning user's landing surface, not a
@@ -101,4 +102,5 @@
    they are seen once, and there the headline is the whole message. */
 .maka-hero-empty-chat:not(.maka-hero-deep-research) h1 {
     font-size: var(--font-size-2xl);
+    line-height: var(--text-heading-1-leading);
   }

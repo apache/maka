@@ -19,17 +19,19 @@
   }
 .settingsMemoryPreview strong {
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     color: var(--foreground);
   }
 .settingsMemoryPreview small {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--muted-foreground);
   }
 .settingsMemoryPreview p {
     margin: 0;
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -58,6 +60,7 @@
 .settingsMemoryPromptPreviewHeader strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 .settingsMemoryPromptPreviewHeader div {
     display: inline-flex;
@@ -68,6 +71,7 @@
     flex-shrink: 0;
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 .settingsMemoryPromptPreview[data-active="true"] .settingsMemoryPromptPreviewHeader span {
     color: var(--foreground);
@@ -75,7 +79,7 @@
 .settingsMemoryPromptPreview small {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    line-height: var(--text-supporting-leading);
   }
 .settingsMemoryPromptPreviewBudget {
     font-family: var(--font-mono);
@@ -92,7 +96,7 @@
     color: var(--foreground-secondary);
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -100,7 +104,7 @@
     margin: 0;
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 .settingsMemoryEntryPreviewNotice {
     display: grid;
@@ -113,11 +117,12 @@
 .settingsMemoryEntryPreviewNotice strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 .settingsMemoryEntryPreviewNotice small {
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    line-height: var(--text-supporting-leading);
   }
 .settingsMemorySaveSummary {
     display: grid;
@@ -130,14 +135,17 @@
 .settingsMemorySaveSummary strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 .settingsMemorySaveSummary small {
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 .settingsMemorySaveSummaryTime {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 .settingsMemoryBackupState {
     color: var(--foreground-secondary);
@@ -158,6 +166,7 @@
 .settingsMemoryBackupList strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 /* PR-MEMORY-BACKUP-LIST-A11Y-0 (round 16/30): selector
      targeted the old `<div role="list">`. Container is now a
@@ -179,7 +188,7 @@
 .settingsMemoryBackupList small {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    line-height: var(--text-supporting-leading);
   }
 .settingsMemoryBackupCandidate {
     display: inline-flex;
@@ -195,6 +204,7 @@
     background: var(--background);
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 
 .settingsMemoryEntryGroups {
@@ -218,12 +228,14 @@
     justify-content: space-between;
     gap: var(--space-3);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     color: var(--foreground-secondary);
   }
 
 .settingsMemoryEntryGroupHeader strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 
 .settingsMemoryEntryDraftNotice {
@@ -234,7 +246,7 @@
     background: oklch(from var(--warning) l c h / 0.08);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 .settingsMemoryEntryList {
@@ -286,11 +298,13 @@
 
 .settingsMemoryEntryCard strong {
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     color: var(--foreground);
   }
 
 .settingsMemoryEntryCard small {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--muted-foreground);
   }
 
@@ -313,7 +327,7 @@
     background: var(--foreground-5);
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
+    line-height: var(--text-supporting-leading);
   }
 
 .settingsMemoryPromptScope[data-active="true"] {
@@ -332,7 +346,7 @@
     margin: 0;
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -355,6 +369,7 @@
 .settingsMemoryFilter small {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   white-space: nowrap;
 }
 
@@ -372,13 +387,14 @@
   .settingsMemoryListEmpty strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 
 .settingsMemoryFilterEmpty small,
   .settingsMemoryListEmpty small {
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 .settingsMemoryManualAdd {
@@ -398,11 +414,13 @@
 .settingsMemoryManualAddHeader strong {
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .settingsMemoryManualAddHeader small {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .settingsMemoryDraftWarning {
@@ -417,12 +435,13 @@
 .settingsMemoryDraftWarning strong {
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .settingsMemoryDraftWarning small {
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 /* Memory page meta row — relocated from connection.css — issue #546 PR1. */

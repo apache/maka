@@ -192,7 +192,7 @@
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-normal);
-  line-height: var(--leading-none);
+  line-height: var(--text-supporting-leading);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -232,9 +232,15 @@
    h1–h6 with stylex props (Markdown.js `const Tag = \`h${level}\``). The
    .astryx-heading.level-N classes come from the standalone Heading
    component, which Markdown never mounts. */
+/* The one heading in a turn that is not at the body size, and so the one that
+   cannot take the body baseline with it: at 16px, --maka-line-body's 20px is
+   on the 4px grid but is the 14px tier's line box, one step tighter than the
+   tier this heading actually sits at. It takes its own tier's leading (24px);
+   the turn still reads as one rhythm because 24 is the next step of the same
+   grid, not a different one. */
 .maka-turn [data-maka-contract="markdown"] h1 {
   font-size: var(--font-size-lg);
-  line-height: var(--maka-line-body);
+  line-height: var(--text-large-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -259,4 +265,5 @@
   color: var(--info-text);
   padding: var(--space-0-5) var(--space-1-5);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }

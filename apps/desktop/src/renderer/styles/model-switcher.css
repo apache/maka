@@ -60,6 +60,7 @@
   box-shadow: none;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-medium);
   transition:
     background-color var(--duration-base) var(--ease-out-strong),

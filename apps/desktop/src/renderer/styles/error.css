@@ -48,6 +48,7 @@
     margin: 0;
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
   }
 
@@ -55,7 +56,7 @@
     margin: 0;
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
     max-width: 56ch;
   }
 
@@ -70,7 +71,7 @@
     overflow: auto;
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }

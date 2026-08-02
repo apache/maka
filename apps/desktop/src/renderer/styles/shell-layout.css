@@ -20,6 +20,7 @@
   background: var(--surface-canvas);
   color: var(--foreground);
   font-size: var(--font-size-base);
+  line-height: var(--text-body-leading);
   box-sizing: border-box;
 }
 

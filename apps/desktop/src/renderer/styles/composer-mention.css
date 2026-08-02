@@ -54,6 +54,7 @@
 .maka-composer-mention-name {
   min-width: 0;
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   color: var(--foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -63,6 +64,7 @@
 .maka-composer-mention-secondary {
   min-width: 0;
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   color: var(--muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -76,6 +78,7 @@
 .maka-composer-mention-status {
   padding: var(--space-2) var(--space-2);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   color: var(--muted-foreground);
   text-align: center;
 }
@@ -117,7 +120,7 @@
      contract), so the pill is sized to fit it rather than the reverse. */
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-none);
+  line-height: var(--text-supporting-leading);
   pointer-events: none;
 }
 
@@ -145,6 +148,7 @@
   flex: 1 1 auto;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -166,6 +170,7 @@
   background: transparent;
   color: var(--link);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition: background var(--duration-base) var(--ease-out-strong);
@@ -210,6 +215,7 @@
   color: var(--foreground);
   font-family: var(--font-default);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .maka-composer-skill-panel-search-input::placeholder {
@@ -284,6 +290,7 @@
 .maka-composer-skill-panel-name {
   min-width: 0;
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -293,6 +300,7 @@
   min-width: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -306,5 +314,6 @@
   padding: var(--space-3) var(--space-2);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   text-align: center;
 }

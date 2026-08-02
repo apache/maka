@@ -30,11 +30,13 @@
 
 .settingsPermissionError strong {
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 
 .settingsPermissionError small {
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 
 .settingsPermissionError button {
@@ -50,6 +52,7 @@
 .settingsPermissionSection > header h4 {
     margin: 0 0 var(--space-0-5);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
     color: var(--foreground);
   }
@@ -57,6 +60,7 @@
 .settingsPermissionSection > header small {
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 
 /* Polish wave Item 3: the per-capability bordered blocks (border + radius +
@@ -106,12 +110,14 @@
 
 .settingsCapabilityHeading strong {
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
   }
 
 .settingsCapabilityId {
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--muted-foreground);
     overflow-wrap: anywhere;
   }
@@ -120,7 +126,7 @@
     margin: 0;
     font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 /* Polish wave Item 3: the five-layer breakdown was a nested gray boxed grid
@@ -148,6 +154,7 @@
 
 .settingsCapabilityLayers dt {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     letter-spacing: var(--tracking-wider);
     text-transform: uppercase;
     color: var(--muted-foreground);
@@ -157,6 +164,7 @@
 .settingsCapabilityLayers dd {
     margin: 0;
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     color: var(--foreground);
     display: flex;
     flex-direction: column;
@@ -165,6 +173,7 @@
 
 .settingsCapabilityLayers dd small {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--muted-foreground);
   }
 
@@ -187,6 +196,7 @@
 
 .settingsCapabilityOsPermissions > span {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     letter-spacing: var(--tracking-wider);
     text-transform: uppercase;
     color: var(--muted-foreground);
@@ -209,6 +219,7 @@
     border: var(--border-width-hairline) solid var(--border);
     border-radius: var(--radius-pill);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     background: var(--background);
     color: var(--foreground-secondary);
   }
@@ -216,6 +227,7 @@
 .settingsCapabilityOsPermissions li em {
     font-style: normal;
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     padding: 1px var(--space-1-5);
     border-radius: var(--radius-pill);
     background: var(--foreground-5);
@@ -257,6 +269,7 @@
 
 .settingsCapabilityGuidance > span {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     font-weight: var(--font-weight-semibold);
     color: var(--foreground-secondary);
   }
@@ -266,7 +279,7 @@
     padding-left: var(--space-4);
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
   }
 
 .settingsCapabilityAuditSlot {
@@ -277,6 +290,7 @@
 .settingsCapabilityAuditSlot small {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 
 .settingsCapabilityAuditSlot ul {
@@ -284,6 +298,7 @@
     margin: 0;
     padding-left: var(--space-4);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--foreground-secondary);
   }
 
@@ -406,6 +421,7 @@
 
 .settingsOsPermissionHeading strong {
     font-size: var(--font-size-heading);
+    line-height: var(--text-large-leading);
     font-weight: var(--font-weight-semibold);
     color: var(--foreground);
     min-width: 0;
@@ -415,7 +431,7 @@
 .settingsOsPermissionPurpose {
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 /* #1361: `flex-wrap` so the "影响功能" pill and the impact sentence can break
@@ -428,7 +444,7 @@
     gap: var(--space-1-5);
     font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 .settingsOsPermissionImpactLabel {
@@ -439,6 +455,7 @@
     background: oklch(from var(--foreground) l c h / 0.05);
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     font-weight: var(--font-weight-semibold);
     letter-spacing: var(--tracking-wider);
   }
@@ -446,6 +463,7 @@
 .settingsOsPermissionReason {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     font-style: italic;
   }
 
@@ -568,11 +586,12 @@
     background: var(--foreground-3);
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
   }
 .settingsCapabilityAuditEmpty {
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
-.settingsPermissionMetaLabel { color: var(--foreground-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
+.settingsPermissionMetaLabel { color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); white-space: nowrap; }

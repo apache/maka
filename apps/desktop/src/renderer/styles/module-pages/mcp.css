@@ -37,13 +37,13 @@
   color: var(--foreground);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
+  line-height: var(--text-large-leading);
 }
 
 .maka-mcp-hero span {
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .maka-mcp-hero-signal {
@@ -78,7 +78,7 @@
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  line-height: var(--leading-tight);
+  line-height: var(--text-supporting-leading);
 }
 
 /* Tab row rhythm mirrors the skills page (.maka-skill-tabs-bar): an
@@ -142,6 +142,7 @@
 
 .maka-mcp-market-icon span {
   font-size: var(--font-size-heading);
+  line-height: var(--text-large-leading);
   font-weight: var(--font-weight-bold);
   letter-spacing: var(--tracking-normal);
 }
@@ -184,12 +185,14 @@
 .maka-mcp-market-copy strong {
   color: var(--foreground);
   font-size: var(--font-size-heading);
+  line-height: var(--text-large-leading);
   font-weight: var(--font-weight-semibold);
 }
 
 .maka-mcp-market-copy small {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-mcp-market-copy p {
@@ -198,7 +201,7 @@
   overflow: hidden;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -328,12 +331,14 @@
   margin: 0 var(--space-3) var(--space-3);
   color: var(--destructive-text);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .maka-mcp-server-details {
   margin: 0 var(--space-3) var(--space-3);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-mcp-tool-list {
@@ -419,7 +424,7 @@
   padding-inline: var(--space-4);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-mcp-editor-footer {

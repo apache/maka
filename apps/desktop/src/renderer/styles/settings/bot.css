@@ -45,6 +45,7 @@
   margin: 0;
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -52,6 +53,7 @@
 .settingsBotConfigurationHeader span {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .settingsRemoteAccessActiveList {
@@ -148,13 +150,14 @@
   margin: 0 0 var(--space-1);
   color: var(--foreground);
   font-size: var(--font-size-heading);
+  line-height: var(--text-large-leading);
 }
 
 .settingsBotDetailHeader p {
   margin: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .settingsBotEnableHint {
@@ -162,6 +165,7 @@
   margin-top: var(--space-1);
   color: var(--warning-text, var(--foreground-secondary));
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotConfigDocLink {
@@ -196,6 +200,7 @@
   margin: 0 0 var(--space-1);
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -203,6 +208,7 @@
   margin: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotStatusGrid {
@@ -218,12 +224,14 @@
   margin-bottom: var(--space-1);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 .settingsBotStatusGrid dd {
   min-width: 0;
   margin: 0;
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   overflow-wrap: anywhere;
 }
 
@@ -371,7 +379,7 @@
   color: var(--foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
-  line-height: var(--leading-none);
+  line-height: var(--text-body-leading);
   white-space: nowrap;
 }
 
@@ -382,7 +390,7 @@
   align-items: center;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
+  line-height: var(--text-supporting-leading);
   white-space: nowrap;
 }
 
@@ -460,6 +468,7 @@
   margin-bottom: var(--space-1);
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .settingsBotQuickSetup p {
@@ -467,7 +476,7 @@
   margin: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotQuickSetup .settingsBotBrandChoice {
@@ -538,6 +547,7 @@
 .settingsBotOnboardingStatus {
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-medium);
 }
 
@@ -549,6 +559,7 @@
 .settingsBotOnboardingPrivacy {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotOnboardingActions {

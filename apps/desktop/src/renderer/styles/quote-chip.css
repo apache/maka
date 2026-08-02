@@ -19,6 +19,7 @@
   color: var(--foreground-secondary);
   box-shadow: var(--shadow-medium);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition:

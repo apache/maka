@@ -22,6 +22,7 @@
     padding: var(--space-4);
     color: var(--muted-foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
     text-align: center;
   }

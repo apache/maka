@@ -54,6 +54,7 @@
 .settingsHealthLayer > header h4 {
     margin: 0 0 var(--space-0-5);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
     color: var(--foreground);
   }
@@ -61,6 +62,7 @@
 .settingsHealthLayer > header small {
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 
 /* Polish wave Item 2: the per-signal bordered blocks (.settingsHealthSignalRow*
@@ -101,6 +103,7 @@
 .settingsHealthSignalMeta {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 
 .settingsHealthSignalMeta {
@@ -160,8 +163,8 @@
     background: var(--foreground-3);
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
   }
-.settingsHealthMetaLabel { color: var(--foreground-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
-.settingsHealthSignalLabel { color: var(--foreground); font-size: var(--font-size-ui); font-weight: 600; }
-.settingsHealthSignalScope { color: var(--muted-foreground); font-size: var(--font-size-caption); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
+.settingsHealthMetaLabel { color: var(--foreground-secondary); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); white-space: nowrap; }
+.settingsHealthSignalLabel { color: var(--foreground); font-size: var(--font-size-ui); line-height: var(--text-body-leading); font-weight: 600; }
+.settingsHealthSignalScope { color: var(--muted-foreground); font-size: var(--font-size-caption); line-height: var(--text-supporting-leading); letter-spacing: var(--tracking-wider); text-transform: uppercase; }

@@ -77,7 +77,7 @@
   color: var(--control-foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-none);
+  line-height: var(--text-body-leading);
   box-shadow: none;
   overflow: hidden;
   -webkit-app-region: no-drag;
@@ -206,6 +206,7 @@
   color: var(--foreground);
   font: inherit;
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
   outline: 0;
   padding: 1px 0;
@@ -223,7 +224,7 @@
   color: var(--warning-text, var(--info-text));
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 /* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */
@@ -239,6 +240,6 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-normal);
   letter-spacing: var(--tracking-wide);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
   white-space: nowrap;
 }

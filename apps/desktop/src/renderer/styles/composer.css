@@ -145,6 +145,7 @@
   background: transparent;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
   max-width: min(180px, 28vw);
@@ -211,9 +212,10 @@
 /* The textarea owns no chrome (the card does). It auto-resizes from
    --h-composer-min up to 240px (capped in @maka/ui), then scrolls. Type
    matches Astryx ChatComposer / ChatComposerInput: body scale tokens, not
-   a local 14/22 magic pair. --text-body-* comes from the Astryx theme;
-   --font-size-base / product leading cover Storybook or mounts where the
-   theme wrapper is absent.
+   a local 14/22 magic pair. The size keeps its --font-size-base fallback for
+   Storybook or mounts where the theme wrapper is absent; the leading dropped
+   its fallback chain with the product leading tiers it named, and there is no
+   second vocabulary left to fall back to.
 
    Kill the global `*:focus-visible` ring (maka-tokens) — Astryx ChatComposer
    elevates the outer shell on focus-within; a second rectangle on the field
@@ -232,7 +234,7 @@
   font-family: var(--font-default);
   font-size: var(--text-body-size, var(--font-size-base));
   font-weight: var(--text-body-weight, var(--font-weight-normal, 400));
-  line-height: var(--text-body-leading, var(--leading-normal, 1.4286));
+  line-height: var(--text-body-leading);
   min-height: var(--h-composer-min);
   max-height: 240px;
 }
@@ -313,6 +315,7 @@
   padding: var(--space-2) var(--space-2);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   text-align: center;
 }
 
@@ -351,6 +354,7 @@
   margin-left: auto;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-project-check {
@@ -376,12 +380,14 @@
   border-radius: var(--radius-control);
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-no-model-hint-action {
   flex-shrink: 0;
   color: var(--link);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-medium);
   text-decoration: none;
   border-radius: var(--radius-control);
@@ -413,7 +419,7 @@
   background: var(--background-elevated);
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-revision-notice > svg {
@@ -447,6 +453,7 @@
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);

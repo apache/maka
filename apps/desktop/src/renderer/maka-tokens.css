@@ -367,29 +367,34 @@
   --maka-line-body: calc(var(--text-body-size) * var(--text-body-leading));
 
   /* === line-height ===
-     PR-LEADING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale for single-line, heading, dense UI, and body copy.
-     relaxed/loose had zero sites and were dropped.
+     There is no product leading vocabulary. The four semantic tiers that used
+     to live here (none 1 / tight 1.25 / snug 1.375 / normal 1.5) are gone, and
+     every line-height in the renderer now names an Astryx role token.
 
-     NOT yet single-source, and deliberately left that way by the type-scale
-     convergence. Leading now has three vocabularies: these semantic tiers,
-     Astryx's role tiers (--text-body-leading 1.4286, --text-supporting-leading
-     1.6667, …), and --maka-line-body above. Two of them disagree about body
-     copy: --leading-normal is 1.5, which at the 14px body tier is 21px and off
-     the 4px grid, while Astryx computes 20px. The transcript is internally
-     consistent because it reads Astryx's; the rest of the product chrome sits
-     1px looser. Converging them moves 66 --leading-normal sites at once, which
-     is a relayout, not a token change — it wants its own PR with its own
-     before/after, and it gets easier now that the size ladder has one source.
+     They were not merely different numbers from Astryx's — they were a
+     different method, and the method is what could not survive. A unitless
+     ratio is one value applied across every tier it is used at; Astryx snaps
+     each tier's line box to the 4px grid on its own (`expandTypeScale.ts`:
+     target 1.5 under 20px, 1.4 through 31px, 1.25 above, snapped, floor
+     size + 4) and reports the quotient. So 1.4286 is not a chosen ratio, it is
+     20/14. No single ratio can sit on the grid at 12, 14, 16 and 22px at once,
+     which is why the two vocabularies could disagree by 1px on body copy while
+     both looked deliberate — and why picking a third number would not have
+     helped.
 
-     Snug is the one tier that can't be cut: 40 sites at 1.3-1.4 (small-
-     title / UI text in small-text dense zones) collapse to tight
-     (1.25, too tight) or normal (1.5, too loose) at ±0.1-0.2 on small
-     text. relaxed/loose had zero sites, dropped. */
-  --leading-none: 1;        /* single-line: kbd / tag / button label / count / timestamp */
-  --leading-tight: 1.25;   /* headings: h1-h4 / card titles */
-  --leading-snug: 1.375;   /* small titles / UI text: dense zones */
-  --leading-normal: 1.5;   /* body / long-form / markdown */
+     The grid is not decoration: Astryx sizes component boxes off the same 4px
+     scale, so a line box that lands on it stops fighting the box around it.
+     Its own Badge and Kbd carry `--text-supporting-leading` (20px) inside a
+     `--spacing-5` (20px) box; that identity is why Astryx ships no
+     `line-height: 1` escape hatch and why this file no longer needs one.
+
+     A consequence worth stating, because it limits what this convergence
+     bought: a unitless leading still inherits as a ratio. An element that
+     inherits a role's leading and then overrides its own font-size lands off
+     the grid again — measured, that is what `.maka-attachment-file-content`
+     did, holding 1.25 for a 14px name and a 12px size at once. The rule that
+     follows from it is that leading belongs on the element that sets the size,
+     never on a container above it. */
 
   /* === font-weight ===
      PR-FONT-WEIGHT-CONVERGE-0 (issue #520 PR1):
@@ -1012,6 +1017,14 @@ html[data-os="darwin"].dark {
 
   body {
     font-size: var(--font-size-base);
+    /* The document's default leading, and the one site where declaring it
+       matters most: Astryx's reset puts `line-height: 1.5` on `:where(html)`,
+       so before this line every element that did not declare a leading of its
+       own inherited that ratio — measured 21px at the 14px body tier, off the
+       grid, on hundreds of nodes no stylesheet in this repo names. Declared
+       here rather than on `html` because the size it pairs with is declared
+       here; the root stays free of typography, per the contract above. */
+    line-height: var(--text-body-leading);
     font-family: var(--font-default);
     background: var(--background);
     color: var(--foreground);
@@ -1087,6 +1100,7 @@ html[data-os="darwin"].dark {
     background: var(--background);
     color: var(--foreground);
     font-size: var(--font-size-base);
+    line-height: var(--text-body-leading);
   }
 
   .maka-shell-rail-right {
@@ -1111,6 +1125,7 @@ html[data-os="darwin"].dark {
     border-bottom: var(--border-width-hairline) solid var(--border);
     font-weight: var(--font-weight-semibold);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     letter-spacing: var(--tracking-wide);
     text-transform: uppercase;
     color: var(--foreground-secondary);
@@ -1126,7 +1141,7 @@ html[data-os="darwin"].dark {
     border-radius: var(--radius-control);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-snug);
+    line-height: var(--text-body-leading);
     user-select: none;
     transition: background var(--duration-quick) var(--ease-out-strong), color var(--duration-quick) var(--ease-out-strong);
   }
@@ -1152,6 +1167,7 @@ html[data-os="darwin"].dark {
     border-radius: var(--radius-control);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
   .maka-sidebar-button:hover { background: var(--state-hover-bg); color: var(--foreground); }
 
@@ -1176,6 +1192,7 @@ html[data-os="darwin"].dark {
     gap: var(--space-3);
     padding: 0 var(--space-4);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     color: var(--foreground-secondary);
   }
   .maka-titlebar strong { color: var(--foreground); font-weight: var(--font-weight-medium); }
@@ -1287,6 +1304,7 @@ html[data-os="darwin"].dark {
     gap: var(--space-2);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */
@@ -1298,6 +1316,7 @@ html[data-os="darwin"].dark {
        command surfaces read literally, so ligatures stay off. */
     font-variant-ligatures: none;
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     background: var(--foreground-3);
     border: var(--border-width-hairline) solid var(--border);
     border-radius: var(--radius-surface);

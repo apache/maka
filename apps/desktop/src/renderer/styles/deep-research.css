@@ -21,6 +21,7 @@
   margin: 0 0 var(--space-1);
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-bold);
 }
 
@@ -28,7 +29,7 @@
   display: block;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .maka-deep-research-report,
@@ -48,7 +49,7 @@
   margin: 0;
   color: var(--foreground);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
 }
 
 .maka-deep-research-report ul,
@@ -79,6 +80,7 @@
 .maka-deep-research-progress-title {
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-bold);
   white-space: nowrap;
 }
@@ -90,7 +92,7 @@
   min-width: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .maka-deep-research-run-panel {
@@ -121,14 +123,14 @@
 
 .maka-deep-research-run-summary strong {
   font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
 }
 
 .maka-deep-research-run-summary span,
 .maka-deep-research-run-panel p {
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-deep-research-run-actions {
@@ -156,6 +158,7 @@
   background: var(--background);
   color: var(--foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-semibold);
   transition:
     background-color var(--duration-quick) var(--ease-out-strong),
@@ -186,7 +189,7 @@
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-deep-research-run-grid ul {
@@ -203,7 +206,7 @@
   min-width: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-deep-research-run-grid li[data-status="completed"] > span {

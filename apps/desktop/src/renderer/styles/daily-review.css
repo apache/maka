@@ -84,6 +84,7 @@
   text-align: center;
   font-weight: var(--font-weight-semibold);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-normal);
   color: var(--foreground);
@@ -162,6 +163,7 @@
 .maka-daily-review-session-time {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
@@ -169,6 +171,7 @@
 .maka-daily-review-session-preview {
     min-width: 0;
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     color: var(--muted-foreground);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -182,6 +185,7 @@
 
 .maka-daily-review-top-meta {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--muted-foreground);
     font-variant-numeric: tabular-nums;
   }
@@ -221,6 +225,7 @@
 
 .maka-daily-review-archive-count {
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     color: var(--muted-foreground);
     font-variant-numeric: tabular-nums;
   }
@@ -244,6 +249,7 @@
     min-width: 0;
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
     letter-spacing: var(--tracking-normal);
     overflow: hidden;
@@ -256,7 +262,7 @@
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
     font-variant-numeric: tabular-nums;
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
     overflow-wrap: anywhere;
   }
 
@@ -277,14 +283,14 @@
 .maka-daily-review-archive-empty {
     color: var(--muted-foreground);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 .maka-daily-review-archive-error {
     margin: 0;
     color: var(--destructive, var(--foreground));
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
   }
 
 .maka-daily-review-archive-sections {
@@ -310,7 +316,7 @@
 .maka-daily-review-archive-section-body {
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
     overflow-wrap: anywhere;
   }
 
@@ -336,5 +342,5 @@
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }

@@ -60,6 +60,7 @@
   background: var(--control);
   color: var(--foreground-dimmed);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-variant-numeric: tabular-nums;
 }
 
@@ -169,6 +170,7 @@
   color: var(--foreground);
   text-align: left;
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   transition:
     background var(--duration-base) var(--ease-out-strong),
     border-color var(--duration-base) var(--ease-out-strong);
@@ -211,6 +213,7 @@
   margin-left: auto;
   gap: 1px;
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   color: oklch(from var(--foreground) l c h / 0.62);
   font-variant-numeric: tabular-nums;
 }
@@ -237,10 +240,12 @@
   justify-content: center;
   color: oklch(from var(--foreground) l c h / 0.5);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-empty {
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-file {
@@ -248,12 +253,13 @@
   white-space: pre-wrap;
   word-break: break-word;
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-diff {
   margin: 0;
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-preview-html {
@@ -275,6 +281,7 @@
 
 .maka-artifact-preview-external-links-bar {
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   padding: var(--space-1) var(--space-1-5);
   border-radius: var(--radius-control);
   background: oklch(from var(--info) l c h / 0.10);
@@ -323,6 +330,7 @@
 
 .maka-artifact-preview-unsupported-title {
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
   color: var(--foreground);
 }
@@ -330,7 +338,7 @@
 .maka-artifact-preview-unsupported-body {
   margin: 0;
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
   color: var(--foreground-secondary);
 }
 
@@ -341,6 +349,7 @@
   margin: 0;
   padding: 0;
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   color: var(--foreground-secondary);
 }
 .maka-artifact-preview-unsupported-meta > div {
@@ -376,6 +385,7 @@
 .maka-artifact-preview-pdf-fallback {
   margin: 0;
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   color: oklch(from var(--foreground) l c h / 0.6);
 }
 
@@ -384,6 +394,7 @@
   align-items: center;
   gap: var(--space-2);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   color: oklch(from var(--foreground) l c h / 0.65);
 }
 
@@ -398,6 +409,7 @@
   border-radius: var(--radius-surface);
   border: var(--border-width-hairline) solid var(--border);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .maka-artifact-preview-fail[data-tone="destructive"] {
@@ -419,7 +431,7 @@
 .maka-artifact-preview-fail-body {
   margin: 0;
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-artifact-toolbar {
