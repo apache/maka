@@ -22,9 +22,9 @@ type ToastApi = {
  * hydrates them from `window.maka.settings` / `e2eFixture` on mount and on
  * close-settings re-reads.
  *
- * `closeSettings` stays in AppShell: on close it re-reads just the default
- * permission mode (cross-slice orchestration with onboarding / memory). The
- * full settings hydration lives here.
+ * `closeSettings` stays in AppShell: on close it calls `refreshShellSettings()`
+ * so display mirrors (default permission mode, configured voice routes) catch
+ * up without an app restart. The full settings hydration lives here.
  */
 export function useShellAppearance({
   toastApi,
@@ -49,7 +49,6 @@ export function useShellAppearance({
   // which mode a session is created with.
   const [defaultPermissionMode, setDefaultPermissionMode] = useState<ChatDefaultPermissionMode>('ask');
   const [voiceCaptureConfigured, setVoiceCaptureConfigured] = useState(false);
-  const [realtimeVoiceConfigured, setRealtimeVoiceConfigured] = useState(false);
 
   async function refreshShellSettings() {
     const uiLocaleHydration = uiLocaleUpdateGate.beginHydration();
@@ -70,9 +69,8 @@ export function useShellAppearance({
       setThemePalette(palette);
       setUserLabel(name);
       setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
-      const voiceAvailability = voiceComposerAvailability(next);
+      const voiceAvailability = voiceComposerAvailability(next.voice);
       setVoiceCaptureConfigured(voiceAvailability.capture);
-      setRealtimeVoiceConfigured(voiceAvailability.realtime);
       applyTheme(pref);
       applyThemePalette(palette);
     } catch (error) {
@@ -95,7 +93,6 @@ export function useShellAppearance({
     defaultPermissionMode,
     setDefaultPermissionMode,
     voiceCaptureConfigured,
-    realtimeVoiceConfigured,
     refreshShellSettings,
   };
 }

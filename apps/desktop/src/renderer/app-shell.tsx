@@ -343,7 +343,6 @@ function AppShellContent({
     defaultPermissionMode,
     setDefaultPermissionMode,
     voiceCaptureConfigured,
-    realtimeVoiceConfigured,
     refreshShellSettings,
   } = useShellAppearance({
     toastApi,
@@ -2234,9 +2233,7 @@ function AppShellContent({
                   onCancelVoiceCapture={
                     voiceCaptureConfigured ? voiceInput.cancelCapture : undefined
                   }
-                  onToggleRealtimeVoice={
-                    realtimeVoiceConfigured ? voiceInput.toggleRealtime : undefined
-                  }
+                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
                   onSend={sendWithAttachments}
                   onStop={stop}
                   revisionNotice={
