@@ -102,7 +102,7 @@ export class PtyScreenCollector {
     this.evictOldestIfOverBudget();
     this.options.onDirty(generation);
 
-    const parse = this.sequence.then(() => (entry.dropped ? undefined : this.write(data)));
+    const parse = this.sequence.then(() => (entry.dropped ? undefined : this.write(entry.data)));
     this.sequence = parse.then(
       () => {
         if (entry.dropped) return;
@@ -129,6 +129,11 @@ export class PtyScreenCollector {
       const oldest = this.pending.shift();
       if (!oldest) break;
       oldest.dropped = true;
+      // Release the payload: the queued closure still references the entry
+      // until the parse chain reaches it, so a paused write would otherwise
+      // keep every evicted string alive — the byte counter would be bounded
+      // while actual memory grows without bound.
+      oldest.data = '';
       this.pendingBytes -= oldest.bytes;
       this.historyTruncated = true;
       // Eviction creates an input gap: the dropped chunk may have carried the
