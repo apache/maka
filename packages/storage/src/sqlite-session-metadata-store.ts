@@ -977,7 +977,7 @@ export class SqliteSessionMetadataStore {
     });
   }
 
-  async listPendingTranscriptGcSessionIds(sessionId?: string): Promise<string[]> {
+  async listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]> {
     this.assertOpen();
     if (sessionId !== undefined) assertSafeSessionId(sessionId);
     const rows =
@@ -986,7 +986,7 @@ export class SqliteSessionMetadataStore {
             .prepare(`
               SELECT session_id AS sessionId
               FROM session_metadata_tombstones
-              WHERE transcript_gc_pending = 1
+              WHERE cleanup_pending = 1
               ORDER BY session_id
             `)
             .all()
@@ -997,7 +997,7 @@ export class SqliteSessionMetadataStore {
               JOIN session_metadata_tombstones pending
                 ON pending.retirement_unit_id = target.retirement_unit_id
               WHERE target.session_id = ?
-                AND pending.transcript_gc_pending = 1
+                AND pending.cleanup_pending = 1
               ORDER BY pending.session_id
             `)
             .all(sessionId);
@@ -1026,14 +1026,14 @@ export class SqliteSessionMetadataStore {
     return tombstoned.sort();
   }
 
-  async completeTranscriptGc(sessionId: string): Promise<void> {
+  async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     this.transaction(() => {
       this.db
         .prepare(`
           UPDATE session_metadata_tombstones
-          SET transcript_gc_pending = 0
+          SET cleanup_pending = 0
           WHERE session_id = ?
         `)
         .run(sessionId);
@@ -2253,7 +2253,7 @@ export class SqliteSessionMetadataStore {
               session_id,
               deleted_at,
               retirement_unit_id,
-              transcript_gc_pending
+              cleanup_pending
             )
             VALUES (?, ?, ?, 1)
             ON CONFLICT(session_id) DO NOTHING
@@ -2278,7 +2278,7 @@ export class SqliteSessionMetadataStore {
             session_id,
             deleted_at,
             retirement_unit_id,
-            transcript_gc_pending
+            cleanup_pending
           )
           VALUES (?, ?, ?, 1)
           ON CONFLICT(session_id) DO NOTHING

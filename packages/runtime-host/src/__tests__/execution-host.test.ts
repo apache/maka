@@ -1819,7 +1819,9 @@ async function withOwnedTaskLedgerToolPort<T>(
   if (!owner) throw new Error('Unable to acquire the interactive Task Ledger tool port');
   try {
     const writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate());
+    const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate(), {
+      probeSessionRemoval: async () => ({ kind: 'present' }),
+    });
     return await run(coordinator, buildTaskLedgerTools({ store: coordinator }));
   } finally {
     await owner.close();

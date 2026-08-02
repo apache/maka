@@ -174,6 +174,134 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('joins family backend disposal failures and drains the Host', async () => {
+    await withHarness(async (harness) => {
+      let releaseSibling!: () => void;
+      const siblingRelease = new Promise<void>((resolve) => {
+        releaseSibling = resolve;
+      });
+      let siblingSettled = false;
+      harness.disposeBackend = async (sessionId) => {
+        harness.actions.disposed.push(sessionId);
+        if (sessionId === harness.rootId) throw new Error('injected backend disposal failure');
+        await siblingRelease;
+        siblingSettled = true;
+      };
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      let removalSettled = false;
+      const removal = harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      ).then((outcome) => {
+        removalSettled = true;
+        return outcome;
+      });
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(removalSettled, false);
+      releaseSibling();
+      const outcome = await removal;
+      assert.equal(siblingSettled, true);
+      assert.equal(outcome.ok, false);
+      if (outcome.ok) return;
+      assert.equal(outcome.error.code, 'persistence_failed');
+      assert.equal(harness.actions.drains, 1);
+      assert.equal(harness.actions.goalRollbacks, 1);
+      assert.equal(harness.actions.automationRollbacks, 1);
+      assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'present');
+    });
+  });
+
+  test('keeps aggregate cleanup retryable without changing a committed remove result', async () => {
+    await withHarness(async (harness) => {
+      harness.failArtifactCleanup = true;
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(removed, {
+        ok: true,
+        result: { kind: 'removed', sessionId: harness.rootId },
+      });
+      assert.equal(harness.actions.drains, 0);
+      await waitFor(
+        () => harness.actions.purgedTasks.length === harness.familyIds.length,
+        'retirement cleanup was not attempted',
+      );
+      assert.deepEqual(
+        new Set(await harness.store.listPendingSessionRetirementCleanupIds()),
+        new Set(harness.familyIds),
+      );
+
+      harness.failArtifactCleanup = false;
+      await harness.coordinator.recover();
+      await waitFor(
+        async () => (await harness.store.listPendingSessionRetirementCleanupIds()).length === 0,
+        'retirement cleanup was not retried',
+      );
+      assert.deepEqual(await harness.store.listPendingSessionRetirementCleanupIds(), []);
+      assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
+      assert.deepEqual(new Set(harness.actions.purgedTasks), new Set(harness.familyIds));
+      assert.deepEqual(new Set(harness.actions.purgedOperationalState), new Set(harness.familyIds));
+    });
+  });
+
+  test('returns after the tombstone commit and joins active cleanup on close', async () => {
+    await withHarness(async (harness) => {
+      let enterCleanup!: () => void;
+      const cleanupEntered = new Promise<void>((resolve) => {
+        enterCleanup = resolve;
+      });
+      let releaseCleanup!: () => void;
+      const cleanupRelease = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+      harness.purgeArtifact = async (sessionId) => {
+        harness.actions.purgedArtifacts.push(sessionId);
+        enterCleanup();
+        await cleanupRelease;
+      };
+
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      assert.deepEqual(
+        await harness.coordinator.handlers['session.remove'](
+          { sessionId: harness.rootId, expectedRevision: target.revision },
+          CONNECTION_CONTEXT,
+        ),
+        { ok: true, result: { kind: 'removed', sessionId: harness.rootId } },
+      );
+      await cleanupEntered;
+
+      let closeSettled = false;
+      const closing = harness.coordinator.close().then(() => {
+        closeSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false);
+      releaseCleanup();
+      await closing;
+      assert.equal(closeSettled, true);
+      assert.deepEqual(await harness.store.listPendingSessionRetirementCleanupIds(), []);
+    });
+  });
+
+  test('projects a sibling metadata race as a family operation conflict', async () => {
+    await withHarness(async (harness) => {
+      await harness.store.updateHeader(harness.revisionId, { name: 'Different revision' });
+      harness.updateSiblingBeforeRemoveCommit = true;
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+      const outcome = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+      assert.equal(outcome.ok, false);
+      if (outcome.ok) return;
+      assert.equal(outcome.error.code, 'operation_conflict');
+      assert.equal(harness.actions.drains, 0);
+    });
+  });
+
   test('drains after post-commit publication failure and converges on tombstone retry', async () => {
     await withHarness(async (harness) => {
       harness.failRemovalPublication = true;
@@ -230,6 +358,9 @@ interface RetirementActions {
   readonly removedContinuity: string[];
   readonly retiredCapabilities: string[];
   readonly retiredMessages: string[];
+  readonly purgedArtifacts: string[];
+  readonly purgedTasks: string[];
+  readonly purgedOperationalState: string[];
   goalCommits: number;
   goalRollbacks: number;
   automationCommits: number;
@@ -242,6 +373,7 @@ async function withHarness(
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-retirement-'));
   const store = createSessionStore(root);
+  let coordinator: HostSessionRetirementCoordinator | undefined;
   try {
     const rootSession = await store.create(sessionInput('Revision root'));
     const revision = await store.create(
@@ -259,6 +391,9 @@ async function withHarness(
       removedContinuity: [],
       retiredCapabilities: [],
       retiredMessages: [],
+      purgedArtifacts: [],
+      purgedTasks: [],
+      purgedOperationalState: [],
       goalCommits: 0,
       goalRollbacks: 0,
       automationCommits: 0,
@@ -282,8 +417,12 @@ async function withHarness(
       blockers,
       failRemoveCommit: false,
       failRemovalPublication: false,
+      failArtifactCleanup: false,
+      purgeArtifact: undefined,
       hideRevisionFromNextFamilyRead: false,
       updateMetadataDuringNextDispose: false,
+      updateSiblingBeforeRemoveCommit: false,
+      disposeBackend: undefined,
       coordinator: undefined as unknown as HostSessionRetirementCoordinator,
     };
     harness.coordinator = new HostSessionRetirementCoordinator({
@@ -297,12 +436,22 @@ async function withHarness(
         probeSessionRemoval: (sessionId) => store.probeSessionRemoval(sessionId),
         readCatalogRecord: (sessionId) => store.readCatalogRecord(sessionId),
         readHeaderRecordSnapshot: (sessionId) => store.readHeaderRecordSnapshot(sessionId),
+        listPendingSessionRetirementCleanupIds: (sessionId) =>
+          store.listPendingSessionRetirementCleanupIds(sessionId),
+        purgeRemovedSessionTranscript: (sessionId) =>
+          store.purgeRemovedSessionTranscript(sessionId),
+        completeSessionRetirementCleanup: (sessionId) =>
+          store.completeSessionRetirementCleanup(sessionId),
         setSessionsLifecycleVersioned: (sessions, state) =>
           store.setSessionsLifecycleVersioned(sessions, state),
-        removeSessionsVersioned: (sessions) =>
-          harness.failRemoveCommit
-            ? Promise.reject(new Error('injected remove failure'))
-            : store.removeSessionsVersioned(sessions),
+        removeSessionsVersioned: async (sessions) => {
+          if (harness.failRemoveCommit) throw new Error('injected remove failure');
+          if (harness.updateSiblingBeforeRemoveCommit) {
+            harness.updateSiblingBeforeRemoveCommit = false;
+            await store.updateHeader(harness.revisionId, { name: 'Racing sibling update' });
+          }
+          return store.removeSessionsVersioned(sessions);
+        },
       },
       admission: new SessionAdmissionGate(),
       root: {
@@ -336,6 +485,7 @@ async function withHarness(
       },
       manager: {
         disposeSessionBackend: async (sessionId) => {
+          if (harness.disposeBackend) return harness.disposeBackend(sessionId);
           actions.disposed.push(sessionId);
           if (harness.updateMetadataDuringNextDispose) {
             harness.updateMetadataDuringNextDispose = false;
@@ -357,12 +507,29 @@ async function withHarness(
           actions.removedContinuity.push(...sessionIds);
         },
       },
+      artifacts: {
+        purgeSessionArtifacts: async (sessionId) => {
+          if (harness.purgeArtifact) return harness.purgeArtifact(sessionId);
+          if (harness.failArtifactCleanup) throw new Error('injected Artifact cleanup failure');
+          actions.purgedArtifacts.push(sessionId);
+        },
+      },
+      taskLedger: {
+        purgeConversationTaskLedger: async (sessionId) => {
+          actions.purgedTasks.push(sessionId);
+        },
+      },
+      purgeOperationalState: async (sessionId) => {
+        actions.purgedOperationalState.push(sessionId);
+      },
       requestDrain: () => {
         actions.drains += 1;
       },
     });
+    coordinator = harness.coordinator;
     await operation(harness);
   } finally {
+    await coordinator?.close();
     await store.close?.();
     await rm(root, { recursive: true, force: true });
   }
@@ -385,8 +552,23 @@ interface RetirementHarness {
   coordinator: HostSessionRetirementCoordinator;
   failRemoveCommit: boolean;
   failRemovalPublication: boolean;
+  failArtifactCleanup: boolean;
+  purgeArtifact: ((sessionId: string) => Promise<void>) | undefined;
   hideRevisionFromNextFamilyRead: boolean;
   updateMetadataDuringNextDispose: boolean;
+  updateSiblingBeforeRemoveCommit: boolean;
+  disposeBackend: ((sessionId: string) => Promise<void>) | undefined;
+}
+
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  message: string,
+): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 function retirementHandle(

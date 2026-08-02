@@ -689,14 +689,14 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     `
     ALTER TABLE session_metadata_tombstones ADD COLUMN retirement_unit_id TEXT;
     ALTER TABLE session_metadata_tombstones
-      ADD COLUMN transcript_gc_pending INTEGER NOT NULL DEFAULT 0
-      CHECK (transcript_gc_pending IN (0, 1));
+      ADD COLUMN cleanup_pending INTEGER NOT NULL DEFAULT 0
+      CHECK (cleanup_pending IN (0, 1));
 
     UPDATE session_metadata_tombstones
-    SET retirement_unit_id = session_id, transcript_gc_pending = 1;
+    SET retirement_unit_id = session_id, cleanup_pending = 1;
 
     CREATE INDEX session_metadata_tombstones_by_retirement_unit
-      ON session_metadata_tombstones(retirement_unit_id, transcript_gc_pending, session_id);
+      ON session_metadata_tombstones(retirement_unit_id, cleanup_pending, session_id);
   `,
   ],
 ]);

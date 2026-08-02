@@ -256,6 +256,9 @@ export interface SessionAuthorityStore extends SessionStore {
     state: 'active' | 'archived',
   ): Promise<SessionHeaderSnapshot[]>;
   removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]>;
+  listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]>;
+  purgeRemovedSessionTranscript(sessionId: string): Promise<void>;
+  completeSessionRetirementCleanup(sessionId: string): Promise<void>;
 }
 
 interface SessionAuthorityStoreTestDependencies {
@@ -290,9 +293,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private catalogProjectionRecovery: Promise<void> | null = null;
   private catalogProjectionFailure: unknown;
   private readonly removeTranscript: (sessionId: string) => Promise<void>;
-  private readonly transcriptGcQueue = new Set<string>();
-  private transcriptGcWorker: Promise<void> | null = null;
-  private closing = false;
 
   constructor(workspaceRoot: string, dependencies: SessionAuthorityStoreTestDependencies) {
     this.files = new FileSessionStore(workspaceRoot, true);
@@ -313,12 +313,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
         await this.metadata.requireCatalogProjectionRecovery();
       }
       await this.recoverCatalogProjections();
-      const [pending, existing] = await Promise.all([
-        this.metadata.listPendingTranscriptGcSessionIds(),
-        this.files.listSessionDirectoryIds(),
-      ]);
-      const resurrected = await this.metadata.listTombstonedSessionIdsAmong(existing);
-      this.scheduleTranscriptGc([...new Set([...pending, ...resurrected])]);
     });
     void this.ready.catch(() => {});
   }
@@ -720,11 +714,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async probeSessionRemoval(sessionId: string): Promise<ProbeSessionRemovalResult> {
     await this.ensureReady();
-    const probe = projectRemovalProbe(await this.metadata.probeRemoval(sessionId));
-    if (probe.kind === 'removed') {
-      this.scheduleTranscriptGc(await this.metadata.listPendingTranscriptGcSessionIds(sessionId));
-    }
-    return probe;
+    return projectRemovalProbe(await this.metadata.probeRemoval(sessionId));
   }
 
   async setSessionsLifecycleVersioned(
@@ -737,9 +727,35 @@ class SqliteSessionStore implements SessionAuthorityStore {
 
   async removeSessionsVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
     await this.ensureReady();
-    const removed = await this.metadata.removeVersioned(sessions);
-    this.scheduleTranscriptGc(removed);
-    return removed;
+    return this.metadata.removeVersioned(sessions);
+  }
+
+  async listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]> {
+    await this.ensureReady();
+    const [pending, existing] = await Promise.all([
+      this.metadata.listPendingSessionRetirementCleanupIds(sessionId),
+      this.files.listSessionDirectoryIds(),
+    ]);
+    const resurrected = await this.metadata.listTombstonedSessionIdsAmong(existing);
+    const relevantResurrected =
+      sessionId === undefined
+        ? resurrected
+        : resurrected.filter((candidate) => candidate === sessionId);
+    return [...new Set([...pending, ...relevantResurrected])].sort();
+  }
+
+  async purgeRemovedSessionTranscript(sessionId: string): Promise<void> {
+    await this.ensureReady();
+    const probe = await this.metadata.probeRemoval(sessionId);
+    if (probe.kind !== 'removed') {
+      throw new Error(`Cannot purge transcript for a Session that is ${probe.kind}`);
+    }
+    await this.removeTranscript(sessionId);
+  }
+
+  async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
+    await this.ensureReady();
+    await this.metadata.completeSessionRetirementCleanup(sessionId);
   }
 
   async markSessionReadThrough(sessionId: string, readThroughTs: number): Promise<SessionHeader> {
@@ -810,11 +826,9 @@ class SqliteSessionStore implements SessionAuthorityStore {
     await this.ensureReady();
     await this.metadata.remove(sessionId);
     await this.removeTranscript(sessionId);
-    await this.metadata.completeTranscriptGc(sessionId);
   }
 
   close(): Promise<void> {
-    this.closing = true;
     this.closePromise ??= this.closeAfterReady();
     return this.closePromise;
   }
@@ -822,7 +836,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private async closeAfterReady(): Promise<void> {
     await this.ready.catch(() => {});
     await this.catalogProjectionRecovery?.catch(() => {});
-    await this.transcriptGcWorker?.catch(() => {});
     this.metadata.close();
   }
 
@@ -852,38 +865,6 @@ class SqliteSessionStore implements SessionAuthorityStore {
       }
     }
     await this.metadata.recoverCatalogProjections(projections);
-  }
-
-  private scheduleTranscriptGc(sessionIds: readonly string[]): void {
-    if (this.closing) return;
-    for (const sessionId of sessionIds) this.transcriptGcQueue.add(sessionId);
-    if (this.transcriptGcWorker || this.transcriptGcQueue.size === 0) return;
-    const worker = this.drainTranscriptGc();
-    this.transcriptGcWorker = worker;
-    void worker.then(
-      () => this.finishTranscriptGc(worker),
-      () => this.finishTranscriptGc(worker),
-    );
-  }
-
-  private async drainTranscriptGc(): Promise<void> {
-    while (!this.closing) {
-      const sessionId = this.transcriptGcQueue.values().next().value as string | undefined;
-      if (!sessionId) return;
-      this.transcriptGcQueue.delete(sessionId);
-      try {
-        await this.removeTranscript(sessionId);
-        await this.metadata.completeTranscriptGc(sessionId);
-      } catch {
-        // The durable pending bit keeps failed physical deletion retryable.
-      }
-    }
-  }
-
-  private finishTranscriptGc(worker: Promise<void>): void {
-    if (this.transcriptGcWorker !== worker) return;
-    this.transcriptGcWorker = null;
-    if (!this.closing && this.transcriptGcQueue.size > 0) this.scheduleTranscriptGc([]);
   }
 
   private async ensureReady(): Promise<void> {

@@ -91,6 +91,50 @@ describe('HostInteractionCoordinator', () => {
     });
   });
 
+  test('does not expose settled interactions after Session removal', async () => {
+    await withStore(async ({ store }) => {
+      let sessionState: 'present' | 'removed' = 'present';
+      const coordinator = createCoordinator(store, {
+        sessions: {
+          probeSessionRemoval: async () => ({ kind: sessionState }),
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      await owner.acceptUserQuestionRequest({
+        request: questionEvent('question_removed_session', 10),
+        continuation: questionContinuation('question_removed_session'),
+      });
+      const answer = {
+        interactionId: 'question_removed_session',
+        answer: { kind: 'question', answers: ['Yes'] },
+      } as const;
+      assert.equal(
+        (await coordinator.handlers['interaction.answer'](answer, connection())).ok,
+        true,
+      );
+
+      sessionState = 'removed';
+      assert.deepEqual(
+        await coordinator.handlers['interaction.query'](
+          { sessionId: RUN.sessionId, interactionId: answer.interactionId },
+          connection(),
+        ),
+        {
+          ok: false,
+          error: { code: 'not_found', message: 'Interaction was not found' },
+        },
+      );
+      assert.deepEqual(await coordinator.handlers['interaction.answer'](answer, connection()), {
+        ok: false,
+        error: { code: 'not_found', message: 'Interaction was not found' },
+      });
+
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
   test('retains the exact live continuation and poisons when async apply rejects', async () => {
     await withStore(async ({ store }) => {
       const poison: RuntimeInteractionFailStopError[] = [];
@@ -351,6 +395,9 @@ function createCoordinator(
   return new HostInteractionCoordinator({
     store,
     sessionAdmission: new SessionAdmissionGate(),
+    sessions: {
+      probeSessionRemoval: async () => ({ kind: 'present' }),
+    },
     now: () => ++now,
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => {},

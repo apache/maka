@@ -230,6 +230,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
       sessionAdmission,
+      sessions: stores.sessionStore,
       preflightSessionSnapshot: (sessionId, interactionProjection) =>
         canonicalProjectionReader.fitsCandidate(sessionId, {
           interactions: interactionProjection,
@@ -2492,6 +2493,7 @@ async function createFailureFixture(options: {
     ? new HostInteractionCoordinator({
         store: stores.interactionStore,
         sessionAdmission,
+        sessions: stores.sessionStore,
         preflightSessionSnapshot: async (sessionId, interactionProjection) => {
           await options.beforeInteractionPreflight?.();
           return canonicalProjectionReader.fitsCandidate(sessionId, {

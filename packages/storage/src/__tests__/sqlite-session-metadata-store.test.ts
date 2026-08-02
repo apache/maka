@@ -157,18 +157,18 @@ describe('SqliteSessionMetadataStore', () => {
       assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
       assert.deepEqual(await store.probeRemoval(root.id), { kind: 'removed' });
       assert.deepEqual(await store.probeRemoval(revision.id), { kind: 'removed' });
-      assert.deepEqual(await store.listPendingTranscriptGcSessionIds(root.id), [
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [
         revision.id,
         root.id,
       ]);
-      assert.deepEqual(await store.listPendingTranscriptGcSessionIds(revision.id), [
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(revision.id), [
         revision.id,
         root.id,
       ]);
-      await store.completeTranscriptGc(revision.id);
-      assert.deepEqual(await store.listPendingTranscriptGcSessionIds(root.id), [root.id]);
-      await store.completeTranscriptGc(root.id);
-      assert.deepEqual(await store.listPendingTranscriptGcSessionIds(), []);
+      await store.completeSessionRetirementCleanup(revision.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [root.id]);
+      await store.completeSessionRetirementCleanup(root.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
       assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
     } finally {
       store.close();
@@ -218,7 +218,7 @@ describe('SqliteSessionMetadataStore', () => {
       const v12 = new DatabaseSync(path);
       v12.exec(`
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN transcript_gc_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
@@ -994,7 +994,7 @@ describe('SqliteSessionMetadataStore', () => {
       const v13 = new DatabaseSync(path);
       v13.exec(`
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN transcript_gc_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
@@ -1501,7 +1501,7 @@ describe('SqliteSessionMetadataStore', () => {
       const v4 = new DatabaseSync(path);
       v4.exec(`
         DROP INDEX session_metadata_tombstones_by_retirement_unit;
-        ALTER TABLE session_metadata_tombstones DROP COLUMN transcript_gc_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
         ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;

@@ -1,4 +1,5 @@
-import type { SessionHeader } from '@maka/core/session';
+import { sessionRevisionFamilyId } from '@maka/core/session';
+import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
 import {
   isSessionNotFoundError,
   SessionMetadataConflictError,
@@ -7,6 +8,7 @@ import {
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
 import type { SessionManager } from '@maka/runtime';
+import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
 import {
   type OperationOutcome,
   type SessionCatalogItem,
@@ -28,6 +30,7 @@ import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admi
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import type { RootTurnCoordinator } from './root-turn-coordinator.js';
 import type { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
+import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 const FAMILY_STABILIZATION_ATTEMPTS = 4;
 
@@ -37,6 +40,9 @@ type RetirementStores = Pick<
   | 'probeSessionRemoval'
   | 'readCatalogRecord'
   | 'readHeaderRecordSnapshot'
+  | 'listPendingSessionRetirementCleanupIds'
+  | 'purgeRemovedSessionTranscript'
+  | 'completeSessionRetirementCleanup'
   | 'removeSessionsVersioned'
   | 'setSessionsLifecycleVersioned'
 >;
@@ -70,6 +76,9 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly manager: RetirementManager;
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
+  readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
+  readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
+  readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly requestDrain: () => void;
 }
 
@@ -114,7 +123,13 @@ export class HostSessionRetirementCoordinator {
   readonly #manager: RetirementManager;
   readonly #capabilities: RetirementCapabilities;
   readonly #continuity: RetirementContinuity;
+  readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
+  readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
+  readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #requestDrain: () => void;
+  readonly #cleanupQueue = new Set<string>();
+  #cleanupWorker: Promise<void> | null = null;
+  #closing = false;
 
   constructor(options: HostSessionRetirementCoordinatorOptions) {
     this.#stores = options.stores;
@@ -128,7 +143,19 @@ export class HostSessionRetirementCoordinator {
     this.#manager = options.manager;
     this.#capabilities = options.capabilities;
     this.#continuity = options.continuity;
+    this.#artifacts = options.artifacts;
+    this.#taskLedger = options.taskLedger;
+    this.#purgeOperationalState = options.purgeOperationalState;
     this.#requestDrain = options.requestDrain;
+  }
+
+  async recover(): Promise<void> {
+    this.#scheduleCleanup(await this.#stores.listPendingSessionRetirementCleanupIds());
+  }
+
+  async close(): Promise<void> {
+    this.#closing = true;
+    await this.#cleanupWorker;
   }
 
   async #setLifecycle(
@@ -203,7 +230,10 @@ export class HostSessionRetirementCoordinator {
     } catch {
       return removeFailure('persistence_failed', 'Session removal state is unavailable');
     }
-    if (probe.kind === 'removed') return removeSuccess(input.sessionId);
+    if (probe.kind === 'removed') {
+      this.#scheduleCleanup([input.sessionId]);
+      return removeSuccess(input.sessionId);
+    }
     if (probe.kind === 'absent') return removeFailure('not_found', 'Session does not exist');
 
     try {
@@ -223,29 +253,26 @@ export class HostSessionRetirementCoordinator {
           handles = await this.#prepareRetirement(family, 'remove');
           await this.#disposeBackends(family.sessionIds);
           const committable = await this.#refreshFamilyRecords(family);
-          await this.#stores.removeSessionsVersioned(versionedFamily(committable));
+          const removedSessionIds = await this.#stores.removeSessionsVersioned(
+            versionedFamily(committable),
+          );
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          this.#scheduleCleanup(removedSessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
           await this.#continuity.retireSessions(family.sessionIds, family.admission);
           return removeSuccess(input.sessionId);
         } catch (error) {
-          if (committed) {
-            this.#requestDrain();
-            return removeFailure(
-              'commit_outcome_unknown',
-              'Session remove committed but publication is uncertain',
-            );
-          }
+          if (committed) return this.#uncertainRemove();
           handles?.goal.rollback();
           handles?.automation.rollback();
           throw error;
         }
       });
     } catch (error) {
-      return this.#removeFailure(error, input.sessionId);
+      return this.#removeFailure(error, input);
     }
   }
 
@@ -283,12 +310,13 @@ export class HostSessionRetirementCoordinator {
     if (target.kind !== 'present') {
       throw new SessionRetirementMissingSessionError(target.kind);
     }
-    const familyId = revisionFamilyId(target.record.header);
+    const familyId = sessionRevisionFamilyId(target.record.header);
     const headers = await this.#stores.listHeaders();
     const members = headers
       .filter(
         (header) =>
-          header.conversationCopy?.state !== 'preparing' && revisionFamilyId(header) === familyId,
+          header.conversationCopy?.state !== 'preparing' &&
+          sessionRevisionFamilyId(header) === familyId,
       )
       .map((header) => header.id);
     if (!members.includes(sessionId)) members.push(sessionId);
@@ -328,9 +356,62 @@ export class HostSessionRetirementCoordinator {
   }
 
   async #disposeBackends(sessionIds: readonly string[]): Promise<void> {
-    await Promise.all(
+    const outcomes = await Promise.allSettled(
       sessionIds.map((sessionId) => this.#manager.disposeSessionBackend(sessionId)),
     );
+    const failures = outcomes.flatMap((outcome) =>
+      outcome.status === 'rejected' ? [outcome.reason] : [],
+    );
+    if (failures.length === 0) return;
+    this.#requestDrain();
+    throw new AggregateError(failures, 'Session backend disposal failed during retirement');
+  }
+
+  #scheduleCleanup(sessionIds: readonly string[]): void {
+    if (this.#closing) return;
+    for (const sessionId of sessionIds) this.#cleanupQueue.add(sessionId);
+    if (this.#cleanupWorker || this.#cleanupQueue.size === 0) return;
+    const worker = this.#drainCleanup();
+    this.#cleanupWorker = worker;
+    void worker.then(
+      () => this.#finishCleanup(worker),
+      () => this.#finishCleanup(worker),
+    );
+  }
+
+  async #drainCleanup(): Promise<void> {
+    while (!this.#closing && this.#cleanupQueue.size > 0) {
+      const batch = [...this.#cleanupQueue];
+      this.#cleanupQueue.clear();
+      await Promise.allSettled(batch.map((sessionId) => this.#cleanupRetiredSession(sessionId)));
+    }
+  }
+
+  async #cleanupRetiredSession(sessionId: string): Promise<void> {
+    const outcomes = await Promise.allSettled([
+      this.#stores.purgeRemovedSessionTranscript(sessionId),
+      purgeSessionSidecars(
+        {
+          artifacts: this.#artifacts,
+          taskLedger: this.#taskLedger,
+          purgeOperationalState: this.#purgeOperationalState,
+        },
+        sessionId,
+      ),
+    ]);
+    const failures = outcomes.flatMap((outcome) =>
+      outcome.status === 'rejected' ? [outcome.reason] : [],
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Session ${sessionId} retirement cleanup failed`);
+    }
+    await this.#stores.completeSessionRetirementCleanup(sessionId);
+  }
+
+  #finishCleanup(worker: Promise<void>): void {
+    if (this.#cleanupWorker !== worker) return;
+    this.#cleanupWorker = null;
+    if (!this.#closing && this.#cleanupQueue.size > 0) this.#scheduleCleanup([]);
   }
 
   async #refreshFamilyRecords(family: StableFamily): Promise<StableFamily> {
@@ -373,10 +454,18 @@ export class HostSessionRetirementCoordinator {
     return lifecycleFailure('persistence_failed', 'Session lifecycle could not be committed');
   }
 
-  #removeFailure(error: unknown, sessionId: string): OperationOutcome<'session.remove'> {
+  #uncertainRemove(): OperationOutcome<'session.remove'> {
+    this.#requestDrain();
+    return removeFailure(
+      'commit_outcome_unknown',
+      'Session remove committed but publication is uncertain',
+    );
+  }
+
+  #removeFailure(error: unknown, input: SessionRemoveInput): OperationOutcome<'session.remove'> {
     if (error instanceof SessionRetirementMissingSessionError) {
       return error.state === 'removed'
-        ? removeSuccess(sessionId)
+        ? removeSuccess(input.sessionId)
         : removeFailure('not_found', 'Session does not exist');
     }
     if (isSessionNotFoundError(error)) {
@@ -389,6 +478,12 @@ export class HostSessionRetirementCoordinator {
       return removeFailure('session_busy', error.message);
     }
     if (error instanceof SessionMetadataVersionConflictError) {
+      if (error.sessionId !== input.sessionId || error.expectedVersion !== input.expectedRevision) {
+        return removeFailure(
+          'operation_conflict',
+          'Session revision family changed during removal',
+        );
+      }
       return removeOutcome({
         kind: 'revision_conflict',
         expectedRevision: error.expectedVersion,
@@ -408,10 +503,6 @@ class SessionRetirementMissingSessionError extends Error {
   constructor(readonly state: 'removed' | 'absent') {
     super(`Session is ${state}`);
   }
-}
-
-function revisionFamilyId(session: Pick<SessionHeader, 'id' | 'revisionRootSessionId'>): string {
-  return session.revisionRootSessionId ?? session.id;
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {

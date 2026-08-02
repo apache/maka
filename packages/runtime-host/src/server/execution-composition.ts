@@ -122,7 +122,11 @@ export async function createExecutionRuntimeHostComposition(
             getLaunchSpec: filesystemWorkerLaunchSpecProvider,
           })
         : undefined;
-    const taskLedger = new HostTaskLedgerCoordinator(taskLedgerStore, sessionAdmission);
+    const taskLedger = new HostTaskLedgerCoordinator(
+      taskLedgerStore,
+      sessionAdmission,
+      stores.sessionStore,
+    );
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
     );
@@ -211,6 +215,7 @@ export async function createExecutionRuntimeHostComposition(
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
       sessionAdmission,
+      sessions: stores.sessionStore,
       preflightSessionSnapshot: (sessionId, interactionProjection) =>
         canonicalProjectionReader.fitsCandidate(sessionId, {
           interactions: interactionProjection,
@@ -448,12 +453,16 @@ export async function createExecutionRuntimeHostComposition(
       manager,
       capabilities: clientCapabilities,
       continuity: continuityCoordinator,
+      artifacts: openedArtifactStore,
+      taskLedger: taskLedgerStore,
+      purgeOperationalState: (sessionId) => stores.purgeConversationOperationalState(sessionId),
       requestDrain: context.requestDrain,
     });
     const artifacts = new HostArtifactCoordinator(
       openedArtifactStore,
       context.requestDrain,
       sessionAdmission,
+      stores.sessionStore,
     );
     const handlers = {
       ...coordinator.handlers,
@@ -481,6 +490,7 @@ export async function createExecutionRuntimeHostComposition(
         await requireMemory(memory).recover();
         await skills.recover();
         await openedArtifactStore.recover();
+        await sessionRetirement.recover();
         await sessionRevisions.recover();
         const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
@@ -600,6 +610,11 @@ export async function createExecutionRuntimeHostComposition(
         }
         try {
           await openedUsageStores.close();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          await sessionRetirement.close();
         } catch (error) {
           errors.push(error);
         }

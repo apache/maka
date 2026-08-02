@@ -41,7 +41,7 @@ test('production Host recovers Artifact publication and preserves deletes across
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-artifacts-'));
   const root = join(base, 'root');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const sessionId = await seedExecutionRoot(capability, root);
+  const { sessionId, otherSessionId } = await seedExecutionRoot(capability, root);
   const residue = await createPublicationResidue(root, sessionId);
   let firstHost: ExecutionHostHandle | undefined;
   let successor: ExecutionHostHandle | undefined;
@@ -132,12 +132,12 @@ test('production Host recovers Artifact publication and preserves deletes across
       assert.deepEqual(
         await tui.request('artifact.query', {
           kind: 'read_text',
-          sessionId: 'different-session',
+          sessionId: otherSessionId,
           artifactId: 'small-text',
         }),
         {
           kind: 'text',
-          sessionId: 'different-session',
+          sessionId: otherSessionId,
           artifactId: 'small-text',
           preview: { ok: false, reason: 'not_found' },
         },
@@ -156,7 +156,7 @@ test('production Host recovers Artifact publication and preserves deletes across
       );
       await assert.rejects(
         tui.request('artifact.delete', {
-          sessionId: 'different-session',
+          sessionId: otherSessionId,
           artifactId: deleteA,
         }),
         operationError('not_found'),
@@ -264,12 +264,19 @@ type ArtifactResult = Extract<ArtifactQueryResult, { kind: 'artifact' }>;
 async function seedExecutionRoot(
   capability: StorageRootCapability<'interactive'>,
   root: string,
-): Promise<string> {
+): Promise<{ readonly sessionId: string; readonly otherSessionId: string }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner, 'Artifact test could not acquire the interactive root owner');
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const otherSession = await stores.sessionStore.create({
       cwd: root,
       backend: 'fake',
       llmConnectionSlug: 'fake',
@@ -354,7 +361,7 @@ async function seedExecutionRoot(
         });
       }),
     ]);
-    return session.id;
+    return { sessionId: session.id, otherSessionId: otherSession.id };
   } finally {
     await owner.close();
   }

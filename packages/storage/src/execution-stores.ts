@@ -355,6 +355,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.setSessionsLifecycleVersioned(sessions, state)),
       removeSessionsVersioned: (sessions) =>
         run(() => sessionStore.removeSessionsVersioned(sessions)),
+      listPendingSessionRetirementCleanupIds: (sessionId) =>
+        run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
+      purgeRemovedSessionTranscript: (sessionId) =>
+        run(() => sessionStore.purgeRemovedSessionTranscript(sessionId)),
+      completeSessionRetirementCleanup: (sessionId) =>
+        run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
       close: () =>
         closeExecutionStorePersistence(sessionStore, runtimePersistence, {
           agentRunStore,

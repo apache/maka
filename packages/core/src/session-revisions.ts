@@ -1,12 +1,11 @@
 import {
   projectLinkedSessionTree,
+  sessionRevisionFamilyId,
   type LinkedSessionTree,
   type SessionSummary,
 } from './session.js';
 
-export function sessionRevisionFamilyId(session: SessionSummary): string {
-  return session.revisionRootSessionId ?? session.id;
-}
+export { sessionRevisionFamilyId } from './session.js';
 
 function freshness(session: SessionSummary): number {
   return session.lastMessageAt ?? session.statusUpdatedAt ?? 0;

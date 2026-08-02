@@ -43,6 +43,7 @@ test('Artifact mutation failure requests Host drain and fails closed', async () 
         drainRequests += 1;
       },
       new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
     );
 
     assert.deepEqual(

@@ -27,6 +27,7 @@ describe('Task Ledger protocol', () => {
       'host_draining',
       'operation_unavailable',
       'invalid_request',
+      'not_found',
       'internal_failure',
     ]);
 

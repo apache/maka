@@ -295,6 +295,12 @@ export interface SessionSummary {
   orchestrationMode?: OrchestrationMode;
 }
 
+export function sessionRevisionFamilyId(
+  session: Pick<SessionSummary, 'id' | 'revisionRootSessionId'>,
+): string {
+  return session.revisionRootSessionId ?? session.id;
+}
+
 /**
  * Host-facing projection of linked subagent Sessions.
  *
