@@ -110,11 +110,23 @@ class FileConnectionStore implements ConnectionStore {
           patch.defaultModel !== undefined ||
           patch.models !== undefined);
       const models = updatesModelCache ? patch.models : current.models;
-      let defaultModel = patch.defaultModel ?? current.defaultModel;
-      let enabledModelIds = connectionEnabledModelIds({
-        defaultModel,
-        enabledModelIds: patch.enabledModelIds ?? current.enabledModelIds,
-      });
+      // Enabling no models is a real answer, so it has to survive the write.
+      // `connectionEnabledModelIds` keeps the default in the enabled list, which
+      // means an explicitly emptied list came back as `[defaultModel]` — the
+      // store re-asserting a choice the user had just withdrawn. Clearing the
+      // list clears the default with it: a connection that offers no models has
+      // no model to start a chat on, which is what the readiness gate's
+      // `empty_model_list` already says.
+      const clearsEnabledModels =
+        Object.prototype.hasOwnProperty.call(patch, 'enabledModelIds') &&
+        (patch.enabledModelIds?.length ?? 0) === 0;
+      let defaultModel = clearsEnabledModels ? '' : (patch.defaultModel ?? current.defaultModel);
+      let enabledModelIds = clearsEnabledModels
+        ? []
+        : connectionEnabledModelIds({
+            defaultModel,
+            enabledModelIds: patch.enabledModelIds ?? current.enabledModelIds,
+          });
       // Authoritative live inventory wins: a retired default (common after
       // Moonshot renamed moonshot-v1-* → kimi-k2.*) must not strand the
       // connection as model_not_enabled once models are fetched. Fallback

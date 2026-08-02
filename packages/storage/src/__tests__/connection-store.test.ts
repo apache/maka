@@ -65,6 +65,29 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  test('clearing the enabled models clears the default with them', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o-mini',
+      });
+
+      // Enabling no models is a real answer: the connection stays configured
+      // and testable, it just offers nothing to chat. Keeping the default here
+      // would re-assert a choice the user had withdrawn.
+      const updated = await store.update(created.slug, { enabledModelIds: [] });
+
+      assert.deepEqual(updated.enabledModelIds, []);
+      assert.equal(updated.defaultModel, '');
+      // Survives a reload — the emptied list is persisted, not just returned.
+      const reloaded = (await store.list()).find((entry) => entry.slug === created.slug);
+      assert.deepEqual(reloaded?.enabledModelIds, []);
+      assert.equal(reloaded?.defaultModel, '');
+    });
+  });
+
   test('automatically enables a model when it becomes the default', async () => {
     await withConnectionStore(async (store) => {
       const created = await store.create({
