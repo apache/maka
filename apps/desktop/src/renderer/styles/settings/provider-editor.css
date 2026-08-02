@@ -1,28 +1,22 @@
 .providerEditor h3 {
+  font: var(--maka-text-heading-4);
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .providerEditor p {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 .catalogTabs strong {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-5);
 }
 
 .catalogTabs small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 /* Provider catalog + OAuth login render as governed Item rows (media ·
@@ -52,7 +46,7 @@
 }
 
 .providerCatalogTitle {
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
 }
 
 /* Trailing badge + chevron live in ItemActions (a direct child of the row),
@@ -63,10 +57,9 @@
 }
 
 .providerCatalogCount {
+  font: var(--maka-text-body);
   margin-left: var(--space-2);
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 .providerCatalogChevron {
@@ -76,16 +69,14 @@
 
 /* category / preview / login badges — compact squared corners, never pills */
 .providerCatalogBadge {
+  font: var(--maka-text-heading-5);
   flex: 0 0 auto;
   width: fit-content;
   border-radius: var(--radius-control);
   background: var(--foreground-5);
   color: var(--foreground-secondary);
   padding: var(--space-0-5) var(--space-1-5);
-  font-size: var(--font-size-caption);
   font-style: normal;
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-supporting-leading);
 }
 
 .providerEditor {
@@ -129,8 +120,7 @@
 }
 
 .providerConnectionIssue span {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
+  font: var(--maka-text-supporting);
 }
 
 .providerAdvancedSettings {
@@ -173,12 +163,10 @@
 }
 
 .providerKeyDialogForm label {
+  font: var(--maka-text-label);
   display: grid;
   gap: var(--space-1-5);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
 }
 
 .providerKeyDialogActions {
@@ -221,11 +209,9 @@
 }
 
 .providerExternalLink {
+  font: var(--maka-text-label);
   width: fit-content;
   color: var(--link);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
   text-decoration: none;
   /* PR-UI-LAYOUT-33: explicit padding + radius so the focus halo
    * has a defined shape. Was a borderless inline link with no
@@ -330,20 +316,18 @@
 }
 
 .providerCatalogEmpty {
+  font: var(--maka-text-body);
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   padding: var(--space-8) var(--space-2);
   text-align: center;
 }
 
 .providerOAuthError {
+  font: var(--maka-text-body);
   border: var(--border-width-hairline) solid color-mix(in srgb, var(--warning) 32%, transparent);
   border-radius: var(--radius-surface);
   background: color-mix(in srgb, var(--warning) 10%, var(--background));
   color: var(--warning-text);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   padding: var(--space-2) var(--space-3);
 }
 .providerOAuthGrid {
@@ -353,9 +337,7 @@
 }
 
 .providerOAuthCardBadge {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
+  font: var(--maka-text-heading-5);
   letter-spacing: var(--tracking-wide);
 }
 
@@ -397,13 +379,10 @@
 }
 
 .enabledEmptyChip strong {
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-bold);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-heading-4);
 }
 
 .enabledEmptyChip small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }

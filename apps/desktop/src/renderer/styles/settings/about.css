@@ -39,18 +39,14 @@
 }
 
 .settingsAboutHeading h2 {
+  font: var(--maka-text-heading-2);
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-xl);
-  line-height: var(--text-heading-2-leading);
-  font-weight: var(--font-weight-bold);
   letter-spacing: var(--tracking-normal);
 }
 
 .settingsAboutVersion {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-code);
   color: var(--foreground-secondary);
   padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-pill);
@@ -58,20 +54,17 @@
 }
 
 .settingsAboutChannel {
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
+  font: var(--maka-text-heading-5);
   color: var(--brand-deep);
   padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-pill);
   background: oklch(from var(--brand-deep) l c h / 0.10);
-  font-weight: var(--font-weight-semibold);
 }
 
 .settingsAboutTagline {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 /* Detail audit / polish wave: the retired `.settingsAboutPrivacy` dialect

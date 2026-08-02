@@ -28,8 +28,7 @@
    hand-rolled 1.6154em (21px) that matched neither Maka's --leading-* tiers
    nor Astryx's. */
 .maka-chat-message-bubble {
-  font-size: var(--text-body-size);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-body);
 }
 
 /* Geometry (radius, padding, max-width) belongs to ChatMessageBubble: under
@@ -60,7 +59,7 @@
    styles/native-cursor.css (role=button + default !important). */
 
 .maka-turn .astryx-chat-tool-calls [role="button"] > span:nth-child(2) {
-  font-family: var(--font-family-body);
+  font: var(--maka-text-label);
 }
 
 /* Reasoning and tool-call rows read at BODY size, not supporting size.
@@ -124,14 +123,11 @@
    is declared with the type tiers in maka-tokens.css, so a turn reads as one
    rhythm rather than a stack of differently-spaced blocks. */
 .maka-turn [data-trow] .astryx-collapsible-trigger {
+  font: var(--maka-text-label);
   min-height: 24px;
   gap: var(--spacing-1-5, 6px);
   padding-block: 2px;
   border-radius: var(--radius-element);
-  font-family: var(--font-family-body);
-  font-size: var(--text-body-size);
-  line-height: var(--maka-line-body);
-  font-weight: var(--font-weight-medium, 500);
   color: var(--color-text-secondary);
 }
 
@@ -196,11 +192,9 @@
    normal weight, muted — and rides in the user turn's meta row beneath
    the block. Aligned to the same tier the footer-action cva uses (text-xs). */
 .maka-message-time-inline {
+  font: var(--maka-text-supporting);
   display: inline-block;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-normal);
-  line-height: var(--text-supporting-leading);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -247,15 +241,11 @@
    the turn still reads as one rhythm because 24 is the next step of the same
    grid, not a different one. */
 .maka-turn [data-maka-contract="markdown"] h1 {
-  font-size: var(--font-size-lg);
-  line-height: var(--text-large-leading);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-3);
 }
 
 .maka-turn [data-maka-contract="markdown"] :is(h2, h3, h4, h5, h6) {
-  font-size: var(--text-body-size);
-  line-height: var(--maka-line-body);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
 }
 
 .maka-chat-message pre:not([data-maka-contract="markdown"] pre) {
@@ -267,11 +257,10 @@
    boundary so raw-pre treatment cannot become a second code-block authority. */
 .maka-chat-message[data-sender="system"]
   pre:not([data-maka-contract="markdown"] pre) {
+  font: var(--maka-text-supporting);
   display: inline-flex;
   border-radius: var(--radius-pill);
   background: oklch(from var(--info) l c h / 0.08);
   color: var(--info-text);
   padding: var(--space-0-5) var(--space-1-5);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }

@@ -50,10 +50,9 @@
     background: oklch(from var(--foreground) l c h / 0.03);
   }
 .settingsQuotaRow {
+    font: var(--maka-text-body);
     display: flex;
     justify-content: space-between;
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     font-variant-numeric: tabular-nums;
   }
 .settingsOauthPastePanel {
@@ -91,31 +90,24 @@
     min-width: 0;
   }
 .settingsConnectionRowText strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
-    font-weight: var(--font-weight-semibold);
   }
 .settingsConnectionRowText small {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
   }
 .settingsConnectionDetail {
+    font: var(--maka-text-supporting);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
   }
 .settingsConnectionMeta {
+    font: var(--maka-text-supporting);
     margin: 0;
     display: flex;
     gap: var(--space-3);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
-    font-family: var(--font-mono);
   }
 .settingsInlineFileState {
     display: inline-flex;

@@ -29,8 +29,8 @@
    Astryx upgrade reintroduces a conflict, re-derive the set (astryx theme
    defs ∩ product defs ∩ product var() usage) before pinning anything. */
 :is(#root, #storybook-root) [data-astryx-theme] {
+  font: inherit;
   color: inherit;
-  font-family: inherit;
 }
 
 /* Titlebar tooltips only: take the popover out of the hit test.

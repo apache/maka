@@ -77,6 +77,7 @@
 }
 
 .maka-sidebar-update-button {
+  font: var(--maka-text-heading-4);
   position: relative;
   min-width: 0;
   height: 34px;
@@ -89,9 +90,6 @@
   padding: 0 var(--space-3);
   background: var(--control);
   color: var(--control-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-body-leading);
   box-shadow: none;
   overflow: hidden;
   -webkit-app-region: no-drag;
@@ -212,6 +210,7 @@
 }
 
 .maka-session-rename-input {
+  font: var(--maka-text-heading-4);
   width: 100%;
   min-width: 0;
   border: 0;
@@ -219,9 +218,6 @@
   background: transparent;
   color: var(--foreground);
   font: inherit;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
   outline: 0;
   padding: 1px 0;
 }
@@ -231,18 +227,17 @@
 }
 
 .maka-list-row-stale-pill {
+  font: var(--maka-text-heading-5);
   flex-shrink: 0;
   padding: 1px var(--space-1-5);
   border-radius: var(--radius-pill);
   background: oklch(from var(--warning, var(--info)) l c h / 0.18);
   color: var(--warning-text, var(--info-text));
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-supporting-leading);
 }
 
 /* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */
 .maka-nav-kbd {
+  font: var(--maka-text-supporting);
   margin-left: auto;
   padding: 0;
   border: 0;
@@ -250,10 +245,6 @@
   background: transparent;
   box-shadow: none;
   color: var(--muted-foreground);
-  font-family: inherit;
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-normal);
   letter-spacing: var(--tracking-wide);
-  line-height: var(--text-supporting-leading);
   white-space: nowrap;
 }

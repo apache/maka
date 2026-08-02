@@ -1,5 +1,6 @@
 /* Shell layout — app frame, panels, topbar rail, main column, workspace top actions. */
 .appFrame {
+  font: var(--maka-text-body);
   position: relative;
   height: 100dvh;
   width: 100%;
@@ -21,8 +22,6 @@
      surface — it is what the window shows when there is no shell yet. */
   background: var(--surface-canvas);
   color: var(--foreground);
-  font-size: var(--font-size-base);
-  line-height: var(--text-body-leading);
   box-sizing: border-box;
 }
 

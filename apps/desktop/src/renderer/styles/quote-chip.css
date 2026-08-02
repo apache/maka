@@ -6,6 +6,7 @@
    translateX(-50%). Low-key elevated pill that brightens on hover; uses
    neutral state tokens. Cursor: styles/native-cursor.css. */
 .maka-quote-action {
+  font: var(--maka-text-supporting);
   position: fixed;
   transform: translateX(-50%);
   z-index: var(--z-panel-action);
@@ -18,9 +19,6 @@
   background: var(--background);
   color: var(--foreground-secondary);
   box-shadow: var(--shadow-medium);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition:
     color var(--duration-quick) var(--ease-out-strong),

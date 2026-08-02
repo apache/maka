@@ -42,18 +42,15 @@
 
 .settingsRemoteAccessSectionHeader h3,
 .settingsBotConfigurationHeader h4 {
+  font: var(--maka-text-heading-4);
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .settingsRemoteAccessSectionHeader span,
 .settingsBotConfigurationHeader span {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsRemoteAccessActiveList {
@@ -143,38 +140,35 @@
 }
 
 .settingsBotDetailHeader h3 {
+  font: var(--maka-text-heading-3);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin: 0 0 var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-heading);
-  line-height: var(--text-large-leading);
 }
 
 .settingsBotDetailHeader p {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 .settingsBotEnableHint {
+  font: var(--maka-text-supporting);
   display: block;
   margin-top: var(--space-1);
   color: var(--warning-text, var(--foreground-secondary));
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotConfigDocLink {
+  font: var(--maka-text-label);
   grid-column: 2;
   grid-row: 2;
   justify-self: start;
   color: var(--link);
   text-decoration: none;
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
 }
 .settingsBotConfigDocLink:hover {
@@ -197,18 +191,15 @@
 }
 
 .settingsBotRuntimeHeader h4 {
+  font: var(--maka-text-heading-4);
   margin: 0 0 var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .settingsBotRuntimeHeader p {
+  font: var(--maka-text-supporting);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotStatusGrid {
@@ -221,17 +212,15 @@
   min-width: 0;
 }
 .settingsBotStatusGrid dt {
+  font: var(--maka-text-supporting);
   margin-bottom: var(--space-1);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 .settingsBotStatusGrid dd {
+  font: var(--maka-text-body);
   min-width: 0;
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   overflow-wrap: anywhere;
 }
 
@@ -371,26 +360,23 @@
 }
 
 .settingsUsageDetailToggle {
+  font: var(--maka-text-label);
   min-height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-1-5);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--text-body-leading);
   white-space: nowrap;
 }
 
 .settingsUsageRecordCount {
+  font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
   min-height: 34px;
   display: inline-flex;
   align-items: center;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   white-space: nowrap;
 }
 
@@ -464,19 +450,17 @@
 }
 
 .settingsBotQuickSetup strong {
+  font: var(--maka-text-body);
   display: block;
   margin-bottom: var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }
 
 .settingsBotQuickSetup p {
+  font: var(--maka-text-supporting);
   max-width: 58ch;
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotQuickSetup .settingsBotBrandChoice {
@@ -545,10 +529,8 @@
 }
 
 .settingsBotOnboardingStatus {
+  font: var(--maka-text-label);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
 }
 
 .settingsBotOnboardingStatus[data-state="error"],
@@ -557,9 +539,8 @@
 }
 
 .settingsBotOnboardingPrivacy {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsBotOnboardingActions {

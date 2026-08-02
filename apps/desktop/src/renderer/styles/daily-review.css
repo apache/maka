@@ -81,10 +81,8 @@
 }
 
 .maka-daily-review-day {
+  font: var(--maka-text-heading-4);
   text-align: center;
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   font-variant-numeric: tabular-nums;
   letter-spacing: var(--tracking-normal);
   color: var(--foreground);
@@ -153,25 +151,23 @@
   }
 
 .maka-daily-review-session-name {
+    font: var(--maka-text-label);
     min-width: 0;
-    font-weight: var(--font-weight-medium);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
 .maka-daily-review-session-time {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
 
 .maka-daily-review-session-preview {
+    font: var(--maka-text-body);
     min-width: 0;
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     color: var(--muted-foreground);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -179,13 +175,12 @@
   }
 
 .maka-daily-review-top-label {
-    font-weight: var(--font-weight-medium);
+    font: var(--maka-text-heading-5);
     color: var(--foreground);
   }
 
 .maka-daily-review-top-meta {
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
     font-variant-numeric: tabular-nums;
   }
@@ -224,8 +219,7 @@
   }
 
 .maka-daily-review-archive-count {
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
     font-variant-numeric: tabular-nums;
   }
@@ -246,11 +240,9 @@
   }
 
 .maka-daily-review-report-title {
+    font: var(--maka-text-heading-4);
     min-width: 0;
     color: var(--foreground);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
-    font-weight: var(--font-weight-semibold);
     letter-spacing: var(--tracking-normal);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -258,11 +250,10 @@
   }
 
 .maka-daily-review-archive-row-meta {
+    font: var(--maka-text-supporting);
     min-width: 0;
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
     font-variant-numeric: tabular-nums;
-    line-height: var(--text-supporting-leading);
     overflow-wrap: anywhere;
   }
 
@@ -281,16 +272,14 @@
   }
 
 .maka-daily-review-archive-empty {
+    font: var(--maka-text-body);
     color: var(--muted-foreground);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
   }
 
 .maka-daily-review-archive-error {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--destructive, var(--foreground));
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
   }
 
 .maka-daily-review-archive-sections {
@@ -314,9 +303,8 @@
 /* Markdown-rendered report body: restore list markers after the shared reset
    and keep block rhythm tight. */
 .maka-daily-review-archive-section-body {
+    font: var(--maka-text-body);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     overflow-wrap: anywhere;
   }
 
@@ -339,8 +327,7 @@
 .maka-daily-review-archive-section-body ul { list-style: disc; }
 .maka-daily-review-archive-section-body ol { list-style: decimal; }
 .maka-daily-review-inline-empty {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
 }

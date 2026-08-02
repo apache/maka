@@ -134,6 +134,7 @@
 
 /* Model chip (static fallback) still owns its own quiet geometry. */
 .maka-composer-model-chip {
+  font: var(--maka-text-label);
   height: 26px;
   display: inline-flex;
   align-items: center;
@@ -144,9 +145,6 @@
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   max-width: min(180px, 28vw);
   transition:
@@ -201,7 +199,6 @@
   flex: 0 0 auto;
 }
 
-
 /* The active transcript and docked card meet at one boundary. Keeping the
    outer composer's default top padding here exposes an extra strip of panel
    background after the transcript viewport has already ended. */
@@ -221,6 +218,7 @@
    elevates the outer shell on focus-within; a second rectangle on the field
    is the bug users describe as “输入后出现长方形边框”. */
 .composer .maka-composer-textarea {
+  font: var(--maka-text-body);
   display: block;
   width: 100%;
   appearance: none;
@@ -231,10 +229,6 @@
   overflow-y: auto;
   background: transparent;
   color: var(--foreground);
-  font-family: var(--font-default);
-  font-size: var(--text-body-size, var(--font-size-base));
-  font-weight: var(--text-body-weight, var(--font-weight-normal, 400));
-  line-height: var(--text-body-leading);
   min-height: var(--h-composer-min);
   max-height: 240px;
 }
@@ -247,11 +241,8 @@
 }
 
 .composer .maka-composer-textarea::placeholder {
+  font: inherit;
   color: var(--muted-foreground);
-  font-family: var(--font-default);
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
   transition: opacity var(--duration-emphasized) var(--ease-out-strong);
 }
 
@@ -312,10 +303,9 @@
 }
 
 .maka-composer-branch-empty {
+  font: var(--maka-text-supporting);
   padding: var(--space-2) var(--space-2);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
   text-align: center;
 }
 
@@ -351,10 +341,9 @@
 }
 
 .maka-composer-project-status {
+  font: var(--maka-text-supporting);
   margin-left: auto;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-project-check {
@@ -369,6 +358,7 @@
    it never touches the #740 constant footprint). Edged, not pill; quiet caption
    text + one link-button into Settings · 模型. Theme-aware via tokens. Centered to the chat measure, matching the revision-notice layout. */
 .maka-composer-no-model-hint {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -379,16 +369,12 @@
   border: var(--border-width-hairline) solid var(--warning);
   border-radius: var(--radius-control);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-no-model-hint-action {
+  font: var(--maka-text-supporting);
   flex-shrink: 0;
   color: var(--link);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
   text-decoration: none;
   border-radius: var(--radius-control);
 }
@@ -405,6 +391,7 @@
 /* Edit-and-resend notice. A single quiet inline pill above the composer form,
    matching the composer toolbar chip family (not a heavy info card). */
 .maka-composer-revision-notice {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -418,8 +405,6 @@
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-composer-revision-notice > svg {
@@ -444,6 +429,7 @@
 }
 
 .maka-composer-revision-notice-cancel {
+  font: var(--maka-text-supporting);
   appearance: none;
   flex: 0 0 auto;
   height: 18px;
@@ -452,9 +438,6 @@
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition: background-color var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong);
 }

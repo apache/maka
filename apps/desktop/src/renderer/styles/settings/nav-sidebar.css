@@ -42,29 +42,25 @@
 }
 
 .settingsFeatureStatusHero h3 {
+  font: var(--maka-text-heading-4);
   margin: 0 0 var(--space-0-5);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .settingsFeatureStatusHero p {
+  font: var(--maka-text-supporting);
   margin: 0;
   max-width: 56ch;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsFeatureStatusList {
+  font: var(--maka-text-supporting);
   margin: 0;
   padding: 0 0 0 var(--space-3);
   display: grid;
   gap: var(--space-1);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .settingsFeatureStatusList li::marker {
@@ -184,6 +180,7 @@
 }
 
 .settingsPageHeader h2 {
+  font: var(--maka-text-heading-1);
   /* PR-SETTINGS-PAGE-HEADER-POLISH-0 (round 12/15): tighten the h2
      with negative tracking + slightly softer weight.
      PR-SETTINGS-MOTION-TYPO-TOKENS-0 (round 15/15): `text-wrap:
@@ -192,10 +189,7 @@
      line. */
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-3xl);
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--text-display-3-leading);
   text-wrap: balance;
 }
 
@@ -203,11 +197,10 @@
    round 15/15 `text-wrap: pretty` so the last line isn't a single
    orphan word (per baseline-ui typography rule). */
 .settingsPageHeaderDescription {
+  font: var(--maka-text-body);
   margin: 0;
   max-width: 56ch;
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   text-wrap: pretty;
 }
 

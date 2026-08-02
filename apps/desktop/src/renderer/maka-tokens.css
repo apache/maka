@@ -380,24 +380,17 @@
      places in the renderer that name a font stack. Astryx's own model agrees:
      Text has no family prop, family follows the element and the `code` role.
 
-     Substitution is lazy, which is what keeps the transcript's role rebinding
-     working: `var(--text-supporting-size)` inside a role token resolves
-     against the element that uses the token, not against :root, so
-     chat-message.css can retune a subtree by rebinding the role's own atoms
-     and every `font: var(--maka-text-supporting)` under it follows. Measured
-     in e2e/type-scale.spec.ts, not assumed. */
+     The role table itself is NOT declared here. A custom property's var()
+     references are substituted where the property is DECLARED, not where it is
+     used, and the resolved string is what inherits — so a role composed once
+     on :root freezes its family slot to the root's sans and no descendant can
+     rebind it. Measured, not reasoned: with the table on :root, a real <pre>
+     whose --maka-font-family read "Geist Mono Variable" still computed
+     font-family: -apple-system, because its `font: var(--maka-text-supporting)`
+     carried the family :root had already substituted. See the two-anchor rule
+     next to the monospace selector below. */
   --maka-font-family: var(--font-family-body);
 
-  --maka-text-body: var(--text-body-weight) var(--text-body-size)/var(--text-body-leading) var(--maka-font-family);
-  --maka-text-label: var(--text-label-weight) var(--text-label-size)/var(--text-label-leading) var(--maka-font-family);
-  --maka-text-supporting: var(--text-supporting-weight) var(--text-supporting-size)/var(--text-supporting-leading) var(--maka-font-family);
-  --maka-text-heading-1: var(--text-heading-1-weight) var(--text-heading-1-size)/var(--text-heading-1-leading) var(--maka-font-family);
-  --maka-text-heading-2: var(--text-heading-2-weight) var(--text-heading-2-size)/var(--text-heading-2-leading) var(--maka-font-family);
-  --maka-text-heading-3: var(--text-heading-3-weight) var(--text-heading-3-size)/var(--text-heading-3-leading) var(--maka-font-family);
-  --maka-text-heading-4: var(--text-heading-4-weight) var(--text-heading-4-size)/var(--text-heading-4-leading) var(--maka-font-family);
-  --maka-text-heading-5: var(--text-heading-5-weight) var(--text-heading-5-size)/var(--text-heading-5-leading) var(--maka-font-family);
-  --maka-text-display-2: var(--text-display-2-weight) var(--text-display-2-size)/var(--text-display-2-leading) var(--maka-font-family);
-  --maka-text-display-3: var(--text-display-3-weight) var(--text-display-3-size)/var(--text-display-3-leading) var(--maka-font-family);
 
   /* === line-height ===
      There is no product leading vocabulary. The four semantic tiers that used
@@ -1068,6 +1061,27 @@ html[data-os="darwin"].dark {
      stack, and the only raw font longhand outside the role table — the
      call-site ban in type-scale-contract.test.ts scopes around this file for
      exactly that reason, and asserts the shape of these lines instead. */
+  /* The role table, anchored on two selectors rather than on :root alone.
+     Declaring the same list against the monospace selector composes it a
+     second time, THERE, against that element's own --maka-font-family. A <pre>
+     and everything under it inherits the mono-composed roles; everything else
+     inherits the root-composed ones. One vocabulary, two anchor points — no
+     per-role mono variants, and no universal selector. */
+  :root,
+  :where(code, kbd, samp, pre) {
+  --maka-text-body: var(--text-body-weight) var(--text-body-size)/var(--text-body-leading) var(--maka-font-family);
+  --maka-text-label: var(--text-label-weight) var(--text-label-size)/var(--text-label-leading) var(--maka-font-family);
+  --maka-text-supporting: var(--text-supporting-weight) var(--text-supporting-size)/var(--text-supporting-leading) var(--maka-font-family);
+  --maka-text-heading-1: var(--text-heading-1-weight) var(--text-heading-1-size)/var(--text-heading-1-leading) var(--maka-font-family);
+  --maka-text-heading-2: var(--text-heading-2-weight) var(--text-heading-2-size)/var(--text-heading-2-leading) var(--maka-font-family);
+  --maka-text-heading-3: var(--text-heading-3-weight) var(--text-heading-3-size)/var(--text-heading-3-leading) var(--maka-font-family);
+  --maka-text-heading-4: var(--text-heading-4-weight) var(--text-heading-4-size)/var(--text-heading-4-leading) var(--maka-font-family);
+  --maka-text-heading-5: var(--text-heading-5-weight) var(--text-heading-5-size)/var(--text-heading-5-leading) var(--maka-font-family);
+  --maka-text-display-2: var(--text-display-2-weight) var(--text-display-2-size)/var(--text-display-2-leading) var(--maka-font-family);
+  --maka-text-display-3: var(--text-display-3-weight) var(--text-display-3-size)/var(--text-display-3-leading) var(--maka-font-family);
+    --maka-text-code: var(--text-code-weight) var(--text-code-size)/var(--text-code-leading) var(--font-family-code);
+  }
+
   :where(code, kbd, samp, pre) {
     --maka-font-family: var(--font-mono);
     font-family: var(--font-mono);
@@ -1153,13 +1167,12 @@ html[data-os="darwin"].dark {
   /* ---- App shell -------------------------------------------------- */
 
   .maka-shell {
+    font: var(--maka-text-body);
     display: grid;
     grid-template-columns: var(--w-sidebar) 1fr;
     height: 100dvh;
     background: var(--background);
     color: var(--foreground);
-    font-size: var(--font-size-base);
-    line-height: var(--text-body-leading);
   }
 
   .maka-shell-rail-right {
@@ -1176,15 +1189,13 @@ html[data-os="darwin"].dark {
     overflow: hidden;
   }
   .maka-sidebar-header {
+    font: var(--maka-text-heading-4);
     height: var(--h-titlebar);
     padding: 0 var(--space-3);
     display: flex;
     align-items: center;
     justify-content: space-between;
     border-bottom: var(--border-width-hairline) solid var(--border);
-    font-weight: var(--font-weight-semibold);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     letter-spacing: var(--tracking-wide);
     text-transform: uppercase;
     color: var(--foreground-secondary);
@@ -1193,22 +1204,21 @@ html[data-os="darwin"].dark {
     padding: var(--space-2) var(--space-1-5);
   }
   .maka-sidebar-row {
+    font: var(--maka-text-body);
     display: flex;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-1-5) var(--space-2-5);
     border-radius: var(--radius-control);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     user-select: none;
     transition: background var(--duration-quick) var(--ease-out-strong), color var(--duration-quick) var(--ease-out-strong);
   }
   .maka-sidebar-row:hover    { background: var(--state-hover-bg); }
   .maka-sidebar-row[data-active="true"] {
+    font: var(--maka-text-label);
     background: var(--state-selected-bg);
     color: var(--foreground);
-    font-weight: var(--font-weight-medium);
   }
   .maka-sidebar-row[data-unread="true"]::before {
     content: "";
@@ -1219,14 +1229,13 @@ html[data-os="darwin"].dark {
   }
 
   .maka-sidebar-button {
+    font: var(--maka-text-body);
     appearance: none;
     background: transparent;
     border: none;
     padding: var(--space-1) var(--space-2);
     border-radius: var(--radius-control);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
   }
   .maka-sidebar-button:hover { background: var(--state-hover-bg); color: var(--foreground); }
 
@@ -1244,17 +1253,18 @@ html[data-os="darwin"].dark {
     background: transparent;
   }
   .maka-titlebar {
+    font: var(--maka-text-body);
     height: var(--h-titlebar);
     border-bottom: var(--border-width-hairline) solid var(--border);
     display: flex;
     align-items: center;
     gap: var(--space-3);
     padding: 0 var(--space-4);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     color: var(--foreground-secondary);
   }
-  .maka-titlebar strong { color: var(--foreground); font-weight: var(--font-weight-medium); }
+  .maka-titlebar strong {
+  font: var(--maka-text-label);
+ color: var(--foreground); }
 
   /* ---- Chat surface ----------------------------------------------- */
 
@@ -1357,25 +1367,22 @@ html[data-os="darwin"].dark {
       0 1px 3px oklch(from var(--foreground) l c h / 0.04);
   }
   .maka-composer-toolbar {
+    font: var(--maka-text-body);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */
 
   .maka-code {
-    font-family: var(--font-mono);
+    font: var(--maka-text-code);
     /* Geist Mono ships programming ligatures on by default, which collapse a
        run like `=== 目录 ===` into a strikethrough-looking rule. Code and
        command surfaces read literally, so ligatures stay off. */
     font-variant-ligatures: none;
-    font-size: var(--font-size-ui);
-    line-height: var(--text-body-leading);
     background: var(--foreground-3);
     border: var(--border-width-hairline) solid var(--border);
     border-radius: var(--radius-surface);
@@ -1462,7 +1469,6 @@ html[data-os="darwin"].dark {
 svg.lucide {
   stroke-width: 1.75;
 }
-
 
 /* =============================================================================
    REDUCED-MOTION

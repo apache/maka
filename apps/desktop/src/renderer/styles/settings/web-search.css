@@ -25,10 +25,8 @@
 }
 
 .settingsWebSearchStatusCluster small {
+  font: var(--maka-text-code);
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-family: var(--font-mono);
   white-space: nowrap;
 }
 
@@ -50,9 +48,8 @@
 }
 
 .settingsWebSearchDisabledReason {
+  font: var(--maka-text-body);
   color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   text-align: right;
   /* #1364: the hint names an env var (TAVILY_API_KEY) — an unbreakable token
      wider than the whole content column at the 480px window floor. */
@@ -74,7 +71,7 @@
     background: var(--foreground-3);
   }
 .settingsWebSearchResult a {
-    font-weight: var(--font-weight-semibold);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
     text-decoration: none;
     /* #1364: Tavily titles are sometimes a bare URL — one unbreakable token
@@ -86,9 +83,8 @@
     text-decoration: underline;
   }
 .settingsWebSearchResult small {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--text-supporting-leading);
     text-transform: uppercase;
     letter-spacing: var(--tracking-wider);
     /* #1364: the source is a hostname — one unbreakable token, and long ones
@@ -96,10 +92,9 @@
     overflow-wrap: anywhere;
   }
 .settingsWebSearchResult p {
+    font: var(--maka-text-body);
     margin: 0;
-    font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
-    line-height: var(--text-body-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }

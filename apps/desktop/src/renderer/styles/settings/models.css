@@ -37,9 +37,7 @@
 }
 
 .catalogPillTabs strong {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-bold);
+  font: var(--maka-text-heading-4);
 }
 
 .providerMarketGrid,

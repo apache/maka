@@ -49,6 +49,7 @@
 .maka-model-switcher-trigger.astryx-selector,
 .maka-new-chat-model-selector.astryx-selector,
 .maka-thinking-level-selector.astryx-selector {
+  font: var(--maka-text-label);
   height: 26px;
   min-height: 26px;
   box-sizing: border-box;
@@ -59,9 +60,6 @@
   background: transparent;
   box-shadow: none;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-medium);
   transition:
     background-color var(--duration-base) var(--ease-out-strong),
     color var(--duration-base) var(--ease-out-strong);

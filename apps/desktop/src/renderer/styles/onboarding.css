@@ -26,12 +26,10 @@
 }
 
 .maka-onboarding header h1 {
+  font: var(--maka-text-heading-3);
   margin: 0;
   max-width: 32ch;
   color: var(--foreground);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-large-leading);
   letter-spacing: var(--tracking-normal);
 }
 
@@ -76,19 +74,16 @@
    any "polish" attempt on the upper block to look like a no-op. Deleted. */
 
 .maka-firstrun-title {
+  font: var(--maka-text-display-3);
   margin: 0;
   max-width: none;
-  font-size: var(--font-size-3xl);
-  font-weight: var(--font-weight-bold);
-  line-height: var(--text-display-3-leading);
   letter-spacing: var(--tracking-normal);
   color: var(--foreground);
 }
 
 .maka-firstrun-sub {
+  font: var(--maka-text-body);
   margin: var(--space-2) 0 0;
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
   color: var(--muted-foreground);
 }
 
@@ -112,21 +107,18 @@
 }
 
 .maka-firstrun-step-dot {
+  font: var(--maka-text-heading-5);
   display: inline-grid;
   place-items: center;
   width: 21px;
   height: 21px;
   border-radius: var(--radius-pill);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
   border: var(--border-width-hairline) solid var(--border-strong);
   color: var(--muted-foreground);
 }
 
 .maka-firstrun-step-label {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-body);
   color: var(--muted-foreground);
   white-space: nowrap;
 }
@@ -140,8 +132,8 @@
   color: var(--background);
 }
 .maka-firstrun-step[data-state="active"] .maka-firstrun-step-label {
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-firstrun-step[data-state="done"] .maka-firstrun-step-dot {
@@ -172,14 +164,11 @@
   margin: var(--space-8) 0 var(--space-3);
 }
 .maka-firstrun-pick-label {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
-  font-weight: var(--font-weight-semibold);
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
 }
 .maka-firstrun-pick-hint {
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-body);
   color: var(--muted-foreground);
 }
 
@@ -285,6 +274,7 @@
 }
 
 .maka-onboarding-setup-step-marker {
+  font: var(--maka-text-heading-5);
   width: 18px;
   height: 18px;
   display: inline-flex;
@@ -293,9 +283,6 @@
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-onboarding-setup-steps > li[data-state="active"] .maka-onboarding-setup-step-marker {
@@ -315,27 +302,22 @@
 }
 
 .maka-onboarding-setup-step-copy strong {
+  font: var(--maka-text-heading-5);
   color: var(--foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-onboarding-setup-step-copy small {
+  font: var(--maka-text-supporting);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
 }
 
 .maka-onboarding-setup-step-state {
+  font: var(--maka-text-heading-5);
   justify-self: end;
   padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--text-supporting-leading);
-  font-weight: var(--font-weight-semibold);
   white-space: nowrap;
 }
 
@@ -367,8 +349,7 @@
      warm/amber for `warning` (info family), shifts destructive
      for `blocked` so a stranded user immediately sees gravity. */
 .maka-onboarding-setup header h1 {
-  font-size: var(--font-size-xl);
-  line-height: var(--text-heading-2-leading);
+  font: var(--maka-text-heading-2);
 }
 /* No leading here on purpose: this paragraph declares no size either, so it
    takes the body tier whole from `body` in maka-tokens.css. Naming the leading
@@ -396,9 +377,7 @@
 }
 
 .maka-onboarding-slug {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  line-height: var(--text-body-leading);
+  font: var(--maka-text-code);
   padding: var(--space-0-5) var(--space-1-5);
   /* PR-UI-LAYOUT-25: slug radius 6 → 8 to join the form input
    * family (same chrome as inline code badges). */
