@@ -160,39 +160,15 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     // to the search input inside the popup.
     const enabledModels = modelSection.getByRole('button', { name: '启用的模型', exact: true });
     await enabledModels.click();
-    // No option is locked: the detail page no longer owns a "default model" that
-    // has to stay enabled. Which model a new chat starts on is one workspace
-    // choice, made on the list level.
+    // No option is locked, and unchecking one is not silently undone: the
+    // detail page no longer owns a "default model" that has to stay enabled.
+    // Which model a new chat starts on lives on 设置 · 通用, which is the one
+    // control for that pair.
     await expect(page.getByRole('option', { name: /GPT OSS 120B/ })).not.toHaveAttribute('aria-disabled', 'true');
     await expect(modelSection.getByText('默认模型', { exact: true })).toHaveCount(0);
     await page.getByRole('option', { name: /Gemma/ }).first().click();
     await page.keyboard.press('Escape');
     await expect(enabledModels).toContainText(/Gemma/);
-  });
-
-  await test.step('the list level picks the connection AND the model a new chat starts on', async () => {
-    await detail.getByRole('button', { name: '返回模型连接', exact: true }).click();
-    await expect(detail).toHaveCount(0);
-
-    // One control for the pair the runtime actually executes. Options are
-    // grouped by connection, so a model id two providers both publish is never
-    // ambiguous.
-    const defaultTarget = page.getByRole('combobox', { name: '默认模型', exact: true });
-    await defaultTarget.click();
-    await expect(page.getByRole('listbox')).toContainText('Cerebras');
-    await page.getByRole('option', { name: /Gemma/ }).first().click();
-    await expect(defaultTarget).toContainText(/Gemma/);
-
-    // It wrote the pair, not just the slug.
-    const target = await page.evaluate(async () => {
-      const [list, slug] = await Promise.all([
-        window.maka.connections.list(),
-        window.maka.connections.getDefault(),
-      ]);
-      return { slug, model: list.find((entry) => entry.slug === slug)?.defaultModel };
-    });
-    expect(target.slug).toBe('cerebras');
-    expect(target.model).toMatch(/gemma/i);
   });
 
   await test.step('deletion stays reachable and reversible in a short viewport', async () => {

@@ -9,7 +9,6 @@ import {
   IconButton,
   List,
   ListItem,
-  Selector,
   Skeleton,
   Text,
   Toolbar,
@@ -21,7 +20,6 @@ import {
   type ProviderType,
 } from '@maka/core';
 import { useMountedRef, useUiLocale, useToast } from '@maka/ui';
-import { buildChatModelChoices } from '../chat-model-selection';
 import { connectionChipStatus } from './provider-connection-status';
 import { statusBadgeVariant } from './settings-status-badge';
 import {
@@ -92,7 +90,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   // Browsing state, not navigation state: it outlives the catalog so that
   // backing out of a provider returns the user to the search they typed.
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(CATALOG_INITIAL_FILTER);
-  const [settingDefault, setSettingDefault] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providersPanelMountedRef = useMountedRef();
@@ -187,54 +184,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'detail', slug });
   }
 
-  async function chooseDefaultTarget(value: string) {
-    const target = parseDefaultTarget(value);
-    if (settingDefault || !target) return;
-    setSettingDefault(true);
-    try {
-      // The model first: a connection whose default model is about to change
-      // should not be the workspace default for even one render with the old
-      // one. If this write fails the default connection is left untouched.
-      const connection = connections.find((entry) => entry.slug === target.slug);
-      if (connection && connection.defaultModel !== target.model) {
-        await bridge.update(target.slug, { defaultModel: target.model });
-      }
-      if (target.slug !== defaultSlug) await bridge.setDefault(target.slug);
-      if (!providersPanelMountedRef.current) return;
-      await reload();
-    } catch (error) {
-      if (!providersPanelMountedRef.current) return;
-      toast.error(copy.switchDefaultFailed, providerPanelActionErrorMessage(error, locale));
-    } finally {
-      if (providersPanelMountedRef.current) setSettingDefault(false);
-    }
-  }
-
   function openCatalog() {
     listReturnFocusRef.current = null;
     setRoute({ kind: 'catalog' });
   }
-
-  // Sections, one per connection, so a model id that several providers publish
-  // (an aggregator and the vendor itself) is never ambiguous in the list.
-  const defaultTargetOptions = (() => {
-    const byConnection = new Map<string, { value: string; label: string }[]>();
-    for (const choice of buildChatModelChoices(connections)) {
-      const entries = byConnection.get(choice.connectionSlug) ?? [];
-      entries.push({ value: formatDefaultTarget(choice.connectionSlug, choice.model), label: choice.label });
-      byConnection.set(choice.connectionSlug, entries);
-    }
-    return connections.flatMap((connection) => {
-      const options = byConnection.get(connection.slug);
-      if (!options?.length) return [];
-      return [{ type: 'section' as const, title: connection.name, options }];
-    });
-  })();
-  const defaultTargetValue = (() => {
-    const connection = connections.find((entry) => entry.slug === defaultSlug);
-    if (!connection?.defaultModel) return '';
-    return formatDefaultTarget(connection.slug, connection.defaultModel);
-  })();
 
   const selected = route.kind === 'detail'
     ? connections.find((connection) => connection.slug === route.slug) ?? null
@@ -464,30 +417,6 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               })}
             </List>
           )}
-          {connections.length > 0 && (
-            /* One control, one choice: which connection AND which model a new
-               chat starts on. That pair is what the runtime actually executes
-               (`ConnectionTarget = { connectionId, modelId }` in
-               core/runtime-policy.ts, already what runtime-host resolves), so
-               splitting it into a per-connection default model plus a separate
-               default connection was asking the user two questions to fill one
-               slot — and left N-1 connections carrying a "default model" that
-               nothing would ever start on.
-               Options come from the same builder the chat model picker uses, so
-               this list cannot drift from what is actually selectable. */
-            <Selector
-              label={copy.defaultTarget}
-              description={copy.defaultTargetHelp}
-              options={defaultTargetOptions}
-              value={defaultTargetValue}
-              onChange={(value) => void chooseDefaultTarget(value)}
-              isLoading={settingDefault}
-              isDisabled={settingDefault || defaultTargetOptions.length === 0}
-              disabledMessage={defaultTargetOptions.length === 0 ? copy.noEnabledModels : undefined}
-              placeholder={copy.noDefault}
-              width="100%"
-            />
-          )}
         </>
       )}
     </VStack>
@@ -544,21 +473,6 @@ function RouteHeader(props: {
   );
 }
 
-/**
- * A `{connection, model}` pair as one Selector value. `\n` is the separator
- * because it cannot appear in a slug or a model id, so no id needs escaping.
- */
-function formatDefaultTarget(slug: string, model: string): string {
-  return `${slug}\n${model}`;
-}
-
-function parseDefaultTarget(value: string): { slug: string; model: string } | null {
-  const separator = value.indexOf('\n');
-  if (separator <= 0) return null;
-  const slug = value.slice(0, separator);
-  const model = value.slice(separator + 1);
-  return model ? { slug, model } : null;
-}
 
 /** Provider · default model — the row's second line, and the detail's subtitle. */
 function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): string {

@@ -415,7 +415,9 @@ export const test = base.extend<{
     await withE2eWindow(
       {
         seed: false,
-        readinessSelector: 'dialog[open]',
+        // The connection detail is a page now, not a dialog; waiting on
+        // `dialog[open]` waited for markup this redesign deleted.
+        readinessSelector: '[data-maka-contract="connection-detail"]',
         e2eFixtureScenario: 'oauth-relogin',
         locale: 'zh',
       },
