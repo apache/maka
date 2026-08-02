@@ -26,6 +26,7 @@ import {
   cssRuleBody,
   assertCssRuleDecls,
   assertCustomPropPinnedOnce,
+  findLeadingPairingOffenders,
   parseCssCustomProps,
   readAllRendererCss,
 } from './css-test-helpers.js';
@@ -180,6 +181,46 @@ describe('type scale contracts', () => {
       /font-size:[^;]*!important/,
       'no renderer stylesheet may force a font-size — product CSS is already in the last layer',
     );
+  });
+
+  it('leaves no product leading vocabulary to compete with the roles', async () => {
+    // Both halves matter. A surviving `--leading-*` DEFINITION is a second
+    // authority waiting to be used; a surviving REFERENCE with the definition
+    // gone resolves to nothing and lands as `line-height: <invalid>`, which
+    // renders as the inherited leading rather than as a visible break. The
+    // scan covers packages/ui too — its bare `@import "@maka/ui/styles.css"`
+    // is expanded by readAllRendererCss, and it held eight of the literals.
+    const css = stripCssComments(await readAllRendererCss());
+    assert.deepEqual(
+      [...css.matchAll(/--leading-[\w-]+/g)].map((m) => m[0]),
+      [],
+      'no renderer stylesheet may define or read a product --leading-* tier',
+    );
+    // Literals are the same divergence written inline. `1.4286` typed out is
+    // not the body role: it is a copy of what the role happened to compute
+    // before the last scale change.
+    assert.deepEqual(
+      [...css.matchAll(/line-height:\s*[\d.]+/g)].map((m) => m[0]),
+      [],
+      'line-height must name an Astryx role token, not a literal ratio',
+    );
+  });
+
+  it('declares every font-size with the leading of its own tier', async () => {
+    // The pairing this branch exists to make unbreakable. Size and leading
+    // were separately chosen per site, so a site could move one and leave the
+    // other — measured, `.maka-onboarding-setup header h1` had done exactly
+    // that, overriding the size to 18px while the leading came from a 16px
+    // rule one selector up, and rendering 22.5px.
+    //
+    // Resolved through the generated theme rather than a copied table, so
+    // this tracks an Astryx scale change instead of failing on one.
+    const offenders = findLeadingPairingOffenders(
+      await readAllRendererCss(),
+      await read('astryx-theme/maka.css'),
+      await read('maka-tokens.css'),
+    );
+    assert.deepEqual(offenders, [], `size/leading pairs must name one tier:\n${offenders.join('\n')}`);
   });
 
   it('keeps font-size off em multipliers and rem', async () => {

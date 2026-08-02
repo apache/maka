@@ -172,6 +172,78 @@ export function findFontShorthandOffenders(css: string, label: string): string[]
   return offenders;
 }
 
+// --- size ↔ leading pairing ------------------------------------------------
+
+/** Innermost declaration blocks. Nested at-rules (`@media`, `@layer`) are
+ * skipped rather than mis-parsed: their body contains braces, so only the
+ * rules inside them match — which is exactly the level declarations live at. */
+export function parseCssBlocks(css: string): { selector: string; body: string }[] {
+  const out: { selector: string; body: string }[] = [];
+  for (const m of stripCssComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    out.push({ selector: m[1].trim().split('\n').pop()!.trim(), body: m[2] });
+  }
+  return out;
+}
+
+/**
+ * Report blocks whose `font-size` and `line-height` name different tiers.
+ *
+ * The rule is not "leading must be token X": Astryx's leading is a pure
+ * function of size (`expandTypeScale.ts` snaps each tier to the 4px grid), so
+ * several role names share one value at one size and the choice between them
+ * is a readability one. What must hold is that the role whose leading a block
+ * names is the role sized like the size the block declares — checked by
+ * resolving both through the generated theme rather than against a hand-copied
+ * table, so an Astryx scale change moves this contract with it instead of
+ * failing it.
+ *
+ * One-directional on purpose. A block may declare a leading with no size (it
+ * inherits one), and no amount of text says what it inherits; `type-scale`
+ * e2e measures that in the resolved document instead.
+ */
+export function findLeadingPairingOffenders(
+  css: string,
+  themeCss: string,
+  tokensCss: string,
+): string[] {
+  const theme = parseCssCustomProps(themeCss);
+  const tokens = parseCssCustomProps(tokensCss);
+  const first = (map: Map<string, string[]>, name: string) => map.get(name)?.[0];
+
+  // Raw size token → length. Product aliases resolve through one hop.
+  const sizeOf = (token: string): string | undefined => {
+    const direct = first(theme, token);
+    if (direct && !direct.startsWith('var(')) return direct;
+    const alias = first(tokens, token) ?? direct;
+    const inner = alias?.match(/var\((--[\w-]+)\)/)?.[1];
+    return inner ? first(theme, inner) : undefined;
+  };
+  // Role leading token → the length of the tier that role is sized at.
+  const leadingTierOf = (token: string): string | undefined => {
+    if (token === '--maka-line-body') return sizeOf('--text-body-size');
+    const role = token.match(/^--text-(.+)-leading$/)?.[1];
+    if (!role) return undefined;
+    const sized = first(theme, `--text-${role}-size`)?.match(/var\((--[\w-]+)\)/)?.[1];
+    return sized ? sizeOf(sized) : undefined;
+  };
+
+  const offenders: string[] = [];
+  for (const { selector, body } of parseCssBlocks(css)) {
+    const size = body.match(/font-size:\s*var\((--[\w-]+)/)?.[1];
+    if (!size) continue;
+    const leading = body.match(/line-height:\s*var\((--[\w-]+)/)?.[1];
+    if (!leading) {
+      offenders.push(`${selector}: declares font-size ${size} and no line-height`);
+      continue;
+    }
+    const want = sizeOf(size);
+    const got = leadingTierOf(leading);
+    if (want && got && want === got) continue;
+    offenders.push(`${selector}: font-size ${size} (${want}) paired with ${leading} (${got})`);
+  }
+  return offenders;
+}
+
 // --- token pin (exact-once) -----------------------------------------------
 
 /** Parse all custom property declarations (`--token: value;`) from CSS.

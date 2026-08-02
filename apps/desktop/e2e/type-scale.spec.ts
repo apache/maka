@@ -133,6 +133,64 @@ test('resolves one type scale from the root down to the transcript', async ({
     expect(await label.evaluate((el) => getComputedStyle(el).fontSize)).toBe('14px');
   });
 
+  await test.step('the document default leading pairs with the body tier', async () => {
+    // The single highest-leverage line in the leading convergence, and one no
+    // stylesheet in this repo used to own: Astryx's reset declares
+    // `line-height: 1.5` on `:where(html)`, so every element that did not
+    // declare a leading inherited that ratio — measured 21px at the 14px body
+    // tier, on hundreds of nodes. `body` in maka-tokens.css now declares the
+    // body role's leading next to the body size it already declared.
+    expect(
+      Number.parseFloat(
+        await page.evaluate(() => getComputedStyle(document.body).lineHeight),
+      ),
+    ).toBeCloseTo(20, 1);
+  });
+
+  await test.step('every rendered line box sits on the 4px grid', async () => {
+    // The measurement the pairing contract cannot make. That contract reads
+    // co-located declarations; this asks the resolved document, which is where
+    // an inherited ratio meets an overridden size — the failure that had
+    // `.maka-attachment-file-content` holding one 1.25 for a 14px name and a
+    // 12px size at once, and `.maka-onboarding-setup header h1` taking a 16px
+    // rule's leading at 18px.
+    //
+    // The grid rule is Astryx's own (expandTypeScale.ts): target 1.5 under
+    // 20px, 1.4 through 31px, 1.25 above, snapped to 4px, floor size + 4.
+    // Recomputed here rather than table-copied so an Astryx scale change moves
+    // the expectation with it.
+    //
+    // Scope stated rather than hidden: this window only. Sweeping every
+    // scenario would import other surfaces' vendor gaps — measured, Astryx's
+    // own TextArea counter row (TextArea.tsx declares --text-supporting-size
+    // with no matching leading) is off-grid in the plan-reminders window, and
+    // an allowlist keyed to generated atom class names would rot on the next
+    // Astryx build. Repo-wide coverage is the pairing contract's job.
+    const offGrid = await page.evaluate(() => {
+      const grid = (px: number) => {
+        const target = px < 20 ? 1.5 : px < 32 ? 1.4 : 1.25;
+        return Math.max(Math.round((px * target) / 4) * 4, px + 4);
+      };
+      const out: string[] = [];
+      for (const el of document.querySelectorAll('*')) {
+        const hasOwnText = [...el.childNodes].some(
+          (n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? '').trim().length > 0,
+        );
+        if (!hasOwnText) continue;
+        const style = getComputedStyle(el);
+        const size = Number.parseFloat(style.fontSize);
+        const leading = Number.parseFloat(style.lineHeight);
+        if (!Number.isFinite(leading)) continue; // `normal` — no declared leading to check
+        const want = grid(size);
+        if (Math.abs(leading - want) < 0.51) continue;
+        const name = typeof el.className === 'string' ? el.className.split(' ')[0] : '';
+        out.push(`${el.tagName.toLowerCase()}.${name}: ${size}px leading ${leading}px, grid wants ${want}px`);
+      }
+      return [...new Set(out)];
+    });
+    expect(offGrid).toEqual([]);
+  });
+
   await test.step('code elements resolve the theme mono stack, not the reset one', async () => {
     expect(
       await page.evaluate(() => {
