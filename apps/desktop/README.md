@@ -2,6 +2,24 @@
 
 The Electron desktop app: `main` (Node/Electron main process) + `preload` (context bridge) + `renderer` (React UI). This file covers the three-layer split and the IPC contract. For build/test commands and the test-layer selection guide, see the top-level `README.md`; for the renderer interior, see `src/renderer/README.md`.
 
+## macOS development permissions
+
+`npm run dev` and `npm start` launch macOS development builds through a generated, ad-hoc-signed
+`apps/desktop/.maka-dev/Maka Dev.app`. The stable bundle identity lets macOS TCC
+retain Accessibility and Screen Recording grants while renderer and main-process
+code change. The generated app is ignored by Git and is rebuilt automatically
+when the installed Electron version changes. Run
+`npm --workspace @maka/desktop run prepare:dev-app` to prepare it explicitly.
+
+The scripts launch the bundle through macOS LaunchServices rather than executing
+its internal binary from a terminal. This is required for TCC to attribute the
+running process to `Maka Dev` and recognize the stored grants.
+
+Grant permissions to **Maka Dev**, not a generic Electron entry. Screen Recording
+changes require restarting the development app. Recreating the app or changing
+its Electron version may require granting permissions again. Other platforms
+continue to use their normal Electron development executable.
+
 ## Three layers
 
 | Layer | Path | Role |

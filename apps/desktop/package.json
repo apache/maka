@@ -9,7 +9,8 @@
   "type": "module",
   "main": "dist/main/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start-dev-app.mjs",
+    "prepare:dev-app": "node scripts/prepare-dev-app.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:hmr": "node scripts/dev.mjs",
     "storybook": "storybook dev -p 6006 -c .storybook",

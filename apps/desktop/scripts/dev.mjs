@@ -24,6 +24,10 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
+import {
+  quitMacosDevelopmentApp,
+  resolveMacosDevelopmentLaunch,
+} from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
@@ -142,7 +146,9 @@ if (!devUrl) {
 }
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
-const electron = spawn(resolveElectronBin(), ['.', ...process.argv.slice(2)], {
+const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
+const macosLaunch = resolveMacosDevelopmentLaunch(appArgs, { VITE_DEV_SERVER_URL: devUrl });
+const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
   cwd: DESKTOP_DIR,
   stdio: 'inherit',
   env: { ...process.env, VITE_DEV_SERVER_URL: devUrl },
@@ -152,6 +158,7 @@ let shuttingDown = false;
 async function shutdown(code, options = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (macosLaunch) quitMacosDevelopmentApp();
   if (options.killElectron !== false) {
     await terminateProcessTree(electron);
   }
