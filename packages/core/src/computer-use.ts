@@ -17,6 +17,12 @@ export const COMPUTER_USE_ERROR_CODES = [
   'capture_failed',
   'sensitivity_blocked',
   'unsupported_action',
+  // The executor attempted the action, the OS refused it, and nothing happened —
+  // or nothing was attempted because every path that could reach the target was
+  // forbidden. Distinct from `unsupported_action`, which is decided before
+  // anything is dispatched: "the element does not offer this" tells the model to
+  // try something else, "we tried and it said no" tells it to try again.
+  'dispatch_refused',
   'aborted',
   'timeout',
   'no_active_frame',
@@ -234,6 +240,26 @@ export type ComputerUseActionOutcome =
       ok: false;
       error: ComputerUseErrorCode;
       message: string;
+      /**
+       * The message may be shown to the model.
+       *
+       * Set only by a backend that guarantees its diagnostics carry no text
+       * belonging to the observed application. `maka.cu/2` §1.2 makes that a
+       * protocol rule: `error.message` is a fixed sentence chosen by
+       * `error.code`, and application text is confined to the declared
+       * observation fields. cua-driver made no such promise, which is why the
+       * message was withheld from every backend alike.
+       *
+       * Withholding it costs more than it protects. The executor writes "say
+       * Backspace or ForwardDelete rather than delete"; the model was handed
+       * `unsupported_action` alone, and the tool description tells it that code
+       * means keyboard input is off in this build. One mistyped key name taught
+       * it that the keyboard does not work.
+       *
+       * Absent means withheld, so a backend that forgets this flag is quiet
+       * rather than leaky.
+       */
+      messageIsAppTextFree?: boolean;
       evidence?: ComputerUseDispatchEvidence;
       completedSubSteps?: number;
     };
@@ -261,6 +287,134 @@ export interface ComputerUseApprovalSummary {
   observationId?: string;
 }
 
+/**
+ * The call as the model should read it back: its own arguments, in the names
+ * the tool accepts.
+ *
+ * The approval summary above is the host's projection for deciding and
+ * displaying a permission. It was also being written into the model-facing
+ * record of the call, and that had a cost nobody was watching for: the model's
+ * transcript said it had called `maka_computer` with `approvalClass`,
+ * `rememberForTurnAllowed` and `windowId` — two host-only fields and a key in a
+ * dialect the tool rejects — so it went on calling it that way. A real desktop
+ * run failed six of eleven calls on shapes copied from its own history, and the
+ * telemetry file on this machine holds 29 such rejections.
+ *
+ * Same privacy boundary as the summary: typed text, written values and
+ * coordinates are screen-derived and stay out. Element ids do not — an element
+ * id is an index into one observation, and withholding it is what left the
+ * model unable to see which control it had just acted on.
+ *
+ * Accepts either dialect on input, so it can project raw arguments or an
+ * approval summary recovered from storage.
+ */
+export interface ComputerUseModelCallArgs {
+  action: string;
+  app?: string;
+  window_id?: number;
+  observation_id?: string;
+  element_id?: string;
+  /** Every other argument the call carried, values reduced to their shape. */
+  [key: string]: string | number | boolean | undefined;
+}
+
+/**
+ * Fields the host adds for its own approval projection, which the model never
+ * sent and must never be shown as though it had.
+ */
+const HOST_ONLY_ARGS = new Set(['approvalClass', 'rememberForTurnAllowed']);
+
+/** The keys projected by name above, so the sweep below does not repeat them. */
+const MODEL_CALL_NAMED_ARGS = new Set([
+  'action',
+  'app',
+  'window_id',
+  'windowId',
+  'observation_id',
+  'observationId',
+  'element_id',
+  'elementId',
+]);
+
+/**
+ * Arguments whose value is the model's own choice from a fixed set, a number,
+ * or a word it wrote itself — nothing here comes off the screen.
+ */
+const MODEL_CALL_PLAIN_VALUES = new Set([
+  'include_screenshot',
+  'scroll_direction',
+  'scroll_amount',
+  'window_action',
+  'duration',
+  'menu',
+  'query',
+]);
+
+/**
+ * A screen-derived or typed argument, kept as a shape.
+ *
+ * The value is what a person typed or what a window showed, so it stays out.
+ * The key does not: without it the model reads its own history as a call it
+ * never made.
+ */
+function shapeOf(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.length === 2 && value.every((v) => typeof v === 'number')
+      ? '<point>'
+      : `<${value.length} ${value.length === 1 ? 'item' : 'items'}>`;
+  }
+  if (typeof value === 'string') return '<text>';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '<value>';
+}
+
+export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArgs {
+  const record = asRecord(args);
+  const rawAction = ownDataProperty(record, 'action');
+  const action =
+    typeof rawAction === 'string' && APPROVAL_ACTIONS.has(rawAction) ? rawAction : 'unknown';
+  const app = ownDataProperty(record, 'app');
+  const windowId = ownDataProperty(record, 'window_id') ?? ownDataProperty(record, 'windowId');
+  const observationId =
+    ownDataProperty(record, 'observation_id') ?? ownDataProperty(record, 'observationId');
+  const elementId = ownDataProperty(record, 'element_id') ?? ownDataProperty(record, 'elementId');
+  // Every remaining argument the model sent, as a shape. This projection used
+  // to name five keys and drop the rest, so `element_sequence` came back to the
+  // model as a call carrying only an observation id, `press_key` as one with no
+  // key, `set_value` as one with no value. The model reads that as the shape
+  // that worked and sends it again — and a real session refused eighteen calls
+  // for missing exactly the fields this had removed. The privacy boundary is
+  // about values, and only values are withheld.
+  const rest: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(record ?? {})) {
+    if (MODEL_CALL_NAMED_ARGS.has(key) || HOST_ONLY_ARGS.has(key)) continue;
+    if (MODEL_CALL_PLAIN_VALUES.has(key)) {
+      rest[key] =
+        typeof value === 'string'
+          ? boundedDisplay(redactSecrets(value), 256)
+          : typeof value === 'number' || typeof value === 'boolean'
+            ? value
+            : shapeOf(value);
+      continue;
+    }
+    rest[key] = shapeOf(value);
+  }
+  return {
+    action,
+    ...(typeof app === 'string' && app.length > 0
+      ? { app: boundedDisplay(redactSecrets(app), 256) }
+      : {}),
+    ...(typeof windowId === 'number' && Number.isInteger(windowId) ? { window_id: windowId } : {}),
+    ...(typeof observationId === 'string' && stableIdentifier(observationId)
+      ? { observation_id: stableIdentifier(observationId) }
+      : {}),
+    ...(typeof elementId === 'string' && elementId.length > 0
+      ? { element_id: boundedDisplay(redactSecrets(elementId), 256) }
+      : {}),
+    ...rest,
+  };
+}
+
 const POINTER_ACTIONS = new Set([
   'mouse_move',
   'left_click',
@@ -276,18 +430,52 @@ const POINTER_ACTIONS = new Set([
 ]);
 
 const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
-const SEMANTIC_ACTIONS = new Set(['click_element', 'set_value', 'select_text', 'secondary_action']);
+const SEMANTIC_ACTIONS = new Set([
+  'click_element',
+  'set_value',
+  'select_text',
+  'secondary_action',
+  // Scrolling an element moves what is on screen without changing any value.
+  // It is still a mutation of the target's state, and it is the semantic twin
+  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
+  'scroll_element',
+  // A sequence of element actions is still element actions: same class, same
+  // approval, one call.
+  'element_sequence',
+  // Starting an app changes what is on screen. It touches no element, but it
+  // is not a read, and letting it fall through to the default would have
+  // classified it correctly by accident rather than on purpose.
+  'launch_app',
+]);
 
-const APPROVAL_ACTIONS = new Set([
+/**
+ * Every semantic action name, as the tool schema spells them.
+ *
+ * Hand-written beside a schema that already lists them, and it drifted:
+ * `window_action` was added to the schema and not here, so every window move,
+ * resize and minimise was summarised as `unknown` — in the approval a person
+ * reads before allowing it, and in the record the model reads back of its own
+ * call. A real run shows one such call succeeding while both projections of it
+ * said `unknown`.
+ *
+ * `computer-use-approval-actions.test.ts` in @maka/runtime holds the two lists
+ * against each other, because this package cannot import the schema.
+ */
+export const COMPUTER_USE_SEMANTIC_ACTIONS = [
   'list_apps',
+  'launch_app',
   'observe',
   'click_element',
   'set_value',
   'select_text',
   'secondary_action',
+  'scroll_element',
+  'element_sequence',
+  'window_action',
   'press_key',
-  ...CU_ACTION_TYPES,
-]);
+] as const;
+
+const APPROVAL_ACTIONS = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
 
 export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSummary {
   const record = asRecord(args);
@@ -387,4 +575,40 @@ function ownDataProperty(record: Record<string, unknown>, key: string): unknown 
     throw new Error(`Computer Use approval requires ${key} to be a plain data property`);
   }
   return descriptor.value;
+}
+
+/**
+ * Whether the model may drive the machine at all.
+ *
+ * Computer Use is gated by the tool, not by the application it is pointed at.
+ * That is how everything else in Maka is gated — `load_tools` admits tools,
+ * plan mode strips them, the tool surface is assembled per turn — and adding an
+ * application axis would be a second dimension nothing else has, paid for with
+ * a per-app grant store and a revocation screen, to ask a question ("allow Maka
+ * to use 词典?") that a person cannot weigh and will answer yes to.
+ *
+ * It also is not a substitute for the macOS grants. Accessibility and Screen
+ * Recording are what actually let anything happen; this decides whether Maka
+ * offers the capability to the model in the first place.
+ *
+ * Off by default. Turning on a capability that reads the screen and presses
+ * buttons is a decision, not a migration.
+ */
+export interface ComputerUseSettings {
+  readonly enabled: boolean;
+}
+
+export type ComputerUseSettingsPatch = Partial<{ enabled: boolean }>;
+
+export function defaultComputerUseSettings(): ComputerUseSettings {
+  return { enabled: false };
+}
+
+export function mergeComputerUseSettings(
+  current: ComputerUseSettings | undefined,
+  patch: ComputerUseSettingsPatch | undefined,
+): ComputerUseSettings {
+  const base = current ?? defaultComputerUseSettings();
+  if (!patch) return base;
+  return { enabled: typeof patch.enabled === 'boolean' ? patch.enabled : base.enabled };
 }
