@@ -75,6 +75,10 @@ export interface AgentGraphSupervisorContextRecoveryDiagnostic {
   historyCompactBlocksWritten?: number;
 }
 
+export type AgentGraphSupervisorTurnOutcome =
+  | GoalTurnOutcome
+  | { kind: 'superseded'; turnId: string; reason: string };
+
 export type AgentGraphSupervisorWakeDiagnostic =
   | {
       event: 'context_overflow_detected';
@@ -123,7 +127,8 @@ export interface AgentGraphSupervisorWakeInput {
     input: UserMessageInput,
     activity: SessionActivityLease,
     abortSignal: AbortSignal,
-  ): Promise<GoalTurnOutcome>;
+    isCurrent: () => Promise<boolean>,
+  ): Promise<AgentGraphSupervisorTurnOutcome>;
   inspectAttempt(
     rootSessionId: string,
     attemptId: string,
@@ -141,6 +146,9 @@ export interface AgentGraphSupervisorWakeInput {
     },
   ): Promise<AgentGraphSupervisorContextRecoveryDiagnostic | void>;
   newId(): string;
+  isSessionDeliverable?(rootSessionId: string): Promise<boolean>;
+  /** Keep an external host alive while a durable wake is admitted or delivered. */
+  acquireResidency?(rootSessionId: string): SessionActivityLease;
   maxDeliveryAttempts?: number;
   onDiagnostic?(diagnostic: AgentGraphSupervisorWakeDiagnostic): void | Promise<void>;
   onError?(rootSessionId: string, error: unknown): void | Promise<void>;
@@ -171,15 +179,20 @@ export class AgentGraphSupervisorWakeCoordinator {
     }
   }
 
-  notify(rootSessionId: string, result: AgentGraphScheduleReconciliationResult): void {
-    if (this.#closed || !isAgentGraphSupervisorMilestone(result)) return;
-    const task = this.#wake(rootSessionId, result).catch((error) => {
-      if (!this.#closed && !isAbortError(error)) {
-        return notifyError(this.#input.onError, rootSessionId, error);
+  notify(
+    rootSessionId: string,
+    result: AgentGraphScheduleReconciliationResult,
+  ): Promise<void> | undefined {
+    if (this.#closed || !isAgentGraphSupervisorMilestone(result)) return undefined;
+    return this.#runTracked(rootSessionId, async () => {
+      try {
+        await this.#wake(rootSessionId, result);
+      } catch (error) {
+        if (!this.#closed && !isAbortError(error)) {
+          await notifyError(this.#input.onError, rootSessionId, error);
+        }
       }
     });
-    this.#tasks.add(task);
-    void task.finally(() => this.#tasks.delete(task));
   }
 
   /**
@@ -189,15 +202,17 @@ export class AgentGraphSupervisorWakeCoordinator {
    * attempt settles. If the stream already ended suspended, admission here
    * proves that waiter is gone and makes the wake eligible for a fresh turn.
    */
-  notifyPermissionResponse(rootSessionId: string): void {
-    if (this.#closed) return;
-    const task = this.#settlePermissionResponse(rootSessionId).catch((error) => {
-      if (!this.#closed && !isAbortError(error)) {
-        return notifyError(this.#input.onError, rootSessionId, error);
+  notifyPermissionResponse(rootSessionId: string): Promise<void> | undefined {
+    if (this.#closed) return undefined;
+    return this.#runTracked(rootSessionId, async () => {
+      try {
+        await this.#settlePermissionResponse(rootSessionId);
+      } catch (error) {
+        if (!this.#closed && !isAbortError(error)) {
+          await notifyError(this.#input.onError, rootSessionId, error);
+        }
       }
     });
-    this.#tasks.add(task);
-    void task.finally(() => this.#tasks.delete(task));
   }
 
   /** Converges persisted wakes from AgentRun facts and resumes only safe retries. */
@@ -219,6 +234,17 @@ export class AgentGraphSupervisorWakeCoordinator {
     while (this.#tasks.size > 0) await Promise.all([...this.#tasks]);
   }
 
+  hasLiveSessionState(rootSessionId: string): boolean {
+    return this.#input.activityRegistry.whenIdle(rootSessionId) !== undefined;
+  }
+
+  async retireSessions(rootSessionIds: readonly string[]): Promise<number> {
+    return this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
+      rootSessionIds,
+      reason: 'session_retired',
+    });
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -230,6 +256,7 @@ export class AgentGraphSupervisorWakeCoordinator {
     rootSessionId: string,
     result: AgentGraphScheduleReconciliationResult,
   ): Promise<void> {
+    if (!(await this.#isSessionDeliverable(rootSessionId))) return;
     const snapshot = await this.#input.readSnapshot(rootSessionId);
     if (this.#closed || snapshot.closed || snapshot.scheduleRevision === 0) return;
     const wakeId = `${snapshot.graphId}:${snapshot.snapshotVersion}`;
@@ -253,18 +280,37 @@ export class AgentGraphSupervisorWakeCoordinator {
   #scheduleRecoveredWake(wake: AgentGraphSupervisorWakeRecord): void {
     if (this.#closed || this.#pendingWakeIds.has(wake.wakeId)) return;
     this.#pendingWakeIds.add(wake.wakeId);
-    const task = this.#resumeWake(wake)
-      .catch((error) => {
+    void this.#runTracked(wake.rootSessionId, async () => {
+      try {
+        await this.#resumeWake(wake);
+      } catch (error) {
         if (!this.#closed && !isAbortError(error)) {
-          return notifyError(this.#input.onError, wake.rootSessionId, error);
+          await notifyError(this.#input.onError, wake.rootSessionId, error);
         }
-      })
-      .finally(() => this.#pendingWakeIds.delete(wake.wakeId));
+      } finally {
+        this.#pendingWakeIds.delete(wake.wakeId);
+      }
+    });
+  }
+
+  #runTracked(rootSessionId: string, operation: () => Promise<void>): Promise<void> {
+    const residency = this.#input.acquireResidency?.(rootSessionId);
+    const task = Promise.resolve()
+      .then(operation)
+      .finally(() => residency?.release());
     this.#tasks.add(task);
-    void task.finally(() => this.#tasks.delete(task));
+    void task.then(
+      () => this.#tasks.delete(task),
+      () => this.#tasks.delete(task),
+    );
+    return task;
   }
 
   async #resumeWake(wake: AgentGraphSupervisorWakeRecord): Promise<void> {
+    if (!(await this.#isSessionDeliverable(wake.rootSessionId))) {
+      await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
+      return;
+    }
     const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
     if (
       this.#closed ||
@@ -285,6 +331,10 @@ export class AgentGraphSupervisorWakeCoordinator {
     let lastFailure: string | undefined;
     let overflowRecoveryAttempted = false;
     for (let index = 0; index < this.#maxDeliveryAttempts; index += 1) {
+      if (!(await this.#isSessionDeliverable(wake.rootSessionId))) {
+        await this.#supersedeSession(wake.rootSessionId, 'session_unavailable');
+        return;
+      }
       let overflowAttempt: { attemptId: string; turnId: string; failureReason: string } | undefined;
       const activity = await this.#input.activityRegistry.acquire(
         wake.rootSessionId,
@@ -323,6 +373,7 @@ export class AgentGraphSupervisorWakeCoordinator {
             },
             activity,
             this.#abortController.signal,
+            () => this.#isWakeCurrent(wake),
           );
           if (outcome.kind === 'completed') {
             await this.#input.wakeStore.completeAgentGraphSupervisorWakeAttempt({
@@ -330,6 +381,16 @@ export class AgentGraphSupervisorWakeCoordinator {
               wakeId: wake.wakeId,
               attemptId,
               status: 'delivered',
+            });
+            return;
+          }
+          if (outcome.kind === 'superseded') {
+            await this.#input.wakeStore.completeAgentGraphSupervisorWakeAttempt({
+              graphId: wake.graphId,
+              wakeId: wake.wakeId,
+              attemptId,
+              status: 'superseded',
+              failureReason: outcome.reason,
             });
             return;
           }
@@ -460,6 +521,27 @@ export class AgentGraphSupervisorWakeCoordinator {
     });
   }
 
+  async #isSessionDeliverable(rootSessionId: string): Promise<boolean> {
+    return (await this.#input.isSessionDeliverable?.(rootSessionId)) ?? true;
+  }
+
+  async #isWakeCurrent(wake: AgentGraphSupervisorWakeRecord): Promise<boolean> {
+    if (!(await this.#isSessionDeliverable(wake.rootSessionId))) return false;
+    const snapshot = await this.#input.readSnapshot(wake.rootSessionId);
+    return (
+      !snapshot.closed &&
+      snapshot.graphId === wake.graphId &&
+      `${snapshot.graphId}:${snapshot.snapshotVersion}` === wake.wakeId
+    );
+  }
+
+  #supersedeSession(rootSessionId: string, reason: string): Promise<number> {
+    return this.#input.wakeStore.supersedeAgentGraphSupervisorWakes({
+      rootSessionIds: [rootSessionId],
+      reason,
+    });
+  }
+
   async #recoverUnsettledWake(wake: AgentGraphSupervisorWakeRecord): Promise<number> {
     const attemptId = wake.currentAttemptId;
     const turnId = wake.currentTurnId;
@@ -547,7 +629,9 @@ export function isAgentGraphSupervisorMilestone(
   return result.dispatches.length > 0 || result.failures.length > 0;
 }
 
-function wakeOutcomeFailure(outcome: Exclude<GoalTurnOutcome, { kind: 'completed' }>): string {
+function wakeOutcomeFailure(
+  outcome: Exclude<AgentGraphSupervisorTurnOutcome, { kind: 'completed' | 'superseded' }>,
+): string {
   if (outcome.kind === 'errored' || outcome.kind === 'suspended') {
     return `${outcome.kind}: ${outcome.reason}`;
   }

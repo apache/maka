@@ -53,6 +53,12 @@ export type RootExecutionDescriptor =
   | { kind: 'automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
+      kind: 'agent_graph_supervisor_wake';
+      graphId: string;
+      wakeId: string;
+      attemptId: string;
+    }
+  | {
       kind: 'linked_child_initial';
       agentId: string;
       agentName: string;
@@ -150,17 +156,14 @@ export interface AgentRunHeader {
 
 type HostedRootExecutionDescriptor = Extract<
   RootExecutionDescriptor,
-  { kind: 'automation' | 'goal' }
+  { kind: 'automation' | 'goal' | 'agent_graph_supervisor_wake' }
 >;
 
 export function agentRunMatchesHostedRootExecution(
   run: AgentRunHeader,
   execution: HostedRootExecutionDescriptor,
 ): boolean {
-  const authorityMatches =
-    execution.kind === 'automation'
-      ? run.automationId === execution.automationId && run.goalId === undefined
-      : run.goalId === execution.goalId && run.automationId === undefined;
+  const authorityMatches = hostedRootAuthorityMatches(run, execution);
   return (
     authorityMatches &&
     run.parentRunId === undefined &&
@@ -173,10 +176,41 @@ export function agentRunMatchesHostedRootExecution(
     run.regeneratedFromTurnId === undefined &&
     run.branchOfTurnId === undefined &&
     run.parentSessionId === undefined &&
-    run.continuationSource === undefined &&
-    run.agentGraphWakeId === undefined &&
-    run.agentGraphWakeAttemptId === undefined
+    run.continuationSource === undefined
   );
+}
+
+function hostedRootAuthorityMatches(
+  run: AgentRunHeader,
+  execution: HostedRootExecutionDescriptor,
+): boolean {
+  switch (execution.kind) {
+    case 'automation':
+      return (
+        run.automationId === execution.automationId &&
+        run.goalId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'goal':
+      return (
+        run.goalId === execution.goalId &&
+        run.automationId === undefined &&
+        run.agentGraphWakeId === undefined &&
+        run.agentGraphWakeAttemptId === undefined
+      );
+    case 'agent_graph_supervisor_wake':
+      return (
+        execution.wakeId.startsWith(`${execution.graphId}:`) &&
+        run.agentGraphWakeId === execution.wakeId &&
+        run.agentGraphWakeAttemptId === execution.attemptId &&
+        run.orchestrationMode === 'graph' &&
+        run.orchestrationSource === 'turn_override' &&
+        run.agentSwarmAuthorization === 'none' &&
+        run.automationId === undefined &&
+        run.goalId === undefined
+      );
+  }
 }
 
 export interface AgentRunInputSummary {

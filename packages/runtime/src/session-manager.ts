@@ -4355,6 +4355,19 @@ export class SessionManager {
         executionKind: input.execution.kind,
         goalId: input.execution.goalId,
       };
+    } else if (input.execution.kind === 'agent_graph_supervisor_wake') {
+      headerExtras.agentGraphWakeId = input.execution.wakeId;
+      headerExtras.agentGraphWakeAttemptId = input.execution.attemptId;
+      headerExtras.orchestrationMode = 'graph';
+      headerExtras.orchestrationSource = 'turn_override';
+      headerExtras.agentSwarmAuthorization = 'none';
+      recoveryReason = 'agent_graph_supervisor_internal_admission_without_run';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        graphId: input.execution.graphId,
+        wakeId: input.execution.wakeId,
+        attemptId: input.execution.attemptId,
+      };
     } else {
       if (
         session.subagentParent?.kind !== 'subagent' ||

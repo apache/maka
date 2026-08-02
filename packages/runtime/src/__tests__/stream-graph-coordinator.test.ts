@@ -594,6 +594,7 @@ describe('host-managed agent graph coordinator', () => {
       releaseProvisionRead = resolve;
     });
     let holdProvisionRead = true;
+    let residencies = 0;
     const gatedStore = new Proxy(controlStore, {
       get(target, property) {
         if (property === 'listAgentGraphOperatorProvisions') {
@@ -630,6 +631,17 @@ describe('host-managed agent graph coordinator', () => {
       },
       newId: randomUUID,
       rootSessionId,
+      acquireResidency: () => {
+        residencies += 1;
+        let released = false;
+        return {
+          release: () => {
+            if (released) return;
+            released = true;
+            residencies -= 1;
+          },
+        };
+      },
     } as unknown as AgentGraphCoordinatorInput);
     try {
       const tools = await coordinator.toolsForSession(rootSessionId);
@@ -656,6 +668,7 @@ describe('host-managed agent graph coordinator', () => {
 
       coordinator.wake(rootSessionId);
       await provisionReadStarted;
+      assert.equal(residencies, 1);
       let settled = false;
       const yielding = Promise.resolve(
         yieldTool.impl(
@@ -672,7 +685,10 @@ describe('host-managed agent graph coordinator', () => {
         yielding,
         /no in-flight work or pending reconciliation.*future supervisor checkpoint/,
       );
+      await coordinator.waitForIdle(rootSessionId);
+      assert.equal(residencies, 0);
       assert.equal((await coordinator.reconcile(rootSessionId)).status, 'waiting');
+      assert.equal(residencies, 0);
     } finally {
       releaseProvisionRead();
       await coordinator.close();

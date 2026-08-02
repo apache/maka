@@ -28,9 +28,11 @@ import {
   type ProxiedFetchTransport,
   type RunTraceEvent,
   type ScannedSkill,
+  agentGraphIdForRootSession,
   buildParentAgentTools,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
@@ -55,6 +57,7 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
+import { AgentGraphProviderScenario } from './fixtures/agent-graph-provider-scenario.js';
 
 const MODEL_ID = 'hosted-real-model';
 const API_KEY = 'hosted-provider-key';
@@ -756,6 +759,205 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(provider.requests.length, requestsBeforeArtifactFailure);
     assert.equal(drainRequests, 1);
   } finally {
+    try {
+      await composition?.close();
+    } finally {
+      try {
+        await owner.close();
+      } finally {
+        await provider.close();
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test('production Host executes and durably supervises an Agent Graph over a real provider wire', {
+  timeout: 20_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-agent-graph-'));
+  const root = join(base, 'interactive');
+  const project = join(base, 'project');
+  const provider = await startProvider();
+  provider.configureAgentGraphFlow();
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  let liveResidencies = 0;
+  const context: ConnectionContext = {
+    hostEpoch: 'agent-graph-test-epoch',
+    connectionId: 'agent-graph-test-client',
+    surface: 'tui',
+    principal: 'local_os_user',
+    acquireResidency: () => {
+      liveResidencies += 1;
+      let released = false;
+      return {
+        release: () => {
+          if (released) return;
+          released = true;
+          liveResidencies -= 1;
+        },
+      };
+    },
+  };
+  let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
+  let graphStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
+  try {
+    await mkdir(project);
+    await writeFile(join(project, 'README.md'), '# Hosted Graph fixture\n');
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'hosted-graph-provider',
+        name: 'Hosted Graph provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: API_KEY,
+        })
+      ).kind,
+      'committed',
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID, 32_768);
+
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await execution.sessionStore.create({
+      cwd: project,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'hosted-graph-provider',
+      model: MODEL_ID,
+      permissionMode: 'bypass',
+    });
+    composition = await createExecutionRuntimeHostComposition({
+      owner,
+      hostEpoch: context.hostEpoch,
+      acquireResidency: context.acquireResidency,
+      retainUntilProcessExit: () => undefined,
+      requestDrain: () => assert.fail('The healthy Agent Graph must not drain the Host'),
+    });
+    await composition.recover();
+
+    const turnId = 'hosted-agent-graph-turn';
+    const started = await composition.handlers['turn.start'](
+      {
+        sessionId: session.id,
+        turnId,
+        content: { text: 'Coordinate this task through a hosted Agent Graph.' },
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+      },
+      context,
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    let initialTerminal: TurnSnapshot;
+    try {
+      initialTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        turnId,
+        started.result,
+        context,
+      );
+    } catch (error) {
+      throw new Error(
+        `Hosted Graph root did not settle: ${JSON.stringify({
+          error: error instanceof Error ? error.message : String(error),
+          requests: providerRequestTrace(provider.requests),
+        })}`,
+      );
+    }
+    assert.equal(initialTerminal.status, 'completed');
+
+    graphStore = createAgentGraphControlStore(root);
+    const graphId = agentGraphIdForRootSession(session.id);
+    let updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+    let runs = await execution.agentRunStore.listSessionRuns(session.id);
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+      if (
+        updates.at(-1)?.finish &&
+        wakeRuns.length > 0 &&
+        wakeRuns.every((run) => ['completed', 'failed', 'cancelled'].includes(run.status)) &&
+        liveResidencies === 0
+      ) {
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      updates = await graphStore.listAgentGraphScheduleUpdates(graphId);
+      runs = await execution.agentRunStore.listSessionRuns(session.id);
+    }
+
+    const finish = updates.at(-1)?.finish;
+    assert.ok(
+      finish,
+      JSON.stringify({
+        updateCount: updates.length,
+        lastUpdate: updates.at(-1),
+        runs: runs.map((run) => ({
+          runId: run.runId,
+          status: run.status,
+          wakeAttemptId: run.agentGraphWakeAttemptId,
+        })),
+        requests: providerRequestTrace(provider.requests),
+      }),
+    );
+    assert.equal(finish?.resultIds.length, 1);
+    const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
+    assert.ok(wakeRuns.length > 0);
+    assert.ok(wakeRuns.every((run) => run.status === 'completed'));
+    assert.ok(wakeRuns.every((run) => run.orchestrationMode === 'graph'));
+    assert.equal(liveResidencies, 0);
+
+    const sessions = await execution.sessionStore.listForRecovery();
+    const child = sessions.find(
+      (candidate) => candidate.subagentParent?.graph?.graphId === graphId,
+    );
+    assert.ok(child);
+    assert.equal(child?.subagentRuntime?.profile, 'local_read');
+    assert.equal(child?.subagentParent?.parentSessionId, session.id);
+    const childRuns = child ? await execution.agentRunStore.listSessionRuns(child.id) : [];
+    assert.equal(childRuns.length, 1);
+    assert.equal(childRuns[0]?.status, 'completed');
+
+    const graphRequests = provider.requests.filter(
+      (request) =>
+        request.body.stream === true && toolNames(request.body).includes('view_agent_graph'),
+    );
+    assert.ok(graphRequests.length >= 4);
+    for (const request of graphRequests) {
+      assert.ok(toolNames(request.body).includes('update_agent_graph'));
+      assert.ok(toolNames(request.body).includes('yield_agent_graph'));
+      assert.ok(toolNames(request.body).includes('agent_output'));
+    }
+    assert.ok(
+      provider.requests.some(
+        (request) =>
+          request.body.stream === true &&
+          JSON.stringify(request.body).includes('child_session_run'),
+      ),
+    );
+  } finally {
+    graphStore?.close();
     try {
       await composition?.close();
     } finally {
@@ -1979,6 +2181,25 @@ function toolNames(body: Record<string, unknown> | undefined): string[] {
     .sort();
 }
 
+function providerRequestTrace(requests: readonly ProviderRequest[]): readonly unknown[] {
+  return requests.map((request) => {
+    const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
+    const lastToolResult = messages
+      .filter(
+        (message): message is Record<string, unknown> =>
+          Boolean(message) && typeof message === 'object' && message.role === 'tool',
+      )
+      .at(-1)?.content;
+    const serializedToolResult =
+      typeof lastToolResult === 'string' ? lastToolResult : JSON.stringify(lastToolResult);
+    return {
+      stream: request.body.stream,
+      tools: toolNames(request.body),
+      lastToolResult: serializedToolResult?.slice(0, 1_000),
+    };
+  });
+}
+
 function toolParameterEnum(
   body: Record<string, unknown> | undefined,
   toolName: string,
@@ -2022,7 +2243,8 @@ type ProviderFlow =
       readonly groupId: string;
       readonly toolName: string;
     }
-  | { readonly kind: 'child_agent' | 'implementation_child_agent' };
+  | { readonly kind: 'child_agent' | 'implementation_child_agent' }
+  | { readonly kind: 'agent_graph'; readonly scenario: AgentGraphProviderScenario };
 
 async function startProvider(): Promise<{
   readonly baseUrl: string;
@@ -2030,6 +2252,7 @@ async function startProvider(): Promise<{
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
+  configureAgentGraphFlow(): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
@@ -2056,6 +2279,13 @@ async function startProvider(): Promise<{
     configureImplementationChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = { kind: 'implementation_child_agent' };
+    },
+    configureAgentGraphFlow: () => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = {
+        kind: 'agent_graph',
+        scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
+      };
     },
     close: () => closeServer(server),
   };
@@ -2095,6 +2325,14 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'agent_graph') {
+    flow.scenario.respond(body, {
+      text: (text) => respondProviderText(response, text),
+      toolCall: (toolName, args) =>
+        respondProviderToolCall(response, streamRequestIndex, toolName, args),
+    });
+    return;
+  }
   if (
     (flow.kind === 'child_agent' || flow.kind === 'implementation_child_agent') &&
     streamRequestIndex === 1

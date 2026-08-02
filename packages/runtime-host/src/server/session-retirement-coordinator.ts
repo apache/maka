@@ -59,6 +59,13 @@ type RetirementGoals = Pick<
   'beginSessionRetirement' | 'hasLiveGoal' | 'unarchiveSessions'
 >;
 type RetirementResources = Pick<HostRuntimeResourceCoordinator, 'hasLiveSessionResources'>;
+type RetirementGraph = {
+  hasLiveSessionState(sessionId: string): Promise<boolean>;
+};
+type RetirementGraphWake = {
+  hasLiveSessionState(sessionId: string): boolean;
+  retireSessions(sessionIds: readonly string[]): Promise<number>;
+};
 type RetirementManager = Pick<
   SessionManager,
   'disposeSessionBackend' | 'finalizeChildWorkspacePatches'
@@ -80,6 +87,8 @@ export interface HostSessionRetirementCoordinatorOptions {
     beginSessionRetirement(sessionIds: readonly string[]): Promise<HostAutomationSessionRetirement>;
   };
   readonly resources: RetirementResources;
+  readonly graph: RetirementGraph;
+  readonly graphWake: RetirementGraphWake;
   readonly manager: RetirementManager;
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
@@ -128,6 +137,8 @@ export class HostSessionRetirementCoordinator {
   readonly #goals: RetirementGoals;
   readonly #automation: HostSessionRetirementCoordinatorOptions['automation'];
   readonly #resources: RetirementResources;
+  readonly #graph: RetirementGraph;
+  readonly #graphWake: RetirementGraphWake;
   readonly #manager: RetirementManager;
   readonly #capabilities: RetirementCapabilities;
   readonly #continuity: RetirementContinuity;
@@ -150,6 +161,8 @@ export class HostSessionRetirementCoordinator {
     this.#goals = options.goals;
     this.#automation = options.automation;
     this.#resources = options.resources;
+    this.#graph = options.graph;
+    this.#graphWake = options.graphWake;
     this.#manager = options.manager;
     this.#capabilities = options.capabilities;
     this.#continuity = options.continuity;
@@ -217,6 +230,7 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          await this.#graphWake.retireSessions(family.sessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
           this.#messages.retireSessions(family.sessionIds);
           await this.#refreshFamily(family);
@@ -272,6 +286,7 @@ export class HostSessionRetirementCoordinator {
           committed = true;
           handles.goal.commit();
           handles.automation.commit();
+          await this.#graphWake.retireSessions(family.sessionIds);
           this.#rememberRetiredWorktrees(committable, removedSessionIds);
           this.#scheduleCleanup(removedSessionIds);
           this.#capabilities.retireSessions(family.sessionIds);
@@ -356,6 +371,13 @@ export class HostSessionRetirementCoordinator {
       }
       if (await this.#resources.hasLiveSessionResources(sessionId)) {
         throw new SessionRetirementBusyError('Session has a live Runtime Resource');
+      }
+      const header = requireFamilyRecord(family, sessionId).header;
+      if (!header.subagentParent && (await this.#graph.hasLiveSessionState(sessionId))) {
+        throw new SessionRetirementBusyError('Session has a live Agent Graph');
+      }
+      if (!header.subagentParent && this.#graphWake.hasLiveSessionState(sessionId)) {
+        throw new SessionRetirementBusyError('Session has an active Agent Graph supervisor wake');
       }
     }
 

@@ -169,6 +169,7 @@ export {
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,
   AgentGraphSupervisorPartialResult,
+  AgentGraphSupervisorTurnOutcome,
   AgentGraphSupervisorWakeDiagnostic,
   AgentGraphSupervisorWakeInput,
 } from './agent-graph-supervisor-wake.js';

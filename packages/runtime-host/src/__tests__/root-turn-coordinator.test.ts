@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  agentGraphIdForRootSession,
   BackendRegistry,
   classifyTerminalRuntimeLedger,
   FakeBackend,
@@ -351,6 +352,202 @@ test('hosted Automation roots preserve one admission, UserMessage, and AgentRun 
     await recoveryCoordinator.close();
     await fixture.messages.close();
   } finally {
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor wake waits for root idle and binds one durable execution identity', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const externalTurnId = 'turn-before-graph-wake';
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const wakeId = `${graphId}:snapshot-1`;
+  const attemptId = 'graph-wake-attempt-1';
+  const graphTurnId = 'turn-graph-supervisor-wake';
+  try {
+    const external = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: externalTurnId,
+        content: { text: HOLD_EXTERNAL_PROMPT },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(external.ok, true);
+    await waitUntil(() => backend !== undefined);
+    await backend?.externalHoldStarted.promise;
+
+    const wake = fixture.coordinator.runAgentGraphSupervisorTurn(
+      fixture.sessionId,
+      {
+        turnId: graphTurnId,
+        text: 'Inspect the durable graph.',
+        displayText: 'Agent graph reached a supervisor checkpoint.',
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+        origin: { kind: 'agent_graph', graphId, wakeId, attemptId },
+      },
+      new AbortController().signal,
+      async () => true,
+    );
+
+    assert.equal(
+      (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId))
+        .length,
+      1,
+    );
+    backend?.release();
+    assert.deepEqual(await wake, { kind: 'completed', turnId: graphTurnId });
+
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
+    assert.equal(admissions.length, 2);
+    const graphAdmission = admissions.find((admission) => admission.turnId === graphTurnId);
+    assert.ok(graphAdmission);
+    assert.deepEqual(graphAdmission?.execution, {
+      kind: 'agent_graph_supervisor_wake',
+      graphId,
+      wakeId,
+      attemptId,
+    });
+    assert.deepEqual(graphAdmission?.turnOrchestration, {
+      mode: 'graph',
+      source: 'host_api',
+    });
+
+    const graphRun = await fixture.stores.agentRunStore.readRun(
+      fixture.sessionId,
+      graphAdmission!.runId,
+    );
+    assert.equal(graphRun.agentGraphWakeId, wakeId);
+    assert.equal(graphRun.agentGraphWakeAttemptId, attemptId);
+    assert.equal(graphRun.orchestrationMode, 'graph');
+    assert.equal(graphRun.orchestrationSource, 'turn_override');
+    const userMessage = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.id === graphAdmission?.userMessageId,
+    );
+    assert.ok(userMessage?.type === 'user');
+    if (userMessage?.type === 'user') {
+      assert.deepEqual(userMessage.origin, { kind: 'agent_graph', graphId, wakeId, attemptId });
+      assert.equal(userMessage.displayText, 'Agent graph reached a supervisor checkpoint.');
+    }
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor wake revalidates freshness before durable root admission', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const turnId = 'turn-stale-graph-supervisor-wake';
+  try {
+    const outcome = await fixture.coordinator.runAgentGraphSupervisorTurn(
+      fixture.sessionId,
+      {
+        turnId,
+        text: 'Inspect a stale graph checkpoint.',
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+        origin: {
+          kind: 'agent_graph',
+          graphId,
+          wakeId: `${graphId}:stale-snapshot`,
+          attemptId: 'stale-attempt',
+        },
+      },
+      new AbortController().signal,
+      async () => false,
+    );
+
+    assert.deepEqual(outcome, {
+      kind: 'superseded',
+      turnId,
+      reason: 'Agent graph supervisor checkpoint was superseded before root admission.',
+    });
+    assert.deepEqual(
+      await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId),
+      [],
+    );
+    assert.deepEqual(await fixture.stores.agentRunStore.listSessionRuns(fixture.sessionId), []);
+    assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor recovery closes a durable admission that has no Run', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const wakeId = `${graphId}:snapshot-recovery`;
+  const attemptId = 'graph-wake-recovery-attempt';
+  const turnId = 'turn-graph-wake-recovery';
+  const runId = 'run-graph-wake-recovery';
+  const userMessageId = 'message-graph-wake-recovery';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: userMessageId,
+      execution: {
+        kind: 'agent_graph_supervisor_wake',
+        graphId,
+        wakeId,
+        attemptId,
+      },
+      normalizedInput: {
+        text: 'Inspect the durable graph after restart.',
+        displayText: 'Agent graph reached a supervisor checkpoint.',
+      },
+      turnOrchestration: { mode: 'graph', source: 'host_api' },
+      sourceMessages: [],
+      admittedAt: Date.now(),
+      previousRootTurnId: null,
+    });
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    await recovery.recover();
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'failed');
+    assert.equal(run.failureClass, 'app_restarted');
+    assert.equal(run.agentGraphWakeId, wakeId);
+    assert.equal(run.agentGraphWakeAttemptId, attemptId);
+    assert.equal(run.orchestrationMode, 'graph');
+    assert.equal(run.orchestrationSource, 'turn_override');
+    const message = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (candidate) => candidate.id === userMessageId,
+    );
+    assert.ok(message?.type === 'user');
+    if (message?.type === 'user') {
+      assert.deepEqual(message.origin, { kind: 'agent_graph', graphId, wakeId, attemptId });
+      assert.equal(message.text, 'Inspect the durable graph after restart.');
+      assert.equal(message.displayText, 'Agent graph reached a supervisor checkpoint.');
+    }
+    assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
     await fixture.dispose();
   }
 });

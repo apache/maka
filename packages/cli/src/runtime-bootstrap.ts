@@ -70,6 +70,7 @@ import {
   createGitWorktreeChildExecutor,
   createReadImageSnapshotter,
   createSessionStore,
+  isSessionNotFoundError,
   createSettingsStore,
   createSqliteShellRunStore,
   assertSessionBundleRootLayout,
@@ -890,7 +891,14 @@ export async function createMakaCliRuntimeContext(
       activityRegistry: goalContinuation.activities,
       wakeStore: agentGraphControlStore,
       readSnapshot: (rootSessionId) => agentGraphCoordinator!.getSnapshot(rootSessionId),
-      startTurn: async (sessionId, message, activity, abortSignal) => {
+      startTurn: async (sessionId, message, activity, abortSignal, isCurrent) => {
+        if (!(await isCurrent())) {
+          return {
+            kind: 'superseded',
+            turnId: message.turnId,
+            reason: 'Agent graph supervisor checkpoint was superseded before execution.',
+          };
+        }
         let stopPromise: Promise<void> | undefined;
         const stop = (): void => {
           stopPromise ??= runtime.stopSession(sessionId, { source: 'graph_supervisor' });
@@ -906,6 +914,15 @@ export async function createMakaCliRuntimeContext(
         } finally {
           abortSignal.removeEventListener('abort', stop);
           await stopPromise;
+        }
+      },
+      isSessionDeliverable: async (sessionId) => {
+        try {
+          const header = await store.readHeader(sessionId);
+          return !header.isArchived && header.status !== 'archived';
+        } catch (error) {
+          if (isSessionNotFoundError(error)) return false;
+          throw error;
         }
       },
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {

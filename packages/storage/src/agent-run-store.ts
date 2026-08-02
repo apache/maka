@@ -2828,6 +2828,15 @@ function isSafeId(value: string): boolean {
   return SAFE_ID_PATTERN.test(value);
 }
 
+function isGraphControlIdentity(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 256 &&
+    value.trim() === value &&
+    /^[A-Za-z0-9._:-]+$/.test(value)
+  );
+}
+
 function normalizeRootTurnAdmission(
   value: unknown,
   sessionId: string,
@@ -3108,9 +3117,18 @@ function assertRootTurnAdmissionSerializedSize(serialized: string): void {
 function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   const execution = admission.execution;
   const providerRetry = execution.kind === 'linked_child_provider_retry';
-  if (admission.turnOrchestration && execution.kind !== 'external_message') {
+  if (execution.kind === 'agent_graph_supervisor_wake') {
+    if (
+      admission.turnOrchestration?.mode !== 'graph' ||
+      admission.turnOrchestration.source !== 'host_api'
+    ) {
+      throw new Error(
+        'Invalid root turn admission contract: Agent Graph supervisor wake requires Host Graph orchestration',
+      );
+    }
+  } else if (admission.turnOrchestration && execution.kind !== 'external_message') {
     throw new Error(
-      'Invalid root turn admission contract: only external messages may override orchestration',
+      'Invalid root turn admission contract: orchestration override is not authorized for this execution',
     );
   }
   if ((admission.userMessageId === null) !== providerRetry) {
@@ -3232,6 +3250,26 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
       throw new Error('Invalid root execution descriptor');
     }
     return Object.freeze({ kind: 'goal', goalId: value.goalId });
+  }
+  if (value.kind === 'agent_graph_supervisor_wake') {
+    if (
+      !hasExactKeys(value, ['kind', 'graphId', 'wakeId', 'attemptId']) ||
+      typeof value.graphId !== 'string' ||
+      !isGraphControlIdentity(value.graphId) ||
+      typeof value.wakeId !== 'string' ||
+      !isGraphControlIdentity(value.wakeId) ||
+      !value.wakeId.startsWith(`${value.graphId}:`) ||
+      typeof value.attemptId !== 'string' ||
+      !isGraphControlIdentity(value.attemptId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({
+      kind: value.kind,
+      graphId: value.graphId,
+      wakeId: value.wakeId,
+      attemptId: value.attemptId,
+    });
   }
   if (value.kind === 'claimed_agent_graph_intent') {
     if (

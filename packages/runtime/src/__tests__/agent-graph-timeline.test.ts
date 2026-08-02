@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentGraphTimelineMetadataSnapshot, AgentRunHeader, RuntimeEvent } from '@maka/core';
+import {
+  AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+  type AgentGraphTimelineMetadataSnapshot,
+  type AgentRunHeader,
+  type RuntimeEvent,
+} from '@maka/core';
+import { createSqliteSessionMetadataStore } from '@maka/storage';
 import {
   buildAgentGraphTimeline,
   buildAgentGraphTimelineCurrentState,
@@ -278,6 +284,51 @@ describe('agent graph replay timeline', () => {
       page.events.some((event) => event.kind === 'activation_terminal'),
       false,
     );
+  });
+
+  test('projects a superseded durable supervisor wake attempt as settled', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    try {
+      await store.claimAgentGraphSupervisorWake({
+        schemaVersion: AGENT_GRAPH_SUPERVISOR_WAKE_SCHEMA_VERSION,
+        graphId: 'graph-1',
+        wakeId: 'wake-superseded',
+        snapshotVersion: 'snapshot-superseded',
+        rootSessionId: 'root-session',
+      });
+      await store.beginAgentGraphSupervisorWakeAttempt({
+        graphId: 'graph-1',
+        wakeId: 'wake-superseded',
+        attemptId: 'attempt-superseded',
+        turnId: 'turn-superseded',
+      });
+      await store.supersedeAgentGraphSupervisorWakes({
+        rootSessionIds: ['root-session'],
+        reason: 'session_retired',
+      });
+
+      const fixture = await timelineFixture();
+      const metadata = await store.readAgentGraphTimelineMetadata('graph-1');
+      const events = buildAgentGraphTimeline({
+        ...fixture,
+        metadata: {
+          ...fixture.metadata,
+          supervisorWakes: metadata.supervisorWakes,
+        },
+      });
+      const settled = requireEvent(events, 'supervisor_wake_settled');
+
+      assert.equal(settled.kind, 'supervisor_wake_settled');
+      assert.equal(settled.wakeId, 'wake-superseded');
+      assert.equal(settled.attemptId, 'attempt-superseded');
+      assert.equal(settled.status, 'superseded');
+      assert.ok(
+        requireEvent(events, 'supervisor_wake_attempted').sequence < settled.sequence,
+        'the settled projection follows its durable attempt',
+      );
+    } finally {
+      store.close();
+    }
   });
 });
 

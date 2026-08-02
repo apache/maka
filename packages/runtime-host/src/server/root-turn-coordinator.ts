@@ -13,7 +13,9 @@ import {
   type SessionEvent,
 } from '@maka/core/events';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import {
+  agentGraphIdForRootSession,
   classifyTerminalRuntimeLedger,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
@@ -25,6 +27,7 @@ import {
   type RuntimeHostedRootExecutionInput,
   type RuntimeMessageRunIdentity,
   type SessionManager,
+  type AgentGraphSupervisorTurnOutcome,
   type GoalObservedTurnSettler,
   type GoalObservedTurnStart,
   type GoalCheckpoint,
@@ -137,6 +140,27 @@ interface GoalRootReservation extends RootTurnReservation {
   readonly text: string;
   completion?: Promise<GoalTurnOutcome>;
 }
+
+interface AgentGraphRootReservation extends RootTurnReservation {
+  readonly turnId: string;
+  readonly runId: string;
+  readonly userMessageId: string;
+  readonly input: UserMessageInput;
+}
+
+interface HostedRootReservationOptions {
+  readonly label: string;
+  readonly unavailableReason: string;
+  readonly revokedReason: string;
+  readonly execution: RootExecutionDescriptor;
+  readonly normalizedInput: MessageContent;
+  readonly turnOrchestration?: UserMessageInput['turnOrchestration'];
+  readonly isAvailable: () => boolean;
+  readonly isCurrent?: () => Promise<boolean>;
+  readonly abortSignal?: AbortSignal;
+}
+
+type HostedRootDisposition = TurnStartDisposition | { kind: 'superseded' };
 
 export interface HostGoalRootAuthority {
   beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart;
@@ -523,92 +547,215 @@ export class RootTurnCoordinator {
   }
 
   async #startGoalReservation(reservation: GoalRootReservation): Promise<GoalTurnOutcome> {
+    return this.#runHostedRootReservation(reservation, {
+      label: 'Goal continuation',
+      unavailableReason: 'Goal continuation is unavailable for this Session.',
+      revokedReason: 'Goal continuation reservation was revoked.',
+      execution: { kind: 'goal', goalId: reservation.checkpoint.goalId },
+      normalizedInput: { text: reservation.text },
+      isAvailable: () =>
+        this.resolveGoal().matchesActive(
+          reservation.sessionId,
+          reservation.checkpoint,
+          reservation.controlLease,
+        ),
+    });
+  }
+
+  async runAgentGraphSupervisorTurn(
+    sessionId: string,
+    input: UserMessageInput,
+    abortSignal: AbortSignal,
+    isCurrent: () => Promise<boolean>,
+  ): Promise<AgentGraphSupervisorTurnOutcome> {
+    if (
+      input.origin?.kind !== 'agent_graph' ||
+      input.origin.graphId !== agentGraphIdForRootSession(sessionId) ||
+      input.turnOrchestration?.mode !== 'graph' ||
+      input.turnOrchestration.source !== 'host_api'
+    ) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        'Agent graph supervisor Turn requires the Session graph origin and Host Graph orchestration',
+      );
+    }
+
+    let reservation: AgentGraphRootReservation;
+    for (;;) {
+      throwIfAborted(abortSignal);
+      if (this.#draining) {
+        return goalErrorOutcome(input.turnId, 'Runtime Host root authority is draining.');
+      }
+      const active = this.#activeBySession.get(sessionId);
+      const pending = this.#reservationsBySession.get(sessionId);
+      const whenIdle = active?.done ?? pending?.whenIdle.promise;
+      if (whenIdle) {
+        await waitForRootIdleOrAbort(whenIdle, abortSignal);
+        continue;
+      }
+      reservation = {
+        sessionId,
+        turnId: input.turnId,
+        runId: randomUUID(),
+        userMessageId: randomUUID(),
+        input,
+        whenIdle: deferred(),
+        admissionSettled: deferred(),
+        admissionPhase: 'prepared',
+      };
+      this.#reservationsBySession.set(sessionId, reservation);
+      break;
+    }
+    return this.#runHostedRootReservation(reservation, {
+      label: 'Agent graph supervisor continuation',
+      unavailableReason: 'Agent graph supervisor continuation is unavailable for this Session.',
+      revokedReason: 'Agent graph supervisor continuation reservation was revoked.',
+      execution: {
+        kind: 'agent_graph_supervisor_wake',
+        graphId: input.origin.graphId,
+        wakeId: input.origin.wakeId,
+        attemptId: input.origin.attemptId,
+      },
+      normalizedInput: normalizeMessageContent(input),
+      turnOrchestration: input.turnOrchestration,
+      isAvailable: () => true,
+      isCurrent,
+      abortSignal,
+    });
+  }
+
+  async #runHostedRootReservation(
+    reservation: GoalRootReservation,
+    options: HostedRootReservationOptions & { isCurrent?: undefined },
+  ): Promise<GoalTurnOutcome>;
+  async #runHostedRootReservation(
+    reservation: AgentGraphRootReservation,
+    options: HostedRootReservationOptions & { isCurrent: () => Promise<boolean> },
+  ): Promise<AgentGraphSupervisorTurnOutcome>;
+  async #runHostedRootReservation(
+    reservation: GoalRootReservation | AgentGraphRootReservation,
+    options: HostedRootReservationOptions,
+  ): Promise<AgentGraphSupervisorTurnOutcome> {
     try {
       if (this.#reservationsBySession.get(reservation.sessionId) !== reservation) {
-        return goalErrorOutcome(reservation.turnId, 'Goal continuation reservation was revoked.');
+        return goalErrorOutcome(reservation.turnId, options.revokedReason);
       }
-      const disposition = await this.sessionAdmission.run(reservation.sessionId, async (lease) => {
-        if (
-          this.#draining ||
-          this.#reservationsBySession.get(reservation.sessionId) !== reservation
-        ) {
-          return undefined;
-        }
-        if (this.#activeBySession.has(reservation.sessionId)) {
-          throw new RuntimeMessageAuthorityInvariantError(
-            'Goal root reservation overlapped an active root Turn',
-          );
-        }
-        let header: SessionHeader;
-        try {
-          header = await this.stores.sessionStore.readHeaderSnapshot(reservation.sessionId);
-        } catch (error) {
-          if (isSessionNotFoundError(error)) return undefined;
-          throw error;
-        }
-        if (header.status === 'archived' || header.isArchived) return undefined;
-        if (runtimeHostExternalTurnUnavailableReason(header)) return undefined;
-        if (
-          !this.resolveGoal().matchesActive(
-            reservation.sessionId,
-            reservation.checkpoint,
-            reservation.controlLease,
-          )
-        ) {
-          return undefined;
-        }
+      const disposition = await this.sessionAdmission.run<HostedRootDisposition | undefined>(
+        reservation.sessionId,
+        async (lease) => {
+          if (
+            this.#draining ||
+            options.abortSignal?.aborted ||
+            this.#reservationsBySession.get(reservation.sessionId) !== reservation
+          ) {
+            return undefined;
+          }
+          if (this.#activeBySession.has(reservation.sessionId)) {
+            throw new RuntimeMessageAuthorityInvariantError(
+              `${options.label} reservation overlapped an active root Turn`,
+            );
+          }
+          let header: SessionHeader;
+          try {
+            header = await this.stores.sessionStore.readHeaderSnapshot(reservation.sessionId);
+          } catch (error) {
+            if (isSessionNotFoundError(error)) return undefined;
+            throw error;
+          }
+          if (header.status === 'archived' || header.isArchived) return undefined;
+          if (runtimeHostExternalTurnUnavailableReason(header)) return undefined;
+          if (!options.isAvailable()) return undefined;
+          if (options.isCurrent && !(await options.isCurrent())) return { kind: 'superseded' };
+          if (!this.beginRootAdmission(reservation)) return undefined;
 
-        if (!this.beginRootAdmission(reservation)) return undefined;
-
-        const admitted = await this.rootAdmissionOwner.admitRootTurn({
-          sessionId: reservation.sessionId,
-          turnId: reservation.turnId,
-          proposedRunId: reservation.runId,
-          proposedUserMessageId: reservation.userMessageId,
-          execution: { kind: 'goal', goalId: reservation.checkpoint.goalId },
-          normalizedInput: { text: reservation.text },
-          sourceMessages: [],
-          admittedAt: Date.now(),
-        });
-        if (admitted.kind !== 'admitted') {
-          throw new RuntimeMessageAuthorityInvariantError(
-            'Fresh Goal root Turn identity already existed',
-          );
-        }
-        return this.prepareAdmittedTurn(
-          {
+          const admitted = await this.rootAdmissionOwner.admitRootTurn({
             sessionId: reservation.sessionId,
             turnId: reservation.turnId,
-            content: admitted.admission.normalizedInput,
-          },
-          admitted.admission,
-          this.acquireRecoveryResidency,
-          lease,
-          undefined,
-          undefined,
-          reservation,
-        );
-      });
-      if (!disposition) {
-        return goalErrorOutcome(
-          reservation.turnId,
-          'Goal continuation is unavailable for this Session.',
-        );
+            proposedRunId: reservation.runId,
+            proposedUserMessageId: reservation.userMessageId,
+            execution: options.execution,
+            normalizedInput: options.normalizedInput,
+            ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+            sourceMessages: [],
+            admittedAt: Date.now(),
+          });
+          if (admitted.kind !== 'admitted') {
+            throw new RuntimeMessageAuthorityInvariantError(
+              `Fresh ${options.label} root Turn identity already existed`,
+            );
+          }
+          return this.prepareAdmittedTurn(
+            {
+              sessionId: reservation.sessionId,
+              turnId: reservation.turnId,
+              content: admitted.admission.normalizedInput,
+              ...(options.turnOrchestration
+                ? { turnOrchestration: options.turnOrchestration }
+                : {}),
+            },
+            admitted.admission,
+            this.acquireRecoveryResidency,
+            lease,
+            undefined,
+            undefined,
+            reservation,
+          );
+        },
+      );
+      if (!disposition) return goalErrorOutcome(reservation.turnId, options.unavailableReason);
+      if (disposition.kind === 'superseded') {
+        return {
+          kind: 'superseded',
+          turnId: reservation.turnId,
+          reason: 'Agent graph supervisor checkpoint was superseded before root admission.',
+        };
       }
       if (disposition.kind !== 'await_start') {
         return goalErrorOutcome(
           reservation.turnId,
           disposition.outcome.ok
-            ? 'Goal continuation did not reserve execution.'
+            ? `${options.label} did not reserve execution.`
             : disposition.outcome.error.message,
         );
       }
-      return await disposition.active.goalOutcome.promise;
+      return await this.#awaitHostedRootOutcome(
+        reservation,
+        disposition.active,
+        options.abortSignal,
+      );
     } catch (error) {
+      if (options.abortSignal && isAbortError(error)) throw error;
       this.requestHostDrain();
       return goalErrorOutcome(reservation.turnId, errorMessage(error));
     } finally {
       this.releaseRootReservation(reservation);
+    }
+  }
+
+  async #awaitHostedRootOutcome(
+    reservation: GoalRootReservation | AgentGraphRootReservation,
+    active: ActiveRootTurn,
+    abortSignal?: AbortSignal,
+  ): Promise<GoalTurnOutcome> {
+    if (!abortSignal) return active.goalOutcome.promise;
+    let stopTask: Promise<void> | undefined;
+    const stop = (): void => {
+      stopTask ??= this.stopRoot(
+        {
+          sessionId: reservation.sessionId,
+          turnId: reservation.turnId,
+          runId: reservation.runId,
+        },
+        { source: 'graph_supervisor' },
+      );
+      void stopTask.catch(() => undefined);
+    };
+    abortSignal.addEventListener('abort', stop, { once: true });
+    if (abortSignal.aborted) stop();
+    try {
+      return await active.goalOutcome.promise;
+    } finally {
+      abortSignal.removeEventListener('abort', stop);
+      await stopTask;
     }
   }
 
@@ -1810,6 +1957,7 @@ function assertRunMatchesExecution(
       return;
     case 'automation':
     case 'goal':
+    case 'agent_graph_supervisor_wake':
       if (agentRunMatchesHostedRootExecution(run, execution)) return;
       break;
     case 'linked_child_initial':
@@ -1842,7 +1990,7 @@ function assertTrustedAgentIdentity(
   turnId: string,
   execution: Exclude<
     RootTurnAdmission['execution'],
-    { kind: 'external_message' | 'automation' | 'goal' }
+    { kind: 'external_message' | 'automation' | 'goal' | 'agent_graph_supervisor_wake' }
   >,
 ): void {
   if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
@@ -1875,6 +2023,12 @@ function recoveryExecutionContract(
         pendingWithoutRun: 'root_replay',
       };
     case 'goal':
+      return {
+        allowsQueueSources: false,
+        requiresUserMessage: true,
+        pendingWithoutRun: 'host_recovery_closure',
+      };
+    case 'agent_graph_supervisor_wake':
       return {
         allowsQueueSources: false,
         requiresUserMessage: true,
@@ -1930,6 +2084,13 @@ function rootExecutionMessageOrigin(execution: RootExecutionDescriptor) {
       return { kind: 'automation' as const, automationId: execution.automationId };
     case 'goal':
       return { kind: 'goal' as const, goalId: execution.goalId };
+    case 'agent_graph_supervisor_wake':
+      return {
+        kind: 'agent_graph' as const,
+        graphId: execution.graphId,
+        wakeId: execution.wakeId,
+        attemptId: execution.attemptId,
+      };
     default:
       return undefined;
   }
@@ -2014,6 +2175,37 @@ function goalErrorOutcome(turnId: string, reason: string): GoalTurnOutcome {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted)
+    throw new DOMException('Agent graph supervisor Turn was aborted', 'AbortError');
+}
+
+async function waitForRootIdleOrAbort(whenIdle: Promise<void>, signal: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      cleanup();
+      reject(new DOMException('Agent graph supervisor Turn was aborted', 'AbortError'));
+    };
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    void whenIdle.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function isMissingFile(error: unknown): boolean {

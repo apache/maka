@@ -106,6 +106,8 @@ describe('Host Session retirement coordinator', () => {
         harness.blockers.interaction,
         harness.blockers.goal,
         harness.blockers.resource,
+        harness.blockers.graph,
+        harness.blockers.graphWake,
         harness.blockers.automation,
       ];
       for (const blocker of blockers) {
@@ -450,6 +452,7 @@ interface RetirementActions {
   readonly purgedOperationalState: string[];
   readonly retiredWorktrees: string[];
   readonly finalizedWorkspacePatches: string[];
+  readonly retiredGraphWakes: string[];
   goalCommits: number;
   goalRollbacks: number;
   automationCommits: number;
@@ -485,6 +488,7 @@ async function withHarness(
       purgedOperationalState: [],
       retiredWorktrees: [],
       finalizedWorkspacePatches: [],
+      retiredGraphWakes: [],
       goalCommits: 0,
       goalRollbacks: 0,
       automationCommits: 0,
@@ -497,6 +501,8 @@ async function withHarness(
       interaction: new Set<string>(),
       goal: new Set<string>(),
       resource: new Set<string>(),
+      graph: new Set<string>(),
+      graphWake: new Set<string>(),
       automation: new Set<string>(),
     };
     const harness: RetirementHarness = {
@@ -576,6 +582,16 @@ async function withHarness(
       resources: {
         hasLiveSessionResources: async (sessionId) => blockers.resource.has(sessionId),
       },
+      graph: {
+        hasLiveSessionState: async (sessionId) => blockers.graph.has(sessionId),
+      },
+      graphWake: {
+        hasLiveSessionState: (sessionId) => blockers.graphWake.has(sessionId),
+        retireSessions: async (sessionIds) => {
+          actions.retiredGraphWakes.push(...sessionIds);
+          return sessionIds.length;
+        },
+      },
       manager: {
         finalizeChildWorkspacePatches: async (sessionId) => {
           if (harness.finalizeWorkspacePatches) {
@@ -652,6 +668,8 @@ interface RetirementHarness {
     readonly interaction: Set<string>;
     readonly goal: Set<string>;
     readonly resource: Set<string>;
+    readonly graph: Set<string>;
+    readonly graphWake: Set<string>;
     readonly automation: Set<string>;
   };
   coordinator: HostSessionRetirementCoordinator;

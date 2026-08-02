@@ -221,6 +221,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimeCommitSink?: RuntimeCommitSink;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
+  readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly automationTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -451,6 +452,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     : input.clientCapabilities.snapshotForSession(input.context.sessionId);
   let modelComposition: HostExecutionModelComposition;
   try {
+    const rootTools =
+      input.resolveRootTools && !input.context.tools && !input.context.header.subagentParent
+        ? await readDuringBackendCreation(
+            () => input.resolveRootTools!(input.context.sessionId),
+            input.context.abortSignal,
+          )
+        : [];
+    const hostTools = [...(input.hostTools ?? []), ...rootTools];
     modelComposition = createHostExecutionModelComposition({
       policy: input.runtimePolicy.runtimePolicy,
       skills: input.skills,
@@ -460,7 +469,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...(input.context.tools ? { boundTools: input.context.tools } : {}),
       ...(clientCapabilities ? { clientCapabilities } : {}),
       ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
-      ...(input.hostTools ? { hostTools: input.hostTools } : {}),
+      ...(hostTools.length > 0 ? { hostTools } : {}),
       ...(input.automationTool ? { automationTool: input.automationTool } : {}),
       ...(input.goalTools ? { goalTools: input.goalTools } : {}),
       ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
