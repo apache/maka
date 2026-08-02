@@ -6,10 +6,14 @@
 // - MotionConfiguration.live supplies the thresholds and spring constants below.
 // - Long moves use independent position, axis, rotation, and stretch springs.
 //
-// The stripped binary does not retain the candidate-path scoring function, so
-// planCursorPath structurally reproduces the 20-candidate cubic planner using
-// the recovered handles/arc constants. Geometry, hotspot, thresholds, and
-// spring/style constants are exact for the inspected 2026-07-16 build.
+// - The candidate-path scoring function IS retained: it is inlined into the
+//   planner at 0x1000972ec, and planCursorPath reproduces it term for term
+//   below. An earlier note here claimed the scorer had been stripped; it had
+//   not, and the placeholder scorer written against that claim rewarded the
+//   bendiest candidate instead of the straightest.
+//
+// Geometry, hotspot, thresholds, and spring/style constants are exact for the
+// inspected 2026-07-16 build.
 import { makaBrandPalette, type Palette, rgba } from './palette.js';
 
 const PI = Math.PI;
@@ -49,8 +53,65 @@ export const CODEX_CURSOR_MOTION = {
   terminalTangentBlendStart: 0.99,
 } as const;
 
+// Candidate scoring, inlined at 0x1000972ec. These weights are deliberately not
+// MotionConfiguration fields: the recovered struct holds exactly the 30 values
+// above and none of the numbers below.
+/** Segments the scorer walks the candidate in (25 samples, 24 steps). */
+const SCORE_SAMPLES = 24;
+const SCORE_DETOUR_WEIGHT = 320;
+const SCORE_ANGLE_ENERGY_WEIGHT = 140;
+const SCORE_MAX_ANGLE_WEIGHT = 180;
+const SCORE_TOTAL_TURN_WEIGHT = 18;
+const SCORE_OUT_OF_BOUNDS_PENALTY = 45;
+const SCORE_BACKWARDS_PENALTY = 90;
+/** Dot product at which the backwards penalty starts ramping in. */
+const SCORE_BACKWARDS_ONSET = -0.08;
+
+/**
+ * Ceiling on the perpendicular bulge. NOT a MotionConfiguration field — the
+ * recovered config has no arc cap — so it is a local clamp kept from the
+ * previous planner to stop very long moves sweeping half the desktop.
+ */
+const MAX_DESIRED_ARC = 120;
+
+/**
+ * How many departure directions the candidate grid fans across when a move
+ * interrupts an in-flight move. `candidateCount` stays the budget either way:
+ * from rest the departure axis collapses and all 20 candidates go to arc.
+ */
+const DEPARTURE_FAN = 5;
+
+/** Weight on the normalized heading deviation inside the single rotation term. */
+const ROTATION_HEADING_WEIGHT = 0.75;
+/** Seconds-per-progress-unit coefficient turning spring velocity into sway. */
+const ROTATION_SWAY_COEFFICIENT = 0.035;
+
+/** Neutral drop-shadow colour, kept out of the palette so no theme tints it. */
+const SHADOW_RGB = [0, 0, 0] as const;
+/**
+ * The outline colour, which is not a brand colour.
+ *
+ * The one colour literal in the whole of the native cursor's drawing code is
+ * `Color.white.opacity(0.8)`, and it is the outline. A white rim is what makes
+ * a small dark glyph readable over an arbitrary application, the same way the
+ * system pointer's is. The brand colour still owns the fill.
+ */
+const OUTLINE_RGB = [255, 255, 255] as const;
+
 export const CODEX_CURSOR_GLYPH = {
-  size: 14,
+  /**
+   * The arrow's frame, in points.
+   *
+   * This was 14, measured off the black core of a rendered cursor while the
+   * outline and its outward half sat outside the ruler. The native view binds
+   * `cursorRadius = 9.0` and draws at `width: 2r`, so the frame is 18 — which
+   * is also what the white rim's outer edge measures, per pixel, in a captured
+   * frame. Two independent readings, one number.
+   *
+   * At 14 with a one-third-transparent fill and a 1.55pt rounded outline, the
+   * glyph read as a blob rather than a pointer at 1x.
+   */
+  size: 18,
   shadowBlur: 9,
   // Normalized AgentCursor.path(in:) coordinates recovered from the native
   // function's read-only floating-point constants.
@@ -86,7 +147,7 @@ interface SpringValue {
   damping: number;
 }
 
-class CubicCursorPath {
+export class CubicCursorPath {
   constructor(
     readonly p0: Point,
     readonly p1: Point,
@@ -176,33 +237,136 @@ function directCursorPath(start: Point, end: Point): CubicCursorPath {
   );
 }
 
-function viewportOverflow(
+interface PathBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export interface PathMeasurement {
+  length: number;
+  angleChangeEnergy: number;
+  maxAngleChange: number;
+  totalTurn: number;
+  staysInBounds: boolean;
+  /** Unit direction of the last sampled segment: how the cursor arrives. */
+  arrivalDirection: Point;
+}
+
+/**
+ * The viewport inset by boundsMargin, widened where necessary so the move's own
+ * endpoints never count as violations. Without the widening a click 5px from
+ * the screen edge would mark every candidate out of bounds, flattening the term
+ * exactly where it is needed to keep the bulge on-screen.
+ */
+function pathBounds(start: Point, end: Point, viewport: Viewport | null): PathBounds | null {
+  if (!viewport) return null;
+  const margin = CODEX_CURSOR_MOTION.boundsMargin;
+  return {
+    minX: Math.max(0, Math.min(margin, start[0], end[0])),
+    minY: Math.max(0, Math.min(margin, start[1], end[1])),
+    maxX: Math.min(viewport.width, Math.max(viewport.width - margin, start[0], end[0])),
+    maxY: Math.min(viewport.height, Math.max(viewport.height - margin, start[1], end[1])),
+  };
+}
+
+/**
+ * Walks the candidate as a 24-segment polyline, accumulating arc length, the
+ * per-step heading deltas the scorer charges for, and whether every sample sat
+ * inside the inset viewport.
+ */
+export function measureCursorPath(
   path: CubicCursorPath,
   start: Point,
   end: Point,
   viewport: Viewport | null,
-): number {
-  if (!viewport) return 0;
-  const margin = CODEX_CURSOR_MOTION.boundsMargin;
-  const minX = Math.max(0, Math.min(margin, start[0], end[0]));
-  const minY = Math.max(0, Math.min(margin, start[1], end[1]));
-  const maxX = Math.min(viewport.width, Math.max(viewport.width - margin, start[0], end[0]));
-  const maxY = Math.min(viewport.height, Math.max(viewport.height - margin, start[1], end[1]));
-  let overflow = 0;
-  for (let index = 0; index <= 32; index++) {
-    const [x, y] = path.sample(index / 32);
-    overflow += Math.max(0, minX - x) ** 2;
-    overflow += Math.max(0, x - maxX) ** 2;
-    overflow += Math.max(0, minY - y) ** 2;
-    overflow += Math.max(0, y - maxY) ** 2;
+): PathMeasurement {
+  const bounds = pathBounds(start, end, viewport);
+  const inside = (point: Point): boolean => !bounds
+    || (point[0] >= bounds.minX && point[0] <= bounds.maxX
+      && point[1] >= bounds.minY && point[1] <= bounds.maxY);
+
+  let length = 0;
+  let angleChangeEnergy = 0;
+  let maxAngleChange = 0;
+  let totalTurn = 0;
+  let previous = path.sample(0);
+  let staysInBounds = inside(previous);
+  let previousAngle: number | null = null;
+  let arrivalDirection: Point = [0, 0];
+
+  for (let index = 1; index <= SCORE_SAMPLES; index++) {
+    const point = path.sample(index / SCORE_SAMPLES);
+    const dx = point[0] - previous[0];
+    const dy = point[1] - previous[1];
+    const step = Math.hypot(dx, dy);
+    length += step;
+    if (step > 1e-9) {
+      const angle = Math.atan2(dy, dx);
+      if (previousAngle !== null) {
+        const delta = Math.abs(wrapAngle(angle - previousAngle));
+        angleChangeEnergy += delta * delta;
+        totalTurn += delta;
+        if (delta > maxAngleChange) maxAngleChange = delta;
+      }
+      previousAngle = angle;
+      arrivalDirection = [dx / step, dy / step];
+    }
+    if (!inside(point)) staysInBounds = false;
+    previous = point;
   }
-  return overflow;
+
+  return { length, angleChangeEnergy, maxAngleChange, totalTurn, staysInBounds, arrivalDirection };
 }
 
-function planCursorPath(
+/**
+ * The recovered scorer. Every term is a cost, so the straightest candidate that
+ * clears the viewport wins; a bulge only survives when it buys back more than
+ * it spends in detour and turning.
+ */
+export function scoreCursorPath(
+  measurement: PathMeasurement,
+  chordLength: number,
+  clickDirection: Point,
+): number {
+  const detour = Math.max(0, measurement.length / Math.max(chordLength, 1) - 1);
+  const dot = measurement.arrivalDirection[0] * clickDirection[0]
+    + measurement.arrivalDirection[1] * clickDirection[1];
+  // travelDirection · clickAngleDirection. The recovered notes do not pin which
+  // stretch of travel the term reads, so it is bound to the arrival direction:
+  // a candidate that arrives opposite the angle the glyph snaps to would force
+  // a near-180° rotation inside the terminal blend, which is the spin this
+  // penalty exists to price. The ramp only opens once the arrival is genuinely
+  // backwards, so ordinary sideways approaches pay nothing.
+  const backwards = clamp(
+    (SCORE_BACKWARDS_ONSET - dot) / (1 + SCORE_BACKWARDS_ONSET),
+    0,
+    1,
+  ) * SCORE_BACKWARDS_PENALTY;
+
+  return measurement.length
+    + SCORE_DETOUR_WEIGHT * detour
+    + SCORE_ANGLE_ENERGY_WEIGHT * measurement.angleChangeEnergy
+    + SCORE_MAX_ANGLE_WEIGHT * measurement.maxAngleChange
+    + SCORE_TOTAL_TURN_WEIGHT * measurement.totalTurn
+    + (measurement.staysInBounds ? 0 : SCORE_OUT_OF_BOUNDS_PENALTY)
+    + backwards;
+}
+
+/**
+ * Builds `candidateCount` cubics and returns the cheapest under the recovered
+ * scorer.
+ *
+ * `incomingHeading` is the direction the cursor is already travelling, and is
+ * null whenever the cursor is at rest. It must stay null in that case: the
+ * engine parks `heading` at clickAngle between moves, so feeding it back in
+ * launched every fresh move up-and-right no matter where the target was.
+ */
+export function planCursorPath(
   start: Point,
   end: Point,
-  departureAngle: number,
+  incomingHeading: number | null,
   viewport: Viewport | null,
 ): CubicCursorPath {
   const config = CODEX_CURSOR_MOTION;
@@ -215,43 +379,76 @@ function planCursorPath(
 
   const directAngle = Math.atan2(dy, dx);
   const direction: Point = [Math.cos(directAngle), Math.sin(directAngle)];
-  const departure: Point = [Math.cos(departureAngle), Math.sin(departureAngle)];
   const perpendicular: Point = [-direction[1], direction[0]];
-  const desiredSign = Math.sin(wrapAngle(directAngle - departureAngle)) >= 0 ? 1 : -1;
-  const desiredArc = Math.min(distance * config.arcSize, 120) * desiredSign;
+  const clickDirection: Point = [Math.cos(config.clickAngle), Math.sin(config.clickAngle)];
+  const maxArc = Math.min(distance * config.arcSize, MAX_DESIRED_ARC);
+
+  // From rest there is no heading to honour, so the whole budget goes to arc
+  // resolution. Interrupting a move fans the start handle from "straight at the
+  // target" to "keep going the way we were", and lets the scorer choose.
+  const headingDelta = incomingHeading !== null && Number.isFinite(incomingHeading)
+    ? wrapAngle(incomingHeading - directAngle)
+    : 0;
+  const departureCount = headingDelta === 0 ? 1 : DEPARTURE_FAN;
+  const arcCount = Math.max(2, Math.round(config.candidateCount / departureCount));
 
   let bestPath: CubicCursorPath | null = null;
   let bestScore = Number.POSITIVE_INFINITY;
-  let bestOverflow = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < config.candidateCount; i++) {
-    const normalized = i / (config.candidateCount - 1);
-    const arc = (normalized * 2 - 1) * Math.abs(desiredArc);
-    const p1: Point = [
-      start[0] + departure[0] * distance * config.startHandle
-        + perpendicular[0] * arc * config.arcFlow,
-      start[1] + departure[1] * distance * config.startHandle
-        + perpendicular[1] * arc * config.arcFlow,
-    ];
-    const p2: Point = [
-      end[0] - direction[0] * distance * config.endpointHandle
-        + perpendicular[0] * arc * (1 - config.arcFlow),
-      end[1] - direction[1] * distance * config.endpointHandle
-        + perpendicular[1] * arc * (1 - config.arcFlow),
-    ];
-    const candidate = new CubicCursorPath(start, p1, p2, end);
-    const arcPreference = Math.abs(arc - desiredArc);
-    const controlLength = Math.hypot(p1[0] - start[0], p1[1] - start[1])
-      + Math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-      + Math.hypot(end[0] - p2[0], end[1] - p2[1]);
-    const overflow = viewportOverflow(candidate, start, end, viewport);
-    const score = overflow * 1_000_000 + arcPreference * 0.8 + controlLength * 0.2;
-    if (score < bestScore) {
-      bestScore = score;
-      bestOverflow = overflow;
-      bestPath = candidate;
+  for (let d = 0; d < departureCount; d++) {
+    const departureWeight = departureCount === 1 ? 0 : d / (departureCount - 1);
+    const departureAngle = directAngle + headingDelta * departureWeight;
+    const departure: Point = [Math.cos(departureAngle), Math.sin(departureAngle)];
+    for (let a = 0; a < arcCount; a++) {
+      const arc = (a / (arcCount - 1) * 2 - 1) * maxArc;
+      const p1: Point = [
+        start[0] + departure[0] * distance * config.startHandle
+          + perpendicular[0] * arc * config.arcFlow,
+        start[1] + departure[1] * distance * config.startHandle
+          + perpendicular[1] * arc * config.arcFlow,
+      ];
+      const p2: Point = [
+        end[0] - direction[0] * distance * config.endpointHandle
+          + perpendicular[0] * arc * (1 - config.arcFlow),
+        end[1] - direction[1] * distance * config.endpointHandle
+          + perpendicular[1] * arc * (1 - config.arcFlow),
+      ];
+      const candidate = new CubicCursorPath(start, p1, p2, end);
+      const score = scoreCursorPath(
+        measureCursorPath(candidate, start, end, viewport),
+        distance,
+        clickDirection,
+      );
+      if (score < bestScore) {
+        bestScore = score;
+        bestPath = candidate;
+      }
     }
   }
-  return bestOverflow > 0.0001 ? directCursorPath(start, end) : bestPath!;
+  return bestPath ?? directCursorPath(start, end);
+}
+
+/**
+ * Heading for a point on the path. Over the last 1% the tangent is blended into
+ * the click angle as a cubic-eased unit-vector interpolation (0x100096cf8), not
+ * a scalar angle lerp: the vector form cannot wind the long way round.
+ */
+export function cursorHeadingAt(tangent: Point, progress: number): number {
+  const clickAngle = CODEX_CURSOR_MOTION.clickAngle;
+  const magnitude = Math.hypot(tangent[0], tangent[1]);
+  if (magnitude < 1e-9) return clickAngle;
+  const unit: Point = [tangent[0] / magnitude, tangent[1] / magnitude];
+
+  const blendStart = CODEX_CURSOR_MOTION.terminalTangentBlendStart;
+  const w = clamp((progress - blendStart) / (1 - blendStart), 0, 1);
+  if (w <= 0) return Math.atan2(unit[1], unit[0]);
+
+  const k = 1 - (1 - w) ** 3;
+  const x = unit[0] * (1 - k) + Math.cos(clickAngle) * k;
+  const y = unit[1] * (1 - k) + Math.sin(clickAngle) * k;
+  // Exactly opposed vectors cancel at k = 0.5; snap to the click angle rather
+  // than reading an angle off the zero vector.
+  if (Math.hypot(x, y) < 1e-9) return clickAngle;
+  return Math.atan2(y, x);
 }
 
 export class CursorEngine {
@@ -276,11 +473,6 @@ export class CursorEngine {
     CODEX_CURSOR_MOTION.scootAxisResponse,
     CODEX_CURSOR_MOTION.scootAxisDampingFraction,
   );
-  private readonly baseRotation = makeSpring(
-    0,
-    CODEX_CURSOR_MOTION.scootBaseRotationResponse,
-    CODEX_CURSOR_MOTION.scootBaseRotationDampingFraction,
-  );
   private readonly stretchX = makeSpring(
     1,
     CODEX_CURSOR_MOTION.scootStretchResponse,
@@ -291,6 +483,13 @@ export class CursorEngine {
     CODEX_CURSOR_MOTION.scootStretchResponse,
     CODEX_CURSOR_MOTION.scootStretchDampingFraction,
   );
+  /**
+   * The one rotation spring. Codex applies a single rotation term bounded by
+   * scootRotationMax (0x1000963cc); the earlier split into a base rotation plus
+   * an offset let the glyph reach twice that, which is what made it spin.
+   * scootBaseRotation{Response,DampingFraction} stay in the recovered config as
+   * inspected data, but nothing in the native rotation path consumes them.
+   */
   private readonly rotationOffset = makeSpring(
     0,
     CODEX_CURSOR_MOTION.scootRotationResponse,
@@ -336,10 +535,13 @@ export class CursorEngine {
       return;
     }
 
-    const departureAngle = Number.isFinite(this.heading)
+    // `heading` is parked at the rest angle between moves, so it is only a real
+    // departure direction while a move is still in flight. Feeding the rest
+    // angle back in launched every fresh move up-and-right, target be damned.
+    const incomingHeading = this.path !== null && Number.isFinite(this.heading)
       ? this.heading
-      : Math.atan2(y - start[1], x - start[0]);
-    this.path = planCursorPath(start, destination, departureAngle, this.viewport);
+      : null;
+    this.path = planCursorPath(start, destination, incomingHeading, this.viewport);
     this.target = destination;
     this.moveDistance = distance;
     const response = clamp(
@@ -401,7 +603,6 @@ export class CursorEngine {
     return this.path !== null
       || this.fadingIn
       || this.clickT !== null
-      || !springSettled(this.baseRotation)
       || !springSettled(this.stretchX)
       || !springSettled(this.stretchY)
       || !springSettled(this.rotationOffset);
@@ -436,12 +637,7 @@ export class CursorEngine {
       const progress = clamp(this.progress.value, 0, 1);
       const sampled = this.path.sample(progress);
       const tangent = this.path.tangent(progress);
-      let tangentAngle = Math.atan2(tangent[1], tangent[0]);
-      if (progress > CODEX_CURSOR_MOTION.terminalTangentBlendStart) {
-        const blend = (progress - CODEX_CURSOR_MOTION.terminalTangentBlendStart)
-          / (1 - CODEX_CURSOR_MOTION.terminalTangentBlendStart);
-        tangentAngle += wrapAngle(CODEX_CURSOR_MOTION.clickAngle - tangentAngle) * clamp(blend, 0, 1);
-      }
+      const tangentAngle = cursorHeadingAt(tangent, progress);
 
       this.pos = [sampled[0], sampled[1]];
       this.heading = tangentAngle;
@@ -450,21 +646,18 @@ export class CursorEngine {
       const intensity = scootEnabled ? clamp(speed / 900, 0, 1) : 0;
 
       setAngleTarget(this.axis, tangentAngle);
-      setAngleTarget(
-        this.baseRotation,
-        clamp(
-          wrapAngle(tangentAngle - CODEX_CURSOR_MOTION.clickAngle),
-          -CODEX_CURSOR_MOTION.scootRotationMax,
-          CODEX_CURSOR_MOTION.scootRotationMax,
-        ) * intensity,
-      );
       this.stretchX.target = 1 + CODEX_CURSOR_MOTION.scootStretchXAmount * intensity;
       this.stretchY.target = 1 - CODEX_CURSOR_MOTION.scootSquashYAmount * intensity;
-      this.rotationOffset.target = clamp(
-        this.progress.velocity * 0.035,
-        -CODEX_CURSOR_MOTION.scootRotationMax,
-        CODEX_CURSOR_MOTION.scootRotationMax,
-      ) * intensity;
+      // One rotation term: intensity * clamp(0.75 * headingDeviation + sway,
+      // -1, 1) * scootRotationMax. Both inputs are unitless fractions and the
+      // clamp is applied once, so the glyph cannot exceed scootRotationMax.
+      const headingDeviation = wrapAngle(tangentAngle - CODEX_CURSOR_MOTION.clickAngle) / PI;
+      const sway = this.progress.velocity * ROTATION_SWAY_COEFFICIENT;
+      this.rotationOffset.target = intensity * clamp(
+        ROTATION_HEADING_WEIGHT * headingDeviation + sway,
+        -1,
+        1,
+      ) * CODEX_CURSOR_MOTION.scootRotationMax;
 
       const progressSettled = springSettled(this.progress, 0.0005, 0.005);
       if (progressSettled) {
@@ -473,7 +666,6 @@ export class CursorEngine {
         this.path = null;
         this.progress = null;
         this.target = null;
-        this.baseRotation.target = 0;
         this.stretchX.target = 1;
         this.stretchY.target = 1;
         this.rotationOffset.target = 0;
@@ -483,14 +675,12 @@ export class CursorEngine {
         }
       }
     } else {
-      this.baseRotation.target = 0;
       this.stretchX.target = 1;
       this.stretchY.target = 1;
       this.rotationOffset.target = 0;
     }
 
     stepSpring(this.axis, dt);
-    stepSpring(this.baseRotation, dt);
     stepSpring(this.stretchX, dt);
     stepSpring(this.stretchY, dt);
     stepSpring(this.rotationOffset, dt);
@@ -504,7 +694,6 @@ export class CursorEngine {
 
   private resetVisualSprings(): void {
     settleSpring(this.axis, CODEX_CURSOR_MOTION.clickAngle);
-    settleSpring(this.baseRotation, 0);
     settleSpring(this.stretchX, 1);
     settleSpring(this.stretchY, 1);
     settleSpring(this.rotationOffset, 0);
@@ -516,7 +705,10 @@ export class CursorEngine {
     const py = this.pos[1] - originY;
     const pressProgress = this.clickT === null ? 0 : Math.sin(PI * this.clickT);
     const pressedAmount = this.pressed ? 1 : pressProgress;
-    const scale = 1 - 0.1 * pressedAmount;
+    // The native cursor multiplies its scale by 0.7 while pressed. Maka's 0.9
+    // was a third of that, which at 14pt was a shrink of one and a half pixels
+    // — the press was happening and nothing on screen said so.
+    const scale = 1 - 0.3 * pressedAmount;
 
     ctx.save();
     ctx.globalAlpha = this.opacity;
@@ -524,7 +716,7 @@ export class CursorEngine {
     ctx.rotate(this.axis.value);
     ctx.scale(this.stretchX.value, this.stretchY.value);
     ctx.rotate(-this.axis.value);
-    ctx.rotate(this.baseRotation.value + this.rotationOffset.value);
+    ctx.rotate(this.rotationOffset.value);
     ctx.scale(scale, scale);
     this.paintAgentCursor(ctx, pressedAmount);
     ctx.restore();
@@ -574,19 +766,37 @@ export class CursorEngine {
 
     const palette = this.palette;
     const gradient = ctx.createLinearGradient(offset, offset, -offset, -offset);
-    gradient.addColorStop(0, rgba(palette.cursorStart, 0.34 + pressedAmount * 0.08));
-    gradient.addColorStop(0.55, rgba(palette.cursorMid, 0.3 + pressedAmount * 0.08));
-    gradient.addColorStop(1, rgba(palette.cursorEnd, 0.26 + pressedAmount * 0.08));
-    ctx.shadowColor = rgba(palette.cursorEnd, 0.38 + pressedAmount * 0.12);
+    // Opaque. The fill was carrying a third of its own colour, which let every
+    // control underneath show through and left the arrow with no interior of
+    // its own — the single largest reason it read as a smudge. The native
+    // cursor's fill has no alpha at all; the gradient across the brand colours
+    // is Maka's and stays.
+    gradient.addColorStop(0, rgba(palette.cursorStart, 0.97));
+    gradient.addColorStop(0.55, rgba(palette.cursorMid, 0.95));
+    gradient.addColorStop(1, rgba(palette.cursorEnd, 0.93));
+    // A drop shadow, not a bloom. The upstream engine shadowed with the
+    // cursor's own brand colour, which reads as a glow: pleasant over light
+    // surfaces, but on a dark control it blends into the background instead of
+    // separating the cursor from it — exactly where separation matters most.
+    // Neutral black is what the system cursor uses, and for the same reason.
+    // The brand colour still owns the fill, and the white outline below is what
+    // the native cursor separates itself with.
+    ctx.shadowColor = rgba(SHADOW_RGB, 0.3 + pressedAmount * 0.1);
     ctx.shadowBlur = glyph.shadowBlur + pressedAmount * 3;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 1;
     ctx.fillStyle = gradient;
     ctx.fill();
-    ctx.strokeStyle = rgba(palette.cursorStart, 0.94 + pressedAmount * 0.06);
-    ctx.lineWidth = 1.55;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
+    // `Color.white.opacity(0.8)`, `lineWidth: 2`, `lineJoin: .miter`,
+    // `miterLimit: 10`, `lineCap: .butt` — the native stroke, read off the only
+    // colour literal in its drawing code. The rounded join Maka had was
+    // rounding off the arrow's point, which is the part that says which way it
+    // is pointing.
+    ctx.strokeStyle = rgba(OUTLINE_RGB, 0.8);
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'miter';
+    ctx.miterLimit = 10;
+    ctx.lineCap = 'butt';
     ctx.stroke();
   }
 }
