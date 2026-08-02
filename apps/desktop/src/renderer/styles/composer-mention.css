@@ -114,8 +114,8 @@
   border-radius: var(--radius-pill);
   background: var(--control);
   color: var(--control-foreground);
-  /* --font-size-caption is the smallest governed size (typography-converge
-     contract), so the pill is sized to fit it rather than the reverse. */
+  /* The supporting role is the smallest governed tier, so the pill is sized to
+     fit it rather than the reverse. */
   pointer-events: none;
 }
 

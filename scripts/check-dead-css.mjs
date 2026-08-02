@@ -131,11 +131,6 @@ const RESERVED_SCALE_TOKENS = new Set([
   '--border-width-accent',
   // Zero rung of the spacing ruler.
   '--space-0',
-  // Weight series read by the generated Astryx theme. Call sites stopped
-  // declaring font-weight with the role triplet (#1875), so the top rung has
-  // no direct consumer while 400/500/600 remain live through the theme's
-  // --text-*-weight atoms; the scale only reads as a scale with it present.
-  '--font-weight-bold',
 ]);
 
 async function readCssFiles(dir) {

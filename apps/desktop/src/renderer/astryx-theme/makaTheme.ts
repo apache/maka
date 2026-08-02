@@ -66,9 +66,9 @@ export const makaTheme = defineTheme({
   // leads with Figtree, which Maka does not bundle, so every Astryx surface
   // (Markdown prose included) declared a family that silently fell back —
   // and its stack carries no CJK face, while Maka is CJK-first. Declaring the
-  // product stacks here makes --font-family-body/heading/code identical to
-  // what the product already uses; maka-tokens.css now aliases --font-sans /
-  // --font-mono to these instead of holding a second copy.
+  // product stacks here makes --font-family-body/heading/code the only font
+  // stacks in the renderer; the product's own --font-sans / --font-mono names
+  // are gone, and maka-tokens.css reads these directly (#1875).
   typography: {
     scale: { base: 14, ratio: 1.125 },
     // PR-UI-ALIGN-0's "clean native" feel comes from the SYSTEM font (SF Pro

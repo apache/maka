@@ -329,18 +329,44 @@
 
      Composed from Astryx's generated atoms only, never from literals: the
      ladder stays a pure function of `typography.scale` in makaTheme.ts, so an
-     Astryx scale change moves these with it. There are no product roles. The
-     42 blocks whose measured values had no Astryx equivalent were hand-rolled
-     picks the ladder never offered — every Astryx heading is 600, yet 10
-     blocks used 700; the 12px tier offers 400 and 600, yet 11 used 500.
+     Astryx scale change moves these with it. The 42 blocks whose measured
+     values had no Astryx equivalent were hand-rolled picks the ladder never
+     offered — every Astryx heading is 600, yet 10 blocks used 700; the 12px
+     tier offers 400 and 600, yet 11 used 500. Which way a 500 resolves is not
+     a judgement call per site: a 12px site that TITLES something below it
+     takes heading-5 (600), everything else takes supporting (400).
+
+     There are no product roles, and that is a choice rather than a limit —
+     Astryx supports custom text types through `defineTheme` component
+     overrides (`astryx theme build` generates the augmentation). The table
+     below stays a pure projection of the vendor's own set so that an upgrade
+     is the only thing that can change what a role means. Two of the vendor's
+     fourteen are deliberately absent: `large` and `heading-6` have no site.
+
+     One coupling the names create, worth knowing before retuning: 97 of these
+     call sites are <strong> and section labels naming heading-4 / heading-5
+     for their WEIGHT, not because they are headings. A `weights.heading`
+     override in makaTheme.ts — a normal, vendor-blessed edit aimed at real
+     headings — moves them too.
+
+     The shorthand resets more than it names: `font-variant-*`, `font-style`,
+     `font-stretch` and the feature/variation settings all return to their
+     initial values. Any of those a site needs must be declared AFTER the role
+     — in the same rule, or in a rule that comes later. Measured, the stat
+     tiles' `tabular-nums` sat in the base rule while the role sat in the
+     modifier, and the figures stopped aligning.
 
      Family is NOT part of the triplet at the call site. `font:` requires a
      family slot, and any literal there would override the one monospace
      authority in this file (`:where(code, kbd, samp, pre)` below, which
      `:where()` gives zero specificity). So the slot reads --maka-font-family,
      rebound on that same selector and inherited from there — the only two
-     places in the renderer that name a font stack. Astryx's own model agrees:
-     Text has no family prop, family follows the element and the `code` role.
+     places in the renderer that name a font STACK. A call site may rebind the
+     axis (the sidebar's ⌘N hint does, to opt a <kbd> back out of mono), but
+     only to another token: the axis is scanned by the same contract that bans
+     a literal size or leading, so it cannot become a third stack. Astryx's own
+     model agrees: Text has no family prop, family follows the element and the
+     `code` role.
 
      The role table itself is NOT declared here. A custom property's var()
      references are substituted where the property is DECLARED, not where it is
@@ -402,9 +428,11 @@
   --font-weight-normal: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
-  /* Unused since call sites stopped declaring weight; kept as the top rung
-     of the series the generated theme reads (RESERVED_SCALE_TOKENS). */
-  --font-weight-bold: 700;
+  /* No --font-weight-bold. It reached zero consumers when call sites stopped
+     declaring weight, and the generated theme reads only normal/medium/
+     semibold; keeping it for the look of a complete series would be a product
+     name for an axis the roles own, which is what the two axes above are on
+     their way out for. */
 
   /* === letter-spacing ===
      PR-TRACKING-CONVERGE-0 (issue #520 PR1):

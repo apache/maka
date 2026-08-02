@@ -10,7 +10,7 @@
 //      `.maka-plan-hero` (.maka-plan-heading > h2+p + .maka-plan-top-actions).
 //
 //   2. SETTINGS intros (as='h3'): the smaller Permission / Health / Voice /
-//      About page intro cards — an --font-size-ui semibold title, a lede,
+//      About page intro cards — a body-tier semibold title, a lede,
 //      and a trailing quieter META cluster (RelativeTime + refresh Button)
 //      or a leading feature ICON + trailing BADGE chip. Previously
 //      `.settingsPermissionIntro`, `.settingsHealthIntro`,
