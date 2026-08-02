@@ -383,12 +383,21 @@ test('resolves one type scale from the root down to the transcript', async ({
  * `.maka-composer-model-chip`, `.plan-proposal-step-number`,
  * `.maka-skill-governance-summary span`, `.maka-quote-action`,
  * `.maka-composer-revision-notice` and `.settingsUsage{DetailToggle,RecordCount}`
- * all resolve to zero nodes in both fixtures. So the floor assertion below
- * proves the MECHANISM (a tier must hold its own content) on three chips whose
- * slack is zero by construction, and not the TIER CHOICE for sm/md/lg — that
- * stays arithmetic in `type-scale-contract.test.ts`, where each rule states its
- * own floor. Booting those surfaces is a fixture change, not a test change, and
- * it does not belong to this one.
+ * all resolve to zero nodes in both fixtures, and so do the four chips pinned
+ * last — `.maka-quote-chip-collapsed`, `.maka-deep-research-run-count`,
+ * `.maka-firstrun-step` and `.maka-mcp-install-button` (measured with a
+ * throwaway probe against both booted windows, with `.maka-turn` and
+ * `.maka-nav-kbd` as controls).
+ *
+ * So the floor assertion below proves the MECHANISM (a tier must hold its own
+ * content) on three chips whose slack is zero by construction, and not the
+ * TIER CHOICE for sm/md/lg. That choice is UNASSERTED, deliberately and
+ * stated plainly rather than credited to a check elsewhere: a floor is a live
+ * metric — a font's line box, or a 21px child dot — so no text contract can
+ * compute it, and each rule records the number it was measured at in its own
+ * comment. A padding change that lifts a floor past its tier is caught by
+ * reading, not by this suite. Booting those surfaces is a fixture change, not
+ * a test change, and it does not belong to this one.
  */
 test('pins single-line chips without pinning the boxes that wrap', async ({
   planRemindersWindow: page,

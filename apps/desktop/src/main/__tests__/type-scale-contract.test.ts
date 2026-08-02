@@ -28,11 +28,15 @@ import {
   assertCssRuleDecls,
   assertCustomPropPinnedOnce,
   findBadgeClassNames,
-  findDynamicBadgeClassNames,
   findTextRoleOffenders,
+  findUnreadableBadgeCallSites,
+  mergeByContext,
   mergeBySelector,
+  parseCssBlocks,
   parseCssCustomProps,
   readAllRendererCss,
+  splitSelectorList,
+  UNCONDITIONAL,
 } from './css-test-helpers.js';
 
 /**
@@ -63,15 +67,47 @@ import {
 const CONSTRAINS_BLOCK_SIZE = /(?<![-\w])(?:min-|max-)?(?:height|block-size)\s*:/;
 const HEIGHT_DECL_G = /(?<![-\w])(?:height|block-size)\s*:([^;}]*)/g;
 const RULER_VALUE = /^\s*var\((--h-control-[a-z0-9-]+)\)\s*$/;
+/** A height that hands the box back to its content. */
+const CONTENT_DRIVEN = /^\s*(?:auto|inherit|initial|unset|revert|(?:fit|min|max)-content)\b/;
 
 /**
- * Does this box's EFFECTIVE height come from the control ruler?
+ * The padding vocabulary, ONE authority, shared by the two contracts that read
+ * it — a chip is a box with its own padding, and a Badge className may not
+ * restate the padding the component computes.
+ *
+ * Written out because both shorthand families are real CSS and a guard that
+ * knows one of them is a guard with a documented bypass. Measured, both
+ * directions of that mistake have shipped in this file: `padding(?:-[a-z]+)?`
+ * missed `padding-inline-start`, and the rewrite that added the logical family
+ * dropped `padding-top/right/bottom/left` — a Badge className given
+ * `padding-left: 9px` redrew the component's box while the contract stayed
+ * green.
+ *
+ * A DECLARATION, not a substring. `/padding/` also matches
+ * `background-clip: padding-box`, which is not padding and not a chip: it is
+ * how a scrollbar thumb — a box no reader perceives as an object, whose block
+ * size is the scroll geometry's business — entered the chip population and
+ * earned an exemption group of its own. The group is deleted with the
+ * substring that created it.
+ */
+const PADDING = 'padding(?:-(?:inline|block|top|right|bottom|left))?(?:-(?:start|end))?';
+const DECLARES_PADDING = new RegExp(`(?<![-\\w])${PADDING}\\s*:`);
+
+/**
+ * This box's EFFECTIVE height declaration, or undefined.
  *
  * Effective, not "mentioned anywhere": CSS takes the last declaration, so a
  * body reading `height: var(--h-control-xs); … height: auto` is an unpinned
  * box that a test matching anywhere in the text reports as pinned. That is a
  * legal, one-line bypass of the whole contract, and this file already
  * documents the same false-green for custom properties.
+ */
+function effectiveHeight(body: string): string | undefined {
+  return [...body.matchAll(HEIGHT_DECL_G)].map((m) => m[1]).at(-1);
+}
+
+/**
+ * Does this box's effective height come from the control ruler?
  *
  * `rungs` is the set of tiers the ruler actually defines. Naming a tier that
  * does not exist makes the declaration invalid at computed-value time, so the
@@ -81,20 +117,35 @@ const RULER_VALUE = /^\s*var\((--h-control-[a-z0-9-]+)\)\s*$/;
  * there is one authority for what the ruler contains.
  */
 function pinnedToRuler(body: string, rungs: Set<string>): boolean {
-  const values = [...body.matchAll(HEIGHT_DECL_G)].map((m) => m[1]);
-  const last = values.at(-1);
+  const last = effectiveHeight(body);
   if (last === undefined) return false;
   const tier = RULER_VALUE.exec(last)?.[1];
   return tier !== undefined && rungs.has(tier);
 }
 
-/** The tiers `--h-control-*` actually defines, read from the token file. */
+/** The tiers `--h-control-*` defines, read from the ruler's OWN scope.
+ *
+ * The scope is the guard, not decoration. `parseCssCustomProps` reads the
+ * whole file, so a `--h-control-xss` declared under `.dark` — or in any other
+ * qualified rule — counted as a rung the ruler does not have: a chip naming it
+ * falls back to `auto` in every other theme, which is #1879 again, and the
+ * membership arm that exists to catch a typo waved it through. A rung is a
+ * rung only where every chip can inherit it. */
 async function rulerRungs(): Promise<Set<string>> {
-  const names = [...parseCssCustomProps(await read('maka-tokens.css')).keys()].filter((name) =>
-    name.startsWith('--h-control-'),
-  );
-  assert.ok(names.length >= 6, `the control ruler must define its tiers; found ${names.length}`);
-  return new Set(names);
+  const names = rootCustomProps(await read('maka-tokens.css'), '--h-control-');
+  assert.ok(names.size >= 6, `the control ruler must define its tiers; found ${names.size}`);
+  return names;
+}
+
+/** Custom properties with the given prefix declared unconditionally on `:root`. */
+function rootCustomProps(css: string, prefix: string): Set<string> {
+  const out = new Set<string>();
+  for (const { rule, conditions, decls } of parseCssBlocks(stripCssComments(css))) {
+    if (conditions.length > 0) continue;
+    if (!splitSelectorList(rule).includes(':root')) continue;
+    for (const { prop } of decls) if (prop.startsWith(prefix)) out.add(prop);
+  }
+  return out;
 }
 
 /**
@@ -150,6 +201,14 @@ const COMPONENT_OWNED = [
   '.maka-model-switcher-trigger.astryx-selector',
   '.maka-new-chat-model-selector.astryx-selector',
   '.maka-thinking-level-selector.astryx-selector',
+  // Takes its pill shape from Astryx `Button` via `--_button-radius` rather
+  // than a `border-radius` of its own, so the chip scan cannot see it and only
+  // this group governs it. An earlier revision dropped it as inert on the
+  // reasoning that neither filter selects it — true while the groups were
+  // skips, false the moment they became assertions: a skip nothing reaches is
+  // dead weight, but an assertion nothing reaches is the only thing standing
+  // between this rule and the `height` override #1879 removed.
+  '.maka-sidebar-update-button',
 ] as const;
 
 /** Pinned, but to a literal rather than to the ruler. The invariant #1879 is
@@ -175,17 +234,7 @@ const CENTRED_BY_A_BASE_RULE: ReadonlyArray<readonly [string, string]> = [
   ['.maka-quote-chip-collapsed', '.maka-quote-chip'],
 ];
 
-/** Not a chip at all — a scrollbar thumb, whose block size is the scroll
- * geometry's business and never a line box's. It reaches the pill scan only
- * because it is round and padded. */
-const NOT_A_BOX_A_READER_SEES = ['.maka-composer-project-scroll::-webkit-scrollbar-thumb'] as const;
-
-const NOT_ON_THE_RULER = new Set<string>([
-  ...WRAPS,
-  ...COMPONENT_OWNED,
-  ...PINNED_OFF_RULER,
-  ...NOT_A_BOX_A_READER_SEES,
-]);
+const NOT_ON_THE_RULER = new Set<string>([...WRAPS, ...COMPONENT_OWNED, ...PINNED_OFF_RULER]);
 
 const RENDERER = resolve(REPO_ROOT, 'apps/desktop/src/renderer');
 
@@ -452,13 +501,16 @@ describe('type scale contracts', () => {
     // scan reported the other 15 green. The arm did not narrow the population
     // to real chips; it narrowed it to chips that happen to write text rules.
     //
-    // Dropping it also removes the reason the scan needed a guard of its own.
-    // The third arm read the type vocabulary, and #1893 moved that vocabulary
-    // out from under it once already — which is why a `chips.length >= 8`
-    // floor sat here, an unanchored number whose only job was to notice the
-    // predicate going quiet. Two arms read radius and padding, which no type
-    // convergence can move. The floor is deleted rather than retuned: a guard
-    // that exists to watch a fragile arm should not outlive the arm.
+    // Dropping it also changed what guards this scan against going quiet. The
+    // third arm read the type vocabulary, which #1893 had moved out from under
+    // it once already, so a `chips.length >= 8` floor sat here — an unanchored
+    // number, deleted with the arm it watched. But the two surviving arms read
+    // token NAMES, and a name that is not defined resolves to nothing: measured,
+    // renaming `--radius-pill` across the tree reported CHIP POPULATION 0 and
+    // this contract passed. So the floor is replaced by the thing it was
+    // approximating and the same arm `rulerRungs` already runs — the tokens the
+    // predicate reads must exist — which fails on the rename rather than
+    // reporting an empty population as compliance.
     //
     // Merged per selector, not per rule block. A chip whose type lives in one
     // rule and whose pill chrome lives in another is one box to a browser and
@@ -475,8 +527,12 @@ describe('type scale contracts', () => {
     // a pin would clip. `--radius-control` is the repo's general control shape,
     // not a chip signal. The squared chips that motivated trying it are Astryx
     // `Badge`s now, so that population is empty rather than unguarded.
+    assert.ok(
+      rootCustomProps(await read('maka-tokens.css'), '--radius-pill').size === 1,
+      'the pill radius this scan derives its population from must exist on :root',
+    );
     const isChip = (body: string) =>
-      /border-radius:\s*var\(--radius-pill\)/.test(body) && /padding/.test(body);
+      /border-radius:\s*var\(--radius-pill\)/.test(body) && DECLARES_PADDING.test(body);
 
     // Anything not named in one of the three reason-groups must pin, and each
     // group is asserted by its own contract below rather than merely skipped
@@ -499,11 +555,22 @@ describe('type scale contracts', () => {
     // the code is an unconditional pass — measured, a review mutation added
     // `height: 1px` to a rule excused as "the Astryx component sizes this" and
     // the whole suite stayed green.
-    const merged = mergeBySelector(stripCssComments(await readAllRendererCss()));
+    //
+    // WHICH VIEW follows from which question, and the two groups below ask
+    // opposite ones. "Does any rule, under any condition, declare a block size
+    // here" is a must-NOT question with no conditional distinction — measured,
+    // `@media (max-width: 620px) { .maka-model-switcher-trigger.astryx-selector
+    // { height: 40px } }` is verbatim the override #1879 removed and passed the
+    // unconditional view green. "Is this box still pinned" is a must-HOLD
+    // question about the unconditional box, and folding breakpoints into it
+    // would read a responsive value as the pin.
+    const css = stripCssComments(await readAllRendererCss());
+    const anyCondition = mergeBySelector(css, { includeConditional: true });
+    const merged = mergeBySelector(css);
     const rungs = await rulerRungs();
 
     for (const selector of COMPONENT_OWNED) {
-      const body = merged.get(selector) ?? '';
+      const body = anyCondition.get(selector) ?? '';
       assert.ok(body !== '', `${selector} must still exist for its exemption to mean anything`);
       assert.doesNotMatch(
         body,
@@ -513,14 +580,20 @@ describe('type scale contracts', () => {
     }
 
     for (const selector of PINNED_OFF_RULER) {
-      const body = merged.get(selector) ?? '';
-      assert.match(
-        body,
-        CONSTRAINS_BLOCK_SIZE,
-        `${selector} is excused because it is already pinned to a literal; losing that pin hands the box back to the line box`,
+      // The EFFECTIVE height, not "constrains its block size somehow".
+      // `CONSTRAINS_BLOCK_SIZE` answers the must-not question above and is the
+      // wrong instrument here: measured, rewriting this group's `height: 16px`
+      // as `min-height: 16px` left the line box free to grow the chip again —
+      // the exact defect #1879 is about — and the exemption stayed green,
+      // because a min-height does constrain a block size. The two vocabularies
+      // are documented apart at the top of this file for this reason.
+      const height = effectiveHeight(anyCondition.get(selector) ?? '')?.trim();
+      assert.ok(
+        height !== undefined && height !== '' && !CONTENT_DRIVEN.test(height),
+        `${selector} is excused because it is already pinned to a literal; its effective height is ${height ?? 'unset'}, which hands the box back to the line box`,
       );
       assert.ok(
-        !pinnedToRuler(body, rungs),
+        !pinnedToRuler(merged.get(selector) ?? '', rungs),
         `${selector} now takes a ruler tier — drop it from PINNED_OFF_RULER rather than carrying a stale reason`,
       );
     }
@@ -562,13 +635,22 @@ describe('type scale contracts', () => {
     // The earlier revision filtered `EXEMPT` here, inherited from a different
     // question; measured, it excluded nothing, so it was a silent widening
     // waiting for its first entry.
+    // LAST declaration, not "matches somewhere". Both halves are overridable
+    // in place: measured, appending `display: block` after an `inline-flex`
+    // left the earlier text in the merged body and passed this check, which is
+    // precisely the inert-`align-items` failure the pair form was adopted to
+    // catch, one property over. `lastValue` is what a browser reads.
+    const lastValue = (body: string, prop: string) =>
+      [...body.matchAll(new RegExp(`(?<![-\\w])${prop}\\s*:([^;}]*)`, 'g'))].map((m) => m[1]).at(-1) ?? '';
+    const CENTRES = (body: string) =>
+      /^\s*(?:inline-)?(?:flex|grid)\b/.test(lastValue(body, 'display')) &&
+      /^\s*(?:safe\s+|unsafe\s+)?center\b/.test(
+        lastValue(body, 'place-items') || lastValue(body, 'align-items'),
+      );
     const rungs = await rulerRungs();
     const merged = mergeBySelector(stripCssComments(await readAllRendererCss()));
     // The base half of the pair, asserted rather than assumed: a modifier is
     // only excused because its base centres for it, and that has to stay true.
-    const CENTRES = (body: string) =>
-      /display:\s*(?:inline-)?(?:flex|grid)/.test(body) &&
-      /(?:align-items|place-items):\s*(?:safe\s+|unsafe\s+)?center/.test(body);
     for (const [modifier, base] of CENTRED_BY_A_BASE_RULE) {
       const pair = `${merged.get(base) ?? ''} ${merged.get(modifier) ?? ''}`;
       assert.ok(
@@ -579,13 +661,7 @@ describe('type scale contracts', () => {
     const excused = new Set(CENTRED_BY_A_BASE_RULE.map(([modifier]) => modifier));
     const offenders = [...merged]
       .filter(([selector, body]) => pinnedToRuler(body, rungs) && !excused.has(selector))
-      .filter(
-        ([, body]) =>
-          !(
-            /display:\s*(?:inline-)?(?:flex|grid)/.test(body) &&
-            /(?:align-items|place-items):\s*(?:safe\s+|unsafe\s+)?center/.test(body)
-          ),
-      )
+      .filter(([, body]) => !CENTRES(body))
       .map(([selector]) => selector);
     assert.deepEqual(
       offenders,
@@ -627,7 +703,9 @@ describe('type scale contracts', () => {
     // the entry deleted.
     const css = stripCssComments(await readAllRendererCss());
     const merged = mergeBySelector(css, { includeConditional: true });
-    const OWNED = /(?<![-\w])(?:min-|max-)?(?:height|block-size|line-height|font|font-size|padding(?:-(?:inline|block))?(?:-(?:start|end))?|border-radius)\s*:/;
+    const OWNED = new RegExp(
+      `(?<![-\\w])(?:(?:min-|max-)?(?:height|block-size)|line-height|font|font-size|${PADDING}|border-radius)\\s*:`,
+    );
     // The wrap/no-wrap duality again, read from the Badge side. A Badge is a
     // single-line pill by construction (`white-space: nowrap` and a fixed
     // `--spacing-5` height); a call site whose content genuinely wraps has to
@@ -653,17 +731,27 @@ describe('type scale contracts', () => {
     // exemption is for. The reason is "it releases the single-line box", so
     // that is what gets asserted: height genuinely released, and `white-space`
     // with it, since releasing one without the other still clips.
+    //
+    // BOTH IN ONE CASCADE CONTEXT. The flattened inclusive view is the right
+    // instrument for the must-not scan below and the wrong one here: it answers
+    // "does any rule anywhere say X" twice, which two rules under mutually
+    // exclusive conditions satisfy without ever applying together. Measured,
+    // leaving `height: auto` in `@media (max-width: 620px)` and moving
+    // `white-space: normal` into `@media (min-width: 621px)` releases the box
+    // at no viewport at all and passed both matches. So the pair is checked
+    // per context, each read as the unconditional rules plus that context's.
+    const contexts = mergeByContext(css);
     for (const selector of RELEASES_THE_SINGLE_LINE_BOX) {
-      const body = merged.get(selector) ?? '';
-      assert.match(
-        body,
-        /(?<![-\w])height\s*:\s*auto\b/,
-        `${selector} is exempted because it releases Badge's fixed height; it must actually release it`,
-      );
-      assert.match(
-        body,
-        /white-space\s*:\s*(?:normal|pre-wrap|pre-line)\b/,
-        `${selector} releases Badge's height but not its nowrap, so the second line is clipped anyway`,
+      const byContext = contexts.get(selector) ?? new Map<string, string>();
+      const base = byContext.get(UNCONDITIONAL) ?? '';
+      const applied = [...byContext].map(([key, body]) => (key === UNCONDITIONAL ? body : base + body));
+      assert.ok(
+        applied.some(
+          (body) =>
+            /(?<![-\w])height\s*:\s*auto\b/.test(body) &&
+            /white-space\s*:\s*(?:normal|pre-wrap|pre-line)\b/.test(body),
+        ),
+        `${selector} is exempted because it releases Badge's fixed height AND its nowrap; no single cascade context does both, so at every viewport the box is still clipped`,
       );
       assert.ok(
         badges.some(({ className }) => `.${className}` === selector),
@@ -687,14 +775,22 @@ describe('type scale contracts', () => {
     // used to rot. There is no legitimate need for a computed class on a Badge
     // today; if one arrives, it needs a seam that stays checkable rather than
     // a quiet exit.
-    const dynamic = (await findDynamicBadgeClassNames([
+    //
+    // A prop SPREAD is the same exit and was open until measured: rewriting a
+    // real call site as `<Badge {...{ className: 'settingsOsPermissionImpactLabel' }} />`
+    // is legal JSX that the static scan cannot read and that a `className={`
+    // check does not match, so the contract above read it as a Badge with no
+    // class at all and a `height` added to that class passed everything green.
+    // Anything this scan cannot read has to say so rather than resolve to
+    // "nothing to govern here".
+    const unreadable = (await findUnreadableBadgeCallSites([
       resolve(REPO_ROOT, 'apps/desktop/src/renderer'),
       resolve(REPO_ROOT, 'packages/ui/src'),
     ])).map((file) => file.replace(`${REPO_ROOT}/`, ''));
     assert.deepEqual(
-      dynamic,
+      unreadable,
       [],
-      `<Badge className={…}> cannot be read statically, so it escapes the Badge-geometry contract:\n${dynamic.join('\n')}`,
+      `a <Badge> whose className is computed or spread cannot be read statically, so it escapes the Badge-geometry contract:\n${unreadable.join('\n')}`,
     );
   });
 
@@ -723,7 +819,15 @@ describe('type scale contracts', () => {
     // stylesheet, so appending `.maka-plan-card-run { height: 20px }` from any
     // other file satisfied it — the same bypass the heading and font-size
     // checks in this file already went repo-wide to close.
-    const merged = mergeBySelector(stripCssComments(await readAllRendererCss()));
+    //
+    // And condition-inclusive, for the same reason as the component-owned
+    // group: this is a must-NOT question. Measured, pinning `.maka-plan-card-run`
+    // to 20px inside `@media (max-width: 620px)` clips its sentence at exactly
+    // the width where the column is narrowest and wrapping likeliest, and the
+    // unconditional view reported it green.
+    const merged = mergeBySelector(stripCssComments(await readAllRendererCss()), {
+      includeConditional: true,
+    });
     for (const selector of WRAPS) {
       const body = merged.get(selector) ?? '';
       assert.ok(body !== '', `${selector} must still exist for its exemption to mean anything`);

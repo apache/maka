@@ -110,24 +110,42 @@ export async function readTsxTree(dir: string): Promise<string[]> {
   return files.flat().sort();
 }
 
+/** One JSX opening tag: its raw text, and whether it spreads props. */
+type JsxOpeningTag = { text: string; spreads: boolean };
+
 /**
- * The opening tags of one JSX element, as raw text.
+ * The opening tags of one JSX element.
  *
  * A brace/quote-aware walk to the tag's real `>`, NOT `/<Tag\b[^>]*?>/`. That
  * form ends at the first `>` ANYWHERE, including one inside a prop expression,
  * so `<Badge label={a > b ? 'x' : 'y'} className="evil" />` matched as
  * `<Badge label={a >` — and the truncated text contains neither
  * `className="` nor `className={`, which took the call site out of BOTH Badge
- * contracts while they reported green. A scan whose entire job is to stop a
- * call site slipping out quietly cannot have a quiet exit of its own.
+ * contracts while they reported green.
+ *
+ * This is a lexer, not a parser, and it stays one deliberately. The property
+ * the Badge contracts actually need is not a faithful AST — it is that a call
+ * site this cannot READ fails loudly instead of reading as a call site with no
+ * `className`. (TypeScript 7 is the Go port and ships no JS compiler API, so
+ * `ts.createSourceFile` is not available to reach for; the parsers in the tree
+ * are transitive dependencies of Storybook and knip.) So every shape below
+ * either parses or throws:
+ *
+ *   - a tag whose `>` this cannot find throws;
+ *   - a tag that spreads props is reported as spreading, and the readability
+ *     contract rejects it. `<Badge {...{ className: 'x' }} />` is legal JSX
+ *     that the static scan cannot read and the `className={` scan does not
+ *     match, so before this it left BOTH contracts while they reported green
+ *     — the same silent exit as the truncated tag above, one level in.
  */
-function jsxOpeningTags(src: string, tagName: string): string[] {
-  const out: string[] = [];
+function jsxOpeningTags(src: string, tagName: string): JsxOpeningTag[] {
+  const out: JsxOpeningTag[] = [];
   const opener = new RegExp(`<${tagName}\\b`, 'g');
   for (const match of src.matchAll(opener)) {
     let depth = 0;
     let quote: string | undefined;
     let closed = false;
+    let spreads = false;
     for (let i = match.index; i < src.length; i += 1) {
       const ch = src[i];
       if (quote) {
@@ -142,17 +160,30 @@ function jsxOpeningTags(src: string, tagName: string): string[] {
       // call sites from a scan that then reported green on 16 of 18. A
       // hand-rolled scanner that mis-parses is worse than the regex it
       // replaced, because it fails silently in the same direction.
+      // Both spellings: `//` is the same habit written the other way, and a
+      // line comment holding a `>` ends the tag early in exactly the way the
+      // brace-aware walk exists to prevent.
       if (ch === '/' && src[i + 1] === '*') {
         const end = src.indexOf('*/', i + 2);
         if (end === -1) break;
         i = end + 1;
         continue;
       }
+      if (ch === '/' && src[i + 1] === '/') {
+        const end = src.indexOf('\n', i + 2);
+        if (end === -1) break;
+        i = end;
+        continue;
+      }
       if (ch === '"' || ch === "'" || ch === '`') quote = ch;
-      else if (ch === '{') depth += 1;
-      else if (ch === '}') depth -= 1;
+      else if (ch === '{') {
+        // Attribute level only. `{...` one brace in is a spread inside a prop
+        // expression (`label={[...parts]}`), which the scan reads fine.
+        if (depth === 0 && /^\s*\.\.\./.test(src.slice(i + 1, i + 8))) spreads = true;
+        depth += 1;
+      } else if (ch === '}') depth -= 1;
       else if (ch === '>' && depth === 0) {
-        out.push(src.slice(match.index, i + 1));
+        out.push({ text: src.slice(match.index, i + 1), spreads });
         closed = true;
         break;
       }
@@ -176,7 +207,7 @@ const DYNAMIC_CLASS_NAME = /\bclassName\s*=\s*\{/;
  * Deliberately a source scan and not a render: the invariant is about what
  * product CSS is allowed to say to a Badge, and that is decidable from text.
  * `className={cond ? 'a' : 'b'}` and other computed forms are not matched —
- * they are reported by `findDynamicBadgeClassNames` instead, so a call site
+ * they are reported by `findUnreadableBadgeCallSites` instead, so a call site
  * cannot leave this contract just by moving its class into an expression.
  */
 export async function findBadgeClassNames(roots: string[]): Promise<{ file: string; className: string }[]> {
@@ -184,8 +215,8 @@ export async function findBadgeClassNames(roots: string[]): Promise<{ file: stri
   for (const root of roots) {
     for (const file of await readTsxTree(root)) {
       const src = await readFile(file, 'utf8');
-      for (const tag of jsxOpeningTags(src, 'Badge')) {
-        for (const attr of tag.matchAll(STATIC_CLASS_NAME)) {
+      for (const { text } of jsxOpeningTags(src, 'Badge')) {
+        for (const attr of text.matchAll(STATIC_CLASS_NAME)) {
           for (const one of attr[2].split(/\s+/).filter(Boolean)) {
             out.push({ file, className: one });
           }
@@ -196,14 +227,23 @@ export async function findBadgeClassNames(roots: string[]): Promise<{ file: stri
   return out;
 }
 
-/** `<Badge className={…}>` call sites, which the static contract cannot read. */
-export async function findDynamicBadgeClassNames(roots: string[]): Promise<string[]> {
+/**
+ * `<Badge>` call sites whose className the static scan cannot read: a computed
+ * `className={…}`, or a prop spread that may carry one.
+ *
+ * The spread arm is the same invariant as the computed arm, not a second one.
+ * Both are "this call site has a className the contract cannot see", and both
+ * have to be reported rather than read as "this call site has no className" —
+ * which is what a scan looking only for `className=` concludes about
+ * `<Badge {...props} />`, silently and while green.
+ */
+export async function findUnreadableBadgeCallSites(roots: string[]): Promise<string[]> {
   const out: string[] = [];
   for (const root of roots) {
     for (const file of await readTsxTree(root)) {
       const src = await readFile(file, 'utf8');
-      for (const tag of jsxOpeningTags(src, 'Badge')) {
-        if (DYNAMIC_CLASS_NAME.test(tag)) out.push(file);
+      for (const { text, spreads } of jsxOpeningTags(src, 'Badge')) {
+        if (spreads || DYNAMIC_CLASS_NAME.test(text)) out.push(file);
       }
     }
   }
@@ -395,7 +435,7 @@ export function findTextRoleOffenders(css: string, tokensCss: string, label: str
 
 /** Split a selector list on top-level commas, ignoring those inside `:is()`,
  * `:where()`, `:not()` and attribute strings. */
-function splitSelectorList(selector: string): string[] {
+export function splitSelectorList(selector: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let quote: string | null = null;
@@ -543,14 +583,46 @@ export function mergeBySelector(
   options: { includeConditional?: boolean } = {},
 ): Map<string, string> {
   const merged = new Map<string, string>();
-  for (const { rule, conditions, decls } of parseCssBlocks(css)) {
-    if (!options.includeConditional && conditions.some((c) => CONDITIONAL_AT.test(c))) continue;
-    const body = decls.map((d) => `${d.prop}: ${d.value};`).join(' ');
-    for (const one of splitSelectorList(rule)) {
-      merged.set(one, `${merged.get(one) ?? ''}${body} `);
-    }
+  for (const [selector, byContext] of mergeByContext(css)) {
+    const bodies = options.includeConditional
+      ? [...byContext.values()]
+      : [byContext.get(UNCONDITIONAL) ?? ''].filter((body) => body !== '');
+    if (bodies.length > 0) merged.set(selector, bodies.join(''));
   }
   return merged;
+}
+
+/** The key `mergeByContext` gives declarations that apply at every viewport. */
+export const UNCONDITIONAL = '';
+
+/**
+ * Every selector's declarations, merged per CASCADE CONTEXT rather than
+ * flattened across them: selector → (condition key → body).
+ *
+ * `mergeBySelector`'s inclusive view answers "does any rule anywhere say X",
+ * which is the right question for a must-NOT contract and the wrong one for a
+ * must-hold PAIR. Measured: a Badge released `height: auto` inside
+ * `@media (max-width: 620px)` and `white-space: normal` inside the mutually
+ * exclusive `@media (min-width: 621px)`, so at no viewport was it actually
+ * released — and two independent matches against one flattened body both
+ * passed. Contexts have to stay distinguishable for that to be visible.
+ *
+ * Only `@media`/`@supports`/`@container` form the key: `@layer` changes how a
+ * rule cascades, not whether it applies, so folding it into the key would
+ * split one context in two.
+ */
+export function mergeByContext(css: string): Map<string, Map<string, string>> {
+  const out = new Map<string, Map<string, string>>();
+  for (const { rule, conditions, decls } of parseCssBlocks(css)) {
+    const key = conditions.filter((c) => CONDITIONAL_AT.test(c)).join(' ');
+    const body = decls.map((d) => `${d.prop}: ${d.value};`).join(' ');
+    for (const one of splitSelectorList(rule)) {
+      const byContext = out.get(one) ?? new Map<string, string>();
+      byContext.set(key, `${byContext.get(key) ?? ''}${body} `);
+      out.set(one, byContext);
+    }
+  }
+  return out;
 }
 
 /** Every enclosing at-rule's `@name params`, outermost first. `@layer` counts:

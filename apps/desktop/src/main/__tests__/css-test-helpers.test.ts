@@ -36,7 +36,9 @@ import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
   findBadgeClassNames,
-  findDynamicBadgeClassNames,
+  findUnreadableBadgeCallSites,
+  mergeByContext,
+  UNCONDITIONAL,
   findTextRoleOffenders,
   mergeBySelector,
   parseCssBlocks,
@@ -539,10 +541,60 @@ describe('css-test-helpers', () => {
       assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['spaced']);
     });
 
-    it('still routes a computed className to the dynamic scanner', async () => {
+    it('reads a className past a `>` inside a line comment', async () => {
+      // The other spelling of the comment above, and the same failure: a `//`
+      // holding a `>` ends the tag there.
+      const root = await write('line.tsx', `<Badge\n  // show this when a > b\n  className="commented"\n/>`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['commented']);
+    });
+
+    it('reports a computed className as unreadable', async () => {
       const root = await write('dyn.tsx', `<Badge label={a > b} className={cls} />`);
       assert.deepEqual(await findBadgeClassNames([root]), []);
-      assert.equal((await findDynamicBadgeClassNames([root])).length, 1);
+      assert.equal((await findUnreadableBadgeCallSites([root])).length, 1);
+    });
+
+    it('reports a spread call site as unreadable rather than as class-less', async () => {
+      // Legal JSX that neither scanner could read: the static one finds no
+      // `className="…"` and the computed one finds no `className={`, so the
+      // geometry contract concluded there was nothing to govern. Measured on a
+      // real call site, with a `height` added to the class it hides — green.
+      const root = await write('spread.tsx', `<Badge {...{ className: 'hidden' }} label="x" />`);
+      assert.deepEqual(await findBadgeClassNames([root]), []);
+      assert.equal((await findUnreadableBadgeCallSites([root])).length, 1);
+    });
+
+    it('does not read a spread inside a prop expression as a prop spread', async () => {
+      const root = await write('inner.tsx', `<Badge label={[...parts]} className="readable" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['readable']);
+      assert.deepEqual(await findUnreadableBadgeCallSites([root]), []);
+    });
+  });
+
+  describe('mergeByContext (one box per selector PER cascade context)', () => {
+    it('keeps mutually exclusive conditions apart', () => {
+      // Flattened, `height: auto` here and `white-space: normal` there satisfy
+      // two independent matches while applying at no viewport at all.
+      const contexts = mergeByContext(
+        '@media (max-width: 620px) { .a { height: auto; } }\n@media (min-width: 621px) { .a { white-space: normal; } }',
+      );
+      const bodies = [...(contexts.get('.a') ?? new Map<string, string>()).values()];
+      assert.equal(bodies.length, 2);
+      assert.equal(bodies.filter((b) => /height/.test(b) && /white-space/.test(b)).length, 0);
+    });
+
+    it('keys unconditional declarations under UNCONDITIONAL', () => {
+      const contexts = mergeByContext('.a { height: 20px; }\n@media print { .a { height: auto; } }');
+      const byContext = contexts.get('.a') ?? new Map<string, string>();
+      assert.match(byContext.get(UNCONDITIONAL) ?? '', /20px/);
+      assert.match(byContext.get('@media print') ?? '', /auto/);
+    });
+
+    it('does not split one context on a cascade-only at-rule', () => {
+      // `@layer` changes how a rule cascades, not whether it applies.
+      const contexts = mergeByContext('.a { height: 20px; }\n@layer components { .a { color: red; } }');
+      const byContext = contexts.get('.a') ?? new Map<string, string>();
+      assert.deepEqual([...byContext.keys()], [UNCONDITIONAL]);
     });
   });
 });
