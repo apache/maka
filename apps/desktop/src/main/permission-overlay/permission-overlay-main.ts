@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { UiLocale } from '@maka/core';
 import { openSystemPermissionPane } from '../permissions-actions.js';
-import { resolveAppBundle } from './app-bundle.js';
+import { resolveAppBundle, shouldLoadNativeBundleIcon } from './app-bundle.js';
 import { getPermissionOverlayCopy } from './permission-overlay-copy.js';
 import {
   createPermissionOverlayController,
@@ -81,7 +81,7 @@ export function createPermissionOverlayMain(
   }
 
   async function resolveAppIconDataUrl(bundlePath: string | null): Promise<string | null> {
-    if (!bundlePath) return null;
+    if (!bundlePath || !shouldLoadNativeBundleIcon(app.isPackaged)) return null;
     try {
       // nativeImage.createFromPath does not decode .icns reliably. Asking
       // macOS for the bundle icon returns the same image Finder and the TCC
@@ -280,7 +280,7 @@ function attachCardGestures(win: import('electron').BrowserWindow): void {
       const fromRenderer = nativeImage.createFromDataURL(iconDataUrl);
       if (!fromRenderer.isEmpty()) icon = fromRenderer;
     }
-    if (icon.isEmpty()) {
+    if (icon.isEmpty() && shouldLoadNativeBundleIcon(app.isPackaged)) {
       try {
         const fallback = await app.getFileIcon(resolved.bundlePath, { size: 'large' });
         if (!fallback.isEmpty()) icon = fallback.resize({ width: 64, height: 64 });

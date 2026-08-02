@@ -33,6 +33,18 @@ export interface ResolveAppBundleDeps {
   exists(path: string): boolean;
 }
 
+/**
+ * Reading a bundle icon is presentation-only. In development Electron's
+ * `app.getPath('exe')` resolves to the generic Electron.app under
+ * node_modules; asking macOS for that bundle's icon can terminate the native
+ * Electron process before the returned promise settles. Keep the native icon
+ * path for packaged Maka.app builds and let development use an empty drag
+ * image instead.
+ */
+export function shouldLoadNativeBundleIcon(isPackaged: boolean): boolean {
+  return isPackaged;
+}
+
 export function resolveAppBundle(deps: ResolveAppBundleDeps): AppBundleResult {
   const { executablePath, platform, exists } = deps;
   if (platform !== 'darwin') {

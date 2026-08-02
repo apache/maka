@@ -19,7 +19,10 @@ import {
   type PermissionOverlayDeps,
   type PermissionOverlayWindowLike,
 } from '../permission-overlay/permission-overlay-controller.js';
-import { resolveAppBundle } from '../permission-overlay/app-bundle.js';
+import {
+  resolveAppBundle,
+  shouldLoadNativeBundleIcon,
+} from '../permission-overlay/app-bundle.js';
 
 /** Deterministic timer wheel — no real time passes in these tests. */
 function createClock() {
@@ -292,6 +295,15 @@ describe('drag-to-grant permission overlay', () => {
 });
 
 describe('app bundle resolution for the drag', () => {
+  it('loads native bundle icons only for packaged builds', () => {
+    assert.equal(shouldLoadNativeBundleIcon(true), true);
+    assert.equal(
+      shouldLoadNativeBundleIcon(false),
+      false,
+      'development must not ask macOS to resolve the node_modules Electron.app icon',
+    );
+  });
+
   it('walks three levels up from the executable to the .app', () => {
     assert.deepEqual(
       resolveAppBundle({
