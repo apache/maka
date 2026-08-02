@@ -34,6 +34,14 @@ import {
   withComputerUsePip,
 } from './computer-use/pip-window.js';
 import {
+  createComputerUseStatusItem,
+  withComputerUseStatusItem,
+} from './computer-use/status-item.js';
+import {
+  createComputerUseScreenLockGuard,
+  withComputerUseScreenLock,
+} from './computer-use/screen-lock.js';
+import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from './computer-use-real-model-policy.js';
@@ -53,6 +61,13 @@ type AutomationWiring = ReturnType<typeof createMainAutomationWiring>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
 type SettingsStore = ReturnType<typeof createSettingsStore>;
 
+/**
+ * One holder name for all of Computer Use, not one per session: the assertion
+ * is about whether the machine may suspend, and that answer does not get more
+ * true with a second session.
+ */
+const COMPUTER_USE_WAKE_HOLD = 'computer-use';
+
 export interface DesktopToolAssemblyDeps {
   /** E2E computer-use flag: routes the ai-sdk backend through the raw
    *  computer-use tools and disables the economy, matching the legacy path. */
@@ -68,6 +83,12 @@ export interface DesktopToolAssemblyDeps {
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
   getWorkspacePrivacyContext: () => Promise<WorkspacePrivacyContext>;
+  /**
+   * The power-assertion controller, so a Computer Use run holds the machine
+   * awake for as long as it is driving something. Optional: the tool surface
+   * is assembled in contexts that have no Electron power management.
+   */
+  keepSystemAwake?: { hold(reason: string): void; release(reason: string): void };
   resolveDesktopSkillHost: HostCapabilitiesResolver;
   /**
    * The app's own window, so the mirror can be its child.
@@ -99,6 +120,7 @@ export interface DesktopToolAssemblyDeps {
 export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
   const {
     mainWindow,
+    keepSystemAwake,
     isComputerUseRealModelE2e,
     workspaceRoot,
     taskLedgerStore,
@@ -167,6 +189,26 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         }
       : {},
   );
+  // A menu bar item is the only place a person can see that the machine is
+  // being driven when the app is not in front, and the only place they can
+  // stop it. It is not the cursor, which stays hidden whenever the window
+  // being driven is covered by something else.
+  const computerUseStatusItem = createComputerUseStatusItem({
+    // A run drives another app for as long as the model needs, and the
+    // physical-input guard means it works precisely while the user is not
+    // touching anything — which is when idle sleep lands and kills the run.
+    // Never `prevent-display-sleep`: that would also suppress the automatic
+    // lock, and Computer Use stops itself when the screen locks rather than
+    // preventing it.
+    onLiveChanged: (live) => {
+      if (live) keepSystemAwake?.hold(COMPUTER_USE_WAKE_HOLD);
+      else keepSystemAwake?.release(COMPUTER_USE_WAKE_HOLD);
+    },
+  });
+  // Background operation is the point, but "the user is elsewhere on the same
+  // machine" and "the user locked the machine and left" are different
+  // situations, and only the first one is what Computer Use was built for.
+  const computerUseScreenLock = createComputerUseScreenLockGuard();
   const computerUseHost = createComputerUseHost({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
@@ -200,12 +242,16 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
           },
         }
       : {}),
-    overlay: withComputerUsePip(
-      createComputerUseOverlayHook(computerUseOverlay),
-      computerUsePip,
+    overlay: withComputerUseStatusItem(
+      withComputerUseScreenLock(
+        withComputerUsePip(createComputerUseOverlayHook(computerUseOverlay), computerUsePip),
+        computerUseScreenLock,
+      ),
+      computerUseStatusItem,
     ),
   });
   const computerUse = computerUseHost.selected;
+  computerUseScreenLock.setSessionEvents(computerUse.tools.sessionEvents);
   const computerUseTools = applyComputerUseRealModelPolicy(
     computerUse.tools,
     isComputerUseRealModelE2e

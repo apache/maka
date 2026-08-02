@@ -667,6 +667,7 @@ const {
   // it falls back to floating above every application on the primary display,
   // with no pointer to hover-test against and so no controls at all.
   mainWindow: mainWindowController,
+  keepSystemAwake,
   isComputerUseRealModelE2e,
   workspaceRoot,
   taskLedgerStore,
