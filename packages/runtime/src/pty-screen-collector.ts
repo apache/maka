@@ -56,6 +56,7 @@ export class PtyScreenCollector {
   private parsedGeneration = 0;
   private pendingBytes = 0;
   private pending: PendingEntry[] = [];
+  private resetBeforeNextWrite = false;
   private dataOpen = true;
   private disposed = false;
   private cursorVisible = true;
@@ -130,6 +131,10 @@ export class PtyScreenCollector {
       oldest.dropped = true;
       this.pendingBytes -= oldest.bytes;
       this.historyTruncated = true;
+      // Eviction creates an input gap: the dropped chunk may have carried the
+      // terminator of an escape sequence the parser is still waiting on, so
+      // the retained suffix must be parsed from a known ground state.
+      this.resetBeforeNextWrite = true;
     }
   }
 
@@ -277,6 +282,10 @@ export class PtyScreenCollector {
     return new Promise<void>((resolve, reject) => {
       this.protocolReplyBatch = '';
       try {
+        if (this.resetBeforeNextWrite) {
+          this.resetBeforeNextWrite = false;
+          this.resetTerminalAtInputGap();
+        }
         this.terminal.write(data, () => {
           this.suppressNextNormalScrollRetention = false;
           const protocolReply = this.protocolReplyBatch;
@@ -296,6 +305,22 @@ export class PtyScreenCollector {
         reject(error);
       }
     });
+  }
+
+  private resetTerminalAtInputGap(): void {
+    // The retained suffix must be parsed from a known ground state: eviction
+    // may have dropped the terminator of an escape sequence the parser is
+    // still waiting on. `terminal.reset()` alone clears the buffer but leaves
+    // the parser state machine untouched (an unterminated OSC still swallows
+    // the suffix), so feed RIS (ESC c): its full reset puts the parser back
+    // to ground and empties the buffer. The old screen was built from
+    // incomplete input and is cleared with it. historyTruncated is kept:
+    // eviction itself is truncation.
+    this.terminal.write('\u001bc');
+    this.cursorVisible = true;
+    this.lastAlternateRows = undefined;
+    this.normalBufferAtScrollbackLimit = false;
+    this.suppressNextNormalScrollRetention = false;
   }
 
   private createSnapshot(): PtyShellOutput {

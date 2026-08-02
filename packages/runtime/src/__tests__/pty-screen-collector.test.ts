@@ -39,6 +39,25 @@ describe('PtyScreenCollector', () => {
     }
   });
 
+  test('resets the parser at an input gap so eviction cannot swallow the newest frame behind an unterminated escape sequence', async () => {
+    const { collector, failures } = await createCollector();
+    try {
+      // OSC starts and parses into the terminal (parser waits for BEL/ST).
+      collector.accept('\u001b]0;unterminated');
+      await collector.snapshotAtCut();
+      // The chunk carrying the OSC terminator exceeds the queue budget and is
+      // evicted as the oldest queued data, creating an input gap.
+      collector.accept('\u0007' + 'x'.repeat(PTY_PARSER_HIGH_WATER_BYTES));
+      collector.accept('FINAL-DRAIN\n');
+      const output = (await collector.snapshotAtCut()).output;
+      assert.match(output.screen, /FINAL-DRAIN/);
+      assert.equal(output.truncated, true);
+      assert.deepEqual(failures, []);
+    } finally {
+      collector.dispose();
+    }
+  });
+
   test('distinguishes an intentional screen clear from scrollback eviction', async () => {
     const { collector, failures } = await createCollector();
     try {
