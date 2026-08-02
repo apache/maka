@@ -148,7 +148,7 @@
 .maka-web-result { display: grid; gap: 8px; }
 .maka-web-result-header { display: grid; gap: 2px; }
 .maka-web-result-header strong {
-  font: var(--maka-text-body);
+  font: var(--maka-text-heading-4);
  color: var(--foreground); }
 .maka-web-result-header small,
 .maka-web-result-list small {
@@ -549,7 +549,7 @@
 .maka-agent-preview-section { display: grid; gap: var(--space-1-5); }
 .maka-agent-preview-section > strong,
 .maka-agent-preview-section-head > strong {
-  font: var(--maka-text-supporting);
+  font: var(--maka-text-heading-5);
  min-width: 0; color: var(--foreground); }
 .maka-agent-preview-section ul { display: grid; gap: var(--space-1-5); margin: 0; padding: 0; list-style: none; }
 .maka-agent-preview-section li { display: grid; min-width: 0; gap: var(--space-0-5); padding-block: var(--space-1-5); border-top: 1px solid var(--foreground-5); }

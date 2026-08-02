@@ -43,7 +43,7 @@
 .maka-deep-research-scope h2,
 .maka-deep-research-evidence h2,
 .maka-deep-research-progress h2 {
-  font: var(--maka-text-body);
+  font: var(--maka-text-heading-4);
   margin: 0;
   color: var(--foreground);
 }
@@ -115,7 +115,7 @@
 }
 
 .maka-deep-research-run-summary strong {
-  font: var(--maka-text-body);
+  font: var(--maka-text-heading-4);
 }
 
 .maka-deep-research-run-summary span,

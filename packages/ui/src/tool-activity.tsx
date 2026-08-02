@@ -222,7 +222,7 @@ function ToolActivityCard({ item, open: openProp }: { item: ToolActivityItem; op
       trigger={(
         <span className={cn('maka-tool-header-full', toolVariants({ part: 'header' }))}>
           <span className={toolVariants({ part: 'dot' })} data-status={visualStatus} aria-hidden="true" />
-          <span className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</span>
+          <code className={toolVariants({ part: 'name' })}>{resolveToolDisplayName(item, locale)}</code>
           <span className={toolVariants({ part: 'meta' })}>
             {duration && <span className={toolVariants({ part: 'duration' })}>{duration}</span>}
             <span className={toolVariants({ part: 'status-label' })}>{toolStatusLabel(item, locale)}</span>
@@ -638,9 +638,9 @@ function SandboxBlockedBanner(props: {
         <span className="maka-sandbox-blocked-description">
           <span>{bannerCopy.description}</span>
           {errorText && (
-            <span className="maka-sandbox-blocked-error">
+            <code className="maka-sandbox-blocked-error">
               {summarizeErrorText(errorText)}
-            </span>
+            </code>
           )}
         </span>
       )}

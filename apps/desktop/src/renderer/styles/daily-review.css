@@ -175,7 +175,7 @@
   }
 
 .maka-daily-review-top-label {
-    font: var(--maka-text-heading-5);
+    font: var(--maka-text-label);
     color: var(--foreground);
   }
 

@@ -29,7 +29,7 @@
   }
 
 .settingsPermissionError strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
   }
 
 .settingsPermissionError small {

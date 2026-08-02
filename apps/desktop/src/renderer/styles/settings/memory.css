@@ -18,7 +18,7 @@
     background: var(--foreground-3);
   }
 .settingsMemoryPreview strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 .settingsMemoryPreview small {
@@ -55,7 +55,7 @@
     gap: var(--space-3);
   }
 .settingsMemoryPromptPreviewHeader strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 .settingsMemoryPromptPreviewHeader div {
@@ -106,7 +106,7 @@
     background: oklch(from var(--warning) l c h / 0.08);
   }
 .settingsMemoryEntryPreviewNotice strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 .settingsMemoryEntryPreviewNotice small {
@@ -122,7 +122,7 @@
     background: var(--foreground-3);
   }
 .settingsMemorySaveSummary strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 .settingsMemorySaveSummary small {
@@ -150,7 +150,7 @@
     background: var(--foreground-3);
   }
 .settingsMemoryBackupList strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 /* PR-MEMORY-BACKUP-LIST-A11Y-0 (round 16/30): selector
@@ -215,7 +215,7 @@
   }
 
 .settingsMemoryEntryGroupHeader strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 
@@ -277,7 +277,7 @@
   }
 
 .settingsMemoryEntryCard strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 
@@ -360,7 +360,7 @@
 
 .settingsMemoryFilterEmpty strong,
   .settingsMemoryListEmpty strong {
-    font: var(--maka-text-body);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 
@@ -385,7 +385,7 @@
 }
 
 .settingsMemoryManualAddHeader strong {
-  font: var(--maka-text-body);
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
 }
 
@@ -404,7 +404,7 @@
 }
 
 .settingsMemoryDraftWarning strong {
-  font: var(--maka-text-body);
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
 }
 

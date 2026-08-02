@@ -37,7 +37,7 @@
 /* Module page titles use the display scale. Negative letter-spacing keeps
    page-level headings compact at that size. */
 .maka-module-main-header h2 {
-  font: var(--maka-text-heading-1);
+  font: var(--maka-text-display-2);
   margin: 0;
   color: var(--foreground);
   letter-spacing: var(--tracking-normal);

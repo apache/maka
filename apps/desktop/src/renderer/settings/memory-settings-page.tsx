@@ -147,9 +147,9 @@ export function MemorySettingsPage(props: {
         onCreate={workspaceInstructions.createFile}
       />
       <div className="settingsConnectionMeta settingsMemoryMeta">
-        <span className="settingsMemoryPath" title={effective.path || undefined}>
+        <code className="settingsMemoryPath" title={effective.path || undefined}>
           {effective.path ? displayMemoryPath(effective.path) : copy.text.waitingFile}
-        </span>
+        </code>
         {effective.latestBackup ? (
           <span className="settingsMemoryBackupState">
             {copy.text.openPrevious} · {localMemoryBackupKindLabel(effective.latestBackup.kind, copy)} · {localMemoryBackupSummary(effective.latestBackup, copy)} · <RelativeTime ts={effective.latestBackup.updatedAt} />

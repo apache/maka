@@ -134,7 +134,7 @@ export function AboutSettingsPage() {
         title="Maka"
         badge={
           <>
-            <span className="settingsAboutVersion">v{info.appVersion}</span>
+            <code className="settingsAboutVersion">v{info.appVersion}</code>
             <span className="settingsAboutChannel">
               {info.buildMode === 'dev'
                 ? info.buildCommit

@@ -450,7 +450,7 @@
 }
 
 .settingsBotQuickSetup strong {
-  font: var(--maka-text-body);
+  font: var(--maka-text-heading-4);
   display: block;
   margin-bottom: var(--space-1);
   color: var(--foreground);

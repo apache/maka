@@ -237,6 +237,12 @@
 
 /* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */
 .maka-nav-kbd {
+  /* A <kbd> composes the mono variant of every role (maka-tokens.css anchors
+     the role table on the code group too), and this hint has always opted out
+     — it read `font-family: inherit` before the roles landed. Naming the
+     family axis re-composes the role the element already carries, so the
+     opt-out stays one declaration instead of reopening the triplet. */
+  --maka-font-family: var(--font-family-body);
   font: var(--maka-text-supporting);
   margin-left: auto;
   padding: 0;

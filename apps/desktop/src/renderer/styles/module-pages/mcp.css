@@ -304,9 +304,15 @@
   white-space: nowrap;
 }
 
-.maka-mcp-server-description code,
+/* Two inherited sizes hid under one family-only rule: the tool chips and the
+   error <pre> sit in 14px card body, the description code sits in the 12px
+   description. Naming a role forces that split into the open. */
 .maka-mcp-tool-list code,
 .maka-mcp-server-details pre {
+  font: var(--maka-text-code);
+}
+
+.maka-mcp-server-description code {
   font: var(--maka-text-supporting);
 }
 

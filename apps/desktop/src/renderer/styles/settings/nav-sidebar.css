@@ -180,7 +180,7 @@
 }
 
 .settingsPageHeader h2 {
-  font: var(--maka-text-heading-1);
+  font: var(--maka-text-display-3);
   /* PR-SETTINGS-PAGE-HEADER-POLISH-0 (round 12/15): tighten the h2
      with negative tracking + slightly softer weight.
      PR-SETTINGS-MOTION-TYPO-TOKENS-0 (round 15/15): `text-wrap:

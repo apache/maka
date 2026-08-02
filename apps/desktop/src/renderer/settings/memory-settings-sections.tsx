@@ -20,7 +20,7 @@ export function WorkspaceInstructionsSection(props: {
       <div className="settingsConnectionMeta">
         {props.state.files.map((file) => (
           <span key={file.file} className="settingsInlineFileState">
-            <span>{file.file} · {workspaceInstructionStatusLabel(file.status, file.chars, file.truncated, props.copy)}</span>
+            <span><code>{file.file}</code> · {workspaceInstructionStatusLabel(file.status, file.chars, file.truncated, props.copy)}</span>
             {(file.status === 'available' || file.status === 'empty') && (
               <Button
                 variant="secondary"

@@ -263,7 +263,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 }
 
 /* Slug caption: soft monospace, matching the library row's id treatment. */
-.maka-skill-market-card-title small {
+.maka-skill-market-card-title code {
   font: var(--maka-text-heading-5);
   min-width: 0;
   overflow: hidden;
@@ -273,6 +273,7 @@ color: oklch(from var(--brand-deep) 0.55 min(c, 0.015) h);
 }
 
 .maka-skill-market-card small,
+.maka-skill-market-card code,
 .maka-skill-market-card-foot span {
   font: var(--maka-text-heading-5);
   color: var(--muted-foreground);
