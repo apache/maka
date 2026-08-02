@@ -25,7 +25,7 @@
         "@fontsource-variable/geist-mono",
         "electron-builder"
       ],
-      "ignoreBinaries": ["taskkill", "electron-builder"]
+      "ignoreBinaries": ["taskkill", "osascript", "plutil", "electron-builder"]
     },
     "packages/ui": {
       "entry": ["src/**/*.test.ts", "src/**/*.test.tsx", "stories/**/*.@(ts|tsx)"],

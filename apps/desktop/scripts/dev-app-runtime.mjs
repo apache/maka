@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -8,12 +9,13 @@ const REPO_ROOT = resolve(DESKTOP_DIR, '..', '..');
 const DEV_RUNTIME_DIR = join(DESKTOP_DIR, '.maka-dev');
 const DEV_APP = join(DEV_RUNTIME_DIR, 'Maka Dev.app');
 const DEV_EXECUTABLE = join(DEV_APP, 'Contents', 'MacOS', 'Electron');
+const DEV_USER_DATA_DIR = join(homedir(), 'Library', 'Application Support', 'Maka Dev');
 const MARKER = join(DEV_RUNTIME_DIR, 'runtime.json');
 const ELECTRON_PACKAGE = join(REPO_ROOT, 'node_modules', 'electron', 'package.json');
 const SOURCE_APP = join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'Electron.app');
 
 const DEV_BUNDLE_ID = 'com.maka.dev';
-const RUNTIME_SCHEMA_VERSION = 1;
+const RUNTIME_SCHEMA_VERSION = 3;
 
 export function resolveMacosDevelopmentLaunch(appArgs, env = {}) {
   if (process.platform !== 'darwin') return null;
@@ -21,7 +23,12 @@ export function resolveMacosDevelopmentLaunch(appArgs, env = {}) {
   return createMacosDevelopmentLaunch(appPath, appArgs, env);
 }
 
-export function createMacosDevelopmentLaunch(appPath, appArgs, env = {}) {
+export function createMacosDevelopmentLaunch(
+  appPath,
+  appArgs,
+  env = {},
+  userDataDir = DEV_USER_DATA_DIR,
+) {
   const launchEnvironment = [];
   if (env.VITE_DEV_SERVER_URL) {
     launchEnvironment.push('--env', `VITE_DEV_SERVER_URL=${env.VITE_DEV_SERVER_URL}`);
@@ -37,7 +44,7 @@ export function createMacosDevelopmentLaunch(appPath, appArgs, env = {}) {
       '-a',
       appPath,
       '--args',
-      ...appArgs,
+      ...withDevelopmentUserData(appArgs, userDataDir),
     ],
   };
 }
@@ -60,43 +67,113 @@ export function prepareDevelopmentApp() {
   const electronVersion = JSON.parse(readFileSync(ELECTRON_PACKAGE, 'utf8')).version;
   if (isCurrentRuntime(electronVersion)) return DEV_APP;
 
-  rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
-  run('mkdir', ['-p', DEV_RUNTIME_DIR]);
-  run('ditto', [SOURCE_APP, DEV_APP]);
-
-  const plist = join(DEV_APP, 'Contents', 'Info.plist');
-  replacePlistValue(plist, 'CFBundleIdentifier', DEV_BUNDLE_ID);
-  replacePlistValue(plist, 'CFBundleName', 'Maka Dev');
-  replacePlistValue(plist, 'CFBundleDisplayName', 'Maka Dev');
-  // `ditto` does not copy quarantine metadata by default. Clear any root-level
-  // attribute without relying on the newer recursive `xattr -r` flag, which
-  // is unavailable on older supported macOS releases.
-  run('xattr', ['-c', DEV_APP]);
-  run('codesign', ['--force', '--deep', '--sign', '-', '--identifier', DEV_BUNDLE_ID, DEV_APP]);
-  run('codesign', ['--verify', '--deep', '--strict', DEV_APP]);
-
-  writeFileSync(
-    MARKER,
-    `${JSON.stringify({ schemaVersion: RUNTIME_SCHEMA_VERSION, electronVersion, bundleId: DEV_BUNDLE_ID }, null, 2)}\n`,
-  );
+  rebuildDevelopmentRuntime({
+    reset: () => {
+      rmSync(DEV_RUNTIME_DIR, { recursive: true, force: true });
+      run('mkdir', ['-p', DEV_RUNTIME_DIR]);
+    },
+    build: () => {
+      run('ditto', [SOURCE_APP, DEV_APP]);
+      const plist = join(DEV_APP, 'Contents', 'Info.plist');
+      replacePlistValue(plist, 'CFBundleIdentifier', DEV_BUNDLE_ID);
+      replacePlistValue(plist, 'CFBundleName', 'Maka Dev');
+      replacePlistValue(plist, 'CFBundleDisplayName', 'Maka Dev');
+      installRelaunchBootstrap();
+      // `ditto` does not copy quarantine metadata by default. Clear any root-level
+      // attribute without relying on the newer recursive `xattr -r` flag, which
+      // is unavailable on older supported macOS releases.
+      run('xattr', ['-c', DEV_APP]);
+      run('codesign', ['--force', '--deep', '--sign', '-', '--identifier', DEV_BUNDLE_ID, DEV_APP]);
+      run('codesign', ['--verify', '--deep', '--strict', DEV_APP]);
+    },
+    writeMarker: () => {
+      writeFileSync(
+        MARKER,
+        `${JSON.stringify({ schemaVersion: RUNTIME_SCHEMA_VERSION, electronVersion, bundleId: DEV_BUNDLE_ID }, null, 2)}\n`,
+      );
+    },
+  });
   return DEV_APP;
+}
+
+function installRelaunchBootstrap() {
+  const bootstrapDir = join(DEV_RUNTIME_DIR, 'relaunch-bootstrap');
+  mkdirSync(bootstrapDir, { recursive: true });
+  writeFileSync(
+    join(bootstrapDir, 'package.json'),
+    `${JSON.stringify({ name: 'maka-dev-relaunch', main: 'main.cjs', private: true })}\n`,
+  );
+  writeFileSync(
+    join(bootstrapDir, 'main.cjs'),
+    createRelaunchBootstrapSource(DESKTOP_DIR, DEV_USER_DATA_DIR),
+  );
+  const asarCli = join(REPO_ROOT, 'node_modules', '.bin', 'asar');
+  run(asarCli, [
+    'pack',
+    bootstrapDir,
+    join(DEV_APP, 'Contents', 'Resources', 'default_app.asar'),
+  ]);
+  rmSync(bootstrapDir, { recursive: true, force: true });
+}
+
+export function createRelaunchBootstrapSource(desktopDir, userDataDir) {
+  return [
+    "const { app } = require('electron');",
+    "const { join } = require('node:path');",
+    "const { pathToFileURL } = require('node:url');",
+    `const desktopDir = ${JSON.stringify(desktopDir)};`,
+    `const userDataDir = ${JSON.stringify(userDataDir)};`,
+    'app.setAppPath(desktopDir);',
+    "app.setPath('userData', userDataDir);",
+    'process.chdir(desktopDir);',
+    "import(pathToFileURL(join(desktopDir, 'dist/main/main.js')).href).catch((error) => {",
+    "  console.error('[maka-dev] relaunch bootstrap failed', error);",
+    '  app.exit(1);',
+    '});',
+    '',
+  ].join('\n');
+}
+
+function withDevelopmentUserData(appArgs, userDataDir) {
+  if (appArgs.some((arg) => arg.startsWith('--user-data-dir='))) return appArgs;
+  return [...appArgs, `--user-data-dir=${userDataDir}`];
 }
 
 function isCurrentRuntime(electronVersion) {
   if (!existsSync(DEV_EXECUTABLE) || !existsSync(MARKER)) return false;
   try {
     const marker = JSON.parse(readFileSync(MARKER, 'utf8'));
-    if (
-      (marker.schemaVersion ?? 1) !== RUNTIME_SCHEMA_VERSION ||
-      marker.electronVersion !== electronVersion ||
-      marker.bundleId !== DEV_BUNDLE_ID
-    ) {
-      return false;
-    }
-    return spawnSync('codesign', ['--verify', '--deep', '--strict', DEV_APP]).status === 0;
+    return isDevelopmentRuntimeCurrent({
+      marker,
+      schemaVersion: RUNTIME_SCHEMA_VERSION,
+      electronVersion,
+      bundleId: DEV_BUNDLE_ID,
+      signatureValid:
+        spawnSync('codesign', ['--verify', '--deep', '--strict', DEV_APP]).status === 0,
+    });
   } catch {
     return false;
   }
+}
+
+export function isDevelopmentRuntimeCurrent(input) {
+  const marker = input.marker;
+  return (
+    marker !== null &&
+    typeof marker === 'object' &&
+    marker.schemaVersion === input.schemaVersion &&
+    marker.electronVersion === input.electronVersion &&
+    marker.bundleId === input.bundleId &&
+    input.signatureValid
+  );
+}
+
+export function rebuildDevelopmentRuntime(deps) {
+  deps.reset();
+  deps.build();
+  // The marker is the cache commit point. Never write it until copying,
+  // bootstrap generation, signing, and strict signature verification succeed.
+  deps.writeMarker();
 }
 
 function replacePlistValue(plist, key, value) {

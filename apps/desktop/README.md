@@ -14,6 +14,11 @@ when the installed Electron version changes. Run
 The scripts launch the bundle through macOS LaunchServices rather than executing
 its internal binary from a terminal. This is required for TCC to attribute the
 running process to `Maka Dev` and recognize the stored grants.
+The generated bundle also contains a small local bootstrap, so macOS's Screen
+Recording “Quit & Reopen” action can reopen the repository app without relying
+on command-line arguments that the system restart discards.
+It uses `~/Library/Application Support/Maka Dev` for development state, keeping
+development restarts isolated from the packaged Maka profile.
 
 Grant permissions to **Maka Dev**, not a generic Electron entry. Screen Recording
 changes require restarting the development app. Recreating the app or changing

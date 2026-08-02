@@ -19,7 +19,7 @@
  * System Settings deep link.
  */
 
-import { shell, systemPreferences } from 'electron';
+import { desktopCapturer, shell, systemPreferences } from 'electron';
 import type { OsPermissionId } from '@maka/core';
 import { OS_PERMISSION_IDS } from '@maka/core';
 import { planPermissionRequest } from './os-permission-policy.js';
@@ -87,12 +87,34 @@ export async function requestPermissionAccess(input: unknown): Promise<Permissio
         id === 'microphone' && process.platform === 'darwin'
           ? systemPreferences.getMediaAccessStatus('microphone')
           : undefined,
+      screenStatus:
+        id === 'screen_recording' && process.platform === 'darwin'
+          ? systemPreferences.getMediaAccessStatus('screen')
+          : undefined,
     });
     switch (plan) {
       case 'unsupported_platform':
         return { ok: false, reason: 'unsupported_platform' };
       case 'already_granted':
         return { ok: true };
+      case 'request_screen_capture': {
+        // macOS has no askForMediaAccess('screen'). A real capture-source
+        // request is the Electron-supported way to engage the screen capture
+        // consent path; if TCC still reports denied, take the user directly to
+        // the pane where the grant must be completed.
+        try {
+          await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: { width: 1, height: 1 },
+          });
+        } catch {
+          // A denied first request is expected; the settings pane is the
+          // recovery path below, not a generic request failure toast.
+        }
+        return systemPreferences.getMediaAccessStatus('screen') === 'granted'
+          ? { ok: true }
+          : openSystemPermissionPane(id);
+      }
       case 'open_settings':
         return openSystemPermissionPane(id);
       case 'request_microphone': {

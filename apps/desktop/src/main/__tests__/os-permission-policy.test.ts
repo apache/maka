@@ -24,7 +24,17 @@ describe('OS permission platform policy', () => {
     assert.equal(supportsMediaPermissionProbe('microphone', 'linux'), false);
   });
 
-  it('never advertises a request button that the main-process action cannot perform', () => {
+  it('advertises only request actions the main process can perform', () => {
+    assert.deepEqual(mediaPermissionActions({
+      id: 'screen_recording',
+      platform: 'darwin',
+      status: 'denied',
+    }), { canOpenSettings: true, canRequest: true });
+    assert.deepEqual(mediaPermissionActions({
+      id: 'screen_recording',
+      platform: 'darwin',
+      status: 'granted',
+    }), { canOpenSettings: true, canRequest: false });
     assert.deepEqual(mediaPermissionActions({
       id: 'microphone',
       platform: 'darwin',
@@ -43,6 +53,16 @@ describe('OS permission platform policy', () => {
   });
 
   it('routes stale denied requests to System Settings and never fakes notification success', () => {
+    assert.equal(planPermissionRequest({
+      id: 'screen_recording',
+      platform: 'darwin',
+      screenStatus: 'denied',
+    }), 'request_screen_capture');
+    assert.equal(planPermissionRequest({
+      id: 'screen_recording',
+      platform: 'darwin',
+      screenStatus: 'granted',
+    }), 'already_granted');
     assert.equal(planPermissionRequest({
       id: 'microphone',
       platform: 'darwin',

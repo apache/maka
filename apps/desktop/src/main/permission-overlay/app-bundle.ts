@@ -11,9 +11,9 @@
  *   /Applications/Maka.app/Contents
  *   /Applications/Maka.app                       <- what we drag
  *
- * Under `electron .` the same walk lands on `Electron.app`, which is
- * correct rather than a degradation: in dev the TCC identity really is
- * Electron, so that is the bundle the user must grant. The only genuinely
+ * In the supported macOS development workflow the same walk lands on the
+ * generated, signed `Maka Dev.app`, which is also the TCC identity the user
+ * grants. The only genuinely
  * unresolvable case is a layout where the walk doesn't end in `.app`
  * (e.g. an unpacked CI tree), and the caller degrades explicitly there
  * instead of starting a drag that can never be accepted.
@@ -34,15 +34,22 @@ export interface ResolveAppBundleDeps {
 }
 
 /**
- * Reading a bundle icon is presentation-only. In development Electron's
- * `app.getPath('exe')` resolves to the generic Electron.app under
- * node_modules; asking macOS for that bundle's icon can terminate the native
- * Electron process before the returned promise settles. Keep the native icon
- * path for packaged Maka.app builds and let development use an empty drag
- * image instead.
+ * Reading a bundle icon is presentation-only. The original unpackaged npm
+ * Electron runtime could terminate natively while macOS resolved its bundle
+ * icon, before the returned promise settled. Keep native icon loading for
+ * packaged Maka.app builds and let the signed Maka Dev workflow use an empty
+ * drag image instead.
  */
-export function shouldLoadNativeBundleIcon(isPackaged: boolean): boolean {
-  return isPackaged;
+export async function loadNativeBundleIcon<T>(
+  isPackaged: boolean,
+  load: () => Promise<T>,
+): Promise<T | null> {
+  if (!isPackaged) return null;
+  try {
+    return await load();
+  } catch {
+    return null;
+  }
 }
 
 export function resolveAppBundle(deps: ResolveAppBundleDeps): AppBundleResult {

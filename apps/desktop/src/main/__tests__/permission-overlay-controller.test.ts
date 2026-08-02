@@ -20,8 +20,8 @@ import {
   type PermissionOverlayWindowLike,
 } from '../permission-overlay/permission-overlay-controller.js';
 import {
+  loadNativeBundleIcon,
   resolveAppBundle,
-  shouldLoadNativeBundleIcon,
 } from '../permission-overlay/app-bundle.js';
 
 /** Deterministic timer wheel — no real time passes in these tests. */
@@ -295,13 +295,15 @@ describe('drag-to-grant permission overlay', () => {
 });
 
 describe('app bundle resolution for the drag', () => {
-  it('loads native bundle icons only for packaged builds', () => {
-    assert.equal(shouldLoadNativeBundleIcon(true), true);
-    assert.equal(
-      shouldLoadNativeBundleIcon(false),
-      false,
-      'development must not ask macOS to resolve the node_modules Electron.app icon',
-    );
+  it('never calls the native icon loader for an unpackaged app', async () => {
+    let calls = 0;
+    const icon = await loadNativeBundleIcon(false, async () => {
+      calls += 1;
+      return 'icon';
+    });
+    assert.equal(icon, null);
+    assert.equal(calls, 0, 'unpackaged development must not call app.getFileIcon()');
+    assert.equal(await loadNativeBundleIcon(true, async () => 'icon'), 'icon');
   });
 
   it('walks three levels up from the executable to the .app', () => {
@@ -315,14 +317,14 @@ describe('app bundle resolution for the drag', () => {
     );
   });
 
-  it('resolves Electron.app in dev, which is the correct TCC identity there', () => {
+  it('resolves the containing app bundle independent of its development name', () => {
     assert.deepEqual(
       resolveAppBundle({
-        executablePath: '/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron',
+        executablePath: '/repo/apps/desktop/.maka-dev/Maka Dev.app/Contents/MacOS/Electron',
         platform: 'darwin',
         exists: () => true,
       }),
-      { ok: true, bundlePath: '/repo/node_modules/electron/dist/Electron.app' },
+      { ok: true, bundlePath: '/repo/apps/desktop/.maka-dev/Maka Dev.app' },
     );
   });
 
