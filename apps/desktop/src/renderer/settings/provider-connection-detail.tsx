@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import { Banner, Divider, Grid, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
@@ -92,7 +92,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     testing,
     fetchingModels,
     settingDefaultModel,
-    settingDefault,
     deleting,
     detailActionBusy,
     supportsApiKey,
@@ -109,15 +108,17 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     issue,
     lastTestMessage,
     lastTestAtMs,
+    savedBaseUrl,
     save,
     updateEnabledModels,
     updateDefaultModel,
     runTest,
     refreshModels,
-    setAsDefault,
     remove,
     refreshAfterRelogin,
   } = useConnectionDetail(props);
+  // One row is a form at a time, the way the settings-sidebar template does it.
+  const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
   const defaultModelOptions = modelChoices
     .filter((entry) => entry.canUseAsChatDefault)
     .map((entry) => ({
@@ -135,45 +136,19 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   }
 
   return (
-    /* The `settings` template's form language, verbatim: a section is a
-       heading with a sentence under it beside its controls, and one Divider
-       BETWEEN sections. No rule under each heading, no box around anything,
-       nothing folded away — the template has no Collapsible, and Astryx's own
-       guidance says not to hide required content behind one or to reach for
-       one to cover a single short field. */
+    /* Three sections, each a heading with a sentence beside its controls, one
+       Divider between them — the `settings` template's form language.
+       The two settled values (key, endpoint) are rows in the
+       settings-sidebar template's language: a row reports its state and
+       carries one link, and only becomes a form when the user asks it to. A
+       credential and an endpoint are set once and then read; a permanent input
+       box for each was the page telling the user to fill in something that is
+       already filled in. */
     <VStack gap={8}>
       <DetailSection
         title={copy.credentials}
         description={supportsApiKey ? copy.credentialsHelp : copy.credentialsHelpAccount}
       >
-        {supportsApiKey && (
-          <VStack gap={2}>
-            <PasswordInput
-              value={apiKey}
-              onChange={setApiKey}
-              placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-              label={copy.modelKeyAria(display.name)}
-              description={apiKeyStatusHint}
-              isDisabled={detailActionBusy}
-            />
-            <HStack gap={2} hAlign="between" vAlign="center">
-              {defaults.signupUrl && (
-                <Link
-                  href={defaults.signupUrl}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  aria-label={copy.getModelKey}
-                >
-                  {copy.getModelKey}
-                </Link>
-              )}
-              {/* Persistent button (disabled until a new key is typed) so the
-                  credential actions row keeps a fixed height — no jitter when the
-                  user starts pasting a key. */}
-              <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
-            </HStack>
-          </VStack>
-        )}
         {issue && (
           <Banner
             status={connectionIssueStatus(issue.tone)}
@@ -225,12 +200,89 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               : copy.credentialUnknownDetail}
           />
         )}
+        {(supportsApiKey || !hasFixedOAuthBaseUrl) && (
+          <VStack gap={0}>
+            <Divider />
+            {supportsApiKey && (
+              <SettingRow
+                label={copy.modelKey}
+                value={apiKeyStatusHint}
+                actionLabel={hasSecret === true ? copy.change : copy.set}
+                isEditing={editingRow === 'key'}
+                isDisabled={detailActionBusy}
+                canSave={hasApiKeyChange}
+                saveLabel={busy ? copy.saving : copy.save}
+                cancelLabel={copy.cancel}
+                onEdit={() => setEditingRow('key')}
+                onCancel={() => { setApiKey(''); setEditingRow(null); }}
+                onSave={async () => { await save(); setEditingRow(null); }}
+              >
+                <PasswordInput
+                  value={apiKey}
+                  onChange={setApiKey}
+                  placeholder={copy.pasteModelKey}
+                  label={copy.modelKeyAria(display.name)}
+                  isLabelHidden
+                  isDisabled={detailActionBusy}
+                />
+                {defaults.signupUrl && (
+                  <Link
+                    href={defaults.signupUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    aria-label={copy.getModelKey}
+                  >
+                    {copy.getModelKey}
+                  </Link>
+                )}
+              </SettingRow>
+            )}
+            {/* Only where the endpoint can actually be changed. An OAuth
+                connection's endpoint is fixed by the provider, so showing it
+                was a permanently read-only row answering a question nobody
+                asked. */}
+            {!hasFixedOAuthBaseUrl && (
+              <SettingRow
+                label={copy.endpoint}
+                value={savedBaseUrl || copy.endpointDefault}
+                actionLabel={copy.edit}
+                isEditing={editingRow === 'endpoint'}
+                isDisabled={detailActionBusy}
+                canSave={hasBaseUrlChange}
+                saveLabel={busy ? copy.saving : copy.save}
+                cancelLabel={copy.cancel}
+                onEdit={() => setEditingRow('endpoint')}
+                onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
+                onSave={async () => { await save(); setEditingRow(null); }}
+              >
+                <TextInput
+                  label={copy.endpoint}
+                  isLabelHidden
+                  value={baseUrl}
+                  onChange={setBaseUrl}
+                  placeholder={defaults.baseUrl}
+                  description={copy.advancedHelp}
+                  isDisabled={detailActionBusy}
+                />
+              </SettingRow>
+            )}
+          </VStack>
+        )}
       </DetailSection>
-      <Divider />
+      {/* The rows draw the closing rule themselves; without them the section
+          still needs one. Two rules with a gap between them read as an empty
+          row, so only ever one. */}
+      {!supportsApiKey && hasFixedOAuthBaseUrl && <Divider />}
       <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
+        <EnabledModelManager
+          modelChoices={modelChoices}
+          enabledModelIds={enabledModelIds}
+          defaultModel={connection.defaultModel}
+          disabled={detailActionBusy}
+          onChange={(next) => void updateEnabledModels(next)}
+        />
         <Selector
           label={copy.connectionDefaultModel}
-          description={copy.connectionDefaultModelHelp}
           options={defaultModelOptions}
           value={connection.defaultModel}
           onChange={(model) => void updateDefaultModel(model)}
@@ -240,13 +292,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           placeholder={copy.noModels}
           width="100%"
         />
-        <EnabledModelManager
-          modelChoices={modelChoices}
-          enabledModelIds={enabledModelIds}
-          defaultModel={connection.defaultModel}
-          disabled={detailActionBusy}
-          onChange={(next) => void updateEnabledModels(next)}
-        />
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
           {supportsRemoteDiscovery && (
@@ -254,55 +299,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           )}
         </HStack>
       </DetailSection>
-      {/* Only where there is something to do. Once this connection IS the
-          default the section had nothing but a sentence saying so — and the
-          page header already says it, with a badge. */}
-      {!props.isDefault && (
-        <>
-          <Divider />
-          <DetailSection title={copy.defaultConnection} description={copy.defaultConnectionHelp}>
-            {connection.enabled ? (
-              <HStack>
-                <Button
-                  variant="primary"
-                  isDisabled={detailActionBusy}
-                  onClick={setAsDefault}
-                  label={settingDefault ? copy.setting : copy.setDefault}
-                />
-              </HStack>
-            ) : (
-              <Text type="supporting" color="secondary">{copy.connectionDisabledDetail}</Text>
-            )}
-          </DetailSection>
-        </>
-      )}
-      {/* The endpoint section only exists where the endpoint can actually be
-          changed. An OAuth connection's endpoint is fixed by the provider, so
-          showing it was a permanently read-only field explaining why it is
-          read-only — a row that answers a question nobody asked. */}
-      {!hasFixedOAuthBaseUrl && (
-        <>
-          <Divider />
-          {/* Named for the one field it holds, not "高级设置": a category name
-              with a single member is an extra door in front of one room. The
-              heading names it, so the field does not repeat the name. */}
-          <DetailSection title={copy.endpoint} description={copy.advancedHelp}>
-            <TextInput
-              label={copy.endpoint}
-              isLabelHidden
-              value={baseUrl}
-              onChange={setBaseUrl}
-              placeholder={defaults.baseUrl}
-              isDisabled={detailActionBusy}
-            />
-            {/* Persistent button (disabled until the endpoint is edited) so the
-                section height stays constant while typing. */}
-            <HStack>
-              <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
-            </HStack>
-          </DetailSection>
-        </>
-      )}
       <Divider />
       {/* Deletion is last, and the only thing beside it is its own warning —
           no quiet action next to the destructive one for a mis-aimed cursor. */}
@@ -325,6 +321,67 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
  * as heading → sentence → controls; it splits into two columns for free if the
  * shell ever widens.
  */
+/**
+ * A settled value: its name, what it currently is, and one link to change it.
+ * Editing swaps the row in place for the control plus save / cancel — the
+ * settings-sidebar template's ExpandableRow, which is the shape Astryx uses for
+ * exactly this (a password that is already set, an address already on file).
+ *
+ * The Divider trails each row, as in the template, so a stack of rows carries
+ * its own separators without the caller interleaving them.
+ */
+function SettingRow(props: {
+  label: string;
+  value: string;
+  actionLabel: string;
+  isEditing: boolean;
+  isDisabled: boolean;
+  canSave: boolean;
+  saveLabel: string;
+  cancelLabel: string;
+  onEdit(): void;
+  onCancel(): void;
+  onSave(): void | Promise<void>;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      {props.isEditing ? (
+        <VStack gap={3} className="settingRow">
+          <Text type="body" weight="semibold">{props.label}</Text>
+          {props.children}
+          <HStack gap={2}>
+            <Button
+              variant="primary"
+              isDisabled={props.isDisabled || !props.canSave}
+              onClick={() => void props.onSave()}
+              label={props.saveLabel}
+            />
+            <Button variant="ghost" isDisabled={props.isDisabled} onClick={props.onCancel} label={props.cancelLabel} />
+          </HStack>
+        </VStack>
+      ) : (
+        <HStack hAlign="between" vAlign="start" gap={4} className="settingRow">
+          <VStack gap={0}>
+            <Text type="body" weight="semibold">{props.label}</Text>
+            <Text type="supporting" color="secondary">{props.value}</Text>
+          </VStack>
+          <Link
+            href="#"
+            onClick={(event: MouseEvent) => {
+              event.preventDefault();
+              props.onEdit();
+            }}
+          >
+            {props.actionLabel}
+          </Link>
+        </HStack>
+      )}
+      <Divider />
+    </>
+  );
+}
+
 function DetailSection(props: { title: string; description: string; children: ReactNode }) {
   return (
     /* `columnGap`, not `gap`: the template's 10 is the gutter BETWEEN the two

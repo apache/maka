@@ -134,47 +134,50 @@ test('adds a catalog provider through the canonical API-key setup page', async (
   });
 
   await test.step('the detail replaces a key and manages enabled and default models', async () => {
-    // The credentials section must not reflow while a key is typed: the hint is
-    // a single persistent line and the 更新密钥 button is always present
-    // (disabled until a new key is entered), so nothing is added or removed.
-    const credentials = detail.getByRole('region', { name: '凭据' });
-    const detailKeyField = credentials.getByRole('textbox', { name: /模型密钥/ });
-    await expect(detailKeyField).toHaveAttribute('placeholder', '••••••••');
-    const credentialsHeightBefore = (await credentials.boundingBox())?.height;
+    // A settled credential is a row, not a form: it reports its state and
+    // carries one link. The input only exists while the user is changing it.
+    const connectionSection = detail.getByRole('region', { name: '连接' });
+    await expect(connectionSection.getByText('已设置，粘贴新值可替换')).toBeVisible();
+    await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveCount(0);
+
+    await connectionSection.getByRole('link', { name: '更换', exact: true }).click();
+    const detailKeyField = connectionSection.getByRole('textbox', { name: /模型密钥/ });
+    await expect(detailKeyField).toBeVisible();
+    const saveKey = connectionSection.getByRole('button', { name: '保存', exact: true });
+    await expect(saveKey).toBeDisabled();
     await detailKeyField.fill('sk-e2e-replacement-key');
-    await expect(credentials.getByRole('button', { name: '更新密钥', exact: true })).toBeEnabled();
-    expect((await credentials.boundingBox())?.height).toBe(credentialsHeightBefore);
-    await detailKeyField.fill('');
+    await expect(saveKey).toBeEnabled();
+    // Cancel restores the row, discarding the draft.
+    await connectionSection.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveCount(0);
 
-    const modelManagement = detail.getByRole('region', { name: '模型管理' });
-    await expect(modelManagement).toBeVisible();
+    const modelSection = detail.getByRole('region', { name: '模型' });
+    await expect(modelSection).toBeVisible();
 
-    // Astryx CheckboxList owns the collection label, checkbox semantics,
-    // disabled state, and focus. Search/popup behavior is intentionally absent.
-    const modelList = modelManagement.getByRole('group', { name: /启用模型/ });
-    const defaultModel = modelList.getByRole('checkbox', {
-      name: /GPT OSS 120B · 默认/,
-    });
-    await expect(defaultModel).toBeChecked();
-    await expect(defaultModel).toBeDisabled();
-
-    const gemmaModel = detail.getByRole('checkbox', { name: /Gemma/ }).first();
-    await expect(gemmaModel).not.toBeChecked();
-    await gemmaModel.check();
-    await expect(gemmaModel).toBeChecked();
+    // Enabled models are a MultiSelector, not a wall of checkboxes: Astryx
+    // scopes CheckboxList to 3–7 options and a provider lists far more.
+    // The MultiSelector trigger is a listbox-popup button; role=combobox belongs
+    // to the search input inside the popup.
+    const enabledModels = modelSection.getByRole('button', { name: '启用的模型', exact: true });
+    await enabledModels.click();
+    const defaultModelOption = page.getByRole('option', { name: /GPT OSS 120B · 默认/ });
+    // The default model is enabled by construction, so its option is checked and
+    // locked rather than silently refusing the click.
+    await expect(defaultModelOption).toHaveAttribute('aria-selected', 'true');
+    await expect(defaultModelOption).toHaveAttribute('aria-disabled', 'true');
+    await page.getByRole('option', { name: /Gemma/ }).first().click();
+    await page.keyboard.press('Escape');
+    await expect(enabledModels).toContainText(/Gemma/);
 
     // Default-model management stays in the connection detail. Selecting an
-    // already enabled model persists immediately and locks that row as the new
-    // default.
-    const defaultModelSelector = modelManagement.getByRole('combobox', {
-      name: '此连接的默认模型',
+    // already enabled model persists immediately.
+    const defaultModelSelector = modelSection.getByRole('combobox', {
+      name: '默认模型',
       exact: true,
     });
     await defaultModelSelector.click();
     await page.getByRole('option', { name: /Gemma/ }).first().click();
     await expect(defaultModelSelector).toContainText(/Gemma/);
-    await expect(modelList.getByRole('checkbox', { name: /Gemma/ }).first()).toBeDisabled();
-    await expect(detail.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
   });
 
   await test.step('deletion stays reachable and reversible in a short viewport', async () => {
@@ -244,10 +247,11 @@ test('derives an account-scoped endpoint from the Cloudflare account-id field', 
 
   const detail = connectionDetail(page);
   await expect(detail).toBeVisible();
-  // The endpoint is a plain section, not something folded away: nothing to
-  // expand before reading it.
-  await expect(detail.getByRole('textbox', { name: '服务地址', exact: true })).toHaveValue(baseUrl);
-  await expect(detail.getByRole('textbox', { name: /模型密钥/ })).toHaveAttribute('placeholder', '••••••••');
+  // The derived endpoint is readable at a glance from the row itself; the
+  // input only appears once the user asks to edit it.
+  const connectionSection = detail.getByRole('region', { name: '连接' });
+  await expect(connectionSection.getByText(baseUrl, { exact: true })).toBeVisible();
+  await expect(connectionSection.getByText('已设置，粘贴新值可替换')).toBeVisible();
 });
 
 // Distinct form behavior: a no-auth local runtime shows no API-key field at all

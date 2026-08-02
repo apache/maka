@@ -13,18 +13,16 @@
   box-shadow: none;
 }
 
-.connectionRow[data-disabled="true"] {
-  opacity: var(--opacity-muted);
+/* A settled-value row breathes on its own block axis, exactly as the
+   settings-sidebar template's InfoRow does — the Divider between rows is the
+   only separator, so the space has to come from the row rather than from a
+   stack gap that would double up around it. */
+.settingRow {
+  padding-block: var(--spacing-4);
 }
 
-/* The icon plate inside the default-connection hint card. Astryx has no
-   primitive for "icon on a tinted square" — the settings-sidebar template
-   builds the same thing from a `Center` plus two declarations, so this is
-   that pair, named. */
-.providerHintIcon {
-  border-radius: var(--radius-container);
-  background: var(--surface-canvas);
-  flex-shrink: 0;
+.connectionRow[data-disabled="true"] {
+  opacity: var(--opacity-muted);
 }
 
 /* Logo plates match the enabled list (compact 32px) so the page reads as

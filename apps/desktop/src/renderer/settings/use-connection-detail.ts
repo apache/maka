@@ -69,7 +69,7 @@ export interface ConnectionDetailProps {
 
 // Controller for the API/OAuth model connection detail sheet. Owns the whole
 // mutually-exclusive action state machine (save / test / fetch-models /
-// save-enabled-models / set-default / delete, all gated through one keyed
+// save-enabled-models / set-default-model / delete, all gated through one keyed
 // action guard) plus the credential-presence probe and the prop-sync effects.
 // The sheet view (provider-connection-detail.tsx) is a thin render over this
 // return; extracting it kept the 12 useState + 4 refs + 4 effects together so
@@ -100,10 +100,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
   const [settingDefaultModel, setSettingDefaultModel] = useState(false);
-  const [settingDefault, setSettingDefault] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'set-default-model' | 'set-default' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'set-default-model' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -123,7 +122,10 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     : supportsApiKey
       ? copy.keyTroubleshooting
       : copy.endpointTroubleshooting;
-  const savedBaseUrl = connection.baseUrl ?? defaults.baseUrl;
+  // `?? ''` to match the `baseUrl` draft's own initializer: a provider with
+  // neither a saved nor a default endpoint compared '' against undefined, so
+  // `hasBaseUrlChange` was permanently true and its save button never rested.
+  const savedBaseUrl = connection.baseUrl ?? defaults.baseUrl ?? '';
   const draftBaseUrl = baseUrl;
   const hasApiKeyChange = apiKey.length > 0;
   const hasBaseUrlChange = draftBaseUrl !== savedBaseUrl;
@@ -144,7 +146,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     fetchingModels ||
     savingEnabledModels ||
     settingDefaultModel ||
-    settingDefault ||
     deleting;
   const issue = connectionChipStatus(connection, locale);
   const lastTestMessage = connectionLastTestMessageDisplay(connection.lastTestMessage, locale);
@@ -420,31 +421,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
   }
 
-  async function setAsDefault() {
-    const releaseSetDefault = connectionDetailActionGuard.beginExclusive('set-default');
-    if (!releaseSetDefault) return;
-    if (!connection.enabled) {
-      releaseSetDefault();
-      toast.error(copy.connectionDisabled, copy.connectionDisabledDetail);
-      return;
-    }
-    const lifecycle = connectionDetailLifecycleRef.current;
-    setSettingDefault(true);
-    try {
-      await props.bridge.setDefault(connection.slug);
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      await props.onChanged();
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.success(copy.defaultSet(connection.name));
-    } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(copy.switchDefaultFailed, providerPanelActionErrorMessage(error, locale));
-    } finally {
-      releaseSetDefault();
-      if (isConnectionDetailCurrent(lifecycle)) setSettingDefault(false);
-    }
-  }
-
   async function remove() {
     const releaseDelete = connectionDetailActionGuard.beginExclusive('delete');
     if (!releaseDelete) return;
@@ -515,7 +491,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     testing,
     fetchingModels,
     settingDefaultModel,
-    settingDefault,
     deleting,
     detailActionBusy,
     supportsApiKey,
@@ -529,6 +504,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     apiKeyStatusHint,
     hasApiKeyChange,
     hasBaseUrlChange,
+    savedBaseUrl,
     issue,
     lastTestMessage,
     lastTestAtMs,
@@ -537,7 +513,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     updateDefaultModel,
     runTest,
     refreshModels,
-    setAsDefault,
     remove,
     refreshAfterRelogin,
   };

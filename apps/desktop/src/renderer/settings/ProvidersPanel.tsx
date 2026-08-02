@@ -3,21 +3,19 @@ import {
   Badge,
   Banner,
   Button,
-  Card,
-  Center,
   EmptyState,
   Heading,
   HStack,
-  Icon,
   IconButton,
   List,
   ListItem,
+  Selector,
   Skeleton,
   Text,
   Toolbar,
   VStack,
 } from '@astryxdesign/core';
-import { ArrowLeft, ChevronRight, Info } from '@maka/ui/icons';
+import { ArrowLeft, ChevronRight } from '@maka/ui/icons';
 import {
   type LlmConnection,
   type ProviderType,
@@ -93,6 +91,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   // Browsing state, not navigation state: it outlives the catalog so that
   // backing out of a provider returns the user to the search they typed.
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(CATALOG_INITIAL_FILTER);
+  const [settingDefault, setSettingDefault] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providersPanelMountedRef = useMountedRef();
@@ -185,6 +184,21 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   function openDetail(slug: string) {
     listReturnFocusRef.current = slug;
     setRoute({ kind: 'detail', slug });
+  }
+
+  async function chooseDefault(slug: string) {
+    if (settingDefault || slug === defaultSlug) return;
+    setSettingDefault(true);
+    try {
+      await bridge.setDefault(slug);
+      if (!providersPanelMountedRef.current) return;
+      await reload();
+    } catch (error) {
+      if (!providersPanelMountedRef.current) return;
+      toast.error(copy.switchDefaultFailed, providerPanelActionErrorMessage(error, locale));
+    } finally {
+      if (providersPanelMountedRef.current) setSettingDefault(false);
+    }
   }
 
   function openCatalog() {
@@ -421,20 +435,24 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             </List>
           )}
           {connections.length > 0 && (
-            /* The one card on the page, and it is the one thing Astryx's Card
-               guidance calls a card: explanatory content beside the rows it
-               explains, not a container drawn around them. */
-            <Card variant="muted" padding={4}>
-              <HStack gap={4} vAlign="start">
-                <Center width={40} height={40} className="providerHintIcon">
-                  <Icon icon={Info} />
-                </Center>
-                <VStack gap={1}>
-                  <Text type="body" weight="semibold">{copy.defaultHintTitle}</Text>
-                  <Text type="supporting" color="secondary">{copy.defaultHintBody}</Text>
-                </VStack>
-              </HStack>
-            </Card>
+            /* The default connection is one choice ACROSS connections, so it
+               belongs to the list, not to each connection's page. It used to be
+               a section on every detail page — N places to change one value,
+               N-1 of which said "not this one" — plus a card here explaining
+               the concept. Both collapse into the control itself. */
+            <Selector
+              label={copy.defaultConnection}
+              description={copy.defaultConnectionHelp}
+              options={connections
+                .filter((connection) => connection.enabled)
+                .map((connection) => ({ value: connection.slug, label: connection.name }))}
+              value={defaultSlug ?? ''}
+              onChange={(slug) => void chooseDefault(slug)}
+              isLoading={settingDefault}
+              isDisabled={settingDefault}
+              placeholder={copy.noDefault}
+              width="100%"
+            />
           )}
         </>
       )}
