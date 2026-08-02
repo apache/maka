@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Collapsible } from '@astryxdesign/core';
+import { Banner, Collapsible, Divider, HStack, Link, Text, VStack } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Button,
@@ -9,7 +9,6 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
-  Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
@@ -21,6 +20,7 @@ import {
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
 } from './provider-panel-shared';
+import type { StatusTone } from './settings-status-badge';
 import {
   useConnectionDetail,
   type ConnectionDetailProps,
@@ -67,12 +67,10 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
     }
   }
   return (
-    <div className="providerConnectionDetail">
-      <p>
-        {copy.unknownDescription(connection.providerType)}
-      </p>
+    <VStack gap={3} align="start">
+      <Text>{copy.unknownDescription(connection.providerType)}</Text>
       <Button variant="destructive" onClick={remove} isDisabled={deleting} label={deleting ? copy.deleting : copy.deleteUnused} />
-    </div>
+    </VStack>
   );
 }
 
@@ -136,10 +134,12 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     });
   }
 
+  const canSetDefault = !props.isDefault && connection.enabled;
+
   return (
-    <div className="providerEditor providerConnectionManager">
+    <VStack gap={4}>
       {supportsApiKey && (
-        <div className="providerCredentialTask">
+        <VStack gap={2}>
           <PasswordInput
             value={apiKey}
             onChange={setApiKey}
@@ -148,36 +148,37 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             description={apiKeyStatusHint}
             isDisabled={detailActionBusy}
           />
-          <div className="providerCredentialActions">
+          <HStack gap={2} justify="between" align="center">
             {defaults.signupUrl && (
-              <a
-                className="providerExternalLink"
+              <Link
                 href={defaults.signupUrl}
                 target="_blank"
                 rel="noreferrer noopener"
                 aria-label={copy.getModelKey}
               >
                 {copy.getModelKey}
-              </a>
+              </Link>
             )}
             {/* Persistent button (disabled until a new key is typed) so the
                 credential actions row keeps a fixed height — no jitter when the
                 user starts pasting a key. */}
             <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
-          </div>
-        </div>
+          </HStack>
+        </VStack>
       )}
       {issue && (
-        <div className="providerConnectionIssue" data-tone={issue.tone} role="status">
-          <strong>{issue.label}</strong>
-          {(lastTestMessage || Number.isFinite(lastTestAtMs)) && (
-            <span>
+        <Banner
+          status={connectionIssueStatus(issue.tone)}
+          role="status"
+          title={issue.label}
+          description={(lastTestMessage || Number.isFinite(lastTestAtMs)) ? (
+            <>
               {lastTestMessage && lastTestMessage !== issue.label ? lastTestMessage : null}
               {lastTestMessage && lastTestMessage !== issue.label && Number.isFinite(lastTestAtMs) ? ' · ' : null}
               {Number.isFinite(lastTestAtMs) && <RelativeTime ts={lastTestAtMs} />}
-            </span>
-          )}
-        </div>
+            </>
+          ) : undefined}
+        />
       )}
       {needsOAuth && (
         usesGitHubCopilotLogin ? (
@@ -208,13 +209,16 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         )
       )}
       {credentialProbePending && (
-        <p className="providerError" role="alert">
-          {hasSecret === 'loading'
+        <Banner
+          status="warning"
+          role="alert"
+          title={hasSecret === 'loading'
             ? copy.credentialLoadingDetail
             : copy.credentialUnknownDetail}
-        </p>
+        />
       )}
-      <section className="providerModelSettings" aria-label={copy.modelManagement}>
+      <Divider />
+      <VStack as="section" gap={4} aria-label={copy.modelManagement}>
         <Selector
           label={copy.connectionDefaultModel}
           description={copy.connectionDefaultModelHelp}
@@ -234,47 +238,55 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
-        <div className="providerModelActions">
+        <HStack gap={2} align="center" wrap="wrap">
           <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
           {supportsRemoteDiscovery && (
             <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
           )}
-        </div>
-      </section>
-      <Collapsible
-        className="providerAdvancedSettings"
-        defaultIsOpen={false}
-        trigger={copy.advanced}
-      >
-        <div className="providerAdvancedSettingsBody">
-          <div className="providerEndpointSettings">
-            <ConnectionEndpointField
-              baseUrl={baseUrl}
-              defaultsBaseUrl={defaults.baseUrl}
-              fixedOAuth={hasFixedOAuthBaseUrl}
-              disabled={detailActionBusy}
-              onChange={setBaseUrl}
-            />
-            {/* Persistent button (disabled until the endpoint is edited) so the
-                advanced settings body height stays constant while typing. An
-                OAuth-fixed endpoint is readOnly with no dirty path — no jitter
-                risk — so it renders no permanently-disabled Save at all. */}
-            {!hasFixedOAuthBaseUrl && (
-              <div className="providerEndpointActions">
-                <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
-              </div>
-            )}
-          </div>
-        </div>
+        </HStack>
+      </VStack>
+      <Divider />
+      <Collapsible defaultIsOpen={false} trigger={copy.advanced}>
+        <VStack gap={2} paddingBlock={3}>
+          <ConnectionEndpointField
+            baseUrl={baseUrl}
+            defaultsBaseUrl={defaults.baseUrl}
+            fixedOAuth={hasFixedOAuthBaseUrl}
+            disabled={detailActionBusy}
+            onChange={setBaseUrl}
+          />
+          {/* Persistent button (disabled until the endpoint is edited) so the
+              advanced settings body height stays constant while typing. An
+              OAuth-fixed endpoint is readOnly with no dirty path — no jitter
+              risk — so it renders no permanently-disabled Save at all. */}
+          {!hasFixedOAuthBaseUrl && (
+            <HStack justify="end">
+              <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
+            </HStack>
+          )}
+        </VStack>
       </Collapsible>
-      <div className="providerConnectionActions">
-        {!props.isDefault && connection.enabled && (
+      <Divider />
+      {/* Delete stays at the trailing edge whether or not "set as default" is
+          offered, so the destructive action never slides under the cursor that
+          was aiming at the quiet one. */}
+      <HStack gap={2} align="center" justify={canSetDefault ? 'between' : 'end'} wrap="wrap">
+        {canSetDefault && (
           <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
         )}
         <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
-      </div>
-    </div>
+      </HStack>
+    </VStack>
   );
+}
+
+/** The list's three status tones against Banner's four; `neutral` has no
+ * Banner equivalent, so it takes the quietest one rather than borrowing an
+ * alarm color it does not mean. */
+function connectionIssueStatus(tone: StatusTone): 'error' | 'success' | 'info' {
+  if (tone === 'destructive') return 'error';
+  if (tone === 'success') return 'success';
+  return 'info';
 }
 
 function ConnectionEndpointField(props: {

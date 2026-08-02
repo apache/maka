@@ -38,7 +38,7 @@ import { ProviderConnectionDialog } from './provider-connection-dialog';
 import { ConnectionDetail } from './provider-connection-detail';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { ModelOAuthSection } from './provider-oauth-section';
-import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
+import { categoryLabel, providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 export type { ConnectionsBridge } from './provider-panel-shared';
@@ -342,6 +342,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           title={copy.connectTitle(providerDisplay(createType, locale).name)}
           subtitle={copy.createSubtitle}
           providerType={createType}
+          headerEndContent={<Badge variant="neutral" label={categoryLabel(PROVIDER_DEFAULTS[createType].category, locale)} />}
           isOpen={isDialogOpen}
           onOpenChange={handleDialogOpenChange}
         >

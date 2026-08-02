@@ -13,6 +13,8 @@ export function ProviderConnectionDialog(props: {
   providerType: ProviderType;
   isOpen: boolean;
   onOpenChange(isOpen: boolean): void;
+  /** Trailing header slot — the provider's category badge on the create path. */
+  headerEndContent?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -35,6 +37,7 @@ export function ProviderConnectionDialog(props: {
             startContent={<ProviderLogo type={props.providerType} compact />}
             title={props.title}
             subtitle={props.subtitle}
+            endContent={props.headerEndContent}
             onOpenChange={props.onOpenChange}
           />
         }
