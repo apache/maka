@@ -7,6 +7,10 @@
    neutral state tokens. Cursor: styles/native-cursor.css. */
 .maka-quote-action {
   font: var(--maka-text-supporting);
+  /* #1879: --h-control-lg, not xs. The floor is arithmetic: a 20px line box
+     plus 2 × var(--space-1) padding plus two hairlines needs 30px, and this is
+     a pointer target rather than a decorative badge. */
+  height: var(--h-control-lg);
   position: fixed;
   transform: translateX(-50%);
   z-index: var(--z-panel-action);

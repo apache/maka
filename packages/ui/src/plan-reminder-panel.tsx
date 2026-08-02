@@ -459,7 +459,7 @@ export function PlanReminderPanel(props: {
                             {reminder.nextRunAt ? (
                               <>
                                 {copy.page.nextRun(formatReminderTime(reminder.nextRunAt, locale))}
-                                <span className="maka-plan-card-countdown">{formatReminderCountdown(reminder.nextRunAt, locale)}</span>
+                                <Badge className="maka-plan-card-countdown" label={formatReminderCountdown(reminder.nextRunAt, locale)} />
                               </>
                             ) : reminder.lastRun ? (
                               copy.page.recentRun(formatReminderTime(reminder.lastRun.at, locale))

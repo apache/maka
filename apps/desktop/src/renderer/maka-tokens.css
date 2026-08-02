@@ -406,10 +406,66 @@
      glyph (`useTableSortable.tsx`) sets `lineHeight: '1'` at 10px behind a
      lint exception reading "no token for lineHeight:1 (tight badge)". It is a
      glyph, not text — below the smallest governed size, in a box the scale
-     never sized. Nothing in this file is in that position; the compact pills
-     here sit at the caption tier, centre their 20px line box inside a shorter
-     flex control without clipping it, and are tracked for a box-height fit in
-     their own follow-up rather than by opting back out of the scale.
+     never sized. That exception is Astryx's own, in `@astryxdesign/core`, and
+     the boundary is worth being precise about: the contracts in this repo scan
+     first-party CSS, so a vendor component's inline React style was never in
+     their reach and needs no exemption here to stay legal. First-party PRODUCT
+     code holds no `lineHeight` inline style; the stories under
+     `packages/ui/stories/` do, which is why the boundary is scoped to what
+     the contracts actually scan rather than stated as an absolute.
+
+     The box-height follow-up this paragraph used to defer is #1879, and it has
+     landed, so the compact pills are no longer "tracked" — they are pinned.
+     Each single-line chip takes its height from the `--h-control-*` scale
+     below and centres its line box, which is the Badge/Kbd identity above
+     expressed with maka's own control ruler. The per-chip measurements are in
+     that PR rather than here: a log of before/after numbers in this file is
+     what the sentence it replaces already proved would rot.
+
+     Two relationships belong here, because nothing else records them.
+
+     First, most of these chips are not product CSS any more. Astryx ships a
+     `Badge` whose box IS this recipe — 20px off `--spacing-5`, pill radius,
+     supporting tier, `nowrap` — so the status pills, counts and category
+     badges are `<Badge variant=...>` at the call site, and their height, chrome
+     and per-state colour left this stylesheet with them. What stayed in CSS is
+     what Badge does not do: a chip with no chrome at all (a timestamp, a ⌘N
+     hint), one that truncates, one that wraps, or one whose colour is a
+     product concept Badge has no variant for.
+
+     Two things the swap changed that no rule records. Badge's weight is
+     `--font-weight-medium` and its inline padding is `--spacing-2`, so the six
+     chips that were semibold at 4–6px now read one step lighter and one step
+     wider. And Astryx keeps TWO badge archives: the semantic names
+     (`warning`, `error`, `info`, `success`) paint SOLID saturated fills — maka
+     retunes them to flat hex, and `warning` has no `light-dark()` at all —
+     while the colour names (`yellow`, `red`, `blue`, `green`) paint tints.
+     Chips whose hand-written chrome was a 5–18% wash take the colour archive,
+     so the swap does not turn a quiet marker into an alert. The exception is
+     Settings' status rows, which route through `statusBadgeVariant` and were
+     already on the semantic archive before this; one tone table per page beats
+     a per-chip opinion. Neither archive follows `data-maka-theme` — that is a
+     property of the Astryx palette, and buying it back would mean product CSS
+     repainting a component's own surface.
+
+     Second, `--h-control-md/lg/xl` now DERIVE from `--size-element-sm/md/lg`
+     rather than restating 28/32/36. That is Astryx's own control ruler — what
+     its Button, TextInput, Selector and SideNavItem read — and maka's md/lg/xl
+     are those three at shifted names. While the two were independent
+     arithmetic, a chip at `--h-control-lg` and an Astryx control beside it at
+     `--size-element-md` lined up by coincidence; retuning Astryx would have
+     reintroduced, at the box, the drift #1878 removed at the line. They agree
+     at `:root`, which is where both are declared and therefore where the
+     substitution happens — a retune inside a nested `<Theme>` would land on
+     that wrapper and leave `--h-control-*` frozen at the root value, so this
+     is "they agree" and not "they cannot disagree". The e2e resolves all six
+     rungs to numbers, which is what catches an upstream token being renamed
+     away. Where a box IS an Astryx component the fix is still its `size` prop
+     and not a height here — `.maka-sidebar-update-button` and the three
+     composer selectors were moved that way rather than pinned.
+     `.maka-composer-model-chip` is NOT one of those: that class sits on
+     `ModelChipStatic`'s inert `<span>`, never on the Button it renders when
+     clickable, so it pins like any other chip.
 
      A consequence worth stating, because it limits what this convergence
      bought: a unitless leading still inherits as a ratio. An element that
@@ -649,18 +705,24 @@
      the same token for width and height (their footprint = control size).
      App-chrome bars (--h-titlebar/--h-composer-min) stay as their own
      semantic tokens — they are structure, not controls.
-     md (28) and xl (36) use calc(var(--spacing) * 7/9) directly because maka's
-     discrete spacing scale skips 7 and 9 — control-only tiers must not expand
-     the general --space-* scale (that would invite p-7 / gap-7 drift). */
+     xs/sm/2xl (20/24/40) stay on the --space-* ruler: Astryx has no element
+     token at those sizes, and 20px is what its own Badge and Kbd take from
+     --spacing-5, so that tier already agrees by construction. */
   --h-control-xs:  var(--space-5);  /* 20px — kbd, dot, tiny chip / close  */
   --h-control-sm:  var(--space-6);  /* 24px — small button, chip, sidebar
                                       topbar button, model switcher       */
-  --h-control-md:  calc(var(--spacing) * 7);  /* 28px — compact menu item, sm tab,
+  /* #1879: md/lg/xl DERIVE from Astryx rather than restating its numbers.
+     Astryx sizes Button, TextInput, Selector and SideNavItem off
+     `--size-element-sm/md/lg` (28/32/36); maka's md/lg/xl ARE those three at
+     shifted names. They used to be independent arithmetic on `--spacing`, so a
+     chip at `--h-control-lg` and an Astryx control beside it at
+     `--size-element-md` lined up by coincidence. Now they cannot disagree. */
+  --h-control-md:  var(--size-element-sm);  /* 28px — compact menu item, sm tab,
                                       round FAB (jump-to-bottom)          */
-  --h-control-lg:  var(--space-8);  /* 32px — default button, input, tab,
+  --h-control-lg:  var(--size-element-md);  /* 32px — default button, input, tab,
                                       sidebar nav row, session row,
                                       settings nav row, select            */
-  --h-control-xl:  calc(var(--spacing) * 9);  /* 36px — prominent button,
+  --h-control-xl:  var(--size-element-lg);  /* 36px — prominent button,
                                       first-run checklist row             */
   --h-control-2xl: var(--space-10); /* 40px — toolbar, large touch target  */
 

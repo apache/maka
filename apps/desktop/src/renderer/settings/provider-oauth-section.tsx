@@ -5,6 +5,7 @@ import {
   type ProviderType,
 } from '@maka/core';
 import {
+  Badge,
   Button,
   useMountedRef,
   useToast,
@@ -196,7 +197,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
               label={<span className="providerCatalogTitle" aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}>{card.name}</span>}
               description={<span className="providerCatalogDesc providerOAuthCardDescription">{liveDescription}</span>}
               endContent={<span className="providerCatalogActions">
-                <span className="providerCatalogBadge providerOAuthCardBadge">{liveBadge}</span>
+                <Badge className="providerOAuthCardBadge" label={liveBadge} />
                 <ChevronRight className="providerCatalogChevron" size={15} aria-hidden="true" />
               </span>}
               onClick={() => openOAuthModal(card.id)}

@@ -52,35 +52,21 @@
   color: var(--muted-foreground);
 }
 
+/* #1879: both meta pills are Astryx `Badge`s now, so the box, radius, padding,
+   caption type and per-state colour all come from the component. The revision
+   pill is the one place where product CSS still has something to say: a
+   revision number is a figure you compare across renders, so it keeps the
+   tabular figures the neutral variant does not carry. The mono stack it also
+   wants is NOT declared here — the figure is a `<code>` at the call site, and
+   `:where(code, kbd, samp, pre)` in maka-tokens.css is the one monospace
+   authority in the renderer. Naming the family here would be a second one.
+   Before this it was also the chip the derived scan could not see — its
+   leading lived in one rule and its pill chrome in another — and it has no
+   rule to miss now. */
 .plan-proposal-revision {
-  font: var(--maka-text-supporting);
-  color: var(--muted-foreground);
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: var(--foreground-5);
   font-variant-numeric: tabular-nums;
 }
 
-.plan-proposal-status {
-  font: var(--maka-text-supporting);
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-pill);
-}
-
-.plan-proposal-status[data-status="pending_approval"] {
-  background: oklch(from var(--status-running) l c h / 0.10);
-  color: var(--foreground);
-}
-
-.plan-proposal-status[data-status="approved"] {
-  background: oklch(from var(--success) l c h / 0.12);
-  color: var(--success-text);
-}
-
-.plan-proposal-status[data-status="stale"] {
-  background: var(--foreground-5);
-  color: var(--muted-foreground);
-}
 
 .plan-proposal-overview {
   font: var(--maka-text-body);

@@ -45,21 +45,14 @@
   letter-spacing: var(--tracking-normal);
 }
 
-.settingsAboutVersion {
-  font: var(--maka-text-code);
-  color: var(--foreground-secondary);
-  padding: var(--space-0-5) var(--space-2);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--foreground) l c h / 0.05);
-}
-
-.settingsAboutChannel {
-  font: var(--maka-text-heading-5);
-  color: var(--brand-deep);
-  padding: var(--space-0-5) var(--space-2);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--brand-deep) l c h / 0.10);
-}
+/* #1879: both hero pills are Astryx `Badge`s, and neither has a product rule
+   left. The version keeps the mono stack — a version string is read digit by
+   digit — but takes it from being a `<code>` inside the badge rather than from
+   a rule here: `:where(code, kbd, samp, pre)` in maka-tokens.css is the one
+   monospace authority in the renderer, and it composes the roles a second time
+   against that family, so nothing else about the badge's type moves. The
+   channel pill was a hand-tinted `--brand-deep` wash; `blue` is the tinted
+   variant that keeps it distinguishable from the neutral version pill. */
 
 .settingsAboutTagline {
   font: var(--maka-text-body);

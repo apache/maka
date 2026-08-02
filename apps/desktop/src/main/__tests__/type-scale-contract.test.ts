@@ -27,10 +27,82 @@ import {
   cssRuleBody,
   assertCssRuleDecls,
   assertCustomPropPinnedOnce,
+  findBadgeClassNames,
+  findDynamicBadgeClassNames,
   findTextRoleOffenders,
+  mergeBySelector,
   parseCssCustomProps,
   readAllRendererCss,
 } from './css-test-helpers.js';
+
+/**
+ * A `height` declaration, excluding `min-height`, `max-height`, `line-height`
+ * and custom properties. `block-size` is the logical alias and is the same
+ * declaration to a browser, so a check that reads one and not the other is a
+ * check with a documented bypass. The `\s*` before the colon is not cosmetic:
+ * `height : 20px` is valid CSS.
+ */
+const HEIGHT_DECL = /(?<![-\w])(?:height|block-size)\s*:/;
+const HEIGHT_DECL_G = /(?<![-\w])(?:height|block-size)\s*:([^;}]*)/g;
+const RULER_VALUE = /^\s*var\(--h-control-[a-z0-9]+\)\s*$/;
+
+/**
+ * Does this box's EFFECTIVE height come from the control ruler?
+ *
+ * Effective, not "mentioned anywhere": CSS takes the last declaration, so a
+ * body reading `height: var(--h-control-xs); … height: auto` is an unpinned
+ * box that a test matching anywhere in the text reports as pinned. That is a
+ * legal, one-line bypass of the whole contract, and this file already
+ * documents the same false-green for custom properties.
+ */
+function pinnedToRuler(body: string): boolean {
+  const values = [...body.matchAll(HEIGHT_DECL_G)].map((m) => m[1]);
+  const last = values.at(-1);
+  return last !== undefined && RULER_VALUE.test(last);
+}
+
+/**
+ * The chips that carry pill chrome but must not take a `--h-control-*` height,
+ * each for a reason that was measured rather than asserted. Anything not named
+ * here has to pin, so growing this set is a deliberate act visible in review —
+ * the property the enumerated inventory this replaced did not have.
+ */
+const EXEMPT = new Set([
+  // A system-note block, not a chip: it wraps, and pinning clips every line but
+  // the first. Keyed by its FULL prelude — the old key was the last line of a
+  // multi-line selector, which also exempted any future rule ending that way.
+  '.maka-chat-message[data-sender="system"] pre:not([data-maka-contract="markdown"] pre)',
+  // `flex-wrap: wrap` is load-bearing — its buttons flow to a second line
+  // inside the pill on the floor column (see that rule's own comment).
+  '.settingsMemoryBackupCandidate',
+  // Wraps too, and measured: its English copy is 317px on one line in a 260px
+  // column. A pin here is only safe with `white-space: nowrap`, which trades a
+  // clipped second line for a 57px overflow past the card. See that rule.
+  '.settingsCapabilityOsPermissions li',
+  // Sized by its Astryx component, which is the stronger form of the same
+  // invariant: the height comes from `--size-element-*` rather than from a
+  // product rule racing it. Declaring a height here would reintroduce the
+  // override #1879 removed. The three composer `.astryx-selector` rules used
+  // to sit in this list while still declaring a height — a reason that was
+  // false about the CSS it excused. They declare no height at all now, so the
+  // reason is finally true of every entry under it.
+  //
+  // `.maka-composer-model-chip` sat here too, on the same false reason: its
+  // class is on `ModelChipStatic`'s inert `<span>`, never on the `Button` it
+  // renders when it is clickable, so no component was sizing it and the
+  // exemption hid a 22px box next to a 28px Selector. It pins like any other
+  // chip now. `.maka-sidebar-update-button` is gone from the list for the
+  // opposite reason — it declares neither a height nor pill chrome any more,
+  // so neither filter selects it and the entry was inert.
+  '.maka-model-switcher-trigger.astryx-selector',
+  '.maka-new-chat-model-selector.astryx-selector',
+  '.maka-thinking-level-selector.astryx-selector',
+  // Deliberate literal. A `pointer-events: none` overlay on a button's corner:
+  // it aligns with no control, so no neighbour names a tier, and the ruler's
+  // smallest rung would grow a decorative badge by 25%. It is already pinned,
+  // which is the invariant; only the vocabulary differs. Reasoning at the rule.
+  '.maka-composer-skill-trigger-count',
+]);
 
 const RENDERER = resolve(REPO_ROOT, 'apps/desktop/src/renderer');
 
@@ -265,5 +337,211 @@ describe('type scale contracts', () => {
       [],
       'no renderer stylesheet may define or read a product --leading-* tier',
     );
+  });
+
+  it('pins every pill chip to the control ruler', async () => {
+    // #1879. #1878 and #1893 made every line box name a role; they did not stop
+    // a line box from DECIDING a box. Where a chip declares no height, leading
+    // and box height are one decision, so the next role retune is a layout
+    // change — measured, these boxes doubled when their own leading was bumped
+    // to 40px, and the inline ones took their parent's line box with them.
+    //
+    // Derived, not enumerated. The first revision of this contract listed
+    // eight selectors, which could only fail for a chip someone remembered to
+    // add: measured against that list, nine identically-defective chips were
+    // shipping in the same files, one of them sixteen lines from a selector
+    // the list did contain. A rule that reads the stylesheet cannot have that
+    // failure mode, and it is less code than the table it replaces.
+    //
+    // The predicate is deliberately the visual definition of a chip rather
+    // than a naming convention: pill radius plus its own padding plus its own
+    // type. That is a box a reader perceives as a discrete object, which is
+    // exactly the population whose height should come from the control ruler.
+    // Merged per selector, not per rule block. A chip whose type lives in one
+    // rule and whose pill chrome lives in another is one box to a browser and
+    // was two invisible halves to the first revision of this scan — which is
+    // exactly how `.plan-proposal-revision` sat five lines from a selector
+    // this scan did catch and went unseen. Splitting a rule in two is not a
+    // way to be exempt from it.
+    const merged = mergeBySelector(stripCssComments(await readAllRendererCss()));
+
+    // Pill radius only, and that boundary was measured rather than assumed:
+    // widening the arm to `--radius-control` reported 27 offenders, among them
+    // `pre` blocks, failure banners, sidebar rows and buttons — every one a box
+    // a pin would clip. `--radius-control` is the repo's general control shape,
+    // not a chip signal. The squared chips that motivated trying it are Astryx
+    // `Badge`s now, so that population is empty rather than unguarded.
+    //
+    // Both type vocabularies count. #1893 folded the size/leading pair into a
+    // `font:` role shorthand, and a scan that only knew the pair would have
+    // gone green on an empty population the day that landed — the loudest
+    // possible failure mode for a derived check is one that finds nothing.
+    const OWNS_ITS_TYPE = /font:\s*var\(--maka-text-[\w-]+\)|line-height:\s*var\(--text-[\w-]+-leading\)/;
+    const isChip = (body: string) =>
+      /border-radius:\s*var\(--radius-pill\)/.test(body) &&
+      /padding/.test(body) &&
+      OWNS_ITS_TYPE.test(body);
+
+    // Guard the guard: a predicate over declarations goes quiet, not red, when
+    // the vocabulary it reads moves out from under it. #1893 moved it once
+    // already.
+    const chips = [...merged].filter(([, body]) => isChip(body));
+    assert.ok(
+      chips.length >= 8,
+      `the chip predicate selected ${chips.length} rules — it has stopped seeing the population it governs`,
+    );
+
+    // Named exemptions, each with a measured reason. Anything not listed here
+    // must pin, so adding a chip to this list is a deliberate act that shows
+    // up in review — the property the eight-row table did not have.
+    const offenders = chips
+      .filter(([selector]) => !EXEMPT.has(selector))
+      .filter(([, body]) => !pinnedToRuler(body))
+      .map(([selector]) => selector);
+    assert.deepEqual(
+      offenders,
+      [],
+      `every chip must take its height from --h-control-*, or be named in EXEMPT with a measured reason:\n${offenders.join('\n')}`,
+    );
+  });
+
+  it('pins the chrome-less chips the scan cannot see', async () => {
+    // The scan above finds chips by their chrome. These two are chips by
+    // behaviour and not by appearance — a timestamp and a ⌘N hint, both
+    // deliberately styled with no pill, no background and no border — so no
+    // predicate over declarations can distinguish them from ordinary inline
+    // text. They are the two #1879 measured first, so they are listed rather
+    // than derived, and the list is short because it can only ever hold boxes
+    // that carry no chrome at all.
+    for (const [file, selector] of [
+      ['styles/chat-message.css', '.maka-message-time-inline'],
+      ['styles/sidebar.css', '.maka-nav-kbd'],
+    ] as const) {
+      const body = cssRuleBody(stripCssComments(await read(file)), selector);
+      assert.ok(body, `${file} must still declare ${selector}`);
+      assert.ok(pinnedToRuler(body), `${selector} must take its height from --h-control-*`);
+    }
+  });
+
+  it('centres the line box inside every box it pins', async () => {
+    // A height with nothing centring the line box inside it clips off-centre
+    // once the two disagree, which is the failure the pin exists to prevent
+    // rather than to cause. Asserted as a PAIR: `align-items` is inert text on
+    // a `display: block` box, so a mutation that keeps the property and drops
+    // the flex display passed a version of this check that read only the
+    // alignment. `grid` is accepted alongside `flex` because it honours
+    // `align-items` identically; measured, every selector this currently
+    // selects uses flex, so the grid arm guards a shape nothing has taken yet
+    // rather than one that was observed.
+    const offenders = [...mergeBySelector(stripCssComments(await readAllRendererCss()))]
+      .filter(([selector, body]) => pinnedToRuler(body) && !EXEMPT.has(selector))
+      .filter(
+        ([, body]) =>
+          !(
+            /display:\s*(?:inline-)?(?:flex|grid)/.test(body) &&
+            /(?:align-items|place-items):\s*(?:safe\s+|unsafe\s+)?center/.test(body)
+          ),
+      )
+      .map(([selector]) => selector);
+    assert.deepEqual(
+      offenders,
+      [],
+      `a box pinned to --h-control-* must centre its line box with a flex/grid display AND align-items: center:\n${offenders.join('\n')}`,
+    );
+  });
+
+  it('lets no product rule redraw the box an Astryx Badge already owns', async () => {
+    // The other half of #1879, and the half the derived scan above cannot see.
+    // Twelve chips stopped hand-drawing a pill and became `<Badge>`s, which is
+    // the stronger form of the invariant — the box comes from the component
+    // instead of from a rule a scan has to police. But it moved them OUT of
+    // that scan's population: a Badge has no product rule, so `isChip` is
+    // false and nothing above would notice `.maka-turn-truncation-badge
+    // { height: auto }` reappearing. Product CSS is in the last cascade layer,
+    // so such a rule would win — the guard and the fix had moved in opposite
+    // directions.
+    //
+    // This is the same invariant read from the other end: whatever a Badge is
+    // handed as a `className` may add layout and may add what the component
+    // has no opinion on (tracking, mono figures, flex-shrink), but may not
+    // restate or override the geometry and type Badge computes for itself.
+    // `font` is in the banned set as well as `font-size`: naming a role on a
+    // component that composes its own type is the type-axis form of pinning
+    // its box, and it is the shape the rules deleted here left behind.
+    const css = stripCssComments(await readAllRendererCss());
+    const merged = mergeBySelector(css);
+    const OWNED = /(?<![-\w])(?:height|block-size|line-height|font|font-size|padding(?:-[a-z]+)?|border-radius)\s*:/;
+    // The wrap/no-wrap duality again, read from the Badge side. A Badge is a
+    // single-line pill by construction (`white-space: nowrap` and a fixed
+    // `--spacing-5` height); a call site whose content genuinely wraps has to
+    // release BOTH or the second line is clipped. That is a real need, not a
+    // rule racing the component — but it is the only one, so it is named here
+    // rather than pattern-matched.
+    const RELEASES_THE_SINGLE_LINE_BOX = new Set([
+      // Health blockers are sentences, not labels. Predates #1879.
+      '.settingsHealthBlockerBadge',
+    ]);
+    const roots = [
+      resolve(REPO_ROOT, 'apps/desktop/src/renderer'),
+      resolve(REPO_ROOT, 'packages/ui/src'),
+    ];
+    const offenders = (await findBadgeClassNames(roots))
+      .filter(({ className }) => !RELEASES_THE_SINGLE_LINE_BOX.has(`.${className}`))
+      .filter(({ className }) => OWNED.test(merged.get(`.${className}`) ?? ''))
+      .map(({ file, className }) => `.${className} (${file.replace(`${REPO_ROOT}/`, '')})`);
+    assert.deepEqual(
+      offenders,
+      [],
+      `a class on an Astryx <Badge> must not declare its height, padding, radius or type:\n${offenders.join('\n')}`,
+    );
+  });
+
+  it('keeps every Badge className readable to the contract above', async () => {
+    // `className={x}` would take a call site out of the scan without deleting
+    // anything, which is how the enumerated inventories this file replaced
+    // used to rot. There is no legitimate need for a computed class on a Badge
+    // today; if one arrives, it needs a seam that stays checkable rather than
+    // a quiet exit.
+    const dynamic = (await findDynamicBadgeClassNames([
+      resolve(REPO_ROOT, 'apps/desktop/src/renderer'),
+      resolve(REPO_ROOT, 'packages/ui/src'),
+    ])).map((file) => file.replace(`${REPO_ROOT}/`, ''));
+    assert.deepEqual(
+      dynamic,
+      [],
+      `<Badge className={…}> cannot be read statically, so it escapes the Badge-geometry contract:\n${dynamic.join('\n')}`,
+    );
+  });
+
+  it('leaves the boxes that wrap unpinned', async () => {
+    // The other half of #1879, and the half that is easy to "fix" wrongly: a
+    // pinned height is only sound for content that cannot wrap. #1879 read
+    // `.maka-plan-card-run` as already pinned and proposed it as the shape for
+    // the rest. It declares no height — the 20px it measures at comes from the
+    // Badge beside the message — and it must not gain one: measured, replacing
+    // the message with a long string grows the row to many lines, so a 20px
+    // pin would clip all but the first. The exact figure is deliberately not
+    // recorded: a wrap threshold is a font metric, so it differs per platform
+    // and would be a number that rots rather than an invariant.
+    //
+    // Repo-wide rather than file-local. The earlier revision read one
+    // stylesheet, so appending `.maka-plan-card-run { height: 20px }` from any
+    // other file satisfied it — the same bypass the heading and font-size
+    // checks in this file already went repo-wide to close.
+    const merged = mergeBySelector(stripCssComments(await readAllRendererCss()));
+    for (const selector of [
+      '.maka-plan-card-run',
+      '.maka-plan-card-schedule',
+      '.settingsMemoryBackupCandidate',
+      '.settingsCapabilityOsPermissions li',
+    ]) {
+      const body = merged.get(selector) ?? '';
+      const offenders = HEIGHT_DECL.test(body) ? [body.trim()] : [];
+      assert.deepEqual(
+        offenders,
+        [],
+        `${selector} wraps by design; a pinned height clips it rather than stabilising it`,
+      );
+    }
   });
 });

@@ -105,6 +105,13 @@
   position: absolute;
   top: -2px;
   right: -2px;
+  /* #1879 left this one at a literal 16px, the only chip in that sweep it did
+     not move onto `--h-control-*`, so the reason is on the record rather than
+     looking like an oversight. This badge is `pointer-events: none` and is
+     positioned OUT of the layout, on the trigger's corner. It
+     aligns with no control, so there is no neighbour to name a tier, and the
+     nearest rung would grow a decorative overlay by 25%. It is already pinned
+     — measured, the leading cannot move it — which is all #1879 asked for. */
   min-width: 16px;
   height: 16px;
   padding: 0 var(--space-0-5);

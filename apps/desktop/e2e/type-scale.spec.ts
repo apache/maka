@@ -220,6 +220,57 @@ test('resolves one type scale from the root down to the transcript', async ({
     expect(offGrid).toEqual([]);
   });
 
+  await test.step('a chip box does not move when its own leading does', async () => {
+    // #1879. The whole file above proves the leading is one scale; this asks
+    // the question that outlives any particular leading — can a leading change
+    // still be a layout change? A pinned box says no by construction, and the
+    // only way to show it is to move the leading and remeasure, which is what
+    // no text contract can do: `height: var(--h-control-xs)` next to
+    // `line-height: var(--text-supporting-leading)` reads as pinned whether or
+    // not the two resolve to compatible lengths in a live document.
+    //
+    // Bumped to 40px rather than nudged, so the assertion is "did not move at
+    // all" instead of "moved within tolerance".
+    // Measured on the PARENT as well as the box. A non-replaced `display:
+    // inline` chip's own border-box height is its font content area and does
+    // not track leading at all, so a probe that reads only the chip reports
+    // "did not move" for a chip whose line box is pushing its row open. The
+    // parent delta is the one measure that covers inline, block and flex.
+    const time = await page
+      .locator('.maka-message-time-inline')
+      .first()
+      .evaluate((el: HTMLElement) => {
+        const parent = el.parentElement!;
+        const before = el.getBoundingClientRect().height;
+        const parentBefore = parent.getBoundingClientRect().height;
+        // The floor, measured rather than computed: what this box would be if
+        // it were not pinned — its line box plus its own padding and border.
+        // A tier below that number does not clip visibly (the line box centres
+        // and the ink still fits) but it silently voids the padding the rule
+        // declares, which is how eleven chips shipped 2-4px shorter than they
+        // read.
+        el.style.setProperty('height', 'auto', 'important');
+        const natural = el.getBoundingClientRect().height;
+        el.style.removeProperty('height');
+        el.style.setProperty('line-height', '40px', 'important');
+        const after = el.getBoundingClientRect().height;
+        const parentAfter = parent.getBoundingClientRect().height;
+        el.style.removeProperty('line-height');
+        return { before, after, natural, parentBefore, parentAfter };
+      });
+    expect(time.before).toBe(20); // --h-control-xs
+    expect(time.after).toBe(time.before); // was 20 -> 40 before the pin
+    expect(time.parentAfter).toBe(time.parentBefore); // and took the meta row with it
+
+    // "Did not move" and "holds its content" are different claims, and a pin
+    // converts the first failure mode into the second. An earlier revision
+    // asserted `scrollHeight <= clientHeight` and was inert twice over: it read
+    // both values AFTER restoring the leading, and on an `overflow: visible`
+    // box the two are equal even while the line box overflows. The tier vs its
+    // own floor is the measure that can actually fail.
+    expect(time.natural).toBeLessThanOrEqual(time.before);
+  });
+
   await test.step('code elements resolve the theme mono stack, not the reset one', async () => {
     expect(
       await page.evaluate(() => {
@@ -289,5 +340,143 @@ test('resolves one type scale from the root down to the transcript', async ({
         return family;
       }),
     ).not.toContain('Geist Mono');
+  });
+});
+
+/**
+ * #1879, the half of the chip invariant the transcript window cannot show.
+ *
+ * Two claims that pull in opposite directions, which is why they belong in one
+ * test: a single-line chip must NOT move when its leading moves, and a box that
+ * wraps MUST still grow with its content. Pinning everything satisfies the
+ * first and breaks the second.
+ *
+ * Both halves assert RELATIVELY. An earlier revision wrote the measured
+ * outcome of a viewport squeeze into the assertion — `{height: 42, rows: 2}` at
+ * 480px — and CI Linux produced `{height: 20, rows: 1}`: the wrap slack was
+ * -4.75px against 244.75px of content, i.e. 1.9%, and the CJK font stack
+ * resolves to different families per platform. A wrap threshold is a font
+ * metric, not an invariant. So the content is made to wrap by construction and
+ * the assertion is "grew", not "grew to N".
+ *
+ * Reuses the existing fixture rather than adding one, per AGENTS.md. Measured,
+ * no booted window renders a chip above `--h-control-xs`:
+ * `.maka-composer-model-chip`, `.plan-proposal-step-number`,
+ * `.maka-skill-governance-summary span`, `.maka-quote-action`,
+ * `.maka-composer-revision-notice` and `.settingsUsage{DetailToggle,RecordCount}`
+ * all resolve to zero nodes in both fixtures. So the floor assertion below
+ * proves the MECHANISM (a tier must hold its own content) on three chips whose
+ * slack is zero by construction, and not the TIER CHOICE for sm/md/lg — that
+ * stays arithmetic in `type-scale-contract.test.ts`, where each rule states its
+ * own floor. Booting those surfaces is a fixture change, not a test change, and
+ * it does not belong to this one.
+ */
+test('pins single-line chips without pinning the boxes that wrap', async ({
+  planRemindersWindow: page,
+}) => {
+  await test.step('every rung of the control ruler resolves to a number', async () => {
+    // `--h-control-md/lg/xl` are `var(--size-element-sm/md/lg)`, and those are
+    // declared by Astryx's own generated sheet, outside every static scan in
+    // this repo (bare imports are skipped by design). If an upgrade renames or
+    // drops them, `height: var(--h-control-md)` becomes invalid at
+    // computed-value time and falls back to `auto` — #1879 on every md/lg/xl
+    // control at once, with nothing in the text contracts able to see it.
+    // Nothing else in the suite resolves these to numbers.
+    const rungs = await page.evaluate(() => {
+      const out: Record<string, number> = {};
+      for (const rung of ['xs', 'sm', 'md', 'lg', 'xl', '2xl']) {
+        // A FRESH element per rung, and the `var()` written into the
+        // declaration rather than resolved in JS first. Reassigning
+        // `style.height` on one reused probe reported the first rung's height
+        // for every rung — the inline value updated and the computed value did
+        // not — so the reuse form measured 20px six times and would have
+        // passed a ruler that had collapsed to a single rung.
+        const probe = document.createElement('div');
+        probe.style.cssText = `position:fixed;top:0;left:0;width:1px;visibility:hidden;height:var(--h-control-${rung});`;
+        document.documentElement.append(probe);
+        out[rung] = probe.getBoundingClientRect().height;
+        probe.remove();
+      }
+      return out;
+    });
+    expect(rungs).toEqual({ xs: 20, sm: 24, md: 28, lg: 32, xl: 36, '2xl': 40 });
+  });
+
+  await test.step('the pinned chips hold their box against a 40px leading', async () => {
+    // Both measured at 20px holding a 20px line box, and both doubled under
+    // this bump before the pin. `.maka-plan-card-countdown` is in none of
+    // #1879's lists — it was found by measuring, and it is one of the "12px
+    // badges" that issue's scope names: real pill chrome, no height of its own.
+    for (const selector of ['.maka-nav-kbd', '.maka-plan-card-countdown']) {
+      const box = await page.locator(selector).first().evaluate((el: HTMLElement) => {
+        const parent = el.parentElement!;
+        const before = el.getBoundingClientRect().height;
+        const parentBefore = parent.getBoundingClientRect().height;
+        // The floor, measured rather than computed: what this box would be if
+        // it were not pinned — its line box plus its own padding and border.
+        // A tier below that number does not clip visibly (the line box centres
+        // and the ink still fits) but it silently voids the padding the rule
+        // declares, which is how eleven chips shipped 2-4px shorter than they
+        // read.
+        el.style.setProperty('height', 'auto', 'important');
+        const natural = el.getBoundingClientRect().height;
+        el.style.removeProperty('height');
+        el.style.setProperty('line-height', '40px', 'important');
+        const after = el.getBoundingClientRect().height;
+        const parentAfter = parent.getBoundingClientRect().height;
+        el.style.removeProperty('line-height');
+        return { before, after, natural, parentBefore, parentAfter };
+      });
+      expect(box.before, `${selector} sits on --h-control-xs`).toBe(20);
+      expect(box.after, `${selector} must not move with its leading`).toBe(box.before);
+      expect(box.parentAfter, `${selector} must not push its row open`).toBe(box.parentBefore);
+      expect(box.natural, `${selector} must sit on a tier that holds its own floor`).toBeLessThanOrEqual(box.before);
+    }
+  });
+
+  await test.step('the boxes that wrap still grow with their content', async () => {
+    // The guard against over-applying the fix, and the one #1879 would have
+    // got wrong: it read `.maka-plan-card-run` as already pinned and offered it
+    // as the shape for the rest.
+    //
+    // The message is the row's LAST child. An earlier revision took
+    // `> span` .first(), which is the Astryx Badge — itself a `span` with its
+    // own `white-space: nowrap`. Writing a long string into it blew the nowrap
+    // flex row out sideways and squeezed the untouched real message to one
+    // character per line, which is where that revision's "220px" came from: an
+    // artifact that stayed 220px for `.repeat(2)` through `.repeat(12)`.
+    const grow = (selector: string, child: string) =>
+      page.locator(selector).first().evaluate(
+        (el: HTMLElement, sel: string) => {
+          const target = el.querySelector(sel) as HTMLElement | null;
+          if (!target) return { before: -1, after: -1 };
+          const previous = target.textContent;
+          const before = el.getBoundingClientRect().height;
+          target.textContent = '这是一条很长的运行结果消息用来验证它是否会真的换行'.repeat(4);
+          const after = el.getBoundingClientRect().height;
+          target.textContent = previous;
+          return { before, after };
+        },
+        child,
+      );
+
+    const run = await grow('.maka-plan-card-run', ':scope > span:last-child');
+    expect(run.before, 'the run row starts as one line').toBe(20);
+    expect(run.after, 'a long run message must not be clipped to one line').toBeGreaterThan(run.before);
+
+    // Same question for the schedule row, constrained at the element rather
+    // than by resizing the window: a max-width derived from its own scrollWidth
+    // forces a wrap at any font metric, on any platform.
+    const schedule = await page.locator('.maka-plan-card-schedule').first().evaluate((el: HTMLElement) => {
+      const rowCount = () => new Set([...el.children].map((c) => Math.round(c.getBoundingClientRect().top))).size;
+      const before = { height: el.getBoundingClientRect().height, rows: rowCount() };
+      el.style.maxWidth = `${Math.ceil(el.scrollWidth / 2)}px`;
+      const after = { height: el.getBoundingClientRect().height, rows: rowCount() };
+      el.style.removeProperty('max-width');
+      return { before, after };
+    });
+    expect(schedule.before.rows, 'the schedule row starts as one line').toBe(1);
+    expect(schedule.after.rows, 'the schedule row must wrap rather than clip').toBeGreaterThan(schedule.before.rows);
+    expect(schedule.after.height).toBeGreaterThan(schedule.before.height);
   });
 });

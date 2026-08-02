@@ -36,6 +36,7 @@ import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
   findTextRoleOffenders,
+  mergeBySelector,
   parseCssBlocks,
   stripCssComments,
   assertCustomPropPinnedOnce,
@@ -234,7 +235,19 @@ describe('css-test-helpers', () => {
     it('keeps a parent rule’s declarations when a nested rule follows them', () => {
       const css = '.a { font-size: 18px; & span { color: red; } }';
       assert.deepEqual(props(css, '.a'), ['font-size']);
-      assert.deepEqual(props(css, '& span'), ['color']);
+      // Resolved against the parent, not emitted as the literal `& span`. The
+      // raw form is a key every nested rule in the tree collides on, and one
+      // that no scan keyed on real selectors can ever reach.
+      assert.deepEqual(props(css, '.a span'), ['color']);
+    });
+
+    it('resolves a bare nested selector as a descendant', () => {
+      assert.deepEqual(props('.a { span { color: red; } }', '.a span'), ['color']);
+    });
+
+    it('resolves `&` in every position it can take', () => {
+      assert.deepEqual(props('.a { &:hover { color: red; } }', '.a:hover'), ['color']);
+      assert.deepEqual(props('.a { .b & { color: red; } }', '.b .a'), ['color']);
     });
 
     it('keeps a parent rule’s declarations that follow the nested rule', () => {
@@ -439,6 +452,51 @@ describe('css-test-helpers', () => {
 
     it('strips comments before parsing (inline comment after value)', () => {
       assert.doesNotThrow(() => assertCustomPropPinnedOnce('--leading-none: 1;        /* single-line: kbd */', '--leading-none', '1'));
+    });
+  });
+
+  describe('mergeBySelector (one box per selector, unconditional only)', () => {
+    it('merges rules that name the same selector, in source order', () => {
+      const merged = mergeBySelector('.a { border-radius: 9999px; }\n.a { height: 20px; }');
+      assert.match(merged.get('.a') ?? '', /border-radius/);
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+    });
+
+    it('merges a selector reached through a group with one reached on its own', () => {
+      const merged = mergeBySelector('.a, .b { border-radius: 9999px; }\n.a { height: 20px; }');
+      assert.match(merged.get('.a') ?? '', /border-radius/);
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+      assert.match(merged.get('.b') ?? '', /border-radius/);
+    });
+
+    it('skips rules gated by a conditional at-rule', () => {
+      // Folding these in read a chip pinned only inside a breakpoint as pinned
+      // everywhere, and made a deliberate responsive unpin illegal. The
+      // unconditional box is what the box contracts are about.
+      const merged = mergeBySelector('.a { height: 20px; }\n@media (min-width: 900px) { .a { height: auto; } }');
+      assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
+    });
+
+    it('keeps rules inside a non-conditional at-rule', () => {
+      const merged = mergeBySelector('@layer components { .a { height: 20px; } }');
+      assert.match(merged.get('.a') ?? '', /height:\s*20px/);
+    });
+
+    it('does not let a nested rule collide on a global `&` key', () => {
+      const merged = mergeBySelector('.a { & { color: red; } }\n.b { & { color: blue; } }');
+      assert.equal(merged.get('&'), undefined);
+      assert.match(merged.get('.a') ?? '', /red/);
+      assert.match(merged.get('.b') ?? '', /blue/);
+    });
+
+    it('keeps a qualified override as its own key', () => {
+      // Documented limitation, asserted so it cannot change silently: this
+      // models one rule per selector, not the cascade. `.wrap .a` is a
+      // different box here, and what covers it is the Badge call-site contract
+      // and the live e2e measurement.
+      const merged = mergeBySelector('.a { height: 20px; }\n.wrap .a { height: auto; }');
+      assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
+      assert.match(merged.get('.wrap .a') ?? '', /auto/);
     });
   });
 });

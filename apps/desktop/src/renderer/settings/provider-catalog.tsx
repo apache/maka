@@ -25,9 +25,12 @@ export function ProviderCatalogCard(props: { type: ProviderType; count: number; 
         label={<span className="providerCatalogTitle">{display.name}</span>}
         description={<span className="providerCatalogDesc">{display.description}</span>}
         endContent={(
+          /* Tinted archive, not the semantic one — this is a catalogue
+             decoration, not a status seam, and the rule it replaced was a
+             tint. `statusBadgeVariant`'s solid archive is reserved for the
+             rows that actually report state. */
           <Badge
-            variant={disabledStatus === 'experimental' ? 'warning' : 'info'}
-            className="providerCatalogStateBadge"
+            variant={disabledStatus === 'experimental' ? 'yellow' : 'blue'}
             aria-hidden="true"
             label={disabledStatus === 'experimental' ? copy.experiment : copy.unavailable}
           />
@@ -50,7 +53,7 @@ export function ProviderCatalogCard(props: { type: ProviderType; count: number; 
         </span>
       )}
       endContent={<span className="providerCatalogActions">
-        {display.badge && <span className="providerCatalogBadge">{display.badge}</span>}
+        {display.badge && <Badge label={display.badge} />}
         <ChevronRight className="providerCatalogChevron" size={15} aria-hidden="true" />
       </span>}
       onClick={props.onSelect}

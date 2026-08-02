@@ -134,21 +134,36 @@
   margin-block-start: var(--space-1);
 }
 
+/* #1879: this rule used to force `height: 34px` onto an Astryx Button. It is a
+   `<Button size="md">` now (session-sidebar-nav.tsx), so the 32px comes from
+   the component's own `--size-element-md` — the same token the 32px nav rows
+   it stacks under already read. Overriding a component's size from product CSS
+   is the drift the control ruler exists to end; declaring no height here is
+   what makes the two agree by derivation instead of by coincidence. */
 .maka-sidebar-update-button {
   font: var(--maka-text-heading-4);
   position: relative;
   min-width: 0;
-  height: 34px;
   display: inline-grid;
   grid-template-columns: auto;
   align-items: center;
   gap: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-pill);
+  /* Astryx Button reads `--_button-radius` for its own shape (Carousel and
+     Thumbnail set it the same way); declaring `border-radius` here would be a
+     product rule racing the component again. */
+  --_button-radius: var(--radius-pill);
   padding: 0 var(--space-3);
-  background: var(--control);
+  /* `background-color`, not the `background` shorthand — here and in EVERY
+     state rule below. The shorthand also resets `background-image`, which is
+     where Button's ghost variant keeps its hover and pressed overlays, so a
+     single shorthand anywhere in this file cancels the `variant` the component
+     was given. Product CSS is in the last cascade layer, so it wins that reset
+     regardless of specificity; fixing only the base rule left the overlays
+     dead on hover and in both download states, which is where they are most
+     visible. `border: 0` and `box-shadow: none` used to sit here too; both
+     restated what Button already computes. */
+  background-color: var(--control);
   color: var(--control-foreground);
-  box-shadow: none;
   overflow: hidden;
   -webkit-app-region: no-drag;
   transition:
@@ -162,12 +177,12 @@
 
 .maka-sidebar-update-button[data-update-state="downloading"] {
   cursor: default;
-  background: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
+  background-color: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
   opacity: 1;
 }
 
 .maka-sidebar-update-button[data-update-state="downloaded"] {
-  background: var(--control);
+  background-color: var(--control);
 }
 
 .maka-sidebar-update-progress {
@@ -175,16 +190,16 @@
   inset: 0;
   transform: scaleX(var(--maka-update-progress, 0));
   transform-origin: left center;
-  background: oklch(from var(--control) calc(l - 0.08) c h);
+  background-color: oklch(from var(--control) calc(l - 0.08) c h);
   transition: transform var(--duration-base) var(--ease-out-strong);
 }
 
 .maka-sidebar-update-button:hover {
-  background: oklch(from var(--control) calc(l - 0.04) c h);
+  background-color: oklch(from var(--control) calc(l - 0.04) c h);
 }
 
 .maka-sidebar-update-button:disabled:hover {
-  background: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
+  background-color: oklch(from var(--control) calc(l + 0.04) calc(c * 0.68) h);
 }
 
 .maka-sidebar-update-button:focus-visible {
@@ -283,16 +298,19 @@
   border-bottom-color: var(--focus-ring);
 }
 
+/* #1879: an Astryx `Badge variant="yellow"` now. Box, radius, padding and
+   caption type all come from the component (20px off `--spacing-5`), so the
+   only thing product CSS still owns is that it must not be squeezed by the
+   row's flex layout. */
 .maka-list-row-stale-pill {
-  font: var(--maka-text-heading-5);
   flex-shrink: 0;
-  padding: 1px var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: oklch(from var(--warning, var(--info)) l c h / 0.18);
-  color: var(--warning-text, var(--info-text));
 }
 
 /* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */
+/* #1879: no chrome, but still a box, and it had no height of its own —
+   measured, its own leading at 40px took it from 20px to 40px and pushed the
+   32px nav row with it. Pinned to `--h-control-xs` (20px), which is what the
+   supporting leading already resolves to, so nothing moves today. */
 .maka-nav-kbd {
   /* A <kbd> composes the mono variant of every role (maka-tokens.css anchors
      the role table on the code group too), and this hint has always opted out
@@ -301,6 +319,9 @@
      opt-out stays one declaration instead of reopening the triplet. */
   --maka-font-family: var(--font-family-body);
   font: var(--maka-text-supporting);
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   margin-left: auto;
   padding: 0;
   border: 0;

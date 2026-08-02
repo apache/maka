@@ -191,9 +191,18 @@
    touch + from assistive tech). It stays quiet — caption tier at
    normal weight, muted — and rides in the user turn's meta row beneath
    the block. Aligned to the same tier the footer-action cva uses (text-xs). */
+/* #1879: height off the control ruler, not off the line box. `inline-block`
+   let the leading decide the box — measured, bumping this element's own
+   leading to 40px took the box from 20px to 40px and carried the meta row
+   with it. `--h-control-xs` is 20px, the value the supporting leading
+   already resolves to, so the pin is pixel-neutral today and load-bearing
+   the next time a leading moves. Safe to pin because `white-space: nowrap`
+   below makes single-line a property of this box rather than an assumption. */
 .maka-message-time-inline {
   font: var(--maka-text-supporting);
-  display: inline-block;
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   color: var(--muted-foreground);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

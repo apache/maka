@@ -197,6 +197,16 @@
     gap: var(--space-1-5);
   }
 
+/* #1879: unpinned on purpose, and it is the one row where that call was got
+   wrong first. It looks like a chip — pill radius, padding, supporting leading
+   — but it is a compound container holding a label plus a status Badge, and
+   the label wraps. An earlier revision pinned it to `--h-control-md` and added
+   `white-space: nowrap` to make the pin safe. That inverts the invariant: on
+   Windows and Linux all five rows read `Unsupported on this platform`, and
+   measured, that string on one line is 317px in a 260px column — 57px past the
+   card border. Wrapping is the correct behaviour, so its height must track its
+   content, exactly like `.maka-plan-card-run`. The 20px Badge inside it is
+   what carries the box #1879 was about. */
 .settingsCapabilityOsPermissions li {
     font: var(--maka-text-supporting);
     display: inline-flex;
@@ -207,33 +217,6 @@
     border-radius: var(--radius-pill);
     background: var(--background);
     color: var(--foreground-secondary);
-  }
-
-.settingsCapabilityOsPermissions li em {
-    font: var(--maka-text-supporting);
-    font-style: normal;
-    padding: 1px var(--space-1-5);
-    border-radius: var(--radius-pill);
-    background: var(--foreground-5);
-    color: var(--foreground-secondary);
-  }
-
-/* success chips fall through to the neutral base above — granted is the
-   expected state and doesn't need a green pill. */
-
-.settingsCapabilityOsPermissions li em[data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
-    background: oklch(from var(--warning, var(--info)) l c h / 0.10);
-  }
-
-.settingsCapabilityOsPermissions li em[data-tone="destructive"] {
-    color: var(--destructive-text);
-    background: oklch(from var(--destructive) l c h / 0.10);
-  }
-
-.settingsCapabilityOsPermissions li em[data-tone="info"] {
-    color: var(--info-text);
-    background: oklch(from var(--info) l c h / 0.10);
   }
 
 /* #1361: `min-width: 0` on the guidance stack and its tracks. A grid item
@@ -422,14 +405,12 @@
     color: var(--foreground-secondary);
   }
 
+/* #1879: an Astryx `Badge` — the neutral pill it drew by hand is the default
+   variant, so the box, radius, padding and caption type all left with the old
+   rule. `letter-spacing` is the one thing that did not: Badge has no opinion
+   on tracking, and this is a wide-tracked micro-label. Additive, not a
+   restatement, which is the line between extending a component and racing it. */
 .settingsOsPermissionImpactLabel {
-    font: var(--maka-text-heading-5);
-    display: inline-flex;
-    align-items: center;
-    padding: 1px var(--space-1-5);
-    border-radius: var(--radius-pill);
-    background: oklch(from var(--foreground) l c h / 0.05);
-    color: var(--muted-foreground);
     letter-spacing: var(--tracking-wider);
   }
 

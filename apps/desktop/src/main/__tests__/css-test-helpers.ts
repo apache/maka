@@ -97,6 +97,59 @@ export function stripCssComments(src: string): string {
   return out;
 }
 
+/** Every first-party `.tsx` that can mount a renderer component. */
+export async function readTsxTree(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      return entry.name === 'node_modules' || entry.name === 'dist' ? [] : readTsxTree(path);
+    }
+    return entry.name.endsWith('.tsx') ? [path] : [];
+  }));
+  return files.flat().sort();
+}
+
+/**
+ * The `className`s handed to an Astryx `<Badge>`, with the file that does it.
+ *
+ * Deliberately a source scan and not a render: the invariant is about what
+ * product CSS is allowed to say to a Badge, and that is decidable from text.
+ * `className={cond ? 'a' : 'b'}` and other computed forms are not matched —
+ * they are reported by `findDynamicBadgeClassNames` instead, so a call site
+ * cannot leave this contract just by moving its class into an expression.
+ */
+export async function findBadgeClassNames(roots: string[]): Promise<{ file: string; className: string }[]> {
+  const out: { file: string; className: string }[] = [];
+  for (const root of roots) {
+    for (const file of await readTsxTree(root)) {
+      const src = await readFile(file, 'utf8');
+      for (const tag of src.matchAll(/<Badge\b[^>]*?\/?>/gs)) {
+        for (const attr of tag[0].matchAll(/\bclassName="([^"]*)"/g)) {
+          for (const one of attr[1].split(/\s+/).filter(Boolean)) {
+            out.push({ file, className: one });
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** `<Badge className={…}>` call sites, which the static contract cannot read. */
+export async function findDynamicBadgeClassNames(roots: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const root of roots) {
+    for (const file of await readTsxTree(root)) {
+      const src = await readFile(file, 'utf8');
+      for (const tag of src.matchAll(/<Badge\b[^>]*?\/?>/gs)) {
+        if (/\bclassName=\{/.test(tag[0])) out.push(file);
+      }
+    }
+  }
+  return [...new Set(out)];
+}
+
 /** Escape a CSS selector for a RegExp, allowing flexible whitespace. */
 function escapeCssSelector(selector: string): string {
   return selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
@@ -359,7 +412,7 @@ export function parseCssBlocks(css: string): CssBlock[] {
     const rule = nearestRuleSelector(node);
     const conditions = enclosingConditions(node);
     if (node.type === 'rule') {
-      const selector = normalizeSelector(node.selector);
+      const selector = resolveNesting(normalizeSelector(node.selector), rule);
       out.push({ selector, rule: selector, conditions, decls });
     } else if (rule !== null) {
       out.push({ selector: `${rule} @${node.name} ${node.params}`.trim(), rule, conditions, decls });
@@ -370,6 +423,66 @@ export function parseCssBlocks(css: string): CssBlock[] {
 
 function normalizeSelector(selector: string): string {
   return selector.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A nested rule's selector rewritten against its nearest style-rule ancestor.
+ *
+ * Without this, `.a { & { height: auto } }` is emitted under the literal key
+ * `&` — so it neither reaches `.a` (a false green) nor stays distinct from
+ * every OTHER nested rule in the tree, which all collide on that one key.
+ * Nothing in this tree nests today; that is exactly when it is cheapest to
+ * close, because the first nested rule someone writes would otherwise walk
+ * through every scan built on these blocks.
+ */
+function resolveNesting(selector: string, parent: string | null): string {
+  if (parent === null) return selector;
+  return splitSelectorList(selector)
+    .map((one) => (one.includes('&') ? one.replaceAll('&', parent) : `${parent} ${one}`))
+    .join(', ');
+}
+
+/** `@media`, `@supports` and `@container` gate WHETHER a rule applies;
+ * `@layer` and `@scope` only gate how it cascades. */
+const CONDITIONAL_AT = /^@(?:media|supports|container)\b/;
+
+/**
+ * Every selector's UNCONDITIONAL declarations, merged across every rule that
+ * names it, in source order.
+ *
+ * A chip whose type lives in one rule and whose pill chrome lives in another
+ * is one box to a browser and was two blocks to a per-block scan — which is
+ * how `.plan-proposal-revision` sat five lines from a selector the scan did
+ * catch and was invisible to it. Merging in source order also makes "the last
+ * declaration wins" true across files, not just within a block.
+ *
+ * What this is NOT, stated because the difference is load-bearing and easy to
+ * assume away: it is not the browser's computed value. It merges on the
+ * literal selector text, so it models one rule for one selector and nothing
+ * about the cascade around it.
+ *
+ *   - `.wrap .chip { height: auto }` is a DIFFERENT key from `.chip`, so it
+ *     neither relaxes nor triggers a check on `.chip`. Qualified overrides are
+ *     invisible here by construction. What covers them is the Badge call-site
+ *     contract and the live e2e measurements, not this.
+ *   - Conditional rules are skipped entirely rather than folded in. Folding
+ *     them made a chip pinned only inside a breakpoint read as pinned
+ *     everywhere (false green) AND made a deliberate responsive unpin illegal
+ *     (false red); dropping them keeps the unconditional box honest, which is
+ *     the box every contract here is about.
+ *   - `!important` is not modelled. Nothing in this tree uses it on the
+ *     properties these contracts read.
+ */
+export function mergeBySelector(css: string): Map<string, string> {
+  const merged = new Map<string, string>();
+  for (const { rule, conditions, decls } of parseCssBlocks(css)) {
+    if (conditions.some((c) => CONDITIONAL_AT.test(c))) continue;
+    const body = decls.map((d) => `${d.prop}: ${d.value};`).join(' ');
+    for (const one of splitSelectorList(rule)) {
+      merged.set(one, `${merged.get(one) ?? ''}${body} `);
+    }
+  }
+  return merged;
 }
 
 /** Every enclosing at-rule's `@name params`, outermost first. `@layer` counts:

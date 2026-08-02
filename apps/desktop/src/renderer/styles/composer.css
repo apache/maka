@@ -135,7 +135,16 @@
 /* Model chip (static fallback) still owns its own quiet geometry. */
 .maka-composer-model-chip {
   font: var(--maka-text-label);
-  height: 26px;
+  /* #1879: was a bare 26px. It is NOT an Astryx component — `ModelChipStatic`
+     puts this class only on its inert `<span>` branch; the `onOpenSettings`
+     branch renders a `Button size="sm"` that carries no class at all
+     (chat-model-switcher.tsx). So nothing sizes this box but this rule, and
+     unpinning it measured 22px (the label role's 20px line box plus two
+     hairlines) against the 28px Selector beside it. `--h-control-md` resolves
+     to `--size-element-sm`, which is the token that Selector's own `size="sm"`
+     reads — so the two agree by deriving from one token rather than by two
+     product rules agreeing on a literal. */
+  height: var(--h-control-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -400,7 +409,11 @@
   margin: 0 auto var(--space-1);
   padding: 0 var(--space-1-5);
   box-sizing: border-box;
-  height: 26px;
+  /* #1879: was `height: 26px`, an off-ruler literal. The floor is arithmetic
+     under `border-box`: a 20px supporting line box plus two hairline borders
+     needs 22px, so `--h-control-sm` (24px) is the smallest tier that holds it
+     without clipping. Loses 2px. */
+  height: var(--h-control-sm);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-pill);
   background: var(--background-elevated);
@@ -428,11 +441,19 @@
   text-overflow: ellipsis;
 }
 
+/* #1879: the one site in this family where the old height was not merely
+   off-ruler but smaller than the line box it renders — measured, an 18px box
+   around a 20px line box, and `display: block` so the text was not centred
+   either. Nothing clipped (the 2px excess is half-leading, and there is no
+   `overflow: hidden` here), but a box shorter than its own line box has no
+   defensible height. `--h-control-xs` (20px) is that line box. Gains 2px. */
 .maka-composer-revision-notice-cancel {
   font: var(--maka-text-supporting);
   appearance: none;
   flex: 0 0 auto;
-  height: 18px;
+  height: var(--h-control-xs);
+  display: inline-flex;
+  align-items: center;
   padding: 0 var(--space-1-5);
   border: none;
   border-radius: var(--radius-pill);

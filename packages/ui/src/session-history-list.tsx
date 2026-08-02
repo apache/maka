@@ -27,6 +27,7 @@ import {
   Trash2,
 } from './icons.js';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
@@ -688,13 +689,25 @@ const SessionItemEndContent = memo(function SessionItemEndContent(props: {
   return (
     <EndContentHitTarget className="maka-session-row-end">
       {props.stale && (
-        <span
-          className="maka-list-row-stale-pill"
-          title={copy.staleTitle}
-          aria-label={copy.staleAriaLabel}
-        >
-          {copy.stale}
-        </span>
+        <Tooltip content={copy.staleTitle}>
+          {/* `yellow`, not `warning`. Astryx keeps two archives: the semantic
+              names paint a solid saturated fill (maka's `warning` is a flat
+              #ffce2f that does not adapt to dark mode), the colour names paint
+              a tint. This pill sits on every stale row in the rail, where the
+              chrome it replaced was an 18% wash — a solid block on each row
+              reads as an alert the state does not mean. */}
+          <Badge
+            variant="yellow"
+            label={copy.stale}
+            className="maka-list-row-stale-pill"
+            /* The reason belongs in the name, not only in the Tooltip. `title`
+               used to carry it, and a screen reader read it as the accessible
+               description; Astryx's Tooltip points `aria-describedby` at a
+               popover that is `display: none` until hovered, so off the mouse
+               the description computes to empty. */
+            aria-label={`${copy.staleAriaLabel}. ${copy.staleTitle}`}
+          />
+        </Tooltip>
       )}
       {props.worktree && (
         <FolderGit2

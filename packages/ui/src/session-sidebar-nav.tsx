@@ -97,7 +97,11 @@ export function SessionSidebarFooter(props: {
           data-update-state={props.updateReminder.state}
           style={{ '--maka-update-progress': String(Math.max(0, Math.min(100, props.updateReminder.progressPercent ?? 0)) / 100) } as CSSProperties}
           label={updateTitle}
-          size="sm"
+          // #1879: was `sm` with a 34px height forced from product CSS. Astryx
+          // sizes Button off --size-element-* (sm 28 / md 32), so `md` IS the
+          // 32px this button wants, and the CSS height is gone rather than
+          // fighting the component's own size token.
+          size="md"
           variant="ghost"
           width="100%"
           onClick={props.onOpenUpdate}

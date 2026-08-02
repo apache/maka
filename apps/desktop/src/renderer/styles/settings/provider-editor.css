@@ -67,18 +67,6 @@
   color: var(--muted-foreground);
 }
 
-/* category / preview / login badges — compact squared corners, never pills */
-.providerCatalogBadge {
-  font: var(--maka-text-heading-5);
-  flex: 0 0 auto;
-  width: fit-content;
-  border-radius: var(--radius-control);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  padding: var(--space-0-5) var(--space-1-5);
-  font-style: normal;
-}
-
 .providerEditor {
   display: grid;
   gap: var(--space-3);
@@ -336,13 +324,24 @@
   overflow: auto;
 }
 
+/* #1879: a `font:` role used to sit here and restate the type Badge already
+   composes from `--text-supporting-*` and `--font-weight-medium`. Naming a
+   role on a component that owns its own type is the same race as pinning its
+   box; the caption tier survives the deletion and the weight lands back on
+   Badge's medium. Only `letter-spacing` is additive — Badge has no opinion on
+   tracking. */
 .providerOAuthCardBadge {
-  font: var(--maka-text-heading-5);
   letter-spacing: var(--tracking-wide);
 }
 
+/* A colour override on a component's own surface, kept deliberately rather
+   than expressed as a `variant`: the state is "already logged in", which reads
+   quieter than the default pill, and Astryx has no quieter neutral to name —
+   its `neutral` and `gray` resolve to the same two tokens in the maka theme
+   (astryx-theme/maka.css). Extending a component where its vocabulary stops is
+   not the same as racing it where it does not. */
 .providerOAuthCard[data-logged-in="true"] .providerOAuthCardBadge {
-  background: var(--foreground-5);
+  background-color: var(--foreground-5);
   color: var(--foreground-secondary);
 }
 

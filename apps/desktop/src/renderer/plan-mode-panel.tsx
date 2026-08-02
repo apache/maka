@@ -6,7 +6,7 @@ import type {
   SessionEvent,
   SessionSummary,
 } from '@maka/core';
-import { Button as UiButton, useToast } from '@maka/ui';
+import { Badge, type BadgeVariant, Button as UiButton, useToast } from '@maka/ui';
 import { ChevronDown } from '@maka/ui/icons';
 
 export interface PlanModeState {
@@ -122,10 +122,18 @@ export function PlanProposalCard(props: {
             <strong>{proposal.title}</strong>
           </div>
           <div className="plan-proposal-meta">
-            <span className="plan-proposal-revision">Revision {proposal.revision}</span>
-            <span className="plan-proposal-status" data-status={proposal.status}>
-              {proposalStatusLabel(proposal.status)}
-            </span>
+            <Badge
+              className="plan-proposal-revision"
+              label={
+                <>
+                  Revision <code>{proposal.revision}</code>
+                </>
+              }
+            />
+            <Badge
+              variant={proposalStatusVariant(proposal.status)}
+              label={proposalStatusLabel(proposal.status)}
+            />
           </div>
         </div>
         {proposal.overview && <p className="plan-proposal-overview">{proposal.overview}</p>}
@@ -279,6 +287,16 @@ function proposalStatusLabel(status: PlanProposal['status']): string {
   if (status === 'approved') return '已批准';
   if (status === 'stale') return '已过期';
   return '等待确认';
+}
+
+/* #1879: the status pill is an Astryx `Badge`. Only `approved` is a semantic
+   outcome; waiting and stale are steady states, so they stay neutral rather
+   than borrowing a colour the state does not mean. `green` rather than
+   `success` because Astryx paints its semantic archive as solid saturated
+   fills and its colour archive as tints — the chrome this replaced was a
+   tint. */
+function proposalStatusVariant(status: PlanProposal['status']): BadgeVariant {
+  return status === 'approved' ? 'green' : 'neutral';
 }
 
 function executionStepStatusLabel(status: PlanExecutionStep['status']): string {

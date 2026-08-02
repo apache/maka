@@ -28,13 +28,15 @@ import { ChevronRight, KeyRound, Settings as SettingsIcon, Cpu, AlertCircle } fr
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { RECOMMENDED_PROVIDER_TYPES, type LlmConnection, type OnboardingState, type ProviderType, type SettingsSection } from '@maka/core';
 import {
+  Badge,
+  type BadgeVariant,
   Button,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
 import { Item } from '@astryxdesign/core/Item';
 import { ProviderLogo, providerDisplay } from './settings/provider-display';
-import { getOnboardingHeroCopy, getOnboardingSetupSteps, type OnboardingSetupStep } from './onboarding-hero-copy';
+import { getOnboardingHeroCopy, getOnboardingSetupSteps, type OnboardingSetupStep, type OnboardingSetupStepState } from './onboarding-hero-copy';
 import { getOnboardingCopy } from './locales/onboarding-copy';
 
 export interface OnboardingHeroProps {
@@ -538,6 +540,20 @@ function SetupHero(props: SetupHeroProps) {
   );
 }
 
+/* #1879: the per-step state pill is an Astryx `Badge`. `active` and `warning`
+   were the only two states product CSS ever tinted; the other two were the
+   untinted default, which is what `neutral` is.
+   Colour names rather than the semantic `info`/`error`: Astryx paints the
+   semantic archive as solid saturated fills and the colour archive as tints,
+   and these two states were a 12% wash. A solid red step in a setup checklist
+   reads as a failure; the state means "needs your attention". */
+const SETUP_STEP_VARIANT: Record<OnboardingSetupStepState, BadgeVariant> = {
+  done: 'neutral',
+  active: 'blue',
+  pending: 'neutral',
+  warning: 'red',
+};
+
 function SetupProgress(props: { steps: readonly OnboardingSetupStep[] }) {
   const copy = getOnboardingCopy(useUiLocale());
   return (
@@ -551,9 +567,11 @@ function SetupProgress(props: { steps: readonly OnboardingSetupStep[] }) {
             <strong>{step.label}</strong>
             <small>{step.detail}</small>
           </span>
-          <span className="maka-onboarding-setup-step-state">
-            {copy.setupStatus[step.state]}
-          </span>
+          <Badge
+            className="maka-onboarding-setup-step-state"
+            variant={SETUP_STEP_VARIANT[step.state]}
+            label={copy.setupStatus[step.state]}
+          />
         </li>
       ))}
     </ol>

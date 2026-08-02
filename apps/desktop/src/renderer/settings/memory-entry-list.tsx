@@ -1,5 +1,5 @@
 import type { LocalMemoryState } from '@maka/core';
-import { Button, RelativeTime } from '@maka/ui';
+import { Badge, Button, RelativeTime } from '@maka/ui';
 import { memoryOriginLabel } from './memory-settings-labels';
 import type { MemorySettingsCopy } from '../locales/settings-memory-copy';
 
@@ -71,9 +71,14 @@ export function MemoryEntryList(props: {
                     </span>
                   )}
                 </small>
-                <span className="settingsMemoryPromptScope" data-active={props.archived ? 'false' : 'true'}>
-                  {props.archived ? props.copy.text.archivedNoPrompt : props.copy.text.activePrompt}
-                </span>
+                <Badge
+                  className="settingsMemoryPromptScope"
+                  /* `blue`, not `info`: Astryx's semantic archive is solid
+                     fills and its colour archive is tints, and the wash this
+                     replaced was `--state-selected-bg`. */
+                  variant={props.archived ? 'neutral' : 'blue'}
+                  label={props.archived ? props.copy.text.archivedNoPrompt : props.copy.text.activePrompt}
+                />
                 <p>{entry.content}</p>
                 {(props.onCopyReference || props.onFocusDraft || props.onStatusChange) && (
                   <div className="settingsMemoryEntryActions" role="group" aria-label={props.copy.entryActionsAria(entry.title)}>

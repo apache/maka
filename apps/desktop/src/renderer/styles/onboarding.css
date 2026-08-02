@@ -311,24 +311,12 @@
   color: var(--foreground-secondary);
 }
 
+/* #1879: an Astryx `Badge` now — box, radius, padding, caption type and the
+   per-state colour all come from the component, so the two `[data-state]`
+   overrides that used to tint it are variants at the call site. Only its place
+   in the step grid is product layout. */
 .maka-onboarding-setup-step-state {
-  font: var(--maka-text-heading-5);
   justify-self: end;
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: var(--background-elevated);
-  color: var(--foreground-secondary);
-  white-space: nowrap;
-}
-
-.maka-onboarding-setup-steps > li[data-state="active"] .maka-onboarding-setup-step-state {
-  background: oklch(from var(--nav-active) l c h / 0.12);
-  color: var(--nav-active);
-}
-
-.maka-onboarding-setup-steps > li[data-state="warning"] .maka-onboarding-setup-step-state {
-  background: oklch(from var(--destructive-text) l c h / 0.12);
-  color: var(--destructive-text);
 }
 
 @media (max-width: 620px) {

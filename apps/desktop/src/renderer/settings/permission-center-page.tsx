@@ -379,9 +379,20 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
             {capability.osPermissions.map((req) => (
               <li key={req.id}>
                 <span>{copy.osPermissions[req.id]?.label ?? req.id}</span>
-                <em data-tone={copy.osStates[req.status].tone}>
-                  {copy.osStates[req.status].label}
-                </em>
+                {/* #1879: was an `<em data-tone>` with a base rule and three
+                    hand-tinted overrides. Routed through the same
+                    `statusBadgeVariant` seam the readiness badge above already
+                    used — one tone table for the page beats a per-chip
+                    opinion. That keeps it on Astryx's semantic (solid) archive
+                    rather than the tinted one the chat and sidebar chips use,
+                    which is deliberate: every other status badge in Settings
+                    reads from this seam, and dissenting here would recreate
+                    the local exception this replaced. No tone actually
+                    changed — `granted` is `neutral` in the copy table. */}
+                <Badge
+                  variant={statusBadgeVariant(copy.osStates[req.status].tone)}
+                  label={copy.osStates[req.status].label}
+                />
               </li>
             ))}
           </ul>
@@ -462,7 +473,7 @@ function OsPermissionRow(props: {
         <small className="settingsOsPermissionPurpose">{purpose}</small>
         {impact ? (
           <small className="settingsOsPermissionImpact">
-            <span className="settingsOsPermissionImpactLabel">{props.copy.impact}</span>
+            <Badge className="settingsOsPermissionImpactLabel" label={props.copy.impact} />
             <span>{impact}</span>
           </small>
         ) : null}
