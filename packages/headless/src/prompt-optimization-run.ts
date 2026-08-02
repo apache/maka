@@ -10,7 +10,8 @@ import {
   type HarborTaskPricing,
 } from './harbor-task-runner.js';
 import { createAiSdkMetaAgent } from './meta-agent-completion.js';
-import { createCliPromptCandidateGit, type MetaAgent } from './prompt-candidate-loop.js';
+import { type MetaAgent } from './prompt-candidate-loop.js';
+import { createCliPromptCandidateGit } from './prompt-candidate-git.js';
 import {
   runPromptOptimizationLoop,
   type PromptOptimizationLoopResult,
