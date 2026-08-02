@@ -148,16 +148,46 @@ function canonicalizeMainlineV1(value: unknown, parentKey?: string): unknown {
  *
  * Dropping the key is lossless in the only sense that matters: JSON cannot tell
  * an absent property from one set to `undefined`, so this writes down what
- * would have been persisted anyway.
+ * would have been persisted anyway. The same reasoning gives an array hole a
+ * `null` rather than a removal — JSON writes one there regardless, and removing
+ * the entry would shift everything after it.
+ *
+ * What it does not do: it never rebuilds a value that needed no change, so
+ * symbol keys, getters and object identity survive untouched on that path; a
+ * value it does rebuild is a plain-object spread, which keeps symbol keys and
+ * loses nothing JSON could have seen. Anything with its own prototype is
+ * returned as-is rather than flattened.
  */
 export function stripUndefinedDeep<T>(value: T): T {
-  if (Array.isArray(value)) return value.map((entry) => stripUndefinedDeep(entry)) as unknown as T;
+  if (Array.isArray(value)) {
+    // An array hole is not a property that can be dropped: JSON writes it as
+    // `null`, so leaving `undefined` in place produces a value that does not
+    // round-trip and the encoder refuses it just the same. Writing `null` is
+    // not inventing a value — it is writing down what would be persisted.
+    const mapped = value.map((entry) => (entry === undefined ? null : stripUndefinedDeep(entry)));
+    return (mapped.some((entry, index) => entry !== value[index]) ? mapped : value) as unknown as T;
+  }
   if (value === null || typeof value !== 'object') return value;
   if (Object.getPrototypeOf(value) !== Object.prototype) return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (entry === undefined) continue;
-    out[key] = stripUndefinedDeep(entry);
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  let changed = false;
+  const out: Record<string, unknown> = { ...record };
+  for (const key of keys) {
+    const entry = record[key];
+    if (entry === undefined) {
+      delete out[key];
+      changed = true;
+      continue;
+    }
+    const next = stripUndefinedDeep(entry);
+    if (next !== entry) {
+      out[key] = next;
+      changed = true;
+    }
   }
-  return out as unknown as T;
+  // Unchanged values are returned as they came. Rebuilding one that needed
+  // nothing would drop symbol keys and re-run getters for no gain, and the
+  // common case by far is that nothing needs removing.
+  return (changed ? out : value) as unknown as T;
 }

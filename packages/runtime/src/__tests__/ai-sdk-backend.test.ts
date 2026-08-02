@@ -13,6 +13,7 @@ import type {
   SessionHeader,
   StorageRef,
 } from '@maka/core';
+import { encodeCanonicalRuntimeEvent } from '@maka/core';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionEventMapMemory, mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
@@ -12758,6 +12759,126 @@ describe('AiSdkBackend steering durability and identity', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
       { role: 'user', content: [{ type: 'text', text: 'continue' }] },
     ]);
+  });
+
+  test('persists provider metadata a canonical event can read back', async () => {
+    // The failure this pins is not in the sanitiser, it is at this seam.
+    //
+    // A field the response did not carry arrives as an explicit `undefined` —
+    // Anthropic sends `{ type: 'direct', toolId: undefined }` when there is no
+    // tool id. JSON drops such a property, so the persisted event no longer
+    // reads back as it was written and `encodeCanonicalRuntimeEvent` refuses
+    // it. That refusal marked the runtime event store unavailable and the
+    // turn's terminal write then threw, so every turn that called any tool
+    // died about a tenth of a second after the tool returned.
+    //
+    // Asserting on the sanitiser alone cannot catch a regression here: the
+    // sanitiser is a pure function and could not have produced the bug. This
+    // streams the shape a real provider sends and encodes what was persisted.
+    const anchor = runtimeTextEvent({
+      id: 'runtime-user',
+      turnId: 'turn-1',
+      role: 'user',
+      author: 'user',
+      text: 'call the tool',
+    });
+    const ledger: RuntimeEvent[] = [anchor];
+    const mappingMemory = createSessionEventMapMemory();
+    const mappingContext: InvocationContext = {
+      sessionId: 'session-1',
+      invocationId: 'invocation-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'desktop',
+      startedAt: 1,
+      request: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        text: 'call the tool',
+        source: 'desktop',
+        initialRuntimeEvent: anchor,
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    };
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'call-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'ok.md' }),
+                  providerMetadata: {
+                    anthropic: { caller: { type: 'direct', toolId: undefined } },
+                  },
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Done.' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'end_turn' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'read',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => ({ body: 'ok' }),
+        },
+      ],
+      loadTurnRuntimeEvents: async () => ledger,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      text: 'call the tool',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+    })) {
+      const mapped = mapSessionEventToRuntimeEvent(event, mappingContext, mappingMemory);
+      if (mapped.partial !== true && mapped.content?.kind !== 'error') ledger.push(mapped);
+    }
+
+    // Every persisted event has to survive the encoder, because one that does
+    // not takes the store — and the turn — with it.
+    for (const event of ledger) {
+      assert.doesNotThrow(
+        () => encodeCanonicalRuntimeEvent(event),
+        `a persisted ${event.content?.kind} event must read back as it was written`,
+      );
+    }
   });
 });
 
