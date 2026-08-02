@@ -55,6 +55,10 @@ test('keeps a captured selection available through action activation', async ({
   const askInSidebar = page.getByRole('button', { name: '在侧栏追问' });
   await askInSidebar.focus();
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await page.evaluate(() =>
+    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true })),
+  );
+  await expect(askInSidebar).toBeVisible();
   await askInSidebar.click();
 
   await expect(page.locator('.maka-quote-companion')).toBeVisible();

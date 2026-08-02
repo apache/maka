@@ -71,18 +71,20 @@ export function useMessageSelectionQuote(
       };
     }
 
-    function refresh(): void {
-      setQuote(computeQuote());
+    function capture(): void {
+      const nextQuote = computeQuote();
+      if (nextQuote) setQuote(nextQuote);
     }
 
     // mouseup finalizes a drag-select; keyup covers keyboard (shift+arrow)
-    // selection. Scroll is capture-phase because scroll events do not bubble.
-    document.addEventListener('mouseup', refresh);
-    document.addEventListener('keyup', refresh);
+    // selection. These events only capture; dismissal and consumption own
+    // clearing the snapshot. Scroll is capture-phase because it does not bubble.
+    document.addEventListener('mouseup', capture);
+    document.addEventListener('keyup', capture);
     document.addEventListener('scroll', clear, { capture: true, passive: true });
     return () => {
-      document.removeEventListener('mouseup', refresh);
-      document.removeEventListener('keyup', refresh);
+      document.removeEventListener('mouseup', capture);
+      document.removeEventListener('keyup', capture);
       document.removeEventListener('scroll', clear, { capture: true });
     };
   }, [scrollRef, enabled, clear]);
