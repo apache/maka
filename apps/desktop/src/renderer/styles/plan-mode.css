@@ -154,7 +154,6 @@
 .plan-proposal-step-content strong {
   overflow-wrap: anywhere;
   font-weight: var(--font-weight-semibold);
-  line-height: var(--text-body-leading);
 }
 
 .plan-proposal-step-content p {

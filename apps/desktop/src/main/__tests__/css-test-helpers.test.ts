@@ -15,6 +15,12 @@
  *    shared backstop for the font-weight and line-height converge contracts,
  *    which scan longhand declarations only and would otherwise miss bare
  *    weight or line-height smuggled in via `font:` shorthand.
+ *
+ * 3. `parseCssBlocks` reports every rule's OWN declarations at any nesting
+ *    depth, and reads the last declaration of a repeated property. Both are
+ *    silent-failure shapes: the innermost-block-only form it replaced dropped
+ *    a nested rule's parent entirely, and a first-match read reports the value
+ *    the browser discards. Untested, the pairing contract inherits both.
  */
 
 import { strict as assert } from 'node:assert';
@@ -25,6 +31,7 @@ import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
   findFontShorthandOffenders,
+  parseCssBlocks,
   assertCustomPropPinnedOnce,
   cssRuleBody,
   cssMediaBody,
@@ -78,6 +85,43 @@ describe('css-test-helpers', () => {
 
     it('ignores font: inside comments', () => {
       assert.deepEqual(findFontShorthandOffenders('/* font: 600 12px sans-serif */', 'test'), []);
+    });
+  });
+
+  describe('parseCssBlocks (own declarations, at any depth)', () => {
+    const bodyOf = (css: string, selector: string) =>
+      parseCssBlocks(css).find((b) => b.selector === selector)?.body;
+
+    it('keeps a parent rule’s declarations when a nested rule follows them', () => {
+      // The regression that motivated replacing the innermost-block-only
+      // parser: under it `.a` disappeared entirely, taking its font-size out
+      // of the pairing scan and silently exempting the rule.
+      const css = '.a { font-size: 18px; & span { color: red; } }';
+      assert.match(bodyOf(css, '.a') ?? '', /font-size:\s*18px/);
+      assert.match(bodyOf(css, '& span') ?? '', /color:\s*red/);
+    });
+
+    it('keeps a parent rule’s declarations that follow the nested rule', () => {
+      const css = '.a { & span { color: red; } line-height: 1.9; }';
+      assert.match(bodyOf(css, '.a') ?? '', /line-height:\s*1\.9/);
+    });
+
+    it('emits rules inside at-rules but not the at-rule body itself', () => {
+      const blocks = parseCssBlocks('@media (min-width: 40rem) { .a { font-size: 18px; } }');
+      assert.deepEqual(
+        blocks.map((b) => b.selector),
+        ['.a'],
+      );
+    });
+
+    it('does not leak a sibling rule’s declarations into a block', () => {
+      const css = '.a { font-size: 18px; }\n.b { color: red; }';
+      assert.doesNotMatch(bodyOf(css, '.a') ?? '', /color/);
+      assert.doesNotMatch(bodyOf(css, '.b') ?? '', /font-size/);
+    });
+
+    it('strips comments before parsing', () => {
+      assert.doesNotMatch(bodyOf('.a { /* font-size: 18px; */ color: red; }', '.a') ?? '', /18px/);
     });
   });
 

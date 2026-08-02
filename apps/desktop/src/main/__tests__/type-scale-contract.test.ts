@@ -26,6 +26,7 @@ import {
   cssRuleBody,
   assertCssRuleDecls,
   assertCustomPropPinnedOnce,
+  findFontShorthandOffenders,
   findLeadingPairingOffenders,
   parseCssCustomProps,
   readAllRendererCss,
@@ -200,18 +201,48 @@ describe('type scale contracts', () => {
     // not the body role: it is a copy of what the role happened to compute
     // before the last scale change.
     assert.deepEqual(
-      [...css.matchAll(/line-height:\s*[\d.]+/g)].map((m) => m[0]),
+      [...css.matchAll(/line-height\s*:\s*[\d.]+/g)].map((m) => m[0]),
       [],
       'line-height must name an Astryx role token, not a literal ratio',
     );
+    // The bypass the two checks above cannot see, and the one this branch is
+    // most exposed to: rebinding a role token itself. The transcript uses that
+    // mechanism deliberately (`--text-supporting-leading: var(--maka-line-body)`
+    // in chat-message.css), so a rebind is legal — but only to another token.
+    // Rebound to a literal, one line re-establishes a second leading authority
+    // for a whole subtree and reaches every `line-height: var(--text-*-leading)`
+    // site under it, with every other check in this file still green.
+    assert.deepEqual(
+      [...css.matchAll(/--text-[\w-]+-leading\s*:\s*[\d.]+/g)].map((m) => m[0]),
+      [],
+      'an Astryx leading role may be rebound to another token, never to a literal',
+    );
+    // Product CSS is already in the last cascade layer, so the keyword buys
+    // nothing here and costs the ability to retune a tier from the theme. The
+    // font-size ban below has always said this; leading was left out.
+    assert.deepEqual(
+      [...css.matchAll(/line-height:[^;]*!important/g)].map((m) => m[0]),
+      [],
+      'no renderer stylesheet may force a line-height',
+    );
+    // `font:` shorthand carries a leading in its `/` slot (`12px/1.9 sans`),
+    // which every longhand scan above is blind to. The backstop for exactly
+    // this existed in css-test-helpers.ts with no caller anywhere in the repo
+    // outside its own unit test — a guard that was written but never posted.
+    assert.deepEqual(findFontShorthandOffenders(css, 'renderer'), []);
   });
 
-  it('declares every font-size with the leading of its own tier', async () => {
+  it('pairs every font-size and every line-height with its own tier', async () => {
     // The pairing this branch exists to make unbreakable. Size and leading
     // were separately chosen per site, so a site could move one and leave the
     // other — measured, `.maka-onboarding-setup header h1` had done exactly
     // that, overriding the size to 18px while the leading came from a 16px
     // rule one selector up, and rendering 22.5px.
+    //
+    // Both directions, because both are ways for the pair to come apart: a
+    // size with no leading takes whatever ratio it inherits, and a leading
+    // with no size pins a ratio to a size it was never chosen against. The
+    // second half found three blocks in this tree that no check anywhere saw.
     //
     // Resolved through the generated theme rather than a copied table, so
     // this tracks an Astryx scale change instead of failing on one.

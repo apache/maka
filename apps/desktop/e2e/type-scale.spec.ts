@@ -160,12 +160,22 @@ test('resolves one type scale from the root down to the transcript', async ({
     // Recomputed here rather than table-copied so an Astryx scale change moves
     // the expectation with it.
     //
-    // Scope stated rather than hidden: this window only. Sweeping every
-    // scenario would import other surfaces' vendor gaps — measured, Astryx's
-    // own TextArea counter row (TextArea.tsx declares --text-supporting-size
-    // with no matching leading) is off-grid in the plan-reminders window, and
-    // an allowlist keyed to generated atom class names would rot on the next
-    // Astryx build. Repo-wide coverage is the pairing contract's job.
+    // Scope stated with the measured number rather than hidden: this window
+    // renders 129 elements with their own text, and of the 323 classes whose
+    // rules declare a leading, 3 land on one. Sweeping every scenario would
+    // import other surfaces' vendor gaps — measured, Astryx's own TextArea
+    // counter row (TextArea.tsx declares --text-supporting-size with no
+    // matching leading) is off-grid in the plan-reminders window, and an
+    // allowlist keyed to generated atom class names would rot on the next
+    // Astryx build.
+    //
+    // So this is not the repo-wide guard and must not be described as one:
+    // what it covers is the one thing text cannot, an inherited ratio meeting
+    // an overridden size in a resolved document. Repo-wide coverage is the
+    // pairing contract's, which now checks both directions — an earlier
+    // revision of that contract deferred leading-without-size here, and
+    // measured, none of the three such blocks in the tree rendered in this
+    // window, so the class had no coverage in either place.
     const offGrid = await page.evaluate(() => {
       const grid = (px: number) => {
         const target = px < 20 ? 1.5 : px < 32 ? 1.4 : 1.25;

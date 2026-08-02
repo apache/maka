@@ -370,10 +370,13 @@
   font-size: var(--font-size-xl);
   line-height: var(--text-heading-2-leading);
 }
+/* No leading here on purpose: this paragraph declares no size either, so it
+   takes the body tier whole from `body` in maka-tokens.css. Naming the leading
+   without the size is the split this branch exists to end — it pins a ratio
+   that stops matching the moment anything above changes the size. */
 .maka-onboarding-setup header p {
   margin-top: var(--space-2);
   color: var(--foreground-secondary);
-  line-height: var(--text-body-leading);
 }
 .maka-onboarding-setup[data-tone="warning"] header h1 {
   color: var(--warning, var(--info-text));
