@@ -43,6 +43,10 @@ const ALLOW = new Map([
     'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
   ],
   [
+    'apps/desktop/src/main/storage-root-startup.ts',
+    'one line when a remounted volume is recognised, before any window exists; a path and no secrets.',
+  ],
+  [
     'apps/desktop/src/main/app-lifecycle.ts',
     'startup/shutdown diagnostics (dock icon, credential migration, e2e-fixture marker, cleanup failures); no secrets (moved from main.ts, arch R6).',
   ],
