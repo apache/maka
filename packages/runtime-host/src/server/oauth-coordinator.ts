@@ -34,6 +34,7 @@ import {
   type HostClientCapabilityCoordinator,
 } from './client-capability-coordinator.js';
 import type { OAuthOperationHandlerMap } from './operation-dispatcher.js';
+import type { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 
 const CODEX_CALLBACK_HOST = '127.0.0.1';
 const CODEX_CALLBACK_PORT = 1455;
@@ -46,6 +47,7 @@ const CALLBACK_ERROR_URI_MAX_CHARS = 8 * 1024;
 const MAX_TERMINAL_ATTEMPTS = 256;
 const DEFAULT_AUTHORIZATION_TIMEOUT_MS = 10 * 60_000;
 const MAX_AUTHORIZATION_TIMEOUT_MS = 60 * 60_000;
+const PRESENTATION_TIMEOUT_MARGIN_MS = 5_000;
 
 export class HostOAuthFatalError extends Error {
   constructor(
@@ -59,7 +61,9 @@ export class HostOAuthFatalError extends Error {
 
 export interface HostOAuthCoordinatorInput {
   readonly runtimePolicy: RuntimePolicyStoresWriter;
+  readonly activation: RuntimePolicyActivationGate;
   readonly clientCapabilities: HostClientCapabilityCoordinator;
+  readonly isProviderEnabled: (provider: OAuthLoginProvider) => boolean;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly invalidateBackends: () => Promise<void>;
   readonly onFatal: (error: HostOAuthFatalError) => void;
@@ -108,7 +112,9 @@ export class HostOAuthCoordinator {
   };
 
   readonly #runtimePolicy: RuntimePolicyStoresWriter;
+  readonly #activation: RuntimePolicyActivationGate;
   readonly #clientCapabilities: HostClientCapabilityCoordinator;
+  readonly #isProviderEnabled: (provider: OAuthLoginProvider) => boolean;
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #invalidateBackends: () => Promise<void>;
   readonly #onFatal: (error: HostOAuthFatalError) => void;
@@ -132,7 +138,9 @@ export class HostOAuthCoordinator {
 
   constructor(input: HostOAuthCoordinatorInput) {
     this.#runtimePolicy = input.runtimePolicy;
+    this.#activation = input.activation;
     this.#clientCapabilities = input.clientCapabilities;
+    this.#isProviderEnabled = input.isProviderEnabled;
     this.#acquireResidency = input.acquireResidency;
     this.#invalidateBackends = input.invalidateBackends;
     this.#onFatal = input.onFatal;
@@ -216,6 +224,9 @@ export class HostOAuthCoordinator {
       return invalidRequest('Connection cannot start an interactive OAuth login');
     }
     if (this.#admissionClosed) return hostDraining();
+    if (!this.#isProviderEnabled(admitted.connection.providerType)) {
+      return operationUnavailable('OAuth enrollment is disabled for this provider');
+    }
     if (
       !this.#clientCapabilities.hasService(
         initiatingConnectionId,
@@ -294,12 +305,14 @@ export class HostOAuthCoordinator {
       attempt.abort.signal.throwIfAborted();
       attempt.cancellationDeferred = true;
       attempt.phase = 'committing';
-      const completion = await this.#runtimePolicy.operations.completeInteractiveOAuthLogin(
-        attempt.ticket.ticket,
-        serializeOAuthSubscriptionTokens(tokens),
-      );
-      if (completion.kind !== 'committed') throw new LoginFailure('credential_changed');
-      await this.#invalidateAfterCredentialMutation();
+      await this.#activation.runMutation(async () => {
+        const completion = await this.#runtimePolicy.operations.completeInteractiveOAuthLogin(
+          attempt.ticket.ticket,
+          serializeOAuthSubscriptionTokens(tokens),
+        );
+        if (completion.kind !== 'committed') throw new LoginFailure('credential_changed');
+        await this.#invalidateAfterCredentialMutation();
+      });
       attempt.phase = 'authenticated';
     } catch (error) {
       if (!attempt.cancellationDeferred && attempt.abort.signal.aborted) {
@@ -438,6 +451,9 @@ export class HostOAuthCoordinator {
         method,
         input,
         signal: attempt.abort.signal,
+        ...(method === 'request_authorization_code'
+          ? { timeoutMs: this.#authorizationTimeoutMs + PRESENTATION_TIMEOUT_MARGIN_MS }
+          : {}),
       });
     } catch (error) {
       if (error instanceof ClientCapabilityInvocationError) {
@@ -691,6 +707,10 @@ function notFound(message: string) {
 
 function persistenceFailure(message: string) {
   return { ok: false, error: { code: 'persistence_failed', message } } as const;
+}
+
+function operationUnavailable(message: string) {
+  return { ok: false, error: { code: 'operation_unavailable', message } } as const;
 }
 
 function hostDraining(): OperationOutcome<'oauth.login.start'> {

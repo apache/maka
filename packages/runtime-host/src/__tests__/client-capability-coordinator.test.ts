@@ -711,10 +711,12 @@ async function assertLossClassification(
   coordinator.close();
 }
 
-function createCoordinator(): HostClientCapabilityCoordinator {
+function createCoordinator(
+  onModelToolsChanged: () => void = () => undefined,
+): HostClientCapabilityCoordinator {
   return new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged,
   });
 }
 
@@ -816,6 +818,50 @@ test('Host services stay bound to the explicitly initiating Client connection', 
   assert.deepEqual(calls, ['connection-b']);
   first.close();
   second.close();
+  coordinator.close();
+});
+
+test('service-only registration lifecycle does not invalidate model backends', async () => {
+  let modelToolChanges = 0;
+  const coordinator = createCoordinator(() => {
+    modelToolChanges += 1;
+  });
+  const connection = coordinator.attachConnection('connection-a', { send: async () => {} });
+  for (const registrationId of ['service-a', 'service-b']) {
+    const outcome = await coordinator.handlers['client.capability.replace'](
+      {
+        registrationId,
+        offers: [],
+        services: [{ serviceId: 'vendor_service', version: '1' }],
+      },
+      connectionContext('connection-a'),
+    );
+    assert.equal(outcome.ok, true);
+  }
+  const unregistered = await coordinator.handlers['client.capability.unregister'](
+    { registrationId: 'service-b' },
+    connectionContext('connection-a'),
+  );
+  assert.equal(unregistered.ok, true);
+  assert.equal(modelToolChanges, 0);
+
+  const serviceConnection = coordinator.attachConnection('connection-b', { send: async () => {} });
+  const serviceRegistered = await coordinator.handlers['client.capability.replace'](
+    {
+      registrationId: 'service-disconnect',
+      offers: [],
+      services: [{ serviceId: 'vendor_service', version: '1' }],
+    },
+    connectionContext('connection-b'),
+  );
+  assert.equal(serviceRegistered.ok, true);
+  serviceConnection.close();
+  assert.equal(modelToolChanges, 0);
+
+  await replace(coordinator, 'connection-a', 'tool-registration', 'inspect');
+  assert.equal(modelToolChanges, 1);
+  connection.close();
+  assert.equal(modelToolChanges, 2);
   coordinator.close();
 });
 

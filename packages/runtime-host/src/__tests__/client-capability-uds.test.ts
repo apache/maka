@@ -47,7 +47,7 @@ test('unknown Client Capability loads, invokes, chunks, and disconnects over rea
       compositionFactory: async () => {
         coordinator = new HostClientCapabilityCoordinator({
           activation: new RuntimePolicyActivationGate(),
-          onRegistryChanged: () => undefined,
+          onModelToolsChanged: () => undefined,
         });
         const unavailable = createUnavailableDomainOperationHandlers();
         const handlers = {

@@ -1,36 +1,49 @@
 import { createHash } from 'node:crypto';
 import { base64urlEncode } from '@maka/core';
 import type { OAuthSubscriptionTokens } from './subscription-credentials.js';
+import {
+  OAUTH_MAX_TOKEN_CHARS,
+  OAUTH_PROVIDER_CONTRACTS,
+  OAuthTokenEndpointError,
+  oauthExpiresAt,
+  optionalOAuthBoundedString,
+  requireOAuthBoundedString,
+  requireOAuthDataRecord,
+  requireOAuthPositiveInteger,
+} from './oauth-provider-contracts.js';
+
+export { OAuthTokenEndpointError } from './oauth-provider-contracts.js';
+export type { OAuthTokenEndpointErrorCategory } from './oauth-provider-contracts.js';
 
 export type OAuthLoginProvider = 'claude-subscription' | 'openai-codex';
 export type OAuthInitialTokenProvider = OAuthLoginProvider | 'xai-oauth';
 export type OAuthLoginPresentationKind = 'paste-code' | 'loopback';
 
 export const OAUTH_LOGIN_MAX_RESPONSE_BYTES = 64 * 1024;
-export const OAUTH_LOGIN_MAX_TOKEN_CHARS = 32 * 1024;
+export const OAUTH_LOGIN_MAX_TOKEN_CHARS = OAUTH_MAX_TOKEN_CHARS;
 export const OAUTH_LOGIN_DEFAULT_TIMEOUT_MS = 15_000;
+
+const CLAUDE = OAUTH_PROVIDER_CONTRACTS['claude-subscription'];
+const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
 
 export const OAUTH_LOGIN_PROVIDER_CONFIG = {
   'claude-subscription': {
-    clientId: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-    authorizationEndpoint: 'https://claude.com/cai/oauth/authorize',
-    tokenEndpoint: 'https://platform.claude.com/v1/oauth/token',
-    redirectUri: 'https://platform.claude.com/oauth/code/callback',
-    scope: 'user:sessions:claude_code user:mcp_servers user:file_upload',
-    tokenUserAgent: 'claude-cli/2.1.153 (external, cli)',
-    presentation: 'paste-code',
+    clientId: CLAUDE.clientId,
+    authorizationEndpoint: CLAUDE.authorizationEndpoint,
+    tokenEndpoint: CLAUDE.tokenEndpoint,
+    redirectUri: CLAUDE.redirectUri,
+    scope: CLAUDE.scope,
+    tokenUserAgent: CLAUDE.tokenUserAgent,
+    presentation: CLAUDE.presentation,
   },
   'openai-codex': {
-    clientId: 'app_EMoamEEZ73f0CkXaXp7hrann',
-    authorizationEndpoint: 'https://auth.openai.com/oauth/authorize',
-    tokenEndpoint: 'https://auth.openai.com/oauth/token',
-    scope: 'openid profile email offline_access',
-    tokenUserAgent: 'maka-desktop/0.1.0 (oauth-subscription)',
-    presentation: 'loopback',
-    authorizationExtras: [
-      ['codex_cli_simplified_flow', 'true'],
-      ['originator', 'codex_cli_rs'],
-    ] as ReadonlyArray<readonly [string, string]>,
+    clientId: CODEX.clientId,
+    authorizationEndpoint: CODEX.authorizationEndpoint,
+    tokenEndpoint: CODEX.tokenEndpoint,
+    scope: CODEX.scope,
+    tokenUserAgent: CODEX.tokenUserAgent,
+    presentation: CODEX.presentation,
+    authorizationExtras: CODEX.authorizationExtras,
   },
 } as const;
 
@@ -45,30 +58,6 @@ export interface OAuthLoginAuthorizationInput {
 export interface OAuthLoginAuthorization {
   authorizationUrl: string;
   presentation: OAuthLoginPresentationKind;
-}
-
-export type OAuthTokenEndpointErrorCategory =
-  | 'invalid_grant'
-  | 'invalid_token'
-  | 'provider_rejected'
-  | 'invalid_response'
-  | 'response_too_large'
-  | 'aborted'
-  | 'outcome_unknown';
-
-/** Safe to cross an ownership boundary: it never retains a response body or cause. */
-export class OAuthTokenEndpointError extends Error {
-  constructor(
-    readonly category: OAuthTokenEndpointErrorCategory,
-    readonly status?: number,
-  ) {
-    super(
-      status === undefined
-        ? `OAuth token endpoint failed: ${category}.`
-        : `OAuth token endpoint failed (${status}): ${category}.`,
-    );
-    this.name = 'OAuthTokenEndpointError';
-  }
 }
 
 export function isDeterministicOAuthCredentialRejection(error: unknown): boolean {
@@ -251,22 +240,20 @@ export function decodeOAuthInitialTokenPayload(
   now = Date.now(),
 ): OAuthSubscriptionTokens {
   if (!Number.isFinite(now) || now < 0) throw new OAuthTokenEndpointError('invalid_response');
-  const record = requireClosedRecord(
-    payload,
-    provider === 'claude-subscription'
-      ? ['access_token', 'refresh_token', 'expires_in', 'token_type', 'scope', 'account']
-      : ['access_token', 'refresh_token', 'expires_in', 'id_token', 'token_type', 'scope'],
+  const record = requireOAuthDataRecord(payload);
+  const accessToken = requireOAuthBoundedString(record.access_token, OAUTH_LOGIN_MAX_TOKEN_CHARS);
+  const refreshToken = requireOAuthBoundedString(record.refresh_token, OAUTH_LOGIN_MAX_TOKEN_CHARS);
+  const expiresAt = oauthExpiresAt(
+    now,
+    requireOAuthPositiveInteger(record.expires_in, 366 * 24 * 60 * 60),
   );
-  const accessToken = requireToken(record.access_token);
-  const refreshToken = requireToken(record.refresh_token);
-  const expiresAt = expiresAtFromExpiresIn(now, requireExpiresIn(record.expires_in));
 
   if (provider === 'claude-subscription') {
     const account =
-      record.account === undefined ? undefined : requireClosedRecord(record.account, ['uuid']);
-    const tokenType = optionalBoundedString(record.token_type, 256);
-    const scope = optionalBoundedString(record.scope, 4 * 1024);
-    const accountUuid = account ? optionalBoundedString(account.uuid, 1024) : undefined;
+      record.account === undefined ? undefined : requireOAuthDataRecord(record.account);
+    const tokenType = optionalOAuthBoundedString(record.token_type, 256);
+    const scope = optionalOAuthBoundedString(record.scope, 4 * 1024);
+    const accountUuid = account ? optionalOAuthBoundedString(account.uuid, 1024) : undefined;
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
@@ -277,9 +264,9 @@ export function decodeOAuthInitialTokenPayload(
     };
   }
 
-  const idToken = optionalBoundedString(record.id_token, OAUTH_LOGIN_MAX_TOKEN_CHARS);
-  const tokenType = optionalBoundedString(record.token_type, 256);
-  const scope = optionalBoundedString(record.scope, 4 * 1024);
+  const idToken = optionalOAuthBoundedString(record.id_token, OAUTH_LOGIN_MAX_TOKEN_CHARS);
+  const tokenType = optionalOAuthBoundedString(record.token_type, 256);
+  const scope = optionalOAuthBoundedString(record.scope, 4 * 1024);
   return {
     access_token: accessToken,
     refresh_token: refreshToken,
@@ -288,26 +275,6 @@ export function decodeOAuthInitialTokenPayload(
     ...(tokenType !== undefined ? { token_type: tokenType } : {}),
     ...(scope !== undefined ? { scope } : {}),
   };
-}
-
-export async function oauthTokenEndpointErrorFromResponse(
-  response: Response,
-  signal?: AbortSignal,
-): Promise<OAuthTokenEndpointError> {
-  let category: OAuthTokenEndpointErrorCategory = 'provider_rejected';
-  try {
-    const payload = await readBoundedOAuthJson(response, signal);
-    const code = findProviderErrorCode(payload);
-    if (code === 'invalid_grant' || code === 'invalid_token') category = code;
-  } catch (error) {
-    if (error instanceof OAuthTokenEndpointError && error.category === 'response_too_large') {
-      category = 'response_too_large';
-    }
-    if (error instanceof OAuthTokenEndpointError && error.category === 'outcome_unknown') {
-      return new OAuthTokenEndpointError('outcome_unknown', response.status);
-    }
-  }
-  return new OAuthTokenEndpointError(category, response.status);
 }
 
 function buildTokenRequest(
@@ -387,67 +354,6 @@ function assertTokenEndpointTimeout(timeoutMs: number): void {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 120_000) {
     throw new OAuthTokenEndpointError('invalid_response');
   }
-}
-
-function requireClosedRecord(
-  value: unknown,
-  allowedKeys: readonly string[],
-): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  const allowed = new Set(allowedKeys);
-  const ownKeys = Reflect.ownKeys(value);
-  if (ownKeys.some((key) => typeof key !== 'string' || !allowed.has(key))) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  const record: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const key of ownKeys as string[]) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (!descriptor || !('value' in descriptor)) {
-      throw new OAuthTokenEndpointError('invalid_response');
-    }
-    record[key] = descriptor.value;
-  }
-  return record;
-}
-
-function requireToken(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > OAUTH_LOGIN_MAX_TOKEN_CHARS
-  ) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return value;
-}
-
-function optionalBoundedString(value: unknown, maxChars: number): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0 || value.length > maxChars) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return value;
-}
-
-function requireExpiresIn(value: unknown): number {
-  if (
-    !Number.isInteger(value) ||
-    (value as number) <= 0 ||
-    (value as number) > 366 * 24 * 60 * 60
-  ) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return value as number;
-}
-
-function expiresAtFromExpiresIn(now: number, expiresIn: number): number {
-  const expiresAt = now + expiresIn * 1000;
-  if (!Number.isFinite(now) || now < 0 || !Number.isSafeInteger(expiresAt) || expiresAt <= now) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return expiresAt;
 }
 
 export async function readBoundedOAuthJson(

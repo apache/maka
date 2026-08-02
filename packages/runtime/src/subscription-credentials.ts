@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto';
 
 import type { ProviderType } from '@maka/core/llm-connections';
 import { TOKEN_REFRESH_SKEW_MS } from '@maka/core';
+import {
+  OAUTH_MAX_TOKEN_CHARS,
+  OAUTH_PROVIDER_CONTRACTS,
+  oauthExpiresAt,
+  optionalOAuthBoundedString,
+  requireOAuthBoundedString,
+  requireOAuthDataRecord,
+  requireOAuthPositiveInteger,
+} from './oauth-provider-contracts.js';
 
 export type OAuthSubscriptionProvider = Extract<
   ProviderType,
@@ -112,17 +121,9 @@ export type RefreshAndPersistOAuthSubscriptionTokensInput = {
 export type ResolveAndPersistOAuthSubscriptionTokensInput =
   RefreshAndPersistOAuthSubscriptionTokensInput & { refreshSkewMs?: number };
 
-const CLAUDE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-const CLAUDE_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
-const CLAUDE_TOKEN_USER_AGENT = 'claude-cli/2.1.153 (external, cli)';
-
-const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
-const CODEX_TOKEN_ENDPOINT = 'https://auth.openai.com/oauth/token';
-const CODEX_TOKEN_USER_AGENT = 'maka-desktop/0.1.0 (oauth-subscription)';
-
-const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
-const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
-const XAI_DEFAULT_TOKEN_LIFETIME_SECONDS = 3_600;
+const CLAUDE = OAUTH_PROVIDER_CONTRACTS['claude-subscription'];
+const CODEX = OAUTH_PROVIDER_CONTRACTS['openai-codex'];
+const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
 const OAUTH_REFRESH_LEASE_MS = 30_000;
 const OAUTH_REFRESH_REQUEST_TIMEOUT_MS = 20_000;
@@ -483,27 +484,23 @@ export function isSupportedGitHubCopilotAccountToken(token: string): boolean {
  * surface as a refresh failure, never overwrite a still-working record
  * with garbage. Returns the validated required fields.
  */
-function requireRefreshedTokenFields(
-  provider: string,
-  payload: { access_token?: unknown; expires_in?: unknown },
-): { accessToken: string; expiresInMs: number } {
-  const accessToken = payload.access_token;
-  const expiresIn = payload.expires_in;
-  if (
-    typeof accessToken !== 'string' ||
-    accessToken.length === 0 ||
-    typeof expiresIn !== 'number' ||
-    !Number.isFinite(expiresIn) ||
-    expiresIn <= 0
-  ) {
-    throw new Error(`${provider} OAuth token refresh returned an invalid token payload.`);
-  }
-  return { accessToken, expiresInMs: 1000 * expiresIn };
+function requireRefreshedTokenFields(payload: unknown): {
+  record: Record<string, unknown>;
+  accessToken: string;
+  expiresInSeconds: number;
+} {
+  const record = requireOAuthDataRecord(payload);
+  return {
+    record,
+    accessToken: requireOAuthBoundedString(record.access_token, OAUTH_MAX_TOKEN_CHARS),
+    expiresInSeconds: requireOAuthPositiveInteger(record.expires_in, 366 * 24 * 60 * 60),
+  };
 }
 
 /** A rotated refresh token must be a non-empty string; otherwise keep the previous one. */
 function nextRefreshToken(candidate: unknown, previous: string): string {
-  return typeof candidate === 'string' && candidate.length > 0 ? candidate : previous;
+  if (candidate === undefined || candidate === '') return previous;
+  return requireOAuthBoundedString(candidate, OAUTH_MAX_TOKEN_CHARS);
 }
 
 async function refreshClaudeSubscriptionTokens(
@@ -512,36 +509,36 @@ async function refreshClaudeSubscriptionTokens(
   fetchFn: typeof fetch,
   signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
-  const response = await fetchFn(CLAUDE_TOKEN_ENDPOINT, {
+  const response = await fetchFn(CLAUDE.tokenEndpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'User-Agent': CLAUDE_TOKEN_USER_AGENT,
+      'User-Agent': CLAUDE.tokenUserAgent,
     },
     body: JSON.stringify({
       grant_type: 'refresh_token',
       refresh_token: tokens.refresh_token,
-      client_id: CLAUDE_CLIENT_ID,
+      client_id: CLAUDE.clientId,
     }),
     signal,
   });
   if (!response.ok) throw new Error(`Claude OAuth token refresh failed (${response.status}).`);
-  const payload = (await response.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-    token_type?: string;
-    scope?: string;
-    account?: { uuid?: string };
-  };
-  const { accessToken, expiresInMs } = requireRefreshedTokenFields('Claude', payload);
+  const {
+    record: payload,
+    accessToken,
+    expiresInSeconds,
+  } = requireRefreshedTokenFields(await response.json());
+  const account =
+    payload.account === undefined ? undefined : requireOAuthDataRecord(payload.account);
   return {
     access_token: accessToken,
     refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
-    expires_at: now() + expiresInMs,
-    token_type: payload.token_type ?? tokens.token_type,
-    scope: payload.scope ?? tokens.scope,
-    account_uuid: payload.account?.uuid ?? tokens.account_uuid,
+    expires_at: oauthExpiresAt(now(), expiresInSeconds),
+    token_type: optionalOAuthBoundedString(payload.token_type, 256) ?? tokens.token_type,
+    scope: optionalOAuthBoundedString(payload.scope, 4 * 1024) ?? tokens.scope,
+    account_uuid:
+      (account ? optionalOAuthBoundedString(account.uuid, 1_024) : undefined) ??
+      tokens.account_uuid,
   };
 }
 
@@ -553,31 +550,30 @@ async function refreshOpenAiCodexTokens(
 ): Promise<OAuthSubscriptionTokens> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
-    client_id: CODEX_CLIENT_ID,
+    client_id: CODEX.clientId,
     refresh_token: tokens.refresh_token,
   });
-  const response = await fetchFn(CODEX_TOKEN_ENDPOINT, {
+  const response = await fetchFn(CODEX.tokenEndpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': CODEX_TOKEN_USER_AGENT,
+      'User-Agent': CODEX.tokenUserAgent,
     },
     body: body.toString(),
     signal,
   });
   if (!response.ok) throw new Error(`Codex OAuth token refresh failed (${response.status}).`);
-  const payload = (await response.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    id_token?: string;
-    expires_in?: number;
-  };
-  const { accessToken, expiresInMs } = requireRefreshedTokenFields('Codex', payload);
+  const {
+    record: payload,
+    accessToken,
+    expiresInSeconds,
+  } = requireRefreshedTokenFields(await response.json());
   return {
     access_token: accessToken,
     refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
-    id_token: payload.id_token ?? tokens.id_token,
-    expires_at: now() + expiresInMs,
+    id_token:
+      optionalOAuthBoundedString(payload.id_token, OAUTH_MAX_TOKEN_CHARS) ?? tokens.id_token,
+    expires_at: oauthExpiresAt(now(), expiresInSeconds),
     account_id: tokens.account_id,
   };
 }
@@ -588,34 +584,28 @@ async function refreshXaiOAuthTokens(
   fetchFn: typeof fetch,
   signal?: AbortSignal,
 ): Promise<OAuthSubscriptionTokens> {
-  const response = await fetchFn(XAI_TOKEN_ENDPOINT, {
+  const response = await fetchFn(XAI.tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
-      client_id: XAI_CLIENT_ID,
+      client_id: XAI.clientId,
       refresh_token: tokens.refresh_token,
     }).toString(),
     signal,
   });
   if (!response.ok) throw new Error(`xAI OAuth token refresh failed (${response.status}).`);
-  const payload = (await response.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-    token_type?: string;
-    scope?: string;
-  };
-  const { accessToken, expiresInMs } = requireRefreshedTokenFields('xAI', {
+  const payload = requireOAuthDataRecord(await response.json());
+  const { record, accessToken, expiresInSeconds } = requireRefreshedTokenFields({
     ...payload,
     expires_in:
-      payload.expires_in === undefined ? XAI_DEFAULT_TOKEN_LIFETIME_SECONDS : payload.expires_in,
+      payload.expires_in === undefined ? XAI.defaultTokenLifetimeSeconds : payload.expires_in,
   });
   return {
     access_token: accessToken,
-    refresh_token: nextRefreshToken(payload.refresh_token, tokens.refresh_token),
-    expires_at: now() + expiresInMs,
-    token_type: payload.token_type ?? tokens.token_type,
-    scope: payload.scope ?? tokens.scope,
+    refresh_token: nextRefreshToken(record.refresh_token, tokens.refresh_token),
+    expires_at: oauthExpiresAt(now(), expiresInSeconds),
+    token_type: optionalOAuthBoundedString(record.token_type, 256) ?? tokens.token_type,
+    scope: optionalOAuthBoundedString(record.scope, 4 * 1024) ?? tokens.scope,
   };
 }

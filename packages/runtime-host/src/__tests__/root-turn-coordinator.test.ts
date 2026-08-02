@@ -1043,7 +1043,7 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
 test('Client Capability ambiguity fails before durable root admission', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   const fixture = await createFailureFixture({
     clientCapabilities,
@@ -1111,7 +1111,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
@@ -1196,7 +1196,7 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
@@ -1330,7 +1330,7 @@ test('queued follow-up degrades lost Session tools and rebinds ephemeral tools t
 async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Promise<void> {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   let backend: LinkedChildAuthorityBackend | undefined;
   const fixture = await createFailureFixture({
@@ -1511,7 +1511,7 @@ test('an exact terminal retry does not require a live Client Capability binding'
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   const fixture = await createFailureFixture({
     clientCapabilities,

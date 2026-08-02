@@ -5,12 +5,15 @@ import {
   OAuthTokenEndpointError,
   requestOAuthEndpointJson,
 } from './oauth-login.js';
+import {
+  OAUTH_PROVIDER_CONTRACTS,
+  oauthExpiresAt,
+  requireOAuthBoundedString,
+  requireOAuthDataRecord,
+  requireOAuthPositiveInteger,
+} from './oauth-provider-contracts.js';
 
-const XAI_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
-const XAI_DEVICE_ENDPOINT = 'https://auth.x.ai/oauth2/device/code';
-const XAI_TOKEN_ENDPOINT = 'https://auth.x.ai/oauth2/token';
-const XAI_SCOPE = 'openid profile email offline_access grok-cli:access api:access';
-const XAI_DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
+const XAI = OAUTH_PROVIDER_CONTRACTS['xai-oauth'];
 
 export interface XaiDeviceAuthorization {
   readonly deviceCode: string;
@@ -40,13 +43,13 @@ export async function startXaiDeviceAuthorization(
   input: StartXaiDeviceAuthorizationInput,
 ): Promise<XaiDeviceAuthorization> {
   const response = await requestOAuthEndpointJson({
-    endpoint: XAI_DEVICE_ENDPOINT,
+    endpoint: XAI.deviceEndpoint,
     init: {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id: XAI_CLIENT_ID,
-        scope: XAI_SCOPE,
+        client_id: XAI.clientId,
+        scope: XAI.scope,
         referrer: 'maka',
       }).toString(),
     },
@@ -55,29 +58,19 @@ export async function startXaiDeviceAuthorization(
     timeoutMs: input.timeoutMs,
   });
   if (!response.ok) throw new OAuthTokenEndpointError('provider_rejected', response.status);
-  const payload = closedRecord(response.payload, [
-    'device_code',
-    'user_code',
-    'verification_uri',
-    'verification_uri_complete',
-    'expires_in',
-    'interval',
-  ]);
-  const deviceCode = requiredString(payload.device_code, OAUTH_LOGIN_MAX_TOKEN_CHARS);
-  const userCode = requiredString(payload.user_code, 1_024);
-  const verificationUrl = requiredString(
+  const payload = requireOAuthDataRecord(response.payload);
+  const deviceCode = requireOAuthBoundedString(payload.device_code, OAUTH_LOGIN_MAX_TOKEN_CHARS);
+  const userCode = requireOAuthBoundedString(payload.user_code, 1_024);
+  const verificationUrl = requireOAuthBoundedString(
     payload.verification_uri_complete ?? payload.verification_uri,
     8_192,
   );
   assertXaiVerificationUrl(verificationUrl);
   const now = input.now?.() ?? Date.now();
-  const expiresIn = positiveInteger(payload.expires_in, 24 * 60 * 60);
+  const expiresIn = requireOAuthPositiveInteger(payload.expires_in, 24 * 60 * 60);
   const intervalSeconds =
-    payload.interval === undefined ? 5 : positiveInteger(payload.interval, 300);
-  const expiresAt = now + expiresIn * 1_000;
-  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) {
-    throw new OAuthTokenEndpointError('invalid_response', response.status);
-  }
+    payload.interval === undefined ? 5 : requireOAuthPositiveInteger(payload.interval, 300);
+  const expiresAt = oauthExpiresAt(now, expiresIn, response.status);
   return {
     deviceCode,
     userCode,
@@ -101,13 +94,13 @@ export async function pollXaiDeviceAuthorization(
     input.signal.throwIfAborted();
     input.onPollAdmission?.();
     const response = await requestOAuthEndpointJson({
-      endpoint: XAI_TOKEN_ENDPOINT,
+      endpoint: XAI.tokenEndpoint,
       init: {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
-          grant_type: XAI_DEVICE_GRANT,
-          client_id: XAI_CLIENT_ID,
+          grant_type: XAI.deviceGrant,
+          client_id: XAI.clientId,
           device_code: input.authorization.deviceCode,
         }).toString(),
       },
@@ -135,32 +128,6 @@ export async function pollXaiDeviceAuthorization(
     }
     throw new OAuthTokenEndpointError('provider_rejected', response.status);
   }
-}
-
-function closedRecord(value: unknown, allowedKeys: readonly string[]): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  const record = value as Record<string, unknown>;
-  const allowed = new Set(allowedKeys);
-  if (Object.keys(record).some((key) => !allowed.has(key))) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return record;
-}
-
-function requiredString(value: unknown, maxChars: number): string {
-  if (typeof value !== 'string' || value.length === 0 || value.length > maxChars) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return value;
-}
-
-function positiveInteger(value: unknown, maximum: number): number {
-  if (!Number.isInteger(value) || (value as number) <= 0 || (value as number) > maximum) {
-    throw new OAuthTokenEndpointError('invalid_response');
-  }
-  return value as number;
 }
 
 function providerErrorCode(value: unknown): string | undefined {

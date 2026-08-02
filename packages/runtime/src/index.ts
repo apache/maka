@@ -823,6 +823,8 @@ export {
   requestOAuthEndpointJson,
   requestOAuthTokenEndpointJson,
 } from './oauth-login.js';
+export { isOAuthEnrollmentProviderEnabled } from './oauth-provider-contracts.js';
+export type { OAuthEnrollmentProvider } from './oauth-provider-contracts.js';
 export {
   pollXaiDeviceAuthorization,
   startXaiDeviceAuthorization,

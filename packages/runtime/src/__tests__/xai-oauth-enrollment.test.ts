@@ -20,6 +20,7 @@ test('xAI device enrollment bounds authorization and polls through provider back
         verification_uri_complete: 'https://accounts.x.ai/device?code=USER-CODE',
         expires_in: 600,
         interval: 1,
+        provider_extension: { version: 2 },
       });
     }
     polls += 1;
@@ -30,6 +31,7 @@ test('xAI device enrollment bounds authorization and polls through provider back
       refresh_token: 'refresh',
       expires_in: 3_600,
       token_type: 'Bearer',
+      provider_extension: true,
     });
   };
   const signal = new AbortController().signal;

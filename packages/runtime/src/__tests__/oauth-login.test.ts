@@ -10,6 +10,7 @@ import {
   exchangeOAuthAuthorizationCode,
   isDeterministicOAuthCredentialRejection,
 } from '../oauth-login.js';
+import { isOAuthEnrollmentProviderEnabled } from '../oauth-provider-contracts.js';
 
 const VERIFIER = 'v'.repeat(43);
 const STATE = 's'.repeat(43);
@@ -109,10 +110,21 @@ describe('OAuth initial token decoder', () => {
     );
   });
 
-  it('rejects unknown fields, oversized tokens, and invalid expiry values', () => {
+  it('ignores additive provider fields while validating bounded token fields', () => {
     const base = { access_token: 'access', refresh_token: 'refresh', expires_in: 3600 };
+    assert.deepEqual(
+      decodeOAuthInitialTokenPayload(
+        'openai-codex',
+        { ...base, provider_extension: { rollout: 'next' } },
+        NOW,
+      ),
+      {
+        access_token: 'access',
+        refresh_token: 'refresh',
+        expires_at: NOW + 3_600_000,
+      },
+    );
     for (const payload of [
-      { ...base, unexpected: true },
       { ...base, access_token: 'x'.repeat(OAUTH_LOGIN_MAX_TOKEN_CHARS + 1) },
       { ...base, id_token: 'x'.repeat(OAUTH_LOGIN_MAX_TOKEN_CHARS + 1) },
       { ...base, expires_in: 0 },
@@ -123,6 +135,20 @@ describe('OAuth initial token decoder', () => {
         (error) => assertEndpointError(error, 'invalid_response'),
       );
     }
+  });
+});
+
+describe('OAuth enrollment policy', () => {
+  it('honors Claude and Codex opt-out flags while keeping xAI enabled', () => {
+    const environment = {
+      MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL: '0',
+      MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0',
+    };
+    assert.equal(isOAuthEnrollmentProviderEnabled('claude-subscription', environment), false);
+    assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', environment), false);
+    assert.equal(isOAuthEnrollmentProviderEnabled('xai-oauth', environment), true);
+    assert.equal(isOAuthEnrollmentProviderEnabled('claude-subscription', {}), true);
+    assert.equal(isOAuthEnrollmentProviderEnabled('openai-codex', {}), true);
   });
 });
 

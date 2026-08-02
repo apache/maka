@@ -3,12 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { parseOAuthSubscriptionTokens } from '@maka/runtime';
+import { isOAuthEnrollmentProviderEnabled, parseOAuthSubscriptionTokens } from '@maka/runtime';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   connectRuntimeHost,
   createOAuthPresentationClientProvider,
+  RuntimeHostOperationError,
   type RuntimeHostConnection,
 } from '../client/index.js';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '../protocol/index.js';
@@ -54,13 +55,16 @@ test('OAuth enrollment presents only on the initiating Client over real UDS', {
       owner,
       idleGraceMs: 60_000,
       compositionFactory: async (context) => {
+        const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
-          activation: new RuntimePolicyActivationGate(),
-          onRegistryChanged: () => undefined,
+          activation,
+          onModelToolsChanged: () => undefined,
         });
         const oauth = new HostOAuthCoordinator({
           runtimePolicy: stores,
+          activation,
           clientCapabilities,
+          isProviderEnabled: (provider) => isOAuthEnrollmentProviderEnabled(provider, {}),
           acquireResidency: context.acquireResidency,
           invalidateBackends: async () => undefined,
           onFatal: () => context.requestDrain(),
@@ -148,6 +152,120 @@ test('OAuth enrollment presents only on the initiating Client over real UDS', {
     await rm(base, { recursive: true, force: true });
   }
 });
+
+test('OAuth enrollment honors Claude and Codex opt-out flags over real UDS', {
+  skip: process.platform === 'win32' ? 'POSIX UDS integration' : false,
+  timeout: 30_000,
+}, async () => {
+  const cases = [
+    ['claude-subscription', { MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL: '0' }],
+    ['openai-codex', { MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL: '0' }],
+  ] as const;
+  for (const [provider, environment] of cases) {
+    await assertProviderDisabledOverUds(provider, environment);
+  }
+});
+
+async function assertProviderDisabledOverUds(
+  provider: 'claude-subscription' | 'openai-codex',
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<void> {
+  const base = await mkdtemp(join(tmpdir(), `maka-oauth-disabled-${provider}-`));
+  const root = join(base, 'root');
+  let host: RuntimeHostKernel | undefined;
+  let client: RuntimeHostConnection | undefined;
+  try {
+    const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: `uds-disabled-${provider}`,
+        name: `Disabled ${provider}`,
+        providerType: provider,
+        enabled: true,
+        enabledModelIds: ['fixture-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+
+    host = await RuntimeHostKernel.start({
+      owner,
+      idleGraceMs: 60_000,
+      compositionFactory: async (context) => {
+        const activation = new RuntimePolicyActivationGate();
+        const clientCapabilities = new HostClientCapabilityCoordinator({
+          activation,
+          onModelToolsChanged: () => undefined,
+        });
+        const oauth = new HostOAuthCoordinator({
+          runtimePolicy: stores,
+          activation,
+          clientCapabilities,
+          isProviderEnabled: (candidate) =>
+            isOAuthEnrollmentProviderEnabled(candidate, environment),
+          acquireResidency: context.acquireResidency,
+          invalidateBackends: async () => undefined,
+          onFatal: () => context.requestDrain(),
+          exchangeCode: async () => {
+            throw new Error('Disabled enrollment must not exchange credentials');
+          },
+        });
+        return {
+          handlers: {
+            ...createUnavailableDomainOperationHandlers(),
+            ...oauth.handlers,
+            ...clientCapabilities.handlers,
+          } as DomainOperationHandlerMap,
+          clientCapabilities,
+          releaseConnection: (connectionId) => clientCapabilities.releaseConnection(connectionId),
+          beginDrain: () => {
+            oauth.beginDrain();
+            clientCapabilities.beginDrain();
+          },
+          recover: async () => undefined,
+          close: async () => {
+            await oauth.close();
+            clientCapabilities.close();
+          },
+        };
+      },
+    });
+    client = await connectClient(root, 'desktop');
+    let presentations = 0;
+    await client.replaceClientCapabilities(
+      createOAuthPresentationClientProvider({
+        openExternal: async () => {
+          presentations += 1;
+        },
+        requestAuthorizationCode: async () => {
+          presentations += 1;
+          return 'unused-code';
+        },
+      }),
+    );
+
+    await assert.rejects(
+      client.request('oauth.login.start', {
+        attemptId: `uds-disabled-${provider}`,
+        connectionId: connection.connectionId,
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable',
+    );
+    assert.equal(presentations, 0);
+  } finally {
+    await client?.close().catch(() => undefined);
+    await host?.close().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
+}
 
 async function connectClient(
   rootPath: string,

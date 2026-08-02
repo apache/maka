@@ -7,6 +7,7 @@ import {
   createFilesystemWorkerLaunchSpecProvider,
   FakeBackend,
   FilesystemWorkerClient,
+  isOAuthEnrollmentProviderEnabled,
   isBuiltinFilesystemWorkerSandboxAvailable,
   SessionManager,
   ShellRunProcessManager,
@@ -319,11 +320,13 @@ export async function createExecutionRuntimeHostComposition(
     };
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
-      onRegistryChanged: registerBackendInvalidation,
+      onModelToolsChanged: registerBackendInvalidation,
     });
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
+      activation: runtimePolicyActivation,
       clientCapabilities,
+      isProviderEnabled: isOAuthEnrollmentProviderEnabled,
       acquireResidency: context.acquireResidency,
       invalidateBackends: () => manager.refreshIdleBackends(),
       onFatal: (error) => {

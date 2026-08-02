@@ -261,7 +261,7 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
   const context: ConnectionContext = {
@@ -324,7 +324,7 @@ test('production backend preserves coordinator Client Capability semantics acros
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   let connection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
