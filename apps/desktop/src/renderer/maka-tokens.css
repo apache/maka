@@ -375,8 +375,9 @@
      different method, and the method is what could not survive. A unitless
      ratio is one value applied across every tier it is used at; Astryx snaps
      each tier's line box to the 4px grid on its own (`expandTypeScale.ts`:
-     target 1.5 under 20px, 1.4 through 31px, 1.25 above, snapped, floor
-     size + 4) and reports the quotient. So 1.4286 is not a chosen ratio, it is
+     target 1.5 under 20px, 1.4 through 31px, 1.25 above, snapped, floored at
+     the next 4px step at or above size + 4) and reports the quotient. So
+     1.4286 is not a chosen ratio, it is
      20/14. No single ratio can sit on the grid at 12, 14, 16 and 22px at once,
      which is why the two vocabularies could disagree by 1px on body copy while
      both looked deliberate — and why picking a third number would not have
@@ -385,8 +386,16 @@
      The grid is not decoration: Astryx sizes component boxes off the same 4px
      scale, so a line box that lands on it stops fighting the box around it.
      Its own Badge and Kbd carry `--text-supporting-leading` (20px) inside a
-     `--spacing-5` (20px) box; that identity is why Astryx ships no
-     `line-height: 1` escape hatch and why this file no longer needs one.
+     `--spacing-5` (20px) box; that identity is why no rule in this file needs
+     a `line-height: 1` escape hatch. Astryx does keep exactly one, and it is
+     worth naming rather than claiming there is none: the sortable table's rank
+     glyph (`useTableSortable.tsx`) sets `lineHeight: '1'` at 10px behind a
+     lint exception reading "no token for lineHeight:1 (tight badge)". It is a
+     glyph, not text — below the smallest governed size, in a box the scale
+     never sized. Nothing in this file is in that position; the compact pills
+     here sit at the caption tier, centre their 20px line box inside a shorter
+     flex control without clipping it, and are tracked for a box-height fit in
+     their own follow-up rather than by opting back out of the scale.
 
      A consequence worth stating, because it limits what this convergence
      bought: a unitless leading still inherits as a ratio. An element that

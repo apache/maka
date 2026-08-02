@@ -155,19 +155,27 @@ test('resolves one type scale from the root down to the transcript', async ({
     // 12px size at once, and `.maka-onboarding-setup header h1` taking a 16px
     // rule's leading at 18px.
     //
-    // The grid rule is Astryx's own (expandTypeScale.ts): target 1.5 under
-    // 20px, 1.4 through 31px, 1.25 above, snapped to 4px, floor size + 4.
-    // Recomputed here rather than table-copied so an Astryx scale change moves
-    // the expectation with it.
+    // The grid rule is Astryx's own (expandTypeScale.ts `computeLeading`):
+    // target 1.5 under 20px, 1.4 through 31px, 1.25 above, snapped to 4px,
+    // floored at the next 4px step at or above size + 4. Recomputed here
+    // rather than table-copied so an Astryx scale change moves the
+    // expectation with it — which only works if it is the same arithmetic:
+    // an earlier revision floored at `size + 4` instead of rounding that
+    // floor up to the grid, and at a 9px tier would have accepted 13px and
+    // rejected Astryx's own 16px.
     //
     // Scope stated with the measured number rather than hidden: this window
     // renders 129 elements with their own text, and of the 323 classes whose
     // rules declare a leading, 3 land on one. Sweeping every scenario would
-    // import other surfaces' vendor gaps — measured, Astryx's own TextArea
-    // counter row (TextArea.tsx declares --text-supporting-size with no
-    // matching leading) is off-grid in the plan-reminders window, and an
-    // allowlist keyed to generated atom class names would rot on the next
-    // Astryx build.
+    // import other surfaces' vendor gaps, and an allowlist keyed to generated
+    // atom class names would rot on the next Astryx build. TextArea has two:
+    // its counter row declares --text-supporting-size with no matching leading
+    // (off-grid in the plan-reminders window, measured), and its input raises
+    // the size to `max(1rem, --text-body-size)` under `(pointer: coarse)`
+    // without raising the leading with it — 16px against the 14px tier's
+    // 1.4286, so 22.86px where the grid wants 24. Both are upstream: this
+    // sweep is first-party CSS's guard, and vendor component styles are not
+    // in any scan in this repo.
     //
     // So this is not the repo-wide guard and must not be described as one:
     // what it covers is the one thing text cannot, an inherited ratio meeting
@@ -179,7 +187,7 @@ test('resolves one type scale from the root down to the transcript', async ({
     const offGrid = await page.evaluate(() => {
       const grid = (px: number) => {
         const target = px < 20 ? 1.5 : px < 32 ? 1.4 : 1.25;
-        return Math.max(Math.round((px * target) / 4) * 4, px + 4);
+        return Math.max(Math.round((px * target) / 4) * 4, Math.ceil((px + 4) / 4) * 4);
       };
       const out: string[] = [];
       for (const el of document.querySelectorAll('*')) {
