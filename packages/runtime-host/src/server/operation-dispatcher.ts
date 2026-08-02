@@ -49,6 +49,7 @@ export type MessageOperationKey = Extract<
 >;
 export type InteractionOperationKey = Extract<OperationKey, `interaction.${string}`>;
 export type GoalOperationKey = Extract<OperationKey, `goal.${string}`>;
+export type ExecutionInspectOperationKey = Extract<OperationKey, `execution.inspect.${string}`>;
 export type SessionContinuityOperationKey = Extract<
   OperationKey,
   'subscription.open' | 'subscription.close'
@@ -84,6 +85,10 @@ export type ConnectionEffectOperationHandlerMap = Pick<
 export type MessageOperationHandlerMap = Pick<OperationHandlerMap, MessageOperationKey>;
 export type InteractionOperationHandlerMap = Pick<OperationHandlerMap, InteractionOperationKey>;
 export type GoalOperationHandlerMap = Pick<OperationHandlerMap, GoalOperationKey>;
+export type ExecutionInspectOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  ExecutionInspectOperationKey
+>;
 export type SessionContinuityOperationHandlerMap = Pick<
   OperationHandlerMap,
   SessionContinuityOperationKey

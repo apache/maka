@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import {
+  discoverMarkedStorageRoot,
   prepareStorageRootControlDirectory,
+  resolveExistingStorageRootControlDirectory,
   resolveStorageRoot,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
@@ -479,29 +481,65 @@ function isClientCapabilityMutation(operation: unknown): boolean {
 export async function connectRuntimeHost(
   input: ConnectRuntimeHostInput,
 ): Promise<ConnectRuntimeHostResult> {
-  validateProtocolRange(input.protocol);
-  const connectTimeoutMs = requireTimeout(
-    input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
-    'connectTimeoutMs',
-  );
-  const handshakeTimeoutMs = requireTimeout(
-    input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
-    'handshakeTimeoutMs',
-  );
-  const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
+  const normalized = normalizeConnectRuntimeHostInput(input);
   const capability = await resolveStorageRoot({
     path: input.rootPath,
     kind: 'interactive',
   });
   const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
-  const result = await connectResolvedRuntimeHost({
-    ...input,
-    clientInstanceId,
-    connectTimeoutMs,
-    handshakeTimeoutMs,
-    capability,
-    controlDirectory,
-  });
+  return finalizeConnectRuntimeHostResult(
+    await connectResolvedRuntimeHost({
+      ...input,
+      ...normalized,
+      capability,
+      controlDirectory,
+    }),
+  );
+}
+
+/** Connects only through an already published Host control plane and performs no filesystem writes. */
+export async function connectExistingRuntimeHost(
+  input: ConnectRuntimeHostInput,
+): Promise<ConnectRuntimeHostResult> {
+  const normalized = normalizeConnectRuntimeHostInput(input);
+  const discovered = await discoverMarkedStorageRoot({ path: input.rootPath });
+  if (discovered.kind !== 'interactive') {
+    return { kind: 'unavailable', reason: 'root_mismatch' };
+  }
+  const capability = discovered;
+  const { controlDirectory } = await resolveExistingStorageRootControlDirectory(capability);
+  return finalizeConnectRuntimeHostResult(
+    await connectResolvedRuntimeHost({
+      ...input,
+      ...normalized,
+      capability,
+      controlDirectory,
+    }),
+  );
+}
+
+function normalizeConnectRuntimeHostInput(input: ConnectRuntimeHostInput): {
+  clientInstanceId: string;
+  connectTimeoutMs: number;
+  handshakeTimeoutMs: number;
+} {
+  validateProtocolRange(input.protocol);
+  return {
+    clientInstanceId: requireClientInstanceId(input.clientInstanceId ?? randomUUID()),
+    connectTimeoutMs: requireTimeout(
+      input.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+      'connectTimeoutMs',
+    ),
+    handshakeTimeoutMs: requireTimeout(
+      input.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+      'handshakeTimeoutMs',
+    ),
+  };
+}
+
+function finalizeConnectRuntimeHostResult(
+  result: ConnectResolvedRuntimeHostResult,
+): ConnectRuntimeHostResult {
   if (result.kind === 'election_deadline_elapsed') {
     return {
       kind: 'unavailable',

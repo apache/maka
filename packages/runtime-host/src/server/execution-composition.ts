@@ -38,6 +38,7 @@ import { recoverClientCapabilityOutcomes } from './client-capability-recovery.js
 import { HostConnectionEffectCoordinator } from './connection-effect-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { createHostAiSdkBackend, createHostGoalEvaluator } from './execution-model-composition.js';
+import { HostExecutionInspectCoordinator } from './execution-inspect-coordinator.js';
 import { HostGoalCoordinator } from './goal-coordinator.js';
 import type { RuntimeHostComposition, RuntimeHostCompositionContext } from './host-kernel.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
@@ -431,6 +432,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       requestDrain: context.requestDrain,
     });
+    const executionInspect = new HostExecutionInspectCoordinator(stores);
     const sessionRevisions = new HostSessionRevisionCoordinator({
       stores,
       artifacts: openedArtifactStore,
@@ -468,6 +470,7 @@ export async function createExecutionRuntimeHostComposition(
       ...coordinator.handlers,
       ...requireGoal(goal).handlers,
       ...sessionCatalog.handlers,
+      ...executionInspect.handlers,
       ...sessionRevisions.handlers,
       ...sessionRetirement.handlers,
       ...messages.handlers,

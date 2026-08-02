@@ -510,6 +510,25 @@ export async function prepareStorageRootControlDirectory(
   );
 }
 
+export async function resolveExistingStorageRootControlDirectory(
+  capability: StorageRootCapability,
+): Promise<{ controlRoot: string; controlDirectory: string }> {
+  return withAuthorityFailure(
+    'control_io_failed',
+    'Unable to validate the existing Runtime Host control directory',
+    async () => {
+      const record = requireCapability(capability, capability.kind);
+      await assertRootIdentity(record);
+      const controlRoot = resolve(resolveRootControlNamespace());
+      const controlDirectory = join(controlRoot, record.rootId);
+      await assertPrivateDirectory(controlRoot);
+      await assertPrivateDirectory(controlDirectory);
+      await assertRootIdentity(record);
+      return { controlRoot, controlDirectory };
+    },
+  );
+}
+
 export async function prepareArtifactWriterBootstrapAuthority(
   path: string,
 ): Promise<ArtifactWriterBootstrapAuthority> {
@@ -1236,6 +1255,29 @@ async function ensurePrivateDirectory(path: string): Promise<void> {
   await chmod(path, 0o700);
   directoryStat = await lstat(path);
   if (!directoryStat.isDirectory() || (directoryStat.mode & 0o077) !== 0) {
+    throw new StorageRootAuthorityError(
+      'insecure_control_directory',
+      `Runtime Host control path is not private: ${path}`,
+    );
+  }
+}
+
+async function assertPrivateDirectory(path: string): Promise<void> {
+  const directoryStat = await lstat(path);
+  if (!directoryStat.isDirectory()) {
+    throw new StorageRootAuthorityError(
+      'insecure_control_directory',
+      `Runtime Host control path is not a directory: ${path}`,
+    );
+  }
+  if (process.platform === 'win32') return;
+  if (typeof process.getuid === 'function' && directoryStat.uid !== process.getuid()) {
+    throw new StorageRootAuthorityError(
+      'insecure_control_directory',
+      `Runtime Host control path is not owned by the current user: ${path}`,
+    );
+  }
+  if ((directoryStat.mode & 0o077) !== 0) {
     throw new StorageRootAuthorityError(
       'insecure_control_directory',
       `Runtime Host control path is not private: ${path}`,

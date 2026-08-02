@@ -20,6 +20,7 @@
     "./runtime-policy": "./dist/runtime-policy.js",
     "./goal": "./dist/goal.js",
     "./execution-evidence": "./dist/execution-evidence.js",
+    "./execution-inspect": "./dist/execution-inspect.js",
     "./events": "./dist/events.js",
     "./interaction": "./dist/interaction.js",
     "./session": "./dist/session.js",

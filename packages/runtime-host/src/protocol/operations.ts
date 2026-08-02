@@ -2,6 +2,7 @@ import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
 import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
+import { EXECUTION_INSPECT_OPERATION_SPECS } from './execution-inspect.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
@@ -88,6 +89,7 @@ export type {
   TurnStopInput,
 } from './turn.js';
 export * from './connection-effects.js';
+export * from './execution-inspect.js';
 export * from './client-capability.js';
 export * from './goal.js';
 export * from './memory.js';
@@ -105,6 +107,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
+  EXECUTION_INSPECT_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
   RUNTIME_RESOURCE_OPERATION_SPECS,
   AUTOMATION_OPERATION_SPECS,

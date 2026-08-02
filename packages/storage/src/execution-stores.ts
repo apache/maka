@@ -12,10 +12,13 @@ import type {
 } from '@maka/core';
 import {
   createSqliteAgentRunStore,
+  type AgentRunIdentitySearchResult,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
+  type BoundedEvidenceReadResult,
   type DurableAgentRunStore,
   type DurableRuntimeEventStore,
+  type EvidenceReadBudget,
   type RootTurnAdmission,
   type RootTurnSourceMessageReceipt,
 } from './agent-run-store.js';
@@ -71,8 +74,11 @@ export {
 } from './sqlite-session-metadata-store.js';
 
 export type {
+  AgentRunIdentitySearchResult,
   AdmitRootTurnInput,
   AdmitRootTurnResult,
+  BoundedEvidenceReadResult,
+  EvidenceReadBudget,
   ImmutableSteeringMessageProof,
   RootTurnAdmission,
   RootTurnAdmissionStore,
@@ -135,8 +141,15 @@ export interface ExecutionSessionReader {
 
 export interface ExecutionAgentRunReader {
   readRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
+  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
+  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
+  readEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
   readEventProjection(
     sessionId: string,
     type: AgentRunEventType,
@@ -150,6 +163,11 @@ export interface ExecutionAgentRunReader {
 
 export interface ExecutionRuntimeEventReader {
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  readRuntimeEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
 }
@@ -374,12 +392,17 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       updateRun: (sessionId, runId, patch, options) =>
         run(() => agentRunStore.updateRun(sessionId, runId, patch, options)),
       readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
+      findRunsById: (runId, limit) => run(() => agentRunStore.findRunsById(runId, limit)),
       listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
+      listSessionRunsBounded: (sessionId, limit) =>
+        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
       listSessionRunsForRecovery: (sessionId) =>
         run(() => agentRunStore.listSessionRunsForRecovery(sessionId)),
       appendEvent: (sessionId, runId, event, options) =>
         run(() => agentRunStore.appendEvent(sessionId, runId, event, options)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
+      readEventsBounded: (sessionId, runId, budget) =>
+        run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),
       readEventsForRecovery: (sessionId, runId) =>
         run(() => agentRunStore.readEventsForRecovery(sessionId, runId)),
       readEventsForEvidence: (sessionId, runId) =>
@@ -408,6 +431,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.ensureTerminalRuntimeEventDurable(sessionId, runId, event)),
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      readRuntimeEventsBounded: (sessionId, runId, budget) =>
+        run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       readSessionRuntimeEvents: (sessionId) =>
@@ -499,8 +524,13 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
     },
     agentRunStore: {
       readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
+      findRunsById: (runId, limit) => run(() => agentRunStore.findRunsById(runId, limit)),
       listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
+      listSessionRunsBounded: (sessionId, limit) =>
+        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
+      readEventsBounded: (sessionId, runId, budget) =>
+        run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),
       readEventProjection: (sessionId, type) =>
         run(() => agentRunStore.readEventProjection(sessionId, type)),
       readRootTurnAdmission: (sessionId, turnId) =>
@@ -511,6 +541,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
     runtimeEventStore: {
       readRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readRuntimeEvents(sessionId, runId)),
+      readRuntimeEventsBounded: (sessionId, runId, budget) =>
+        run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       readSessionRuntimeEvents: (sessionId) =>

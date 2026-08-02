@@ -1257,13 +1257,17 @@ export type {
 
 // execution-inspect.ts — payload-safe, versioned CLI inspection documents.
 export {
-  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
-  SESSION_INSPECT_DOCUMENT_VERSION,
   inspectAgentRunDocument,
   inspectSessionDocument,
   renderAgentRunInspectTree,
   renderSessionInspectTree,
 } from './execution-inspect.js';
+export {
+  AGENT_RUN_INSPECT_DOCUMENT_VERSION,
+  SESSION_INSPECT_DOCUMENT_VERSION,
+  isAgentRunInspectDocument,
+  isSessionInspectDocument,
+} from '@maka/core/execution-inspect';
 export type {
   AgentRunInspectCompactionCheckpoint,
   AgentRunInspectDocument,
@@ -1272,10 +1276,12 @@ export type {
   AgentRunInspectToolSummary,
   ExecutionInspectDiagnostic,
   ExecutionInspectSeverity,
-  InspectSessionDocumentOptions,
-  SessionHeaderReader,
   SessionInspectDocument,
   SessionInspectSummary,
+} from '@maka/core/execution-inspect';
+export type {
+  InspectSessionDocumentOptions,
+  SessionHeaderReader,
 } from './execution-inspect.js';
 
 // model-history.ts — policy-driven model-history projection.

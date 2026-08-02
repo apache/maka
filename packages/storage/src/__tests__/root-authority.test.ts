@@ -30,6 +30,7 @@ import {
   prepareStorageRootIdentityRepair,
   repairStorageRootIdentity,
   resolveExistingStorageRoot,
+  resolveExistingStorageRootControlDirectory,
   resolveRootControlNamespace,
   resolveStorageRoot,
   runWithStorageRootLease,
@@ -688,6 +689,38 @@ describe('storage root authority', () => {
           error.code === 'lock_failed' &&
           error.cause instanceof Error,
       );
+    });
+  });
+
+  test('does not create a missing control directory while resolving an existing Host', async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const controlDirectory = join(resolveRootControlNamespace(), capability.rootId);
+      await rm(controlDirectory, { recursive: true, force: true });
+
+      await assert.rejects(
+        () => resolveExistingStorageRootControlDirectory(capability),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'control_io_failed',
+      );
+      await assert.rejects(lstat(controlDirectory), { code: 'ENOENT' });
+    });
+  });
+
+  test('validates an existing control directory without repairing its permissions', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    await withRoots(async ({ root }) => {
+      const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+      const { controlDirectory } = await prepareStorageRootControlDirectory(capability);
+      await chmod(controlDirectory, 0o755);
+
+      await assert.rejects(
+        () => resolveExistingStorageRootControlDirectory(capability),
+        (error: unknown) =>
+          error instanceof StorageRootAuthorityError && error.code === 'insecure_control_directory',
+      );
+      assert.equal((await lstat(controlDirectory)).mode & 0o777, 0o755);
     });
   });
 

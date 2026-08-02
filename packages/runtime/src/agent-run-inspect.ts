@@ -65,6 +65,7 @@ export interface InspectAgentRunOptions {
   runId: string;
   header?: AgentRunHeader;
   isFatalReadError?: (error: unknown) => boolean;
+  includeModelReplay?: boolean;
 }
 
 export type AgentRunInspectReader = Pick<AgentRunStore, 'readRun' | 'readEvents'>;
@@ -139,7 +140,9 @@ export async function inspectAgentRunReadModel(
   }
 
   const modelReplay =
-    runtimeEvents.length > 0 ? buildRuntimeEventModelReplayPlan(runtimeEvents) : undefined;
+    runtimeEvents.length > 0 && options.includeModelReplay !== false
+      ? buildRuntimeEventModelReplayPlan(runtimeEvents)
+      : undefined;
 
   const statusConsistency = computeStatusConsistency(
     header,
