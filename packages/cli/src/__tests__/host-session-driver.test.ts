@@ -7,14 +7,18 @@ import type {
   RuntimeHostSessionTranscript,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import type {
   OperationKey,
   SessionCatalogProjection,
   SessionContinuitySnapshot,
   SubscriptionFrame,
+  TurnStartInput,
+  TurnStopInput,
   TurnSnapshot,
 } from '@maka/runtime-host/protocol';
 import { createHostMakaSessionDriver } from '../host-session-driver.js';
+import type { MakaSessionObservation } from '../session-driver.js';
 
 describe('HostMakaSessionDriver', () => {
   test('starts lazily, projects bounded live events, and reloads the durable transcript', async () => {
@@ -109,7 +113,7 @@ describe('HostMakaSessionDriver', () => {
       'turn.start',
       'subscription.close',
     ]);
-    assert.deepEqual(await driver.reloadTranscript?.(), transcriptMessages);
+    assert.deepEqual(await driver.sessionObservation?.reloadTranscript(), transcriptMessages);
     assert.equal(driver.getSessionId(), 'session-1');
     assert.equal(driver.getPermissionMode?.(), 'ask');
   });
@@ -142,6 +146,263 @@ describe('HostMakaSessionDriver', () => {
 
     assert.deepEqual(await driver.steer?.('redirected'), { kind: 'queued' });
     assert.ok(calls.includes('turn.message.submit'));
+  });
+
+  test('forwards trusted per-turn orchestration to Host admission', async () => {
+    const session = sessionProjection();
+    const turnStarts: TurnStartInput[] = [];
+    const connection = fakeConnection({
+      calls: [],
+      turnStarts,
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [projectionFrame(1, terminalTurn(runningTurn()))],
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+      newId: sequenceIds('session-1', 'turn-1'),
+    });
+
+    const prepared = await driver.preparePrompt('coordinate this', {
+      turnOrchestration: { mode: 'graph', source: 'slash_command' },
+    });
+    for await (const _event of prepared.events) {
+      // Drain the Host-owned turn.
+    }
+
+    assert.deepEqual(turnStarts, [
+      {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        content: { text: 'coordinate this' },
+        turnOrchestration: { mode: 'graph', source: 'slash_command' },
+      },
+    ]);
+  });
+
+  test('interrupt waits for an admitted turn identity while turn.start is pending', async () => {
+    const session = sessionProjection();
+    const calls: string[] = [];
+    const requests: Array<{ operation: OperationKey; input: unknown }> = [];
+    const start = deferred<TurnSnapshot>();
+    const connection = fakeConnection({
+      calls,
+      requests,
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [],
+      startTurnResult: start.promise,
+      requestResult: (operation) =>
+        operation === 'turn.interrupt'
+          ? {
+              queueRevision: 1,
+              retracted: [],
+              turn: {
+                ...runningTurn(),
+                status: 'cancelled',
+                terminalEventId: 'terminal-1',
+                abortSource: 'user_stop',
+              },
+            }
+          : undefined,
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+      newId: sequenceIds('session-1', 'turn-1', 'interrupt-1'),
+    });
+
+    const prepared = await driver.preparePrompt('hello');
+    const events = prepared.events[Symbol.asyncIterator]();
+    const firstEvent = events.next();
+    while (!calls.includes('turn.start')) await new Promise((resolve) => setImmediate(resolve));
+
+    const interrupted = driver.interrupt?.();
+    await Promise.resolve();
+    assert.ok(!calls.includes('turn.interrupt'));
+
+    start.resolve(runningTurn());
+    assert.equal(await interrupted, '');
+    assert.equal((await firstEvent).value?.type, 'queue_update');
+    await events.return?.();
+    assert.deepEqual(
+      requests.filter((request) => request.operation === 'turn.interrupt'),
+      [
+        {
+          operation: 'turn.interrupt',
+          input: {
+            originHostEpoch: 'host-1',
+            sessionId: 'session-1',
+            interruptId: 'interrupt-1',
+            turnId: 'turn-1',
+            runId: 'run-1',
+          },
+        },
+      ],
+    );
+  });
+
+  test('stop waits for an admitted turn identity while turn.start is pending', async () => {
+    const session = sessionProjection();
+    const calls: string[] = [];
+    const turnStops: TurnStopInput[] = [];
+    const start = deferred<TurnSnapshot>();
+    const connection = fakeConnection({
+      calls,
+      turnStops,
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [],
+      startTurnResult: start.promise,
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+      newId: sequenceIds('session-1', 'turn-1'),
+    });
+    const prepared = await driver.preparePrompt('hello');
+    const events = prepared.events[Symbol.asyncIterator]();
+    const firstEvent = events.next();
+    await waitFor(() => calls.includes('turn.start'));
+
+    const stopped = driver.stop();
+    await Promise.resolve();
+    assert.ok(!calls.includes('turn.stop'));
+
+    start.resolve(runningTurn());
+    await stopped;
+    assert.equal((await firstEvent).value?.type, 'queue_update');
+    await events.return?.();
+    assert.deepEqual(turnStops, [{ sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' }]);
+  });
+
+  test('keeps a newly observed remote turn identity when the local stream closes', async () => {
+    const session = sessionProjection();
+    const calls: string[] = [];
+    const requests: Array<{ operation: OperationKey; input: unknown }> = [];
+    const publishRemote = deferred<void>();
+    const remoteConsumed = deferred<void>();
+    const localCloseStarted = deferred<void>();
+    const releaseLocalClose = deferred<void>();
+    const remoteTurn = turnSnapshot('turn-remote', 'run-remote');
+    const initialObservation: RuntimeHostSessionSubscription = {
+      hostEpoch: 'host-1',
+      subscriptionId: 'observation-1',
+      snapshot: snapshot(null),
+      async *[Symbol.asyncIterator]() {
+        await publishRemote.promise;
+        yield projectionFrame(1, remoteTurn);
+        remoteConsumed.resolve();
+        await new Promise(() => {});
+      },
+      async close() {},
+    };
+    const localTurn: RuntimeHostSessionSubscription = {
+      hostEpoch: 'host-1',
+      subscriptionId: 'local-turn',
+      snapshot: snapshot(null),
+      async *[Symbol.asyncIterator]() {
+        yield projectionFrame(1, terminalTurn(runningTurn()));
+      },
+      async close() {
+        localCloseStarted.resolve();
+        await releaseLocalClose.promise;
+      },
+    };
+    const reconciledObservation: RuntimeHostSessionSubscription = {
+      hostEpoch: 'host-1',
+      subscriptionId: 'observation-2',
+      snapshot: snapshot(remoteTurn),
+      async *[Symbol.asyncIterator]() {
+        await new Promise(() => {});
+      },
+      async close() {},
+    };
+    const connection = fakeConnection({
+      calls,
+      requests,
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [],
+      subscriptions: [initialObservation, localTurn, reconciledObservation],
+      requestResult: (operation) =>
+        operation === 'turn.interrupt'
+          ? {
+              queueRevision: 1,
+              retracted: [],
+              turn: {
+                ...remoteTurn,
+                status: 'cancelled',
+                terminalEventId: 'terminal-remote',
+                abortSource: 'user_stop',
+              },
+            }
+          : undefined,
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+      newId: sequenceIds('turn-1', 'interrupt-remote'),
+    });
+    let observeRemote!: () => void;
+    const remoteObserved = new Promise<void>((resolve) => {
+      observeRemote = resolve;
+    });
+    const unsubscribe = driver.sessionObservation?.subscribe((observation) => {
+      if (observation.cut === 'active') observeRemote();
+    });
+
+    await driver.switchSession(session.id);
+    await waitFor(() => calls.filter((call) => call === 'subscription.open').length === 1);
+    const prepared = await driver.preparePrompt('local prompt');
+    const drain = (async () => {
+      for await (const _event of prepared.events) {
+        // Drain through local subscription cleanup.
+      }
+    })();
+    await localCloseStarted.promise;
+    publishRemote.resolve();
+    await remoteConsumed.promise;
+    releaseLocalClose.resolve();
+    await drain;
+    await remoteObserved;
+
+    await driver.interrupt?.();
+    unsubscribe?.();
+
+    const interrupt = requests.find((request) => request.operation === 'turn.interrupt');
+    assert.deepEqual(interrupt?.input, {
+      originHostEpoch: 'host-1',
+      sessionId: 'session-1',
+      interruptId: 'interrupt-remote',
+      turnId: 'turn-remote',
+      runId: 'run-remote',
+    });
   });
 
   test('keeps observing a Host-started followup instead of ending at the previous turn', async () => {
@@ -323,21 +584,21 @@ describe('HostMakaSessionDriver', () => {
     const observations: Array<{
       eventTypes: string[];
       reloadTranscript: boolean;
-      activeTurn: boolean;
+      cut: MakaSessionObservation['cut'];
     }> = [];
     let finish!: () => void;
     const finished = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const unsubscribe = driver.subscribeSessionObservations?.((observation) => {
+    const unsubscribe = driver.sessionObservation?.subscribe((observation) => {
       observations.push({
         eventTypes: observation.events.map((event) => event.type),
         reloadTranscript: observation.reloadTranscript,
-        activeTurn: observation.activeTurn,
+        cut: observation.cut,
       });
       if (
         observation.reloadTranscript &&
-        !observation.activeTurn &&
+        observation.cut === 'idle' &&
         observation.events.some((event) => event.type === 'complete')
       ) {
         finish();
@@ -349,14 +610,16 @@ describe('HostMakaSessionDriver', () => {
     unsubscribe?.();
 
     assert.ok(
-      observations.some((observation) => observation.reloadTranscript && observation.activeTurn),
+      observations.some(
+        (observation) => observation.reloadTranscript && observation.cut === 'active',
+      ),
     );
     assert.ok(observations.some((observation) => observation.eventTypes.includes('text_delta')));
     assert.ok(
       observations.some(
         (observation) =>
           observation.reloadTranscript &&
-          !observation.activeTurn &&
+          observation.cut === 'idle' &&
           observation.eventTypes.includes('complete'),
       ),
     );
@@ -413,28 +676,211 @@ describe('HostMakaSessionDriver', () => {
       newId: sequenceIds('event-1', 'event-2'),
     });
     const observedText: string[] = [];
-    const activeStates: boolean[] = [];
+    const cuts: MakaSessionObservation['cut'][] = [];
     let finish!: () => void;
     const finished = new Promise<void>((resolve) => {
       finish = resolve;
     });
-    const unsubscribe = driver.subscribeSessionObservations?.((observation) => {
-      activeStates.push(observation.activeTurn);
+    const unsubscribe = driver.sessionObservation?.subscribe((observation) => {
+      cuts.push(observation.cut);
       for (const event of observation.events) {
         if (event.type === 'text_delta') observedText.push(event.text);
       }
-      if (!observation.activeTurn) finish();
+      if (observation.cut === 'idle') finish();
     });
 
     await driver.switchSession(session.id);
     await finished;
     unsubscribe?.();
 
-    assert.equal(activeStates[0], true);
+    assert.equal(cuts[0], 'active');
     assert.deepEqual(observedText, [
       'output before this Client joined',
       ' and output after it joined',
     ]);
+  });
+
+  test('reopens a slow-consumer observation from a fresh durable cut', {
+    timeout: 2_000,
+  }, async () => {
+    const session = sessionProjection();
+    const calls: string[] = [];
+    const slowConsumer: RuntimeHostSessionSubscription = {
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      snapshot: snapshot(runningTurn()),
+      async *[Symbol.asyncIterator]() {
+        throw new RuntimeHostSubscriptionError(
+          'slow_consumer',
+          'Session subscription consumer exceeded its local queue bound',
+        );
+      },
+      async close() {},
+    };
+    const recovered: RuntimeHostSessionSubscription = {
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-2',
+      snapshot: snapshot(runningTurn()),
+      async *[Symbol.asyncIterator]() {
+        yield {
+          ...projectionFrame(1, terminalTurn(runningTurn())),
+          subscriptionId: 'subscription-2',
+        };
+      },
+      async close() {},
+    };
+    const connection = fakeConnection({
+      calls,
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [],
+      subscriptions: [slowConsumer, recovered],
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+    });
+    const observations: MakaSessionObservation[] = [];
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = driver.sessionObservation?.subscribe((observation) => {
+      observations.push(observation);
+      if (observation.events.some((event) => event.type === 'complete')) finish();
+    });
+
+    await driver.switchSession(session.id);
+    await finished;
+    unsubscribe?.();
+
+    assert.equal(calls.filter((call) => call === 'subscription.open').length, 2);
+    assert.ok(
+      observations.some(
+        (observation) => observation.reloadTranscript && observation.cut === 'active',
+      ),
+    );
+    assert.ok(
+      observations.some(
+        (observation) =>
+          observation.cut === 'idle' &&
+          observation.events.some((event) => event.type === 'complete'),
+      ),
+    );
+  });
+
+  test('stops observation after the Session disappears instead of reopening forever', async () => {
+    const session = sessionProjection();
+    const calls: string[] = [];
+    const connection = fakeConnection({
+      calls,
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [],
+      openSessionSubscription: async () => {
+        throw new RuntimeHostOperationError(
+          'subscription.open',
+          'not_found',
+          'Session was not found',
+        );
+      },
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+      newId: sequenceIds('session-removed-1'),
+    });
+    let failure: MakaSessionObservation | undefined;
+    let finish!: () => void;
+    const failed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = driver.sessionObservation?.subscribe((observation) => {
+      if (observation.events.some((event) => event.type === 'error')) {
+        failure = observation;
+        finish();
+      }
+    });
+
+    await driver.switchSession(session.id);
+    await failed;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    unsubscribe?.();
+
+    assert.equal(calls.filter((call) => call === 'subscription.open').length, 1);
+    assert.equal(failure?.cut, 'unavailable');
+    const error = failure?.events.find((event) => event.type === 'error');
+    assert.equal(error?.type === 'error' ? error.code : undefined, 'runtime_host_session_removed');
+  });
+
+  test('reports a closed Host connection and clears remote turn activity', async () => {
+    const session = sessionProjection();
+    const closed = deferred<void>();
+    const releaseStream = deferred<void>();
+    const subscription: RuntimeHostSessionSubscription = {
+      hostEpoch: 'host-1',
+      subscriptionId: 'subscription-1',
+      snapshot: snapshot(runningTurn()),
+      async *[Symbol.asyncIterator]() {
+        await releaseStream.promise;
+      },
+      async close() {},
+    };
+    const connection = fakeConnection({
+      calls: [],
+      session,
+      transcript: {
+        revision: 1,
+        boundary: { kind: 'managed', revision: 0, displayMode: 'ask' },
+        messages: [],
+      },
+      frames: [],
+      closed: closed.promise,
+      subscriptions: [subscription],
+    });
+    const driver = createHostMakaSessionDriver({
+      connection,
+      cwd: '/tmp',
+      llmConnectionSlug: 'connection-1',
+      model: 'model-1',
+      newId: sequenceIds('connection-error-1'),
+    });
+    let failure: MakaSessionObservation | undefined;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = driver.sessionObservation?.subscribe((observation) => {
+      if (observation.events.some((event) => event.type === 'error')) {
+        failure = observation;
+        finish();
+      }
+    });
+
+    await driver.switchSession(session.id);
+    closed.resolve();
+    await finished;
+    unsubscribe?.();
+    releaseStream.resolve();
+
+    assert.equal(failure?.cut, 'unavailable');
+    const error = failure?.events.find((event) => event.type === 'error');
+    assert.equal(
+      error?.type === 'error' ? error.code : undefined,
+      'runtime_host_connection_closed',
+    );
   });
 
   test('requests a durable reload when the initial subscription cut is terminal', async () => {
@@ -459,17 +905,17 @@ describe('HostMakaSessionDriver', () => {
     let initial:
       | {
           reloadTranscript: boolean;
-          activeTurn: boolean;
+          cut: MakaSessionObservation['cut'];
         }
       | undefined;
     let observed!: () => void;
     const observation = new Promise<void>((resolve) => {
       observed = resolve;
     });
-    const unsubscribe = driver.subscribeSessionObservations?.((value) => {
+    const unsubscribe = driver.sessionObservation?.subscribe((value) => {
       initial ??= {
         reloadTranscript: value.reloadTranscript,
-        activeTurn: value.activeTurn,
+        cut: value.cut,
       };
       observed();
     });
@@ -478,7 +924,7 @@ describe('HostMakaSessionDriver', () => {
     await observation;
     unsubscribe?.();
 
-    assert.deepEqual(initial, { reloadTranscript: true, activeTurn: false });
+    assert.deepEqual(initial, { reloadTranscript: true, cut: 'idle' });
   });
 
   test('fails closed when a resumed Session belongs to an external harness', async () => {
@@ -510,15 +956,22 @@ describe('HostMakaSessionDriver', () => {
 
 interface FakeConnectionInput {
   readonly calls: string[];
+  readonly closed?: Promise<void>;
   readonly requests?: Array<{ operation: OperationKey; input: unknown }>;
+  readonly turnStarts?: TurnStartInput[];
+  readonly turnStops?: TurnStopInput[];
   readonly session: SessionCatalogProjection;
   readonly transcript: RuntimeHostSessionTranscript;
   readonly snapshot?: SessionContinuitySnapshot;
   readonly frames: readonly SubscriptionFrame[];
+  readonly subscriptions?: readonly RuntimeHostSessionSubscription[];
+  readonly openSessionSubscription?: () => Promise<RuntimeHostSessionSubscription>;
+  readonly startTurnResult?: Promise<TurnSnapshot>;
   readonly requestResult?: (operation: OperationKey) => unknown;
 }
 
 function fakeConnection(input: FakeConnectionInput): RuntimeHostConnection {
+  let subscriptionIndex = 0;
   const subscription: RuntimeHostSessionSubscription = {
     hostEpoch: 'host-1',
     subscriptionId: 'subscription-1',
@@ -534,7 +987,7 @@ function fakeConnection(input: FakeConnectionInput): RuntimeHostConnection {
     hostEpoch: 'host-1',
     connectionId: 'connection-1',
     selectedProtocol: 0,
-    closed: new Promise(() => {}),
+    closed: input.closed ?? new Promise(() => {}),
     async request(operation: OperationKey, operationInput: unknown) {
       input.calls.push(operation);
       input.requests?.push({ operation, input: operationInput });
@@ -549,22 +1002,37 @@ function fakeConnection(input: FakeConnectionInput): RuntimeHostConnection {
     async status() {
       throw new Error('not used');
     },
-    async startTurn() {
+    async startTurn(turn: TurnStartInput) {
       input.calls.push('turn.start');
-      return runningTurn();
+      input.turnStarts?.push(turn);
+      return input.startTurnResult ?? runningTurn();
     },
     async queryTurn() {
       throw new Error('not used');
     },
-    async stopTurn() {
-      throw new Error('not used');
+    async stopTurn(stop: TurnStopInput) {
+      input.calls.push('turn.stop');
+      input.turnStops?.push(stop);
+      return {
+        ...runningTurn(),
+        status: 'cancelled',
+        terminalEventId: 'terminal-stop',
+        abortSource: 'user_stop',
+      };
     },
     async readSessionTranscript() {
       return input.transcript;
     },
     async openSessionSubscription() {
       input.calls.push('subscription.open');
-      return subscription;
+      if (input.openSessionSubscription) return input.openSessionSubscription();
+      return input.subscriptions?.[subscriptionIndex++] ?? subscription;
+    },
+    async replaceClientCapabilities() {
+      throw new Error('not used');
+    },
+    async unregisterClientCapabilities() {
+      throw new Error('not used');
     },
     async close() {},
   } as RuntimeHostConnection;
@@ -599,7 +1067,7 @@ function snapshot(
   interactions: readonly InteractionPendingSnapshot[] = [],
 ): SessionContinuitySnapshot {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     session: {
       sessionId: 'session-1',
       metadataRevision: 1,
@@ -610,6 +1078,7 @@ function snapshot(
     },
     projectionRevision: rootTurn ? 2 : 1,
     rootTurn,
+    goal: null,
     queue: {
       hostEpoch: 'host-1',
       queueRevision: 0,
@@ -674,4 +1143,20 @@ function isTerminal(turn: TurnSnapshot): boolean {
 function sequenceIds(...ids: string[]): () => string {
   let index = 0;
   return () => ids[index++] ?? `id-${index}`;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  throw new Error('Condition was not met');
 }

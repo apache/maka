@@ -15,6 +15,7 @@ import type {
   RuntimeHostConnection,
   RuntimeHostSessionSubscription,
 } from '@maka/runtime-host/client';
+import { RuntimeHostOperationError, RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
 import type {
   InteractionPendingSnapshot,
   SessionCatalogItem,
@@ -30,6 +31,7 @@ import type {
   MakaSessionDriver,
   MakaSessionDriverEvent,
   MakaSessionObservation,
+  MakaSessionObservationCapability,
   MakaSessionObservationListener,
   MakaSessionMoveResult,
   MakaSessionRewindResult,
@@ -54,6 +56,7 @@ export function createHostMakaSessionDriver(input: HostMakaSessionDriverInput): 
 }
 
 class HostMakaSessionDriver implements MakaSessionDriver {
+  readonly sessionObservation: MakaSessionObservationCapability;
   readonly #connection: RuntimeHostConnection;
   readonly #newId: () => string;
   #sessionId: string | null = null;
@@ -66,6 +69,7 @@ class HostMakaSessionDriver implements MakaSessionDriver {
   #catalog: SessionCatalogProjection | undefined;
   #transcriptRevision: number | undefined;
   #activeTurn: TurnSnapshot | undefined;
+  #pendingTurnStart: Promise<TurnSnapshot> | undefined;
   #streamToken: symbol | undefined;
   #observationToken: symbol | undefined;
   #observationSubscription: RuntimeHostSessionSubscription | undefined;
@@ -81,6 +85,10 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     this.#model = input.model;
     this.#permissionMode = input.permissionMode ?? 'ask';
     this.#orchestrationMode = input.orchestrationMode ?? 'default';
+    this.sessionObservation = {
+      reloadTranscript: () => this.#reloadTranscript(),
+      subscribe: (listener) => this.#subscribeSessionObservations(listener),
+    };
   }
 
   async listSessions(): Promise<SessionSummary[]> {
@@ -139,19 +147,21 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     prompt: string,
     options: MakaPreparePromptOptions = {},
   ): Promise<MakaPreparedSessionTurn> {
-    if (options.turnOrchestration !== undefined) {
-      throw new Error('Per-turn orchestration is unavailable through Runtime Host');
-    }
     const sessionId = await this.#ensureSession();
     const turnId = options.turnId ?? this.#newId();
     const modelText = options.modelText ?? prompt;
     return {
       sessionId,
       turnId,
-      events: this.#observeTurn(sessionId, turnId, {
-        text: modelText,
-        ...(modelText === prompt ? {} : { displayText: prompt }),
-      }),
+      events: this.#observeTurn(
+        sessionId,
+        turnId,
+        {
+          text: modelText,
+          ...(modelText === prompt ? {} : { displayText: prompt }),
+        },
+        options.turnOrchestration,
+      ),
     };
   }
 
@@ -181,11 +191,13 @@ class HostMakaSessionDriver implements MakaSessionDriver {
 
   interrupt(): Promise<string> {
     return this.#serializeMessageOperation(async () => {
-      const active = this.#activeTurn;
-      if (!this.#sessionId || !active || isTerminalTurn(active)) return '';
+      const sessionId = this.#sessionId;
+      const active = await this.#activeTurnForControl();
+      if (!sessionId || !active || active.sessionId !== sessionId || isTerminalTurn(active))
+        return '';
       const result = await this.#connection.request('turn.interrupt', {
         originHostEpoch: this.#connection.hostEpoch,
-        sessionId: this.#sessionId,
+        sessionId,
         interruptId: this.#newId(),
         turnId: active.turnId,
         runId: active.runId,
@@ -300,7 +312,7 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     return { summary, messages: decodeTranscriptMessages(transcript.messages) };
   }
 
-  async reloadTranscript(): Promise<StoredMessage[]> {
+  async #reloadTranscript(): Promise<StoredMessage[]> {
     if (!this.#sessionId) return [];
     const transcript = await this.#connection.readSessionTranscript(this.#sessionId);
     if (transcript.boundary.kind === 'external') {
@@ -311,7 +323,7 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     return decodeTranscriptMessages(transcript.messages);
   }
 
-  subscribeSessionObservations(listener: MakaSessionObservationListener): () => void {
+  #subscribeSessionObservations(listener: MakaSessionObservationListener): () => void {
     const shouldStart = this.#observationListeners.size === 0;
     this.#observationListeners.add(listener);
     if (shouldStart) this.#restartSessionObservation();
@@ -378,10 +390,11 @@ class HostMakaSessionDriver implements MakaSessionDriver {
   }
 
   async stop(): Promise<void> {
-    const active = this.#activeTurn;
-    if (!this.#sessionId || !active || isTerminalTurn(active)) return;
+    const sessionId = this.#sessionId;
+    const active = await this.#activeTurnForControl();
+    if (!sessionId || !active || active.sessionId !== sessionId || isTerminalTurn(active)) return;
     this.#activeTurn = await this.#connection.stopTurn({
-      sessionId: this.#sessionId,
+      sessionId,
       turnId: active.turnId,
       runId: active.runId,
     });
@@ -397,6 +410,11 @@ class HostMakaSessionDriver implements MakaSessionDriver {
 
   getPermissionMode(): PermissionMode {
     return this.#permissionMode;
+  }
+
+  async #activeTurnForControl(): Promise<TurnSnapshot | undefined> {
+    if (this.#activeTurn && !isTerminalTurn(this.#activeTurn)) return this.#activeTurn;
+    return (await this.#pendingTurnStart) ?? this.#activeTurn;
   }
 
   async #ensureSession(): Promise<string> {
@@ -426,18 +444,35 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     sessionId: string,
     turnId: string,
     content: { text: string; displayText?: string },
+    turnOrchestration?: MakaPreparePromptOptions['turnOrchestration'],
   ): AsyncIterable<MakaSessionDriverEvent> {
     const token = Symbol('HostMakaSessionDriver stream');
     this.#streamToken = token;
     this.#expectedNextTurnIds.clear();
-    const subscription = await this.#connection.openSessionSubscription({ sessionId });
+    let subscription: RuntimeHostSessionSubscription | undefined;
+    const pendingStart = (async () => {
+      subscription = await this.#connection.openSessionSubscription({ sessionId });
+      return this.#connection.startTurn({
+        sessionId,
+        turnId,
+        content,
+        ...(turnOrchestration === undefined ? {} : { turnOrchestration }),
+      });
+    })();
+    this.#pendingTurnStart = pendingStart;
     const chainTurnIds = new Set([turnId]);
     const projectedInteractions = new Set<string>();
     let queueRevision = -1;
     let waitingForFollowup = false;
     try {
-      const started = await this.#connection.startTurn({ sessionId, turnId, content });
+      let started: TurnSnapshot;
+      try {
+        started = await pendingStart;
+      } finally {
+        if (this.#pendingTurnStart === pendingStart) this.#pendingTurnStart = undefined;
+      }
       this.#activeTurn = started;
+      if (!subscription) throw new Error('Runtime Host Session subscription did not open');
       yield* projectSnapshotState(
         subscription.snapshot,
         turnId,
@@ -497,11 +532,14 @@ class HostMakaSessionDriver implements MakaSessionDriver {
       }
       throw new Error('Runtime Host Session subscription ended before the turn became terminal');
     } finally {
-      await subscription.close().catch(() => {});
+      await subscription?.close().catch(() => {});
       if (this.#streamToken === token) {
         this.#streamToken = undefined;
-        this.#activeTurn = undefined;
+        if (this.#activeTurn && chainTurnIds.has(this.#activeTurn.turnId)) {
+          this.#activeTurn = undefined;
+        }
         this.#expectedNextTurnIds.clear();
+        this.#restartSessionObservation();
       }
     }
   }
@@ -518,15 +556,78 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     // view. The Host replay covers anything emitted during this one-tick gap.
     setImmediate(() => {
       if (this.#observationToken !== token) return;
-      void this.#observeSession(sessionId, token).catch(() => {});
+      void this.#observeSessionLoop(sessionId, token);
     });
   }
 
-  async #observeSession(sessionId: string, token: symbol): Promise<void> {
+  async #observeSessionLoop(sessionId: string, token: symbol): Promise<void> {
+    let retryDelayMs = 25;
+    let forceReload = false;
+    while (
+      this.#observationToken === token &&
+      this.#sessionId === sessionId &&
+      this.#observationListeners.size > 0
+    ) {
+      const attempt = this.#observeSession(sessionId, token, forceReload).then(
+        (result) => ({ kind: 'completed' as const, result }),
+        (error: unknown) => ({ kind: 'failed' as const, error }),
+      );
+      const outcome = await Promise.race([
+        attempt,
+        this.#connection.closed.then(
+          () => ({ kind: 'connection_closed' as const }),
+          () => ({ kind: 'connection_closed' as const }),
+        ),
+      ]);
+      if (
+        this.#observationToken !== token ||
+        this.#sessionId !== sessionId ||
+        this.#observationListeners.size === 0
+      ) {
+        return;
+      }
+      if (
+        outcome.kind === 'connection_closed' ||
+        (outcome.kind === 'failed' &&
+          outcome.error instanceof RuntimeHostSubscriptionError &&
+          outcome.error.reason === 'connection_closed')
+      ) {
+        await this.#publishObservationFailure(
+          sessionId,
+          'runtime_host_connection_closed',
+          'Runtime Host connection closed; live Session updates are unavailable.',
+        );
+        return;
+      }
+      if (outcome.kind === 'completed' && outcome.result === 'stop') return;
+      if (outcome.kind === 'failed' && !isRecoverableObservationFailure(outcome.error)) {
+        const sessionRemoved =
+          outcome.error instanceof RuntimeHostOperationError && outcome.error.code === 'not_found';
+        await this.#publishObservationFailure(
+          sessionId,
+          sessionRemoved ? 'runtime_host_session_removed' : 'runtime_host_observation_failed',
+          sessionRemoved
+            ? 'Runtime Host Session no longer exists; live Session updates stopped.'
+            : 'Runtime Host Session observation stopped after an unrecoverable subscription failure.',
+        );
+        return;
+      }
+
+      forceReload = true;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      retryDelayMs = Math.min(retryDelayMs * 2, 250);
+    }
+  }
+
+  async #observeSession(
+    sessionId: string,
+    token: symbol,
+    forceReload: boolean,
+  ): Promise<'retry' | 'stop'> {
     const subscription = await this.#connection.openSessionSubscription({ sessionId });
     if (this.#observationToken !== token) {
       await subscription.close().catch(() => {});
-      return;
+      return 'stop';
     }
     this.#observationSubscription = subscription;
     const projectedInteractions = new Set<string>();
@@ -543,16 +644,27 @@ class HostMakaSessionDriver implements MakaSessionDriver {
           queueRevision,
         ),
         reloadTranscript:
+          forceReload ||
           (subscription.snapshot.rootTurn !== null &&
             isTerminalTurn(subscription.snapshot.rootTurn)) ||
           subscription.snapshot.session.metadataRevision !== this.#transcriptRevision,
-        activeTurn: isRunningTurn(subscription.snapshot.rootTurn),
+        cut: isRunningTurn(subscription.snapshot.rootTurn) ? 'active' : 'idle',
       });
       queueRevision = subscription.snapshot.queue.queueRevision;
 
       for await (const frame of subscription) {
-        if (this.#observationToken !== token) return;
-        if (frame.kind === 'subscription.closed') return;
+        if (this.#observationToken !== token) return 'stop';
+        if (frame.kind === 'subscription.closed') {
+          if (frame.reason === 'session_removed') {
+            await this.#publishObservationFailure(
+              sessionId,
+              'runtime_host_session_removed',
+              'Runtime Host Session no longer exists; live Session updates stopped.',
+            );
+            return 'stop';
+          }
+          return 'retry';
+        }
         if (frame.kind === 'subscription.session_delta') {
           await this.#publishObservation({
             sessionId,
@@ -567,7 +679,7 @@ class HostMakaSessionDriver implements MakaSessionDriver {
               },
             ],
             reloadTranscript: false,
-            activeTurn: true,
+            cut: 'active',
           });
           continue;
         }
@@ -576,7 +688,7 @@ class HostMakaSessionDriver implements MakaSessionDriver {
             sessionId,
             events: [projectToolEvent(sessionId, frame.event)],
             reloadTranscript: false,
-            activeTurn: true,
+            cut: 'active',
           });
           continue;
         }
@@ -603,15 +715,45 @@ class HostMakaSessionDriver implements MakaSessionDriver {
           sessionId,
           events,
           reloadTranscript: rootFingerprint !== previousFingerprint,
-          activeTurn: isRunningTurn(snapshot.rootTurn),
+          cut: isRunningTurn(snapshot.rootTurn) ? 'active' : 'idle',
         });
       }
+      return 'retry';
     } finally {
       if (this.#observationSubscription === subscription) {
         this.#observationSubscription = undefined;
       }
       await subscription.close().catch(() => {});
     }
+  }
+
+  async #publishObservationFailure(
+    sessionId: string,
+    code:
+      | 'runtime_host_connection_closed'
+      | 'runtime_host_observation_failed'
+      | 'runtime_host_session_removed',
+    message: string,
+  ): Promise<void> {
+    const turnId = this.#activeTurn?.turnId ?? `session-observation-${sessionId}`;
+    this.#activeTurn = undefined;
+    await this.#publishObservation({
+      sessionId,
+      events: [
+        {
+          id: this.#newId(),
+          type: 'error',
+          turnId,
+          ts: Date.now(),
+          recoverable: true,
+          code,
+          reason: code,
+          message,
+        },
+      ],
+      reloadTranscript: false,
+      cut: 'unavailable',
+    });
   }
 
   async #publishObservation(observation: MakaSessionObservation): Promise<void> {
@@ -717,6 +859,13 @@ class HostMakaSessionDriver implements MakaSessionDriver {
     this.#orchestrationMode = session.orchestrationMode;
     if (previousSessionId !== session.id) this.#restartSessionObservation();
   }
+}
+
+function isRecoverableObservationFailure(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostSubscriptionError &&
+    (error.reason === 'slow_consumer' || error.reason === 'sequence_gap')
+  );
 }
 
 function projectSnapshotState(

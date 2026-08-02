@@ -170,7 +170,7 @@ async function resolveHarnessTarget(
 function createHarnessGoalLifecycle(): MakaPiTuiGoalLifecycle {
   return {
     activities: new SessionActivityRegistry(),
-    beginExternalTurn: () => ({ kind: 'registered', settle: async () => {} }),
+    beginObservedTurn: () => ({ kind: 'registered', settle: async () => {} }),
     bindHost: () => () => {},
   };
 }

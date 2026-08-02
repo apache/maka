@@ -334,7 +334,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     if (initial.kind === 'revision_changed') {
       throw new Error('Runtime Host returned a revision change for a transcript start');
     }
+    if (initial.kind === 'snapshot_expired') {
+      throw new Error('Runtime Host returned an expired transcript snapshot for a start');
+    }
     let chunk = initial;
+    const snapshotId = chunk.snapshotId;
     const revision = chunk.revision;
     const boundary = chunk.boundary;
     const messageCount = chunk.messageCount;
@@ -344,6 +348,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
     while (true) {
       if (
+        chunk.snapshotId !== snapshotId ||
         chunk.revision !== revision ||
         chunk.messageCount !== messageCount ||
         !sameBoundaryProjection(chunk.boundary, boundary)
@@ -382,6 +387,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         {
           kind: 'continue',
           sessionId,
+          snapshotId,
           revision,
           boundaryRevision: boundary.revision,
           messageIndex: next.messageIndex,
@@ -389,7 +395,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         },
         timeoutMs,
       );
-      if (continuation.kind === 'revision_changed') return undefined;
+      if (continuation.kind === 'revision_changed' || continuation.kind === 'snapshot_expired') {
+        return undefined;
+      }
       chunk = continuation;
     }
   }

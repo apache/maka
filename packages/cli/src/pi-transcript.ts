@@ -94,9 +94,10 @@ export interface MakaPiTranscriptState {
   /**
    * Messages whose enqueue hit the no-live-owner fallback while a turn was
    * running (the begin window). CLI-owned, NOT a runtime mirror: the runner
-   * retries the original enqueue until it lands and flushes any remainder
-   * into the next turn at the turn boundary, so the text is never dropped.
-   * Rendered in the pending bar alongside the mirror.
+   * retries the original enqueue while an owner exists. At a healthy idle
+   * boundary, any remainder becomes the next turn; abort, failure, or an
+   * unavailable Session returns it to the editor. Rendered in the pending bar
+   * alongside the mirror until one of those paths takes ownership.
    */
   pendingFallback: Array<{ text: string; enqueue: 'steer' | 'queue' }>;
   /** Current non-durable provider retry progress for the activity strip. */
@@ -336,10 +337,11 @@ export function replaceTranscriptWithStoredMessages(
   // keeps its viewport and so does the estimate.
   state.renderGeometry.entryFirstLine = undefined;
   state.usage = { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 };
-  // Queues are per-active-run; a switched/reset session has none pending.
+  // These are runtime projections and must converge with the durable cut.
+  // `pendingFallback` is CLI-owned delivery state, so ordinary transcript
+  // reloads must preserve it. Session switch/reset paths clear it explicitly.
   state.steering = [];
   state.followup = [];
-  state.pendingFallback = [];
   for (const msg of messages) {
     if (msg.type === 'token_usage') accumulateUsage(state.usage, msg);
   }

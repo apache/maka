@@ -127,10 +127,12 @@ function createTestGoalLifecycle(
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 /** Catalog API-key providers as wizard entries with no existing connection —
@@ -1142,7 +1144,7 @@ describe('Maka Pi TUI runner', () => {
       sessionId: 'session-1',
       events: [],
       reloadTranscript: true,
-      activeTurn: true,
+      cut: 'active',
     });
     await waitFor(
       () =>
@@ -1163,7 +1165,7 @@ describe('Maka Pi TUI runner', () => {
         },
       ],
       reloadTranscript: false,
-      activeTurn: true,
+      cut: 'active',
     });
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('remote reply'));
 
@@ -1190,7 +1192,7 @@ describe('Maka Pi TUI runner', () => {
         },
       ],
       reloadTranscript: true,
-      activeTurn: false,
+      cut: 'idle',
     });
     await waitFor(() => terminal.progressStates.at(-1) === false);
 
@@ -1228,7 +1230,7 @@ describe('Maka Pi TUI runner', () => {
         },
       ],
       reloadTranscript: true,
-      activeTurn: true,
+      cut: 'active',
     });
     await reloadStarted.promise;
     driver.adoptSessionForTest('session-2');
@@ -1237,6 +1239,334 @@ describe('Maka Pi TUI runner', () => {
     await delay(10);
 
     assert.ok(!plainTerminalOutput(terminal.screenOutput()).includes('STALE-REMOTE-OBSERVATION'));
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('does not let a stale remote reload overwrite a local turn that starts while it waits', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredLocalTurnObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'active',
+    });
+    const reloadStarted = deferred<void>();
+    const releaseReload = deferred<StoredMessage[]>();
+    driver.deferNextReload(reloadStarted.resolve, releaseReload.promise);
+    const terminalObservation = driver.emit({
+      sessionId: 'session-1',
+      events: [
+        {
+          type: 'complete',
+          id: 'remote-complete',
+          turnId: 'remote-turn',
+          ts: 2,
+          stopReason: 'end_turn',
+        },
+      ],
+      reloadTranscript: true,
+      cut: 'idle',
+    });
+    await reloadStarted.promise;
+
+    terminal.input('local prompt');
+    terminal.input('\r');
+    await driver.turnStarted.promise;
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('LOCAL-LIVE-REPLY'));
+
+    releaseReload.resolve([
+      {
+        type: 'user',
+        id: 'stale-user',
+        turnId: 'remote-turn',
+        ts: 1,
+        text: 'STALE-REMOTE-TRANSCRIPT',
+      },
+    ]);
+    await terminalObservation;
+    await delay(10);
+
+    const output = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(output.includes('local prompt'));
+    assert.ok(output.includes('LOCAL-LIVE-REPLY'));
+    assert.ok(!output.includes('STALE-REMOTE-TRANSCRIPT'));
+    assert.equal(terminal.progressStates.at(-1), true);
+
+    const localReloadStarted = deferred<void>();
+    driver.deferNextReload(localReloadStarted.resolve, Promise.resolve([]));
+    driver.releaseTurn.resolve();
+    await localReloadStarted.promise;
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'idle',
+    });
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('adopts a remote turn that appears while the local terminal reload is pending', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredLocalTurnObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+    terminal.input('local prompt');
+    terminal.input('\r');
+    await driver.turnStarted.promise;
+    terminal.input('fallback text');
+    terminal.input('\r');
+    await waitFor(() => driver.steerAttempts === 1);
+
+    const reloadStarted = deferred<void>();
+    const releaseReload = deferred<StoredMessage[]>();
+    driver.deferNextReload(reloadStarted.resolve, releaseReload.promise);
+    driver.releaseTurn.resolve();
+    await reloadStarted.promise;
+
+    driver.acceptSteering = true;
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'active',
+    });
+    assert.equal(terminal.progressStates.at(-1), true);
+
+    releaseReload.resolve([]);
+    await waitFor(() => driver.deliveredSteering.includes('fallback text'));
+    assert.equal(terminal.progressStates.at(-1), true);
+    assert.deepEqual(driver.prompts, ['local prompt']);
+
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'idle',
+    });
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('preserves fallback when the local reload completes before remote takeover is observed', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredLocalTurnObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+    terminal.input('local prompt');
+    terminal.input('\r');
+    await driver.turnStarted.promise;
+    terminal.input('fallback text');
+    terminal.input('\r');
+    await waitFor(() => driver.steerAttempts === 1);
+
+    const reloadStarted = deferred<void>();
+    driver.deferNextReload(reloadStarted.resolve, Promise.resolve([]));
+    driver.releaseTurn.resolve();
+    await reloadStarted.promise;
+    await delay(10);
+    assert.deepEqual(driver.prompts, ['local prompt']);
+    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('fallback text'));
+
+    driver.acceptSteering = true;
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'active',
+    });
+    await waitFor(() => driver.deliveredSteering.includes('fallback text'));
+    assert.deepEqual(driver.prompts, ['local prompt']);
+
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'idle',
+    });
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('refills fallback instead of opening a turn when the post-local cut is unavailable', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredLocalTurnObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+    terminal.input('local prompt');
+    terminal.input('\r');
+    await driver.turnStarted.promise;
+    terminal.input('fallback text');
+    terminal.input('\r');
+    await waitFor(() => driver.steerAttempts === 1);
+
+    const localReloadStarted = deferred<void>();
+    const releaseLocalReload = deferred<StoredMessage[]>();
+    const observationReloadStarted = deferred<void>();
+    const releaseObservationReload = deferred<StoredMessage[]>();
+    driver.deferNextReload(localReloadStarted.resolve, releaseLocalReload.promise);
+    driver.deferNextReload(observationReloadStarted.resolve, releaseObservationReload.promise);
+    driver.releaseTurn.resolve();
+    await localReloadStarted.promise;
+    const idleObservation = driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: true,
+      cut: 'idle',
+    });
+    await observationReloadStarted.promise;
+    const unavailableObservation = driver.emit({
+      sessionId: 'session-1',
+      events: [
+        {
+          type: 'error',
+          id: 'connection-error',
+          turnId: 'local-turn',
+          ts: 2,
+          recoverable: true,
+          code: 'runtime_host_connection_closed',
+          reason: 'runtime_host_connection_closed',
+          message: 'Runtime Host connection closed; live Session updates are unavailable.',
+        },
+      ],
+      reloadTranscript: false,
+      cut: 'unavailable',
+    });
+    releaseLocalReload.resolve([]);
+    releaseObservationReload.resolve([
+      {
+        type: 'user',
+        id: 'stale-idle-user',
+        turnId: 'stale-idle-turn',
+        ts: 3,
+        text: 'STALE-IDLE-RELOAD',
+      },
+    ]);
+    await Promise.all([idleObservation, unavailableObservation]);
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.screenOutput());
+      return output.includes('fallback text') && !output.includes('Steering: fallback text');
+    });
+    assert.deepEqual(driver.prompts, ['local prompt']);
+    assert.deepEqual(driver.deliveredSteering, []);
+    assert.ok(!plainTerminalOutput(terminal.screenOutput()).includes('STALE-IDLE-RELOAD'));
+
+    terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
+  });
+
+  test('clears remote turn activity even when its terminal transcript reload fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RemoteObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'active',
+    });
+    assert.equal(terminal.progressStates.at(-1), true);
+
+    const reloadStarted = deferred<void>();
+    const failedReload = deferred<StoredMessage[]>();
+    driver.deferNextReload(reloadStarted.resolve, failedReload.promise);
+    const terminalObservation = driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: true,
+      cut: 'idle',
+    });
+    await reloadStarted.promise;
+    failedReload.reject(new Error('durable reload failed'));
+    await terminalObservation;
+
+    assert.equal(terminal.progressStates.at(-1), false);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('keeps a control activity busy when an overlapping remote turn settles', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new DeferredRemoteObservationDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'model-1',
+      connectionSlug: 'connection-1',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('/model model-2');
+    terminal.input('\r');
+    await waitFor(() => driver.models.length === 1);
+
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'active',
+    });
+    await driver.emit({
+      sessionId: 'session-1',
+      events: [],
+      reloadTranscript: false,
+      cut: 'idle',
+    });
+    assert.equal(terminal.progressStates.at(-1), true);
+
+    driver.releaseSetModel();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
 
     exitMaka(terminal);
     await run;
@@ -7894,41 +8224,91 @@ class RemoteObservationDriver extends SlashCommandDriver {
   transcript: StoredMessage[] = [];
   observerClosed = false;
   private listener: MakaSessionObservationListener | undefined;
-  private nextReload:
-    | {
-        readonly started: () => void;
-        readonly messages: Promise<StoredMessage[]>;
+  private readonly deferredReloads: Array<{
+    readonly started: () => void;
+    readonly messages: Promise<StoredMessage[]>;
+  }> = [];
+
+  readonly sessionObservation = {
+    subscribe: (listener: MakaSessionObservationListener): (() => void) => {
+      this.listener = listener;
+      return () => {
+        if (this.listener === listener) this.listener = undefined;
+        this.observerClosed = true;
+      };
+    },
+    reloadTranscript: async (): Promise<StoredMessage[]> => {
+      const deferredReload = this.deferredReloads.shift();
+      if (deferredReload) {
+        deferredReload.started();
+        return deferredReload.messages;
       }
-    | undefined;
-
-  subscribeSessionObservations(listener: MakaSessionObservationListener): () => void {
-    this.listener = listener;
-    return () => {
-      if (this.listener === listener) this.listener = undefined;
-      this.observerClosed = true;
-    };
-  }
-
-  async reloadTranscript(): Promise<StoredMessage[]> {
-    const deferredReload = this.nextReload;
-    if (deferredReload) {
-      this.nextReload = undefined;
-      deferredReload.started();
-      return deferredReload.messages;
-    }
-    return [...this.transcript];
-  }
+      return [...this.transcript];
+    },
+  };
 
   async emit(observation: MakaSessionObservation): Promise<void> {
     await this.listener?.(observation);
   }
 
   deferNextReload(started: () => void, messages: Promise<StoredMessage[]>): void {
-    this.nextReload = { started, messages };
+    this.deferredReloads.push({ started, messages });
   }
 
   adoptSessionForTest(sessionId: string): void {
     this.sessionId = sessionId;
+  }
+}
+
+class DeferredLocalTurnObservationDriver extends RemoteObservationDriver {
+  readonly turnStarted = deferred<void>();
+  readonly releaseTurn = deferred<void>();
+  readonly deliveredSteering: string[] = [];
+  steerAttempts = 0;
+  acceptSteering = false;
+
+  steer(text: string): QueueEnqueueOutcome {
+    this.steerAttempts += 1;
+    if (!this.acceptSteering) return { kind: 'fallback' };
+    this.deliveredSteering.push(text);
+    return { kind: 'queued' };
+  }
+
+  override async *promptEvents(_prompt: string, turnId = 'turn-1'): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_delta',
+      id: 'local-delta',
+      turnId,
+      ts: 1,
+      messageId: 'local-assistant',
+      text: 'LOCAL-LIVE-REPLY',
+    };
+    this.turnStarted.resolve();
+    await this.releaseTurn.promise;
+    yield {
+      type: 'complete',
+      id: 'local-complete',
+      turnId,
+      ts: 2,
+      stopReason: 'end_turn',
+    };
+  }
+}
+
+class DeferredRemoteObservationDriver extends RemoteObservationDriver {
+  readonly models: string[] = [];
+  private resolveSetModel: (() => void) | undefined;
+
+  override async setModel(model: string): Promise<void> {
+    this.models.push(model);
+    await new Promise<void>((resolve) => {
+      this.resolveSetModel = resolve;
+    });
+  }
+
+  releaseSetModel(): void {
+    this.resolveSetModel?.();
+    this.resolveSetModel = undefined;
   }
 }
 

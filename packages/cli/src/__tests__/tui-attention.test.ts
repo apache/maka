@@ -70,6 +70,18 @@ describe('AttentionController title', () => {
     assert.equal(terminal.bells, 0);
   });
 
+  test('keeps the busy marker until overlapping turn and control activity both end', () => {
+    const { terminal, controller } = makeController();
+    controller.controlStarted();
+    controller.promptTurnStarted();
+
+    controller.promptTurnEnded();
+    assert.equal(terminal.title, BUSY);
+
+    controller.controlEnded();
+    assert.equal(terminal.title, 'Maka');
+  });
+
   test('reset clears the busy marker and goes inert', () => {
     const { terminal, controller } = makeController(8000);
     controller.focusChanged(false);

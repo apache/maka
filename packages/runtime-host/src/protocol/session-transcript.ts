@@ -24,6 +24,7 @@ export type SessionTranscriptQueryInput =
   | {
       readonly kind: 'continue';
       readonly sessionId: string;
+      readonly snapshotId: string;
       readonly revision: number;
       readonly boundaryRevision: number;
       readonly messageIndex: number;
@@ -44,6 +45,7 @@ export interface SessionTranscriptCursor {
 export type SessionTranscriptQueryResult =
   | {
       readonly kind: 'chunk';
+      readonly snapshotId: string;
       readonly revision: number;
       readonly boundary: SessionExecutionBoundaryProjection;
       readonly messageCount: number;
@@ -51,6 +53,10 @@ export type SessionTranscriptQueryResult =
       readonly byteOffset: number;
       readonly data: string;
       readonly next: SessionTranscriptCursor | null;
+    }
+  | {
+      readonly kind: 'snapshot_expired';
+      readonly snapshotId: string;
     }
   | {
       readonly kind: 'revision_changed';
@@ -91,6 +97,7 @@ export function decodeSessionTranscriptQueryInput(value: unknown): SessionTransc
     const exact = requireExactRecord(input, 'Session transcript continuation input', [
       'kind',
       'sessionId',
+      'snapshotId',
       'revision',
       'boundaryRevision',
       'messageIndex',
@@ -99,6 +106,7 @@ export function decodeSessionTranscriptQueryInput(value: unknown): SessionTransc
     return {
       kind: 'continue',
       sessionId: requireEntityId(exact.sessionId, 'sessionId'),
+      snapshotId: requireEntityId(exact.snapshotId, 'Session transcript snapshotId'),
       revision: requirePositiveRevision(exact.revision, 'Session transcript revision'),
       boundaryRevision: requireCount(
         exact.boundaryRevision,
@@ -113,6 +121,16 @@ export function decodeSessionTranscriptQueryInput(value: unknown): SessionTransc
 
 export function decodeSessionTranscriptQueryResult(value: unknown): SessionTranscriptQueryResult {
   const result = requireRecord(value, 'Session transcript query result');
+  if (result.kind === 'snapshot_expired') {
+    const exact = requireExactRecord(result, 'expired Session transcript snapshot', [
+      'kind',
+      'snapshotId',
+    ]);
+    return {
+      kind: 'snapshot_expired',
+      snapshotId: requireEntityId(exact.snapshotId, 'Session transcript snapshotId'),
+    };
+  }
   if (result.kind === 'revision_changed') {
     const exact = requireExactRecord(result, 'Session transcript revision change', [
       'kind',
@@ -146,6 +164,7 @@ export function decodeSessionTranscriptQueryResult(value: unknown): SessionTrans
   }
   const exact = requireExactRecord(result, 'Session transcript chunk', [
     'kind',
+    'snapshotId',
     'revision',
     'boundary',
     'messageCount',
@@ -168,6 +187,7 @@ export function decodeSessionTranscriptQueryResult(value: unknown): SessionTrans
   }
   const decoded: SessionTranscriptQueryResult = {
     kind: 'chunk',
+    snapshotId: requireEntityId(exact.snapshotId, 'Session transcript snapshotId'),
     revision: requirePositiveRevision(exact.revision, 'Session transcript revision'),
     boundary: decodeBoundaryProjection(exact.boundary),
     messageCount,
@@ -242,6 +262,13 @@ function assertSessionTranscriptOutput(
 ): void {
   if (
     input.kind === 'continue' &&
+    output.kind === 'snapshot_expired' &&
+    output.snapshotId !== input.snapshotId
+  ) {
+    throw invalidProtocolFrame('Expired Session transcript snapshot does not match request');
+  }
+  if (
+    input.kind === 'continue' &&
     output.kind === 'revision_changed' &&
     (output.expectedRevision !== input.revision ||
       output.expectedBoundaryRevision !== input.boundaryRevision)
@@ -251,7 +278,8 @@ function assertSessionTranscriptOutput(
   if (
     input.kind === 'continue' &&
     output.kind === 'chunk' &&
-    (output.revision !== input.revision ||
+    (output.snapshotId !== input.snapshotId ||
+      output.revision !== input.revision ||
       output.boundary.revision !== input.boundaryRevision ||
       output.messageIndex !== input.messageIndex ||
       output.byteOffset !== input.byteOffset)

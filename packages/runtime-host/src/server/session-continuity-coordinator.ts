@@ -26,6 +26,11 @@ import type {
   SessionContinuityFrameSink,
   SessionContinuityService,
 } from './session-continuity-service.js';
+import {
+  boundedJsonTextTail,
+  jsonStringContentBytes,
+  LiveAssistantReplayBuffer,
+} from './live-assistant-replay-buffer.js';
 
 const MAX_CONNECTION_SUBSCRIPTIONS = 16;
 const MAX_SUBSCRIBER_QUEUED_FRAMES = 32;
@@ -34,6 +39,8 @@ const MAX_LIVE_REPLAY_ITEMS = 8;
 const MAX_LIVE_REPLAY_RETAINED_BYTES = 96 * 1024;
 const MAX_LIVE_REPLAY_ASSISTANT_BYTES = 64 * 1024;
 const MAX_LIVE_REPLAY_ASSISTANT_WIRE_BYTES = 80 * 1024;
+const MAX_LIVE_REPLAY_CHUNK_BYTES = 4 * 1024;
+const MAX_LIVE_REPLAY_CHUNK_WIRE_BYTES = 5 * 1024;
 
 export type { CanonicalSessionProjection } from './canonical-session-projection.js';
 
@@ -66,9 +73,7 @@ type LiveReplayItem =
   | {
       readonly kind: 'assistant_delta';
       readonly delta: Omit<SessionAssistantDelta, 'text'>;
-      chunks: string[];
-      textBytes: number;
-      wireTextBytes: number;
+      readonly text: LiveAssistantReplayBuffer;
     }
   | { readonly kind: 'tool_event'; readonly event: SessionToolEvent };
 
@@ -355,9 +360,15 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
             runId: delta.runId,
             messageId: delta.messageId,
           },
-          chunks: [replayText],
-          textBytes: Buffer.byteLength(replayText, 'utf8'),
-          wireTextBytes: jsonStringContentBytes(replayText),
+          text: new LiveAssistantReplayBuffer(
+            {
+              maxRawBytes: MAX_LIVE_REPLAY_ASSISTANT_BYTES,
+              maxWireBytes: MAX_LIVE_REPLAY_ASSISTANT_WIRE_BYTES,
+              maxChunkRawBytes: MAX_LIVE_REPLAY_CHUNK_BYTES,
+              maxChunkWireBytes: MAX_LIVE_REPLAY_CHUNK_WIRE_BYTES,
+            },
+            replayText,
+          ),
         });
         for (const subscriber of state.subscribers.values()) {
           this.#enqueueAssistantDelta(subscriber, sessionId, delta);
@@ -645,7 +656,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
       if (item.kind === 'assistant_delta') {
         this.#enqueueAssistantDelta(subscriber, subscriber.sessionId, {
           ...item.delta,
-          text: item.chunks.join(''),
+          text: item.text.value(),
         });
       } else {
         this.#enqueue(subscriber, {
@@ -870,48 +881,17 @@ function mergeLiveReplayItems(previous: LiveReplayItem, next: LiveReplayItem): b
   ) {
     return false;
   }
-  previous.chunks.push(...next.chunks);
-  previous.textBytes += next.textBytes;
-  previous.wireTextBytes += next.wireTextBytes;
-  trimLiveAssistantReplay(previous);
+  previous.text.append(next.text.value());
   return true;
 }
 
 function liveReplayBytes(items: readonly LiveReplayItem[]): number {
   return items.reduce((total, item) => {
     if (item.kind === 'assistant_delta') {
-      return total + item.wireTextBytes + Buffer.byteLength(JSON.stringify(item.delta), 'utf8');
+      return total + item.text.wireBytes + Buffer.byteLength(JSON.stringify(item.delta), 'utf8');
     }
     return total + Buffer.byteLength(JSON.stringify(item.event), 'utf8');
   }, 0);
-}
-
-function trimLiveAssistantReplay(item: Extract<LiveReplayItem, { kind: 'assistant_delta' }>): void {
-  while (
-    item.textBytes > MAX_LIVE_REPLAY_ASSISTANT_BYTES ||
-    item.wireTextBytes > MAX_LIVE_REPLAY_ASSISTANT_WIRE_BYTES
-  ) {
-    const first = item.chunks[0];
-    if (first === undefined) {
-      item.textBytes = 0;
-      item.wireTextBytes = 0;
-      return;
-    }
-    const firstBytes = Buffer.byteLength(first, 'utf8');
-    const firstWireBytes = jsonStringContentBytes(first);
-    const rawExcess = Math.max(0, item.textBytes - MAX_LIVE_REPLAY_ASSISTANT_BYTES);
-    const wireExcess = Math.max(0, item.wireTextBytes - MAX_LIVE_REPLAY_ASSISTANT_WIRE_BYTES);
-    if (firstBytes <= rawExcess || firstWireBytes <= wireExcess) {
-      item.chunks.shift();
-      item.textBytes -= firstBytes;
-      item.wireTextBytes -= firstWireBytes;
-      continue;
-    }
-    const bounded = boundedJsonTextTail(first, firstBytes - rawExcess, firstWireBytes - wireExcess);
-    item.chunks[0] = bounded;
-    item.textBytes += Buffer.byteLength(bounded, 'utf8') - firstBytes;
-    item.wireTextBytes += jsonStringContentBytes(bounded) - firstWireBytes;
-  }
 }
 
 function sameActiveTurn(replay: LiveTurnReplay | undefined, turn: TurnSnapshot | null): boolean {
@@ -951,11 +931,6 @@ function isTerminalTurn(turn: TurnSnapshot): boolean {
 
 function wireTextByteLimit(frame: SessionDeltaFrame): number {
   return RUNTIME_HOST_MAX_FRAME_BYTES - encodeProtocolFrame(frame).byteLength;
-}
-
-function jsonStringContentBytes(value: string): number {
-  const encoded = JSON.stringify(value);
-  return Buffer.byteLength(encoded.slice(1, -1), 'utf8');
 }
 
 function projectToolEvent(
@@ -1021,30 +996,4 @@ function boundedUtf8(value: string, maxBytes: number): string {
     bytes += characterBytes;
   }
   return bounded;
-}
-
-function boundedJsonTextTail(value: string, maxRawBytes: number, maxWireBytes: number): string {
-  if (
-    Buffer.byteLength(value, 'utf8') <= maxRawBytes &&
-    jsonStringContentBytes(value) <= maxWireBytes
-  ) {
-    return value;
-  }
-  const characters: string[] = [];
-  let rawBytes = 0;
-  let wireBytes = 0;
-  for (const character of Array.from(value).reverse()) {
-    const rawCharacterBytes = Buffer.byteLength(character, 'utf8');
-    const wireCharacterBytes = jsonStringContentBytes(character);
-    if (
-      rawBytes + rawCharacterBytes > maxRawBytes ||
-      wireBytes + wireCharacterBytes > maxWireBytes
-    ) {
-      break;
-    }
-    characters.push(character);
-    rawBytes += rawCharacterBytes;
-    wireBytes += wireCharacterBytes;
-  }
-  return characters.reverse().join('');
 }

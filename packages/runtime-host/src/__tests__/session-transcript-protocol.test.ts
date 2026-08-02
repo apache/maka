@@ -21,6 +21,7 @@ describe('Session transcript protocol', () => {
       request({
         kind: 'continue',
         sessionId: 'session-1',
+        snapshotId: 'snapshot-1',
         revision: 2,
         boundaryRevision: 4,
         messageIndex: 1,
@@ -33,6 +34,7 @@ describe('Session transcript protocol', () => {
     const data = Buffer.alloc(SESSION_TRANSCRIPT_CHUNK_MAX_BYTES, 1).toString('base64');
     const decoded = response({
       kind: 'chunk',
+      snapshotId: 'snapshot-1',
       revision: 2,
       boundary: { kind: 'managed', revision: 4, displayMode: 'explore' },
       messageCount: 3,
@@ -46,6 +48,7 @@ describe('Session transcript protocol', () => {
     assert.doesNotThrow(() =>
       response({
         kind: 'chunk',
+        snapshotId: 'snapshot-1',
         revision: 1,
         boundary: { kind: 'external', revision: 0, displayMode: null },
         messageCount: 0,
@@ -65,6 +68,7 @@ describe('Session transcript protocol', () => {
     for (const result of [
       {
         kind: 'chunk',
+        snapshotId: 'snapshot-1',
         revision: 1,
         boundary: { kind: 'managed', revision: 0, displayMode: null },
         messageCount: 1,
@@ -75,6 +79,7 @@ describe('Session transcript protocol', () => {
       },
       {
         kind: 'chunk',
+        snapshotId: 'snapshot-1',
         revision: 1,
         boundary: { kind: 'bypass', revision: 0, displayMode: 'bypass' },
         messageCount: 1,
@@ -85,6 +90,7 @@ describe('Session transcript protocol', () => {
       },
       {
         kind: 'chunk',
+        snapshotId: 'snapshot-1',
         revision: 1,
         boundary: { kind: 'bypass', revision: 0, displayMode: 'bypass' },
         messageCount: 0,
@@ -102,6 +108,7 @@ describe('Session transcript protocol', () => {
     const input = {
       kind: 'continue' as const,
       sessionId: 'session-1',
+      snapshotId: 'snapshot-1',
       revision: 3,
       boundaryRevision: 4,
       messageIndex: 2,
@@ -133,6 +140,7 @@ describe('Session transcript protocol', () => {
       () =>
         HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(input, {
           kind: 'chunk',
+          snapshotId: 'snapshot-1',
           revision: 3,
           boundary: { kind: 'bypass', revision: 4, displayMode: 'bypass' },
           messageCount: 3,
@@ -142,6 +150,20 @@ describe('Session transcript protocol', () => {
           next: null,
         }),
       isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(input, {
+          kind: 'snapshot_expired',
+          snapshotId: 'snapshot-2',
+        }),
+      isInvalidFrame,
+    );
+    assert.doesNotThrow(() =>
+      HOST_OPERATION_SPECS['session.transcript.query'].assertOutputForInput?.(input, {
+        kind: 'snapshot_expired',
+        snapshotId: 'snapshot-1',
+      }),
     );
   });
 });

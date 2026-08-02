@@ -150,12 +150,18 @@ export interface MakaSessionObservation {
   readonly sessionId: string;
   readonly events: readonly MakaSessionDriverEvent[];
   readonly reloadTranscript: boolean;
-  readonly activeTurn: boolean;
+  /** The authoritative Session state at this observation cut. */
+  readonly cut: 'active' | 'idle' | 'unavailable';
 }
 
 export type MakaSessionObservationListener = (
   observation: MakaSessionObservation,
 ) => void | Promise<void>;
+
+export interface MakaSessionObservationCapability {
+  reloadTranscript(): Promise<StoredMessage[]>;
+  subscribe(listener: MakaSessionObservationListener): () => void;
+}
 
 export interface MakaPreparePromptOptions {
   /** Caller-owned identity used when Goal admission reserves a turn synchronously. */
@@ -216,16 +222,11 @@ export interface MakaSessionDriver {
   moveSession?(cwd: string): Promise<MakaSessionMoveResult>;
   switchSession(sessionId: string): Promise<MakaSessionSwitchResult>;
   /**
-   * Reload the active Session from its durable authority after a live turn.
-   * Host-backed drivers use this to replace bounded live projections with the
-   * complete transcript at the turn boundary.
+   * Observe turns owned by another client and reload their durable boundaries.
+   * The paired methods prevent a live projection from being exposed without
+   * its authoritative convergence path.
    */
-  reloadTranscript?(): Promise<StoredMessage[]>;
-  /**
-   * Observe turns owned by another client while this driver is idle. Host-backed
-   * drivers use this to keep multiple TUI clients on one Session converged.
-   */
-  subscribeSessionObservations?(listener: MakaSessionObservationListener): () => void;
+  readonly sessionObservation?: MakaSessionObservationCapability;
   /** Every prompted turn the user can rewind to, newest first. */
   listRewindTargets(): Promise<RewindTarget[]>;
   /**

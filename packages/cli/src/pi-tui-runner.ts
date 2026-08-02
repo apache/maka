@@ -14,6 +14,7 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
+import type { StoredMessage } from '@maka/core/session';
 import {
   isThinkingLevel,
   thinkingVariantsForModel,
@@ -60,6 +61,7 @@ import {
   inspectSessionResumeAvailability,
   type MakaSessionDriver,
   type MakaSessionDriverEvent,
+  type MakaSessionObservation,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
 import {
@@ -210,6 +212,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let busy = false;
   let closed = false;
   let currentActivityCompletion: Promise<void> | undefined;
+  let resolveActivitiesIdle: (() => void) | undefined;
+  let activeActivityCount = 0;
+  let syncActivityUi = () => {};
   let permissionResponseInFlightRequestId: string | null = null;
   // Session recap (issue #1055): an in-flight lock shared by manual and
   // automatic recap calls, an activity clock for idle-return detection, a
@@ -225,18 +230,28 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let recapWatermark: { sessionId: string; mainTurnCount: number } | null = null;
   let promptSeq = 0;
   const beginActivity = () => {
-    let finish!: () => void;
-    const completion = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    currentActivityCompletion = completion;
+    if (activeActivityCount === 0) {
+      currentActivityCompletion = new Promise<void>((resolve) => {
+        resolveActivitiesIdle = resolve;
+      });
+    }
+    activeActivityCount += 1;
+    busy = true;
+    syncActivityUi();
     let finished = false;
     return {
       finish: () => {
         if (finished) return;
         finished = true;
-        if (currentActivityCompletion === completion) currentActivityCompletion = undefined;
-        finish();
+        activeActivityCount -= 1;
+        if (activeActivityCount === 0) {
+          busy = false;
+          currentActivityCompletion = undefined;
+          const resolve = resolveActivitiesIdle;
+          resolveActivitiesIdle = undefined;
+          resolve?.();
+        }
+        syncActivityUi();
       },
     };
   };
@@ -249,11 +264,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         answers: Array<string | null>;
       }
     | undefined;
-  let turnRunning = false;
-  let remoteTurnRunning = false;
+  let turnOwner: 'local' | 'remote' | undefined;
+  let turnUiGeneration = 0;
+  let observedRemoteTurnActive = false;
+  let localTurnSettlementPending = false;
+  let syncObservedRemoteTurn = () => {};
+  let ensureFallbackRetry = () => {};
+  const turnIsRunning = () => turnOwner !== undefined;
   let permissionAlerted = false;
   let turnStartedAt: number | undefined;
   let interruptRequested = false;
+  let interruptTask: Promise<void> | undefined;
   let lastTurnEscapeAt = 0;
   let lastIdleEscapeAt = 0;
   let lastIdleCtrlCAt = 0;
@@ -318,6 +339,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const requestRender = () => {
     transcript.invalidate();
     tui.requestRender();
+  };
+  syncActivityUi = () => {
+    terminal.setProgress(busy);
+    requestRender();
   };
   const unsubscribeSessionTitleChanges =
     input.subscribeSessionTitleChanges?.((sessionId) => {
@@ -450,6 +475,33 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       turnElapsedInterval = undefined;
     }
   };
+  const beginTurnUi = (owner: 'local' | 'remote') => {
+    if (turnOwner === owner) return;
+    if (turnOwner !== undefined) {
+      throw new Error(`Cannot start a ${owner} turn while a ${turnOwner} turn owns the TUI`);
+    }
+    turnOwner = owner;
+    turnUiGeneration += 1;
+    turnStartedAt = Date.now();
+    startTurnElapsedTicker();
+    interruptRequested = false;
+    lastTurnEscapeAt = 0;
+    attention.promptTurnStarted();
+    requestRender();
+  };
+  const finishTurnUi = (owner: 'local' | 'remote') => {
+    if (turnOwner !== owner) return;
+    turnOwner = undefined;
+    turnUiGeneration += 1;
+    turnStartedAt = undefined;
+    stopTurnElapsedTicker();
+    interruptRequested = false;
+    editor.disableSubmit = activeActivityCount > 1;
+    attention.promptTurnEnded();
+    lastActivityAt = Date.now();
+    requestRender();
+    if (owner === 'local') syncObservedRemoteTurn();
+  };
   const shellRunHydration = createShellRunHydrationController({
     driver: input.driver,
     applyToTranscript: (update, options) =>
@@ -504,10 +556,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // Refuse nested control actions: an overlay onSelect bypasses editor.onSubmit,
     // so without this guard a switch could start while a prompt is still running.
     if (busy) return;
-    busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
-    terminal.setProgress(true);
     attention.controlStarted();
     requestRender();
     let sessionActivity: SessionActivityLease | undefined;
@@ -520,47 +570,91 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       reportError(error);
     } finally {
       sessionActivity?.release();
-      busy = false;
-      activity.finish();
       editor.disableSubmit = false;
-      terminal.setProgress(false);
       attention.controlEnded();
-      requestRender();
+      activity.finish();
     }
   };
 
   let observationTail = Promise.resolve();
+  let observationCut = 0;
+  let latestObservationCut: MakaSessionObservation['cut'] = 'unavailable';
+  const observationCutWaiters = new Set<{
+    readonly after: number;
+    readonly resolve: () => void;
+  }>();
+  const publishObservationCut = (cut: MakaSessionObservation['cut']) => {
+    latestObservationCut = cut;
+    observationCut += 1;
+    for (const waiter of observationCutWaiters) {
+      if (observationCut <= waiter.after) continue;
+      observationCutWaiters.delete(waiter);
+      waiter.resolve();
+    }
+  };
+  const waitForObservationAfter = (after: number): Promise<void> => {
+    if (closed || observationCut > after) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      observationCutWaiters.add({ after, resolve });
+    });
+  };
+  const releaseObservationWaiters = () => {
+    for (const waiter of observationCutWaiters) waiter.resolve();
+    observationCutWaiters.clear();
+  };
+  let remoteTurnActivity: ReturnType<typeof beginActivity> | undefined;
+  syncObservedRemoteTurn = () => {
+    if (observedRemoteTurnActive && turnOwner === undefined) {
+      remoteTurnActivity = beginActivity();
+      beginTurnUi('remote');
+      if (localTurnSettlementPending) editor.disableSubmit = false;
+      ensureFallbackRetry();
+    } else if (!observedRemoteTurnActive && turnOwner === 'remote') {
+      finishTurnUi('remote');
+      remoteTurnActivity?.finish();
+      remoteTurnActivity = undefined;
+    }
+  };
+  const sessionObservation = input.driver.sessionObservation;
   const unsubscribeSessionObservations =
-    input.driver.subscribeSessionObservations?.((observation) => {
+    sessionObservation?.subscribe((observation) => {
+      if (closed || input.driver.getSessionId() !== observation.sessionId) return;
+      observedRemoteTurnActive = observation.cut === 'active';
+      syncObservedRemoteTurn();
+      publishObservationCut(observation.cut);
+      const observationGeneration = turnUiGeneration;
+      const observationCutAtArrival = observationCut;
       observationTail = observationTail
         .then(async () => {
           if (closed || input.driver.getSessionId() !== observation.sessionId) return;
-          if (observation.reloadTranscript && input.driver.reloadTranscript) {
-            const messages = await input.driver.reloadTranscript();
-            if (closed || input.driver.getSessionId() !== observation.sessionId) return;
-            replaceTranscriptWithStoredMessages(state, messages);
+          let reloadResult:
+            | { readonly kind: 'success'; readonly messages: readonly StoredMessage[] }
+            | { readonly kind: 'failure'; readonly error: unknown }
+            | undefined;
+          if (observation.reloadTranscript) {
+            try {
+              reloadResult = {
+                kind: 'success',
+                messages: await sessionObservation.reloadTranscript(),
+              };
+            } catch (error) {
+              reloadResult = { kind: 'failure', error };
+            }
+          }
+          if (
+            closed ||
+            input.driver.getSessionId() !== observation.sessionId ||
+            turnUiGeneration !== observationGeneration ||
+            observationCut !== observationCutAtArrival
+          ) {
+            return;
+          }
+          if (reloadResult?.kind === 'success') {
+            replaceTranscriptWithStoredMessages(state, reloadResult.messages);
+          } else if (reloadResult?.kind === 'failure') {
+            reportError(reloadResult.error);
           }
           for (const event of observation.events) applyDriverEventToUi(event);
-          if (observation.activeTurn && !turnRunning) {
-            remoteTurnRunning = true;
-            turnRunning = true;
-            busy = true;
-            turnStartedAt = Date.now();
-            startTurnElapsedTicker();
-            terminal.setProgress(true);
-            attention.promptTurnStarted();
-            requestRender();
-          } else if (!observation.activeTurn && remoteTurnRunning) {
-            remoteTurnRunning = false;
-            turnRunning = false;
-            busy = false;
-            turnStartedAt = undefined;
-            stopTurnElapsedTicker();
-            terminal.setProgress(false);
-            attention.promptTurnEnded();
-            lastActivityAt = Date.now();
-            requestRender();
-          }
         })
         .catch(reportError);
       return observationTail;
@@ -580,6 +674,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unbindGoalHost = undefined;
     unsubscribeSessionTitleChanges();
     unsubscribeSessionObservations();
+    releaseObservationWaiters();
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();
@@ -597,11 +692,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (closed) return;
     closed = true;
     restoreTerminal();
-    if (error) rejectClosed(error);
-    else resolveClosed();
-    // Runtime stop is best-effort after the shell has its terminal back. A
-    // double-Escape/Ctrl-C interrupt may already have one in flight; reuse it.
-    if (!interruptRequested) void input.driver.stop().catch(() => {});
+    // The shell gets its terminal back before Runtime cleanup starts, while
+    // callers retain the connection until an exact stop/interrupt settles or
+    // the bounded drain expires.
+    const drain = interruptRequested
+      ? interruptTask
+      : Promise.resolve().then(() => input.driver.stop());
+    void waitForCloseDrain(drain).then(() => {
+      if (error) rejectClosed(error);
+      else resolveClosed();
+    });
   };
 
   const handleProcessExit = (exitCode: number, error?: Error): void => {
@@ -685,12 +785,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     return true;
   };
 
-  // Refill the editor from a retract result, prepended to any current draft.
-  // Shared by the interrupt path and the alt+↑ path. The text always comes
-  // from `driver.retractQueued()` — a synchronous in-process read of the
-  // runtime's authoritative queues — never from the render mirror, which can
-  // lag a step-boundary consumption and would resurrect an already-consumed
-  // steering message for a double execution. Clears the local mirror.
+  // Refill the editor from authoritative runtime retraction and/or CLI-owned
+  // fallback/follow-up state, prepended to any current draft. Never read the
+  // render mirror: it can lag step-boundary consumption and resurrect an
+  // already-consumed steering message for a double execution. Clears that
+  // mirror after the caller transfers the owned text here.
   const refillEditorFromQueues = (joined: string) => {
     state.steering = [];
     state.followup = [];
@@ -710,7 +809,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // Host-backed drivers combine retraction and stop in one command. Embedded
     // drivers keep the legacy in-process sequence, but both paths refill only
     // from the authoritative result rather than the potentially stale mirror.
-    void (async () => {
+    const task = (async () => {
       const fallback = takePendingFallback();
       let retracted: string;
       if (input.driver.interrupt) {
@@ -723,11 +822,18 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
       refillEditorFromQueues([fallback, retracted].filter(Boolean).join('\n\n'));
       requestRender();
-    })().catch((error) => {
-      interruptRequested = false;
-      editor.disableSubmit = false;
-      reportError(error);
-    });
+    })();
+    interruptTask = task;
+    void task
+      .catch((error) => {
+        if (closed) return;
+        interruptRequested = false;
+        editor.disableSubmit = false;
+        reportError(error);
+      })
+      .finally(() => {
+        if (interruptTask === task) interruptTask = undefined;
+      });
   };
 
   // Open a fresh turn from a submitted prompt (idle path). Control actions hold
@@ -779,10 +885,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // `editor.disableSubmit` for the async prep window: pi-tui clears the draft
   // before onSubmit, so a second Enter during prep must not be accepted (it
   // would be dropped by the busy guard with the draft already gone).
-  // runAgentTurn re-asserts busy for the turn itself and re-enables submit so
+  // runAgentTurn opens the turn activity and re-enables submit so
   // mid-turn Enter can still steer.
   const submitPreparedUserPrompt = async (prompt: string) => {
-    busy = true;
     const preparationActivity = beginActivity();
     editor.disableSubmit = true;
     let handedOff = false;
@@ -819,7 +924,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       reportError(error);
     } finally {
       if (!handedOff) {
-        busy = false;
         editor.disableSubmit = false;
         requestRender();
       }
@@ -832,12 +936,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Fallback handoff owner. A `fallback` outcome while the turn is running
   // means the runtime has no live steering owner YET (the begin window) or
   // just lost it; the runtime keeps no record of the text, so the CLI owns
-  // delivery: retry the SAME enqueue until the owner appears, and flush any
-  // remainder into the next turn at the turn boundary. Never a bounded wait —
-  // a normal turn outlives any fixed budget and the text must not vanish.
+  // delivery. Retry the SAME enqueue while a turn owner exists. Once the
+  // post-local observation cut is known, a healthy idle boundary opens the
+  // next turn; abort, failure, or unavailability restores the text to the
+  // editor. Never use a bounded retry: a normal turn can outlive any fixed
+  // budget and the text must not vanish.
   const FALLBACK_RETRY_MS = 100;
   let fallbackRetryTimer: ReturnType<typeof setInterval> | null = null;
   let fallbackRetryInFlight = false;
+
+  ensureFallbackRetry = () => {
+    if (!turnIsRunning() || state.pendingFallback.length === 0) return;
+    fallbackRetryTimer ??= setInterval(() => void retryPendingFallback(), FALLBACK_RETRY_MS);
+  };
 
   const stopFallbackRetry = () => {
     if (fallbackRetryTimer === null) return;
@@ -847,7 +958,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const retryPendingFallback = async () => {
     if (fallbackRetryInFlight) return;
-    if (closed || !turnRunning || state.pendingFallback.length === 0) {
+    if (closed || !turnIsRunning() || state.pendingFallback.length === 0) {
       stopFallbackRetry();
       return;
     }
@@ -878,7 +989,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const deferFallback = (text: string, enqueue: 'steer' | 'queue') => {
     state.pendingFallback.push({ text, enqueue });
-    fallbackRetryTimer ??= setInterval(() => void retryPendingFallback(), FALLBACK_RETRY_MS);
+    ensureFallbackRetry();
     requestRender();
   };
 
@@ -902,7 +1013,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         requestRender();
         return;
       }
-      if (turnRunning || busy) deferFallback(text, enqueue);
+      if (turnIsRunning() || busy) deferFallback(text, enqueue);
       else submitPrompt(text);
     } catch (error) {
       const draft = editor.getText();
@@ -926,14 +1037,14 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // Mirror Enter's control-busy guard BEFORE touching the editor: during a
     // control action (busy without a running turn) submitPrompt would drop the
     // prompt, so keep the draft in place instead of clearing it into the void.
-    if (busy && !turnRunning) return;
+    if (busy && !turnIsRunning()) return;
     // Interrupt convergence window: the turn is being stopped, so nothing may
     // be queued onto it and no fresh turn may open — keep the draft.
     if (interruptRequested) return;
     const text = editor.getExpandedText().trim();
     if (!text) return;
     editor.setText('');
-    if (!turnRunning) {
+    if (!turnIsRunning()) {
       submitPrompt(text);
       return;
     }
@@ -975,9 +1086,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let wizardAttempt = 0;
 
   editor.onSubmit = (prompt) => {
-    if (turnRunning) {
+    if (turnIsRunning()) {
       // A quit/exit form typed while a turn is running must close the TUI, not
-      // steer it into the model as prompt text (review finding on turnRunning
+      // steer it into the model as prompt text (review finding on running-turn
       // input routing): check it before handing off to steering.
       if (isExitPrompt(prompt)) {
         beginGracefulClose();
@@ -1022,32 +1133,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // Runs one agent turn through the shared activity/drain lifecycle. Shared by
   // user submits, queued follow-ups, and coordinator-owned goal injections.
   function runAgentTurn(request: MakaPiTuiTurnRequest): Promise<GoalTurnOutcome> {
-    busy = true;
     const activity = beginActivity();
-    turnRunning = true;
-    turnStartedAt = Date.now();
-    startTurnElapsedTicker();
-    interruptRequested = false;
-    lastTurnEscapeAt = 0;
+    try {
+      beginTurnUi('local');
+    } catch (error) {
+      activity.finish();
+      throw error;
+    }
     // Re-enable submit after skill-prep's disableSubmit hold: Enter must steer
     // a running turn (see editor.onSubmit) instead of being swallowed.
     editor.disableSubmit = false;
-    terminal.setProgress(true);
-    attention.promptTurnStarted();
-    requestRender();
-
-    const finishTurnUi = () => {
-      turnRunning = false;
-      turnStartedAt = undefined;
-      stopTurnElapsedTicker();
-      interruptRequested = false;
-      editor.disableSubmit = false;
-      terminal.setProgress(false);
-      attention.promptTurnEnded();
-      // A turn ending is activity too — resets the idle clock the next
-      // submission's auto-recap check measures against.
-      lastActivityAt = Date.now();
-    };
 
     return runMakaPiTuiTurn({
       driver: input.driver,
@@ -1070,16 +1165,58 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       },
     }).then(
       async (outcome) => {
-        if (input.driver.reloadTranscript) {
+        finishTurnUi('local');
+        if (closed) {
+          activity.finish();
+          return outcome;
+        }
+        let postLocalCut: MakaSessionObservation['cut'] | undefined;
+        if (sessionObservation && turnOwner === undefined) {
+          const reloadSessionId = input.driver.getSessionId();
+          const reloadGeneration = turnUiGeneration;
+          const postLocalObservation = waitForObservationAfter(observationCut);
+          localTurnSettlementPending = true;
+          editor.disableSubmit = true;
           try {
-            replaceTranscriptWithStoredMessages(state, await input.driver.reloadTranscript());
-          } catch (error) {
-            reportError(error);
+            let reloadResult:
+              | { readonly kind: 'success'; readonly messages: readonly StoredMessage[] }
+              | { readonly kind: 'failure'; readonly error: unknown };
+            try {
+              reloadResult = {
+                kind: 'success',
+                messages: await sessionObservation.reloadTranscript(),
+              };
+            } catch (error) {
+              reloadResult = { kind: 'failure', error };
+            }
+            await postLocalObservation;
+            postLocalCut = latestObservationCut;
+            const current =
+              !closed &&
+              input.driver.getSessionId() === reloadSessionId &&
+              turnUiGeneration === reloadGeneration;
+            if (current) {
+              if (reloadResult.kind === 'success') {
+                replaceTranscriptWithStoredMessages(state, reloadResult.messages);
+              } else if (postLocalCut !== 'unavailable') reportError(reloadResult.error);
+            }
+          } finally {
+            localTurnSettlementPending = false;
+            if (turnOwner === undefined) editor.disableSubmit = false;
           }
         }
-        finishTurnUi();
         if (closed) {
-          busy = false;
+          activity.finish();
+          return outcome;
+        }
+        if (turnOwner === 'remote') {
+          ensureFallbackRetry();
+          activity.finish();
+          return outcome;
+        }
+        if (postLocalCut === 'unavailable') {
+          const fallbackText = takePendingFallback();
+          if (fallbackText) refillEditorFromQueues(fallbackText);
           activity.finish();
           return outcome;
         }
@@ -1114,16 +1251,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           }
         }
 
-        busy = false;
         activity.finish();
-        requestRender();
         return outcome;
       },
       (error) => {
-        finishTurnUi();
-        busy = false;
+        finishTurnUi('local');
         activity.finish();
-        requestRender();
         throw error;
       },
     );
@@ -1256,6 +1389,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     thinkingLevel = summary.thinkingLevel;
     thinkingLevels = providerType ? thinkingVariantsForModel(providerType, summary.model) : [];
     refreshEditorCwd?.(cwd);
+    stopFallbackRetry();
+    state.pendingFallback = [];
     replaceTranscriptWithStoredMessages(state, messages);
     shellRunHydration.reset();
     if (input.listShellRunUpdates) {
@@ -1885,6 +2020,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // same welcome block as a cold start — the welcome block is the "fresh
     // session, send a prompt to begin" cue. A notice here would make entries
     // non-empty and suppress it.
+    stopFallbackRetry();
+    state.pendingFallback = [];
     replaceTranscriptWithStoredMessages(state, []);
     shellRunElapsedTicker.sync();
     requestRender();
@@ -1895,12 +2032,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // envelope. Mirrors submitPreparedUserPrompt: claim `busy` + an activity lease
   // SYNCHRONOUSLY before the async read so no other turn (a Goal auto-
   // continuation, or a user Enter) can start during it and make the import a
-  // silent no-op. runAgentTurn re-asserts busy for the turn; on any failure the
+  // silent no-op. runAgentTurn opens the turn activity; on any failure the
   // finally releases the lease. The handoff is the model-facing `sendText`; a
   // short line shows in the transcript.
   const importForeignSession = async (summary: ForeignSessionSummary): Promise<void> => {
     if (busy || input.foreignSessions === undefined) return;
-    busy = true;
     const activity = beginActivity();
     editor.disableSubmit = true;
     let handedOff = false;
@@ -1920,7 +2056,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       reportError(error);
     } finally {
       if (!handedOff) {
-        busy = false;
         editor.disableSubmit = false;
         requestRender();
       }
@@ -2600,7 +2735,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (isKeyRelease(data)) return undefined;
     if (
       activeUserQuestionRequest(state) &&
-      turnRunning &&
+      turnIsRunning() &&
       matchesKey(data, Key.ctrl('c')) &&
       !isKeyRepeat(data)
     ) {
@@ -2668,7 +2803,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         return { consume: true };
       }
     }
-    if (turnRunning && matchesKey(data, Key.ctrl('c'))) {
+    if (turnIsRunning() && matchesKey(data, Key.ctrl('c'))) {
       if (interruptRequested) handleProcessExit(0);
       else requestTurnInterrupt();
       return { consume: true };
@@ -2676,7 +2811,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // Double Escape interrupts the running turn. This must sit below the
     // boundary branch so Escape keeps meaning "deny" while a prompt is
     // pending, and it only arms while a prompt turn is actually running.
-    if (turnRunning && matchesKey(data, Key.escape)) {
+    if (turnIsRunning() && matchesKey(data, Key.escape)) {
       // Once an interrupt is issued, swallow further Escapes until the turn
       // ends so a still-settling stop is not requested twice. A rejected stop
       // re-arms interruption so the user can retry within the same turn.
@@ -2691,13 +2826,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     // Idle double Escape opens the rewind picker (the same gesture that
-    // interrupts a running turn). This sits below the turnRunning branch, so it
+    // interrupts a running turn). This sits below the running-turn branch, so it
     // only arms when nothing is running. It engages only when the editor has no
     // Escape work of its own — empty draft, no autocomplete popup — so the
     // editor keeps owning Escape for clearing input and closing autocomplete.
     // The first Escape falls through to the editor; only the second, within the
     // window, consumes and opens the picker.
-    if (!busy && !turnRunning && matchesKey(data, Key.escape)) {
+    if (!busy && !turnIsRunning() && matchesKey(data, Key.escape)) {
       const editorNeutral = editor.getText().length === 0 && !editor.isShowingAutocomplete();
       if (!editorNeutral) {
         lastIdleEscapeAt = 0;
@@ -2712,13 +2847,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       lastIdleEscapeAt = now;
       return undefined;
     }
-    if (!turnRunning && matchesKey(data, Key.ctrl('c')) && editor.getText().length > 0) {
+    if (!turnIsRunning() && matchesKey(data, Key.ctrl('c')) && editor.getText().length > 0) {
       lastIdleCtrlCAt = 0;
       editor.setText('');
       requestRender();
       return { consume: true };
     }
-    if (!turnRunning && matchesKey(data, Key.ctrl('c'))) {
+    if (!turnIsRunning() && matchesKey(data, Key.ctrl('c'))) {
       const now = Date.now();
       if (lastIdleCtrlCAt && now - lastIdleCtrlCAt <= DOUBLE_CTRL_C_EXIT_WINDOW_MS) {
         lastIdleCtrlCAt = 0;
@@ -2731,7 +2866,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       return { consume: true };
     }
     if (matchesKey(data, Key.ctrl('d'))) {
-      if (busy || turnRunning) return { consume: true };
+      if (busy || turnIsRunning()) return { consume: true };
       if (editor.getText().length === 0) {
         beginGracefulClose();
         return { consume: true };
@@ -2909,3 +3044,19 @@ function isExitPrompt(prompt: string): boolean {
 // Two Escapes this close together read as one deliberate "stop the turn".
 const DOUBLE_ESCAPE_INTERRUPT_WINDOW_MS = 600;
 const DOUBLE_CTRL_C_EXIT_WINDOW_MS = 1_000;
+const CLOSE_DRIVER_DRAIN_TIMEOUT_MS = 5_000;
+
+async function waitForCloseDrain(task: Promise<void> | undefined): Promise<void> {
+  if (!task) return;
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      task.catch(() => {}),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, CLOSE_DRIVER_DRAIN_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}

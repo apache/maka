@@ -76,7 +76,8 @@ export class AttentionController {
   // reports focus (no 1004 support) is treated as always-watching and stays
   // silent, rather than ringing on every turn.
   private focused = true;
-  private busy = false;
+  private promptTurnActive = false;
+  private activeControls = 0;
   // Latched when something the user has not yet acknowledged is waiting; drives
   // the attention title marker until they engage (focus, answer, or a new turn).
   private attention = false;
@@ -127,7 +128,7 @@ export class AttentionController {
     if (this.stopped) return;
     this.turnStartedAt = this.now();
     this.attention = false;
-    this.busy = true;
+    this.promptTurnActive = true;
     this.refreshTitle();
   }
 
@@ -139,7 +140,7 @@ export class AttentionController {
    */
   promptTurnEnded(): void {
     if (this.stopped) return;
-    this.busy = false;
+    this.promptTurnActive = false;
     if (this.now() - this.turnStartedAt >= this.longTurnThresholdMs) {
       this.raiseAttention();
     } else {
@@ -151,14 +152,14 @@ export class AttentionController {
   controlStarted(): void {
     if (this.stopped) return;
     this.attention = false;
-    this.busy = true;
+    this.activeControls += 1;
     this.refreshTitle();
   }
 
   /** A control action ended. */
   controlEnded(): void {
     if (this.stopped) return;
-    this.busy = false;
+    this.activeControls = Math.max(0, this.activeControls - 1);
     this.refreshTitle();
   }
 
@@ -183,7 +184,8 @@ export class AttentionController {
    */
   reset(): void {
     this.stopped = true;
-    this.busy = false;
+    this.promptTurnActive = false;
+    this.activeControls = 0;
     this.attention = false;
     this.refreshTitle();
   }
@@ -219,7 +221,7 @@ export class AttentionController {
     // is only ever set while unfocused, so a normal running turn still shows busy.
     const title = this.attention
       ? `${ATTENTION_TITLE_MARKER}${this.baseTitle}`
-      : this.busy
+      : this.isBusy()
         ? `${this.busySpinnerFrames[this.spinnerFrame] ?? ''} ${this.baseTitle}`
         : this.baseTitle;
     // Only write on a real change so the title stream stays quiet between turns
@@ -234,7 +236,7 @@ export class AttentionController {
   // currently shown (busy, not overridden by attention, session still live).
   private syncSpinner(): void {
     const shouldRun =
-      this.busy && !this.attention && !this.stopped && this.busySpinnerFrames.length > 0;
+      this.isBusy() && !this.attention && !this.stopped && this.busySpinnerFrames.length > 0;
     if (shouldRun && !this.cancelSpinner) {
       this.cancelSpinner = this.scheduleSpinnerInterval(() => {
         this.spinnerFrame = (this.spinnerFrame + 1) % this.busySpinnerFrames.length;
@@ -246,5 +248,9 @@ export class AttentionController {
       // Reset so the next busy episode opens on the first frame, not mid-cycle.
       this.spinnerFrame = 0;
     }
+  }
+
+  private isBusy(): boolean {
+    return this.promptTurnActive || this.activeControls > 0;
   }
 }
