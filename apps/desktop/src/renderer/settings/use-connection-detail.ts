@@ -325,7 +325,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     const lifecycle = connectionDetailLifecycleRef.current;
     setTesting(true);
     try {
-      const result: ConnectionTestResult = await props.bridge.test(connection.slug, { model: connection.defaultModel });
+      // No model argument: `resolveConnectionTestModel` already picks one from
+      // the enabled ids, then the provider fallbacks, and drops any candidate
+      // the fetched inventory doesn't list. Naming `connection.defaultModel`
+      // here handed that choice to the layer with the least information — and
+      // to a field this page no longer owns, which is '' once the user enables
+      // no models. Left unset, a zero-model connection still verifies its
+      // credential against a fallback instead of failing with 'No model to test'.
+      const result: ConnectionTestResult = await props.bridge.test(connection.slug);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
         toast.success(

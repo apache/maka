@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
-import type { LlmConnection } from '@maka/core';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core';
 import { generateText, isStepCount, streamText, tool } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
@@ -311,6 +311,40 @@ describe('models.dev provider conformance', () => {
     const legacy = { ...connection, models: undefined, enabledModelIds: undefined };
     assert.equal((await testConnection(legacy, 'moonshot-key')).modelTested, 'moonshot-v1-8k');
     assert.deepEqual(requestedModels, ['kimi-k2.6', 'explicit-preview', 'moonshot-v1-8k']);
+  });
+
+  test('connection probe verifies a connection that enables no models at all', async () => {
+    // Enabling zero models is a real, persistable state, and the settings page
+    // no longer names a model when it asks for a test. The credential still has
+    // to be verifiable: with nothing enabled and no fetched inventory, the probe
+    // falls back to the provider's own model rather than 'No model to test'.
+    const requestedModels: string[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as { model: string };
+      requestedModels.push(body.model);
+      respondJson(response, 200, {});
+    });
+    const result = await testConnection(
+      {
+        slug: 'moonshot-empty',
+        name: 'Moonshot Empty',
+        providerType: 'moonshot',
+        baseUrl: `${server.url}/v1`,
+        defaultModel: '',
+        enabledModelIds: [],
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      'moonshot-key',
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(requestedModels.length, 1);
+    assert.ok(
+      PROVIDER_DEFAULTS.moonshot.fallbackModels.includes(requestedModels[0]!),
+      `expected a provider fallback model, got ${requestedModels[0]}`,
+    );
   });
 
   test('connection probe bounds a fallback snapshot to its non-empty inventory', async () => {
