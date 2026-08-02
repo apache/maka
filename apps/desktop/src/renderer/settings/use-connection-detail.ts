@@ -284,15 +284,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 
   async function updateEnabledModels(nextIds: string[]) {
     if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return;
-    // An emptied selection is passed through as-is. Merging the default back in
-    // here would undo the user's clear before it ever reached the store, which
-    // now persists an empty list (and clears the default with it).
-    const next = nextIds.length === 0
-      ? []
-      : connectionEnabledModelIds({
-          defaultModel: connection.defaultModel,
-          enabledModelIds: nextIds,
-        });
+    // The selection is passed through as stated. Merging the default back in
+    // here made unchecking it a silent no-op: the recomputed list equalled the
+    // current one, `modelIdListsEqual` short-circuited, and nothing was ever
+    // written. The store owns what follows from the selection.
+    const next = [...new Set(nextIds.map((id) => id.trim()).filter(Boolean))];
     if (modelIdListsEqual(next, enabledModelIds)) return;
     const previous = enabledModelIds;
     const lifecycle = connectionDetailLifecycleRef.current;

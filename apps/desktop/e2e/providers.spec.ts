@@ -169,6 +169,22 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     await page.getByRole('option', { name: /Gemma/ }).first().click();
     await page.keyboard.press('Escape');
     await expect(enabledModels).toContainText(/Gemma/);
+
+    // Unchecking the connection's own default model is not silently undone.
+    // The store used to merge the default back into every write, so this click
+    // computed an identical list, short-circuited, and the box re-checked
+    // itself. A default that is no longer enabled is simply no longer a
+    // default.
+    await enabledModels.click();
+    await page.getByRole('option', { name: /GPT OSS 120B/ }).first().click();
+    await page.keyboard.press('Escape');
+    await expect
+      .poll(async () => page.evaluate(async () => {
+        const list = await window.maka.connections.list();
+        const entry = list.find((candidate) => candidate.slug === 'cerebras');
+        return { enabled: entry?.enabledModelIds ?? null, model: entry?.defaultModel ?? null };
+      }))
+      .toEqual({ enabled: ['gemma-4-31b'], model: '' });
   });
 
   await test.step('deletion stays reachable and reversible in a short viewport', async () => {

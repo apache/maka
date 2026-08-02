@@ -1349,6 +1349,7 @@ export {
   connectionEnabledModelIds,
   deriveConnectionSlug,
   isWiredOAuthProvider,
+  reconcileConnectionAfterEnabledModelsChange,
   reconcileConnectionAfterModelFetch,
   effectiveBaseUrl,
   migrateConnectionV1ToV2,

@@ -48,7 +48,7 @@ describe('FileConnectionStore', () => {
     });
   });
 
-  test('normalizes an updated enabled-model list and keeps the default enabled', async () => {
+  test('normalizes an updated enabled-model list and writes it as stated', async () => {
     await withConnectionStore(async (store) => {
       const created = await store.create({
         slug: 'openai-main',
@@ -61,7 +61,10 @@ describe('FileConnectionStore', () => {
         enabledModelIds: [' gpt-5 ', 'gpt-5', ''],
       });
 
-      assert.deepEqual(updated.enabledModelIds, ['gpt-4o-mini', 'gpt-5']);
+      // Trimmed and de-duplicated, but not extended: the default is not merged
+      // back in. A default outside the stated set is no longer the default.
+      assert.deepEqual(updated.enabledModelIds, ['gpt-5']);
+      assert.equal(updated.defaultModel, '');
     });
   });
 
@@ -85,6 +88,84 @@ describe('FileConnectionStore', () => {
       const reloaded = (await store.list()).find((entry) => entry.slug === created.slug);
       assert.deepEqual(reloaded?.enabledModelIds, []);
       assert.equal(reloaded?.defaultModel, '');
+      // And the workspace default goes with it: the runtime starts a chat on a
+      // {connection, model} pair, so half a pair is not a state to keep.
+      assert.equal(await store.getDefault(), null);
+    });
+  });
+
+  test('unchecking the default model is not silently undone', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o',
+      });
+      await store.update(created.slug, { enabledModelIds: ['gpt-4o', 'gpt-4o-mini'] });
+
+      // The store used to merge the default back into every write, so this
+      // selection came back as ['gpt-4o', 'gpt-4o-mini'] — identical to the
+      // current one. Callers that skip no-op writes therefore never wrote, and
+      // the checkbox re-checked itself.
+      const updated = await store.update(created.slug, { enabledModelIds: ['gpt-4o-mini'] });
+
+      assert.deepEqual(updated.enabledModelIds, ['gpt-4o-mini']);
+      assert.equal(updated.defaultModel, '');
+    });
+  });
+
+  test('an emptied selection survives the next model fetch', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o-mini',
+      });
+      // Give it an inventory first: bootstrapping a default is a first-fetch
+      // affordance, and this connection has now had its first fetch.
+      await store.update(created.slug, {
+        models: [{ id: 'gpt-4o' }, { id: 'gpt-4o-mini' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      });
+      await store.update(created.slug, { enabledModelIds: [] });
+
+      // Refreshing the catalog used to re-seed `liveIds[0]`, so "enable
+      // nothing" only lasted until the next 更新模型目录 — or until the silent
+      // auto-fetch that follows saving a key.
+      const refreshed = await store.update(created.slug, {
+        models: [{ id: 'gpt-5' }, { id: 'gpt-4o' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 2,
+      });
+
+      assert.deepEqual(refreshed.enabledModelIds, []);
+      assert.equal(refreshed.defaultModel, '');
+    });
+  });
+
+  test('the first model fetch still seeds a provider that ships no fallback models', async () => {
+    await withConnectionStore(async (store) => {
+      // LM Studio and the three *-compatible providers have no
+      // `fallbackModels`, so they are created with an empty default. Their
+      // first discovery is the only place a usable default can come from.
+      const created = await store.create({
+        slug: 'lmstudio-local',
+        name: 'LM Studio',
+        providerType: 'lm-studio',
+      });
+      assert.equal(created.defaultModel, '');
+
+      const fetched = await store.update(created.slug, {
+        models: [{ id: 'qwen3-30b' }, { id: 'llama-3.3-70b' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 1,
+      });
+
+      assert.equal(fetched.defaultModel, 'qwen3-30b');
+      assert.deepEqual(fetched.enabledModelIds, ['qwen3-30b']);
     });
   });
 

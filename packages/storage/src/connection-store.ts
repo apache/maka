@@ -4,6 +4,7 @@ import {
   PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   migrateConnectionV1ToV2,
+  reconcileConnectionAfterEnabledModelsChange,
   persistedBaseUrl,
   reconcileConnectionAfterModelFetch,
   validateSlug,
@@ -110,23 +111,27 @@ class FileConnectionStore implements ConnectionStore {
           patch.defaultModel !== undefined ||
           patch.models !== undefined);
       const models = updatesModelCache ? patch.models : current.models;
-      // Enabling no models is a real answer, so it has to survive the write.
-      // `connectionEnabledModelIds` keeps the default in the enabled list, which
-      // means an explicitly emptied list came back as `[defaultModel]` — the
-      // store re-asserting a choice the user had just withdrawn. Clearing the
-      // list clears the default with it: a connection that offers no models has
-      // no model to start a chat on, which is what the readiness gate's
-      // `empty_model_list` already says.
-      const clearsEnabledModels =
-        Object.prototype.hasOwnProperty.call(patch, 'enabledModelIds') &&
-        (patch.enabledModelIds?.length ?? 0) === 0;
-      let defaultModel = clearsEnabledModels ? '' : (patch.defaultModel ?? current.defaultModel);
-      let enabledModelIds = clearsEnabledModels
-        ? []
-        : connectionEnabledModelIds({
-            defaultModel,
-            enabledModelIds: patch.enabledModelIds ?? current.enabledModelIds,
-          });
+      // A patch carrying `enabledModelIds` is the user stating a selection, so
+      // it is written as stated — including empty. Anything else re-asserts a
+      // choice they just withdrew. `reconcileConnectionAfterEnabledModelsChange`
+      // owns the one rule that follows from it: a default outside the new set
+      // is no longer the default.
+      const statesEnabledModels = Object.prototype.hasOwnProperty.call(patch, 'enabledModelIds');
+      let defaultModel = patch.defaultModel ?? current.defaultModel;
+      let enabledModelIds: string[];
+      if (statesEnabledModels) {
+        const selection = reconcileConnectionAfterEnabledModelsChange(
+          { defaultModel },
+          patch.enabledModelIds ?? [],
+        );
+        defaultModel = selection.defaultModel;
+        enabledModelIds = selection.enabledModelIds;
+      } else {
+        enabledModelIds = connectionEnabledModelIds({
+          defaultModel,
+          enabledModelIds: current.enabledModelIds,
+        });
+      }
       // Authoritative live inventory wins: a retired default (common after
       // Moonshot renamed moonshot-v1-* → kimi-k2.*) must not strand the
       // connection as model_not_enabled once models are fetched. Fallback
@@ -135,7 +140,7 @@ class FileConnectionStore implements ConnectionStore {
         Object.prototype.hasOwnProperty.call(patch, 'models') && patch.modelSource === 'fetched';
       if (writesFetchedModels && models && models.length > 0) {
         const reconciled = reconcileConnectionAfterModelFetch(
-          { defaultModel, enabledModelIds },
+          { defaultModel, enabledModelIds, hasModelInventory: current.models !== undefined },
           models,
         );
         defaultModel = reconciled.defaultModel;
@@ -172,7 +177,11 @@ class FileConnectionStore implements ConnectionStore {
         updatedAt: Date.now(),
       };
       file.connections[index] = next;
-      if (file.defaultSlug === slug && next.enabled === false) {
+      // The workspace default is the pair {connection, model}. A connection
+      // that is disabled, or that no longer has a default model, cannot supply
+      // half of it — leaving the slug behind showed a "默认" badge next to a
+      // picker that read 未设置.
+      if (file.defaultSlug === slug && (next.enabled === false || !next.defaultModel)) {
         file.defaultSlug = null;
       }
       updated = next;

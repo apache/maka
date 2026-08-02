@@ -115,9 +115,14 @@ export interface LlmConnection extends RuntimeExecutionConnection {
 }
 
 /**
- * Return the model ids exposed by a connection, preserving the invariant that
- * its default model is always enabled. Missing legacy state intentionally
- * resolves to the default model only, never the full discovered catalog.
+ * Read-time normalizer: the model ids a stored connection exposes.
+ *
+ * A row written before `enabledModelIds` existed carries only `defaultModel`,
+ * so reading one resolves to the default model alone — never the full
+ * discovered catalog. This is a migration shim for reads, NOT the rule for
+ * writes: merging the default into a selection the user just made would
+ * re-assert a choice they withdrew. Explicit selections go through
+ * `reconcileConnectionAfterEnabledModelsChange`.
  */
 export function connectionEnabledModelIds(connection: {
   defaultModel?: unknown;
@@ -137,6 +142,41 @@ export function connectionEnabledModelIds(connection: {
 }
 
 /**
+ * THE rule for a connection's model selection:
+ * **`defaultModel` is either absent, or a member of `enabledModelIds`.**
+ *
+ * Applied when the user states a new enabled set. Dropping a model that
+ * happens to be the default drops the default with it — a connection may
+ * legitimately enable nothing at all, and "enable nothing" has no model for a
+ * chat to start on. That is exactly what the readiness gate's
+ * `empty_model_list` already reports, so no state is lost by saying it.
+ *
+ * The old behavior merged the default back into every write, which made
+ * unchecking the default a silent no-op: the recomputed list equalled the
+ * current one, the write short-circuited, and the box re-checked itself.
+ */
+export function reconcileConnectionAfterEnabledModelsChange(
+  connection: { defaultModel?: unknown },
+  nextEnabledModelIds: readonly unknown[],
+): {
+  defaultModel: string;
+  enabledModelIds: string[];
+} {
+  const enabled = new Set<string>();
+  for (const candidate of nextEnabledModelIds) {
+    if (typeof candidate !== 'string') continue;
+    const id = candidate.trim();
+    if (id) enabled.add(id);
+  }
+  const previousDefault =
+    typeof connection.defaultModel === 'string' ? connection.defaultModel.trim() : '';
+  return {
+    defaultModel: enabled.has(previousDefault) ? previousDefault : '',
+    enabledModelIds: [...enabled],
+  };
+}
+
+/**
  * After a successful live model discovery, keep the connection usable.
  *
  * Fetching models used to leave a stale `defaultModel` (e.g. retired
@@ -144,11 +184,19 @@ export function connectionEnabledModelIds(connection: {
  * readiness gate then fails with `model_not_enabled` — the "pull models and
  * the connection breaks" regression. Prefer an already-enabled id that is
  * still live; otherwise take the first discovered id.
+ *
+ * Bootstrapping a default from the inventory is a FIRST-fetch affordance, not
+ * a repair. Four providers ship no `fallbackModels` (LM Studio and the three
+ * *-compatible ones), so their first discovery is the only place a default can
+ * come from. Once a connection has an inventory, an empty selection is the
+ * user's answer and re-seeding it would undo the choice on the next refresh.
  */
 export function reconcileConnectionAfterModelFetch(
   connection: {
     defaultModel?: unknown;
     enabledModelIds?: unknown;
+    /** Whether this connection already had an inventory before this fetch. */
+    hasModelInventory?: boolean;
   },
   models: readonly { id?: unknown }[],
 ): {
@@ -178,6 +226,12 @@ export function reconcileConnectionAfterModelFetch(
         enabledModelIds: previousEnabled,
       }),
     };
+  }
+
+  // No enabled models and no default on a connection that already has an
+  // inventory is a stated choice, not a gap to fill.
+  if (connection.hasModelInventory && previousEnabled.length === 0 && !previousDefault) {
+    return { defaultModel: '', enabledModelIds: [] };
   }
 
   const defaultModel =
