@@ -2254,7 +2254,7 @@ async function runCandidateRoundHeldInTaskSetHash(
 }
 
 function expectedHeldInTaskSetHash(heldInTaskIds: readonly string[]): string {
-  return sha256Json([...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)));
+  return sha256Json([...new Set(heldInTaskIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
 function expectedCandidateRationaleHash(candidateRationale: Record<string, unknown>): string {

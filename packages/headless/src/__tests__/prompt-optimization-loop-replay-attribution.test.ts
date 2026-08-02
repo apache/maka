@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
 import { readFixedPromptWal } from '../fixed-prompt-controller.js';
-import { hashHeldInTaskSet } from '../prompt-candidate-loop.js';
+import { heldInTaskSetHash } from '../rsi-round-analysis.js';
 import {
   execFileAsync,
   fakeMetaAgent,
@@ -400,7 +400,7 @@ describe('runPromptOptimizationLoop replay attribution guards', () => {
         baselineRuns: 1,
       });
       const tamperedHeldInTaskIds = [...heldInTasks.map((task) => task.id), 'hout-0'];
-      const tamperedHeldInTaskSetHash = hashHeldInTaskSet(tamperedHeldInTaskIds);
+      const tamperedHeldInTaskSetHash = heldInTaskSetHash(tamperedHeldInTaskIds);
       const events = await readFixedPromptWal(harness.resultsJsonlPath);
       const tamperedEvents = events.map((event) => {
         if (event.type === 'prompt_candidate_committed' && event.roundId === 'round-0') {

@@ -25,7 +25,8 @@ import {
   runPromptOptimizationRun,
   selectPromptOptimizationPartitions,
 } from '../prompt-optimization-run.js';
-import { hashCandidateRationale, hashHeldInTaskSet } from '../prompt-candidate-loop.js';
+import { hashCandidateRationale } from '../prompt-candidate-loop.js';
+import { heldInTaskSetHash } from '../rsi-round-analysis.js';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
 
 const execFileAsync = promisify(execFile);
@@ -674,7 +675,7 @@ describe('runPromptOptimizationRun', () => {
           commitSha: candidateSha,
           summary: 'candidate',
           promptHash: hashSystemPrompt('candidate prompt\n'),
-          heldInTaskSetHash: hashHeldInTaskSet(['hin-0']),
+          heldInTaskSetHash: heldInTaskSetHash(['hin-0']),
           heldInTaskIds: ['hin-0'],
           candidateRationaleHash: hashCandidateRationale(candidateRationale),
           candidateRationale,

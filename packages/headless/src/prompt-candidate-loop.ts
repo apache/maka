@@ -17,6 +17,9 @@ import {
   type ProjectRsiPromptAttributionInput,
 } from './rsi-controller-attribution.js';
 import type { RsiRoundAnalysis } from './rsi-round-analysis.js';
+import { heldInTaskSetHash, sortedUnique } from './rsi-round-analysis.js';
+
+export { heldInTaskSetHash as hashHeldInTaskSet } from './rsi-round-analysis.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -229,7 +232,7 @@ export async function runPromptCandidateRound(
     commitSha,
     candidateRationale,
     candidateRationaleHash: hashCandidateRationale(candidateRationale),
-    heldInTaskSetHash: hashHeldInTaskSet(input.heldInTaskIds),
+    heldInTaskSetHash: heldInTaskSetHash(input.heldInTaskIds),
   };
 }
 
@@ -699,15 +702,11 @@ function promptCandidateCommittedEvent(input: {
     commitSha: input.commitSha,
     summary: input.summary,
     promptHash: hashSystemPrompt(input.systemPrompt),
-    heldInTaskSetHash: hashHeldInTaskSet(input.heldInTaskIds),
-    heldInTaskIds: [...new Set(input.heldInTaskIds)].sort((a, b) => a.localeCompare(b)),
+    heldInTaskSetHash: heldInTaskSetHash(input.heldInTaskIds),
+    heldInTaskIds: sortedUnique(input.heldInTaskIds),
     candidateRationaleHash: hashCandidateRationale(input.candidateRationale),
     candidateRationale: input.candidateRationale,
   };
-}
-
-export function hashHeldInTaskSet(heldInTaskIds: readonly string[]): string {
-  return sha256Json([...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)));
 }
 
 export function hashCandidateRationale(candidateRationale: CandidateRationale): string {

@@ -6,6 +6,8 @@ import type {
   PromptCandidateRewardHackScan,
 } from '../fixed-prompt-controller.js';
 import { promptStructuralSmokeReport } from '../prompt-structural-smoke.js';
+import { hashHeldInTaskSet } from '../prompt-candidate-loop.js';
+import { heldInTaskSetHash } from '../rsi-round-analysis.js';
 import { tokenSummary } from './helpers/cell-output-fixtures.js';
 
 describe('prompt structural smoke report', () => {
@@ -463,6 +465,46 @@ describe('prompt structural smoke report', () => {
     assert.equal(report.status, 'fail');
     assert.deepEqual(report.failures, ['rsi_attribution_malformed']);
     assert.deepEqual(report.roundsWithMalformedRsiAttribution, ['round-1']);
+  });
+
+  test('keeps a legitimate round clean when held-in ids trigger sort divergence', () => {
+    // Ids chosen to diverge between codepoint order and localeCompare.
+    // localeCompare folds case (UCA tertiary weight), so it orders these as
+    // ['apple','Banana','cherry','Date']; codepoint orders them as
+    // ['Banana','Date','apple','cherry'] (uppercase < lowercase). The committed
+    // event hashes with hashHeldInTaskSet (formerly localeCompare) and the
+    // attribution event hashes with heldInTaskSetHash (codepoint). Under the old
+    // split the two hashes diverged for these ids and the smoke check marked this
+    // legitimate round as malformed. The unified codepoint order must keep both
+    // sides equal so the round stays clean.
+    const heldInTaskIds = ['apple', 'Banana', 'cherry', 'Date'];
+    const events: FixedPromptWalEvent[] = [
+      committedEvent('round-1', 'run-1', promptHashForRound('round-1'), heldInTaskIds),
+      completedEvent('round-1', 'apple', 0.1),
+      decisionEvent('round-1', 'discard', 'held_in_within_noise', 'run-1', { decision: 'clean' }),
+      attributionEvent('round-1'),
+    ];
+
+    // Override the placeholder hashes with the two real implementations, so the
+    // committed/attribution pair mirrors what each side actually writes.
+    const committed = events[0] as Extract<
+      FixedPromptWalEvent,
+      { type: 'prompt_candidate_committed' }
+    >;
+    committed.heldInTaskSetHash = hashHeldInTaskSet(heldInTaskIds);
+    const attribution = events[3] as Extract<
+      FixedPromptWalEvent,
+      { type: 'rsi_controller_attribution' }
+    >;
+    attribution.heldInTaskSetHash = heldInTaskSetHash(heldInTaskIds);
+
+    const report = promptStructuralSmokeReport({
+      events,
+      minimumRounds: 1,
+      requireRsiR2Evidence: true,
+    });
+
+    assert.deepEqual(report.roundsWithMalformedRsiAttribution, []);
   });
 });
 

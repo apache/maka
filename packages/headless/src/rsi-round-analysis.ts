@@ -567,7 +567,7 @@ function nonNegativeInt(value: number | undefined, fallback: number): number {
   return Math.max(0, Math.trunc(value));
 }
 
-function compareStrings(a: string, b: string): number {
+export function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
@@ -584,6 +584,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sortedUnique(values: readonly string[]): string[] {
+export function sortedUnique(values: readonly string[]): string[] {
   return [...new Set(values)].sort(compareStrings);
 }
