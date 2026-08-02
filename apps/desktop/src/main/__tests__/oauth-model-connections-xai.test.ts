@@ -129,6 +129,38 @@ describe('xAI OAuth model connection synchronization', () => {
     assert.deepEqual(synced?.enabledModelIds, []);
   });
 
+  test('an account that recovers from an empty catalog does not re-seed', async () => {
+    // The sync persists `models: []` when the account reports nothing usable,
+    // which erases the record of ever having had a catalog. Reading "has a list
+    // to pick from" off the current array then made the recovery look like a
+    // first discovery — and handed back the selection the user had cleared.
+    // Every OAuth provider here ships fallbackModels, so an existing connection
+    // has had a list since it was created; that is the actual question.
+    let saved: LlmConnection = {
+      slug: XAI_OAUTH_CONNECTION_SLUG,
+      name: 'xAI OAuth',
+      providerType: 'xai-oauth',
+      defaultModel: '',
+      enabled: true,
+      enabledModelIds: [],
+      models: [],
+      modelSource: 'fetched',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const service = createXaiService(
+      () => saved,
+      (connection) => {
+        saved = connection;
+      },
+      [{ id: 'grok-4.5' }, { id: 'grok-4-fast' }],
+    );
+
+    const synced = await service.syncXaiOAuthConnection();
+    assert.equal(synced?.defaultModel, '');
+    assert.deepEqual(synced?.enabledModelIds, []);
+  });
+
   test('a resync does not re-pick a default the user cleared', async () => {
     // The user unchecked the default model but kept another one enabled — a
     // legitimate state, and the only half of the workspace default pair this

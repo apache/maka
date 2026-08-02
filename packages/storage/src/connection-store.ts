@@ -81,7 +81,7 @@ class FileConnectionStore implements ConnectionStore {
         updatedAt: now,
       };
       file.connections.push(next);
-      if (!file.defaultSlug && next.defaultModel) file.defaultSlug = next.slug;
+      claimVacantWorkspaceDefault(file, next);
       created = next;
       await this.write(file);
     });
@@ -188,6 +188,11 @@ class FileConnectionStore implements ConnectionStore {
       if (file.defaultSlug === slug && (next.enabled === false || !next.defaultModel)) {
         file.defaultSlug = null;
       }
+      // The other direction: a provider with no `fallbackModels` is created
+      // with no model at all, so its first discovery is where it becomes able
+      // to hold the default. Without this the user finished setting up their
+      // only connection and onboarding still had nothing to point at.
+      claimVacantWorkspaceDefault(file, next);
       updated = next;
       await this.write(file);
     });
@@ -232,16 +237,14 @@ class FileConnectionStore implements ConnectionStore {
       if (index >= 0) file.connections[index] = next;
       else file.connections.push(next);
       // Same {connection, model} pair as in update(): a connection with no
-      // default model supplies only half of it, so it can neither keep the slug
-      // nor claim a vacant one. Without this an OAuth resync re-pointed the
-      // workspace default at a connection whose model list the user had just
-      // emptied, and the list showed a 默认 badge over 未设置.
+      // default model supplies only half of it, so it cannot keep the slug.
+      // Without this an OAuth resync re-pointed the workspace default at a
+      // connection whose model list the user had just emptied, and the list
+      // showed a 默认 badge over 未设置.
       if (file.defaultSlug === connection.slug && (next.enabled === false || !next.defaultModel)) {
         file.defaultSlug = null;
       }
-      if (!file.defaultSlug && next.enabled !== false && next.defaultModel) {
-        file.defaultSlug = connection.slug;
-      }
+      if (index < 0) claimVacantWorkspaceDefault(file, next);
       await this.write(file);
       saved = next;
     });
@@ -333,6 +336,26 @@ function normalizeConnectionsFile(value: unknown): ConnectionsFile {
     defaultSlug: record.defaultSlug ?? null,
     connections: record.connections,
   };
+}
+
+/**
+ * A workspace with no default takes one from the connection the user is
+ * working on, so a fresh install is usable as soon as its first connection is
+ * — including the four providers that ship no `fallbackModels`, which only
+ * become able to hold it at their first discovery rather than at create.
+ *
+ * Only from the connection the user is working on. `save()` is the snapshot
+ * boundary the OAuth sync writes on, and `connections:list` runs that sync
+ * before every read, so letting it claim any vacant slug meant that clearing
+ * your own default handed the workspace to whichever account happened to sync
+ * first — your next chat went to a different provider, without you touching
+ * anything. A sync that is bringing a brand-new connection into existence is
+ * the one exception: that is the same event as create().
+ */
+function claimVacantWorkspaceDefault(file: ConnectionsFile, connection: LlmConnection): void {
+  if (file.defaultSlug) return;
+  if (connection.enabled === false || !connection.defaultModel) return;
+  file.defaultSlug = connection.slug;
 }
 
 function normalizeDefaultSlug(

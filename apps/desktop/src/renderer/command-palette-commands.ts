@@ -446,7 +446,10 @@ export function buildCommandList(args: {
     for (const connection of args.connections) {
       if (!connection.enabled) continue;
       const isDefault = connection.slug === args.defaultSlug;
-      if (args.onSetDefaultConnection && !isDefault) {
+      // The workspace default is the pair {connection, model}. A connection
+      // with no default model cannot supply half of it, so offering the command
+      // could only produce a failure toast that reads like a transient one.
+      if (args.onSetDefaultConnection && !isDefault && connection.defaultModel) {
         cmds.push({
           id: `connection:set-default:${connection.slug}`,
           kind: 'action',

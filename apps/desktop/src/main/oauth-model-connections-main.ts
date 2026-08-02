@@ -630,6 +630,13 @@ function normalizeOpenAiCodexModels(
  *
  * Both are the same question a model fetch asks, and it already has one
  * answer. This is a fetch: the account's catalog is the live inventory.
+ *
+ * All four of these providers ship a `fallbackModels` catalog, so a connection
+ * that already exists has had a list in front of the user since the moment it
+ * was created. Whether it happens to hold one *right now* is not the same
+ * question and answers it wrongly: these syncs persist `models: []` when an
+ * account temporarily reports nothing usable, which would make the recovery
+ * look like a first discovery and re-seed a default the user had cleared.
  */
 function syncedSelection(
   existing: LlmConnection | null | undefined,
@@ -639,7 +646,7 @@ function syncedSelection(
     {
       defaultModel: existing?.defaultModel,
       enabledModelIds: existing?.enabledModelIds,
-      hasModelInventory: (existing?.models?.length ?? 0) > 0,
+      hasModelInventory: existing !== null && existing !== undefined,
     },
     models,
   );

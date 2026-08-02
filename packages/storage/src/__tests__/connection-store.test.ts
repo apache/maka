@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
 import { createConnectionStore } from '../connection-store.js';
 
 describe('FileConnectionStore', () => {
@@ -214,21 +214,22 @@ describe('FileConnectionStore', () => {
         updatedAt: 1,
       });
 
-      // The provider retires gpt-4.1. The account sync reconciles against the
-      // live catalog and hands back a repaired default. save() sees only a
-      // snapshot, so it cannot tell that from a selection the user just stated
-      // — treating it as one threw the repair away and left the connection
+      // The provider retires gpt-4.1 and the sync repairs the default to a live
+      // id, but hands back the stored selection unchanged — the exact snapshot
+      // it used to write. save() sees only a snapshot, so it cannot tell that
+      // repaired default from one a user just contradicted; reading the stale
+      // list as their word threw the repair away and left the connection
       // pointing at a model that no longer exists.
       const existing = (await store.get('github-copilot'))!;
       const synced = await store.save({
         ...existing,
         defaultModel: 'gpt-5',
-        enabledModelIds: ['gpt-5'],
+        enabledModelIds: ['gpt-4.1'],
         models: [{ id: 'gpt-5' }],
       });
 
       assert.equal(synced.defaultModel, 'gpt-5');
-      assert.deepEqual(synced.enabledModelIds, ['gpt-5']);
+      assert.ok(synced.enabledModelIds?.includes('gpt-5'));
       assert.equal(await store.getDefault(), 'github-copilot');
     });
   });
@@ -283,6 +284,48 @@ describe('FileConnectionStore', () => {
 
       assert.equal(fetched.defaultModel, 'qwen3-30b');
       assert.deepEqual(fetched.enabledModelIds, ['qwen3-30b']);
+      // And that is where it becomes able to hold the workspace default. It
+      // could not at create — it had no model — so if discovery does not claim
+      // the vacant slug, the user finishes setting up their only connection and
+      // onboarding still has nothing to point at.
+      assert.equal(await store.getDefault(), 'lmstudio-local');
+    });
+  });
+
+  test('a routine account sync never takes the vacant workspace default', async () => {
+    await withConnectionStore(async (store) => {
+      const xai: LlmConnection = {
+        slug: 'xai-oauth',
+        name: 'xAI OAuth',
+        providerType: 'xai-oauth',
+        defaultModel: 'grok-4.5',
+        enabled: true,
+        enabledModelIds: ['grok-4.5'],
+        models: [{ id: 'grok-4.5' }],
+        modelSource: 'fetched',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o',
+      });
+      await store.save(xai);
+      assert.equal(await store.getDefault(), 'openai-main');
+
+      await store.update('openai-main', { enabledModelIds: [] });
+      assert.equal(await store.getDefault(), null);
+
+      // What one `connections:list` does: it runs the OAuth account sync before
+      // every read, and each sync ends in save() on a connection that already
+      // exists. Claiming any vacant slug meant clearing your own default handed
+      // the workspace to another provider — the next chat went to a different
+      // account, with nothing on screen to say so.
+      await store.save({ ...xai, updatedAt: 2 });
+
+      assert.equal(await store.getDefault(), null);
     });
   });
 
