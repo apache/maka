@@ -535,6 +535,10 @@ export function ChatView(props: {
               className="maka-quote-actions"
               // Keep the live selection alive while clicking an action.
               onMouseDown={(event) => event.preventDefault()}
+              // The selection hook listens for transcript mouseup globally.
+              // This surface owns its mouseup so a previously collapsed native
+              // selection cannot discard the captured quote before click fires.
+              onMouseUp={(event) => event.stopPropagation()}
             >
               <ButtonGroup
                 label={selectionActionsLabel}

@@ -15,8 +15,11 @@ export interface MessageSelectionQuote {
 
 /**
  * Watches for a non-empty text selection within `scrollRef` (the messages
- * container) and exposes it as a {@link MessageSelectionQuote}. The selection is
- * cleared when it collapses or the container scrolls (its rect would be stale).
+ * container) and exposes a captured snapshot as a
+ * {@link MessageSelectionQuote}. The snapshot survives native selection
+ * collapse so keyboard and accessibility activation can reach the action that
+ * owns it; consumers explicitly clear it when that action is dismissed or
+ * consumed. Scrolling still clears it because its rect would be stale.
  * Read-only: the hook never mutates the selection, so native copy still works.
  *
  * Listeners live on `document` and resolve `scrollRef.current` at event time —
@@ -71,22 +74,16 @@ export function useMessageSelectionQuote(
     function refresh(): void {
       setQuote(computeQuote());
     }
-    function onSelectionChange(): void {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed) setQuote(null);
-    }
 
     // mouseup finalizes a drag-select; keyup covers keyboard (shift+arrow)
     // selection. Scroll is capture-phase because scroll events do not bubble.
     document.addEventListener('mouseup', refresh);
     document.addEventListener('keyup', refresh);
     document.addEventListener('scroll', clear, { capture: true, passive: true });
-    document.addEventListener('selectionchange', onSelectionChange);
     return () => {
       document.removeEventListener('mouseup', refresh);
       document.removeEventListener('keyup', refresh);
       document.removeEventListener('scroll', clear, { capture: true });
-      document.removeEventListener('selectionchange', onSelectionChange);
     };
   }, [scrollRef, enabled, clear]);
 
