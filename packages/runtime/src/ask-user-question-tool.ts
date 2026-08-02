@@ -26,7 +26,10 @@ export function buildAskUserQuestionTool(): MakaTool<
     }),
     impl: ({ questions }, context) => {
       if (!context.askUserQuestion)
-        throw new Error('AskUserQuestion is unavailable on this surface');
+        throw new Error(
+          'AskUserQuestion is not available on this surface, so the user was not asked anything. ' +
+            'Retrying will fail the same way — write the question and its options as ordinary reply text and wait for the user to answer.',
+        );
       return context.askUserQuestion(questions);
     },
   };

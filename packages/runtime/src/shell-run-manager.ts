@@ -70,6 +70,16 @@ import { CompletionLatch } from './completion-latch.js';
 import { closeChildFdSources } from './child-fd-input.js';
 
 type LifecycleCause = 'timeout' | 'cancel' | 'shutdown';
+
+/**
+ * Shown whenever a `ref` argument does not parse. Echoing the rejected string
+ * back taught the model nothing (and could carry command text back into the
+ * transcript); the canonical shape and where to obtain it are the only useful
+ * reply. Keep this in sync with the `ref` description in shell-tools.ts.
+ */
+const BACKGROUND_TASK_REF_HELP =
+  'That is not a runtime background task ref. Use the ref exactly as it was returned when the ' +
+  'background task started — the form is maka://runtime/background-tasks/<id>.';
 type DriverExit =
   | { mode: 'pipes'; value: PipeProcessExit }
   | { mode: 'pty'; value: PtyProcessExit };
@@ -281,7 +291,7 @@ export class ShellRunProcessManager
   async writeStdin(input: ShellRunWriteInput): Promise<ShellRunToolResult> {
     validateWriteStdinInput(input);
     const target = parseShellRunResourceRef(input.ref);
-    if (!target) throw new Error(`Unsupported runtime background task ref: ${input.ref}`);
+    if (!target) throw new Error(BACKGROUND_TASK_REF_HELP);
     const live = this.liveResource(input.sessionId, target.shellRunId);
     if (!live) return this.writeStdinWithoutLive(input, target.shellRunId);
     if (live.mode !== 'pty') throw new Error('WriteStdin requires a PTY background task ref');
@@ -425,7 +435,7 @@ export class ShellRunProcessManager
     abortSignal: AbortSignal,
   ): Promise<ToolResultContent> {
     const target = parseShellRunResourceRef(ref);
-    if (!target) throw new Error(`Unsupported runtime background task ref: ${ref}`);
+    if (!target) throw new Error(BACKGROUND_TASK_REF_HELP);
     const live = this.liveResource(sessionId, target.shellRunId);
     if (!live) return this.stopWithoutLive(sessionId, target.shellRunId, abortSignal);
     if (live.driverExit) {
@@ -1722,10 +1732,16 @@ export class ShellRunProcessManager
 
   private reserveSlot(mode: ShellMode): ShellRunSlotReservation {
     if (this.reservedShellRuns >= this.maxLiveShellRuns) {
-      throw new Error(`Live background task capacity is full (${this.maxLiveShellRuns})`);
+      throw new Error(
+        `No free background task slot: ${this.maxLiveShellRuns} are already running. ` +
+          'Stop one with StopBackgroundTask, or wait for one to finish, before starting another.',
+      );
     }
     if (mode === 'pty' && this.reservedPtyRuns >= this.maxLivePtyRuns) {
-      throw new Error(`Live PTY capacity is full (${this.maxLivePtyRuns})`);
+      throw new Error(
+        `No free interactive (PTY) background task slot: ${this.maxLivePtyRuns} are already running. ` +
+          'Stop one with StopBackgroundTask, or wait for one to finish, before starting another.',
+      );
     }
     this.reservedShellRuns += 1;
     if (mode === 'pty') this.reservedPtyRuns += 1;

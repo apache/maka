@@ -20,7 +20,10 @@ export function buildRequestSandboxBoundaryTool(): MakaTool<
       .strict(),
     impl: ({ expansion, justification }, context) => {
       if (!context.requestSandboxBoundary) {
-        throw new Error('Sandbox boundary expansion is unavailable on this surface');
+        throw new Error(
+          'request_sandbox_boundary is not available on this surface, so the sandbox was not widened. ' +
+            'Retrying will fail the same way — redo the work inside the paths already allowed, or tell the user which path needs access.',
+        );
       }
       return context.requestSandboxBoundary(expansion, justification);
     },

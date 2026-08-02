@@ -143,13 +143,19 @@ export function buildAgentSwarmTool(
     impl: async (input, ctx) => {
       const prepared = await prepareAgentSwarmInput(input, ctx, definitions);
       if (prepared.items.some((item) => item.mode === 'spawn') && !ctx.spawnChildSession) {
-        throw new Error('spawnChildSession capability is unavailable in this runtime context');
+        throw new Error(
+          'agent_swarm cannot start new child agents in this session, so nothing ran. ' +
+            'Retrying agent_swarm will fail the same way — do the items yourself with the tools you already have.',
+        );
       }
       if (
         prepared.items.some((item) => item.mode === 'resume') &&
         (!ctx.prepareChildAgentResume || !ctx.resumeChildAgent)
       ) {
-        throw new Error('Child AgentRun resume capability is unavailable in this runtime context');
+        throw new Error(
+          'agent_swarm cannot resume earlier child runs in this session, so nothing ran. ' +
+            'Drop resume_run_ids and send that work as new items instead.',
+        );
       }
 
       const startedAt = now();
@@ -667,10 +673,16 @@ async function prepareAgentSwarmInput(
   const presetProfiles = await readAvailablePresetProfiles(input, ctx);
   const preflight = preflightAgentSwarmInput(input, definitions, presetProfiles);
   if (preflight.items.length > 0 && !ctx.spawnChildSession) {
-    throw new Error('spawnChildSession capability is unavailable in this runtime context');
+    throw new Error(
+      'agent_swarm cannot start new child agents in this session, so nothing ran. ' +
+        'Retrying agent_swarm will fail the same way — do the items yourself with the tools you already have.',
+    );
   }
   if (preflight.resumes.length > 0 && (!ctx.prepareChildAgentResume || !ctx.resumeChildAgent)) {
-    throw new Error('Child AgentRun resume capability is unavailable in this runtime context');
+    throw new Error(
+      'agent_swarm cannot resume earlier child runs in this session, so nothing ran. ' +
+        'Drop resume_run_ids and send that work as new items instead.',
+    );
   }
   const resumes = await Promise.all(
     preflight.resumes.map(async (item): Promise<PreparedAgentSwarmItem> => {

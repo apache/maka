@@ -117,7 +117,10 @@ function buildGoalSetTool(deps: GoalToolsDeps): MakaTool<
         }).goal;
       });
       if (!goal) {
-        return 'Goal not set: this turn no longer owns Goal activation.';
+        return (
+          'Goal not set: the session goal changed while this turn was running, so nothing was armed. ' +
+          'Call GoalStatus to see the current goal, then call GoalSet again only if there is still no active goal.'
+        );
       }
       const limits = [
         `max ${goal.maxIterations} turns`,
@@ -150,7 +153,10 @@ function buildGoalClearTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         return deps.goalManager.clear(ctx.sessionId)!;
       });
       if (!goal) {
-        return 'Goal not cleared: this turn no longer owns Goal control.';
+        return (
+          'Goal not cleared: the session goal changed while this turn was running. ' +
+          'Call GoalStatus to see whether it is already gone before calling GoalClear again.'
+        );
       }
       return `Goal cleared: "${goal.condition}" after ${goal.iterations} turn(s).`;
     },
@@ -174,7 +180,10 @@ function buildGoalPauseTool(deps: GoalToolsDeps): MakaTool<Record<string, never>
         return deps.goalManager.pause(ctx.sessionId)!;
       });
       if (!goal) {
-        return 'Goal not paused: this turn no longer owns Goal control.';
+        return (
+          'Goal not paused: the session goal changed while this turn was running. ' +
+          'Call GoalStatus to see its current status before calling GoalPause again.'
+        );
       }
       return `Goal paused: "${goal.condition}" at turn ${goal.iterations}. Use GoalResume to continue.`;
     },
@@ -196,7 +205,10 @@ function buildGoalResumeTool(deps: GoalToolsDeps): MakaTool<Record<string, never
         return deps.goalManager.resume(ctx.sessionId)!;
       });
       if (!goal) {
-        return 'Goal not resumed: this turn no longer owns Goal activation.';
+        return (
+          'Goal not resumed: the session goal changed while this turn was running. ' +
+          'Call GoalStatus to see its current status before calling GoalResume again.'
+        );
       }
       return `Goal resumed: "${goal.condition}". Autonomous continuation re-enabled.`;
     },

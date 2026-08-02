@@ -72,6 +72,22 @@ import {
 // watchdog is paused during tool execution.
 const GREP_TIMEOUT_MS = 120_000;
 
+/**
+ * The filesystem worker answered with a different operation's result than the
+ * one that was requested. Naming the worker told the model about an internal
+ * component it cannot address, and the wording read like an argument
+ * complaint — on Edit the likeliest reaction was another `old_string` guess,
+ * which can never fix this. Say what did not happen, that the arguments were
+ * not the cause, and what to do next.
+ */
+function internalFilesystemFailure(tool: string, unchanged: string, extra?: string): Error {
+  return new Error(
+    `${tool} could not be completed inside Maka, so ${unchanged}. ` +
+      `This is an internal failure, not a problem with your arguments${extra ? ` — ${extra}` : ''}. ` +
+      `Retry the same ${tool} call once; if it fails again, use Bash to do the same work.`,
+  );
+}
+
 export interface BuildBuiltinToolsOptions {
   shellRuns?: ShellRunLauncher;
   runtimeResources?: RuntimeResourceReader;
@@ -275,8 +291,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             });
             return { kind: 'image' as const, mimeType: result.mimeType, ref };
           }
-          if (result.kind !== 'read')
-            throw new Error('Filesystem worker returned a mismatched Read result.');
+          if (result.kind !== 'read') throw internalFilesystemFailure('Read', 'nothing was read');
           return { content: result.content };
         }
         const { path: resolvedPath } = await executor.resolveExistingPath({
@@ -340,7 +355,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'write')
-              throw new Error('Filesystem worker returned a mismatched Write result.');
+              throw internalFilesystemFailure('Write', 'nothing was written to disk');
             return { ok: result.ok, path: result.path, bytes: result.bytes };
           }
           const { path: resolvedPath } = await executor.resolveWritablePath({
@@ -392,7 +407,11 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'edit')
-              throw new Error('Filesystem worker returned a mismatched Edit result.');
+              throw internalFilesystemFailure(
+                'Edit',
+                'the file is unchanged',
+                'a different old_string will not help',
+              );
             return {
               ok: result.ok,
               path: result.path,
@@ -465,7 +484,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
               ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
             });
             if (result.kind !== 'format_json') {
-              throw new Error('Filesystem worker returned a mismatched FormatJson result.');
+              throw internalFilesystemFailure('FormatJson', 'the file is unchanged');
             }
             return result;
           }
@@ -545,7 +564,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
           });
           if (result.kind !== 'glob')
-            throw new Error('Filesystem worker returned a mismatched Glob result.');
+            throw internalFilesystemFailure('Glob', 'no file list was produced');
           return { files: result.files };
         }
         const { path: base } = await executor.resolveExistingPath({
@@ -588,7 +607,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             ...(abortSignal ? { abortSignal } : {}),
           });
           if (result.kind !== 'grep')
-            throw new Error('Filesystem worker returned a mismatched Grep result.');
+            throw internalFilesystemFailure('Grep', 'no matches were produced');
           return { matches: result.matches };
         }
         const { path: searchPath } = await executor.resolveExistingPath({
