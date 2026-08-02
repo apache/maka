@@ -36,8 +36,12 @@ if (!app.requestSingleInstanceLock()) {
     })
     .catch((error: unknown) => {
       console.error('[startup] fatal:', error);
-      const message = error instanceof Error ? error.message : String(error);
-      dialog.showErrorBox('Maka failed to start', message);
+      // E2E runs must not hang on a modal error box (same reasoning as the
+      // fixture-fatal path in boot.ts: print a parseable line and exit fast).
+      if (!isIsolatedE2e) {
+        const message = error instanceof Error ? error.message : String(error);
+        dialog.showErrorBox('Maka failed to start', message);
+      }
       app.exit(1);
     });
 }

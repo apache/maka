@@ -680,7 +680,7 @@ const desktopBackendToolSurfaceDeps = {
   getAgentGraphSupervisorTools: (sessionId: string) =>
     agentGraphCoordinator.toolsForSession(sessionId),
 };
-// Cursor-overlay teardown assigns a module-scoped `let`, so it stays in main.ts.
+// Cursor-overlay teardown assigns a module-scoped `let`, so it stays in boot.ts.
 onMainWindowClose = () => computerUseOverlay.destroyAll();
 const systemPromptService = createSystemPromptMainService({
   settingsStore,

@@ -10,56 +10,44 @@ import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mj
 const DESKTOP_ROOT = process.cwd();
 
 /**
- * Poll the main process for readiness without hanging on the modal repair
- * dialog: once the dialog opens (which can only happen after ready, because
- * the boot module runs inside the `whenReady` callback), the dialog's modal
- * loop on macOS stops answering CDP evaluation, so an evaluate call that
- * never settles is itself proof that ready was reached. A deadlocked main
- * process, by contrast, answers every evaluate with `isReady() === false`
- * forever.
+ * Prove the app parked at the modal repair dialog — the only success signal
+ * this test accepts.
+ *
+ * The dialog can only appear after ready: the whole boot module runs inside
+ * the `whenReady` callback, so a modal dialog being up simultaneously proves
+ * (a) ready was reached and (b) the root-identity gate fired and is holding
+ * before any store/db write. On macOS the dialog's modal loop stops answering
+ * CDP evaluation, so an evaluate that never settles within the deadline is the
+ * observable form of "dialog is open". A deadlocked main process (the
+ * regression this test guards) answers every evaluate with `isReady() ===
+ * false` forever, and a future removal of the gate would make evaluate answer
+ * `true` — both must fail, only the parked dialog may pass.
  */
-async function mainProcessReachedReady(app: ElectronApplication): Promise<boolean> {
+async function appParkedAtRepairDialog(app: ElectronApplication): Promise<boolean> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    let settled = false;
     const outcome = await Promise.race([
       app
         .evaluate(({ app: electronApp }) => electronApp.isReady())
-        .then((ready) => {
-          settled = true;
-          return ready ? 'ready' : 'not-ready';
-        })
-        .catch((error: unknown) => {
-          settled = true;
-          return `evaluate-error:${error instanceof Error ? error.message : String(error)}`;
-        }),
+        .then((ready) => (ready ? 'ready' : 'not-ready'))
+        .catch(() => 'evaluate-error'),
       new Promise<string>((resolve) => setTimeout(() => resolve('modal-dialog'), 1_000)),
     ]);
-    if (outcome === 'ready' || outcome === 'modal-dialog') return true;
-    if (outcome === 'not-ready' || outcome.startsWith('evaluate-error:')) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      continue;
-    }
+    if (outcome === 'modal-dialog') return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return false;
 }
 
 /**
- * A conflicting storage root must reach the ready state with the repair
- * dialog open, not deadlock in module evaluation, and must not write any
- * store/db files before the user answers the dialog.
+ * A conflicting storage root must park at the repair dialog — never deadlock
+ * in module evaluation — and must not write any store/db files before the
+ * user answers.
  *
  * Regression for the Electron ESM startup deadlock: top-level
  * `await app.whenReady()` inside the repair-confirm path never resolves
  * because `ready` only fires after the main module finishes evaluating.
- *
- * The ready signal is the main-process line `[startup] app ready`, which the
- * thin entry prints from inside the `whenReady` callback right before
- * dynamic-importing the boot module. A modal repair dialog blocks further
- * CDP evaluation on macOS, so asserting `app.isReady()` from the test side
- * would hang once the dialog opens; the console line is emitted before the
- * dialog exists and stays observable.
  */
-test('reaches ready with a storage-root repair dialog open and writes nothing before the answer', async () => {
+test('parks at the storage-root repair dialog and writes nothing before the answer', async () => {
   const userDataDir = await mkdtemp(join(tmpdir(), 'maka-root-conflict-'));
   const homeDir = join(userDataDir, 'home');
   await mkdir(homeDir, { recursive: true });
@@ -86,12 +74,11 @@ test('reaches ready with a storage-root repair dialog open and writes nothing be
       env: buildFixtureEnv(userDataDir, homeDir, {}),
     });
 
-    // The app must become ready while the repair dialog is open — before
-    // this fix the main process deadlocked in module evaluation and
-    // isReady() never turned true.
-    expect(await mainProcessReachedReady(app)).toBe(true);
+    // The app must park at the dialog — before this fix the main process
+    // deadlocked in module evaluation and no dialog ever appeared.
+    expect(await appParkedAtRepairDialog(app)).toBe(true);
 
-    // Before the dialog is answered, no store/db files may be created in
+    // While the dialog is unanswered, no store/db files may be created in
     // the workspace: the root-identity gate must precede all storage.
     const workspaceEntries = await readdir(workspaceRoot);
     expect(workspaceEntries).toEqual([STORAGE_ROOT_MARKER_FILE]);
