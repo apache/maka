@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import postcss, { type AtRule, type ChildNode, type Container, type Document as CssDocument, type Rule } from 'postcss';
 
 export const REPO_ROOT = resolve(import.meta.dirname, '../../../../..');
 export const RENDERER_STYLES_ENTRY = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'styles.css');
@@ -66,21 +67,34 @@ export async function readAllRendererCss(): Promise<string> {
   return expandCssImports(RENDERER_STYLES_ENTRY, new Set([RENDERER_STYLES_ENTRY]));
 }
 
-export const RENDERER_TOKENS = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'maka-tokens.css');
-
-/** Every renderer stylesheet EXCEPT the role table.
+/** Strip CSS comments without eating a comment delimiter that sits in a string.
  *
- * Pre-seeding `seen` is the same mechanism the import walk already uses for
- * cycles, so there is no second traversal to keep in step with the first.
- * maka-tokens.css is where the roles are composed and where the family axis
- * is pinned, so it is the one file that must write font longhands; every
- * other sheet is a call site. */
-export async function readCallSiteCss(): Promise<string> {
-  return expandCssImports(RENDERER_STYLES_ENTRY, new Set([RENDERER_STYLES_ENTRY, RENDERER_TOKENS]));
-}
-
+ * Quote-aware because the naive regex form is a silent-DELETION bug, not a
+ * cosmetic one: a rule whose `content` value holds an open-comment delimiter
+ * and whose last declaration holds the closing one makes the regex delete the
+ * real declarations between them as if they were comment text, and every scan
+ * built on the result goes green on a rule it never saw. Nothing in this tree
+ * writes that today, which is exactly when it is cheapest to close. */
 export function stripCssComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '');
+  let out = '';
+  let quote: string | null = null;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (quote) {
+      out += ch;
+      if (ch === '\\') { out += src[i + 1] ?? ''; i += 1; }
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; out += ch; continue; }
+    if (ch === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      i = end === -1 ? src.length : end + 1;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 /** Escape a CSS selector for a RegExp, allowing flexible whitespace. */
@@ -160,14 +174,14 @@ export function assertCssRuleDecls(
 /** The one text-style vocabulary check.
  *
  * A text style is one indivisible role — size, leading, weight and family
- * chosen together — so the call site names a role and nothing else. Three
- * things have to hold for that to be true, and all three are text:
+ * chosen together — so a rule names a role and nothing else. Four things have
+ * to hold for that to be true, and all four are text:
  *
- *   1. no call site declares font-size, line-height, font-weight or
- *      font-family. Four independent properties are four independent
- *      choices; the previous two convergences (#1857 sizes, #1878 leadings)
- *      removed the divergence that existed without removing the ability to
- *      diverge again, because the properties stayed separate.
+ *   1. no rule declares font-size, line-height, font-weight or font-family.
+ *      Four independent properties are four independent choices; the previous
+ *      two convergences (#1857 sizes, #1878 leadings) removed the divergence
+ *      that existed without removing the ability to diverge again, because the
+ *      properties stayed separate.
  *   2. every `font:` value is a role token or a whole-inheritance literal.
  *      `font: 600 12px/1.4 sans-serif` is the same four choices written on
  *      one line, and it is what the shorthand is normally banned for.
@@ -176,39 +190,67 @@ export function assertCssRuleDecls(
  *      time, so the element silently keeps whatever it inherits — measured,
  *      `--maka-text-display-1` was referenced by the hero and defined
  *      nowhere, and every other check in this file stayed green.
+ *   4. the type vocabulary itself is composed only from other tokens. This is
+ *      the bypass the first three cannot see, and it reopens all four axes in
+ *      one line: `--maka-text-heading-1: 700 44px/1.05 Impact` at any rule,
+ *      followed by `font: var(--maka-text-heading-1)`, names one role and
+ *      re-chooses everything. Rebinding is legal and used deliberately (the
+ *      transcript rebinds `--text-supporting-leading` to `--maka-line-body`),
+ *      so the rule is not "never rebind" — it is "rebind to a token, never to
+ *      a value". Astryx's atoms are covered by the same arm, which is where
+ *      `calc(2.5)` and `max(24px, 1rem)` used to walk through a ban that only
+ *      looked for a leading digit.
  *
- * Scoped to the call sites: the role table itself has to write a family
- * longhand (see maka-tokens.css), so the tokens file is excluded from the
- * scan and its shape is asserted separately.
- */
+ * Scope is every renderer stylesheet INCLUDING maka-tokens.css. An earlier
+ * shape of this scan excluded that whole file because the role table has to
+ * write one family longhand, and the file is 1400 lines of which ~40 rules are
+ * ordinary call sites — so the exclusion silently exempted them from the only
+ * remaining guard. The exemption is now the one declaration that actually
+ * needs it. */
 const FONT_LONGHANDS = ['font-size', 'line-height', 'font-weight', 'font-family'] as const;
 const FONT_LITERAL_OK = /^(?:inherit|initial|unset|revert)$/i;
 const ROLE_TOKEN_RE = /^var\(\s*(--maka-text-[\w-]+)\s*\)$/;
+/** Custom properties that ARE the type vocabulary: role tokens, the family
+ * axis the shorthand's mandatory family slot reads, and Astryx's own atoms. */
+const TYPE_CUSTOM_PROP_RE =
+  /^(?:--maka-text-[\w-]+|--maka-font-family|--text-[\w-]+-(?:size|weight|leading))$/;
+/** The only rule in the renderer that may write a font longhand, and the only
+ * property it may write. Astryx's reset hardcodes a UA monospace stack on this
+ * same element group, and inheritance passes computed values rather than
+ * variables, so a bare <code> inside migrated prose cannot be reached by
+ * rebinding the axis — it needs the longhand. See maka-tokens.css. */
+const FAMILY_ANCHOR = { selector: ':where(code, kbd, samp, pre)', prop: 'font-family' } as const;
 
-export function findTextRoleOffenders(
-  callSiteCss: string,
-  tokensCss: string,
-  label: string,
-): string[] {
+export function findTextRoleOffenders(css: string, tokensCss: string, label: string): string[] {
   const defined = new Set(parseCssCustomProps(tokensCss).keys());
   const offenders: string[] = [];
-  for (const { selector, body } of parseCssBlocks(callSiteCss)) {
+  /** Selectors that have already been given a role in this cascade context. */
+  const roled = new Set<string>();
+  for (const { selector, rule, conditions, decls } of parseCssBlocks(css)) {
     for (const prop of FONT_LONGHANDS) {
-      const value = lastDecl(body, prop);
+      const value = lastDecl(decls, prop);
       if (value === undefined) continue;
+      if (rule === FAMILY_ANCHOR.selector && prop === FAMILY_ANCHOR.prop) continue;
       offenders.push(`${label}: ${selector} declares ${prop}: ${value} — name a text role instead`);
+    }
+    for (const { prop, value } of decls) {
+      if (!TYPE_CUSTOM_PROP_RE.test(prop)) continue;
+      const residue = stripVarRefs(value);
+      if (residue !== '') {
+        offenders.push(`${label}: ${selector} binds ${prop} to ${value} — a type token may be rebound to another token, never to a value`);
+      }
     }
     // Count before reading: `lastDecl` reports what the browser uses, so a
     // block that declares a role and then `font: inherit` after it reads as
     // legal while the role line is dead. Measured, `.maka-session-rename-input`
     // was exactly that — it declared `font: inherit` before its longhands, and
     // migrating the longhands to a role left the reset winning.
-    const declared = [...body.matchAll(/(?:^|[;{])\s*font\s*:/g)].length;
+    const declared = decls.filter((d) => d.prop === 'font').length;
     if (declared > 1) {
       offenders.push(`${label}: ${selector} declares font ${declared} times — a role is not a base to override`);
       continue;
     }
-    const font = lastDecl(body, 'font');
+    const font = lastDecl(decls, 'font');
     if (font === undefined) continue;
     if (FONT_LITERAL_OK.test(font)) continue;
     const token = ROLE_TOKEN_RE.exec(font)?.[1];
@@ -218,69 +260,152 @@ export function findTextRoleOffenders(
     }
     if (!defined.has(token)) {
       offenders.push(`${label}: ${selector} names ${token}, which the role table does not define`);
+      continue;
+    }
+    // The same shape as the two-fonts-in-one-rule arm, one level out: a
+    // selector handed a role by a grouped rule and then another by its own
+    // leaves the grouped one dead, and a later retune of the group moves
+    // every OTHER member of it while this site silently stays put. Measured,
+    // `.plan-proposal-kicker` was exactly that and had moved a size tier.
+    // Keyed on the cascade context, so a `@media` or `@layer` variant of the
+    // same selector — a legitimate responsive role swap — is not a duplicate.
+    for (const one of splitSelectorList(rule)) {
+      const key = `${conditions.join(' ')}|${one}`;
+      if (roled.has(key)) {
+        offenders.push(`${label}: ${one} is given a text role by more than one rule — a role is not a base to override`);
+      }
+      roled.add(key);
     }
   }
   return offenders;
 }
 
-// --- block + declaration parsing -------------------------------------------
-
-/** Every style rule's own declarations, at any nesting depth.
- *
- * Depth-aware rather than `/([^{}]+)\{([^{}]*)\}/g`, which only ever matches
- * the INNERMOST block. That form reads correctly against this repo's CSS today
- * and is wrong the moment anyone writes native nesting: given
- * `.a { font-size: X; & span { … } }` it yields only `& span`, and the
- * declarations on `.a` vanish from every scan built on it — silently
- * disarming the pairing contract for that rule. Nesting is supported by the
- * build (Vite/Lightning CSS) and unused today, which is exactly when a parser
- * bug is cheapest to fix and most likely to go unnoticed.
- *
- * At-rule bodies (`@media`, `@layer`, `@keyframes`) are not themselves rules,
- * so they are not emitted; the style rules nested inside them are.
- */
-export function parseCssBlocks(css: string): { selector: string; body: string }[] {
-  const src = stripCssComments(css);
-  const out: { selector: string; body: string }[] = [];
-  const stack: { selector: string; body: string }[] = [];
+/** Split a selector list on top-level commas, ignoring those inside `:is()`,
+ * `:where()`, `:not()` and attribute strings. */
+function splitSelectorList(selector: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
   let buf = '';
-
-  for (const ch of src) {
-    if (ch === '{') {
-      // Declarations the enclosing rule made before this nested block opened
-      // are everything up to the last `;`; the remainder is the selector.
-      const cut = buf.lastIndexOf(';');
-      if (stack.length > 0 && cut >= 0) stack[stack.length - 1].body += buf.slice(0, cut + 1);
-      stack.push({ selector: (cut >= 0 ? buf.slice(cut + 1) : buf).trim(), body: '' });
-      buf = '';
-    } else if (ch === '}') {
-      const rule = stack.pop();
-      if (!rule) continue;
-      rule.body += buf;
-      buf = '';
-      if (!rule.selector.startsWith('@')) {
-        out.push({ selector: rule.selector.split('\n').pop()!.trim(), body: rule.body });
-      }
-    } else {
-      buf += ch;
-    }
+  for (const ch of selector) {
+    if (quote) { buf += ch; if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth -= 1;
+    else if (ch === ',' && depth === 0) { out.push(buf.trim()); buf = ''; continue; }
+    buf += ch;
   }
+  if (buf.trim()) out.push(buf.trim());
   return out;
 }
 
-/** Last-declared value of `prop` in a block body, or undefined.
+/** What is left of a value once every `var()` reference is removed. Empty
+ * means the value is composed of tokens and separators only. Iterated so a
+ * nested fallback (`var(--a, var(--b))`) collapses from the inside out. */
+function stripVarRefs(value: string): string {
+  let residue = value;
+  for (let prev = ''; residue !== prev; ) {
+    prev = residue;
+    residue = residue.replace(/var\(\s*--[\w-]+\s*(?:,[^()]*)?\)/g, '');
+  }
+  return residue.replace(/[\s/]/g, '');
+}
+
+// --- block + declaration parsing -------------------------------------------
+
+export type CssBlock = {
+  /** The declaring context, e.g. `.a` or `.a @media (pointer: coarse)`. */
+  selector: string;
+  /** The selector of the nearest enclosing style rule. */
+  rule: string;
+  /** The enclosing at-rule conditions, outermost first — the cascade context
+   * a selector's declarations compete in. Two rules for the same selector
+   * under different conditions do not override each other. */
+  conditions: string[];
+  /** That context's OWN declarations, in source order, property lower-cased. */
+  decls: { prop: string; value: string }[];
+};
+
+/** Every declaring context in a stylesheet, and only its own declarations.
+ *
+ * PostCSS rather than a hand-rolled brace walk. The hand-rolled one this
+ * replaced treated every `{`/`}` as structural regardless of quoting, and —
+ * worse — dropped the body of any at-rule outright. That second hole made
+ * `.p { font: var(--maka-text-body); @media (pointer: coarse) { font-size: 16px } }`
+ * invisible to every scan built on it, which is not a hypothetical shape: it
+ * is the one Astryx itself uses for coarse pointers (see the note in
+ * e2e/type-scale.spec.ts). Keeping half a CSS parser in a test helper is a
+ * second authority on what CSS means; postcss is already what Vite parses this
+ * same CSS with.
+ *
+ * A nested at-rule is emitted as its own block because it is its own cascade
+ * context: a role declared in `@media` legitimately replaces the base one, and
+ * counting both against one rule would report a false "declares font twice".
+ *
+ * Top-level at-rules that hold declarations rather than rules (`@font-face`,
+ * `@property`, `@page`) are NOT call sites — they are definitions, and
+ * `@font-face` exists to declare a font-family. They are skipped, and the tree
+ * contains none today. */
+export function parseCssBlocks(css: string): CssBlock[] {
+  const out: CssBlock[] = [];
+  const root = postcss.parse(css);
+  root.walk((node) => {
+    if (node.type !== 'rule' && node.type !== 'atrule') return;
+    const decls = (node.nodes ?? []).flatMap((child) =>
+      child.type === 'decl' ? [{ prop: child.prop.toLowerCase(), value: child.value.trim() }] : [],
+    );
+    if (decls.length === 0) return;
+
+    const rule = nearestRuleSelector(node);
+    const conditions = enclosingConditions(node);
+    if (node.type === 'rule') {
+      const selector = normalizeSelector(node.selector);
+      out.push({ selector, rule: selector, conditions, decls });
+    } else if (rule !== null) {
+      out.push({ selector: `${rule} @${node.name} ${node.params}`.trim(), rule, conditions, decls });
+    }
+  });
+  return out;
+}
+
+function normalizeSelector(selector: string): string {
+  return selector.replace(/\s+/g, ' ').trim();
+}
+
+/** Every enclosing at-rule's `@name params`, outermost first. `@layer` counts:
+ * two rules in different layers are in different cascade contexts too. */
+function enclosingConditions(node: ChildNode): string[] {
+  const out: string[] = [];
+  let up: Container | CssDocument | undefined = node.parent;
+  while (up) {
+    if (up.type === 'atrule') {
+      const at = up as AtRule;
+      out.unshift(`@${at.name} ${at.params}`.trim());
+    }
+    up = up.parent;
+  }
+  if (node.type === 'atrule') out.push(`@${node.name} ${node.params}`.trim());
+  return out;
+}
+
+/** The selector of the nearest enclosing style rule, or null at the top level. */
+function nearestRuleSelector(node: ChildNode): string | null {
+  let up: Container | CssDocument | undefined = node.parent;
+  while (up) {
+    if (up.type === 'rule') return normalizeSelector((up as Rule).selector);
+    up = up.parent;
+  }
+  return null;
+}
+
+/** Last-declared value of `prop` in a block, or undefined.
  *
  * Last, not first: within one block CSS takes the later declaration, so a
- * scanner that reads `body.match(...)` reports the value the browser discards.
+ * scanner that reads the first match reports the value the browser discards.
  * `assertCustomPropPinnedOnce` below documents that same false-green at length
- * for custom properties; this is the longhand case of it.
- *
- * `\s*` around the colon because nothing normalizes it — biome.jsonc excludes
- * both `apps/desktop/**` and `packages/ui/**` from the formatter, so
- * `font-size : 18px` would otherwise slip every check in this file. */
-function lastDecl(body: string, prop: string): string | undefined {
-  const matches = [...body.matchAll(new RegExp(`(?:^|[;{])\\s*${prop}\\s*:\\s*([^;}]+)`, 'g'))];
-  return matches.at(-1)?.[1].trim();
+ * for custom properties; this is the longhand case of it. */
+function lastDecl(decls: CssBlock['decls'], prop: string): string | undefined {
+  return decls.filter((d) => d.prop === prop).at(-1)?.value;
 }
 
 // --- token pin (exact-once) -----------------------------------------------

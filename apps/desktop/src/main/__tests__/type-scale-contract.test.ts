@@ -2,14 +2,15 @@
  * Type-scale contracts.
  *
  * The renderer has exactly one type-scale authority: `typography.scale` in
- * astryx-theme/makaTheme.ts, whose generated ladder the product aliases. Three
- * things make that arrangement work, and all three are invisible at the call
- * site — reverting any one of them silently hands back Astryx's neutral
+ * astryx-theme/makaTheme.ts, whose generated ladder the role table composes.
+ * Three things make that arrangement work, and all three are invisible at the
+ * call site — reverting any one of them silently hands back Astryx's neutral
  * defaults or an implicit rem multiplier, with nothing else failing:
  *
  *   1. the root font-size stays at the browser default,
  *   2. the generated theme layer sits after the Astryx component layer,
- *   3. the product size names stay aliases instead of holding values.
+ *   3. the product keeps no name of its own for a size, a family or a
+ *      leading, so there is nothing that can drift from the Astryx one.
  *
  * Each is a pure text declaration, so it belongs here rather than in e2e —
  * the same demotion #1854 made for the settings floor layout. What text
@@ -29,7 +30,6 @@ import {
   findTextRoleOffenders,
   parseCssCustomProps,
   readAllRendererCss,
-  readCallSiteCss,
 } from './css-test-helpers.js';
 
 const RENDERER = resolve(REPO_ROOT, 'apps/desktop/src/renderer');
@@ -222,55 +222,44 @@ describe('type scale contracts', () => {
         /--text-supporting-leading:\s*var\(--maka-line-body\)/,
       ],
     );
-    // Repo-wide, and deliberately wider than the rule above it. A
-    // `font-size: … !important` anywhere in the renderer is a site declaring
-    // itself exempt from the ladder, which is the thing this branch exists to
-    // end; the sidebar's section-title pin was exactly that shape, and it
-    // survived because the ban only looked at one file. Product CSS sits in
-    // the last cascade layer, so nothing here needs the keyword to win.
-    assert.doesNotMatch(
-      stripCssComments(await readAllRendererCss()),
-      /font-size:[^;]*!important/,
-      'no renderer stylesheet may force a font-size — product CSS is already in the last layer',
-    );
   });
 
-  it('lets a call site name a role and nothing else', async () => {
-    // This one assertion replaces five. Before the roles, size / leading /
+  it('lets a rule name a text role and nothing else', async () => {
+    // This one assertion replaces six. Before the roles, size / leading /
     // weight / family were four independent properties, so each needed its
     // own guard — a ban on `--leading-*` tiers, on literal ratios, on
-    // `!important` leadings and sizes, on em/rem multipliers, and a pairing
-    // check that resolved a block's size and leading through the generated
-    // theme to prove they named the same tier. Every one of those describes a
-    // way for the four to come apart. None of them is expressible now: a call
-    // site that cannot write a font longhand cannot write a literal ratio, an
-    // em multiplier, a forced size, or a mismatched pair.
+    // `!important` leadings and sizes, on em/rem multipliers, a ban on the
+    // `font:` shorthand, and a pairing check that resolved a block's size and
+    // leading through the generated theme to prove they named the same tier.
+    // Every one of those describes a way for the four to come apart. None of
+    // them is expressible now: a rule that cannot write a font longhand cannot
+    // write a literal ratio, an em multiplier, a forced size, or a mismatched
+    // pair, and the shorthand is inverted from the bypass into the only legal
+    // form. The atom-rebind arm folded in here too, for the same reason:
+    // two authorities on "may this name hold a value" would leave people
+    // reading the weaker one.
     //
-    // Keeping the pairing check alongside this one would leave two
-    // authorities on the same question, and the weaker one would be the one
-    // people read.
+    // Scope is every renderer stylesheet, this file included. Excluding
+    // maka-tokens.css wholesale — which the first shape of this contract did,
+    // to spare the one family longhand the role table needs — exempted the
+    // ~40 ordinary component rules that also live there from the only
+    // remaining guard.
     const offenders = findTextRoleOffenders(
-      await readCallSiteCss(),
+      await readAllRendererCss(),
       await read('maka-tokens.css'),
       'renderer',
     );
-    assert.deepEqual(offenders, [], `call sites must name a text role:\n${offenders.join('\n')}`);
+    assert.deepEqual(offenders, [], `rules must name a text role:\n${offenders.join('\n')}`);
   });
 
-  it('keeps the role atoms themselves off literals', async () => {
-    // The one bypass the call-site ban cannot see: rebinding an Astryx atom.
-    // The transcript rebinds `--text-supporting-leading` to `--maka-line-body`
-    // deliberately, so a rebind is legal — but only to another token. Rebound
-    // to a literal, one line re-establishes a second scale authority for a
-    // whole subtree and reaches every role composed from that atom.
+  it('keeps no product leading vocabulary to compete with the roles', async () => {
+    // Not covered by the scan above, because this is about a NAME rather than
+    // a declaration: a surviving `--leading-*` definition is a second leading
+    // authority waiting to be used, and a surviving reference with the
+    // definition gone resolves to nothing and lands as an invalid
+    // `line-height` — which renders as the inherited leading, not as a
+    // visible break.
     const css = stripCssComments(await readAllRendererCss());
-    assert.deepEqual(
-      [...css.matchAll(/--text-[\w-]+-(?:size|leading|weight)\s*:\s*[\d.]/g)].map((m) => m[0]),
-      [],
-      'an Astryx type atom may be rebound to another token, never to a literal',
-    );
-    // A surviving `--leading-*` DEFINITION is a second authority waiting to be
-    // used; a surviving REFERENCE with the definition gone resolves to nothing.
     assert.deepEqual(
       [...css.matchAll(/--leading-[\w-]+/g)].map((m) => m[0]),
       [],

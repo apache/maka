@@ -4,7 +4,8 @@ import { expect, test } from './fixtures.js';
 //
 // `type-scale-contract.test.ts` locks the three declarations the scale rests
 // on — root unpinned, generated theme layered after the Astryx component
-// sheet, product names kept as aliases. What no amount of text can show is
+// sheet, and no product name for a size, a family or a leading at all. What no
+// amount of text can show is
 // what those three resolve to together in a real document: a custom property
 // is declared in one place and read in another, and whether the read sees the
 // theme depends on layer order, `@scope` roots and tree position interacting.
@@ -34,15 +35,15 @@ test('resolves one type scale from the root down to the transcript', async ({
   // `0.875rem` to `.875rem`, and px is the number the design decision is
   // actually about. The probe hangs off <html> so it sees exactly what a
   // portaled Astryx component outside the Theme wrapper sees.
-  const rootTokenPx = (name: string) =>
-    page.evaluate((prop) => {
+  const rootRolePx = (role: string) =>
+    page.evaluate((name) => {
       const probe = document.createElement('div');
-      probe.style.fontSize = `var(${prop})`;
+      probe.style.font = `var(${name})`;
       document.documentElement.append(probe);
       const px = getComputedStyle(probe).fontSize;
       probe.remove();
       return px;
-    }, name);
+    }, role);
 
   await test.step('the root is the browser default, not a density knob', async () => {
     // 13px here would silently rescale the whole rem-based ladder, plus
@@ -53,20 +54,28 @@ test('resolves one type scale from the root down to the transcript', async ({
     ).toBe('16px');
   });
 
-  await test.step('the product aliases resolve to Maka ladder rungs at :root', async () => {
+  await test.step('the roles resolve to Maka ladder rungs at :root', async () => {
     // Resolved AT :root, which is also where a portaled Astryx component
     // reads them. Measured on main, the wrong layer order left the generated
     // theme inert at BOTH `<html>` and the inner Theme wrapper — see the note
     // in cascade-layers.css — so this probe is not merely covering an edge.
     //
-    // heading and stat are the discriminating pair: Astryx's neutral default
-    // (`{base: 14, ratio: 1.2}`) happens to agree with Maka on base and sm,
-    // but puts lg at 17px and 2xl at 24px. If the theme ever stops winning
-    // at :root, those two are what move.
-    expect(await rootTokenPx('--font-size-heading')).toBe('16px'); // neutral: 17
-    expect(await rootTokenPx('--font-size-stat')).toBe('20px'); //    neutral: 24
-    expect(await rootTokenPx('--font-size-ui')).toBe('14px');
-    expect(await rootTokenPx('--font-size-caption')).toBe('12px');
+    // This used to read four product size aliases (--font-size-heading/stat/
+    // ui/caption). Those names are gone: a call site names a role, so the
+    // aliases reached zero consumers. Probing the ROLE instead is what the
+    // product actually reads, and it measures one more link of the chain —
+    // the role table composing on `:root` — for the same window. Note the
+    // probe assigns `font:`, not `font-size:`, because that is the only shape
+    // the role token has.
+    //
+    // heading-3 and heading-1 are the discriminating pair: Astryx's neutral
+    // default (`{base: 14, ratio: 1.2}`) happens to agree with Maka on base
+    // and sm, but puts lg at 17px and 2xl at 24px. If the theme ever stops
+    // winning at :root, those two are what move.
+    expect(await rootRolePx('--maka-text-heading-3')).toBe('16px'); // neutral: 17
+    expect(await rootRolePx('--maka-text-heading-1')).toBe('20px'); // neutral: 24
+    expect(await rootRolePx('--maka-text-body')).toBe('14px');
+    expect(await rootRolePx('--maka-text-supporting')).toBe('12px');
   });
 
   await test.step('body copy and the tool disclosure share the body tier', async () => {
@@ -179,11 +188,13 @@ test('resolves one type scale from the root down to the transcript', async ({
     //
     // So this is not the repo-wide guard and must not be described as one:
     // what it covers is the one thing text cannot, an inherited ratio meeting
-    // an overridden size in a resolved document. Repo-wide coverage is the
-    // pairing contract's, which now checks both directions — an earlier
-    // revision of that contract deferred leading-without-size here, and
-    // measured, none of the three such blocks in the tree rendered in this
-    // window, so the class had no coverage in either place.
+    // an overridden size in a resolved document. Repo-wide, the size and the
+    // leading now arrive together or not at all — no rule may declare either
+    // longhand, and the role that supplies both may only be rebound to another
+    // token (type-scale-contract.test.ts). The pairing contract that used to
+    // resolve the two through the generated theme is gone with the properties
+    // it compared. What survives it is exactly this sweep, because a role can
+    // still be inherited onto an element whose size came from somewhere else.
     const offGrid = await page.evaluate(() => {
       const grid = (px: number) => {
         const target = px < 20 ? 1.5 : px < 32 ? 1.4 : 1.25;
@@ -247,12 +258,19 @@ test('resolves one type scale from the root down to the transcript', async ({
       return out;
     });
     // Same role, same three other axes — only the family differs, and only
-    // because the element differs.
+    // because the element differs. The three non-family axes are pinned to the
+    // supporting tier's own values rather than merely to each other: equality
+    // alone would also hold if the role stopped resolving entirely and both
+    // probes fell back to the same inherited body text.
     expect(composed.pre.family).toContain('Geist Mono');
     expect(composed.div.family).not.toContain('Geist Mono');
-    expect(composed.pre.size).toBe(composed.div.size);
-    expect(composed.pre.weight).toBe(composed.div.weight);
-    expect(composed.pre.leading).toBe(composed.div.leading);
+    for (const probe of [composed.pre, composed.div]) {
+      expect(probe.size).toBe('12px');
+      expect(probe.weight).toBe('400');
+      // 12 × 1.6667. The ratio is Astryx's reported quotient for a 20px line
+      // box at the 12px tier, so the used value lands a fraction over.
+      expect(Number.parseFloat(probe.leading)).toBeCloseTo(20, 1);
+    }
   });
 
   await test.step('naming the family axis re-composes the role the element carries', async () => {
