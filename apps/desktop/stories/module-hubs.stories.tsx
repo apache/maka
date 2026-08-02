@@ -492,6 +492,30 @@ export const ScheduledDailyReview: Story = {
   ),
 };
 
+// Real path: sidebar → scheduled tasks → Daily Review while a new range loads.
+export const ScheduledDailyReviewRefreshing: Story = {
+  render: () => (
+    <ScheduledDailyReviewSurface
+      bridge={{
+        fetchDay: async (_offsetDays, range) => {
+          if (range === 1) return DAILY_REVIEW_SUMMARY;
+          return new Promise<DailyReviewSummary>(() => undefined);
+        },
+        listArchives: async () => [],
+        runOnce: async () => ({ archiveId: DAILY_REVIEW_ARCHIVE.id }),
+        getArchive: async () => DAILY_REVIEW_ARCHIVE,
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const button = await waitForStoryButton(
+      canvasElement,
+      (candidate) => candidate.textContent?.includes('本周') === true,
+    );
+    button.click();
+  },
+};
+
 // Real path at a narrow desktop window. The metrics collapse to two columns
 // while the Astryx controls keep their native wrapping behavior.
 // Real path: sidebar → scheduled tasks → Daily Review at a narrow window.

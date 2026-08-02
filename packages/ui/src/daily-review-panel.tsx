@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type {
   DailyReviewArchive,
   DailyReviewArchiveSectionContent,
@@ -39,6 +39,11 @@ import { Markdown } from './markdown.js';
 import { RelativeTime } from './relative-time.js';
 import { useUiLocale } from './locale-context.js';
 import { useMountedRef } from './use-mounted-ref.js';
+import {
+  createDailyReviewActivityState,
+  dailyReviewActivityReducer,
+  type DailyReviewScope,
+} from './daily-review-view-state.js';
 
 type DailyReviewRoute =
   | { kind: 'activity' }
@@ -59,20 +64,25 @@ export function DailyReviewPanel(props: {
   const bridgeRef = useRef(props.bridge);
   bridgeRef.current = props.bridge;
 
-  const [range, setRange] = useState<DailyReviewRange>(1);
-  const [offsetDays, setOffsetDays] = useState(0);
-  const [summary, setSummary] = useState<DailyReviewSummary | null>(null);
-  const [summaryScopeKey, setSummaryScopeKey] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [activityState, dispatchActivity] = useReducer(
+    dailyReviewActivityReducer,
+    { range: 1, offsetDays: 0 },
+    createDailyReviewActivityState,
+  );
   const [reloadToken, setReloadToken] = useState(0);
   const [archives, setArchives] = useState<DailyReviewArchiveSummary[]>([]);
   const [archivesReloadToken, setArchivesReloadToken] = useState(0);
   const [route, setRoute] = useState<DailyReviewRoute>({ kind: 'activity' });
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
+  const { range, offsetDays } = activityState.selection;
   const scopeKey = dailyReviewScopeKey(offsetDays, range);
-  const visibleSummary = summaryScopeKey === scopeKey ? summary : null;
+  const resolvedView = activityState.resolvedView;
+  const displayedSummary = resolvedView?.summary ?? null;
+  const visibleSummary = resolvedView?.scopeKey === scopeKey ? resolvedView.summary : null;
+  const loading = activityState.pendingScopeKey !== null;
+  const error = actionError ?? activityState.error;
   const currentArchive = useMemo(() => {
     if (!visibleSummary) return null;
     return archives.find((archive) =>
@@ -84,20 +94,18 @@ export function DailyReviewPanel(props: {
 
   useEffect(() => {
     let cancelled = false;
-    const requestedScope = dailyReviewScopeKey(offsetDays, range);
-    setLoading(true);
-    setError(null);
+    const requestedScope = { range, offsetDays };
+    dispatchActivity({ type: 'selected', scope: requestedScope });
     bridgeRef.current.fetchDay(offsetDays, range).then((next) => {
       if (cancelled) return;
-      setSummary(next);
-      setSummaryScopeKey(requestedScope);
-      setLoading(false);
+      dispatchActivity({ type: 'resolved', scope: requestedScope, summary: next });
     }).catch((nextError: unknown) => {
       if (cancelled) return;
-      setSummary(null);
-      setSummaryScopeKey(null);
-      setError(dailyReviewPanelErrorMessage(nextError, locale));
-      setLoading(false);
+      dispatchActivity({
+        type: 'rejected',
+        scope: requestedScope,
+        error: dailyReviewPanelErrorMessage(nextError, locale),
+      });
     });
     return () => {
       cancelled = true;
@@ -121,22 +129,29 @@ export function DailyReviewPanel(props: {
     };
   }, [archivesReloadToken]);
 
-  const rangeLabel = (() => {
-    if (range === 1) {
-      if (offsetDays === 0) return copy.date.today;
-      if (offsetDays === -1) return copy.date.yesterday;
-      return copy.date.daysAgo(-offsetDays);
+  const rangeLabel = formatScopeLabel(activityState.selection);
+  const displayedRangeLabel = resolvedView ? formatScopeLabel(resolvedView.scope) : rangeLabel;
+
+  function formatScopeLabel(scope: DailyReviewScope): string {
+    if (scope.range === 1) {
+      if (scope.offsetDays === 0) return copy.date.today;
+      if (scope.offsetDays === -1) return copy.date.yesterday;
+      return copy.date.daysAgo(-scope.offsetDays);
     }
-    const base = range === 7 ? copy.date.recent7Days : copy.date.recent30Days;
-    return offsetDays === 0 ? base : copy.date.shiftedRange(base, -offsetDays);
-  })();
+    const base = scope.range === 7 ? copy.date.recent7Days : copy.date.recent30Days;
+    return scope.offsetDays === 0 ? base : copy.date.shiftedRange(base, -scope.offsetDays);
+  }
+
+  function selectScope(scope: DailyReviewScope) {
+    setActionError(null);
+    dispatchActivity({ type: 'selected', scope });
+    setRoute({ kind: 'activity' });
+  }
 
   function changeRange(value: string) {
     const next = Number(value) as DailyReviewRange;
     if (!DAILY_REVIEW_RANGES.includes(next)) return;
-    setRange(next);
-    setOffsetDays(0);
-    setRoute({ kind: 'activity' });
+    selectScope({ range: next, offsetDays: 0 });
   }
 
   async function openArchive(summaryRow: DailyReviewArchiveSummary) {
@@ -147,7 +162,7 @@ export function DailyReviewPanel(props: {
       const archive = await getArchive(summaryRow.id);
       if (mounted.current) setRoute({ kind: 'report', archive });
     } catch (nextError) {
-      if (mounted.current) setError(dailyReviewPanelErrorMessage(nextError, locale));
+      if (mounted.current) setActionError(dailyReviewPanelErrorMessage(nextError, locale));
     } finally {
       if (mounted.current) setPendingAction(null);
     }
@@ -158,7 +173,7 @@ export function DailyReviewPanel(props: {
     const getArchive = props.bridge.getArchive;
     if (!runOnce || !getArchive || pendingAction !== null) return;
     setPendingAction('generate');
-    setError(null);
+    setActionError(null);
     try {
       const result = await runOnce({ range, offsetDays });
       const archive = await getArchive(result.archiveId);
@@ -166,7 +181,7 @@ export function DailyReviewPanel(props: {
       setArchivesReloadToken((value) => value + 1);
       setRoute({ kind: 'report', archive });
     } catch (nextError) {
-      if (mounted.current) setError(dailyReviewPanelErrorMessage(nextError, locale));
+      if (mounted.current) setActionError(dailyReviewPanelErrorMessage(nextError, locale));
     } finally {
       if (mounted.current) setPendingAction(null);
     }
@@ -174,23 +189,30 @@ export function DailyReviewPanel(props: {
 
   if (route.kind === 'report') {
     return (
-      <DailyReviewReport
-        archive={route.archive}
-        summary={visibleSummary}
-        onBack={() => setRoute({ kind: 'activity' })}
-        onCopyMarkdown={props.onCopyMarkdown}
-        onAppendMarkdown={props.onAppendMarkdown}
-        onSaveMarkdown={props.onSaveMarkdown}
-      />
+      <VStack className="maka-daily-review-panel" gap={5}>
+        <div key="report" className="maka-daily-review-route-frame">
+          <DailyReviewReport
+            archive={route.archive}
+            summary={visibleSummary}
+            onBack={() => setRoute({ kind: 'activity' })}
+            onCopyMarkdown={props.onCopyMarkdown}
+            onAppendMarkdown={props.onAppendMarkdown}
+            onSaveMarkdown={props.onSaveMarkdown}
+          />
+        </div>
+      </VStack>
     );
   }
 
-  const totals = visibleSummary?.totals;
-  const hasActivity = Boolean(totals && totals.sessionCount + totals.requestCount > 0);
+  const totals = displayedSummary?.totals;
+  const currentTotals = visibleSummary?.totals;
+  const hasActivity = Boolean(currentTotals && currentTotals.sessionCount + currentTotals.requestCount > 0);
   const canAnalyze = Boolean(props.bridge.runOnce && props.bridge.getArchive);
 
   return (
-    <VStack className="maka-daily-review-panel" gap={5} data-loading={loading ? 'true' : undefined}>
+    <VStack className="maka-daily-review-panel" gap={5}>
+      <div key="activity" className="maka-daily-review-route-frame">
+      <VStack gap={5} data-loading={loading ? 'true' : undefined}>
       <HStack gap={4} vAlign="start" wrap="wrap">
         <StackItem size="fill">
           <VStack gap={1}>
@@ -219,7 +241,7 @@ export function DailyReviewPanel(props: {
           isIconOnly
           icon={<ChevronLeft />}
           label={copy.date.earlier(range === 1 ? copy.date.unit.day : range === 7 ? copy.date.unit.week : copy.date.unit.month)}
-          onClick={() => setOffsetDays((value) => value - range)}
+          onClick={() => selectScope({ range, offsetDays: offsetDays - range })}
         />
         <Text type="label" weight="semibold" className="maka-daily-review-range-label">{rangeLabel}</Text>
         <Button
@@ -229,7 +251,7 @@ export function DailyReviewPanel(props: {
           icon={<ChevronRight />}
           label={copy.date.later(range === 1 ? copy.date.unit.day : range === 7 ? copy.date.unit.week : copy.date.unit.month)}
           isDisabled={offsetDays >= 0}
-          onClick={() => setOffsetDays((value) => Math.min(0, value + range))}
+          onClick={() => selectScope({ range, offsetDays: Math.min(0, offsetDays + range) })}
         />
         <StackItem size="fill" />
         {currentArchive ? (
@@ -259,19 +281,33 @@ export function DailyReviewPanel(props: {
         <Banner
           status="warning"
           title={copy.overview.refreshFailed(error)}
-          endContent={<Button variant="ghost" size="sm" label={copy.overview.retry} onClick={() => setReloadToken((value) => value + 1)} />}
+          endContent={<Button
+            variant="ghost"
+            size="sm"
+            label={copy.overview.retry}
+            onClick={() => {
+              setActionError(null);
+              dispatchActivity({ type: 'selected', scope: activityState.selection });
+              setReloadToken((value) => value + 1);
+            }}
+          />}
         />
       ) : null}
 
-      {loading || !visibleSummary ? (
+      {!displayedSummary ? (
         <VStack gap={3} aria-busy="true">
           <Skeleton width="100%" height={64} radius="rounded" index={0} />
           <Skeleton width="100%" height={48} radius="rounded" index={1} />
           <Skeleton width="100%" height={48} radius="rounded" index={2} />
         </VStack>
       ) : (
-        <>
-          <div className="maka-daily-review-metrics" aria-label={copy.overview.ariaLabel(rangeLabel)}>
+        <div
+          key={resolvedView?.scopeKey}
+          className="maka-daily-review-content"
+          aria-busy={loading}
+          data-refreshing={loading ? 'true' : undefined}
+        >
+          <div className="maka-daily-review-metrics" aria-label={copy.overview.ariaLabel(displayedRangeLabel)}>
             <DailyReviewMetric label={copy.overview.conversations} value={totals?.sessionCount.toString() ?? '0'} />
             <DailyReviewMetric label={copy.overview.requests} value={totals?.requestCount.toString() ?? '0'} />
             <DailyReviewMetric label={copy.overview.tokens} value={(totals?.totalTokens ?? 0).toLocaleString(intlLocale)} />
@@ -283,9 +319,9 @@ export function DailyReviewPanel(props: {
 
           <VStack gap={2}>
             <Heading level={3}>{copy.overview.activeConversations}</Heading>
-            {visibleSummary.sessions.length > 0 ? (
+            {displayedSummary.sessions.length > 0 ? (
               <List density="balanced" hasDividers>
-                {visibleSummary.sessions.map((session) => (
+                {displayedSummary.sessions.map((session) => (
                   <ListItem
                     key={session.id}
                     label={session.name}
@@ -298,13 +334,15 @@ export function DailyReviewPanel(props: {
             ) : (
               <EmptyState
                 icon={<CalendarDays />}
-                title={offsetDays === 0 && range === 1 ? copy.emptyOverview.todayTitle : copy.emptyOverview.rangeTitle(rangeLabel)}
-                description={offsetDays === 0 && range === 1 ? copy.emptyOverview.todayBody : copy.emptyOverview.rangeBody(rangeLabel)}
+                title={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayTitle : copy.emptyOverview.rangeTitle(displayedRangeLabel)}
+                description={resolvedView?.scope.offsetDays === 0 && resolvedView.scope.range === 1 ? copy.emptyOverview.todayBody : copy.emptyOverview.rangeBody(displayedRangeLabel)}
               />
             )}
           </VStack>
-        </>
+        </div>
       )}
+      </VStack>
+      </div>
     </VStack>
   );
 }
@@ -349,7 +387,7 @@ function DailyReviewReport(props: {
 
   const actionInput = props.summary ? { markdown, label: title, summary: props.summary } : null;
   return (
-    <VStack className="maka-daily-review-panel maka-daily-review-report" gap={5}>
+    <VStack className="maka-daily-review-report" gap={5}>
       <HStack gap={2} vAlign="center" wrap="wrap">
         <Button variant="ghost" size="sm" icon={<ArrowLeft />} label={copy.page.backToActivity} onClick={props.onBack} />
         <StackItem size="fill" />

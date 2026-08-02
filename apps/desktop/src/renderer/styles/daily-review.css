@@ -9,6 +9,39 @@
   padding: var(--space-4) var(--space-5) var(--space-6);
 }
 
+.maka-daily-review-route-frame {
+  min-width: 0;
+}
+
+.maka-daily-review-report,
+.maka-daily-review-content {
+  min-width: 0;
+  animation: maka-daily-review-enter var(--duration-fast, 175ms)
+    var(--ease-standard, cubic-bezier(0.24, 1, 0.4, 1)) both;
+}
+
+.maka-daily-review-content {
+  display: grid;
+  gap: var(--space-5);
+}
+
+@keyframes maka-daily-review-enter {
+  from {
+    opacity: 0.9;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-daily-review-report,
+  .maka-daily-review-content {
+    animation: none;
+  }
+}
+
 .maka-daily-review-toolbar {
   min-width: 0;
 }
