@@ -13,14 +13,6 @@
   box-shadow: none;
 }
 
-/* A settled-value row breathes on its own block axis, exactly as the
-   settings-sidebar template's InfoRow does — the Divider between rows is the
-   only separator, so the space has to come from the row rather than from a
-   stack gap that would double up around it. */
-.settingRow {
-  padding-block: var(--spacing-4);
-}
-
 .connectionRow[data-disabled="true"] {
   opacity: var(--opacity-muted);
 }

@@ -11,7 +11,7 @@ import {
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
-import { Badge, Banner, HStack, VStack } from '@astryxdesign/core';
+import { Banner, HStack, VStack } from '@astryxdesign/core';
 import { Button, FormLayout, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogRecommendedDefaultModel } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';

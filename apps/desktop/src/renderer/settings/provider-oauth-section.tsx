@@ -80,9 +80,13 @@ export function useOAuthCards(props: { query?: string }) {
     const claudeEnabledForRefresh = 'enabled' in claudeGate
       ? claudeGate.enabled
       : claudeCatalogEnabled === true;
-    const cardsToRefresh = cards
-      .filter((card) => card.id !== 'claude' || claudeEnabledForRefresh)
-      .filter(matchesQuery);
+    // Every card the gate allows, not just the ones the current search shows.
+    // The catalog keeps its query across navigation now, so filtering here left
+    // the cards that were hidden at mount with a null state: clearing the
+    // search then revealed signed-in accounts rendering as "可用".
+    const cardsToRefresh = cards.filter(
+      (card) => card.id !== 'claude' || claudeEnabledForRefresh,
+    );
     const results = await Promise.all(
       cardsToRefresh.map(async (card) => {
         try {

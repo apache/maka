@@ -387,7 +387,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
             />
           ) : (
-            <List hasDividers className="connectionList">
+            <List hasDividers>
               {connections.map((connection) => {
                 const status = connectionChipStatus(connection, locale);
                 const isDefault = connection.slug === defaultSlug;

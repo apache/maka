@@ -96,7 +96,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     needsOAuth,
     usesGitHubCopilotLogin,
     oauthLoginService,
-    hasFixedOAuthBaseUrl,
     supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,
@@ -124,13 +123,15 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     else setApiKey('');
     setEditingRow(row);
   }
-  // 52 of the 60 providers publish a fixed endpoint; editing it there can only
-  // break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in a
-  // per-connection URL. So the row exists only where the address is genuinely
+  // Most of the 60 providers publish a fixed endpoint; editing it there can
+  // only break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in
+  // a per-connection URL. So the row exists only where the address is genuinely
   // the user's: a service with no published endpoint (the *-compatible ones), or
   // a local runtime whose port is a convention rather than a fact. A derived
-  // endpoint (Cloudflare builds one from the account id) is nobody's to type.
-  const showsEndpoint = !hasFixedOAuthBaseUrl
+  // endpoint (Cloudflare builds one from the account id) is nobody's to type,
+  // and neither is an account-authorized one — `gemini-cli` is OAuth with an
+  // empty baseUrl, so keying off "OAuth with a fixed URL" let it slip through.
+  const showsEndpoint = !needsOAuth
     && !defaults.baseUrlTemplate
     && (!defaults.baseUrl || defaults.category === 'local');
 
@@ -205,7 +206,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           <VStack gap={0}>
             <Divider />
             {supportsApiKey && (
-              <SettingRow
+              <ExpandableSettingRow
                 label={copy.modelKey}
                 value={apiKeyStatusHint}
                 actionLabel={hasSecret === true ? copy.change : copy.set}
@@ -236,10 +237,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                     {copy.getModelKey}
                   </Link>
                 )}
-              </SettingRow>
+              </ExpandableSettingRow>
             )}
             {showsEndpoint && (
-              <SettingRow
+              <ExpandableSettingRow
                 label={copy.endpoint}
                 value={savedBaseUrl || copy.endpointDefault}
                 actionLabel={copy.edit}
@@ -260,7 +261,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   placeholder={defaults.baseUrl}
                   isDisabled={detailActionBusy}
                 />
-              </SettingRow>
+              </ExpandableSettingRow>
             )}
           </VStack>
         )}
@@ -313,7 +314,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
  * The Divider trails each row, as in the template, so a stack of rows carries
  * its own separators without the caller interleaving them.
  */
-function SettingRow(props: {
+function ExpandableSettingRow(props: {
   label: string;
   value: string;
   actionLabel: string;
@@ -330,7 +331,7 @@ function SettingRow(props: {
   return (
     <>
       {props.isEditing ? (
-        <VStack gap={3} className="settingRow">
+        <VStack gap={3} paddingBlock={4}>
           <Text type="body" weight="semibold">{props.label}</Text>
           {props.children}
           <HStack gap={2}>
@@ -344,7 +345,7 @@ function SettingRow(props: {
           </HStack>
         </VStack>
       ) : (
-        <HStack hAlign="between" vAlign="start" gap={4} className="settingRow">
+        <HStack hAlign="between" vAlign="start" gap={4} paddingBlock={4}>
           <VStack gap={0}>
             <Text type="body" weight="semibold">{props.label}</Text>
             <Text type="supporting" color="secondary">{props.value}</Text>

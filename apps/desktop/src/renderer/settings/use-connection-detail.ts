@@ -110,7 +110,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const needsOAuth = defaults.authKind === 'oauth_token';
   const oauthLoginService = needsOAuth ? oauthLoginServiceFor(connection.providerType) : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
-  const hasFixedOAuthBaseUrl = needsOAuth && Boolean(defaults.baseUrl);
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
   const requiresCredential = providerAuthRequiresSecret(connection.providerType);
   const probesCredential = supportsApiKey || needsOAuth;
@@ -487,7 +486,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     needsOAuth,
     usesGitHubCopilotLogin,
     oauthLoginService,
-    hasFixedOAuthBaseUrl,
     supportsRemoteDiscovery,
     credentialProbePending,
     hasUsableCredential,

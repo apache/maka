@@ -152,7 +152,7 @@ export function ProviderCatalogPage(props: {
                 data-provider={type}
                 data-status="ready"
                 startContent={<ProviderLogo type={type} />}
-                label={<span aria-label={catalogCopy.cardAria(display.name, display.badge, display.description, 0)}>{display.name}</span>}
+                label={<span aria-label={catalogCopy.cardAria(display.name, display.badge, display.description)}>{display.name}</span>}
                 description={display.description}
                 endContent={(
                   <HStack gap={2} vAlign="center">
