@@ -19,10 +19,7 @@ import {
   linuxExecutableRoots,
 } from '../sandbox/linux-sandbox.js';
 import { detectLinuxSandboxCapability } from '../sandbox/linux-capability.js';
-import {
-  LINUX_BWRAP_PROBE_ARGS,
-  LINUX_BWRAP_REQUIRED_OPTIONS,
-} from '../sandbox/linux-capability.js';
+import { LINUX_BWRAP_PROBE_ARGS } from '../sandbox/linux-capability.js';
 import type { SandboxPathContext, SandboxTransformRequest } from '../sandbox/types.js';
 
 function workspaceRequest(profile: PermissionProfile): SandboxTransformRequest {
@@ -76,18 +73,17 @@ function protectedMetadataProfile(): PermissionProfile {
 }
 
 describe('detectLinuxSandboxCapability', () => {
-  it('probes every namespace used by production and requires seccomp support', () => {
-    for (const flag of [
-      '--unshare-user',
-      '--unshare-pid',
-      '--unshare-ipc',
-      '--unshare-uts',
-      '--unshare-cgroup',
-      '--unshare-net',
-    ]) {
-      assert.ok((LINUX_BWRAP_PROBE_ARGS as readonly string[]).includes(flag));
+  it('probes every namespace required by production commands', () => {
+    const request = workspaceRequest(createWorkspaceWritePermissionProfile());
+    const productionArgv = buildBubblewrapArgv({
+      bwrapPath: '/usr/bin/bwrap',
+      command: request.command,
+    });
+    const requiredNamespaces = productionArgv.filter((arg) => arg.startsWith('--unshare-'));
+
+    for (const namespace of requiredNamespaces) {
+      assert.ok((LINUX_BWRAP_PROBE_ARGS as readonly string[]).includes(namespace));
     }
-    assert.ok(LINUX_BWRAP_REQUIRED_OPTIONS.includes('--seccomp'));
   });
 
   it('reports non-Linux platforms without probing bwrap', () => {
@@ -164,6 +160,16 @@ describe('buildBubblewrapArgv', () => {
 
     assert.equal(argv.includes('--unshare-net'), false);
     assert.equal(argv.includes('--seccomp'), false);
+  });
+
+  it('isolates host process namespaces when network is enabled', () => {
+    const request = workspaceRequest(enabledNetworkProfile());
+    const argv = buildBubblewrapArgv({ bwrapPath: '/usr/bin/bwrap', command: request.command });
+
+    assert.deepEqual(
+      argv.filter((arg) => arg.startsWith('--unshare-')),
+      ['--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup'],
+    );
   });
 
   it('mounts an absolute program directory outside the default host paths', () => {

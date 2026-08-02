@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Card, Item } from '@astryxdesign/core';
 import { PersonalizationSettingsPage } from './appearance-settings-page';
 import type {
   AppSettings,
@@ -9,8 +10,6 @@ import type {
 } from '@maka/core';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import {
-  Alert,
-  AlertDescription,
   Button,
   FormLayout,
   TextInput,
@@ -25,11 +24,11 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  Banner,
 } from '@maka/ui';
 import { ProviderBrandMark } from './provider-brand-marks';
 import { buildCatalogChatModelChoices } from '../model-catalog-choices';
 import { PasswordInput } from './password-input';
-import { SettingsRows } from './settings-rows';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { useActionGuard, useKeyedActionGuard } from './use-action-guard';
 import { useOptimisticSettingsDraft } from './use-optimistic-settings-draft';
@@ -52,13 +51,11 @@ export function GeneralSettingsPage(props: {
           moved here from the 外观 page — they configure who you are to the
           app, not how the app looks. The component keeps its save flow. */}
       <PersonalizationSettingsPage settings={props.settings} onUpdate={props.onUpdate} />
-      <SettingsRows>
-        <div className="settingsFormRow" data-control="switch">
-          <div>
-            <strong>{copy.incognito}</strong>
-            <small>{copy.incognitoHelp}</small>
-          </div>
-          <Switch
+      <Card padding={0} className="settingsRows">
+        <Item
+          label={copy.incognito}
+          description={copy.incognitoHelp}
+          endContent={<Switch
             label={copy.enableIncognito}
             isLabelHidden
             value={props.settings.privacy.incognitoActive}
@@ -67,14 +64,12 @@ export function GeneralSettingsPage(props: {
                 toast.error(copy.incognitoFailed, settingsActionErrorMessage(error, locale));
               });
             }}
-          />
-        </div>
-        <div className="settingsFormRow" data-control="switch">
-          <div>
-            <strong>{copy.notifications}</strong>
-            <small>{copy.notificationsHelp}</small>
-          </div>
-          <Switch
+          />}
+        />
+        <Item
+          label={copy.notifications}
+          description={copy.notificationsHelp}
+          endContent={<Switch
             label={copy.notifications}
             isLabelHidden
             value={props.settings.notifications.runComplete}
@@ -83,9 +78,9 @@ export function GeneralSettingsPage(props: {
                 toast.error(copy.notificationsFailed, settingsActionErrorMessage(error, locale));
               });
             }}
-          />
-        </div>
-      </SettingsRows>
+          />}
+        />
+      </Card>
       <GeneralDefaultsCard
         connections={props.connections}
         defaultSlug={props.defaultSlug}
@@ -93,9 +88,9 @@ export function GeneralSettingsPage(props: {
         permissionMode={props.settings.chatDefaults.permissionMode}
         onUpdate={props.onUpdate}
       />
-      <SettingsRows>
+      <Card padding={0} className="settingsRows">
         <NetworkProxySection settings={props.settings} onUpdate={props.onUpdate} />
-      </SettingsRows>
+      </Card>
     </div>
   );
 }
@@ -209,46 +204,40 @@ function GeneralDefaultsCard(props: {
   }
 
   return (
-    <SettingsRows>
-      <div className="settingsRow" data-control-width="select">
-        <div>
-          <strong>{copy.defaultModel}</strong>
-          <small>{copy.defaultModelHelp}</small>
-        </div>
-        {/* Maka supplies catalog groups and provider marks; Astryx Selector
-            owns search, options, keyboard, focus, and the popup. */}
-        <ModelPicker
-          groups={modelGroups}
-          value={selectedValue}
-          leadingOption={{ value: '', label: copy.notSet }}
-          renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-          ariaLabel={copy.defaultModel}
-          disabled={saving}
-          loading={saving}
-          triggerClassName="settingsModelPickerTrigger"
-          onValueChange={persistDefault}
-        />
-      </div>
-      <div className="settingsRow" data-control-width="select">
-        <div>
-          <strong>{copy.defaultPermission}</strong>
-          {/* Fixed description of the SETTING (not the selected option's own
-              hint — the shared popup already shows every option's hint). */}
-          <small>{copy.defaultPermissionHelp}</small>
-        </div>
-        {/* Shared permission picker with the composer, so option labels and
-            hints cannot drift between the two surfaces. */}
-        <PermissionModeSelect
-          activeMode={props.permissionMode}
-          onSelect={(mode) => {
-            void persistPermissionMode(mode);
-          }}
-          align="end"
-          disabled={savingPermissionMode}
-          ariaLabel={copy.defaultPermission}
-        />
-      </div>
-    </SettingsRows>
+    <Card padding={0} className="settingsRows">
+      <Item
+        label={copy.defaultModel}
+        description={copy.defaultModelHelp}
+        endContent={(
+          <ModelPicker
+            groups={modelGroups}
+            value={selectedValue}
+            leadingOption={{ value: '', label: copy.notSet }}
+            renderProviderMark={(type) => <ProviderBrandMark type={type} />}
+            ariaLabel={copy.defaultModel}
+            disabled={saving}
+            loading={saving}
+            triggerClassName="settingsModelPickerTrigger"
+            onValueChange={persistDefault}
+          />
+        )}
+      />
+      <Item
+        label={copy.defaultPermission}
+        description={copy.defaultPermissionHelp}
+        endContent={(
+          <PermissionModeSelect
+            activeMode={props.permissionMode}
+            onSelect={(mode) => {
+              void persistPermissionMode(mode);
+            }}
+            align="end"
+            disabled={savingPermissionMode}
+            ariaLabel={copy.defaultPermission}
+          />
+        )}
+      />
+    </Card>
   );
 }
 
@@ -302,19 +291,16 @@ function NetworkProxySection(props: {
 
   return (
     <>
-      <div className="settingsFormRow" data-control="switch">
-        <div>
-          <strong>{copy.proxy}</strong>
-          <small>{copy.proxyHelp}</small>
-        </div>
-        <Switch
+      <Item
+        label={copy.proxy}
+        description={copy.proxyHelp}
+        endContent={<Switch
           label={copy.enableProxy}
           isLabelHidden
           value={proxyDraft.enabled}
           onChange={(enabled) => void updateProxy({ enabled })}
-        />
-      </div>
-
+        />}
+      />
       {proxyDraft.enabled && (
         <>
           <FormLayout className="settingsFormLayout" direction="horizontal">
@@ -338,18 +324,16 @@ function NetworkProxySection(props: {
             <NumberInput label={copy.port} value={proxyDraft.port || null} isIntegerOnly onChange={(value) => void updateProxy({ port: value ?? 0 })} placeholder="7890" />
           </FormLayout>
 
-          <div className="settingsFormRow" data-control="switch">
-            <div>
-              <strong>{copy.proxyAuth}</strong>
-              <small>{copy.proxyAuthHelp}</small>
-            </div>
-            <Switch
+          <Item
+            label={copy.proxyAuth}
+            description={copy.proxyAuthHelp}
+            endContent={<Switch
               label={copy.enableProxyAuth}
               isLabelHidden
               value={proxyDraft.authEnabled}
               onChange={(authEnabled) => void updateProxy({ authEnabled })}
-            />
-          </div>
+            />}
+          />
 
           {proxyDraft.authEnabled && (
             <FormLayout className="settingsFormLayout" direction="horizontal">
@@ -377,9 +361,9 @@ function NetworkProxySection(props: {
             />
           </div>
 
-          <Alert variant="info">
-            <AlertDescription>{copy.autoBypass(proxyDraft.autoBypassDomains.length)}</AlertDescription>
-          </Alert>
+          <Banner
+            status="info"
+            title={copy.autoBypass(proxyDraft.autoBypassDomains.length)} />
 
           <div className="settingsActionRow">
             <Button

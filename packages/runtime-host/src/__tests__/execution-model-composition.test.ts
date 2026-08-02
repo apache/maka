@@ -5,34 +5,51 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createBypassExecutionBoundary, type RuntimeEvent } from '@maka/core';
+import {
+  createBypassExecutionBoundary,
+  createManagedExecutionBoundary,
+  createWorkspaceWritePermissionProfile,
+  type ModelCallKind,
+  type RuntimeEvent,
+} from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { TaskLedgerStore } from '@maka/core/task-ledger';
-import type {
-  BackendFactoryContext,
-  MakaTool,
-  MakaToolContext,
-  RunTraceEvent,
-  ScannedSkill,
+import {
+  serializeOAuthSubscriptionTokens,
+  type OAuthSubscriptionTokens,
+  type BackendFactoryContext,
+  type FilesystemWorkerExecuteInput,
+  type MakaTool,
+  type MakaToolContext,
+  type ProxiedFetchProxy,
+  type ProxiedFetchTransport,
+  type RunTraceEvent,
+  type ScannedSkill,
 } from '@maka/runtime';
 import { createSqliteRuntimeStore } from '@maka/storage';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
-import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import {
+  openInteractiveRuntimePolicyStoresForWrite,
+  type RuntimePolicyStoresWriter,
+} from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
+  createHostGoalEvaluator,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 import type { HostSkillCatalogCoordinator } from '../server/skill-catalog-coordinator.js';
 
 const MODEL_ID = 'hosted-real-model';
@@ -83,6 +100,134 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
     name: 'AbortError',
     message: 'Pricing resolution was interrupted',
   });
+});
+
+test('backend abort cannot cancel the authority-owned OAuth refresh used by its successor', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-oauth-backend-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  let secondBackend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'backend-creation-connection',
+        name: 'OAuth backend creation',
+        providerType: 'claude-subscription',
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const tokens: OAuthSubscriptionTokens = {
+      access_token: 'expired-oauth-access',
+      refresh_token: 'rotating-oauth-refresh',
+      expires_at: 0,
+      account_uuid: 'oauth-account-v1',
+    };
+    await writeFile(
+      join(capability.canonicalPath, 'credential-vault.json'),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          revision: 1,
+          entries: [
+            {
+              locator: {
+                scope: 'connection',
+                connectionId: connection.connectionId,
+                kind: 'oauth_token',
+              },
+              credentialId: randomUUID(),
+              revision: 1,
+              secret: serializeOAuthSubscriptionTokens(tokens),
+              updatedAt: Date.now(),
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    transports = controlledOAuthTransports();
+    const authority = new HostOAuthExecutionAuthority(policy);
+    const firstAbort = new AbortController();
+    const firstCreation = createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: firstAbort.signal,
+        resolveExecutionConnection: () =>
+          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+        runtimePolicy: policy,
+        oauthCredentials: authority,
+        claudeDeviceId: capability.rootId,
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        createFetchTransport: transports.create,
+      }),
+    );
+    await transports.refreshStarted;
+
+    const abortReason = new DOMException('First backend stopped', 'AbortError');
+    firstAbort.abort(abortReason);
+    await assert.rejects(settleWithin(firstCreation), (error) => error === abortReason);
+    assert.equal(transports.modelTransportsClosed, 1);
+    assert.equal(transports.refreshTransportClosed, false);
+
+    transports.completeRefresh();
+    await transports.refreshTransportSettled;
+    assert.equal(transports.refreshTransportClosed, true);
+
+    secondBackend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: () =>
+          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+        runtimePolicy: policy,
+        oauthCredentials: authority,
+        claudeDeviceId: capability.rootId,
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        createFetchTransport: transports.create,
+      }),
+    );
+    assert.equal(transports.refreshCalls, 1);
+
+    const resolved = await policy.operations.resolveExecutionConnection(
+      'backend-creation-connection',
+    );
+    assert.equal(resolved.kind, 'ready');
+    if (resolved.kind === 'ready') {
+      const persisted = JSON.parse(
+        resolved.secretMaterial.connection?.secret ?? '',
+      ) as OAuthSubscriptionTokens;
+      assert.equal(persisted.access_token, 'refreshed-oauth-access');
+      assert.equal(persisted.refresh_token, 'rotated-oauth-refresh');
+      assert.equal(persisted.account_uuid, 'oauth-account-v2');
+      assert.ok((persisted.expires_at ?? 0) > Date.now());
+    }
+  } finally {
+    try {
+      if (transports && transports.refreshCalls > 0) {
+        transports.completeRefresh();
+        await transports.refreshTransportSettled;
+      }
+      await secondBackend?.dispose();
+    } finally {
+      await owner.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  }
 });
 
 test('backend creation does not acquire Client Capabilities beyond a bound tool ceiling', async () => {
@@ -404,22 +549,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       secret: API_KEY,
     });
     assert.equal(configured.kind, 'committed');
-    const fetchPreparation = await policy.operations.beginModelFetch(connection.connectionId);
-    assert.equal(fetchPreparation.kind, 'ready');
-    if (fetchPreparation.kind !== 'ready') return;
-    const fetched = await policy.operations.completeModelFetch(fetchPreparation.ticket, {
-      models: [
-        {
-          id: MODEL_ID,
-          capabilities: { chat: true, functionCalling: true },
-          contextWindow: 3_072,
-          maxOutputTokens: 64,
-        },
-      ],
-      source: 'fetched',
-      fetchedAt: Date.now(),
-    });
-    assert.equal(fetched.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -525,8 +655,23 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
+      'Automation',
+      'Bash',
+      'Edit',
+      'FormatJson',
+      'Glob',
+      'GoalClear',
+      'GoalPause',
+      'GoalResume',
+      'GoalSet',
+      'GoalStatus',
+      'Grep',
+      'Read',
       'Skill',
       'SkillSearch',
+      'StopBackgroundTask',
+      'Write',
+      'WriteStdin',
       'task_create',
       'task_get',
       'task_list',
@@ -612,6 +757,144 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         await rm(base, { recursive: true, force: true });
       }
     }
+  }
+});
+
+test('Host Goal evaluator meters provider usage and aborts its physical request', {
+  timeout: 10_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+    const evaluator = createHostGoalEvaluator(evaluatorInput);
+    const result = await evaluator.evaluate(
+      'Judge the completed Goal.',
+      session.id,
+      new AbortController().signal,
+    );
+    assert.equal(result, SUMMARY_TEXT);
+    const logs = await usage.telemetry.logs({ range: 'all' });
+    const recorded = logs.rows.find((row) => row.callKind === 'goal_evaluation');
+    assert.ok(recorded);
+    assert.equal(recorded.callId, `goal_evaluation_${session.id}_call-1`);
+    assert.equal(recorded.inputTokens, 7);
+    assert.equal(recorded.outputTokens, 3);
+    assert.equal(recorded.status, 'success');
+    await evaluator.close();
+
+    let providerSignal: AbortSignal | undefined;
+    let transportCloses = 0;
+    const providerDispatched = deferred<void>();
+    const providerRelease = deferred<void>();
+    const stalled = createHostGoalEvaluator({
+      ...evaluatorInput,
+      newId: () => 'call-2',
+      createFetchTransport: () => ({
+        fetch: async (_request, init) => {
+          providerSignal = init?.signal ?? undefined;
+          providerDispatched.resolve();
+          await providerRelease.promise;
+          throw providerSignal?.reason ?? new DOMException('Aborted', 'AbortError');
+        },
+        close: async () => {
+          transportCloses += 1;
+        },
+      }),
+    });
+    const abort = new AbortController();
+    const pending = stalled.evaluate('Wait forever.', session.id, abort.signal);
+    try {
+      await settleWithin(providerDispatched.promise);
+      abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
+      assert.equal(providerSignal?.aborted, true);
+      let closeSettled = false;
+      const closing = stalled.close().then(() => {
+        closeSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false);
+
+      providerRelease.resolve();
+      await assert.rejects(settleWithin(pending), (error: unknown) => {
+        assert.notEqual(error instanceof Error ? error.message : undefined, SETTLE_TIMEOUT_MESSAGE);
+        return true;
+      });
+      await closing;
+      assert.equal(transportCloses, 1);
+      const abortedLogs = await usage.telemetry.logs({ range: 'all' });
+      assert.ok(
+        abortedLogs.rows.some(
+          (row) =>
+            row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
+        ),
+      );
+    } finally {
+      abort.abort(new DOMException('Goal evaluator test cleanup', 'AbortError'));
+      providerRelease.resolve();
+      await stalled.close();
+      await pending.catch(() => undefined);
+    }
+  } finally {
+    await usage.close();
+    await execution.sessionStore.close?.();
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -747,6 +1030,56 @@ test('Client Capability tools join the existing load_tools catalog without a par
   );
 });
 
+test('Host model composition routes managed file tools through its filesystem worker', async () => {
+  let workerInput: FilesystemWorkerExecuteInput | undefined;
+  const composition = createHostExecutionModelComposition({
+    policy: {
+      getSnapshot: async () => ({
+        revision: 0,
+        policy: createDefaultRuntimePolicy(),
+      }),
+    },
+    skills: {
+      readCanonicalModelInventory: async () => ({ inventory: [] }),
+    } as unknown as HostSkillCatalogCoordinator,
+    memory: {} as HostMemoryCoordinator,
+    taskLedger: {} as TaskLedgerStore,
+    builtinTools: {
+      filesystemWorker: {
+        execute: async (input) => {
+          workerInput = input;
+          return { kind: 'read', content: 'read by Host worker' };
+        },
+      },
+      sandboxPlatform: 'darwin',
+    },
+  });
+  const read = composition.tools.find((tool) => tool.name === 'Read');
+  assert.ok(read);
+
+  const result = await read.impl(
+    { path: 'resource.txt' },
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      toolCallId: 'read-call',
+      cwd: process.cwd(),
+      permissionMode: 'ask',
+      executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),
+      abortSignal: new AbortController().signal,
+      emitOutput: () => {},
+    },
+  );
+
+  assert.deepEqual(result, { content: 'read by Host worker' });
+  assert.ok(workerInput);
+  assert.deepEqual(workerInput.operation, { kind: 'read', path: 'resource.txt' });
+  assert.equal(workerInput.cwd, process.cwd());
+  assert.equal(workerInput.executionBoundary?.kind, 'managed');
+  assert.equal(workerInput.mode, 'ask');
+  assert.ok(workerInput.abortSignal instanceof AbortSignal);
+});
+
 test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
   const boundTool: MakaTool = {
     name: 'bounded_tool',
@@ -761,6 +1094,12 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     categoryHint: 'client_capability',
     impl: async () => 'capability',
   };
+  const automationTool: MakaTool = {
+    name: 'Automation',
+    description: 'A root-only Host authority outside the exact child ceiling.',
+    parameters: {},
+    impl: async () => 'automation',
+  };
   const composition = createHostExecutionModelComposition({
     policy: {
       getSnapshot: async () => ({
@@ -774,6 +1113,8 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     memory: {} as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     boundTools: [boundTool],
+    automationTool,
+    builtinTools: {},
     clientCapabilities: {
       tools: [capabilityTool],
       groups: [
@@ -858,7 +1199,7 @@ async function waitForUsage(
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
   context: ConnectionContext,
   connectionSlug: string,
-  callKind: 'main' | 'semantic_compact' | 'history_compact',
+  callKind: ModelCallKind,
 ): Promise<Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const queried = await composition.handlers['usage.query'](
@@ -907,16 +1248,43 @@ function isTerminal(snapshot: TurnSnapshot): boolean {
   );
 }
 
+async function publishConnectionModel(
+  policy: RuntimePolicyStoresWriter,
+  connectionId: string,
+  modelId: string,
+): Promise<void> {
+  const prepared = await policy.operations.beginModelFetch(connectionId);
+  assert.equal(prepared.kind, 'ready');
+  if (prepared.kind !== 'ready') throw new Error('Model discovery was not ready');
+  const committed = await policy.operations.completeModelFetch(prepared.ticket, {
+    models: [
+      {
+        id: modelId,
+        capabilities: { chat: true, functionCalling: true },
+        contextWindow: 3_072,
+        maxOutputTokens: 64,
+      },
+    ],
+    source: 'fetched',
+    fetchedAt: Date.now(),
+  });
+  assert.equal(committed.kind, 'committed');
+}
+
 function backendCreationFixture(input: {
   abortSignal: AbortSignal;
   resolveExecutionConnection: () => Promise<unknown>;
   readPricing: () => Promise<unknown>;
+  runtimePolicy?: RuntimePolicyStoresWriter;
+  oauthCredentials?: HostOAuthExecutionAuthority;
+  claudeDeviceId?: string;
   tools?: readonly MakaTool[];
   snapshotClientCapabilities?: () => unknown;
   executionBoundary?: unknown;
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
+  createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
 }): HostAiSdkBackendInput {
   return {
     context: {
@@ -939,7 +1307,7 @@ function backendCreationFixture(input: {
         readExecutionBoundary: async () => input.executionBoundary,
       },
     } as unknown as BackendFactoryContext,
-    runtimePolicy: {
+    runtimePolicy: input.runtimePolicy ?? {
       operations: {
         resolveExecutionConnection: input.resolveExecutionConnection,
       },
@@ -950,6 +1318,8 @@ function backendCreationFixture(input: {
         }),
       },
     },
+    ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
+    ...(input.claudeDeviceId ? { claudeDeviceId: input.claudeDeviceId } : {}),
     skills: {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     },
@@ -979,6 +1349,7 @@ function backendCreationFixture(input: {
       snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
     },
     ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
+    ...(input.createFetchTransport ? { createFetchTransport: input.createFetchTransport } : {}),
   } as unknown as HostAiSdkBackendInput;
 }
 
@@ -1009,16 +1380,105 @@ function readyExecutionConnection(baseUrl?: string) {
 async function settleWithin<T>(pending: Promise<T>): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error('Backend creation did not settle after abort')),
-      250,
-    );
+    timeout = setTimeout(() => reject(new Error(SETTLE_TIMEOUT_MESSAGE)), 5_000);
   });
   try {
     return await Promise.race([pending, deadline]);
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
+    resolve = next;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function controlledOAuthTransports(): {
+  readonly create: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
+  readonly refreshStarted: Promise<void>;
+  readonly refreshTransportSettled: Promise<void>;
+  readonly refreshCalls: number;
+  readonly refreshTransportClosed: boolean;
+  readonly modelTransportsClosed: number;
+  completeRefresh(): void;
+} {
+  let markRefreshStarted!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    markRefreshStarted = resolve;
+  });
+  let markRefreshTransportSettled!: () => void;
+  const refreshTransportSettled = new Promise<void>((resolve) => {
+    markRefreshTransportSettled = resolve;
+  });
+  let refreshCalls = 0;
+  let refreshTransportClosed = false;
+  let modelTransportsClosed = 0;
+  let resolveRefresh: ((response: Response) => void) | undefined;
+  let rejectRefresh: ((error: Error) => void) | undefined;
+  let refreshCompleted = false;
+
+  const create = (_proxy: ProxiedFetchProxy | null): ProxiedFetchTransport => {
+    let usedForRefresh = false;
+    let closed = false;
+    return {
+      fetch: async (url) => {
+        assert.equal(String(url), 'https://platform.claude.com/v1/oauth/token');
+        usedForRefresh = true;
+        refreshCalls += 1;
+        markRefreshStarted();
+        return new Promise<Response>((resolve, reject) => {
+          resolveRefresh = resolve;
+          rejectRefresh = reject;
+        });
+      },
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        if (usedForRefresh) {
+          refreshTransportClosed = true;
+          rejectRefresh?.(new Error('Controlled OAuth transport closed'));
+          markRefreshTransportSettled();
+        } else {
+          modelTransportsClosed += 1;
+        }
+      },
+    };
+  };
+
+  return {
+    create,
+    refreshStarted,
+    refreshTransportSettled,
+    get refreshCalls() {
+      return refreshCalls;
+    },
+    get refreshTransportClosed() {
+      return refreshTransportClosed;
+    },
+    get modelTransportsClosed() {
+      return modelTransportsClosed;
+    },
+    completeRefresh: () => {
+      if (refreshCompleted || !resolveRefresh) return;
+      refreshCompleted = true;
+      resolveRefresh(
+        Response.json({
+          access_token: 'refreshed-oauth-access',
+          refresh_token: 'rotated-oauth-refresh',
+          expires_in: 3_600,
+          account: { uuid: 'oauth-account-v2' },
+        }),
+      );
+    },
+  };
 }
 
 function toolNames(body: Record<string, unknown> | undefined): string[] {

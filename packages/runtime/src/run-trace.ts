@@ -38,6 +38,7 @@ export type RunTraceEventType =
   | 'model_stream_started'
   | 'model_stream_completed'
   | 'model_stream_failed'
+  | 'send_diagnostics_recorded'
   | 'tool_started'
   | 'tool_completed'
   | 'tool_failed'
@@ -58,8 +59,7 @@ export type RunTraceEventType =
   | 'sandbox_escalation_applied'
   | 'sandbox_escalation_failed'
   | 'sandbox_denial_detected'
-  | 'abort_requested'
-  | 'usage_recorded';
+  | 'abort_requested';
 
 export interface RunTraceEvent {
   id: string;
@@ -185,18 +185,24 @@ export class RunTrace {
     });
   }
 
-  usageRecorded(usage: {
-    inputTokens: number;
-    outputTokens: number;
-    cacheHitInputTokens: number;
-    cacheMissInputTokens: number;
-    cacheMissInputSource?: CacheMissInputSource;
-    cachedInputTokens: number;
-    cacheWriteInputTokens: number;
-    reasoningTokens: number;
-    totalTokens: number;
-    rawFinishReason?: string;
-    costUsd?: number;
+  /**
+   * Terminal diagnostics for one send: what the request actually cost in
+   * context, and how the send ended.
+   *
+   * Explicitly not accounting. It carries no cost and is not summed by
+   * anything — spend lives in `ModelCallAttempt`, one record per physical
+   * provider request (#1679). This exists because the exhausted and aborted
+   * paths produce no `token_usage` SessionEvent, so their compaction decisions
+   * and accumulated step usage would otherwise have no durable home at all.
+   */
+  sendDiagnostics(diagnostics: {
+    status: string;
+    errorClass?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    contextBudget?: unknown;
+    promptSegments?: readonly unknown[];
     systemPromptHash?: string;
     prefixHash?: string;
     prefixChangeReason?: PrefixChangeReason;
@@ -205,33 +211,40 @@ export class RunTrace {
     toolSchemaChangeReason?: ToolSchemaChangeReason;
     toolAvailability?: ToolAvailabilityDiagnostic;
   }): void {
-    this.emit('usage', 'usage_recorded', 'Token usage recorded', {
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheHitInputTokens: usage.cacheHitInputTokens,
-      cacheMissInputTokens: usage.cacheMissInputTokens,
-      ...(usage.cacheMissInputSource !== undefined
-        ? { cacheMissInputSource: usage.cacheMissInputSource }
+    this.emit('model', 'send_diagnostics_recorded', 'Send diagnostics recorded', {
+      status: diagnostics.status,
+      ...(diagnostics.errorClass !== undefined ? { errorClass: diagnostics.errorClass } : {}),
+      ...(diagnostics.inputTokens !== undefined ? { inputTokens: diagnostics.inputTokens } : {}),
+      ...(diagnostics.outputTokens !== undefined ? { outputTokens: diagnostics.outputTokens } : {}),
+      ...(diagnostics.totalTokens !== undefined ? { totalTokens: diagnostics.totalTokens } : {}),
+      ...(diagnostics.contextBudget !== undefined
+        ? { contextBudget: diagnostics.contextBudget }
         : {}),
-      cachedInputTokens: usage.cachedInputTokens,
-      cacheWriteInputTokens: usage.cacheWriteInputTokens,
-      reasoningTokens: usage.reasoningTokens,
-      totalTokens: usage.totalTokens,
-      ...(usage.rawFinishReason !== undefined ? { rawFinishReason: usage.rawFinishReason } : {}),
-      ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
-      ...(usage.systemPromptHash !== undefined ? { systemPromptHash: usage.systemPromptHash } : {}),
-      ...(usage.prefixHash !== undefined ? { prefixHash: usage.prefixHash } : {}),
-      ...(usage.prefixChangeReason !== undefined
-        ? { prefixChangeReason: usage.prefixChangeReason }
+      ...(diagnostics.promptSegments !== undefined && diagnostics.promptSegments.length > 0
+        ? { promptSegments: diagnostics.promptSegments }
         : {}),
-      ...(usage.requestShapeHash !== undefined ? { requestShapeHash: usage.requestShapeHash } : {}),
-      ...(usage.requestShapeChangeReason !== undefined
-        ? { requestShapeChangeReason: usage.requestShapeChangeReason }
+      // The FINAL request shape, not step 0's: a same-turn tool load changes it
+      // mid-send, and `model_stream_started` reports only what the first
+      // request carried.
+      ...(diagnostics.systemPromptHash !== undefined
+        ? { systemPromptHash: diagnostics.systemPromptHash }
         : {}),
-      ...(usage.toolSchemaChangeReason !== undefined
-        ? { toolSchemaChangeReason: usage.toolSchemaChangeReason }
+      ...(diagnostics.prefixHash !== undefined ? { prefixHash: diagnostics.prefixHash } : {}),
+      ...(diagnostics.prefixChangeReason !== undefined
+        ? { prefixChangeReason: diagnostics.prefixChangeReason }
         : {}),
-      ...(usage.toolAvailability !== undefined ? { toolAvailability: usage.toolAvailability } : {}),
+      ...(diagnostics.requestShapeHash !== undefined
+        ? { requestShapeHash: diagnostics.requestShapeHash }
+        : {}),
+      ...(diagnostics.requestShapeChangeReason !== undefined
+        ? { requestShapeChangeReason: diagnostics.requestShapeChangeReason }
+        : {}),
+      ...(diagnostics.toolSchemaChangeReason !== undefined
+        ? { toolSchemaChangeReason: diagnostics.toolSchemaChangeReason }
+        : {}),
+      ...(diagnostics.toolAvailability !== undefined
+        ? { toolAvailability: diagnostics.toolAvailability }
+        : {}),
     });
   }
 

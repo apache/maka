@@ -22,7 +22,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, after } from 'node:test';
-import { expandCssImports, findFontShorthandOffenders, assertCustomPropPinnedOnce } from './css-test-helpers.js';
+import {
+  expandCssImports,
+  findFontShorthandOffenders,
+  assertCustomPropPinnedOnce,
+  cssRuleBody,
+  cssMediaBody,
+  assertCssRuleDecls,
+} from './css-test-helpers.js';
 
 describe('css-test-helpers', () => {
   describe('expandCssImports (fail closed on bad @import)', () => {
@@ -71,6 +78,112 @@ describe('css-test-helpers', () => {
 
     it('ignores font: inside comments', () => {
       assert.deepEqual(findFontShorthandOffenders('/* font: 600 12px sans-serif */', 'test'), []);
+    });
+  });
+
+  describe('cssRuleBody (stops at the target rule’s closing brace)', () => {
+    const sheet = `
+.maka-chat-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.maka-chat-layout > :first-child {
+  min-height: 0;
+  flex: 1 0 auto;
+}
+.maka-shell-topbar-rail {
+  display: flex;
+}
+.maka-workspace-top-actions {
+  -webkit-app-region: no-drag;
+}
+`;
+
+    it('returns only the matched rule’s own declarations', () => {
+      const body = cssRuleBody(sheet, '.maka-chat-layout');
+      assert.ok(body);
+      assert.match(body!, /display:\s*flex/);
+      assert.match(body!, /min-height:\s*0/);
+      assert.doesNotMatch(body!, /flex:\s*1\s+0\s+auto/);
+    });
+
+    it('fails closed when the property only lives on a later sibling rule', () => {
+      // Mutation: drop min-height from .maka-chat-layout; child still has it.
+      const mutated = sheet.replace(
+        /\.maka-chat-layout\s*\{[^}]*?min-height:\s*0;\s*/s,
+        '.maka-chat-layout {\n  display: flex;\n  flex-direction: column;\n',
+      );
+      const body = cssRuleBody(mutated, '.maka-chat-layout');
+      assert.ok(body);
+      assert.doesNotMatch(body!, /min-height:\s*0/);
+      // The naive cross-rule regex still "passes" — document the bug class.
+      const naive = /\.maka-chat-layout\s*\{[\s\S]*?min-height:\s*0;/;
+      assert.equal(naive.test(mutated), true, 'naive regex is the false-green pattern');
+      assert.throws(
+        () => assertCssRuleDecls(mutated, '.maka-chat-layout', [/min-height:\s*0/]),
+        /must declare/,
+      );
+    });
+
+    it('fails closed when no-drag only lives on a later action cluster', () => {
+      const body = cssRuleBody(sheet, '.maka-shell-topbar-rail');
+      assert.ok(body);
+      assert.doesNotMatch(body!, /-webkit-app-region:\s*no-drag/);
+      assert.throws(
+        () => assertCssRuleDecls(sheet, '.maka-shell-topbar-rail', [/-webkit-app-region:\s*no-drag/]),
+        /must declare/,
+      );
+      assert.doesNotThrow(() =>
+        assertCssRuleDecls(sheet, '.maka-workspace-top-actions', [/-webkit-app-region:\s*no-drag/]),
+      );
+    });
+
+    it('returns null for a missing selector', () => {
+      assert.equal(cssRuleBody(sheet, '.does-not-exist'), null);
+    });
+
+    it('does not match a right-hand combinator target as the rule selector', () => {
+      const withSibling = `
+.settingsOsPermissionRow + .settingsOsPermissionRow {
+  border-top: 1px solid red;
+}
+.settingsOsPermissionRow {
+  display: flex;
+  flex-wrap: wrap;
+}
+`;
+      const body = cssRuleBody(withSibling, '.settingsOsPermissionRow');
+      assert.ok(body);
+      assert.match(body!, /display:\s*flex/);
+      assert.doesNotMatch(body!, /border-top/);
+    });
+  });
+
+  describe('cssMediaBody', () => {
+    const sheet = `
+@media (max-width: 620px) {
+  .settingsRemoteAccessItemActions {
+    display: none;
+  }
+  .settingsBotStatusGrid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 990px) {
+  .maka-session-workbar {
+    max-height: min(42dvh, 360px);
+  }
+}
+`;
+
+    it('extracts one media block without bleeding into the next', () => {
+      const body = cssMediaBody(sheet, '(max-width: 620px)');
+      assert.ok(body);
+      assert.match(body!, /\.settingsRemoteAccessItemActions/);
+      assert.doesNotMatch(body!, /\.maka-session-workbar/);
+      const rule = cssRuleBody(body!, '.settingsRemoteAccessItemActions');
+      assert.match(rule!, /display:\s*none/);
     });
   });
 

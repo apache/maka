@@ -25,11 +25,11 @@ import type { EphemeralVoiceAudio } from '@maka/core/voice';
 // ============================================================================
 
 /**
- * Where the invocation entered the runtime. Desktop, bot, and gateway should
- * eventually share the same runner; `test` covers in-process fake-service
- * invocations like the ones in this node's test suite.
+ * Where the invocation entered the runtime. Desktop, bot, and gateway share
+ * the same runner; `test` covers in-process fake-service invocations like the
+ * ones in this package's test suite.
  */
-export const INVOCATION_SOURCES = ['desktop', 'bot', 'test'] as const;
+export const INVOCATION_SOURCES = ['desktop', 'bot', 'gateway', 'test'] as const;
 export type InvocationSource = (typeof INVOCATION_SOURCES)[number];
 
 export function isInvocationSource(value: unknown): value is InvocationSource {

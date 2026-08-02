@@ -6,11 +6,11 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
 
   await settings.getByRole('button', { name: '接入 钉钉' }).click();
   await expect(settings.getByRole('heading', { name: '接入方式' })).toBeVisible();
-  await expect(settings.getByRole('button', { name: '快捷接入（推荐）' })).toHaveAttribute('data-pressed', '');
+  await expect(settings.getByRole('radio', { name: '快捷接入（推荐）' })).toBeChecked();
 
-  await settings.getByRole('button', { name: '手动配置' }).click();
+  await settings.getByRole('radio', { name: '手动配置' }).click();
   await expect(settings.getByRole('textbox', { name: '钉钉应用密钥' })).toBeVisible();
-  await settings.getByRole('button', { name: '快捷接入（推荐）' }).click();
+  await settings.getByRole('radio', { name: '快捷接入（推荐）' }).click();
   await settings.getByRole('button', { name: '使用钉钉扫码接入' }).click();
 
   const dialog = page.getByRole('dialog', { name: '配置钉钉扫码接入' });
@@ -18,21 +18,8 @@ test('IM 快捷接入完成真实 QR session、扫码状态和本机凭据落盘
   const qr = dialog.getByRole('img', { name: '配置钉钉二维码' });
   await expect(qr).toHaveAttribute('src', /^data:image\/png;base64,/);
   await expect(dialog.getByText('请使用钉钉扫描二维码并确认授权')).toBeVisible();
-
-  const dialogBox = await dialog.boundingBox();
-  const qrFrameBox = await dialog.locator('.settingsBotOnboardingQrFrame').boundingBox();
-  const qrBox = await qr.boundingBox();
-  expect(dialogBox).not.toBeNull();
-  expect(qrFrameBox).not.toBeNull();
-  expect(qrBox).not.toBeNull();
-  const viewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  expect(dialogBox!.width).toBeLessThanOrEqual(522);
-  expect(qrFrameBox!.width).toBe(284);
-  expect(qrBox!.width).toBe(qrFrameBox!.width - 2);
-  expect(Math.abs((dialogBox!.x + dialogBox!.width / 2) - (qrBox!.x + qrBox!.width / 2))).toBeLessThan(2);
-  expect(Math.abs((dialogBox!.y + dialogBox!.height / 2) - viewport.height / 2)).toBeLessThan(2);
-  expect(dialogBox!.y).toBeGreaterThan(24);
-  expect(dialogBox!.y + dialogBox!.height).toBeLessThan(viewport.height - 24);
+  // QR square / fill-frame geometry is pinned in chat-shell-layout-contract
+  // (settingsBotOnboardingQrFrame CSS). This journey owns session + secret isolation.
 
   await expect(dialog.getByText('已扫码，请在钉钉中完成确认')).toBeVisible({ timeout: 4_000 });
   await expect(dialog.getByText('钉钉 已连接')).toBeVisible({ timeout: 5_000 });
@@ -78,7 +65,7 @@ test('关闭扫码弹窗会取消迟到结果，过期二维码可以重新生�
 
   await settings.getByRole('button', { name: '返回远程接入' }).click();
   await settings.getByRole('button', { name: '接入 飞书' }).click();
-  await settings.getByRole('button', { name: 'Lark' }).click();
+  await settings.getByRole('radio', { name: 'Lark' }).click();
   await settings.getByRole('button', { name: '使用Lark扫码接入' }).click();
   const larkDialog = page.getByRole('dialog', { name: '配置 Lark 扫码接入' });
   await expect(larkDialog.getByRole('img', { name: '配置 Lark 二维码' })).toBeVisible();

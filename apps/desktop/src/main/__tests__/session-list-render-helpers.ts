@@ -31,6 +31,7 @@ export function renderSessionListPanel(options: {
   childSessionsByParentId?: Parameters<
     typeof SessionListPanel
   >[0]['childSessionsByParentId'];
+  staleSessionIds?: Parameters<typeof SessionListPanel>[0]['staleSessionIds'];
   viewMode?: Parameters<typeof SessionListPanel>[0]['viewMode'];
 } = {}): string {
   const rowActions = options.rowActions ?? {
@@ -50,6 +51,7 @@ export function renderSessionListPanel(options: {
       projectActions: options.projectActions,
       worktreeSessionIds: options.worktreeSessionIds,
       childSessionsByParentId: options.childSessionsByParentId,
+      staleSessionIds: options.staleSessionIds,
       viewMode: options.viewMode,
       onViewModeChange: options.viewMode ? () => {} : undefined,
       onSelectSession() {},

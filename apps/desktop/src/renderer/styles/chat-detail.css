@@ -63,16 +63,19 @@
 .maka-session-workbar-tabs {
   height: 100%;
   min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0;
+}
+
+.maka-session-workbar-toolbar {
+  min-width: 0;
 }
 
 .maka-session-workbar-tab-list {
   width: 100%;
   flex: 0 0 auto;
-  border-bottom: var(--border-width-hairline) solid var(--border);
 }
-
-.maka-session-workbar-tab-list > [data-slot="tabs-tab"] { flex: 1 1 0; }
 
 .maka-session-workbar-count {
   min-width: var(--space-4);
@@ -133,11 +136,14 @@
 }
 
 .maka-browser-empty {
+  position: absolute;
+  inset: 0;
+  padding-block: 2.5rem;
   color: var(--muted-foreground);
 }
 
-.maka-browser-empty-hint {
-  max-width: 280px;
+@media (min-width: 768px) {
+  .maka-browser-empty { padding-block: 3rem; }
 }
 
 .maka-artifact-pane {
@@ -156,34 +162,7 @@
 }
 
 .maka-artifact-list-error {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  gap: var(--space-2);
-  align-items: start;
   margin: var(--space-2);
-  padding: var(--space-2);
-  border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.28);
-  border-radius: var(--radius-surface);
-  background: oklch(from var(--warning) l c h / 0.08);
-  color: var(--foreground);
-  font-size: var(--font-size-ui);
-}
-
-.maka-artifact-list-error svg {
-  color: var(--warning-text, var(--info-text));
-}
-
-.maka-artifact-list-error strong {
-  display: block;
-  margin-bottom: var(--space-0-5);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-.maka-artifact-list-error p {
-  margin: 0;
-  color: var(--foreground-secondary);
-  overflow-wrap: anywhere;
 }
 
 .maka-artifact-list {
@@ -205,10 +184,7 @@
 
 .maka-artifact-row {
   width: 100%;
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-1-5);
+  justify-content: flex-start;
   padding: var(--space-1) var(--space-1-5);
   margin: 0;
   border: var(--border-width-hairline) solid transparent;
@@ -252,17 +228,11 @@
   color: var(--link);
 }
 
-.maka-artifact-row-name {
-  font-weight: var(--font-weight-medium);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
 .maka-artifact-row-meta {
   display: inline-flex;
   flex-direction: column;
   align-items: flex-end;
+  margin-left: auto;
   gap: 1px;
   font-size: var(--font-size-caption);
   color: oklch(from var(--foreground) l c h / 0.62);
@@ -274,8 +244,6 @@
 }
 
 .maka-artifact-row-badge {
-  grid-column: 1 / -1;
-  justify-self: start;
   margin-top: var(--space-0-5);
 }
 
@@ -444,10 +412,7 @@
 }
 
 .maka-artifact-preview-spinner {
-  width: 12px;
-  height: 12px;
   flex: 0 0 auto;
-  color: var(--status-running);
 }
 
 .maka-artifact-preview-fail {
@@ -503,20 +468,6 @@
 
 .maka-artifact-toolbar-danger-group {
   margin-left: auto;
-}
-
-.maka-artifact-toolbar-separator {
-  /* Pin the separator to a literal 1px hairline. At narrow pane widths
-     the toolbar wraps and this element rendered as a ~15px bordered
-     pill next to the delete button — visual noise that read as an
-     empty broken button. */
-  flex: 0 0 1px;
-  width: 1px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  min-height: 22px;
-  background: var(--border);
 }
 
 /* Narrow windows place the single workbar below the conversation. */
@@ -584,92 +535,3 @@
  * The measure-column geometry the `tool-output.css` re-anchor used to add
  * to the summary / lineage rows / footer is folded into those Marker
  * variants. */
-
-/* PR109f: branched session banner. Renders above the chat scroll area
-   when the active session has a parentSessionId. Inline button-styled
-   pill that the user can click to jump back to the parent session.
-
-   Visual style: info-tinted background, GitBranch icon, single line.
-   `data-from-aborted` shifts the tone to muted-warning so the user
-   sees that the branch starts from before an abort. */
-.maka-session-branch-banner {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-0-5) var(--space-2);
-  margin: var(--space-1-5) var(--space-3) var(--space-1);
-  border-radius: var(--radius-pill);
-  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.20);
-  background: oklch(from var(--info) l c h / 0.06);
-  color: var(--info-text);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
-  transition: background var(--duration-base) var(--ease-out-strong), color var(--duration-base) var(--ease-out-strong), border-color var(--duration-base) var(--ease-out-strong);
-  align-self: flex-start;
-}
-.maka-session-branch-banner:hover {
-  background: oklch(from var(--info) l c h / 0.14);
-  border-color: oklch(from var(--info) l c h / 0.38);
-  color: var(--info-text);
-}
-.maka-session-branch-banner:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-.maka-session-branch-banner[data-from-aborted] {
-  /* Muted-warning tone so the user sees the branch starts from before
-     the cancel point, not from the abort itself. */
-  border-color: oklch(from var(--warning, var(--info)) l c h / 0.28);
-  background: oklch(from var(--warning, var(--info)) l c h / 0.08);
-  color: var(--warning-text);
-}
-.maka-session-branch-banner[data-from-aborted]:hover {
-  background: oklch(from var(--warning) l c h / 0.14);
-  border-color: oklch(from var(--warning) l c h / 0.42);
-  color: var(--warning-text, var(--info-text));
-}
-
-/* Edit-and-resend stays in one conversation slot; this compact toolbar moves
-   between durable versions without exposing revision sessions in the sidebar. */
-.maka-session-revision-nav {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: 26px;
-  padding: var(--space-0-5) var(--space-1) var(--space-0-5) var(--space-2);
-  margin: var(--space-1-5) var(--space-3) var(--space-1);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--background-elevated);
-  color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
-  align-self: flex-start;
-}
-
-.maka-session-revision-nav-action {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: inherit;
-}
-
-.maka-session-revision-nav-action:hover:not(:disabled) {
-  background: var(--state-hover-bg);
-  color: var(--foreground);
-}
-
-.maka-session-revision-nav-action:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
-}
-
-.maka-session-revision-nav-action:disabled {
-  opacity: var(--opacity-disabled);
-  cursor: default;
-}

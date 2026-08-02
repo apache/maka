@@ -1,19 +1,39 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { UserQuestionRequestEvent } from '@maka/core';
 import { UserQuestionPrompt } from '@maka/ui';
-import { expect, userEvent, within } from 'storybook/test';
-
-import './ask-user-question.css';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Ask User Question',
+  component: UserQuestionPrompt,
   parameters: {
     layout: 'fullscreen',
   },
-} satisfies Meta;
+  // The prompt's root carries the `composer` class, and `.mainColumn` zeroes
+  // that class's top padding in production. Without that ancestor the story
+  // would render the prompt var(--space-2) lower than the app does, so the
+  // frame reproduces the two wrappers the renderer puts around the composer
+  // slot rather than approximating them with a bare canvas.
+  //
+  // A narrower column is a viewport, not a second story — the smoke manifest
+  // renders this one at compact and floor.
+  decorators: [
+    (Story) => (
+      <div
+        className="maka-panel maka-panel-detail"
+        style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
+      >
+        <div className="maka-detail-with-artifacts">
+          <div className="mainColumn" style={{ justifyContent: 'flex-end' }}>
+            <Story />
+          </div>
+        </div>
+      </div>
+    ),
+  ],
+} satisfies Meta<typeof UserQuestionPrompt>;
 
 export default meta;
 
@@ -40,57 +60,18 @@ const REQUEST: UserQuestionRequestEvent = {
   ],
 };
 
-function PreviewColumn(props: {
-  title: string;
-  width: number;
-  request?: UserQuestionRequestEvent;
-}) {
-  return (
-    <div className="maka-question-review-column" style={{ width: props.width }}>
-      <p className="maka-question-review-label">{props.title}</p>
-      <div className="maka-question-review-chat">
-        <div className="maka-question-review-transcript" aria-hidden="true">
-          <div><strong>你</strong><p>请帮我确定官网上线方案。</p></div>
-          <div><strong>Maka</strong><p>我需要先确认几个有明确选项的发布决策，然后会继续生成执行计划。</p></div>
-        </div>
-        <UserQuestionPrompt request={props.request ?? REQUEST} onRespond={() => {}} onStop={() => {}} />
-      </div>
-    </div>
-  );
-}
-
-// Real path: chat → the agent calls AskUserQuestion → the prompt takes over the composer
-// slot, below the turn that asked. The two columns are a review scaffold, not one
-// screen: each is the same reachable prompt at a different chat-column width (default
-// vs. a narrow window or an open artifact pane).
-export const StandardAndNarrow: Story = {
-  render: () => (
-    <main className="maka-question-review-board">
-      <PreviewColumn title="标准聊天列" width={760} />
-      <PreviewColumn title="窄聊天列" width={390} />
-    </main>
-  ),
-};
-
-// Real path: same prompt, after the user picks 其他 and types a free-text answer — driven
-// here by the play function.
-export const OtherAnswerSelected: Story = {
-  render: () => (
-    <main className="maka-question-review-board">
-      <PreviewColumn
-        title="“其他”选中并直接输入"
-        width={760}
-        request={{ ...REQUEST, questions: REQUEST.questions.slice(0, 1) }}
-      />
-    </main>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const input = canvas.getByRole('textbox', { name: '其他答案' });
-    await userEvent.click(input);
-    await expect(input).toHaveFocus();
-    await userEvent.type(input, '分阶段发布');
-    await expect(input).toHaveValue('分阶段发布');
-    await expect(input.closest('.maka-question-other-field')).toHaveAttribute('data-selected');
+// Real path: chat → the agent calls AskUserQuestion → the prompt appears in the
+// composer's place, on the first of three questions.
+//
+// Scope: the prompt, not the takeover. ChatComposerRegion is what hides the
+// Composer while an interaction owns the slot, and this story does not mount it,
+// so nothing here would fail if the prompt and the Composer rendered together.
+// That host contract has no coverage today; it belongs to a region-level test,
+// not to a story about how the prompt itself reads.
+export const PendingDecisions: Story = {
+  args: {
+    request: REQUEST,
+    onRespond: () => {},
+    onStop: () => {},
   },
 };

@@ -25,7 +25,7 @@ export function WorkspaceInstructionsSection(props: {
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[4rem]"
+                className="settingsActionWidthSm"
                 aria-label={props.copy.openInstructionAria(file.file)}
                 isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:open`)}
                 onClick={() => void props.onOpen(file.file)}
@@ -36,7 +36,7 @@ export function WorkspaceInstructionsSection(props: {
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[4rem]"
+                className="settingsActionWidthSm"
                 aria-label={props.copy.createInstructionAria(file.file)}
                 isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:create`)}
                 onClick={() => void props.onCreate(file.file)}
@@ -69,7 +69,7 @@ export function MemoryPromptPreviewSection(props: {
           <Button
             variant="secondary"
             size="sm"
-            className="min-w-[5rem]"
+            className="settingsActionWidthMd"
             isDisabled={!props.preview || props.copyPending}
             onClick={() => void props.onCopy()}
             label={props.copyPending ? props.copy.text.copying : props.copy.text.copyContext}

@@ -1,7 +1,7 @@
 import type { SessionEvent } from '@maka/core';
 import {
   drainGoalTurn,
-  type GoalExternalTurnStart,
+  type GoalObservedTurnStart,
   type GoalTurnOutcome,
   type SessionActivityLease,
   type SessionActivityRegistry,
@@ -16,7 +16,7 @@ export interface StartDesktopSessionTurnInput {
   goalBoundary: SessionGoalBoundary;
   activities: SessionActivityRegistry;
   activity?: SessionActivityLease;
-  beginExternalTurn: (sessionId: string, turnId: string) => GoalExternalTurnStart;
+  beginObservedTurn: (sessionId: string, turnId: string) => GoalObservedTurnStart;
   onEvent: (event: SessionEvent) => void | Promise<void>;
   onStreamError: (error: unknown) => void | Promise<void>;
   onDrained: (outcome: GoalTurnOutcome) => void | Promise<void>;
@@ -34,7 +34,7 @@ export function startDesktopSessionTurn(
   input: StartDesktopSessionTurnInput,
 ): DesktopSessionTurnStart {
   const registration = input.goalBoundary === 'external'
-    ? input.beginExternalTurn(input.sessionId, input.turnId)
+    ? input.beginObservedTurn(input.sessionId, input.turnId)
     : undefined;
   if (registration && registration.kind !== 'registered') {
     return {

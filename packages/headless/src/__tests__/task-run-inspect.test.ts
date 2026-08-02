@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, RuntimeEvent } from '@maka/core';
 import { buildHistoryCompactCheckpoint } from '@maka/runtime';
-import { createAgentRunStore, createRuntimeEventStore } from '@maka/storage';
+import {
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import type { HeavyTaskSemanticSelfCheckState, TaskEvent } from '../task-contracts.js';
 import { taskAttemptExecutionEvidence } from '../task-execution-lineage.js';
 import { createInMemoryTaskRunStore } from '../task-run-store.js';
@@ -350,16 +353,16 @@ const TURN_ID = 'turn-1';
 async function withStores(
   run: (stores: {
     taskRunStore: ReturnType<typeof createInMemoryTaskRunStore>;
-    agentRunStore: ReturnType<typeof createAgentRunStore>;
-    runtimeEventStore: ReturnType<typeof createRuntimeEventStore>;
+    agentRunStore: ReturnType<typeof createLegacyAgentRunStoreForTest>;
+    runtimeEventStore: ReturnType<typeof createLegacyRuntimeEventStoreForTest>;
   }) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-task-run-inspect-'));
   try {
     await run({
       taskRunStore: createInMemoryTaskRunStore(),
-      agentRunStore: createAgentRunStore(root),
-      runtimeEventStore: createRuntimeEventStore(root),
+      agentRunStore: createLegacyAgentRunStoreForTest(root),
+      runtimeEventStore: createLegacyRuntimeEventStoreForTest(root),
     });
   } finally {
     await rm(root, { recursive: true, force: true });

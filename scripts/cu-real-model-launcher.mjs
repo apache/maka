@@ -15,9 +15,9 @@ import {
   sanitizeCuTrace,
 } from './cu-report-sanitize.mjs';
 import {
-  createAgentRunStore,
   createConnectionStore,
   createFileCredentialStore,
+  createSqliteAgentRunStore,
 } from '../packages/storage/dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -556,8 +556,14 @@ async function run() {
       .filter((toolCallId) => typeof toolCallId === 'string');
     const driverTraces = await waitForTraceFlush(tracePath, expectedDispatchToolCallIds);
     const actions = bindActionTargets(rawActions, driverTraces, fixtureIdentity);
-    const runStore = createAgentRunStore(workspace);
-    const runHeader = await waitForRunHeader(runStore, runResult.sessionId, runResult.turnId);
+    const runStore = createSqliteAgentRunStore(workspace);
+    await runStore.ready?.();
+    let runHeader;
+    try {
+      runHeader = await waitForRunHeader(runStore, runResult.sessionId, runResult.turnId);
+    } finally {
+      runStore.close?.();
+    }
     const qualifyingActions = actions.filter(
       (action) =>
         action.success === true &&

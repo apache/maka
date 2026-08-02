@@ -31,6 +31,8 @@ import {
   createSqliteArtifactStoreWriteAuthority,
 } from '../artifact-store.js';
 import { createSessionStore } from '../session-store.js';
+import { LONG_TERM_MEMORY_DATABASE_NAME } from '../long-term-memory-store.js';
+import { SqliteMemoryItemStore } from '../sqlite-long-term-memory-store.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 
 const createArtifactStore = createSqliteArtifactStore;
@@ -254,6 +256,39 @@ test('exports while the operational DB remains open and protects its sidecars', 
       );
     } finally {
       await sessions.close?.();
+    }
+  });
+});
+
+test('excludes the long-term memory database and its sidecars from Session Bundles', async () => {
+  await withBundleRoots(async ({ stateRoot, configRoot, destinationRoot }) => {
+    const sessions = createSessionStore(stateRoot);
+    const selected = await sessions.create(sessionInput('Selected'));
+    await sessions.close?.();
+
+    const databasePath = join(stateRoot, LONG_TERM_MEMORY_DATABASE_NAME);
+    const memory = new SqliteMemoryItemStore(databasePath);
+    memory.close();
+    const protectedEntries = [
+      LONG_TERM_MEMORY_DATABASE_NAME,
+      `${LONG_TERM_MEMORY_DATABASE_NAME}-wal`,
+      `${LONG_TERM_MEMORY_DATABASE_NAME}-shm`,
+      `${LONG_TERM_MEMORY_DATABASE_NAME}-journal`,
+    ];
+    for (const entry of protectedEntries.slice(1)) {
+      await writeFile(join(stateRoot, entry), 'memory-sidecar-canary');
+    }
+
+    const plan = await exportSessionBundleState({
+      stateRoot,
+      configRoot,
+      destinationRoot,
+      sessionId: selected.id,
+    });
+
+    for (const entry of protectedEntries) {
+      assert.ok(plan.excludedEntries.includes(entry), JSON.stringify(plan));
+      await assert.rejects(readFile(join(destinationRoot, entry)));
     }
   });
 });

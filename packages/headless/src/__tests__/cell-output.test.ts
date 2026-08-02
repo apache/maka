@@ -10,114 +10,79 @@ import {
 } from '../cell-output.js';
 
 describe('Harbor cell output contract', () => {
-  test('rejects non-catalog names in a new product-tool surface identity', () => {
-    assert.throws(
-      () =>
-        validateHarborCellExecutionIdentity({
-          llmConnectionSlug: 'deepseek',
-          model: 'deepseek-v4-flash',
-          systemPromptHash: 'sha256:prompt-a',
-          pricingProfile: 'public',
-          agentTools: false,
-          productToolSurface: {
-            policy: { economy: true, disabledSurfaceIds: ['agent'] },
-            productToolNames: ['Read', 'not_a_catalog_tool'],
-          },
+  test('rejects malformed or internally inconsistent product-tool identities', () => {
+    const identity = (
+      productToolSurface: {
+        policy: { economy: boolean; disabledSurfaceIds: string[] };
+        productToolNames: string[];
+      },
+      agentTools = false,
+    ) => ({
+      llmConnectionSlug: 'deepseek',
+      model: 'deepseek-v4-flash',
+      systemPromptHash: 'sha256:prompt-a',
+      pricingProfile: 'public',
+      agentTools,
+      productToolSurface,
+    });
+    const cases: Array<[string, unknown, RegExp]> = [
+      [
+        'unknown tool',
+        identity({
+          policy: { economy: true, disabledSurfaceIds: ['agent'] },
+          productToolNames: ['Read', 'not_a_catalog_tool'],
         }),
-      /productToolNames.*not_a_catalog_tool.*catalog/,
-    );
-  });
-
-  test('rejects a non-canonical disabled-surface policy in a new identity', () => {
-    assert.throws(
-      () =>
-        validateHarborCellExecutionIdentity({
-          llmConnectionSlug: 'deepseek',
-          model: 'deepseek-v4-flash',
-          systemPromptHash: 'sha256:prompt-a',
-          pricingProfile: 'public',
-          agentTools: false,
-          productToolSurface: {
-            policy: { economy: true, disabledSurfaceIds: ['office', 'agent'] },
-            productToolNames: ['Read'],
-          },
+        /productToolNames.*not_a_catalog_tool.*catalog/,
+      ],
+      [
+        'non-canonical disabled surfaces',
+        identity({
+          policy: { economy: true, disabledSurfaceIds: ['office', 'agent'] },
+          productToolNames: ['Read'],
         }),
-      /disabledSurfaceIds must be sorted and unique/,
-    );
-  });
-
-  test('rejects unknown disabled surfaces in a new identity', () => {
-    assert.throws(
-      () =>
-        validateHarborCellExecutionIdentity({
-          llmConnectionSlug: 'deepseek',
-          model: 'deepseek-v4-flash',
-          systemPromptHash: 'sha256:prompt-a',
-          pricingProfile: 'public',
-          agentTools: true,
-          productToolSurface: {
-            policy: { economy: true, disabledSurfaceIds: ['agnet'] },
-            productToolNames: ['Read'],
-          },
+        /disabledSurfaceIds must be sorted and unique/,
+      ],
+      [
+        'unknown disabled surface',
+        identity({
+          policy: { economy: true, disabledSurfaceIds: ['agnet'] },
+          productToolNames: ['Read'],
         }),
-      /disabledSurfaceIds.*agnet.*catalog/,
-    );
-  });
-
-  test('rejects non-canonical effective product-tool names in a new identity', () => {
-    assert.throws(
-      () =>
-        validateHarborCellExecutionIdentity({
-          llmConnectionSlug: 'deepseek',
-          model: 'deepseek-v4-flash',
-          systemPromptHash: 'sha256:prompt-a',
-          pricingProfile: 'public',
-          agentTools: false,
-          productToolSurface: {
-            policy: { economy: true, disabledSurfaceIds: ['agent'] },
-            productToolNames: ['Read', 'Read'],
-          },
+        /disabledSurfaceIds.*agnet.*catalog/,
+      ],
+      [
+        'duplicate effective tool',
+        identity({
+          policy: { economy: true, disabledSurfaceIds: ['agent'] },
+          productToolNames: ['Read', 'Read'],
         }),
-      /productToolNames must be sorted and unique/,
-    );
-  });
-
-  test('rejects product tools that belong to a disabled surface', () => {
-    assert.throws(
-      () =>
-        validateHarborCellExecutionIdentity({
-          llmConnectionSlug: 'deepseek',
-          model: 'deepseek-v4-flash',
-          systemPromptHash: 'sha256:prompt-a',
-          pricingProfile: 'public',
-          agentTools: false,
-          productToolSurface: {
-            policy: { economy: true, disabledSurfaceIds: ['agent'] },
-            productToolNames: ['Read', 'agent_spawn'],
-          },
+        /productToolNames must be sorted and unique/,
+      ],
+      [
+        'tool from disabled surface',
+        identity({
+          policy: { economy: true, disabledSurfaceIds: ['agent'] },
+          productToolNames: ['Read', 'agent_spawn'],
         }),
-      /agent_spawn.*disabled surface "agent"/,
-    );
-  });
-
-  test('requires legacy agentTools to match the effective product-tool names', () => {
-    assert.throws(
-      () =>
-        validateHarborCellExecutionIdentity({
-          llmConnectionSlug: 'deepseek',
-          model: 'deepseek-v4-flash',
-          systemPromptHash: 'sha256:prompt-a',
-          pricingProfile: 'public',
-          agentTools: true,
-          productToolSurface: {
+        /agent_spawn.*disabled surface "agent"/,
+      ],
+      [
+        'legacy agentTools mismatch',
+        identity(
+          {
             policy: { economy: true, disabledSurfaceIds: [] },
             productToolNames: ['Read'],
           },
-        }),
-      /agentTools must match.*effective product-tool surface/,
-    );
-  });
+          true,
+        ),
+        /agentTools must match.*effective product-tool surface/,
+      ],
+    ];
 
+    for (const [label, value, pattern] of cases) {
+      assert.throws(() => validateHarborCellExecutionIdentity(value), pattern, label);
+    }
+  });
   test('summarizes runtime outcome, prompt hash, token cost, and event path', () => {
     const events: RuntimeEvent[] = [
       runtimeEvent({ id: 'user-event' }),

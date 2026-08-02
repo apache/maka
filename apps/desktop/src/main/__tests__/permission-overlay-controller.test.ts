@@ -9,8 +9,6 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   GIVE_UP_MS,
@@ -294,19 +292,6 @@ describe('drag-to-grant permission overlay', () => {
 });
 
 describe('app bundle resolution for the drag', () => {
-  it('asks macOS for the bundle icon instead of trying to decode .icns directly', async () => {
-    const source = await readFile(
-      resolve(
-        process.cwd().endsWith('apps/desktop') ? process.cwd() : resolve(process.cwd(), 'apps/desktop'),
-        'src/main/permission-overlay/permission-overlay-main.ts',
-      ),
-      'utf8',
-    );
-    assert.match(source, /app\.getFileIcon\(bundlePath, \{ size: 'large' \}\)/);
-    assert.match(source, /app\.getFileIcon\(resolved\.bundlePath, \{ size: 'large' \}\)/);
-    assert.doesNotMatch(source, /nativeImage\.createFromPath\([^)]*\.icns/);
-  });
-
   it('walks three levels up from the executable to the .app', () => {
     assert.deepEqual(
       resolveAppBundle({

@@ -7,13 +7,28 @@
 
 import { useEffect, useState } from 'react';
 import { Keyboard } from '@maka/ui/icons';
-import { Kbd, useUiLocale } from '@maka/ui';
+import { useUiLocale } from '@maka/ui';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import {
   Dialog,
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { getShellCopy } from './locales/shell-copy';
+
+const ASTRYX_KEY_TOKENS: Readonly<Record<string, string>> = {
+  '⌘': 'mod',
+  '↑': 'up',
+  '↓': 'down',
+  '←': 'left',
+  '→': 'right',
+  esc: 'escape',
+};
+
+function toAstryxKeyToken(key: string): string {
+  const normalized = key.toLowerCase();
+  return ASTRYX_KEY_TOKENS[key] ?? ASTRYX_KEY_TOKENS[normalized] ?? normalized;
+}
 
 /**
  * Manages the global key listener that opens and closes the help modal.
@@ -72,7 +87,6 @@ export function KeyboardHelpModal(props: {
       className="maka-help-modal"
       width={560}
       maxHeight="calc(100dvh - 96px)"
-      padding={0}
       purpose="info"
     >
       <Layout
@@ -101,7 +115,7 @@ export function KeyboardHelpModal(props: {
                               +
                             </span>
                           )}
-                          <Kbd>{key}</Kbd>
+                          <Kbd keys={toAstryxKeyToken(key)} />
                         </span>
                       ))}
                     </dd>

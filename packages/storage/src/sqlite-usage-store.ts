@@ -15,6 +15,7 @@ import {
   normalizePricingConfig,
   normalizePricingModelKey,
 } from '@maka/core/usage-stats/pricing';
+import { usageBucketKey } from '@maka/core/usage-stats/bucket-key';
 import {
   createPricingStore,
   PricingRevisionConflictError,
@@ -198,7 +199,7 @@ class SqliteTelemetryRepo implements TelemetryRepo {
     }
     const groups = new Map<string, PersistedLlmCallRecord[]>();
     for (const row of this.filteredUsageRows(query, from, to)) {
-      const key = bucketKey(row, groupBy);
+      const key = usageBucketKey(row, groupBy);
       const group = groups.get(key);
       if (group) group.push(row);
       else groups.set(key, [row]);
@@ -717,21 +718,6 @@ function toUsageLogRow(row: PersistedLlmCallRecord): UsageLogRow {
     ...(row.promptSegments ? { promptSegments: row.promptSegments } : {}),
     ...(row.contextBudget ? { contextBudget: row.contextBudget } : {}),
   };
-}
-
-function bucketKey(row: PersistedLlmCallRecord, groupBy: UsageGroupBy): string {
-  switch (groupBy) {
-    case 'provider':
-      return row.providerId;
-    case 'model':
-      return `${row.providerId}:${row.modelId}`;
-    case 'day':
-      return row.date;
-    case 'hour':
-      return String(Math.floor(row.ts / (60 * 60 * 1000)));
-    case 'tool':
-      return '';
-  }
 }
 
 function usageBucket(key: string, rows: readonly PersistedLlmCallRecord[]): UsageBucket {

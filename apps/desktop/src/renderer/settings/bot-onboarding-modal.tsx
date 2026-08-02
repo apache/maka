@@ -4,9 +4,9 @@ import type {
   BotOnboardingProvider,
   BotOnboardingSnapshot,
 } from '@maka/core';
+import { Spinner } from '@astryxdesign/core';
 import {
   Button,
-  Spinner,
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
@@ -151,7 +151,6 @@ export function BotOnboardingModal(props: {
       className="settingsBotOnboardingModal"
       width={520}
       aria-label={copy.ariaLabel}
-      padding={0}
       purpose="form"
     >
       <Layout
@@ -170,7 +169,7 @@ export function BotOnboardingModal(props: {
             {showQr ? (
               <img src={qrDataUrl ?? undefined} alt={copy.qrAlt} />
             ) : starting || snapshot?.state === 'connecting' ? (
-              <Spinner size={28} aria-label={onboardingCopy.generatingAria} />
+              <Spinner size="xl" aria-label={onboardingCopy.generatingAria} />
             ) : snapshot?.state === 'connected' ? (
               snapshot.warning ? (
                 <span className="settingsBotOnboardingEmpty" aria-hidden="true">

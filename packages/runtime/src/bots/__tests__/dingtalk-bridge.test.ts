@@ -6,8 +6,6 @@ import { __TEST__ } from '../dingtalk-bridge.js';
 const {
   decideDingTalkClose,
   dingTalkReconnectBackoffMs,
-  buildDingTalkGroupSendBody,
-  buildDingTalkSingleSendBody,
   pickDingTalkSendRoute,
   classifyDingTalkSendResponse,
   dingTalkPayloadToEvent,
@@ -15,86 +13,59 @@ const {
 } = __TEST__;
 
 describe('decideDingTalkClose (PR-BOT-DINGTALK-OPERATIONAL-0)', () => {
-  it('treats explicit stop as terminal regardless of code', () => {
+  it('only treats explicit stops as terminal', () => {
     assert.deepEqual(decideDingTalkClose(1000, true), { kind: 'stopped' });
     assert.deepEqual(decideDingTalkClose(1006, true), { kind: 'stopped' });
-  });
-
-  it('treats any non-explicit close as a reconnect (Stream gateway does not surface fatal codes)', () => {
     assert.deepEqual(decideDingTalkClose(1000, false), { kind: 'reconnect' });
-    assert.deepEqual(decideDingTalkClose(1001, false), { kind: 'reconnect' });
     assert.deepEqual(decideDingTalkClose(1006, false), { kind: 'reconnect' });
   });
 });
 
 describe('dingTalkReconnectBackoffMs', () => {
-  it('starts at 1s and doubles each attempt', () => {
+  it('doubles from 1s and caps at 30s', () => {
     assert.equal(dingTalkReconnectBackoffMs(0), 1_000);
     assert.equal(dingTalkReconnectBackoffMs(1), 2_000);
     assert.equal(dingTalkReconnectBackoffMs(2), 4_000);
-  });
-
-  it('caps at 30s', () => {
     assert.equal(dingTalkReconnectBackoffMs(5), 30_000);
     assert.equal(dingTalkReconnectBackoffMs(50), 30_000);
   });
 });
 
-describe('buildDingTalkGroupSendBody', () => {
-  it('packs robotCode + openConversationId + text into msgParam JSON', () => {
-    const body = buildDingTalkGroupSendBody('cidp-abc', 'app-key-1', 'hello world');
-    assert.equal(body.robotCode, 'app-key-1');
-    assert.equal(body.openConversationId, 'cidp-abc');
-    assert.equal(body.msgKey, 'sampleText');
-    assert.equal(body.msgParam, '{"content":"hello world"}');
-  });
-});
-
-describe('buildDingTalkSingleSendBody', () => {
-  it('packs robotCode + userIds + text into msgParam JSON', () => {
-    const body = buildDingTalkSingleSendBody('user-99', 'app-key-1', 'hi');
-    assert.equal(body.robotCode, 'app-key-1');
-    assert.deepEqual(body.userIds, ['user-99']);
-    assert.equal(body.msgKey, 'sampleText');
-    assert.equal(body.msgParam, '{"content":"hi"}');
-  });
-});
-
 describe('pickDingTalkSendRoute', () => {
-  it('routes cid-prefixed chat ids to group send with trimmed target ids', () => {
-    const route = pickDingTalkSendRoute(' cidp-abc ', 'app-key-1', 'hello');
-    assert.ok(route);
-    assert.equal(route.path, '/v1.0/robot/groupMessages/send');
-    assert.equal(route.body.openConversationId, 'cidp-abc');
-    assert.equal(route.body.robotCode, 'app-key-1');
-  });
-
-  it('routes non-cid chat ids to single send with trimmed user ids', () => {
-    const route = pickDingTalkSendRoute(' user-99 ', 'app-key-1', 'hi');
-    assert.ok(route);
-    assert.equal(route.path, '/v1.0/robot/oToMessages/batchSend');
-    assert.deepEqual(route.body.userIds, ['user-99']);
-  });
-
-  it('returns null for empty route target ids', () => {
+  it('routes group and direct targets while rejecting empty ids', () => {
+    assert.deepEqual(pickDingTalkSendRoute(' cidp-abc ', 'app-key-1', 'hello'), {
+      path: '/v1.0/robot/groupMessages/send',
+      body: {
+        robotCode: 'app-key-1',
+        openConversationId: 'cidp-abc',
+        msgKey: 'sampleText',
+        msgParam: '{"content":"hello"}',
+      },
+    });
+    assert.deepEqual(pickDingTalkSendRoute(' user-99 ', 'app-key-1', 'hi'), {
+      path: '/v1.0/robot/oToMessages/batchSend',
+      body: {
+        robotCode: 'app-key-1',
+        userIds: ['user-99'],
+        msgKey: 'sampleText',
+        msgParam: '{"content":"hi"}',
+      },
+    });
     assert.equal(pickDingTalkSendRoute('', 'app-key-1', 'hi'), null);
     assert.equal(pickDingTalkSendRoute('   ', 'app-key-1', 'hi'), null);
   });
 });
 
 describe('classifyDingTalkSendResponse', () => {
-  it('returns ok with processQueryKey when present', () => {
+  it('accepts successful responses with or without a message id', () => {
     assert.deepEqual(classifyDingTalkSendResponse(200, { processQueryKey: 'pk-1' }), {
       kind: 'ok',
       messageId: 'pk-1',
     });
-  });
-
-  it('returns ok with null id when 2xx response has no processQueryKey', () => {
     assert.deepEqual(classifyDingTalkSendResponse(200, {}), { kind: 'ok', messageId: null });
   });
 
-  it('returns fatal when errcode is non-zero even on 200 OK', () => {
+  it('distinguishes API errors, retryable throttling, and fatal HTTP errors', () => {
     assert.deepEqual(
       classifyDingTalkSendResponse(200, { errcode: 80001, errmsg: 'token invalid' }),
       { kind: 'fatal', description: 'token invalid' },
@@ -103,14 +74,8 @@ describe('classifyDingTalkSendResponse', () => {
       kind: 'fatal',
       description: 'errcode 99999',
     });
-  });
-
-  it('returns retry on 429', () => {
     const result = classifyDingTalkSendResponse(429, null);
     assert.equal(result.kind, 'retry');
-  });
-
-  it('returns fatal on other 4xx / 5xx', () => {
     assert.deepEqual(classifyDingTalkSendResponse(403, { errmsg: 'Forbidden' }), {
       kind: 'fatal',
       description: 'Forbidden',
@@ -123,7 +88,7 @@ describe('classifyDingTalkSendResponse', () => {
 });
 
 describe('dingTalkPayloadToEvent', () => {
-  it('maps a single-chat text message to BotMessageEvent with isGroup=false', () => {
+  it('maps direct and group messages with stable identity fallbacks', () => {
     const event = dingTalkPayloadToEvent(
       {
         senderId: 'user-1',
@@ -143,52 +108,34 @@ describe('dingTalkPayloadToEvent', () => {
     assert.equal(event!.isGroup, false);
     assert.equal(event!.text, 'hello');
     assert.equal(event!.sourceMessageId, 'cidp-single:1700000000000');
-  });
-
-  it('maps a group-chat text message with isGroup=true', () => {
-    const event = dingTalkPayloadToEvent(
+    const groupEvent = dingTalkPayloadToEvent(
       {
         senderId: 'user-2',
-        senderNick: 'Bob',
         conversationId: 'cidp-group',
         conversationType: '2',
         text: { content: 'hi' },
       },
       1,
     );
-    assert.equal(event!.isGroup, true);
+    assert.equal(groupEvent!.isGroup, true);
+    assert.equal(groupEvent!.userName, 'user-2');
   });
 
-  it('drops payloads with no text content', () => {
+  it('drops payloads missing text or routing identity', () => {
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c', text: {} }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', conversationId: 'c' }, 1), null);
-  });
-
-  it('drops payloads missing sender or conversation', () => {
     assert.equal(dingTalkPayloadToEvent({ conversationId: 'c', text: { content: 'x' } }, 1), null);
     assert.equal(dingTalkPayloadToEvent({ senderId: 'u', text: { content: 'x' } }, 1), null);
-  });
-
-  it('falls back to senderId when senderNick is absent', () => {
-    const event = dingTalkPayloadToEvent(
-      { senderId: 'u3', conversationId: 'c3', text: { content: 'x' } },
-      1,
-    );
-    assert.equal(event!.userName, 'u3');
   });
 });
 
 describe('buildDingTalkAckFrame', () => {
-  it('returns a 200 ack with content-type + messageId headers', () => {
+  it('builds default and data-bearing acknowledgements', () => {
     const ack = buildDingTalkAckFrame('msg-99');
     assert.equal(ack.code, 200);
     assert.equal(ack.headers.contentType, 'application/json');
     assert.equal(ack.headers.messageId, 'msg-99');
     assert.equal(ack.data, '{}');
-  });
-
-  it('serializes optional response data as JSON', () => {
-    const ack = buildDingTalkAckFrame('msg-100', { received: true });
-    assert.equal(ack.data, '{"received":true}');
+    assert.equal(buildDingTalkAckFrame('msg-100', { received: true }).data, '{"received":true}');
   });
 });

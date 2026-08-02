@@ -18,7 +18,7 @@ import { test, expect } from './fixtures.js';
 async function expandedSidebar(page: Page) {
   const expand = page.getByRole('button', { name: '展开侧边栏' });
   if (await expand.count()) await expand.click();
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   await expect(sidebar).toBeVisible();
   return sidebar;
 }
@@ -30,14 +30,14 @@ test('session grouping menu switches between flat conversations and project disc
   const grouping = sidebar.getByRole('button', { name: '会话分组方式' });
   const popup = page.getByRole('menu', { name: '会话分组方式' });
 
-  await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
-  await expect(sidebar.locator('.maka-list-row').first()).toBeVisible();
+  await expect(sidebar.locator('[data-maka-contract="session-row"]').first()).toBeVisible();
   await grouping.click();
   const byTime = page.getByRole('menuitemradio', { name: '按时间' });
   const byProject = page.getByRole('menuitemradio', { name: '按项目' });
   await expect(byTime).toHaveAttribute('aria-checked', 'true');
   await byProject.click();
-  await expect(sidebar.locator('.maka-list-project-heading').first()).toBeVisible();
+  await expect(sidebar.locator('[data-project-id]').first()).toBeVisible();
+  await expect(sidebar.locator('.astryx-badge').first()).toBeVisible();
 
   // A radio item does not dismiss the menu, so the single trigger click this
   // used to do was closing the menu, not reopening it — and the radios below
@@ -53,24 +53,85 @@ test('session grouping menu switches between flat conversations and project disc
   await expect(page.getByRole('menuitemradio', { name: '按时间' })).toHaveAttribute('aria-checked', 'false');
 });
 
-test('session grouping menu fits its Chinese labels instead of inheriting the generic minimum width', async ({
+test('project mode nests sessions under collapsible project SideNav items', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
   await sidebar.getByRole('button', { name: '会话分组方式' }).click();
+  await page.getByRole('menuitemradio', { name: '按项目' }).click();
 
-  const popup = page.getByRole('menu', { name: '会话分组方式' });
-  await expect(popup).toBeVisible();
-  const width = await popup.evaluate((element) => element.getBoundingClientRect().width);
-  expect(width).toBeLessThan(128);
+  const project = sidebar.locator('[data-project-id]').first();
+  await expect(project).toBeVisible();
+  // Project row is a collapsible SideNavItem (button with aria-expanded).
+  const projectToggle = project.locator('button[aria-expanded]').first();
+  await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
+  const session = project.locator('[data-maka-contract="session-row"]').first();
+  await expect(session).toBeVisible();
+  // Nested project sessions are ordinary nav rows, not subagent rows.
+  await expect(session).not.toHaveAttribute('data-subagent', 'true');
+  // Product zero-nest: session left edge matches the project row (no 24px tree indent).
+  const projectBox = await projectToggle.boundingBox();
+  const sessionBox = await session.boundingBox();
+  expect(projectBox && sessionBox).toBeTruthy();
+  if (projectBox && sessionBox) {
+    expect(Math.abs(sessionBox.x - projectBox.x)).toBeLessThanOrEqual(2);
+  }
+});
+
+test('project rename owns Enter without toggling the project disclosure', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  await sidebar.getByRole('button', { name: '会话分组方式' }).click();
+  await page.getByRole('menuitemradio', { name: '按项目' }).click();
+
+  const project = sidebar.locator('[data-project-id]').first();
+  const projectToggle = project.locator('button[aria-expanded]').first();
+  await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
+  await project.getByRole('button', { name: /项目操作$/ }).click();
+  await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
+
+  const rename = project.getByRole('textbox', { name: '重命名' });
+  await expect(rename).toBeFocused();
+  const disclosureState = await projectToggle.getAttribute('aria-expanded');
+  const originalName = await rename.inputValue();
+  await rename.press('A');
+  await expect(rename).toBeFocused();
+  await rename.press('Space');
+  await expect(rename).toHaveValue('A ');
+  await expect(rename).toBeFocused();
+  await rename.evaluate((element) => {
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      isComposing: true,
+    }));
+  });
+  await expect(rename).toBeFocused();
+  await rename.fill(originalName);
+  await rename.press('Enter');
+  await expect(projectToggle).toHaveAttribute('aria-expanded', disclosureState ?? 'false');
+});
+
+test('double-clicking the flat ListItem menu does not enter rename', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = await expandedSidebar(page);
+  const row = sidebar.locator('[data-maka-contract="session-row"]').filter({ hasText: '会话 00' }).first();
+
+  await row.getByRole('button', { name: '对话操作' }).dispatchEvent('dblclick');
+
+  await expect(sidebar.getByRole('textbox', { name: '重命名对话' })).toHaveCount(0);
 });
 
 test('session delete intent opens only after its menu closes and restores the trigger', async ({
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  const row = sidebar.locator('.maka-list-row').filter({ hasText: '会话 00' }).first();
-  const rowButton = row.locator('[data-session-id]').first();
+  const row = sidebar.locator('[data-maka-contract="session-row"]').filter({ hasText: '会话 00' }).first();
+  // SideNavItem wraps the primary control: row > root div > button (not row > button).
+  const rowButton = row.getByRole('button', { name: '会话 00' });
+  await expect(rowButton).toHaveCount(1);
   await rowButton.focus();
 
   const trigger = row.getByRole('button', { name: '对话操作' });
@@ -92,18 +153,9 @@ test('session heading stays singular and the default list has no redundant headi
   sidebarLongSessionsWindow: page,
 }) => {
   const sidebar = await expandedSidebar(page);
-  const panelHeading = sidebar.locator('.maka-session-list-heading');
-  const navLabel = sidebar.locator('.maka-nav-row span:nth-child(2)').first();
 
   await expect(sidebar.getByText('会话', { exact: true })).toHaveCount(1);
-  await expect(sidebar.locator('.maka-list-group-label')).toHaveCount(0);
-
-  const fontSizes = await Promise.all(
-    [navLabel, panelHeading].map((locator) =>
-      locator.evaluate((element) => getComputedStyle(element).fontSize),
-    ),
-  );
-  expect(fontSizes).toEqual(['13px', '13px']);
+  await expect(sidebar.locator('[data-maka-contract="session-row"]').first()).toBeVisible();
 });
 
 test('scheduled-task hub restores the last selected child module', async ({ window: page }) => {
@@ -111,10 +163,9 @@ test('scheduled-task hub restores the last selected child module', async ({ wind
   const scheduledTasks = sidebar.getByRole('button', { name: '定时任务', exact: true });
   await scheduledTasks.click();
 
-  const selector = page.locator('.maka-module-hub-selector-trigger');
+  const selector = page.locator('.maka-module-hub-selector');
   await expect(selector).toHaveAccessibleName('定时任务内容：计划提醒');
-  await selector.click();
-  await page.getByRole('menuitemradio', { name: '每日回顾' }).click();
+  await selector.getByRole('button', { name: '每日回顾' }).click();
   await expect(selector).toHaveAccessibleName('定时任务内容：每日回顾');
 
   await sidebar.getByRole('button', { name: '扩展', exact: true }).click();

@@ -15,12 +15,11 @@ import {
   decodeCanonicalToolResultContent,
   isSessionInlineRun,
 } from '@maka/core';
+import { createSqliteAgentRunStore, createSqliteRuntimeStore } from '@maka/storage';
 import {
-  createAgentRunStore,
-  createRuntimeEventStore,
-  createSqliteAgentRunStore,
-  createSqliteRuntimeStore,
-} from '@maka/storage';
+  createLegacyAgentRunStoreForTest,
+  createLegacyRuntimeEventStoreForTest,
+} from '@maka/storage/legacy-execution-test-support';
 import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
@@ -412,8 +411,8 @@ test('conversation copy turn closure includes legacy children but excludes later
 test('conversation copy rejects a retained AgentRun without RuntimeEvent facts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-missing-runtime-copy-'));
   try {
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const rootRun = agentRunHeader({
       runId: 'run-root',
       invocationId: 'invocation-root',
@@ -693,8 +692,8 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
 test('conversation copy validates operational events before persisting target ledgers', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-copy-preflight-'));
   try {
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     await runStore.createRun(
       agentRunHeader({
         runId: 'run-source',
@@ -763,8 +762,8 @@ test('conversation copy validates operational events before persisting target le
 test('conversation copy clones one terminal Runtime ledger with new owned identities', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-runtime-copy-'));
   try {
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const sourceRun: AgentRunHeader = {
       runId: 'run-source',
       invocationId: 'invocation-source',
@@ -1130,8 +1129,8 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
 test('conversation copy rebuilds an inline checkpoint without legacy child events in its prefix', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-checkpoint-copy-'));
   try {
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const firstRun = agentRunHeader({
       runId: 'run-1',
       invocationId: 'invocation-1',
@@ -1306,8 +1305,8 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
 test('conversation copy rebuilds a resumed child checkpoint over its child run chain', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-child-checkpoint-copy-'));
   try {
-    const runStore = createAgentRunStore(root);
-    const runtimeEventStore = createRuntimeEventStore(root);
+    const runStore = createLegacyAgentRunStoreForTest(root);
+    const runtimeEventStore = createLegacyRuntimeEventStoreForTest(root);
     const rootRun = agentRunHeader({
       runId: 'run-root',
       invocationId: 'invocation-root',

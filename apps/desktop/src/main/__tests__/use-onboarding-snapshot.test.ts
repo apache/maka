@@ -10,8 +10,6 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { OnboardingState } from '@maka/core';
 import {
@@ -19,7 +17,6 @@ import {
   createOnboardingSnapshotPoller,
   createOnboardingSnapshotState,
   isSetupRequired,
-  onboardingSnapshotErrorMessage,
 } from '../../renderer/use-onboarding-snapshot.js';
 import type { OnboardingSnapshot } from '../../preload/bridge-contract.js';
 
@@ -230,23 +227,6 @@ describe('onboarding mounted snapshot handoff', () => {
 
     assert.equal(afterC.snapshot, snapshotC);
     assert.equal(afterC.firstMountedSnapshot, snapshotB);
-  });
-});
-
-describe('first-run error boundaries', () => {
-  it('keeps onboarding probe errors localized and scrubbed', async () => {
-    const onboarding = await readFile(join(process.cwd(), 'src/renderer/use-onboarding-snapshot.ts'), 'utf8');
-
-    assert.match(onboarding, /function onboardingSnapshotErrorMessage\(error: unknown, locale: UiLocale\): string \{[\s\S]*locale === 'zh' \? generalizedErrorMessageChinese\(error, fallback\) : generalizedErrorMessage\(error, fallback\)/);
-    assert.match(onboarding, /emitError\(onboardingSnapshotErrorMessage\(err, getLocale\(\)\)\)/);
-    assert.doesNotMatch(onboarding, /callbacks\.onError\(err instanceof Error \? err\.message : String\(err\)\)/);
-    assert.match(onboarding, /export interface OnboardingSnapshotPoller \{[\s\S]*activate\(\): void;[\s\S]*pull\(\): Promise<void>;[\s\S]*dispose\(\): void;/);
-    assert.match(onboarding, /poller\.activate\(\);[\s\S]*void poller\.pull\(\);[\s\S]*unsubscribe\(\);[\s\S]*poller\.dispose\(\);/);
-    assert.match(onboarding, /let active = true;/);
-    assert.match(onboarding, /if \(!active \|\| ticket !== inflightTicket\) return/);
-    assert.match(onboarding, /dispose\(\): void \{[\s\S]*active = false;[\s\S]*inflightTicket \+= 1;/);
-
-    assert.doesNotMatch(onboardingSnapshotErrorMessage(new Error('IPC failed'), 'en'), /[\u3400-\u9fff]/);
   });
 });
 

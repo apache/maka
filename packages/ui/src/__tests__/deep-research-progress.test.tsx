@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { DeepResearchRun } from '@maka/core';
+import { DeepResearchEmptyHero } from '../chat-empty-hero.js';
 import { DeepResearchProgressPanel } from '../chat-view.js';
 import { getConversationCopy } from '../conversation-copy.js';
+import { LocaleProvider } from '../locale-context.js';
 
 function completedRun(): DeepResearchRun {
   return {
@@ -99,5 +101,26 @@ describe('DeepResearchProgressPanel', () => {
     assert.match(markup, /Research complete · Original session remains read-only/);
     assert.match(markup, /Tradeoffs and risks/);
     assert.doesNotMatch(markup, /研究完成|取舍与风险/);
+  });
+});
+
+describe('DeepResearchEmptyHero', () => {
+  it('exposes each starter label and prompt as one clickable item name', () => {
+    const copy = getConversationCopy('en').deepResearchEmpty;
+    const markup = renderToStaticMarkup(
+      <LocaleProvider locale="en">
+        <DeepResearchEmptyHero onPromptSuggestion={() => undefined} />
+      </LocaleProvider>,
+    );
+
+    const buttons = markup.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) ?? [];
+    for (const suggestion of copy.starters) {
+      const promptPreview = suggestion.prompt.slice(0, 60);
+      const button = buttons.find((candidate) =>
+        candidate.includes(suggestion.label) && candidate.includes(promptPreview)
+      ) ?? '';
+      assert.notEqual(button, '', `missing accessible starter for ${suggestion.label}`);
+      assert.doesNotMatch(button, /aria-label=/, 'visible label and description must own the accessible name');
+    }
   });
 });

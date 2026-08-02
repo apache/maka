@@ -82,6 +82,8 @@
     margin-top: var(--space-1-5);
   }
 
+.maka-error-copy-action { min-width: 5.5rem; }
+
 .maka-error-copy-action[data-copy-state="pending"] {
     cursor: progress;
   }

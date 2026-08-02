@@ -5,6 +5,7 @@ import {
 } from '@maka/core/usage-stats/pricing';
 import type {
   CacheMissInputSource,
+  ModelCallKind,
   PricingConfig,
   ToolInvocationResultSummary,
   UsageBucket,
@@ -12,6 +13,8 @@ import type {
   UsageQuery,
   UsageSummaryV2,
 } from '@maka/core/usage-stats/types';
+import { MODEL_CALL_KINDS } from '@maka/core/usage-stats/types';
+import type { UsageProvenance } from '@maka/core/usage-ledger-merge';
 import { requireCount, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
@@ -74,6 +77,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'reasoningTokens',
   'totalTokens',
   'costUsd',
+  'costBasis',
   'latencyMs',
   'status',
   'errorClass',
@@ -122,7 +126,7 @@ export interface LlmUsageLogProjection {
   readonly source: 'llm';
   readonly id: string;
   readonly ts: number;
-  readonly callKind?: 'main' | 'semantic_compact' | 'history_compact';
+  readonly callKind?: ModelCallKind;
   readonly callId?: string;
   readonly connectionSlug?: string;
   readonly providerId: string;
@@ -135,7 +139,10 @@ export interface LlmUsageLogProjection {
   readonly cacheMissInputSource?: CacheMissInputSource;
   readonly reasoningTokens: number;
   readonly totalTokens: number;
-  readonly costUsd: number;
+  /** Absent when `costBasis` is `'unpriced'`. Zero means genuinely free. */
+  readonly costUsd?: number;
+  /** Undefined for rows from the frozen table, which never recorded a basis. */
+  readonly costBasis?: 'priced' | 'unpriced';
   readonly latencyMs: number;
   readonly status: 'success' | 'error' | 'aborted';
   readonly errorClass?: string;
@@ -197,13 +204,18 @@ export type UsageQueryInput =
     };
 
 export type UsageQueryResult =
-  | { readonly kind: 'summary'; readonly summary: UsageSummaryV2 }
+  | {
+      readonly kind: 'summary';
+      readonly summary: UsageSummaryV2;
+      readonly provenance: UsageProvenance;
+    }
   | {
       readonly kind: 'buckets';
       readonly buckets: readonly UsageBucket[];
       readonly offset: number;
       readonly total: number;
       readonly nextOffset: number | null;
+      readonly provenance: UsageProvenance;
     }
   | {
       readonly kind: 'logs';
@@ -212,6 +224,7 @@ export type UsageQueryResult =
       readonly offset: number;
       readonly total: number;
       readonly nextOffset: number | null;
+      readonly provenance: UsageProvenance;
     }
   | {
       readonly kind: 'logs';
@@ -347,8 +360,16 @@ export function decodeUsageQueryInput(value: unknown): UsageQueryInput {
 export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
   const result = requireRecord(value, 'usage query result');
   if (result.kind === 'summary') {
-    const exact = requireExactRecord(result, 'usage summary result', ['kind', 'summary']);
-    return { kind: 'summary', summary: decodeUsageSummary(exact.summary) };
+    const exact = requireExactRecord(result, 'usage summary result', [
+      'kind',
+      'summary',
+      'provenance',
+    ]);
+    return {
+      kind: 'summary',
+      summary: decodeUsageSummary(exact.summary),
+      provenance: decodeUsageProvenance(exact.provenance),
+    };
   }
   if (result.kind === 'buckets') {
     const exact = requireExactRecord(result, 'usage buckets result', [
@@ -357,22 +378,34 @@ export function decodeUsageQueryResult(value: unknown): UsageQueryResult {
       'offset',
       'total',
       'nextOffset',
+      'provenance',
     ]);
     return decodeUsagePage('buckets', exact, decodeUsageBucket);
   }
   if (result.kind === 'logs') {
-    const exact = requireExactRecord(result, 'usage logs result', [
-      'kind',
-      'source',
-      'rows',
-      'offset',
-      'total',
-      'nextOffset',
-    ]);
-    if (exact.source === 'llm') {
+    // Only LLM logs are drawn from the model-call ledger, so only they carry
+    // provenance; tool logs have no canonical source to qualify.
+    if (result.source === 'llm') {
+      const exact = requireExactRecord(result, 'usage llm logs result', [
+        'kind',
+        'source',
+        'rows',
+        'offset',
+        'total',
+        'nextOffset',
+        'provenance',
+      ]);
       return decodeUsageLogPage('llm', exact, decodeLlmUsageLog);
     }
-    if (exact.source === 'tool') {
+    if (result.source === 'tool') {
+      const exact = requireExactRecord(result, 'usage tool logs result', [
+        'kind',
+        'source',
+        'rows',
+        'offset',
+        'total',
+        'nextOffset',
+      ]);
       return decodeUsageLogPage('tool', exact, decodeToolUsageLog);
     }
     throw invalidProtocolFrame('Invalid usage log source');
@@ -651,7 +684,12 @@ function decodeUsagePage(
   }
   const items = rawItems.map(decodeItem);
   const page = decodeUsagePagePosition(result, items.length);
-  const decoded = { kind, buckets: items, ...page } as const;
+  const decoded = {
+    kind,
+    buckets: items,
+    ...page,
+    provenance: decodeUsageProvenance(result.provenance),
+  } as const;
   assertJsonBytes(decoded, USAGE_PAGE_MAX_BYTES, 'Usage page');
   return decoded;
 }
@@ -677,10 +715,13 @@ function decodeUsageLogPage(
   }
   const items = rawItems.map(decodeItem);
   const page = decodeUsagePagePosition(result, items.length);
-  const decoded = { kind: 'logs', source, rows: items, ...page } as Extract<
-    UsageQueryResult,
-    { kind: 'logs' }
-  >;
+  const decoded = {
+    kind: 'logs',
+    source,
+    rows: items,
+    ...page,
+    ...(source === 'llm' ? { provenance: decodeUsageProvenance(result.provenance) } : {}),
+  } as Extract<UsageQueryResult, { kind: 'logs' }>;
   assertJsonBytes(decoded, USAGE_PAGE_MAX_BYTES, 'Usage page');
   return decoded;
 }
@@ -749,6 +790,54 @@ function decodeUsageSummary(value: unknown): UsageSummaryV2 {
   };
 }
 
+/**
+ * What qualifies the numbers in a usage result (#1679): how the canonical
+ * records behind it were classified, how many rows still come from the frozen
+ * pre-cutover table, and how many stored records could not be read. A total
+ * crossing the wire without this cannot be presented honestly.
+ */
+function decodeUsageProvenance(value: unknown): UsageProvenance {
+  const provenance = requireExactRecord(value, 'usage provenance', [
+    'coverage',
+    'legacyRecords',
+    'unreadableRecords',
+    'pendingRepairs',
+  ]);
+  const coverage = requireExactRecord(provenance.coverage, 'usage provenance coverage', [
+    'attempts',
+    'pricedAttempts',
+    'unpricedAttempts',
+    'usageReportedAttempts',
+    'usagePartialAttempts',
+    'usageMissingAttempts',
+  ]);
+  return {
+    coverage: {
+      attempts: requireCount(coverage.attempts, 'usage coverage attempts'),
+      pricedAttempts: requireCount(coverage.pricedAttempts, 'usage coverage priced attempts'),
+      unpricedAttempts: requireCount(coverage.unpricedAttempts, 'usage coverage unpriced attempts'),
+      usageReportedAttempts: requireCount(
+        coverage.usageReportedAttempts,
+        'usage coverage reported attempts',
+      ),
+      usagePartialAttempts: requireCount(
+        coverage.usagePartialAttempts,
+        'usage coverage partial attempts',
+      ),
+      usageMissingAttempts: requireCount(
+        coverage.usageMissingAttempts,
+        'usage coverage missing attempts',
+      ),
+    },
+    legacyRecords: requireCount(provenance.legacyRecords, 'usage provenance legacy records'),
+    unreadableRecords: requireCount(
+      provenance.unreadableRecords,
+      'usage provenance unreadable records',
+    ),
+    pendingRepairs: requireCount(provenance.pendingRepairs, 'usage provenance pending repairs'),
+  };
+}
+
 function decodeUsageBucket(value: unknown): UsageBucket {
   const bucket = requireRecord(value, 'usage bucket');
   assertAllowedKeys(bucket, USAGE_BUCKET_FIELDS, 'usage bucket');
@@ -805,16 +894,21 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     'cacheWriteTokens',
     'reasoningTokens',
     'totalTokens',
-    'costUsd',
     'latencyMs',
     'status',
   ]);
   if (row.source !== 'llm') throw invalidProtocolFrame('Invalid LLM usage log source');
+  const costBasis = optionalEnum(row, 'costBasis', ['priced', 'unpriced'] as const);
+  // An unpriced row carries no amount. Admitting one would put a number on the
+  // wire that reads as a price and is not one.
+  if ('costBasis' in costBasis && costBasis.costBasis === 'unpriced' && row.costUsd !== undefined) {
+    throw invalidProtocolFrame('Unpriced usage log row carries a cost');
+  }
   return {
     source: 'llm',
     id: projectionText(row.id, 'usage log id'),
     ts: nonnegativeFinite(row.ts, 'usage log timestamp'),
-    ...optionalEnum(row, 'callKind', ['main', 'semantic_compact', 'history_compact'] as const),
+    ...optionalEnum(row, 'callKind', MODEL_CALL_KINDS),
     ...optionalProjectionText(row, 'callId'),
     ...optionalProjectionText(row, 'connectionSlug'),
     providerId: projectionText(row.providerId, 'usage log provider'),
@@ -829,7 +923,10 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
       : { cacheMissInputSource: decodeCacheMissInputSource(row.cacheMissInputSource) }),
     reasoningTokens: requireCount(row.reasoningTokens, 'usage log reasoning tokens'),
     totalTokens: requireCount(row.totalTokens, 'usage log total tokens'),
-    costUsd: nonnegativeFinite(row.costUsd, 'usage log cost'),
+    ...(row.costUsd === undefined
+      ? {}
+      : { costUsd: nonnegativeFinite(row.costUsd, 'usage log cost') }),
+    ...costBasis,
     latencyMs: nonnegativeFinite(row.latencyMs, 'usage log latency'),
     status: decodeUsageLogStatus(row.status),
     ...optionalProjectionText(row, 'errorClass'),

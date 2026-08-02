@@ -37,24 +37,6 @@ export async function writeSettings(
     settings.usage.range = 'all';
     settings.usage.showDetails = true;
   }
-  // Settings → 联网搜索: a configured Tavily key so the live-query controls
-  // are enabled. The query itself is answered by the typed fixture in
-  // `main/web-search-e2e-fixture.ts` — no network round-trip in e2e.
-  if (scenario === 'settings-search') {
-    settings.webSearch = {
-      ...settings.webSearch,
-      enabled: true,
-      providers: {
-        ...settings.webSearch.providers,
-        tavily: {
-          ...settings.webSearch.providers.tavily,
-          apiKey: 'e2e-tavily-fixture-key',
-          credentialSource: 'saved',
-          credentialStatus: 'valid',
-        },
-      },
-    };
-  }
   await writeJson(join(workspaceRoot, 'settings.json'), settings);
 }
 

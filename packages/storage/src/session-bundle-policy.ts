@@ -23,6 +23,7 @@ import {
 } from './artifact-storage-layout.js';
 import { decodeArtifactMetadata } from './artifact-metadata-codec.js';
 import { withArtifactWriterLock } from './artifact-writer-lock.js';
+import { LONG_TERM_MEMORY_DATABASE_NAME } from './long-term-memory-store.js';
 import { exportLegacySessionTreeSnapshot } from './session-metadata-maintenance.js';
 import {
   encodeExecutionBoundaryTransfer,
@@ -85,6 +86,10 @@ export const SESSION_BUNDLE_PROTECTED_ENTRIES = [
   `${LEGACY_SESSION_METADATA_DATABASE_NAME}-wal`,
   `${LEGACY_SESSION_METADATA_DATABASE_NAME}-shm`,
   `${LEGACY_SESSION_METADATA_DATABASE_NAME}-journal`,
+  LONG_TERM_MEMORY_DATABASE_NAME,
+  `${LONG_TERM_MEMORY_DATABASE_NAME}-wal`,
+  `${LONG_TERM_MEMORY_DATABASE_NAME}-shm`,
+  `${LONG_TERM_MEMORY_DATABASE_NAME}-journal`,
   'runtime.sqlite-wal',
   'runtime.sqlite-shm',
   'runtime.sqlite-journal',

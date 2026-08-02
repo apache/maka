@@ -352,7 +352,7 @@ describe('setToolStatus', () => {
     const items = applyAppendedMessage([], toolCall('t', 'Read')).items;
     const once = setToolStatus(items, 't', { status: 'running' });
     const twice = setToolStatus(once, 't', { status: 'running' });
-    expect(twice).toHaveLength(1);
+    expect(twice).toEqual(once);
   });
 
   test('unknown toolUseId → no-op', () => {

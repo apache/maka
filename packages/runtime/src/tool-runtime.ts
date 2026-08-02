@@ -788,8 +788,13 @@ export class ToolRuntime {
         new Error('Durable tool execution requires a run id'),
       );
     }
+    // Exclusive-step rejection is preflight: it must remain on the generic
+    // call/response lane instead of claiming the T1 dispatch protocol. If the
+    // call carried an operationId here, AgentRun would (correctly) skip its
+    // generic projection assuming commitToolPrepared already persisted it;
+    // the synthetic response would then become an orphan.
     const operationId =
-      this.input.runtimeCommitSink && invocationId
+      this.input.runtimeCommitSink && invocationId && !admissionFailure
         ? buildToolOperationId({ invocationId, providerToolCallId: toolUseId })
         : undefined;
     const startEv: ToolStartEvent = {

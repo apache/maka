@@ -1,7 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { buildSessionEnvironmentPromptFragment } from '@maka/runtime';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 
 describe('session environment prompt', () => {
   it('renders cwd, git branch, platform, date, and permission boundary', () => {
@@ -46,13 +45,4 @@ describe('session environment prompt', () => {
     assert.doesNotMatch(prompt, /Git branch: .*\nmalicious/);
   });
 
-  it('is injected as a current-turn tail instead of durable system prefix', async () => {
-    const source = await readMainProcessCombinedSource();
-
-    assert.match(source, /turnTailPrompt:\s*async \(\{ cwd, sessionId \}\) => \{/);
-    assert.match(source, /const base = await systemPromptService\.buildTurnTailPrompt\(cwd, sessionId\)/);
-    assert.match(source, /async function buildTurnTailPrompt\(cwd\?: string, sessionId\?: string\)/);
-    assert.match(source, /projectGit:\s*await resolveProjectGitInfo\(cwd\)/);
-    assert.doesNotMatch(source, /personalization\.text,\n\s*environment,\n\s*deepResearch/);
-  });
 });

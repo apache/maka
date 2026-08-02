@@ -2,7 +2,9 @@ import { constants as osConstants } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import {
   isActiveShellRunStatus,
+  isShellRunSourceToolCallId,
   isTerminalShellRunStatus,
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   type ShellMode,
   type ShellOutput,
   type ShellRunPatch,
@@ -44,6 +46,7 @@ import {
   MAX_FOREGROUND_BASH_TIMEOUT_MS,
   MAX_SHELL_RUN_TIMEOUT_MS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
+  ShellRunPtyControlClosedError,
   parseShellRunResourceRef,
   shellRunResourceRef,
   validateWriteStdinInput,
@@ -217,6 +220,7 @@ export class ShellRunProcessManager
     const onCompletion = onceShellRunCompletion(input.onCompletion);
     const ownedInput = onCompletion ? { ...input, onCompletion } : input;
     try {
+      validateSourceToolCallId(input.sourceToolCallId);
       return await this.withPendingStartup(input.sessionId, async () => {
         if (input.abortSignal?.aborted)
           throw abortError('Command aborted before shell process started');
@@ -248,6 +252,7 @@ export class ShellRunProcessManager
     const onCompletion = onceShellRunCompletion(input.onCompletion);
     const ownedInput = onCompletion ? { ...input, onCompletion } : input;
     try {
+      validateSourceToolCallId(input.sourceToolCallId);
       return await this.withPendingStartup(input.sessionId, async () => {
         if (input.pty)
           throw new Error('Foreground Bash does not support PTY mode; set run_in_background=true');
@@ -285,9 +290,7 @@ export class ShellRunProcessManager
       );
     }
     if (!isPtyControlOpen(live)) {
-      throw new Error(
-        'This PTY is stopping and no longer accepts input; use Read to observe its final state',
-      );
+      throw new ShellRunPtyControlClosedError();
     }
     if (input.abortSignal?.aborted)
       throw abortError('WriteStdin aborted before the control operation was committed');
@@ -305,7 +308,7 @@ export class ShellRunProcessManager
         exitBeforeControlCut = true;
         return;
       }
-      if (live.termination) return;
+      if (live.termination) throw new ShellRunPtyControlClosedError();
       if (input.size) {
         const currentSize = live.collector.currentSize();
         if (currentSize.cols === input.size.cols && currentSize.rows === input.size.rows) {
@@ -343,7 +346,7 @@ export class ShellRunProcessManager
     try {
       await controlCut;
     } catch (error) {
-      if (isAbortError(error)) throw error;
+      if (error instanceof ShellRunPtyControlClosedError || isAbortError(error)) throw error;
       operationFailed = true;
       this.handleIntegrityFailure(live, asError(error, 'PTY control failed'));
     }
@@ -1172,7 +1175,17 @@ export class ShellRunProcessManager
     cause?: LifecycleCause,
   ): TerminationLifecycle | undefined {
     if (live.rootExited || live.finalizeOnce) return live.termination;
-    if (live.termination) return live.termination;
+    if (live.termination) {
+      // A timeout fired while termination was still waiting for the process
+      // (POSIX process discovery, child startup); a cancellation that arrives
+      // before the kill is applied should win, so callers observe 'cancelled'
+      // instead of a stale 'timed_out'. Once the process is gone (rootExited /
+      // finalizeOnce) we never reach this branch.
+      if (cause === 'cancel' && live.lifecycleCause === 'timeout') {
+        live.lifecycleCause = 'cancel';
+      }
+      return live.termination;
+    }
     const lifecycle = createTerminationLifecycle();
     live.termination = lifecycle;
     this.startTermination(live, lifecycle, cause, () => {
@@ -1844,6 +1857,14 @@ function normalizeBackgroundTimeoutMs(value: number | undefined): number | undef
     throw new Error(`Background Bash timeout must be between 1 and ${MAX_SHELL_RUN_TIMEOUT_MS}ms`);
   }
   return value;
+}
+
+function validateSourceToolCallId(value: string): void {
+  if (!isShellRunSourceToolCallId(value)) {
+    throw new Error(
+      `ShellRun source tool-call ID must be non-empty and at most ${SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES} UTF-8 bytes`,
+    );
+  }
 }
 
 function requireProgram(argv: readonly string[]): string {

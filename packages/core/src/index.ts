@@ -20,6 +20,7 @@ export * from './agent-graph-client-projection.js';
 export * from './agent-graph-supervisor-wake.js';
 export * from './agent-graph-timeline.js';
 export * from './runtime-policy.js';
+export * from './goal.js';
 export * from './interaction.js';
 export * from './project.js';
 export * from './subagent-workspace.js';
@@ -379,6 +380,7 @@ export {
   MODEL_CALL_USAGE_BASES,
   decodeModelCallAttempt,
   dedupeModelCallAttempts,
+  modelCallAttemptsFromRunEvents,
   groupModelCallAttempts,
   isModelCallAttempt,
   settledAttempt,
@@ -449,12 +451,14 @@ export {
 export { redactSecrets as displayRedactSecrets } from './display-redaction.js';
 export {
   SHELL_RUN_ID_MAX_CHARS,
+  SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES,
   SHELL_RUN_ACTIVE_STATUSES,
   SHELL_RUN_STATUSES,
   SHELL_RUN_TERMINAL_STATUSES,
   isShellOutput,
   isActiveShellRunStatus,
   isShellRunId,
+  isShellRunSourceToolCallId,
   isShellRunStatus,
   isValidShellRunState,
   isValidShellRunStatusTransition,
@@ -1160,6 +1164,9 @@ export {
   validateMemoryWriteRequest,
 } from './memory.js';
 
+// long-term-memory.ts — atomic SQLite-backed memory contracts; no storage/runtime/UI.
+export * from './long-term-memory.js';
+
 // local-memory.ts — transparent user-visible MEMORY.md MVP.
 export type {
   LocalMemoryEntryStatus,
@@ -1739,3 +1746,13 @@ export {
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
 } from './attachments.js';
 export type { AttachmentByteReader } from './attachments.js';
+
+export type {
+  AutomationAuthoritySnapshot,
+  AutomationDefinition,
+  AutomationExecutionTemplate,
+  AutomationKind,
+  AutomationPendingFire,
+  AutomationSchedule,
+  AutomationStatus,
+} from './automation.js';

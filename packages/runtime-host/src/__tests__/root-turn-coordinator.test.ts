@@ -11,6 +11,7 @@ import {
   FAKE_ASK_USER_QUESTION_PROMPT,
   LOCAL_READ_AGENT_PROFILE,
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeMessageAuthorityInvariantError,
   SessionManager,
@@ -24,6 +25,7 @@ import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
 import {
   openInteractiveExecutionStoresForWrite,
+  type RootTurnAdmission,
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -35,7 +37,10 @@ import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import { HostInteractionCoordinator } from '../server/interaction-coordinator.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
-import { RootTurnCoordinator } from '../server/root-turn-coordinator.js';
+import {
+  type HostGoalRootAuthority,
+  RootTurnCoordinator,
+} from '../server/root-turn-coordinator.js';
 import {
   SessionAdmissionGate,
   type SessionAdmissionLease,
@@ -45,6 +50,105 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
+const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
+  beginObservedTurn: () => ({ kind: 'unavailable', reason: 'Goal authority is not composed.' }),
+  matchesActive: () => false,
+};
+
+test('hosted Automation roots preserve one admission, UserMessage, and AgentRun identity', async () => {
+  let recoveryValidationCount = 0;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  const automationId = 'automation-root-fixture';
+  const turnId = 'turn-automation-root';
+  const runId = 'run-automation-root';
+  const userMessageId = 'message-automation-root';
+  const prompt = '[Automation: check build]\n\nCheck the build.';
+  try {
+    await fixture.coordinator.executeRoot({
+      sessionId: fixture.sessionId,
+      turnId,
+      runId,
+      userMessageId,
+      execution: { kind: 'automation', automationId },
+      content: { text: prompt },
+      start: ({ runId: admittedRunId, userMessageId: admittedMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          fixture.sessionId,
+          {
+            turnId,
+            text: prompt,
+            origin: { kind: 'automation', automationId },
+          },
+          {
+            runId: admittedRunId,
+            userMessageId: admittedMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      turnId,
+    );
+    assert.ok(admission);
+    assert.deepEqual(admission?.execution, { kind: 'automation', automationId });
+    assert.equal(admission?.runId, runId);
+    assert.equal(admission?.userMessageId, userMessageId);
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.automationId, automationId);
+    const messages = await fixture.stores.sessionStore.readMessagesSnapshot(fixture.sessionId);
+    const user = messages.find((message) => message.id === userMessageId);
+    assert.ok(user?.type === 'user');
+    if (user?.type === 'user') {
+      assert.deepEqual(user.origin, { kind: 'automation', automationId });
+      assert.equal(user.text, prompt);
+    }
+    assert.equal(fixture.drainRequested(), false);
+
+    await fixture.coordinator.close();
+    const recoveryCoordinator = fixture.createRecoveryCoordinator(() => {
+      recoveryValidationCount += 1;
+    });
+    await recoveryCoordinator.prepareRecovery();
+    assert.equal(recoveryValidationCount, 0);
+
+    await recoveryCoordinator.close();
+    await fixture.messages.close();
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('hosted root target unavailability is retryable without poisoning the Host', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) => backends.register('fake', (context) => new FakeBackend(context)),
+  });
+  try {
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeRoot({
+          sessionId: 'missing-session',
+          turnId: 'turn-missing-root',
+          runId: 'run-missing-root',
+          userMessageId: 'message-missing-root',
+          execution: { kind: 'automation', automationId: 'automation-missing-root' },
+          content: { text: 'Retry later.' },
+          start: async function* () {},
+        }),
+      RuntimeHostedRootUnavailableError,
+    );
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
 
 test('hosted linked child roots share admission, message, terminal, and stop authority', {
   timeout: 20_000,
@@ -191,6 +295,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       () => {
         drainRequested = true;
       },
+      undefined,
+      () => NO_GOAL_ROOT_AUTHORITY,
     );
 
     const parentSink = new RecordingContinuitySink();
@@ -833,182 +939,104 @@ test('successor admission failure retains the terminal transition and its confir
   }
 });
 
-test('shutdown re-scans a successor created by an in-flight terminal handoff', {
+test('shutdown contains a successor backend start rejected by Interaction drain', {
   timeout: 20_000,
 }, async () => {
-  const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-close-'));
-  const capability = await resolveStorageRoot({
-    path: join(base, 'root'),
-    kind: 'interactive',
-  });
-  const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) throw new Error('Unable to acquire test root');
-
-  try {
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    const session = await stores.sessionStore.create({
-      cwd: capability.canonicalPath,
-      backend: 'fake',
-      llmConnectionSlug: 'fake',
-      model: 'fake-model',
-      permissionMode: 'ask',
-    });
-    const followupAdmissionStarted = deferred<void>();
-    const releaseFollowupAdmission = deferred<void>();
-    const admissionStore: RootTurnAdmissionStore = {
+  const followupAdmissionStarted = deferred<void>();
+  const releaseFollowupAdmission = deferred<void>();
+  let backend: LinkedChildAuthorityBackend | undefined;
+  const fixture = await createFailureFixture({
+    withInteractions: true,
+    wrapAdmissionStore: (store) => ({
       admitRootTurn: async (input) => {
         if (input.previousRootTurnId !== null) {
           followupAdmissionStarted.resolve();
           await releaseFollowupAdmission.promise;
         }
-        return stores.agentRunStore.admitRootTurn(input);
+        return store.admitRootTurn(input);
       },
-      readRootTurnAdmission: (sessionId, turnId) =>
-        stores.agentRunStore.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
       readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
-        stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
+        store.readRootTurnSourceMessageReceipt(sessionId, messageId),
       listRootTurnAdmissionsForRecovery: (sessionId) =>
-        stores.agentRunStore.listRootTurnAdmissionsForRecovery(sessionId),
-    };
-    const rootAdmissionOwner = new RootAdmissionOwner(admissionStore);
-    await rootAdmissionOwner.recoverSession(session.id);
+        store.listRootTurnAdmissionsForRecovery(sessionId),
+    }),
+    registerBackend: (backends) => {
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      });
+    },
+  });
+  let closed = false;
 
-    let liveResidencies = 0;
-    const acquireResidency = (): RuntimeHostResidency => {
-      liveResidencies += 1;
-      let released = false;
-      return {
-        release: () => {
-          assert.equal(released, false);
-          released = true;
-          liveResidencies -= 1;
-        },
-      };
-    };
-    const sessionAdmission = new SessionAdmissionGate();
-    let coordinator: RootTurnCoordinator | undefined;
-    let continuity: SessionContinuityCoordinator | undefined;
-    let canonicalProjection: CanonicalSessionProjectionReader | undefined;
-    const rootPort: HostMessageRootPort = {
-      readSessionHeader: (sessionId) =>
-        requireCoordinator(coordinator).readSessionHeader(sessionId),
-      readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
-      claimStopFence: (input, commitQueueFence, admission) =>
-        requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
-      startFromMessage: (input, admission) =>
-        requireCoordinator(coordinator).startFromMessage(input, admission),
-      claimStop: (input, commitQueueFence, admission) =>
-        requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
-    };
-    const hostEpoch = 'epoch-close-handoff';
-    await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
-    const messages = new HostMessageCoordinator({
-      hostEpoch,
-      root: rootPort,
-      durableProof: {
-        readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
-          stores.agentRunStore.readRootTurnSourceMessageReceipt(sessionId, messageId),
-        readImmutableSteeringMessageProof: (sessionId, messageId) =>
-          stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
-      },
-      receipts: stores.messageReceiptStore,
-      sessionAdmission,
-      acquireResidency,
-      preflightSessionSnapshot: (sessionId, candidate) =>
-        requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
-      onProjectionChanged: (sessionId) =>
-        requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
-    });
-    const canonicalProjectionReader = new CanonicalSessionProjectionReader({
-      stores,
-      rootAdmissions: rootAdmissionOwner,
-      messages,
-    });
-    canonicalProjection = canonicalProjectionReader;
-    continuity = new SessionContinuityCoordinator(
-      hostEpoch,
-      (sessionId) => canonicalProjectionReader.read(sessionId),
-      sessionAdmission,
-    );
-    const backends = new BackendRegistry();
-    backends.register('fake', (context) => new FakeBackend(context));
-    const manager = new SessionManager({
-      store: stores.sessionStore,
-      runStore: stores.agentRunStore,
-      runtimeEventStore: stores.runtimeEventStore,
-      backends,
-      newId: randomUUID,
-      now: Date.now,
-      messageAuthority: messages,
-    });
-    let drainRequested = false;
-    coordinator = new RootTurnCoordinator(
-      manager,
-      stores,
-      sessionAdmission,
-      rootAdmissionOwner,
-      {
-        assertTerminalFence: async () => undefined,
-        claimRunClosure: async () => undefined,
-      },
-      messages,
-      continuity,
-      acquireResidency,
-      () => {
-        drainRequested = true;
-      },
-    );
-
+  try {
     const firstTurnId = 'turn-close-first';
-    const started = await coordinator.handlers['turn.start'](
+    const started = await fixture.coordinator.handlers['turn.start'](
       {
-        sessionId: session.id,
+        sessionId: fixture.sessionId,
         turnId: firstTurnId,
-        content: { text: `long-running root ${'x'.repeat(540)}` },
+        content: { text: HOLD_EXTERNAL_PROMPT },
       },
-      operationContext(hostEpoch, acquireResidency),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
     assert.equal(started.ok, true);
-    const followup = await messages.handlers['turn.message.submit'](
+    assert.ok(backend);
+    assert.ok(fixture.interactions);
+    await completesWithin(backend.externalHoldStarted.promise, 2_000, 'held root start');
+
+    const followup = await fixture.messages.handlers['turn.message.submit'](
       {
-        originHostEpoch: hostEpoch,
-        sessionId: session.id,
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
         messageId: 'message-close-followup',
-        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+        content: { text: 'start successor while shutdown drains Interaction authority' },
         placement: 'next_turn',
       },
-      operationContext(hostEpoch, acquireResidency),
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
     );
     assert.equal(followup.ok && followup.result.disposition, 'followup');
 
-    await followupAdmissionStarted.promise;
-    messages.beginDrain();
-    const closing = coordinator.close();
-    assert.equal(await settlesWithin(closing, 25), false);
+    backend.release();
+    await completesWithin(followupAdmissionStarted.promise, 2_000, 'successor root admission');
+    fixture.messages.beginDrain();
+    fixture.interactions.beginDrain();
+    const closing = fixture.coordinator.close();
     releaseFollowupAdmission.resolve();
-    await closing;
-    await messages.close();
-    continuity.close();
+    await completesWithin(closing, 2_000, 'root close after successor admission');
+    await fixture.messages.close();
+    await fixture.interactions.close();
+    closed = true;
 
-    assert.deepEqual(coordinator.readRootState(session.id), { kind: 'idle' });
-    assert.equal(liveResidencies, 0);
-    assert.equal(drainRequested, false);
-    const admissions = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(session.id);
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'idle' });
+    assert.equal(fixture.liveResidencies(), 0);
+    assert.equal(fixture.drainRequested(), false);
+    assert.equal(fixture.interactions.isPoisoned(), false);
+    const admissions = await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(
+      fixture.sessionId,
+    );
     assert.equal(admissions.length, 2);
     const successor = admissions[1];
     assert.ok(successor);
-    const run = await stores.agentRunStore.readRun(session.id, successor.runId);
-    const runtimeEvents = await stores.runtimeEventStore.readImmutableRuntimeEvents(
-      session.id,
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, successor.runId);
+    const runtimeEvents = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
+      fixture.sessionId,
       successor.runId,
     );
     const terminal = classifyTerminalRuntimeLedger(run, runtimeEvents);
     assert.equal(terminal.kind, 'fact');
     if (terminal.kind === 'fact') assert.equal(terminal.fact.runStatus, 'cancelled');
   } finally {
-    await owner.close();
-    await rm(base, { recursive: true, force: true });
+    releaseFollowupAdmission.resolve();
+    backend?.release();
+    if (!closed) {
+      await Promise.allSettled([
+        fixture.coordinator.close(),
+        fixture.messages.close(),
+        fixture.interactions?.close(),
+      ]);
+    }
+    await fixture.dispose();
   }
 });
 
@@ -1803,7 +1831,7 @@ test('Runtime stop lets a running admission publish before its exact-Run closure
     const stopping = fixture.manager.stopSession(fixture.sessionId, {
       source: 'stop_button',
     });
-    assert.equal(await settlesWithin(stopping, 25), false);
+    await completesWithin(backend.stopRequested.promise, 2_000, 'Runtime stop request');
     releasePreflight.resolve();
 
     await completesWithin(backend.admitted.promise, 2_000, 'running admission completion');
@@ -2495,21 +2523,28 @@ async function createFailureFixture(options: {
         }),
       })
     : new SessionManager(managerDeps);
-  coordinator = new RootTurnCoordinator(
-    manager,
-    stores,
-    sessionAdmission,
-    rootAdmissionOwner,
-    interactions ?? {
-      assertTerminalFence: async () => undefined,
-      claimRunClosure: async () => undefined,
-    },
-    messages,
-    continuity,
-    acquireResidency,
-    requestDrain,
-    options.clientCapabilities,
-  );
+  const createCoordinator = (
+    admissionOwner: RootAdmissionOwner,
+    assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+  ) =>
+    new RootTurnCoordinator(
+      manager,
+      stores,
+      sessionAdmission,
+      admissionOwner,
+      interactions ?? {
+        assertTerminalFence: async () => undefined,
+        claimRunClosure: async () => undefined,
+      },
+      messages,
+      continuity,
+      acquireResidency,
+      requestDrain,
+      options.clientCapabilities,
+      () => NO_GOAL_ROOT_AUTHORITY,
+      assertAutomationRecoveryAdmission,
+    );
+  coordinator = createCoordinator(rootAdmissionOwner);
 
   return {
     stores,
@@ -2522,6 +2557,15 @@ async function createFailureFixture(options: {
     interactions,
     sessionAdmission,
     acquireResidency,
+    createRecoveryCoordinator: (
+      assertAutomationRecoveryAdmission?: (admission: RootTurnAdmission) => void,
+    ) => {
+      coordinator = createCoordinator(
+        new RootAdmissionOwner(stores.agentRunStore),
+        assertAutomationRecoveryAdmission,
+      );
+      return coordinator;
+    },
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
     dispose: async () => {
@@ -2597,16 +2641,6 @@ class ObservableSessionAdmissionGate extends SessionAdmissionGate {
   }
 }
 
-async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  return Promise.race([
-    promise.then(
-      () => true,
-      () => true,
-    ),
-    new Promise<false>((resolve) => setTimeout(resolve, timeoutMs, false)),
-  ]);
-}
-
 async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -2617,6 +2651,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
 
 class LinkedChildAuthorityBackend implements AgentBackend {
   readonly kind = 'fake' as const;
+  readonly externalHoldStarted = deferred<void>();
   sendCount = 0;
   stopCount = 0;
   private stopped = false;
@@ -2630,6 +2665,7 @@ class LinkedChildAuthorityBackend implements AgentBackend {
     if (input.text === HOLD_EXTERNAL_PROMPT) {
       await new Promise<void>((resolve) => {
         this.releaseWait = resolve;
+        this.externalHoldStarted.resolve();
       });
     }
     if (input.text === FAKE_ASK_USER_QUESTION_PROMPT) {
@@ -2846,6 +2882,7 @@ class StopReleasedAdmissionBackend implements AgentBackend {
 class RunningAdmissionBackend implements AgentBackend {
   readonly kind = 'fake' as const;
   readonly admitted = deferred<void>();
+  readonly stopRequested = deferred<void>();
   readonly closureReasons: string[] = [];
   private readonly settled = deferred<void>();
 
@@ -2904,7 +2941,9 @@ class RunningAdmissionBackend implements AgentBackend {
     };
   }
 
-  async stop(): Promise<void> {}
+  async stop(): Promise<void> {
+    this.stopRequested.resolve();
+  }
 
   async respondToSandboxBoundary(): Promise<void> {}
 

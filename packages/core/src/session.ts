@@ -629,6 +629,7 @@ export interface UserMessage extends MessageContent {
    * hand-type. Mirrors TurnOrigin in runtime-inputs. */
   origin?:
     | { kind: 'automation'; automationId: string }
+    | { kind: 'goal'; goalId: string }
     | { kind: 'agent_graph'; graphId: string; wakeId: string; attemptId: string };
 }
 
@@ -885,8 +886,10 @@ const ASSISTANT_THINKING_SHAPE = defineObjectShape<AssistantThinking>()(
 );
 type MessageOrigin = NonNullable<UserMessage['origin']>;
 type AutomationOrigin = Extract<MessageOrigin, { kind: 'automation' }>;
+type GoalOrigin = Extract<MessageOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<MessageOrigin, { kind: 'agent_graph' }>;
 const AUTOMATION_ORIGIN_SHAPE = defineObjectShape<AutomationOrigin>()(['kind', 'automationId'], []);
+const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []);
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
   [],
@@ -1078,6 +1081,15 @@ function isAutomationOrigin(value: unknown): value is AutomationOrigin {
   );
 }
 
+function isGoalOrigin(value: unknown): value is GoalOrigin {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, GOAL_ORIGIN_SHAPE) &&
+    value.kind === 'goal' &&
+    typeof value.goalId === 'string'
+  );
+}
+
 function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
   return (
     isRecord(value) &&
@@ -1090,7 +1102,7 @@ function isAgentGraphOrigin(value: unknown): value is AgentGraphOrigin {
 }
 
 function isMessageOrigin(value: unknown): value is MessageOrigin {
-  return isAutomationOrigin(value) || isAgentGraphOrigin(value);
+  return isAutomationOrigin(value) || isGoalOrigin(value) || isAgentGraphOrigin(value);
 }
 
 function isOptionalFiniteDuration(value: unknown): boolean {

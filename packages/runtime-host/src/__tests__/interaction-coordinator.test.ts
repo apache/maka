@@ -11,7 +11,7 @@ import {
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime';
 import {
-  openInteractiveInteractionStoreForWrite,
+  openSqliteInteractiveInteractionStoreForWrite,
   type InteractiveInteractionStoreWriterFacade,
   type StoredInteractionRequest,
 } from '@maka/storage/interaction-store';
@@ -509,7 +509,7 @@ async function withStore(run: (context: StoreContext) => Promise<void>): Promise
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
-  const store = await openInteractiveInteractionStoreForWrite(owner.lease);
+  const store = await openSqliteInteractiveInteractionStoreForWrite(owner.lease);
   try {
     await run({ owner, store });
   } finally {

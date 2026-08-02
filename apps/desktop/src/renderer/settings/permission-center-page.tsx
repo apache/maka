@@ -17,7 +17,7 @@ import type {
   UiLocale,
 } from '@maka/core';
 import { isDragGrantPermissionId, OS_PERMISSION_IDS } from '@maka/core';
-import { Button, Badge, Chip, EmptyState, RelativeTime, SectionHeader, StatTile, useMountedRef, useToast, useUiLocale } from '@maka/ui';
+import { Button, Badge, RelativeTime, SectionHeader, StatTile, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { getPermissionCenterCopy, type PermissionCenterCopy } from '../locales/permission-center-copy';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { statusBadgeVariant } from './settings-status-badge';
@@ -170,7 +170,7 @@ export function PermissionCenterPage() {
         subtitle={copy.subtitle}
         action={
           <>
-            <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
+            <small className="settingsPermissionMetaLabel">
               {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
@@ -334,7 +334,7 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
           <strong>{capabilityLabel}</strong>
           <small className="settingsCapabilityId">{prettyCapabilityId(capability.id)}</small>
         </div>
-        <Chip variant={readinessCopy.tone}>{readinessCopy.label}</Chip>
+        <Badge variant={statusBadgeVariant(readinessCopy.tone)} label={readinessCopy.label} />
       </div>
       <p className="settingsCapabilityDetail">{readinessCopy.detail}</p>
       <dl className="settingsCapabilityLayers" aria-label={copy.layers.aria(capabilityLabel)}>
@@ -406,7 +406,7 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
       */}
       <div className="settingsCapabilityAuditSlot" aria-hidden={capability.auditEvents.length === 0}>
         {capability.auditEvents.length === 0 ? (
-          <EmptyState variant="inline" title={copy.noAudit} body="" />
+          <p className="settingsCapabilityAuditEmpty">{copy.noAudit}</p>
         ) : (
           <ul aria-label={copy.auditAria(capabilityLabel)}>
             {capability.auditEvents.slice(-3).map((event, index) => (

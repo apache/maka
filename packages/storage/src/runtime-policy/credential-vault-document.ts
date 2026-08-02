@@ -46,6 +46,7 @@ export interface CredentialVaultDocument {
 interface PreparedCredentialSet {
   readonly kind: 'ready';
   readonly document: CredentialVaultDocument;
+  readonly entry: CredentialVaultEntry;
 }
 
 interface PreparedCredentialDelete {
@@ -85,7 +86,8 @@ export class CredentialVaultDocumentOwner {
   async set(root: string, rawInput: SetCredentialInput): Promise<CredentialMutationResult> {
     const prepared = this.prepareSet(await this.read(root), rawInput);
     if (prepared.kind !== 'ready') return prepared;
-    return this.commitSet(root, prepared);
+    await this.commitSet(root, prepared);
+    return committed(prepared.document);
   }
 
   prepareSet(
@@ -128,15 +130,11 @@ export class CredentialVaultDocumentOwner {
       entries,
     };
     this.assertDocumentSize(next);
-    return { kind: 'ready', document: next };
+    return { kind: 'ready', document: next, entry };
   }
 
-  async commitSet(
-    root: string,
-    prepared: PreparedCredentialSet,
-  ): Promise<CredentialMutationResult> {
+  async commitSet(root: string, prepared: PreparedCredentialSet): Promise<void> {
     await this.write(root, prepared.document);
-    return committed(prepared.document);
   }
 
   async delete(root: string, rawInput: DeleteCredentialInput): Promise<CredentialMutationResult> {

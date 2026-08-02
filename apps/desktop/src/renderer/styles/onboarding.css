@@ -454,6 +454,8 @@
   padding: clamp(var(--space-10), 7vh, 76px) var(--space-6) var(--space-12);
 }
 
+.maka-firstrun-row { padding: 8px 14px; }
+
 @media (max-width: 760px) {
   .maka-onboarding-surface {
     padding: var(--space-6) var(--space-4) var(--space-8);

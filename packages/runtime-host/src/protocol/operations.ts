@@ -1,9 +1,11 @@
 import { ARTIFACT_OPERATION_SPECS } from './artifact.js';
+import { AUTOMATION_OPERATION_SPECS } from './automation.js';
 import { requireExactRecord, requireId, requireRecord, requireString } from './codec.js';
 import { CONNECTION_EFFECT_OPERATION_SPECS } from './connection-effects.js';
 import { CLIENT_CAPABILITY_OPERATION_SPECS } from './client-capability.js';
 import { invalidProtocolFrame } from './errors.js';
 import { HOST_STATUS_OPERATION_SPECS } from './host-status.js';
+import { GOAL_OPERATION_SPECS } from './goal.js';
 import { INTERACTION_OPERATION_SPECS } from './interaction.js';
 import { MESSAGE_OPERATION_SPECS } from './message.js';
 import { MEMORY_OPERATION_SPECS } from './memory.js';
@@ -14,6 +16,7 @@ import {
   type OperationSpec,
 } from './operation-spec.js';
 import { RUNTIME_POLICY_OPERATION_SPECS } from './runtime-policy.js';
+import { RUNTIME_RESOURCE_OPERATION_SPECS } from './runtime-resource.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
@@ -84,8 +87,10 @@ export type {
 } from './turn.js';
 export * from './connection-effects.js';
 export * from './client-capability.js';
+export * from './goal.js';
 export * from './memory.js';
 export * from './runtime-policy.js';
+export * from './runtime-resource.js';
 export * from './session-catalog.js';
 export * from './session-revision.js';
 export * from './skill-catalog.js';
@@ -93,9 +98,12 @@ export * from './usage-pricing.js';
 
 export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   HOST_STATUS_OPERATION_SPECS,
+  GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
   CONNECTION_EFFECT_OPERATION_SPECS,
   RUNTIME_POLICY_OPERATION_SPECS,
+  RUNTIME_RESOURCE_OPERATION_SPECS,
+  AUTOMATION_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,

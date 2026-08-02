@@ -23,7 +23,7 @@ spacing: { base: "4px", sm: "8px", md: "12px", lg: "16px", xl: "24px", "2xl": "3
 
 # Design System: Maka
 
-This is a small snapshot of the default theme. `maka-tokens.css` is the runtime source of truth; component source owns exact component values. Refresh this file from source when they diverge. `styles.css` is a Tailwind bridge, not a second authority.
+This is a small snapshot of the default theme. `maka-tokens.css` is the runtime source of truth; component source owns exact component values. Refresh this file from source when they diverge. The renderer and `@maka/ui` stylesheets compose those tokens into product-owned semantic classes; they are not a second token authority.
 
 ## 1. Overview
 

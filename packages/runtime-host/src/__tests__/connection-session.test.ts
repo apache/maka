@@ -960,6 +960,7 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
       runId: `run-${sessionId}`,
       status: 'running',
     },
+    goal: null,
     queue: {
       hostEpoch: 'host-epoch',
       queueRevision: 0,

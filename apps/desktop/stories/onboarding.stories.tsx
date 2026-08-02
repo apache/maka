@@ -1,7 +1,8 @@
 import { type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
-import { ChatView } from '@maka/ui';
+import { ChatSurfaceLayout, ChatView } from '@maka/ui';
+import { expect } from 'storybook/test';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -51,7 +52,7 @@ const connections: LlmConnection[] = [
  * #1433, second pass: the replacement claimed to be the app's chain "class for
  * class" and was not — it nested `.mainColumn` OUTSIDE `.maka-panel-detail`
  * (the app nests it inside), and dropped `.maka-detail-with-artifacts`,
- * ChatView's 32px `header.maka-chat-header`, and the scroll viewport. Writing
+ * ChatView's session-owned chrome, and the scroll viewport. Writing
  * a chain out by hand is the same mistake one level down.
  *
  * So only the part that cannot be imported is written out: app-shell.tsx owns
@@ -65,18 +66,24 @@ const connections: LlmConnection[] = [
 function DetailPane(props: { children: ReactNode }) {
   return (
     <div
-      className="maka-panel maka-panel-detail maka-floating-panel agents-content-area agents-parchment-paper-surface"
+      className="app maka-shell-astryx agents-layout-body"
       data-sidebar-state="expanded"
-      data-agents-view="im_hub"
       style={{ background: 'var(--surface-canvas)', height: '100%', minHeight: 560 }}
     >
-      <div className="maka-detail-with-artifacts">
-        <div className="mainColumn" data-home-surface="true">
-          <ChatView
-            messages={[]}
-            onNew={() => undefined}
-            emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
-          />
+      <div
+        className="maka-panel maka-panel-detail agents-parchment-paper-surface"
+        data-agents-view="im_hub"
+      >
+        <div className="maka-detail-with-artifacts">
+          <div className="mainColumn" data-home-surface="true">
+            <ChatSurfaceLayout composer={null}>
+              <ChatView
+                messages={[]}
+                onNew={() => undefined}
+                emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
+              />
+            </ChatSurfaceLayout>
+          </div>
         </div>
       </div>
     </div>
@@ -104,50 +111,11 @@ export const NeedsConnection: Story = {
       <OnboardingHero {...heroProps({ kind: 'needs_connection' })} />
     </DetailPane>
   ),
-};
-
-// Real path: same hero, with at least one ready connection but no default picked — e.g.
-// after deleting the connection that used to be the default.
-export const NeedsDefaultConnection: Story = {
-  render: () => (
-    <DetailPane>
-      <OnboardingHero {...heroProps({ kind: 'needs_default_connection' })} />
-    </DetailPane>
-  ),
-};
-
-// Real path: same hero, when the default connection exists but its API key is missing or
-// was rejected.
-export const NeedsConnectionCredentials: Story = {
-  render: () => (
-    <DetailPane>
-      <OnboardingHero
-        {...heroProps({ kind: 'needs_connection_credentials', connectionSlug: 'zai-live' })}
-      />
-    </DetailPane>
-  ),
-};
-
-// Real path: same hero, when the default connection is usable but no default model has
-// been chosen.
-export const NeedsDefaultModel: Story = {
-  render: () => (
-    <DetailPane>
-      <OnboardingHero
-        {...heroProps({ kind: 'needs_default_model', connectionSlug: 'zai-live' })}
-      />
-    </DetailPane>
-  ),
-};
-
-// Real path: same hero, when connections exist but every one of them fails its health
-// probe — no per-connection fix applies, so the hero offers no single next step.
-export const BlockedAllUnhealthy: Story = {
-  render: () => (
-    <DetailPane>
-      <OnboardingHero
-        {...heroProps({ kind: 'blocked', reason: 'all_connections_unhealthy' })}
-      />
-    </DetailPane>
-  ),
+  play: async ({ canvasElement }) => {
+    const providerRow = canvasElement.querySelector<HTMLElement>('.maka-firstrun-row');
+    await expect(providerRow).not.toBeNull();
+    const style = getComputedStyle(providerRow as HTMLElement);
+    await expect(style.paddingTop).toBe('8px');
+    await expect(style.paddingRight).toBe('14px');
+  },
 };

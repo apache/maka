@@ -25,17 +25,17 @@ export function AttachmentFileCard(props: {
   return (
     <div
       className={cn(
-        'flex items-center gap-2.5 rounded-md bg-[var(--foreground-alpha-6)] ring-1 ring-inset ring-[color:var(--foreground-alpha-12)] p-2 w-[200px] max-w-full',
+        'maka-attachment-file-card',
         props.className,
       )}
     >
-      <span className="h-9 w-9 shrink-0 rounded-sm bg-[var(--foreground-alpha-10)] grid place-items-center text-foreground-secondary">
-        <AttachmentKindIcon kind={props.kind} className="h-5 w-5" />
+      <span className="maka-attachment-file-icon">
+        <AttachmentKindIcon kind={props.kind} />
       </span>
-      <span className="min-w-0 flex-1 leading-tight">
-        <span className="block truncate text-sm font-medium text-foreground">{props.name}</span>
+      <span className="maka-attachment-file-content">
+        <span className="maka-attachment-file-name">{props.name}</span>
         {props.size !== undefined && (
-          <span className="block truncate text-xs font-mono tabular-nums text-muted-foreground mt-0.5">
+          <span className="maka-attachment-file-size">
             {formatBytes(props.size)}
           </span>
         )}
@@ -44,10 +44,10 @@ export function AttachmentFileCard(props: {
         <button
           type="button"
           onClick={props.onRemove}
-          className="ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-[var(--foreground-alpha-10)] hover:text-foreground transition"
+          className="maka-attachment-file-remove"
           aria-label={copy.removeAttachmentAriaLabel(props.name)}
         >
-          <X className="h-3.5 w-3.5" />
+          <X />
         </button>
       )}
     </div>

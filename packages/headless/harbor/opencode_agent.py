@@ -10,10 +10,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from harbor.agents.installed.base import NonZeroAgentExitCodeError, with_prompt_template
-from harbor.agents.installed.opencode import OpenCode
-from harbor.environments.base import BaseEnvironment
-from harbor.models.agent.context import AgentContext
+from harness_compat import (
+    AgentContext,
+    BaseEnvironment,
+    NetworkAllowlist as _NetworkAllowlist,
+    NonZeroAgentExitCodeError,
+    OpenCode,
+    with_prompt_template,
+)
+from provider_proxy import provider_proxy_endpoint, warn_if_pier_unreachable_proxy_port
 
 from trial_pricing import estimate_cost, pricing_from_env
 
@@ -33,6 +38,29 @@ class MakaOpenCodeAgent(OpenCode):
 
     def get_version_command(self) -> str | None:
         return f"{shlex.quote(str(_TOOLCHAIN_OPENCODE))} --version"
+
+    def install_spec(self) -> None:
+        # The pinned OpenCode toolchain is bind-mounted read-only and only
+        # verified (sha256 checksums + manifest fingerprint) in install().
+        # Pier's inherited spec would instead install OpenCode from the
+        # network, which offline tasks cannot reach and which would break the
+        # fixed-build comparison. None keeps the runtime verify path
+        # unchanged (Pier runs install() when no spec is preinstalled).
+        return None
+
+    def network_allowlist(self) -> _NetworkAllowlist | None:
+        # Called only under Pier; plain Harbor never calls it and
+        # harness_compat exports NetworkAllowlist = None there.
+        if _NetworkAllowlist is None:
+            return None
+        # The container runs the pinned OpenCode CLI against
+        # OPENCODE_CONFIG (opencode-benchmark.json), whose provider options
+        # point at MAKA_PROVIDER_PROXY_URL (see _run_with_stop_sentinel);
+        # that proxy host is the only egress the container needs. No fallback
+        # domain: a misconfigured trial fails here, at environment creation.
+        hostname, port = provider_proxy_endpoint(self._get_env, "OpenCode")
+        warn_if_pier_unreachable_proxy_port(port, "OpenCode")
+        return _NetworkAllowlist(domains=[hostname])
 
     async def install(self, environment: BaseEnvironment) -> None:
         expected_fingerprint = self._get_env("MAKA_OPENCODE_TOOLCHAIN_FINGERPRINT")
@@ -69,6 +97,10 @@ class MakaOpenCodeAgent(OpenCode):
         self._started_at_ms = int(time.time() * 1000)
         try:
             await self._run_with_stop_sentinel(instruction, environment)
+            # Hydrate before reading error events: under Pier the explicit
+            # --mounts-json replaces the default /logs bind-mount, so the CLI
+            # stream only exists inside the container until downloaded.
+            await self._download_agent_logs(environment)
             if messages := self._error_messages():
                 raise NonZeroAgentExitCodeError(
                     "OpenCode emitted error event(s): " + "; ".join(messages[:3])
@@ -78,6 +110,25 @@ class MakaOpenCodeAgent(OpenCode):
             raise
         finally:
             self._finished_at_ms = int(time.time() * 1000)
+            await self._download_agent_logs(environment)
+
+    async def _download_agent_logs(self, environment: BaseEnvironment) -> None:
+        # _error_messages() and populate_context_post_run read opencode.txt
+        # from the host log dir. Under plain Harbor the agent log dir is
+        # bind-mounted, so the file is already host-side and is skipped; under
+        # Pier a --mounts-json run replaces the default log mounts while
+        # capabilities.mounted stays true (pier docker.py), so pier's own log
+        # download never runs — without this hydration a real provider error
+        # event is invisible to failure classification and the parsed
+        # trajectory/steps/token metadata come out empty. Best-effort, same
+        # contract as the Kimi and Codex arms.
+        local = self.logs_dir / "opencode.txt"
+        if local.exists():
+            return
+        try:
+            await environment.download_file("/logs/agent/opencode.txt", local)
+        except Exception as exc:  # noqa: BLE001 - best-effort log hydration.
+            self.logger.debug("Could not download OpenCode stream %s: %s", local, exc)
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         super().populate_context_post_run(context)
@@ -145,6 +196,7 @@ class MakaOpenCodeAgent(OpenCode):
         provider_env_names = {
             "zai-coding-plan": ("ZAI_BASE_URL", "ZAI_API_KEY"),
             "kimi-coding-plan": ("KIMI_BASE_URL", "KIMI_API_KEY"),
+            "deepseek": ("DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"),
         }
         if provider not in provider_env_names:
             raise ValueError(f"Unsupported Maka OpenCode benchmark provider: {provider}")
@@ -156,7 +208,12 @@ class MakaOpenCodeAgent(OpenCode):
         base_url_env, api_key_env = provider_env_names[provider]
         env[base_url_env] = proxy_url
         env[api_key_env] = proxy_token
-        env["OPENCODE_CONFIG"] = self._opencode_config_path()
+        config_path = self._opencode_config_path()
+        env["OPENCODE_CONFIG"] = config_path
+        self._resolved_opencode_config_path = config_path
+        self._opencode_config_hash = await self._probe_opencode_config(
+            environment, config_path, env
+        )
         env["OPENCODE_FAKE_VCS"] = "git"
 
         skills_command = self._build_register_skills_command()
@@ -198,6 +255,12 @@ class MakaOpenCodeAgent(OpenCode):
         )
 
     def _opencode_config_path(self) -> str:
+        # Harness A/B prompt/config ablations point one arm at an alternate
+        # benchmark config (e.g. agent.build.prompt overrides) without
+        # shadowing the whole MAKA_REPO_ROOT tree.
+        override = self._get_env("MAKA_OPENCODE_CONFIG_PATH")
+        if override:
+            return override
         maka_repo = self._get_env("MAKA_REPO_ROOT") or "/opt/maka-agent"
         return str(
             Path(maka_repo)
@@ -206,6 +269,27 @@ class MakaOpenCodeAgent(OpenCode):
             / "harbor"
             / "opencode-benchmark.json"
         )
+
+    async def _probe_opencode_config(
+        self, environment: BaseEnvironment, config_path: str, env: dict[str, str]
+    ) -> str:
+        # Fail closed: harbor raises RuntimeError on non-zero exit, so a
+        # mistyped MAKA_OPENCODE_CONFIG_PATH aborts the cell here instead of
+        # silently launching OpenCode with its built-in default config (the
+        # wrong ablation arm). The digest goes into the execution identity so
+        # each cell can prove which exact config bytes it ran.
+        result = await self.exec_as_agent(
+            environment,
+            command=f"sha256sum {shlex.quote(config_path)}",
+            env=env,
+        )
+        stdout = (getattr(result, "stdout", None) or "").strip()
+        digest = stdout.split()[0] if stdout else ""
+        if not digest:
+            raise ValueError(
+                f"Could not hash the resolved OpenCode benchmark config: {config_path}"
+            )
+        return "sha256:" + digest
 
     def _stop_grace_ms(self) -> int:
         raw = self._get_env("MAKA_OPENCODE_STOP_GRACE_MS")
@@ -375,7 +459,7 @@ class MakaOpenCodeAgent(OpenCode):
         ).hexdigest()
         pricing_profile = self._get_env("MAKA_TRIAL_PRICING_SOURCE") or "unconfigured"
         reasoning_effort = self._get_env("MAKA_REASONING_EFFORT")
-        return {
+        identity = {
             "llmConnectionSlug": self._get_env("MAKA_LLM_CONNECTION_SLUG") or provider,
             "model": model,
             **({"reasoningEffort": reasoning_effort} if reasoning_effort else {}),
@@ -383,6 +467,12 @@ class MakaOpenCodeAgent(OpenCode):
             "pricingProfile": pricing_profile,
             "agentTools": False,
         }
+        resolved_config = getattr(self, "_resolved_opencode_config_path", None)
+        config_hash = getattr(self, "_opencode_config_hash", None)
+        if resolved_config and config_hash:
+            identity["opencodeConfigPath"] = resolved_config
+            identity["opencodeConfigHash"] = config_hash
+        return identity
 
     def _write_execution_identity(self) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)

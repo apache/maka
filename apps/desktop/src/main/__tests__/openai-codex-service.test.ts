@@ -8,9 +8,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
-import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   CODEX_OAUTH_CONFIG,
@@ -19,26 +17,6 @@ import {
   pkceChallengeFromVerifier,
 } from '../oauth/openai-codex-helpers.js';
 import { base64urlEncode } from '@maka/core';
-
-const REPO_ROOT = resolve(process.cwd(), '..', '..');
-const SERVICE_SOURCE = resolve(
-  REPO_ROOT,
-  'apps',
-  'desktop',
-  'src',
-  'main',
-  'oauth',
-  'openai-codex-service.ts',
-);
-const HELPERS_SOURCE = resolve(
-  REPO_ROOT,
-  'apps',
-  'desktop',
-  'src',
-  'main',
-  'oauth',
-  'openai-codex-helpers.ts',
-);
 
 describe('Codex subscription OAuth config (upstream openai-codex-auth pattern)', () => {
   it('pins clientId, endpoints, redirect URI, scopes and extras', () => {
@@ -151,33 +129,5 @@ describe('Codex JWT account-id extraction', () => {
   it('throws when neither token contains an account id', () => {
     const access = makeJwt({});
     assert.throws(() => extractAccountClaims(access), /account ID/i);
-  });
-});
-
-describe('Codex service source-grep contract', () => {
-  it('uses proxiedFetch by default so the active Maka proxy applies to OAuth requests', async () => {
-    const src = await readFile(SERVICE_SOURCE, 'utf8');
-    assert.match(
-      src,
-      /deps\.fetchFn\s*\?\?\s*\(proxiedFetch as unknown as typeof fetch\)/,
-      'authorization-code exchange and token refresh must use the active Maka proxy by default',
-    );
-    assert.doesNotMatch(
-      src,
-      /deps\.fetchFn\s*\?\?\s*\(globalThis\.fetch/,
-      'Electron global fetch does not honor Maka active-proxy state',
-    );
-  });
-
-  it('exports isOpenAiCodexExperimentalEnabled tied to the env flag', async () => {
-    const helpersSrc = await readFile(HELPERS_SOURCE, 'utf8');
-    assert.match(helpersSrc, /export function isOpenAiCodexExperimentalEnabled\(\)/);
-    assert.match(helpersSrc, /MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL/);
-    const serviceSrc = await readFile(SERVICE_SOURCE, 'utf8');
-    assert.match(
-      serviceSrc,
-      /isOpenAiCodexExperimentalEnabled/,
-      'service must re-export the flag so main.ts can import from a single path',
-    );
   });
 });

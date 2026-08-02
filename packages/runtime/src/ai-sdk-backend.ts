@@ -156,10 +156,13 @@ import {
   toolSchemaCharsForDiagnostics,
   type RequestShapeDiagnostic,
 } from './request-shape.js';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
   type ProviderRequestAttemptRecord,
   type ProviderRequestCaptureRecord,
+  type ProviderRequestUsage,
+  type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
 import { ToolAvailabilityRuntime, type ToolAvailabilityConfig } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
@@ -207,6 +210,14 @@ export {
 export { normalizeAiSdkUsage } from './model-adapter.js';
 export type { ModelFactory, ModelFactoryInput, RepairableAiSdkToolCall } from './model-adapter.js';
 export type { RunTraceEvent, RunTraceRecorder } from './run-trace.js';
+
+const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
+  '<step_budget_finalization>',
+  'This is the final budgeted step for this child-agent turn.',
+  'Do not call tools. Return the best concise final answer now using evidence already gathered.',
+  'Clearly separate verified findings from inference and explicitly name any remaining gaps.',
+  '</step_budget_finalization>',
+].join('\n');
 
 // ============================================================================
 // AgentBackend interface — port contract now lives in @maka/core/backend-types;
@@ -375,6 +386,18 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   ) => Promise<{ artifactId: string }>;
   /** Best-effort durable row for one physical provider request attempt. */
   recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
+  /**
+   * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
+   * stays a diagnostic trace: this one carries the accounting record.
+   */
+  recordModelCallAttempt?: (attempt: ModelCallAttempt) => void | Promise<void>;
+  /**
+   * Pre-dispatch accounting gate, paired with `recordModelCallAttempt` and read
+   * only when it is present. Throws when the canonical record could not be
+   * written for this dispatch, which fails the send before the provider is
+   * called rather than producing spend nothing recorded.
+   */
+  assertModelCallAccountingReady?: () => void;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -784,6 +807,22 @@ export class AiSdkBackend implements AgentBackend {
           newId: this.newId,
           persistCapture: recordProviderRequestCapture!,
           recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+          ...(this.input.recordModelCallAttempt
+            ? {
+                accounting: {
+                  sessionId: this.sessionId,
+                  resolveRunId: () => this.currentRunId ?? undefined,
+                  connectionSlug: this.input.connection.slug,
+                  providerId: this.input.connection.providerType,
+                  callKind: 'main' as const,
+                  record: this.input.recordModelCallAttempt,
+                  resolveCost: (usage: ProviderRequestUsage) => this.resolveModelCallCost(usage),
+                  ...(this.input.assertModelCallAccountingReady
+                    ? { assertReady: this.input.assertModelCallAccountingReady }
+                    : {}),
+                },
+              }
+            : {}),
         })
       : undefined;
 
@@ -1231,7 +1270,18 @@ export class AiSdkBackend implements AgentBackend {
               })
             : undefined;
           const projectedMessages = shaped?.messages ?? requestMessages;
-          const activeToolsForRequest = shaped?.activeTools ?? currentRepairToolNames();
+          const finalChildSummaryStep =
+            this.input.header.collaborationMode === 'agent' &&
+            this.maxSteps !== undefined &&
+            this.maxSteps > 1 &&
+            runtimeSteps === this.maxSteps - 1 &&
+            completedProviderSteps.length > 0;
+          const activeToolsForRequest = finalChildSummaryStep
+            ? []
+            : (shaped?.activeTools ?? currentRepairToolNames());
+          const requestSystemPrompt = finalChildSummaryStep
+            ? joinPromptFragments([systemPrompt, CHILD_STEP_BUDGET_FINALIZATION_PROMPT])
+            : systemPrompt;
           providerRequestTracker?.setStep(runtimeSteps);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
@@ -1262,7 +1312,7 @@ export class AiSdkBackend implements AgentBackend {
                   error,
                 });
               },
-              system: systemPrompt,
+              system: requestSystemPrompt,
               abortSignal: turnAbortController.signal,
               ...(providerRequestTracker ? { providerRequestTracker } : {}),
             });
@@ -1609,21 +1659,6 @@ export class AiSdkBackend implements AgentBackend {
           if (tokenUsage) {
             const systemPromptHash = turnDiagnostics.requestShape.componentHashes.systemPromptHash;
             tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
-            trace.usageRecorded({
-              ...tokenUsage,
-              ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              ...(turnDiagnostics.requestShape.toolSchemaChangeReason !== undefined
-                ? { toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason }
-                : {}),
-              ...(turnDiagnostics.requestShape.toolAvailability !== undefined
-                ? { toolAvailability: turnDiagnostics.requestShape.toolAvailability }
-                : {}),
-            });
             const contextBudgetForUsage = contextBudgetWithActiveProjectionDiagnostics(
               contextBudgetForTelemetry,
               activeToolResultPruneDiagnosticPatch,
@@ -1816,55 +1851,59 @@ export class AiSdkBackend implements AgentBackend {
           activeToolResultPruneDiagnosticPatch,
           activeCompactDiagnosticPatch,
         );
-        // The terminal record is fail-closed on usage evidence: no evidence,
-        // no record. An aborted send may have no final `usage`, but when EVERY
-        // completed step produced a usable sample their accumulated usage IS
-        // the complete evidence — record it, carrying the real cost of the
-        // steps that ran plus the diagnostics riding this record. Otherwise
-        // (no finish-step at all, or any unusable sample) the record is
-        // skipped: a partial sum posed as the whole call would violate the
-        // #972 no-fabrication invariant. The terminal outcome itself does not
-        // depend on this record — stopReason and the exhausted detail are
-        // durable on the CompleteEvent either way.
+        // `tokenUsage` still backfills from the completed steps when the send
+        // ended without a final `usage`: the terminal outcome and the
+        // `token_usage` SessionEvent below both read it. An unusable sample in
+        // any step fails it closed rather than posing a partial sum as the
+        // whole call (#972).
+        //
+        // The send-level `recordLlmCall` that used to sit here is gone (#1679).
+        // It measured the same provider requests the canonical seam now settles
+        // into `ModelCallAttempt`, one record per physical request instead of
+        // one aggregate per send, and keeping both would have been two
+        // independent meters free to disagree.
+        //
+        // What does NOT follow it out is the diagnostics that rode on it. The
+        // exhausted and aborted paths emit no `token_usage` SessionEvent, so
+        // their compaction decisions and the accumulated usage of the steps that
+        // did complete had that record as their only durable home. They move to
+        // the run trace, which carries no cost and meters nothing.
         if (!tokenUsage && completedStepUsage && !sawUnusableStepUsage) {
           tokenUsage = completedStepUsage;
           tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
         }
-        if (tokenUsage)
-          this.input.recordLlmCall?.({
-            sessionId: this.sessionId,
-            turnId,
-            connectionSlug: this.input.connection.slug,
-            providerId: this.input.connection.providerType,
-            modelId: this.input.modelId,
-            ...llmCallUsageFields(tokenUsage),
-            latencyMs: Math.max(0, this.now() - startedAt),
-            status: streamStatus,
-            ...(streamErrorClass ? { errorClass: streamErrorClass } : {}),
-            startedAt,
-            ...(requestShapeForTelemetry !== undefined
-              ? {
-                  systemPromptHash: requestShapeForTelemetry.componentHashes.systemPromptHash,
-                  prefixHash: requestShapeForTelemetry.prefixHash,
-                  prefixChangeReason: requestShapeForTelemetry.prefixChangeReason,
-                  requestShapeHash: requestShapeForTelemetry.requestShapeHash,
-                  requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
-                  ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
-                    ? { toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason }
-                    : {}),
-                  ...(requestShapeForTelemetry.toolAvailability !== undefined
-                    ? { toolAvailability: requestShapeForTelemetry.toolAvailability }
-                    : {}),
-                }
-              : {}),
-            ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-            ...(promptSegmentsForTelemetry.length > 0
-              ? { promptSegments: promptSegmentsForTelemetry }
-              : {}),
-            ...(contextBudgetForTelemetry !== undefined
-              ? { contextBudget: contextBudgetForTelemetry }
-              : {}),
-          });
+        trace.sendDiagnostics({
+          status: streamStatus,
+          ...(streamErrorClass ? { errorClass: streamErrorClass } : {}),
+          ...(tokenUsage
+            ? {
+                inputTokens: tokenUsage.inputTokens,
+                outputTokens: tokenUsage.outputTokens,
+                totalTokens: tokenUsage.totalTokens,
+              }
+            : {}),
+          ...(contextBudgetForTelemetry !== undefined
+            ? { contextBudget: contextBudgetForTelemetry }
+            : {}),
+          ...(promptSegmentsForTelemetry.length > 0
+            ? { promptSegments: promptSegmentsForTelemetry }
+            : {}),
+          ...(requestShapeForTelemetry !== undefined
+            ? {
+                systemPromptHash: requestShapeForTelemetry.componentHashes.systemPromptHash,
+                prefixHash: requestShapeForTelemetry.prefixHash,
+                prefixChangeReason: requestShapeForTelemetry.prefixChangeReason,
+                requestShapeHash: requestShapeForTelemetry.requestShapeHash,
+                requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
+                ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
+                  ? { toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason }
+                  : {}),
+                ...(requestShapeForTelemetry.toolAvailability !== undefined
+                  ? { toolAvailability: requestShapeForTelemetry.toolAvailability }
+                  : {}),
+              }
+            : {}),
+        });
         queue.close();
       }
     })();
@@ -1988,6 +2027,39 @@ export class AiSdkBackend implements AgentBackend {
         },
         pricing,
       ).totalCost;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolves cost for a canonical accounting record at settlement time, together
+   * with the rates it was computed against.
+   *
+   * The basis travels with the amount because a figure recomputed later from
+   * whatever pricing is current would silently drift from what the call actually
+   * cost. An unresolvable price returns `undefined` rather than zero — the
+   * record then carries `costBasis: 'unpriced'`, which is not the same claim as
+   * a call that was free.
+   */
+  private resolveModelCallCost(usage: ProviderRequestUsage): ResolvedModelCallCost | undefined {
+    try {
+      const pricing = (this.input.lookupPricing ?? getBuiltinPricing)(
+        `${this.input.connection.providerType}:${this.input.modelId}`,
+      );
+      if (pricing === null) return undefined;
+      const costUsd = computeCost(
+        {
+          inputTokens: usage.inputTokens ?? 0,
+          outputTokens: usage.outputTokens ?? 0,
+          cacheHitInputTokens: usage.cacheReadInputTokens ?? 0,
+          cacheMissInputTokens: usage.cacheMissInputTokens ?? 0,
+          cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+        },
+        pricing,
+      ).totalCost;
+      if (costUsd === undefined || !Number.isFinite(costUsd)) return undefined;
+      return { costUsd, pricingRates: pricing };
     } catch {
       return undefined;
     }

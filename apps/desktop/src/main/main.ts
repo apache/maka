@@ -10,12 +10,14 @@ import {
   resolveUiLocale,
 } from '@maka/core';
 import type {
+  AppSettings,
   BotProvider,
   ConnectionEvent,
   SessionChangedEvent,
   SessionChangedReason,
   SessionEvent,
   SessionHeader,
+  UpdateAppSettingsInput,
 } from '@maka/core';
 import { deriveBotStatusPersistenceUpdate } from './bot-status-persistence.js';
 import { runThreadSearch } from './search/thread-search.js';
@@ -58,7 +60,6 @@ import type {
 } from '@maka/runtime';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
-  createAgentRunStore,
   createSqliteArtifactStore,
   createSqliteDeepResearchStore,
   createReadImageSnapshotter,
@@ -71,7 +72,7 @@ import {
   createSessionStore,
   createSettingsStore,
   createMcpConfigStore,
-  createShellRunStore,
+  createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
 } from '@maka/storage';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -158,6 +159,7 @@ import {
   resolveProjectContextRoot,
 } from './project-context-root.js';
 import { resolveDesktopStorageRoot } from './storage-root-startup.js';
+import { openDesktopExecutionStoreWiring } from './execution-store-wiring.js';
 
 // E2E switches must never fire in a packaged build, and must never run against
 // the real user data: a stray MAKA_E2E on a build/dev machine would otherwise
@@ -267,12 +269,12 @@ const agentGraphControlStore = createAgentGraphControlStore(workspaceRoot);
 const projectCatalog = createProjectCatalog(workspaceRoot);
 const worktreeChildExecutor = createGitWorktreeChildExecutor({ storageRoot: workspaceRoot });
 const planStore = createSqlitePlanStore(workspaceRoot);
-const runStore = createAgentRunStore(workspaceRoot);
+const executionStoreWiring = await openDesktopExecutionStoreWiring(workspaceRoot);
+const { runStore, shellRunStore } = executionStoreWiring;
 const runtimePersistence = await openRuntimeEventPersistence({
   workspaceRoot,
 });
 const runtimeEventStore = runtimePersistence.runtimeEventStore;
-const shellRunStore = createShellRunStore(workspaceRoot);
 const connectionStore = createConnectionStore(workspaceRoot);
 const settingsStore = createSettingsStore(workspaceRoot);
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
@@ -289,6 +291,10 @@ function ensureMcpReady(): Promise<void> {
   return mcpStartup;
 }
 const telemetryRepo = createSqliteTelemetryRepo(workspaceRoot);
+// Canonical model-call accounting ledger (#1679). Separate store, same
+// operational database: `telemetryRepo` is now a frozen historical projection
+// for LLM calls, and every model call dispatched from here settles into this.
+const modelCallLedger = createSqliteModelCallLedger(workspaceRoot);
 const dailyReviewArchiveStore = createDailyReviewArchiveStore(workspaceRoot);
 const artifactStore = createSqliteArtifactStore(workspaceRoot);
 const deepResearchStore = createSqliteDeepResearchStore(workspaceRoot);
@@ -680,6 +686,7 @@ const {
   automationWiring,
   goalWiring,
   settingsStore,
+  updateAgentSettings,
   shellRuns,
   snapshotReadImage,
   readArchivedToolResultResource,
@@ -818,6 +825,7 @@ backends.register('ai-sdk', createAiSdkBackendFactory({
   buildSubscriptionModelFetch,
   systemPromptService,
   telemetryRepo,
+  modelCallLedger,
   ensureUsageReady,
   artifactStore,
   desktopSessionSkillHosts,
@@ -982,6 +990,7 @@ const dailyReview = createDailyReviewMainService({
   archiveStore: dailyReviewArchiveStore,
   connectionStore,
   telemetryRepo,
+  modelCallLedger,
   ensureUsageReady,
   listSessions: async () => collapseSessionRevisions(await runtime.listSessions()),
   resolveConnectionSecret,
@@ -1109,6 +1118,7 @@ function registerIpc(): void {
       voiceIpcService.consumeNativeAudioOperation(input),
   });
   registerSubscriptionIpc({
+    ipcMain,
     connectionStore,
     claudeSubscription,
     openAiCodex,
@@ -1128,6 +1138,7 @@ function registerIpc(): void {
   registerWebSearchIpc({ settingsStore, getWorkspacePrivacyContext });
   registerBrowserIpc({ mainWindowController });
   registerConnectionsIpc({
+    ipcMain,
     connectionStore,
     credentialStore,
     syncOAuthModelConnections,
@@ -1157,6 +1168,7 @@ function registerIpc(): void {
     settingsStore,
     connectionStore,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     botRegistry,
     getComputerUseCapabilityInput: computerUseCapabilityInput,
@@ -1199,6 +1211,8 @@ function registerIpc(): void {
     ipcMain,
     settingsStore,
     telemetryRepo,
+    modelCallLedger,
+    readRunEvents: (sessionId, runId) => runStore.readEvents(sessionId, runId),
     ensureUsageReady,
     refreshPricingLookup: () => {
       lookupPricing = buildPricingLookup(telemetryRepo.listPricingOverrides());
@@ -1222,6 +1236,14 @@ const { normalizeSettingsPatch, applySettingsRuntimeEffects, handleExternalSetti
     keepSystemAwake,
     safeSendToRenderer,
   });
+
+async function updateAgentSettings(patch: UpdateAppSettingsInput): Promise<AppSettings> {
+  const normalizedPatch = await normalizeSettingsPatch(patch);
+  const next = await settingsStore.update(normalizedPatch);
+  await applySettingsRuntimeEffects(next, patch);
+  safeSendToRenderer('settings:externalChanged', { ts: Date.now() });
+  return next;
+}
 
 const streamEvents = createSessionStreamer({
   sessionActivities,
@@ -1402,6 +1424,7 @@ wireAppLifecycle({
   settingsStore,
   telemetryRepo,
   artifactStore,
+  modelCallLedger,
   ensureUsageReady,
   keepSystemAwake,
   botRegistry,
@@ -1414,6 +1437,7 @@ wireAppLifecycle({
   shellRuns,
   mcpManager,
   runtimePersistence,
+  executionStoreWiring,
   closeWorkflowStores,
   mainWindowController,
   runtime,

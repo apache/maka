@@ -205,6 +205,16 @@ describe('runHarnessAbComparison', () => {
 
       await runHarnessAbComparison(input);
       assert.equal(failingAttempts, 1);
+
+      const adjudicatedRetry = {
+        ...input,
+        retryAdjudicatedInfraRoundIdsOnce: ['ab-maka-r0-a'],
+      };
+      await runHarnessAbComparison(adjudicatedRetry);
+      assert.equal(failingAttempts, 2);
+
+      await runHarnessAbComparison(adjudicatedRetry);
+      assert.equal(failingAttempts, 2);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

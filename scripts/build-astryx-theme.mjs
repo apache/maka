@@ -27,7 +27,10 @@ const desktopDir = path.join(repoRoot, 'apps', 'desktop');
 const themeDir = path.join(desktopDir, 'src', 'renderer', 'astryx-theme');
 const themeSource = path.join('src', 'renderer', 'astryx-theme', 'makaTheme.ts');
 const cssOut = path.join('src', 'renderer', 'astryx-theme', 'maka.css');
-const generatedFiles = ['maka.css', 'maka.js', 'maka.d.ts', 'maka.variants.d.ts'];
+// @astryxdesign/cli 0.2.0 stopped emitting maka.variants.d.ts (`astryx theme
+// build` now outputs css/js/d.ts only) — the file was tracked but never
+// imported, so it is gone with the upgrade.
+const generatedFiles = ['maka.css', 'maka.js', 'maka.d.ts'];
 const canonicalCommand =
   ' * Command: astryx theme build src/renderer/astryx-theme/makaTheme.ts --out ' +
   'src/renderer/astryx-theme/maka.css';

@@ -6,6 +6,9 @@
  * 8k-line `components.tsx`. They are consumed only by the Composer and share
  * the grouped model-choice helpers, so they form a clean seam. `index.ts` does
  * not re-export them (they are internal to the `@maka/ui` Composer surface).
+ *
+ * Thinking level is a separate Selector (not nested in the model menu). The
+ * Composer places it immediately after the model control in the left footer.
  */
 
 import { type ReactNode, useMemo } from 'react';
@@ -24,8 +27,12 @@ import { getConversationCopy } from './conversation-copy.js';
 
 const DEFAULT_THINKING_LEVEL = '__default__';
 
-/** Product-level value mapping over a separate Astryx Selector authority. */
-function ThinkingLevelSelector(props: {
+/**
+ * Standalone thinking-level picker. Hidden when the active model has no
+ * variants — the control does not appear as a disabled husk or change the
+ * model menu's shape.
+ */
+export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
   current?: ThinkingLevel;
   onChange?(level: ThinkingLevel | undefined): void | Promise<void>;
@@ -52,6 +59,8 @@ function ThinkingLevelSelector(props: {
       value={props.current ?? DEFAULT_THINKING_LEVEL}
       size="sm"
       placement="above"
+      // Content-sized: short zh labels (关/中/高) must not sit in a fixed field.
+      width="max-content"
       className="maka-thinking-level-selector"
       isDisabled={props.disabled}
       isLoading={props.loading}
@@ -75,9 +84,6 @@ export function ChatModelSwitcher(props: {
   disabledReason?: string;
   renderProviderMark?(type: ProviderType): ReactNode;
   onChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
-  thinkingLevels?: readonly ThinkingLevel[];
-  thinkingLevel?: ThinkingLevel;
-  onThinkingLevelChange?(level: ThinkingLevel | undefined): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
@@ -103,42 +109,33 @@ export function ChatModelSwitcher(props: {
       data-pending={pending ? 'true' : undefined}
       aria-busy={pending ? 'true' : undefined}
     >
-      <div className="maka-model-selection-controls">
-        <ModelPicker
-          groups={grouped}
-          value={currentValue}
-          disabled={disabled}
-          loading={pending}
-          renderProviderMark={props.renderProviderMark}
-          ariaLabel={copy.switchAriaLabel}
-          triggerClassName="maka-model-switcher-trigger"
-          leadingOption={!currentKnownChoice ? {
-            value: currentValue,
-            label: displayLabel,
-            providerType: props.currentProviderType,
-          } : undefined}
-          onValueChange={async (value) => {
-            const next = parseModelChoiceValue(value);
-            if (!next) return;
-            if (
-              next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
-              next.model === currentModel
-            ) return;
-            try {
-              await props.onChange?.(next);
-            } catch {
-              // The AppShell action owner reports the visible model-switch failure.
-            }
-          }}
-        />
-        <ThinkingLevelSelector
-          levels={props.thinkingLevels ?? []}
-          current={props.thinkingLevel}
-          onChange={props.onThinkingLevelChange}
-          disabled={pending}
-          loading={pending}
-        />
-      </div>
+      <ModelPicker
+        groups={grouped}
+        value={currentValue}
+        disabled={disabled}
+        loading={pending}
+        renderProviderMark={props.renderProviderMark}
+        ariaLabel={copy.switchAriaLabel}
+        triggerClassName="maka-model-switcher-trigger"
+        leadingOption={!currentKnownChoice ? {
+          value: currentValue,
+          label: displayLabel,
+          providerType: props.currentProviderType,
+        } : undefined}
+        onValueChange={async (value) => {
+          const next = parseModelChoiceValue(value);
+          if (!next) return;
+          if (
+            next.llmConnectionSlug === props.activeSession.llmConnectionSlug &&
+            next.model === currentModel
+          ) return;
+          try {
+            await props.onChange?.(next);
+          } catch {
+            // The AppShell action owner reports the visible model-switch failure.
+          }
+        }}
+      />
     </div>
   );
 }
@@ -148,10 +145,8 @@ export function ChatModelSwitcher(props: {
  * `ChatModelSwitcher` — which is bound to a live session and switches THAT
  * session's model — this one just records which model the next new chat should
  * start with. Reuses the model chip's look so the only visible change is that
- * the chevron now actually opens a menu. The thinking level chosen here is
- * passed to `createSession` on the first message (so reasoning models start at
- * the right depth without a mid-session change that would invalidate the
- * provider prompt cache).
+ * the chevron now actually opens a menu. The thinking level for new chats is a
+ * separate right-footer control owned by the Composer.
  */
 export function NewChatModelPicker(props: {
   label: string;
@@ -160,9 +155,6 @@ export function NewChatModelPicker(props: {
   currentProviderType?: ProviderType;
   renderProviderMark?(type: ProviderType): ReactNode;
   onPick(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
-  thinkingLevels?: readonly ThinkingLevel[];
-  thinkingLevel?: ThinkingLevel;
-  onThinkingLevelChange?(level: ThinkingLevel | undefined): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).model;
@@ -172,29 +164,22 @@ export function NewChatModelPicker(props: {
     (choice) => modelChoiceValue(choice.connectionSlug, choice.model) === currentValue,
   );
   return (
-    <div className="maka-model-selection-controls">
-      <ModelPicker
-        groups={grouped}
-        value={currentValue}
-        renderProviderMark={props.renderProviderMark}
-        ariaLabel={copy.newChatAriaLabel(props.label)}
-        triggerClassName="maka-new-chat-model-selector"
-        leadingOption={!currentKnownChoice ? {
-          value: currentValue,
-          label: props.label,
-          providerType: props.currentProviderType,
-        } : undefined}
-        onValueChange={async (value) => {
-          const next = parseModelChoiceValue(value);
-          if (next) await props.onPick(next);
-        }}
-      />
-      <ThinkingLevelSelector
-        levels={props.thinkingLevels ?? []}
-        current={props.thinkingLevel}
-        onChange={props.onThinkingLevelChange}
-      />
-    </div>
+    <ModelPicker
+      groups={grouped}
+      value={currentValue}
+      renderProviderMark={props.renderProviderMark}
+      ariaLabel={copy.newChatAriaLabel(props.label)}
+      triggerClassName="maka-new-chat-model-selector"
+      leadingOption={!currentKnownChoice ? {
+        value: currentValue,
+        label: props.label,
+        providerType: props.currentProviderType,
+      } : undefined}
+      onValueChange={async (value) => {
+        const next = parseModelChoiceValue(value);
+        if (next) await props.onPick(next);
+      }}
+    />
   );
 }
 

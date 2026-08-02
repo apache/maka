@@ -44,7 +44,7 @@ export function createComputerUseHost(input: {
     base64: string,
     mimeType: string,
   ) => { base64: string; mimeType: 'image/png' | 'image/jpeg' };
-  physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
+  physicalInputRecentlyActive: () => boolean | Promise<boolean>;
   onTrace?: CuaDriverBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
 }): ComputerUseHostState {
@@ -100,9 +100,7 @@ export function createComputerUseHost(input: {
         ...(expectedServerVersion ? { expectedServerVersion } : {}),
         ...(expectedProtocolVersion ? { expectedProtocolVersion } : {}),
         ...(input.compressFrame ? { compressFrame: input.compressFrame } : {}),
-        ...(input.physicalInputRecentlyActive
-          ? { physicalInputRecentlyActive: input.physicalInputRecentlyActive }
-          : {}),
+        physicalInputRecentlyActive: input.physicalInputRecentlyActive,
         ...(input.onTrace ? { onTrace: input.onTrace } : {}),
         ...(input.overlay ? { overlay: input.overlay } : {}),
       }),
@@ -112,6 +110,12 @@ export function createComputerUseHost(input: {
   } catch {
     return { selected: selectComputerUseBackend() };
   }
+}
+
+export function createDesktopPhysicalInputGuard(
+  getSystemIdleTime: () => number,
+): () => boolean {
+  return () => getSystemIdleTime() < 1;
 }
 
 export function computerUseServiceHealth(

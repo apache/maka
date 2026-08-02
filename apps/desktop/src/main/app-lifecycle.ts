@@ -17,6 +17,7 @@ import type {
   createSessionStore,
   createSettingsStore,
   createSqliteArtifactStore,
+  createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
@@ -33,6 +34,7 @@ import type { createDailyReviewMainService } from './daily-review-main.js';
 import type { createMainAutomationWiring } from './automation-wiring.js';
 import type { createMainGoalWiring } from './goal-wiring.js';
 import type { createMainWindowController } from './main-window.js';
+import type { DesktopExecutionStoreWiring } from './execution-store-wiring.js';
 import type { assembleDesktopTools } from './tool-assembly.js';
 import type { StreamEvents } from './session-stream.js';
 import type { SettingsIpcHandle } from './settings-ipc-main.js';
@@ -59,6 +61,7 @@ export interface AppLifecycleDeps {
   settingsStore: ReturnType<typeof createSettingsStore>;
   telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
   artifactStore: ReturnType<typeof createSqliteArtifactStore>;
+  modelCallLedger: ReturnType<typeof createSqliteModelCallLedger>;
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
@@ -71,6 +74,7 @@ export interface AppLifecycleDeps {
   shellRuns: ShellRunProcessManager;
   mcpManager: McpClientManager;
   runtimePersistence: Awaited<ReturnType<typeof openRuntimeEventPersistence>>;
+  executionStoreWiring: DesktopExecutionStoreWiring;
   closeWorkflowStores: () => Promise<void>;
   mainWindowController: ReturnType<typeof createMainWindowController>;
   runtime: SessionManager;
@@ -113,6 +117,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     settingsStore,
     telemetryRepo,
     artifactStore,
+    modelCallLedger,
     ensureUsageReady,
     keepSystemAwake,
     botRegistry,
@@ -125,6 +130,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     shellRuns,
     mcpManager,
     runtimePersistence,
+    executionStoreWiring,
     closeWorkflowStores,
     mainWindowController,
     runtime,
@@ -389,6 +395,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       agentGraphSupervisorWakeCoordinator.close(),
       telemetryRepo.close(),
       Promise.resolve().then(() => artifactStore.close?.()),
+      modelCallLedger.close(),
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);
@@ -399,6 +406,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       console.error('[shutdown] cleanup failed:', error);
     }
     runtimePersistence.close();
+    executionStoreWiring.close();
     agentGraphControlStore.close();
     await sessionStore.close?.();
   }

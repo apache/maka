@@ -1,21 +1,17 @@
 import { test, expect } from './fixtures';
 
-test('project picker keeps fixed actions outside the scroll region and can create an unassigned task', async ({
+// Project picker product journey. "Fixed actions outside the scroll region"
+// is owned by `.maka-composer-project-scroll` CSS
+// (chat-shell-layout-contract.test.ts).
+test('project picker can create an unassigned task and surfaces it under project grouping', async ({
   window: page,
 }) => {
   const picker = page.locator('.maka-composer-workspace-picker');
   await picker.click();
 
-  const projectScroll = page.locator('.maka-composer-project-scroll');
-  const addProject = page.getByRole('menuitem', { name: '添加项目' });
   const noProject = page.getByRole('menuitem', { name: '无项目' });
-  await expect(projectScroll).toBeAttached();
-  await expect(addProject).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: '添加项目' })).toBeVisible();
   await expect(noProject).toBeVisible();
-  await expect(projectScroll).toHaveCSS('overflow-y', 'auto');
-  expect(await projectScroll.locator('text=添加项目').count()).toBe(0);
-  expect(await projectScroll.locator('text=无项目').count()).toBe(0);
-
   await noProject.click();
   await expect(picker).toContainText('无项目');
 
@@ -28,5 +24,6 @@ test('project picker keeps fixed actions outside the scroll region and can creat
   const sidebar = page.locator('.maka-session-panel');
   await sidebar.getByRole('button', { name: '会话分组方式' }).click();
   await page.getByRole('menuitemradio', { name: '按项目' }).click();
-  await expect(sidebar.locator('.maka-list-project-heading').filter({ hasText: '未归属项目' })).toBeVisible();
+  // Project groups are collapsible SideNav items, not the retired heading class.
+  await expect(sidebar.locator('[data-project-id]').filter({ hasText: '未归属项目' })).toBeVisible();
 });

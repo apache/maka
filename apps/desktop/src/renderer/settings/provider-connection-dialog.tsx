@@ -22,7 +22,6 @@ export function ProviderConnectionDialog(props: {
       className="providerConnectionDialog"
       width={520}
       maxHeight="calc(100dvh - 80px)"
-      padding={0}
       purpose="form"
     >
       <Layout

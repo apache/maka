@@ -249,6 +249,7 @@ export { renderSwarmModePrompt } from './swarm-mode.js';
 export { renderGraphModePrompt } from './graph-mode.js';
 export {
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeMessageAuthorityInvariantError,
 } from './message-authority.js';
 export type {
@@ -518,6 +519,7 @@ export {
   MIN_PTY_ROWS,
   SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
   SHELL_RUN_RESOURCE_PREFIX,
+  ShellRunPtyControlClosedError,
   isWellFormedTerminalInput,
   isShellRunResourceRef,
   shellRunResourceRef,
@@ -1054,13 +1056,18 @@ export { materializeSession, applyAppendedMessage, setToolStatus } from './mater
 export type { ToolActivityItem, ChatItem, SessionViewModel } from './materializer.js';
 
 export { AsyncEventQueue } from './async-queue.js';
-export { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from './fake-backend.js';
+export {
+  FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_WAIT_FOR_STEERING_PROMPT,
+  FakeBackend,
+} from './fake-backend.js';
 
 export {
   BUILTIN_PRICING,
   buildPricingLookup,
   computeCost,
   getBuiltinPricing,
+  llmCallUsageFields,
   recordLlmCall,
   recordToolInvocation,
 } from './telemetry/index.js';
@@ -1380,9 +1387,12 @@ export {
   computeNextCronFire,
   computeJitter,
   matchesCronField,
+  settleAutomationAttempt,
 } from './automation-state.js';
 export type {
+  AutomationAttemptOutcome,
   AutomationDefinition,
+  AutomationExecutionTemplate,
   AutomationKind,
   AutomationSchedule,
   AutomationStatus,
@@ -1394,8 +1404,17 @@ export {
   DEFER_WINDOW_MS,
 } from './automation-scheduler.js';
 export type { AutomationSchedulerDeps, AutomationFireResult } from './automation-scheduler.js';
-export { buildAutomationTool, AUTOMATION_TOOL_NAME } from './automation-tools.js';
-export type { AutomationToolDeps } from './automation-tools.js';
+export {
+  buildAutomationAuthorityTool,
+  buildAutomationTool,
+  AUTOMATION_TOOL_NAME,
+  AUTOMATION_MODEL_LIST_MAX_ITEMS,
+} from './automation-tools.js';
+export type {
+  AutomationAuthorityToolDeps,
+  AutomationToolAuthority,
+  AutomationToolDeps,
+} from './automation-tools.js';
 export { evaluateAutomationCanFire, HEARTBEAT_IDLE_STATUSES } from './automation-can-fire.js';
 export type { CanFireSessionHeader, EvaluateAutomationCanFireDeps } from './automation-can-fire.js';
 
@@ -1407,21 +1426,35 @@ export {
   TERMINAL_GOAL_STATUSES,
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_BLOCK_CAP,
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  goalCheckpoint,
+  isGoalTextWithinLimit,
+  truncateGoalText,
 } from './goal-state.js';
 export type {
   GoalCheckpoint,
+  GoalControlLease,
   GoalManagerDeps,
   GoalPauseOptions,
   GoalState,
   GoalStatus,
+  GoalTextLimit,
 } from './goal-state.js';
 export {
   evaluateGoal,
   buildGoalEvaluationPrompt,
   parseGoalEvaluation,
+  generateGoalEvaluationModelCall,
   DEFAULT_EVALUATOR_TIMEOUT_MS,
 } from './goal-evaluator.js';
-export type { GoalEvaluation, GoalEvaluatorDeps } from './goal-evaluator.js';
+export type {
+  GoalEvaluation,
+  GoalEvaluationModelInput,
+  GoalEvaluationModelResult,
+  GoalEvaluatorDeps,
+  GoalEvaluatorResource,
+} from './goal-evaluator.js';
 export {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,
@@ -1439,8 +1472,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
-  GoalExternalTurnStart,
-  GoalExternalTurnSettler,
+  GoalObservedTurnStart,
+  GoalObservedTurnSettler,
   GoalSessionCloseOperation,
   GoalTaskGateDecision,
   GoalTaskGateDeps,

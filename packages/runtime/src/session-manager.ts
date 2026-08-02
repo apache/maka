@@ -133,6 +133,7 @@ import {
 import type { AgentBackend, BackendStopMode } from '@maka/core/backend-types';
 import type { MakaTool } from './tool-runtime.js';
 import type { RunTraceRecorder } from './run-trace.js';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type {
   ProviderRequestAttemptRecord,
   ProviderRequestCaptureLedgerRecord,
@@ -170,7 +171,7 @@ import {
   type TurnStartOptions,
 } from './runtime-kernel.js';
 import { fallbackSessionTitle, sessionTitleSource } from './session-title.js';
-import type { HistoryCompactCleanupRequest } from './runtime-kernel.js';
+import type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-coordinator.js';
 import { fingerprintAgentGraphRunnableIntent } from './stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from './stream-graph-readiness.js';
 import { projectAgentGraphRecords } from './stream-graph-projection.js';
@@ -661,6 +662,12 @@ export interface BackendFactoryContext {
   recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
   /** Best-effort AgentRun row for one physical provider call. */
   recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void;
+  /**
+   * Durable AgentRun row carrying the canonical accounting record for one
+   * physical provider call. Distinct from the diagnostic row above: this one is
+   * the metering source of truth (#1679).
+   */
+  recordModelCallAttempt?: (attempt: ModelCallAttempt) => Promise<void>;
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,
@@ -4216,61 +4223,93 @@ export class SessionManager {
     if (childStopError !== undefined) throw childStopError;
   }
 
-  async closePendingHostedLinkedChildAdmission(input: {
+  async closePendingHostedAdmission(input: {
     sessionId: string;
     turnId: string;
     runId: string;
     admittedAt: number;
-    execution: Exclude<RootExecutionDescriptor, { kind: 'external_message' }>;
+    execution: Exclude<
+      RootExecutionDescriptor,
+      { kind: 'external_message' } | { kind: 'automation' }
+    >;
   }): Promise<void> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) {
-      throw new Error('Linked child admission recovery requires execution stores');
+      throw new Error('Hosted admission recovery requires execution stores');
     }
     const session = await this.deps.store.readHeader(input.sessionId);
-    if (
-      session.subagentParent?.kind !== 'subagent' ||
-      session.subagentRuntime?.agentId !== input.execution.agentId ||
-      session.subagentRuntime.agentName !== input.execution.agentName
-    ) {
-      throw new Error(
-        `Admitted Turn ${input.turnId} does not match its linked child Session identity`,
-      );
-    }
-
-    const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
-    if (continuationAuthority) {
-      const claimState = (
-        await continuationAuthority.listContinuationClaimsForRecovery(input.sessionId)
-      ).find(
-        (candidate) =>
-          candidate.claim.target.runId === input.runId ||
-          candidate.claim.target.turnId === input.turnId,
-      );
-      if (claimState) {
-        assertClaimOwnsHostedLinkedChildAdmission(input, claimState.claim);
-        // The continuation claim is the durable owner of this target identity.
-        // SessionManager's claim-repair saga must materialize its exact header;
-        // the generic hosted-admission repair must not steal the same Run ID.
-        return;
-      }
-    }
-
+    const headerExtras: Partial<AgentRunHeader> = {};
+    let recoveryReason: string;
+    let diagnostic: Record<string, unknown>;
     let workspaceIdentity: string | undefined;
-    if (
-      input.execution.kind === 'linked_child_resume' ||
-      input.execution.kind === 'linked_child_provider_retry'
-    ) {
-      const sourceRun = await this.deps.runStore.readRun(
-        input.sessionId,
-        input.execution.sourceRunId,
-      );
+    if (input.execution.kind === 'goal') {
+      headerExtras.goalId = input.execution.goalId;
+      recoveryReason = 'goal_internal_admission_without_run';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        goalId: input.execution.goalId,
+      };
+    } else {
       if (
-        sourceRun.agentId !== input.execution.agentId ||
-        sourceRun.agentName !== input.execution.agentName
+        session.subagentParent?.kind !== 'subagent' ||
+        session.subagentRuntime?.agentId !== input.execution.agentId ||
+        session.subagentRuntime.agentName !== input.execution.agentName
       ) {
-        throw new Error(`Admitted Turn ${input.turnId} source changed its trusted agent identity`);
+        throw new Error(
+          `Admitted Turn ${input.turnId} does not match its linked child Session identity`,
+        );
       }
-      workspaceIdentity = sourceRun.workspaceIdentity;
+
+      const continuationAuthority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
+      if (continuationAuthority) {
+        const claimState = (
+          await continuationAuthority.listContinuationClaimsForRecovery(input.sessionId)
+        ).find(
+          (candidate) =>
+            candidate.claim.target.runId === input.runId ||
+            candidate.claim.target.turnId === input.turnId,
+        );
+        if (claimState) {
+          assertClaimOwnsHostedLinkedChildAdmission(input, claimState.claim);
+          // The continuation claim is the durable owner of this target identity.
+          // SessionManager's claim-repair saga must materialize its exact header;
+          // the generic hosted-admission repair must not steal the same Run ID.
+          return;
+        }
+      }
+
+      if (
+        input.execution.kind === 'linked_child_resume' ||
+        input.execution.kind === 'linked_child_provider_retry'
+      ) {
+        const sourceRun = await this.deps.runStore.readRun(
+          input.sessionId,
+          input.execution.sourceRunId,
+        );
+        if (
+          sourceRun.agentId !== input.execution.agentId ||
+          sourceRun.agentName !== input.execution.agentName
+        ) {
+          throw new Error(
+            `Admitted Turn ${input.turnId} source changed its trusted agent identity`,
+          );
+        }
+        workspaceIdentity = sourceRun.workspaceIdentity;
+        if (input.execution.kind === 'linked_child_resume') {
+          headerExtras.resumedFromRunId = input.execution.sourceRunId;
+        } else {
+          headerExtras.retriedFromRunId = input.execution.sourceRunId;
+        }
+      }
+      headerExtras.agentId = input.execution.agentId;
+      headerExtras.agentName = input.execution.agentName;
+      recoveryReason = 'child_internal_admission_without_run';
+      diagnostic = {
+        executionKind: input.execution.kind,
+        ...(input.execution.kind === 'linked_child_resume' ||
+        input.execution.kind === 'linked_child_provider_retry'
+          ? { sourceRunId: input.execution.sourceRunId }
+          : {}),
+      };
     }
 
     const run: AgentRunHeader = {
@@ -4288,19 +4327,11 @@ export class SessionManager {
       collaborationMode: session.collaborationMode ?? 'agent',
       createdAt: input.admittedAt,
       updatedAt: input.admittedAt,
-      ...(input.execution.kind === 'linked_child_resume'
-        ? { resumedFromRunId: input.execution.sourceRunId }
-        : {}),
-      ...(input.execution.kind === 'linked_child_provider_retry'
-        ? { retriedFromRunId: input.execution.sourceRunId }
-        : {}),
-      agentId: input.execution.agentId,
-      agentName: input.execution.agentName,
+      ...headerExtras,
     };
     await this.deps.runStore.createRun(run, { durable: true });
 
     const ts = this.deps.now();
-    const recoveryReason = 'child_internal_admission_without_run';
     const terminalEvent = buildRecoveredTerminalRuntimeEvent({
       id: this.deps.newId(),
       run,
@@ -4308,13 +4339,7 @@ export class SessionManager {
       ts,
       failureClass: 'app_restarted',
       recoveryReason,
-      diagnostic: {
-        executionKind: input.execution.kind,
-        ...(input.execution.kind === 'linked_child_resume' ||
-        input.execution.kind === 'linked_child_provider_retry'
-          ? { sourceRunId: input.execution.sourceRunId }
-          : {}),
-      },
+      diagnostic,
       message: 'app_restarted',
     });
     await commitTerminalRunWithRuntimeFact({
@@ -4331,7 +4356,7 @@ export class SessionManager {
       runEventData: {
         recovered: true,
         recoveryReason,
-        executionKind: input.execution.kind,
+        ...diagnostic,
       },
       existingEvents: [],
     });
@@ -5474,7 +5499,10 @@ function assertClaimOwnsHostedLinkedChildAdmission(
     sessionId: string;
     turnId: string;
     runId: string;
-    execution: Exclude<RootExecutionDescriptor, { kind: 'external_message' }>;
+    execution: Exclude<
+      RootExecutionDescriptor,
+      { kind: 'external_message' } | { kind: 'automation' }
+    >;
   },
   claim: ContinuationClaimV1,
 ): void {

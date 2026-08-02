@@ -3,8 +3,6 @@
 .settingsSurface {
   min-height: 0;
   height: 100%;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--background);
 }
@@ -54,9 +52,6 @@
 .settingsSurface[data-modal="true"] {
   position: relative;
   background: transparent;
-  grid-template-columns: 240px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 0;
 }
 
 .settingsActionRow {
@@ -65,6 +60,13 @@
   flex-wrap: wrap;
   gap: var(--space-2-5);
 }
+
+.settingsActionWidthXs { min-width: 3.5rem; }
+.settingsActionWidthSm { min-width: 4rem; }
+.settingsActionWidthMd { min-width: 5rem; }
+.settingsActionWidthLg { min-width: 6rem; }
+.settingsActionWidthXl { min-width: 7rem; }
+.settingsActionWidth2Xl { min-width: 7.5rem; }
 
 .settingsSubheading {
   margin: 0;

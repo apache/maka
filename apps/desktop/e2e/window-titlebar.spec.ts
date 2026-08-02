@@ -6,8 +6,8 @@ import type { Page } from '@playwright/test';
  *
  * `.maka-window-titlebar` is the only element allowed to declare
  * `-webkit-app-region: drag`, and it occupies the shell's first grid row — both
- * static gates live in `app-region-hygiene-contract.test.ts` and
- * `window-titlebar-contract.test.ts`. What no static gate can see is the
+ * static gates live in `app-region-hygiene-contract.test.ts`. What no static
+ * gate can see is the
  * RENDERED rectangle against whatever the window currently contains, and that is
  * where every known defect in this area lived:
  *
@@ -41,7 +41,7 @@ import type { Page } from '@playwright/test';
  * without removing it, so the drag rect is still underneath them.
  */
 
-const SHELL = '.maka-shell-2col';
+const SHELL = '.maka-shell-astryx';
 
 const INTERACTIVE_SELECTOR = [
   'button',
@@ -80,7 +80,7 @@ interface TitlebarReport {
 
 async function readTitlebar(page: Page, interactiveSelector: string): Promise<TitlebarReport> {
   return page.evaluate((selector) => {
-    const shell = document.querySelector('.maka-shell-2col');
+    const shell = document.querySelector('.maka-shell-astryx');
     const titlebar = document.querySelector('.maka-window-titlebar');
     if (!shell || !titlebar) throw new Error('shell or titlebar missing from the rendered tree');
     const band = titlebar.getBoundingClientRect();
@@ -212,14 +212,16 @@ async function readTitlebar(page: Page, interactiveSelector: string): Promise<Ti
       });
     }
 
-    const contentTops = [...shell.children]
-      .filter((child) => child !== titlebar)
+    const contentElements = [...shell.querySelectorAll('.maka-session-panel, .maka-panel-detail')];
+    const contentTops = contentElements
       .map((child) => child.getBoundingClientRect())
       .filter((rect) => rect.width > 0 && rect.height > 0)
       .map((rect) => rect.top);
 
     return {
-      isFirstElementChild: shell.firstElementChild === titlebar,
+      isFirstElementChild: contentElements.every(
+        (content) => Boolean(titlebar.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ),
       band: {
         top: Math.round(band.top),
         left: Math.round(band.left),
@@ -323,7 +325,7 @@ test('the window titlebar owns its row across surfaces, sidebar states, and the 
   await openSidebar(page);
   await assertTitlebarIsWellFormed(page, 'chat surface, sidebar expanded, wide');
 
-  const sidebar = page.getByRole('complementary', { name: '对话列表' });
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
   for (const destination of ['扩展', '定时任务'] as const) {
     await sidebar.getByRole('button', { name: destination, exact: true }).click();
     await expect(page.getByRole('main', { name: destination })).toBeVisible();

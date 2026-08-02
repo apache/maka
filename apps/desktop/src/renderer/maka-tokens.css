@@ -342,10 +342,9 @@
 
   /* === line-height ===
      PR-LEADING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to a Tailwind leading-scale subset (drop
-     relaxed/loose, zero sites). Token names mirror Tailwind's leading-*
-     utilities so `var(--leading-*)` in CSS and `leading-*` in TSX share
-     one source — same bridge pattern as --space-* / p-N.
+     four-tier scale for single-line, heading, dense UI, and body copy.
+     relaxed/loose had zero sites and were dropped; all consumers share
+     these semantic custom properties as their single source.
 
      Snug is the one tier that can't be cut: 40 sites at 1.3-1.4 (small-
      title / UI text, 13/11px small-text dense zones) collapse to tight
@@ -358,10 +357,8 @@
 
   /* === font-weight ===
      PR-FONT-WEIGHT-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to Tailwind font-weight utilities (drop
-     thin/extralight/light/extrabold/black, zero sites). Token names
-     mirror Tailwind's font-* utilities so `var(--font-weight-*)` in CSS
-     and `font-*` in TSX share one source. Variable-weight Geist +
+     four-tier scale for the weights Maka actually uses (drop
+     thin/extralight/light/extrabold/black, zero sites). Variable-weight Geist +
      system-ui means 550/620/650/680 are mid-axis picks to snap:
      550/620/650 → semibold (600), 680 → bold (700). */
   --font-weight-normal: 400;
@@ -371,7 +368,7 @@
 
   /* === letter-spacing ===
      PR-TRACKING-CONVERGE-0 (issue #520 PR1):
-     four-tier scale aligned to a Tailwind tracking-scale subset. No
+     four-tier tracking scale. No
      --tracking-tight: Maka is a CJK-first app, so avoid
      tightening CJK letter-spacing, so all negative values snap to
      normal (0). ALL-CAPS short labels use wider/widest (+5–10%
@@ -406,15 +403,10 @@
      only misuse, and a contract test pinned the result. Adjacency is
      the whole rule; state it or the rule licenses nonsense.
 
-     Both legitimate forms in this codebase:
-       1. Tier swap, when outer − inset lands on a tier — the segmented
-          track (8px surface) with a uniform 2px pad: 8 − 2 = 6 =
-          --radius-control for the buttons that hug its ends.
-          See styles/segmented.css.
-       2. `calc(var(--radius-*) - 1px)`, the border inset — a ::before
+     A legitimate form in this codebase is
+       `calc(var(--radius-*) - 1px)`, the border inset — a ::before
           overlay at inset-0 hugging the inner edge of a 1px border.
-          See primitives/empty.tsx.
-     Both are corner-adjacent with a uniform inset. If a proposed
+     It is corner-adjacent with a uniform inset. If a proposed
      shrink is neither, it is not concentric — pick the tier the
      element's ROLE calls for instead. */
   --radius-control: 6px;
@@ -434,10 +426,8 @@
   /* PR-SPACING-CONVERGE-0 (issue #430 PR3, 2026-07-03):
      One ruler for every padding/gap/margin. Absolute 4px (not 0.25rem)
      so it holds under any root font-size — the previous 0.25rem was
-     3.75px under the 15px root, silently mis-aligning Tailwind's spacing
-     scale (p-2 = 7.5px) with hand-written px (padding: 8px). The
-     the `@theme inline` bridge in styles.css exports this same 4px to Tailwind so
-     p-2/gap-2/m-4 and var(--space-*) share one ruler.
+     3.75px under the 15px root, silently mis-aligning rem-based spacing
+     with hand-written px. Product CSS and `@maka/ui` both consume this ruler.
 
      Scale: 16-and-below keeps every even number (0/2/4/6/8/10/12) because
      dense UI needs the half-steps (6 between 4-8, 10 between 8-12).
@@ -589,8 +579,8 @@
 
   /* === control-height scale (component sizing, #520 PR4 item 15) =========
      Interactive controls (button / input / select / tab / nav row / badge /
-     kbd) live on the 4px spacing ruler so CSS var(--h-control-*) and Tailwind
-     h-N share one scale (h-5=20, h-6=24, h-7=28, h-8=32, h-9=36, h-10=40).
+     kbd) live on the 4px spacing ruler and share the `--h-control-*` scale
+     (20, 24, 28, 32, 36, and 40px).
      The historic sidebar/会话/设置 height drift came from off-ruler bare px
      (22/26/30/34/38); this scale converges them. Square icon controls use
      the same token for width and height (their footprint = control size).
@@ -1023,53 +1013,6 @@ html[data-os="darwin"].dark {
 }
 
 /* =============================================================================
-   UTILITY CLASSES
-============================================================================= */
-
-@layer utilities {
-  /* Hide scrollbar but keep scrolling */
-  .scrollbar-hide              { -ms-overflow-style: none; scrollbar-width: none; }
-  .scrollbar-hide::-webkit-scrollbar { display: none; }
-
-  /* Reveal scrollbar only on parent hover (use with .group) */
-  .scrollbar-hover::-webkit-scrollbar       { width: 4px; }
-  .scrollbar-hover::-webkit-scrollbar-track { background: transparent; }
-  .scrollbar-hover::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--radius-control); }
-  .group:hover .scrollbar-hover::-webkit-scrollbar-thumb { background: var(--border); }
-
-  /* Shadow recipes — apply as standalone classes */
-  .shadow-minimal      { box-shadow: var(--shadow-minimal); }
-  .shadow-minimal-flat { box-shadow: var(--shadow-minimal-flat); }
-  .shadow-medium       { box-shadow: var(--shadow-medium); }
-  .shadow-modal        { box-shadow: var(--shadow-modal); }
-
-  /* iOS-style continuous corners (supported in WebKit/Chromium). */
-  .smooth-corners {
-    corner-shape: superellipse;
-    -webkit-corner-shape: superellipse;
-  }
-
-  /* "Pill" — used for status badges and labels.
-     Background is 5% foreground; text is 80% foreground. */
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-0-5) var(--space-2);
-    font-size: var(--font-size-ui);
-    font-weight: var(--font-weight-medium);
-    color: var(--foreground-secondary);
-    background: var(--foreground-5);
-    border: var(--border-width-hairline) solid var(--border);
-    border-radius: var(--radius-pill);
-  }
-  .pill[data-tone="accent"]      { background: oklch(from var(--accent) l c h / 0.08); color: var(--accent); border-color: oklch(from var(--accent) l c h / 0.15); }
-  .pill[data-tone="info"]        { background: oklch(from var(--info) l c h / 0.10); color: var(--info-text); border-color: oklch(from var(--info) l c h / 0.20); }
-  .pill[data-tone="success"]     { background: oklch(from var(--success) l c h / 0.10); color: var(--success-text); border-color: oklch(from var(--success) l c h / 0.20); }
-  .pill[data-tone="destructive"] { background: oklch(from var(--destructive) l c h / 0.10); color: var(--destructive-text); border-color: oklch(from var(--destructive) l c h / 0.20); }
-}
-
-/* =============================================================================
    COMPONENT RECIPES — drop-in classes for our V0.1 UI
 
    These are literal class names used by the React components. Layout stays in JSX; this file
@@ -1231,9 +1174,18 @@ html[data-os="darwin"].dark {
     content-visibility: visible;
   }
 
-  /* Tools now render inline via the flat `ToolTrow`; reasoning uses Astryx
-     Collapsible through `DeepThinking`. Product text and shimmer remain local,
-     while disclosure focus, keyboard behavior, chevron, and chrome are Astryx-owned. */
+  /* ChatReasoning is ejected from Astryx lab 0.1.9 because lab is canary-only.
+     Core's atom sheet already contains every compiled StyleX atom except the
+     five shimmer declarations below; these are copied verbatim from lab.css. */
+  @keyframes x1ofn8cw-B {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .xct3ic7:not(#\#):not(#\#):not(#\#) { background-image: linear-gradient(90deg, var(--color-text-secondary) 0%, var(--color-text-disabled) 50%, var(--color-text-secondary) 100%); }
+  .xakli9p:not(#\#):not(#\#):not(#\#) { background-size: 200% 100%; }
+  .x1ta4xzc:not(#\#):not(#\#):not(#\#) { background-clip: text; }
+  .x3mlza6:not(#\#):not(#\#):not(#\#) { animation-name: x1ofn8cw-B; }
+  .xeaay5l:not(#\#):not(#\#):not(#\#) { animation-duration: 4s; }
 
   /* ---- Tool activity ---------------------------------------------- */
 
@@ -1263,7 +1215,7 @@ html[data-os="darwin"].dark {
 
   /* ---- Composer --------------------------------------------------- */
 
-  .maka-composer[data-drag-active="true"] .maka-composer-inner {
+  .maka-composer[data-drag-active="true"] .maka-composer-astryx {
     border-color: oklch(from var(--focus-ring) l c h / 0.46);
     background: oklch(from var(--focus-ring) 0.98 calc(c * 0.20) h / 0.35);
     box-shadow:
@@ -1278,34 +1230,6 @@ html[data-os="darwin"].dark {
     gap: var(--space-2);
     color: var(--foreground-secondary);
     font-size: var(--font-size-ui);
-  }
-
-  /* ---- Tabs ------------------------------------------------------- */
-
-  /* Shared tab spec (#499 P0-3): one `maka-tab` class + `underline`/`pill`
-   * variants on the Base UI Tabs primitive. Active/hover use the neutral
-   * state tokens — no brand color, no per-surface hand-written tab CSS.
-   * underline = neutral under-bar via the Base UI indicator (no bg fill);
-   * pill = neutral bg fill + bold (indicator hidden). */
-  .maka-tabs-list[data-variant="pill"] .maka-tab {
-    min-height: 34px;
-    border-radius: var(--radius-pill);
-    border: var(--border-width-hairline) solid transparent;
-    background: var(--foreground-5);
-    color: var(--foreground-secondary);
-    padding: 0 var(--space-4);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab:hover {
-    background: var(--state-hover-bg);
-    color: var(--foreground);
-  }
-  .maka-tabs-list[data-variant="pill"] .maka-tab[data-active] {
-    border-color: oklch(from var(--foreground) l c h / 0.16);
-    background: var(--state-selected-bg);
-    font-weight: var(--font-weight-semibold);
-  }
-  .maka-tabs-list[data-variant="underline"] .maka-tab[data-active] {
-    color: var(--foreground);
   }
 
   /* ---- Code blocks (used in args preview inside permission prompt) --- */
@@ -1339,9 +1263,8 @@ html[data-os="darwin"].dark {
 
 /* Governance-level keyframe for the `TextShimmer` primitive (streaming UI
    rework). A named `@keyframes` is a global rule, not an element property, so
-   it can't be a Tailwind leaf-literal — it lives here (the shared motion home)
-   like `maka-tool-pulse`, with the shimmer's other declarations
-   as literal utilities in the primitive. Sweeps a clipped light band left→right
+   it lives here in the shared motion home like `maka-tool-pulse`, with the
+   shimmer's other declarations in the primitive stylesheet. Sweeps a clipped light band left→right
    across the glyph shape by translating `background-position`; the two-layer
    primitive keeps an opaque base underneath so the text stays readable. Frozen
    by the global reduced-motion / e2e-fixture rules in base.css and the
@@ -1386,44 +1309,6 @@ html[data-os="darwin"].dark {
   );
   background-size: 200% 100%;
   animation: maka-shimmer 1.5s var(--ease-in-out-strong) infinite;
-}
-
-/* Skeleton placeholder primitives — used while data is still in flight.
-   The base block carries the shimmer animation and a token-based tint so
-   they read the same in light + dark modes. Compose `.maka-skeleton-line`
-   widths via `style={{ width: '40%' }}` from the consuming component. */
-.maka-skeleton {
-  position: relative;
-  overflow: hidden;
-  background: var(--foreground-3);
-  border-radius: var(--radius-control);
-}
-.maka-skeleton::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: linear-gradient(
-    90deg,
-    transparent 0%,
-    oklch(from var(--foreground) l c h / 0.06) 50%,
-    transparent 100%
-  );
-  background-size: 200% 100%;
-  animation: maka-shimmer 1.6s var(--ease-in-out-strong) infinite;
-}
-.maka-skeleton-line {
-  height: 12px;
-  border-radius: var(--radius-pill);
-}
-.maka-skeleton-line[data-size="lg"] { height: 16px; }
-.maka-skeleton-line[data-size="sm"] { height: 9px; }
-.maka-skeleton-card {
-  height: 92px;
-  border-radius: var(--radius-surface);
-}
-.maka-skeleton-stack {
-  display: grid;
-  gap: var(--space-2-5);
 }
 
 /* =============================================================================

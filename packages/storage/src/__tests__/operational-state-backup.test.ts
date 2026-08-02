@@ -19,11 +19,17 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   createOperationalStateBackup,
   OPERATIONAL_BACKUP_MANIFEST_FILE,
+  OPERATIONAL_BACKUP_SCHEMA_VERSION,
   type OperationalBackupError,
   restoreOperationalStateBackup,
   validateOperationalStateBackup,
 } from '../operational-state-backup.js';
+import {
+  LEGACY_AUTOMATION_FILE,
+  openInteractiveAutomationAuthorityForWrite,
+} from '../automation-authority.js';
 import { createSqliteArtifactStore } from '../artifact-store.js';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import { createSessionStore } from '../session-store.js';
 
 test('backs up live WAL state and restores a writable relational closure', async () => {
@@ -65,6 +71,7 @@ test('backs up live WAL state and restores a writable relational closure', async
         content: 'second payload\n',
         now: 11,
       });
+      seedAutomationState(stateRoot, first.id);
       await writeFile(join(stateRoot, 'credentials.json'), 'secret-canary\n');
       await writeFile(join(stateRoot, 'settings.json'), 'settings-canary\n');
 
@@ -114,6 +121,12 @@ test('backs up live WAL state and restores a writable relational closure', async
       const restoredSessions = createSessionStore(restoreRoot);
       const restoredArtifacts = createSqliteArtifactStore(restoreRoot);
       try {
+        assert.deepEqual(readAutomationState(restoreRoot), {
+          revision: 1,
+          automationId: 'backup-automation',
+          name: 'Backup automation',
+          pendingFireId: 'backup-fire',
+        });
         assert.deepEqual(
           (await restoredSessions.list()).map((session) => session.id).sort(),
           [first.id, second.id].sort(),
@@ -155,6 +168,220 @@ test('backs up live WAL state and restores a writable relational closure', async
     }
   });
 });
+
+test('restores a writable Automation authority after a real legacy cutover', async () => {
+  await withBackupRoots(async ({ stateRoot, backupRoot, restoreRoot }) => {
+    const sessionId = await createSession(stateRoot);
+    const legacyAutomation = backupAutomationDefinition(sessionId);
+    await writeFile(
+      join(stateRoot, LEGACY_AUTOMATION_FILE),
+      `${JSON.stringify({ version: 1, automations: [legacyAutomation] }, null, 2)}\n`,
+    );
+
+    const sourceCapability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+    const sourceOwner = await tryAcquireInteractiveRootOwner(sourceCapability);
+    assert.ok(sourceOwner);
+    if (!sourceOwner) return;
+    try {
+      const writer = await openInteractiveAutomationAuthorityForWrite(sourceOwner.lease);
+      assert.deepEqual(
+        (await writer.read()).automations.map((automation) => automation.id),
+        [legacyAutomation.id],
+      );
+      writer.close();
+    } finally {
+      if (!sourceOwner.closed) await sourceOwner.close();
+    }
+
+    const manifest = await createOperationalStateBackup({
+      stateRoot,
+      destinationRoot: backupRoot,
+    });
+    assert.equal(manifest.schemaVersion, OPERATIONAL_BACKUP_SCHEMA_VERSION);
+    assert.equal(
+      manifest.schemaVersion === OPERATIONAL_BACKUP_SCHEMA_VERSION
+        ? manifest.legacyAutomation?.path
+        : undefined,
+      LEGACY_AUTOMATION_FILE,
+    );
+    await restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot });
+
+    const restoredCapability = await resolveStorageRoot({
+      path: restoreRoot,
+      kind: 'interactive',
+    });
+    const restoredOwner = await tryAcquireInteractiveRootOwner(restoredCapability);
+    assert.ok(restoredOwner);
+    if (!restoredOwner) return;
+    try {
+      const writer = await openInteractiveAutomationAuthorityForWrite(restoredOwner.lease);
+      const restored = await writer.read();
+      assert.deepEqual(restored.pendingFires, []);
+      assert.equal(restored.automations[0]?.id, legacyAutomation.id);
+      const committed = await writer.commit({
+        expectedRevision: restored.revision,
+        automations: [{ ...restored.automations[0]!, name: 'Restored automation' }],
+        pendingFires: [],
+      });
+      assert.equal(committed.kind, 'committed');
+      assert.equal((await writer.read()).automations[0]?.name, 'Restored automation');
+      writer.close();
+    } finally {
+      if (!restoredOwner.closed) await restoredOwner.close();
+    }
+  });
+});
+
+test('restores a pre-Automation v1 backup into a writable current authority', async () => {
+  await withBackupRoots(async ({ stateRoot, backupRoot, restoreRoot }) => {
+    const sessionId = await createSession(stateRoot);
+    await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot });
+
+    const databasePath = join(backupRoot, 'runtime.sqlite');
+    const database = new DatabaseSync(databasePath);
+    try {
+      database.exec(`
+        DROP TABLE automation_pending_fires;
+        DROP TABLE automation_definitions;
+        DROP TABLE automation_authority_state;
+        DELETE FROM operational_schema_migrations WHERE scope = 'automation';
+      `);
+    } finally {
+      database.close();
+    }
+    const manifestPath = join(backupRoot, OPERATIONAL_BACKUP_MANIFEST_FILE);
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown> & {
+      database: { sizeBytes: number; sha256: string };
+    };
+    manifest.schemaVersion = 1;
+    delete manifest.legacyAutomation;
+    manifest.database.sizeBytes = (await stat(databasePath)).size;
+    manifest.database.sha256 = await hashFile(databasePath);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    assert.equal((await validateOperationalStateBackup(backupRoot)).schemaVersion, 1);
+    await restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot });
+
+    const capability = await resolveStorageRoot({ path: restoreRoot, kind: 'interactive' });
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    try {
+      const writer = await openInteractiveAutomationAuthorityForWrite(owner.lease);
+      const restored = await writer.read();
+      assert.deepEqual(restored, { revision: 0, automations: [], pendingFires: [] });
+      const committed = await writer.commit({
+        expectedRevision: 0,
+        automations: [backupAutomationDefinition(sessionId)],
+        pendingFires: [],
+      });
+      assert.equal(committed.kind, 'committed');
+      assert.equal((await writer.read()).automations[0]?.id, 'backup-automation');
+      writer.close();
+    } finally {
+      if (!owner.closed) await owner.close();
+    }
+  });
+});
+
+function backupAutomationDefinition(sessionId: string) {
+  return {
+    id: 'backup-automation',
+    kind: 'heartbeat' as const,
+    name: 'Backup automation',
+    status: 'active' as const,
+    prompt: 'Preserve this Automation.',
+    sessionId,
+    schedule: { type: 'interval' as const, seconds: 60 },
+    createdAt: 1,
+    updatedAt: 1,
+    nextFireAt: null,
+    lastFireAt: 60_001,
+    lastRunId: null,
+    fireCount: 1,
+    maxFires: null,
+    expiresAt: 604_800_001,
+    lastError: null,
+    consecutiveFailures: 0,
+  };
+}
+
+function seedAutomationState(root: string, sessionId: string): void {
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+  try {
+    const automation = backupAutomationDefinition(sessionId);
+    database
+      .prepare(`
+        INSERT INTO automation_definitions(
+          automation_id, session_id, created_at, status, durable, record_json
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        automation.id,
+        automation.sessionId,
+        automation.createdAt,
+        automation.status,
+        0,
+        JSON.stringify(automation),
+      );
+    const fire = {
+      id: 'backup-fire',
+      automationId: automation.id,
+      automationKind: automation.kind,
+      automationName: automation.name,
+      prompt: automation.prompt,
+      scheduledFor: 60_001,
+      targetSessionId: sessionId,
+      turnId: 'backup-turn',
+      runId: 'backup-run',
+      userMessageId: 'backup-message',
+      status: 'admitted',
+      admittedAt: 60_001,
+      updatedAt: 60_001,
+    };
+    database
+      .prepare(`
+        INSERT INTO automation_pending_fires(
+          fire_id, automation_id, target_session_id, admitted_at, record_json
+        ) VALUES (?, ?, ?, ?, ?)
+      `)
+      .run(fire.id, fire.automationId, fire.targetSessionId, fire.admittedAt, JSON.stringify(fire));
+    database
+      .prepare('UPDATE automation_authority_state SET revision = 1 WHERE singleton = 1')
+      .run();
+  } finally {
+    database.close();
+  }
+}
+
+function readAutomationState(root: string): {
+  revision: number;
+  automationId: string;
+  name: string;
+  pendingFireId: string;
+} {
+  const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+  try {
+    const state = database
+      .prepare('SELECT revision FROM automation_authority_state WHERE singleton = 1')
+      .get() as { revision: number };
+    const row = database
+      .prepare('SELECT automation_id, record_json FROM automation_definitions')
+      .get() as { automation_id: string; record_json: string };
+    const fire = database.prepare('SELECT fire_id FROM automation_pending_fires').get() as {
+      fire_id: string;
+    };
+    const record = JSON.parse(row.record_json) as { name: string };
+    return {
+      revision: state.revision,
+      automationId: row.automation_id,
+      name: record.name,
+      pendingFireId: fire.fire_id,
+    };
+  } finally {
+    database.close();
+  }
+}
 
 test('linearizes an Artifact mutation after the backup snapshot', async () => {
   await withBackupRoots(async ({ stateRoot, backupRoot, restoreRoot }) => {
@@ -256,6 +483,31 @@ test('fails the whole backup when a transcript changes across the SQLite snapsho
   });
 });
 
+test('fails the whole backup when a legacy Automation source appears after its snapshot', async () => {
+  await withBackupRoots(async ({ stateRoot, backupRoot }) => {
+    const sessionId = await createSession(stateRoot);
+
+    await assertBackupError(
+      createOperationalStateBackup({
+        stateRoot,
+        destinationRoot: backupRoot,
+        failpoint: async (point) => {
+          if (point !== 'after_database_snapshot') return;
+          await writeFile(
+            join(stateRoot, LEGACY_AUTOMATION_FILE),
+            `${JSON.stringify({
+              version: 1,
+              automations: [backupAutomationDefinition(sessionId)],
+            })}\n`,
+          );
+        },
+      }),
+      'source_changed',
+    );
+    await assert.rejects(lstat(backupRoot), { code: 'ENOENT' });
+  });
+});
+
 test('rejects a corrupt source transcript instead of preserving unreadable state', async () => {
   await withBackupRoots(async ({ stateRoot, backupRoot }) => {
     const sessionId = await createSession(stateRoot);
@@ -269,6 +521,51 @@ test('rejects a corrupt source transcript instead of preserving unreadable state
       'corrupt_backup',
     );
     await assert.rejects(lstat(backupRoot), { code: 'ENOENT' });
+  });
+});
+
+test('rejects an invalid legacy Automation source instead of preserving unreadable state', async () => {
+  await withBackupRoots(async ({ stateRoot, backupRoot }) => {
+    await createSession(stateRoot);
+    await writeFile(join(stateRoot, LEGACY_AUTOMATION_FILE), '{"version":2,"automations":[]}\n');
+
+    await assertBackupError(
+      createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot }),
+      'corrupt_backup',
+    );
+    await assert.rejects(lstat(backupRoot), { code: 'ENOENT' });
+  });
+});
+
+test('rejects a digest-matching invalid legacy Automation backup before restore', async () => {
+  await withBackupRoots(async ({ stateRoot, backupRoot, restoreRoot }) => {
+    const sessionId = await createSession(stateRoot);
+    const legacyPath = join(stateRoot, LEGACY_AUTOMATION_FILE);
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        version: 1,
+        automations: [backupAutomationDefinition(sessionId)],
+      })}\n`,
+    );
+    await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot });
+
+    const backupLegacyPath = join(backupRoot, LEGACY_AUTOMATION_FILE);
+    await writeFile(backupLegacyPath, '{"version":2,"automations":[]}\n');
+    const manifestPath = join(backupRoot, OPERATIONAL_BACKUP_MANIFEST_FILE);
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+      legacyAutomation: { sizeBytes: number; sha256: string };
+    };
+    manifest.legacyAutomation.sizeBytes = (await stat(backupLegacyPath)).size;
+    manifest.legacyAutomation.sha256 = await hashFile(backupLegacyPath);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    await assertBackupError(validateOperationalStateBackup(backupRoot), 'corrupt_backup');
+    await assertBackupError(
+      restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot }),
+      'corrupt_backup',
+    );
+    await assert.rejects(lstat(restoreRoot), { code: 'ENOENT' });
   });
 });
 

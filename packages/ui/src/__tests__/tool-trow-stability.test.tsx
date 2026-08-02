@@ -18,18 +18,17 @@ function renderToStaticMarkup(node: ReactNode): string {
 }
 
 describe('ToolTrow stable structure', () => {
-  it('keeps the same group root when a second tool arrives', () => {
+  it('keeps the Astryx tool-call root when a second tool arrives', () => {
     const first = runningTool('tool-1', 'Read');
     const one = renderToStaticMarkup(createElement(ToolTrow, { items: [first] }));
     const two = renderToStaticMarkup(createElement(ToolTrow, {
       items: [first, runningTool('tool-2', 'Grep')],
     }));
 
-    assert.match(one, /data-trow="group"/);
-    assert.doesNotMatch(one, /data-trow="row"/);
-    assert.doesNotMatch(one, /data-panel-open/);
+    assert.match(one, /class="astryx-chat-tool-calls\b/);
     assert.match(one, /aria-expanded="false"/);
-    assert.match(one, /class="[^"]*astryx-collapsible-content[^"]*"/);
-    assert.match(two, /data-trow="group"/);
+    assert.match(two, /class="astryx-chat-tool-calls\b/);
+    assert.match(two, /aria-expanded="true"/);
+    assert.match(two, />2 tool calls</);
   });
 });

@@ -11,8 +11,8 @@ Four export surfaces, in the order to look:
 | Surface | Role | Status |
 |---|---|---|
 | `@astryxdesign/core` re-exports in `src/index.ts` | Generic design-system components such as Button, TextInput, TextArea, CheckboxInput, RadioList, and Switch. | target authority |
-| `src/primitives/` | Maka-specific compositions and remaining migration seams that do not duplicate an Astryx component. | transitional/product-specific |
-| `src/ui.tsx` | Remaining Base UI migration seams and shared exports. | transitional |
+| `src/primitives/` | Maka-specific compositions that do not duplicate an Astryx component. | product-specific |
+| `src/ui.tsx` | Shared product compositions and compatibility-free exports. | stable |
 | `src/*.tsx` / `src/*.ts` (top-level) | Feature components + pure logic (e.g. `chat-view.tsx`, `composer.tsx`, `sandbox-boundary-prompt.tsx`, `session-list-panel.tsx`, plus pure helpers like `materialize.ts`, `redact.ts`, `smooth-stream.ts`). | stable |
 | `src/components.tsx` | Re-export barrel for the feature components above (ChatView, Composer, SandboxBoundaryPrompt, …). | stable |
 
@@ -21,7 +21,7 @@ Four export surfaces, in the order to look:
 ## Consuming
 
 ```ts
-import { Button, ChatView, Composer, Badge, Chip, PageHeader, useToast } from '@maka/ui';
+import { Badge, Button, ChatView, Composer, PageHeader, useToast } from '@maka/ui';
 ```
 
 Sub-path exports (declared in `package.json` `exports`): `@maka/ui/artifact-preview-registry`, `@maka/ui/assistant-stream`, `@maka/ui/icons`, `@maka/ui/maka-uri`, `@maka/ui/smooth-stream`. (`@maka/ui/icons` re-exports Lucide symbols; model-provider brand logos live in the renderer's `settings/provider-*`, not here — bot-provider logos are in `@maka/ui`'s `bot-brand-logo`.)
@@ -35,12 +35,6 @@ Renderer CSS owns product layout containers only. It must not target Astryx inte
 - **New feature component** → top-level `src/<name>.tsx`, kept as a relative import until it has a cross-package consumer or an explicit public-API need; then re-export it from `src/components.tsx` (`index.ts` does `export * from './components.js'`, so it lands on the barrel automatically).
 - **Don't** add a per-surface hand-rolled CSS recipe when Astryx public props can express the need. If they cannot, redesign the consumer; keep a product-owned control only for an irreducible product interaction.
 - **Don't** re-export a symbol onto the barrel without a cross-package consumer or explicit public-API need; keep it a relative import even with multiple in-package consumers (a cross-package consumer can't use a relative import — `previewVariants` is re-exported for exactly that reason).
-
-## Convergence direction (transitional surfaces)
-
-Acknowledged transitional states — not TODOs; track actual work in issues/PRs.
-
-- `ui.tsx` ↔ `primitives/`: end state is one Maka-owned primitive layer in `primitives/`; Astryx components are consumed directly instead of being reshaped behind compatibility APIs.
 
 ## Contracts & guardrails
 

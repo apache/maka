@@ -6,6 +6,7 @@ import {
   isValidLegacyShellRunState,
   isShellOutput,
   isShellRunId,
+  isShellRunSourceToolCallId,
   isShellRunStatus,
   isTerminalShellRunStatus,
   isValidShellRunState,
@@ -492,6 +493,7 @@ function normalizeShellRunRecord(
   const valid =
     hasOnlyKeys(record, SHELL_RUN_RECORD_KEYS) &&
     requiredStrings.every((item) => typeof item === 'string') &&
+    isShellRunSourceToolCallId(record.sourceToolCallId) &&
     record.sessionId === sessionId &&
     record.shellRunId === shellRunId &&
     isShellRunStatus(record.status) &&
@@ -528,7 +530,7 @@ function normalizeLegacyShellRunRecord(
     record.shellRunId !== shellRunId ||
     record.sessionId !== sessionId ||
     typeof record.sourceTurnId !== 'string' ||
-    typeof record.sourceToolCallId !== 'string' ||
+    !isShellRunSourceToolCallId(record.sourceToolCallId) ||
     typeof record.cwd !== 'string' ||
     typeof record.command !== 'string' ||
     !isShellRunStatus(record.status) ||

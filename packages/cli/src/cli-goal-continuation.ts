@@ -5,8 +5,8 @@ import {
   drainGoalTurn,
   type GoalContinuationDeps,
   type GoalState,
-  type GoalExternalTurnStart,
-  type GoalExternalTurnSettler,
+  type GoalObservedTurnStart,
+  type GoalObservedTurnSettler,
   type GoalTurnAdmission,
   type GoalTurnOutcome,
 } from '@maka/runtime';
@@ -47,8 +47,8 @@ export class CliGoalContinuation {
     };
   }
 
-  beginExternalTurn(sessionId: string, turnId: string): GoalExternalTurnStart {
-    return this.coordinator.beginExternalTurn(sessionId, turnId);
+  beginObservedTurn(sessionId: string, turnId: string): GoalObservedTurnStart {
+    return this.coordinator.beginObservedTurn(sessionId, turnId);
   }
 
   activateGoal(
@@ -77,12 +77,12 @@ export class CliGoalContinuation {
         reason: 'CLI Goal continuation is disposed.',
       };
     }
-    const registration = this.beginExternalTurn(input.sessionId, input.turnId);
+    const registration = this.beginObservedTurn(input.sessionId, input.turnId);
     if (registration.kind !== 'registered') {
       activity.release();
       return { kind: 'errored', turnId: input.turnId, reason: registration.reason };
     }
-    const settleExternalTurn: GoalExternalTurnSettler = registration.settle;
+    const settleExternalTurn: GoalObservedTurnSettler = registration.settle;
     let events: AsyncIterable<SessionEvent>;
     try {
       events = input.start();

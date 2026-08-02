@@ -68,7 +68,7 @@ describe('BotRegistry', () => {
     );
   });
 
-  test('queues overlapping applySettings calls so the newest settings win deterministically', async () => {
+  test('keeps the newest settings when overlapping updates disable and re-enable a bot', async () => {
     const registry = new BotRegistry({
       onIncomingMessage: () => {},
       onStatusChange: () => {},

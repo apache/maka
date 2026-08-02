@@ -15,14 +15,19 @@ import {
   ShellRunProcessManager,
 } from '@maka/runtime';
 import type { HostCapabilitiesResolver, MakaTool } from '@maka/runtime';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core';
 import type { WorkspacePrivacyContext } from '@maka/core/incognito';
 import { createSettingsStore } from '@maka/storage';
 import { createComputerUseOverlayHook } from '@maka/computer-use';
 import { buildWebSearchAgentTool } from './web-search/agent-tool.js';
+import { buildAgentSettingsTools } from './agent-settings-tools.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
-import { createComputerUseHost } from './computer-use-host.js';
+import {
+  createComputerUseHost,
+  createDesktopPhysicalInputGuard,
+} from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
 import {
   applyComputerUseRealModelPolicy,
@@ -54,6 +59,7 @@ export interface DesktopToolAssemblyDeps {
   automationWiring: AutomationWiring;
   goalWiring: GoalWiring;
   settingsStore: SettingsStore;
+  updateAgentSettings: (patch: UpdateAppSettingsInput) => Promise<AppSettings>;
   shellRuns: ShellRunProcessManager;
   snapshotReadImage: ToolArtifactPersistence['snapshotReadImage'];
   readArchivedToolResultResource: ToolArtifactPersistence['readArchivedToolResultResource'];
@@ -81,6 +87,7 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     automationWiring,
     goalWiring,
     settingsStore,
+    updateAgentSettings,
     shellRuns,
     snapshotReadImage,
     readArchivedToolResultResource,
@@ -141,7 +148,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         return { base64, mimeType: 'image/png' };
       }
     },
-    physicalInputRecentlyActive: () => powerMonitor.getSystemIdleTime() < 1,
+    physicalInputRecentlyActive: createDesktopPhysicalInputGuard(
+      () => powerMonitor.getSystemIdleTime(),
+    ),
     ...(isComputerUseRealModelE2e
       ? {
           onTrace: (event) => {
@@ -180,6 +189,10 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     settingsStore,
     getPrivacyContext: getWorkspacePrivacyContext,
   });
+  const agentSettingsTools = buildAgentSettingsTools({
+    settingsStore,
+    updateSettings: updateAgentSettings,
+  });
   // Assemble product tools first, then derive skill host + deferred groups from
   // the shared catalog ∩ this binding (#1099 S2). Skill listing uses the same host.
   const toolsBeforeSkill: MakaTool[] = [
@@ -209,6 +222,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
     // permission engine routes it through the `web_read` policy which
     // prompts the user in explore / ask modes.
     webSearchTool,
+    // Safe self-configuration surface: read a redacted projection and update
+    // only an explicit non-secret allowlist after an in-app confirmation.
+    ...agentSettingsTools,
     // Session task ledger: model manages a flat task list; the current list is
     // re-injected each turn tail. Pure local state, so no permission gate.
     ...taskLedgerWiring.tools,
