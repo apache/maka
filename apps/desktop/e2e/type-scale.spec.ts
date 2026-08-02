@@ -381,13 +381,12 @@ test('resolves one type scale from the root down to the transcript', async ({
  * Reuses the existing fixture rather than adding one, per AGENTS.md. Measured,
  * no booted window renders a chip above `--h-control-xs`:
  * `.maka-composer-model-chip`, `.plan-proposal-step-number`,
- * `.maka-skill-governance-summary span`, `.maka-quote-action`,
- * `.maka-composer-revision-notice` and `.settingsUsage{DetailToggle,RecordCount}`
- * all resolve to zero nodes in both fixtures, and so do the four chips pinned
- * last — `.maka-quote-chip-collapsed`, `.maka-deep-research-run-count`,
- * `.maka-firstrun-step` and `.maka-mcp-install-button` (measured with a
- * throwaway probe against both booted windows, with `.maka-turn` and
- * `.maka-nav-kbd` as controls).
+ * `.maka-skill-governance-summary span`, `.maka-composer-revision-notice` and
+ * `.settingsUsage{DetailToggle,RecordCount}` all resolve to zero nodes in both
+ * fixtures, and so do the four chips pinned last — `.maka-quote-chip-collapsed`,
+ * `.maka-deep-research-run-count`, `.maka-firstrun-step` and
+ * `.maka-mcp-install-button` (measured with a throwaway probe against both
+ * booted windows, with `.maka-turn` and `.maka-nav-kbd` as controls).
  *
  * So the floor assertion below proves the MECHANISM (a tier must hold its own
  * content) on three chips whose slack is zero by construction, and not the

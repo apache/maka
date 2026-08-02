@@ -262,15 +262,6 @@
     rgba(0,0,0,0) 0 0 0 0,
     oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px;
 
-  --shadow-medium:
-    rgba(0,0,0,0) 0 0 0 0,
-    rgba(0,0,0,0) 0 0 0 0,
-    oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px,
-    oklch(from var(--foreground) l c h / 0.06) 0 1px 1px -0.5px,
-    oklch(from var(--foreground) l c h / 0.06) 0 3px 3px -1.5px,
-    oklch(from var(--foreground) l c h / 0.06) 0 6px 6px -3px,
-    oklch(from var(--foreground) l c h / 0.04) 0 12px 12px -6px;
-
   /* === z-index scale (semantic) === */
   --z-base: 0;
   --z-sticky: 20;
@@ -799,10 +790,6 @@
     0 0 0 1px oklch(1 0 0 / 0.08);
   --shadow-minimal-flat:
     0 0 0 1px oklch(1 0 0 / 0.08);
-  --shadow-medium:
-    0 0 0 1px oklch(1 0 0 / 0.09),
-    0 4px 12px -6px oklch(0 0 0 / 0.5);
-
   /* Slate user bubble for dark mode — distinct from --accent and readable
      against the dark background.
      PR-DEFAULT-CANVAS-DEYELLOW-0: hue 250 to match the cool-neutral
