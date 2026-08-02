@@ -494,12 +494,14 @@ export const ScheduledDailyReview: Story = {
 
 // Real path at a narrow desktop window. The metrics collapse to two columns
 // while the Astryx controls keep their native wrapping behavior.
+// Real path: sidebar → scheduled tasks → Daily Review at a narrow window.
 export const ScheduledDailyReviewNarrow: Story = {
   ...ScheduledDailyReview,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
 // Real path after an analysis exists and the user opens its dedicated detail route.
+// Real path: sidebar → scheduled tasks → Daily Review → view analysis.
 export const ScheduledDailyReviewReport: Story = {
   render: () => (
     <ScheduledDailyReviewSurface

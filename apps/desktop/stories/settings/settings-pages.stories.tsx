@@ -878,12 +878,14 @@ export const DailyReview: Story = {
 };
 
 // Real path at a narrow desktop window.
+// Real path: Settings → Daily Review at a narrow window.
 export const DailyReviewNarrow: Story = {
   ...DailyReview,
   parameters: { viewport: { defaultViewport: 'mobile2' } },
 };
 
 // Real path with the Astryx model selector expanded.
+// Real path: Settings → Daily Review → Analysis model.
 export const DailyReviewModelSelectorOpen: Story = {
   decorators: [withSettingsBridge],
   render: () => <SettingsStory section="daily-review" />,
