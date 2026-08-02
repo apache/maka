@@ -2,7 +2,18 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, normalize } from 'node:path';
 import { promisify } from 'node:util';
@@ -456,6 +467,63 @@ describe('Git workspace service', () => {
     await assert.rejects(
       service.inspectManagedWorkspace(binding),
       isWorkspaceError('managed_workspace_unavailable'),
+    );
+  });
+
+  test('rejects quarantine resume when its owned root is replaced by a symlink', async () => {
+    const root = await temporaryRoot();
+    const storageRoot = join(root, 'storage');
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    let interruptOnce = true;
+    const interrupted = createGitWorkspaceService({
+      storageRoot,
+      gitRuntime: {
+        executablePath: gitExecutablePath,
+        expectedSha256: gitExecutableSha256,
+      },
+      failpoint(point) {
+        if (point === 'after_quarantine_intent' && interruptOnce) {
+          interruptOnce = false;
+          throw new Error('stop after durable quarantine intent');
+        }
+      },
+    });
+    const binding = await interrupted.createManagedWorkspaceFromSource(openRequest(sourceRoot));
+    await assert.rejects(
+      interrupted.quarantineManagedWorkspace(binding, 'owned_root_symlink'),
+      /stop after durable quarantine intent/u,
+    );
+    const quarantineRoot = join(storageRoot, 'managed-workspaces', 'quarantine');
+    const externalRoot = join(root, 'external-quarantine');
+    await rm(quarantineRoot, { recursive: true, force: true });
+    await mkdir(externalRoot, { recursive: true });
+    await symlink(externalRoot, quarantineRoot, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const service = await serviceAt(storageRoot);
+    await assert.rejects(
+      service.quarantineManagedWorkspace(binding, 'owned_root_symlink'),
+      isWorkspaceError('managed_workspace_identity_conflict'),
+    );
+    assert.equal(existsSync(binding.worktreePath), true);
+    assert.deepEqual(await readdir(externalRoot), []);
+  });
+
+  test('rejects control records reached through a replaced instance-root symlink', async () => {
+    const root = await temporaryRoot();
+    const storageRoot = join(root, 'storage');
+    const sourceRoot = await createEligibleSource(join(root, 'source'));
+    const service = await serviceAt(storageRoot);
+    const binding = await service.createManagedWorkspaceFromSource(openRequest(sourceRoot));
+    const instanceRoot = dirname(binding.worktreePath);
+    const externalRoot = join(root, 'external-instance');
+    await mkdir(externalRoot, { recursive: true });
+    const movedInstance = join(externalRoot, 'instance');
+    await rename(instanceRoot, movedInstance);
+    await symlink(movedInstance, instanceRoot, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await assert.rejects(
+      service.inspectManagedWorkspace(binding),
+      isWorkspaceError('managed_workspace_identity_conflict'),
     );
   });
 

@@ -308,6 +308,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       await ensureOwnedDirectory(layout.managedRoot, canonicalStorageRoot);
       await ensureOwnedDirectory(layout.quarantineRoot, layout.managedRoot);
       await ensureOwnedDirectory(layout.homePath, layout.managedRoot);
+      await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
 
       const quarantined = await this.resumePendingQuarantine(input, layout, runtime.digest);
       if (quarantined) {
@@ -408,6 +409,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     const runtime = await this.runtime.verify();
     return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
       const layout = workspaceLayout(canonicalStorageRoot, input);
+      await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
       const quarantined = await this.resumePendingQuarantine(input, layout, runtime.digest);
       if (quarantined) {
         throw new GitWorkspaceServiceError(
@@ -454,6 +456,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     assertOpenIdentity(binding);
     return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
       const layout = workspaceLayout(canonicalStorageRoot, binding);
+      await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
       assertBindingPaths(binding, layout);
       const quarantined = await this.resumePendingQuarantine(binding, layout, runtime.digest);
       if (quarantined) {
@@ -499,6 +502,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     }
     return withArtifactWriterLock(this.input.storageRoot, async (canonicalStorageRoot) => {
       const layout = workspaceLayout(canonicalStorageRoot, binding);
+      await assertOwnedManagedWorkspaceLayout(canonicalStorageRoot, layout);
       assertBindingPaths(binding, layout);
       const pending = await readQuarantineIntent(layout.quarantineIntentPath);
       if (pending) {
@@ -1219,6 +1223,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     layout: WorkspaceLayout,
     runtimeDigest: `sha256:${string}`,
   ): Promise<ManagedWorkspaceQuarantine | undefined> {
+    await assertOwnedManagedWorkspaceLayout(this.input.storageRoot, layout);
     const intent = await readQuarantineIntent(layout.quarantineIntentPath);
     if (!intent) return undefined;
     assertQuarantineIntentMatches(intent, intent.binding, intent.reason, layout);
@@ -1270,6 +1275,7 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
     intent: ManagedWorkspaceQuarantineIntent,
     layout: WorkspaceLayout,
   ): Promise<ManagedWorkspaceQuarantine> {
+    await assertOwnedManagedWorkspaceLayout(this.input.storageRoot, layout);
     const { binding, reason, quarantinePath } = intent;
     assertQuarantineIntentMatches(intent, binding, reason, layout);
     const registration = findWorktreeRegistration(
@@ -1307,12 +1313,20 @@ class GitWorkspaceServiceImpl implements GitWorkspaceService {
       );
     }
     if (sourceExists) {
-      await mkdir(layout.quarantineRoot, { recursive: true });
+      await ensureOwnedDirectory(layout.quarantineRoot, layout.managedRoot);
+      await assertOwnedManagedWorkspaceLayout(this.input.storageRoot, layout);
       await rename(binding.worktreePath, quarantinePath);
     } else if (!targetExists) {
       throw new GitWorkspaceServiceError(
         'managed_workspace_identity_conflict',
         'Quarantine intent has neither a source worktree nor a target artifact',
+      );
+    }
+    await assertOwnedDirectoryEntry(quarantinePath, layout.quarantineRoot, true);
+    if (!samePath(await realpath(dirname(quarantinePath)), await realpath(layout.quarantineRoot))) {
+      throw new GitWorkspaceServiceError(
+        'managed_workspace_identity_conflict',
+        'Quarantine target parent does not match the owned quarantine root',
       );
     }
     await this.input.failpoint?.('after_quarantine_move');
@@ -2072,6 +2086,63 @@ async function ensureOwnedDirectory(path: string, ownerRoot: string): Promise<vo
         `Managed workspace control path is not one owned directory: ${current}`,
       );
     }
+  }
+}
+
+async function assertOwnedManagedWorkspaceLayout(
+  storageRoot: string,
+  layout: WorkspaceLayout,
+): Promise<void> {
+  const canonicalStorageRoot = normalize(await realpath(storageRoot));
+  await assertOwnedDirectoryEntry(layout.managedRoot, canonicalStorageRoot, true);
+  await assertOwnedDirectoryEntry(layout.quarantineRoot, layout.managedRoot, true);
+  await assertOwnedDirectoryEntry(layout.homePath, layout.managedRoot, true);
+  await assertOwnedDirectoryEntry(layout.quarantineIntentRoot, layout.managedRoot, false);
+  await assertOwnedDirectoryEntry(layout.repositoryRoot, layout.managedRoot, false);
+  await assertOwnedDirectoryEntry(layout.repositoryPath, layout.repositoryRoot, false);
+  await assertOwnedDirectoryEntry(layout.hooksPath, layout.repositoryRoot, false);
+  await assertOwnedDirectoryEntry(layout.epochRoot, layout.managedRoot, false);
+  await assertOwnedDirectoryEntry(layout.instanceRoot, layout.epochRoot, false);
+  await assertOwnedDirectoryEntry(layout.worktreePath, layout.instanceRoot, false);
+}
+
+async function assertOwnedDirectoryEntry(
+  path: string,
+  ownerRoot: string,
+  required: boolean,
+): Promise<void> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (!required && (error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_identity_conflict',
+      `Managed workspace owned directory is unavailable: ${path}`,
+      { cause: error },
+    );
+  }
+  let canonicalOwner: string;
+  let canonicalPath: string;
+  try {
+    canonicalOwner = normalize(await realpath(ownerRoot));
+    canonicalPath = normalize(await realpath(path));
+  } catch (error) {
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_identity_conflict',
+      `Managed workspace owned directory cannot be canonicalized: ${path}`,
+      { cause: error },
+    );
+  }
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    !isPathWithin(canonicalPath, canonicalOwner)
+  ) {
+    throw new GitWorkspaceServiceError(
+      'managed_workspace_identity_conflict',
+      `Managed workspace owned directory escaped or changed identity: ${path}`,
+    );
   }
 }
 
