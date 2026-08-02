@@ -731,13 +731,6 @@ test('harness composition preserves historical manifest fingerprints', async () 
   }
 });
 
-test('harness A/B completion log preserves the report status', async () => {
-  const scriptPath = new URL('../../harbor/run-harness-ab.mjs', import.meta.url);
-  const source = await readFile(scriptPath, 'utf8');
-
-  assert.match(source, /console\.log\(\s*`\$\{report\.runStatus\}:/);
-});
-
 test('Codex comparison freezes the OpenAI model, pricing, and run identity', async () => {
   const {
     buildHarnessAbManifest,

@@ -33,7 +33,12 @@ import { redactSecrets } from './redact.js';
 // Heavy pipeline — parsed on first `<Markdown>` mount, not at app boot.
 const MarkdownBody = lazy(() => import('./markdown-body.js').then((m) => ({ default: m.MarkdownBody })));
 
-export function Markdown(props: { text: string; streaming?: boolean }) {
+export function Markdown(props: {
+  text: string;
+  streaming?: boolean;
+  /** Block rhythm. Transcript turns pass `compact`; documents leave it. */
+  density?: 'default' | 'compact';
+}) {
   const safeText = redactSecrets(props.text);
   return (
     <Suspense
@@ -46,7 +51,7 @@ export function Markdown(props: { text: string; streaming?: boolean }) {
         </div>
       }
     >
-      <MarkdownBody text={safeText} streaming={props.streaming} />
+      <MarkdownBody text={safeText} streaming={props.streaming} density={props.density} />
     </Suspense>
   );
 }

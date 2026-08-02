@@ -1,4 +1,5 @@
-/* Sidebar — session panel, nav, session list, list-row layout, view-mode toggle. List-row status family merged back from onboarding.css (was split across files) — issue #546 PR3, zero visual change. */
+/* Sidebar — SideNav shell, session rows, footer update chip.
+ * Session rows are Astryx SideNavItem; this file only owns product-only chrome. */
 .maka-session-panel {
   min-width: 0;
   min-height: 0;
@@ -21,33 +22,44 @@
 }
 
 .maka-session-list {
-  /* PR-SIDEBAR-IA-0 Phase 1 (xuan msg `dc790a54`, kenji msg `0f7bb872`):
-   * scroll fix. The previous block layout let the inner `.maka-list-stack`
-   * grow to its natural content height, so the scroll viewport was
-   * unconstrained — once a workspace had enough sessions, the
-   * list overflowed the parent and the footer (Settings / Update) got
-   * pushed out of view. Defining a grid row template here pins the
-   * title at the top (`auto`) and gives the scroll body the remaining
-   * space (`minmax(0, 1fr)`), at which point the stack's own
-   * overlay viewport activates correctly.
-   *
-   * Hard gate: 50+ sessions in a narrow window must still let the
-   * footer stay visible. See the e2e-fixture `sidebar-long-sessions`
-   * scenario.
-   */
   min-width: 0;
   position: relative;
-  border-top: 0;
-  padding-top: var(--space-1);
+}
+
+.maka-session-group {
+  min-width: 0;
+}
+
+/*
+ * Footer is a SideNavSection (shell-side-nav). Sticky bottom already owns
+ * padding; Astryx defaults are asymmetric (spacing-1 top / spacing-2 bottom)
+ * and the section adds another paddingBlock, so Settings sat tight under the
+ * hairline and airy above the window edge. Equalize on the sticky shell and
+ * kill the section's own padding so hover never kisses the divider.
+ */
+.astryx-side-nav.maka-session-panel > div:has(> .maka-session-panel-footer) {
+  /* !important: StyleX stickyBottom is unlayered. */
+  padding-block: var(--space-2) !important;
+  gap: 0 !important;
+  border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.05);
+  background: transparent;
+}
+
+/* Empty footerRow still mounts when hasButton:false; hide so it cannot
+ * reserve flex gap under Settings. */
+.astryx-side-nav.maka-session-panel > div:has(> .maka-session-panel-footer) > div:empty {
+  display: none;
 }
 
 .maka-session-panel-footer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-1-5);
-  align-items: center;
-  padding: var(--space-2) var(--space-2) var(--space-2);
-  border-top: 0;
+  /* !important: SideNavSection paddingBlock is StyleX/unlayered. */
+  padding: 0 !important;
+  border-top: 0 !important;
+  background: transparent;
+}
+
+.maka-session-panel-footer .maka-sidebar-update-button {
+  margin-block-start: var(--space-1);
 }
 
 .maka-sidebar-update-button {
@@ -65,7 +77,7 @@
   color: var(--control-foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-none);
+  line-height: var(--text-body-leading);
   box-shadow: none;
   overflow: hidden;
   -webkit-app-region: no-drag;
@@ -110,157 +122,82 @@
   outline-offset: var(--focus-ring-offset);
 }
 
-/* PR-PARCHMENT-HOME-9 (WAWQAQ msg `781852eb` 2026-06-20): module nav
-   styles restored, then tightened after task #98 so active rows read
-   as slim target-layout like nav rows instead of full-width pills. */
-.maka-sidebar-modules {
+.maka-session-row {
+  min-width: 0;
   -webkit-app-region: no-drag;
 }
 
-.maka-list-stack {
-  min-height: 0;
-  overflow: hidden;
-}
-
-.maka-list-stackContent {
-  align-content: start;
-  display: grid;
-  gap: 1px;
-  padding: var(--space-0-5) var(--space-2) var(--space-1-5);
-}
-
-.maka-list-group {
-  display: grid;
-  gap: 0;
-}
-
-/* Sidebar group separator. Each group beyond
-   the first is preceded by a 1px hairline divider that reads as a
-   "data section break" rather than a card-like edge. */
-.maka-list-group + .maka-list-group {
-  margin-top: var(--space-2-5);
-  padding-top: var(--space-2);
-  border-top: var(--border-width-hairline) solid oklch(from var(--foreground) l c h / 0.05);
-}
-
-/* Group label — a quiet, non-interactive divider for flat conversations.
-   Project disclosures use their own heading control below. */
-.maka-list-group-label {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-0-5);
-  padding: 0 var(--space-1-5) var(--space-0-5);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  font-variant-numeric: tabular-nums;
-}
-
-.maka-list-project-heading {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  min-width: 0;
-}
-
-.maka-list-project-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-list-project-count {
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-}
-
-.maka-list-project-heading[data-unavailable="true"] {
-  color: var(--muted-foreground);
-}
-
-.maka-list-project-heading[data-unavailable="true"] [aria-label] {
-  color: var(--warning-foreground, var(--muted-foreground));
-}
-
-.maka-list-project-rename {
-  min-width: 0;
-  width: 100%;
-  height: var(--h-control-sm);
-  border: var(--border-width-hairline) solid var(--border-strong);
-  border-radius: var(--radius-control);
-  outline: none;
-  background: var(--background);
-  color: var(--foreground);
-  font: inherit;
-  padding: 0 var(--space-1);
-}
-
-.maka-list-project-rename:focus-visible {
-  border-color: var(--focus-ring);
-  box-shadow: 0 0 0 var(--focus-ring-width) color-mix(in srgb, var(--focus-ring) 24%, transparent);
-}
-
-.maka-list-row-worktree-icon {
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-}
-
-/* Astryx ListItem and TreeListItem own row geometry, selection, hover, and focus.
-   Maka contributes only product content inside their public slots. */
-.maka-session-item-start,
-.maka-session-item-end,
-.maka-session-item-label,
-.maka-project-item-end {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.maka-session-item-start,
-.maka-session-item-end,
-.maka-project-item-end {
-  gap: var(--space-1);
-}
-
-.maka-session-item-label {
-  gap: var(--space-1-5);
-  overflow: hidden;
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-}
-
-.maka-session-item-label > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.maka-session-item-label[data-stale="true"] {
+/*
+ * Dim only this row's SideNavItem. Child combinators stop before [role=group]
+ * nests, so a stale parent never mutes healthy subagent rows underneath.
+ * DOM: .maka-session-row > SideNavItem root > .astryx-side-nav-item
+ * (leaf: button; collapsible parent: split-action row that may host the
+ * primary control with aria-current).
+ */
+.maka-session-row[data-stale="true"] > div > .astryx-side-nav-item {
   opacity: var(--opacity-muted);
 }
 
-:is([data-maka-contract="list-row"][aria-current="true"], [role="treeitem"][aria-selected="true"])
-  .maka-session-item-label[data-stale="true"] {
+.maka-session-row[data-stale="true"] > div > .astryx-side-nav-item[aria-current="page"],
+.maka-session-row[data-stale="true"] > div > .astryx-side-nav-item:has(> [aria-current="page"]) {
   opacity: 1;
 }
 
-.maka-session-list-item[data-subagent="true"] .maka-session-item-label {
+.maka-session-row[data-subagent="true"] .astryx-side-nav-item {
   color: var(--foreground-secondary);
 }
 
-.maka-list-row-subagent-icon {
+/*
+ * Project groups are a section label + peer sessions, not a deep tree.
+ * Astryx SideNavItem always pads children with spacing-6 (24px); that is the
+ * shell-side-nav workspace pattern, but it wastes a full icon column in a
+ * narrow session rail. Zero only the project item's own nest so sessions share
+ * the time-sort left edge. Do not use a descendant selector — that would also
+ * punch through subagent trees under session rows inside the project.
+ * DOM: .maka-project-row > SideNavItem root > [role=group] > childrenInner
+ */
+.maka-project-row > div > [role="group"] > div {
+  /* !important: StyleX childrenInner paddingInlineStart is unlayered. */
+  padding-inline-start: 0 !important;
+}
+
+.maka-session-row-end,
+.maka-project-item-end {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+/* Fixed trailing column so StatusDot ↔ MoreMenu swaps do not reflow the label
+ * (hover used to steal ~28px and shove the title left). */
+.maka-session-row-trailing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--h-control-sm, 24px);
+  min-height: var(--h-control-sm, 24px);
+}
+
+.maka-session-row-trailing-spacer {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+
+.maka-session-worktree-icon {
   flex: 0 0 auto;
   color: var(--muted-foreground);
 }
 
-.maka-list-row-rename-input {
+.maka-session-row--editing {
+  padding-inline: var(--space-2);
+  padding-block: var(--space-1);
+}
+
+.maka-session-rename-input {
   width: 100%;
   min-width: 0;
   border: 0;
@@ -269,188 +206,28 @@
   color: var(--foreground);
   font: inherit;
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
   outline: 0;
   padding: 1px 0;
 }
 
-.maka-list-row-rename-input:focus {
+.maka-session-rename-input:focus {
   border-bottom-color: var(--focus-ring);
-}
-
-
-/* The session-list heading carries grouping as a quiet menu action. The
-   selected mode is already visible in the groups below, so the previous
-   full-width segmented control added permanent chrome without information. */
-.maka-session-list-toolbar {
-  display: flex;
-  min-height: var(--h-control-lg);
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 var(--space-2) var(--space-0-5);
-}
-
-.maka-session-list-heading {
-  padding-left: var(--space-1-5);
-  color: var(--muted-foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-}
-
-/* Small pulsing accent dot rendered when a session has live streaming
- * delta in flight. Replaces the unread halo for streaming sessions so the
- * indicator hierarchy is: streaming > unread > inactive. Respects
- * prefers-reduced-motion. */
-.maka-list-row-streaming-dot {
-  flex-shrink: 0;
-  width: var(--space-2);
-  height: var(--space-2);
-  border-radius: 50%;
-  background: var(--status-running);
-  box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.15);
-  animation: maka-list-row-streaming-pulse 1.2s var(--ease-in-out-strong) infinite;
-}
-
-@keyframes maka-list-row-streaming-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.18);
-    transform: scale(1);
-  }
-  50% {
-    box-shadow: 0 0 0 5px oklch(from var(--status-running) l c h / 0.05);
-    transform: scale(1.1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .maka-list-row-streaming-dot {
-    animation: none;
-  }
-}
-
-/* PR-SIDEBAR-IA-0 Phase 3: meta (relative time) now sits inline at
- * the row's inline-end instead of stacked below the name. Color +
- * size kept muted so it reads as secondary info, not a competing
- * label. `margin-top` from the old stacked layout is removed. */
-.maka-list-row-meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-}
-
-/* PR-SIDEBAR-IA-0 Phase 3: `.maka-list-row-preview` is no longer
- * rendered in the default DOM — preview text is exposed via the row
- * button's native `title=` tooltip on hover so users can still peek
- * at the last message without paying the layout cost of a second
- * stacked line. This rule intentionally remains DELETED (no fallback
- * style). The `sidebar-row-density-contract.test.ts` gate asserts
- * the rule is gone so a future "let's bring snippet back" patch
- * lands as an explicit design discussion, not a silent regression.
- */
-
-/* PR-SIDEBAR-IA-0 Phase 3: `.maka-list-row-preview` is no longer
- * rendered in the default DOM (see comment above). The
- * `[data-active]` variant of that rule is therefore dead and
- * removed. */
-
-.maka-list-row-unread {
-  width: var(--space-2);
-  height: var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--status-running);
-  box-shadow: 0 0 0 3px oklch(from var(--status-running) l c h / 0.15);
-}
-
-/* PR109b: SessionStatusIcon — small inline icon next to session name
- * representing lifecycle status. Tone-based color from the
- * design-system token vocabulary; running spins via `animation`
- * (capped under reduced-motion + e2e-fixture per PR-IR-04). */
-.maka-list-row-status-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-right: var(--space-1);
-  /* #743: 14px layout slot for the dense-meta status icon
-     (dense-meta icons are intentionally call-site 12–14px). Kept
-     as a documented exception — the wrapper reserves the row's status footprint
-     so the title does not shift when the SVG is overridden to 12px below. */
-  width: 14px;
-  height: 14px;
-  color: var(--foreground-secondary);
-}
-.maka-list-row-status-icon svg {
-  /* #743: restore <Icon size={12}> — the shared action's icon sizing
-     would force 16px (chrome tier, a cascade leak from borrowing UiButton), so
-     scope a local 12px dense-meta override. Only
-     the chrome tier is tokenized; dense-meta stays call-site 12–14px and is NOT
-     bound to a spacing token, so this stays a bare 12px (a spacing-scale change
-     cannot drift the icon size). The 14px wrapper centers it. */
-  width: 12px;
-  height: 12px;
-}
-.maka-list-row-status-icon[data-tone="accent"] {
-  color: var(--nav-active);
-}
-.maka-list-row-status-icon[data-tone="warning"] {
-  color: var(--info-text);
-}
-.maka-list-row-status-icon[data-tone="destructive"] {
-  color: var(--destructive);
-}
-.maka-list-row-status-icon[data-tone="info"] {
-  color: var(--info-text);
-}
-.maka-list-row-status-icon[data-tone="success"] {
-  /* Success uses the brand-deep tone introduced for Settings hero */
-  color: var(--brand-deep);
-}
-.maka-list-row-status-icon[data-tone="muted"] {
-  color: var(--muted-foreground);
-}
-.maka-list-row-status-icon[data-status="running"] svg {
-  animation: maka-status-spin 1.2s var(--ease-linear) infinite;
-}
-@keyframes maka-status-spin {
-  to { transform: rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .maka-list-row-status-icon[data-status="running"] svg {
-    animation: none;
-  }
-}
-[data-maka-e2e-fixture="true"] .maka-list-row-status-icon[data-status="running"] svg {
-  animation: none;
 }
 
 .maka-list-row-stale-pill {
   flex-shrink: 0;
-  /* PR-UI-3: drop margin-left, let parent's gap (6px) handle spacing
-   * so all badges in .maka-list-row-name share the same rhythm. */
   padding: 1px var(--space-1-5);
   border-radius: var(--radius-pill);
-  /* Reuses the session health notice warning tone tokens (--warning + --warning-text)
-   * for visual consistency with the banner that explains the same state.
-   * Switched from --info (blue) to --warning (amber) per UI audit §2.9 —
-   * "已过期" is a degraded-state signal, not informational. */
   background: oklch(from var(--warning, var(--info)) l c h / 0.18);
   color: var(--warning-text, var(--info-text));
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
-/* ⌘N hint on the 新任务 row — quiet kbd chip pushed to the right rail,
-   visible at rest like the reference app (it advertises a real global
-   shortcut registered in app-shell-effects). */
-/* Plain muted text, no chip chrome — the reference treatment. A boxed
-   chip made the hint compete with the row label. Explicit resets beat
-   the global tactile `kbd` element rule in maka-tokens.css. */
+/* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */
 .maka-nav-kbd {
   margin-left: auto;
   padding: 0;
@@ -463,6 +240,6 @@
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-normal);
   letter-spacing: var(--tracking-wide);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
   white-space: nowrap;
 }

@@ -45,6 +45,10 @@ import {
 } from './interaction-record-schema.js';
 import { isTokenUsageFields } from './usage-record-schema.js';
 import { isToolRecoveryFactEnvelope, type ToolRecoveryFactEnvelope } from './tool-recovery-fact.js';
+import {
+  isRuntimeEventWorkspaceFactEnvelope,
+  type RuntimeEventWorkspaceFactEnvelope,
+} from './workspace-version-authority.js';
 
 // ============================================================================
 // Role / Author / Status
@@ -322,6 +326,8 @@ export interface RuntimeEventActions {
   runtimeProtocol?: RuntimeEventProtocolMarker;
   /** Durable provider-call T1 for a claimed continuation. */
   continuationStart?: RuntimeEventContinuationStartV2;
+  /** Reserved workspace authority fact; only its atomic SQLite writer may persist it. */
+  workspaceFact?: RuntimeEventWorkspaceFactEnvelope;
 }
 
 // ============================================================================
@@ -377,7 +383,9 @@ export type ToolRecoveryMode =
  *
  * Phase 0-3 identity contract: one `invocationId` maps to one `runId`.
  * Invocation identifies provider/tool execution while Run identifies its
- * durable operational ledger. A continuation creates fresh values for both;
+ * durable operational ledger. Store-owned control-plane streams (for example,
+ * workspace version authority) use reserved identities and have no AgentRun
+ * header. A continuation creates fresh values for both;
  * `turnId` names the user turn and `ts` is Unix ms.
  *
  * `partial: true` marks a transient chunk (streaming text, progress) that
@@ -454,6 +462,7 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'toolRecovery',
     'runtimeProtocol',
     'continuationStart',
+    'workspaceFact',
   ],
 );
 const ANSWER_ACCEPTED_IDENTITY_SHAPE = defineObjectShape<RuntimeEventAnswerAcceptedIdentity>()(
@@ -669,6 +678,9 @@ function isTurnOrigin(value: unknown): value is TurnOrigin {
   if (value.kind === 'automation') {
     return Object.keys(value).length === 2 && typeof value.automationId === 'string';
   }
+  if (value.kind === 'goal') {
+    return Object.keys(value).length === 2 && typeof value.goalId === 'string';
+  }
   return (
     value.kind === 'agent_graph' &&
     Object.keys(value).length === 4 &&
@@ -710,7 +722,9 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.toolDispatch === undefined || isRuntimeToolDispatch(value.toolDispatch)) &&
     (value.toolRecovery === undefined || isToolRecoveryFactEnvelope(value.toolRecovery)) &&
     (value.runtimeProtocol === undefined || isRuntimeProtocolMarker(value.runtimeProtocol)) &&
-    (value.continuationStart === undefined || isRuntimeContinuationStart(value.continuationStart))
+    (value.continuationStart === undefined ||
+      isRuntimeContinuationStart(value.continuationStart)) &&
+    (value.workspaceFact === undefined || isRuntimeEventWorkspaceFactEnvelope(value.workspaceFact))
   );
 }
 

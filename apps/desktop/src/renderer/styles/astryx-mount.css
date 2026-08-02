@@ -1,5 +1,5 @@
-/* #1565 PR 2 — keep the Astryx Theme wrapper visually inert while legacy CSS
-   owns the screen.
+/* Keep the Astryx Theme wrapper aligned with Maka's product-level font and
+   foreground tokens.
 
    The root <Theme> renders a display:contents wrapper that establishes
    Astryx's inheritance baseline: color: var(--color-text-primary) and
@@ -9,27 +9,26 @@
    inheritance, which the layer order alone cannot stop (the rule targets the
    wrapper, and nothing else competes on that element).
 
-   Living in maka.legacy is the point: this neutralizer wins only while the
-   legacy layer exists, and is deleted with it in PR 11 — at which point
-   Astryx is supposed to own the inheritance baseline. color-scheme is left
-   alone: the wrapper's mode comes from the same resolved `.dark` source as
-   the product's, so the values always agree.
+   color-scheme is left alone: the wrapper's mode comes from the same resolved
+   `.dark` source as the product's, so the values always agree.
 
    Scoped under the Electron and Storybook renderer roots: Theme also mirrors
    data-astryx-theme (and data-theme) onto <html>, and a bare
    [data-astryx-theme] would quietly pin html-level text properties too.
    Keeping both renderer mounts on the same selector is required for Storybook
-   pixels to remain evidence for the live app. */
+   pixels to remain evidence for the live app.
+
+   No token is re-pinned here, and re-pinning is a last resort: the theme
+   declares its tokens through an `@scope` root, so a name both sides define
+   can be shadowed for a whole subtree in ways layer order alone does not
+   predict — verify any such pin against the live app rather than reasoning
+   about it. --font-size-base used to be pinned back to
+   the product's :root value here to undo the 13px root multiplier; the type
+   scale in astryx-theme/makaTheme.ts now emits the body tier directly, so the two
+   definitions agree and the pin has nothing left to correct. If a future
+   Astryx upgrade reintroduces a conflict, re-derive the set (astryx theme
+   defs ∩ product defs ∩ product var() usage) before pinning anything. */
 :is(#root, #storybook-root) [data-astryx-theme] {
   color: inherit;
   font-family: inherit;
-  /* theme.css declares its tokens ON the wrapper (@scope root), so a name
-     both sides define is shadowed for the entire subtree no matter what the
-     layer order says — custom properties resolve by tree distance, not by
-     layer. The only name both maka-tokens.css and the Astryx theme define
-     AND product CSS consumes is --font-size-base (13px vs 0.875rem);
-     `inherit` reopens the path to the product's :root value. Re-derive this
-     list (astryx theme defs ∩ product defs ∩ product var() usage) whenever
-     the Astryx pin moves. */
-  --font-size-base: inherit;
 }

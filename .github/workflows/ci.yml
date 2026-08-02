@@ -20,6 +20,7 @@ jobs:
       runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
       script_mode: ${{ steps.plan.outputs.script_mode }}
       storage_stress: ${{ steps.plan.outputs.storage_stress }}
+      storybook: ${{ steps.plan.outputs.storybook }}
       unit: ${{ steps.plan.outputs.unit }}
       workspaces: ${{ steps.plan.outputs.workspaces }}
     steps:
@@ -54,12 +55,28 @@ jobs:
       - run: npm run format:check
       - run: npm run build
       - run: npm run typecheck
+      # Generated-artifact governance. astryx-theme/maka.{css,js} are built
+      # from makaTheme.ts, which is now the renderer's type-scale authority —
+      # editing the scale without regenerating would leave the authority and
+      # the shipped ladder disagreeing, and nothing else would notice.
+      - name: Astryx theme drift
+        run: npm run astryx:theme -- --check
       # Dead-code / dependency governance. Entry points and reasoned ignores
       # live in knip.json; both workspaces must stay at zero findings.
       - name: Knip (apps/desktop)
         run: npx knip --workspace apps/desktop
       - name: Knip (packages/ui)
         run: npx knip --workspace packages/ui
+      # Dead-CSS governance. Lived only under `check:release`, so a regression
+      # stayed invisible until a release was cut; it was red on main when this
+      # step was added. Same class of source-scanning guard as knip above.
+      - name: Dead CSS
+        run: node scripts/check-dead-css.mjs --check
+      # Storybook fidelity: every Product/* story must name the real user path
+      # to the state it renders. Presence is mechanical; truth stays with the
+      # reviewer. See apps/desktop/stories/FIDELITY.md.
+      - name: Story annotations
+        run: node scripts/check-story-annotations.mjs
 
   test:
     needs: changes
@@ -151,3 +168,29 @@ jobs:
       # e2e step just built; same xvfb pattern.
       - name: Alignment audit
         run: xvfb-run -a node scripts/audit-alignment.mjs
+
+  # Storybook build + render smoke. Independent of Electron e2e: the smoke
+  # launches Playwright Chromium, not `_electron.launch`, so it does not
+  # need xvfb or the desktop cold-start suite. See stories/FIDELITY.md.
+  storybook:
+    needs: changes
+    if: needs.changes.outputs.storybook == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # Stories import @maka/core / @maka/ui package exports (dist/). The old
+      # e2e job paid for this via `build:with-deps`; the split job must too.
+      - name: Build workspace packages
+        run: npm --workspace @maka/desktop run build:workspace-deps
+      # The smoke calls `chromium.launch()`; Electron's binary is irrelevant.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Build Storybook
+        run: npm --workspace @maka/desktop run build-storybook
+      - name: Storybook smoke
+        run: npm --workspace @maka/desktop run smoke:storybook

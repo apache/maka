@@ -113,7 +113,6 @@ import {
   createAppShellRevisionActions,
   type TurnRevisionDraft,
 } from './app-shell-revision-actions';
-import { createAppShellLayoutActions } from './app-shell-layout-actions';
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
 import { createAppShellDailyReviewActions } from './app-shell-daily-review-actions';
 import { createAppShellSessionRowActions } from './app-shell-session-row-actions';
@@ -1175,16 +1174,11 @@ function AppShellContent({
     workbarCollapsed,
     setWorkbarCollapsed,
     workbarWidth,
-    setWorkbarWidth,
+    workbarResizable,
     workbarTab,
     setWorkbarTab,
   } = useShellLayout();
   const sessionSideNavHandleRef = useRef<SideNavImperativeCollapseHandle>(null);
-  const { startWorkbarResize, onWorkbarResizeHandleKeyDown } = useStableActions(createAppShellLayoutActions, {
-    workbarCollapsed,
-    workbarWidth,
-    setWorkbarWidth,
-  });
 
   // The companion panel unmounts (and its fork is removed) when the workbar
   // collapses or the active session moves off the panel's source; clear the
@@ -1510,6 +1504,37 @@ function AppShellContent({
       );
     },
   });
+
+  // Quiet composer: show the single mic only when recognition is configured.
+  // Unconfigured voice is a dead control and must not occupy sendActions.
+  // Refresh on mount, external settings writes, and Settings close (same
+  // settings-only path as defaultPermissionMode — in-app settings:update does
+  // not emit externalChanged until the file watcher fires).
+  const [composerVoiceCaptureReady, setComposerVoiceCaptureReady] = useState(false);
+  const applyVoiceCaptureReady = useCallback((settings: {
+    voice?: { recognition?: { connectionSlug?: string; model?: string } | null } | null;
+  }) => {
+    const recognition = settings.voice?.recognition;
+    setComposerVoiceCaptureReady(
+      Boolean(recognition?.connectionSlug?.trim() && recognition?.model?.trim()),
+    );
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshVoiceCaptureReady() {
+      try {
+        const settings = await window.maka.settings.get();
+        if (cancelled) return;
+        applyVoiceCaptureReady(settings);
+      } catch {
+        if (!cancelled) setComposerVoiceCaptureReady(false);
+      }
+    }
+    void refreshVoiceCaptureReady();
+    return window.maka.settings.subscribeExternalChanged(() => {
+      void refreshVoiceCaptureReady();
+    });
+  }, [applyVoiceCaptureReady]);
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
@@ -1950,17 +1975,14 @@ function AppShellContent({
     // session-context memory state — user may have just flipped the
     // agentReadEnabled switch.
     void refreshMemoryActive();
-    // PR-DEFAULT-PERMISSION-MODE-0: the General page writes
-    // chatDefaults.permissionMode through its own settings-surface.tsx
-    // state, which app-shell.tsx never sees live. Re-read it here so a
-    // change takes effect for the next new chat without requiring an
-    // app restart. New-chat creation can't happen while Settings is open
-    // anyway, so a close-time refresh is timely enough (unlike theme,
-    // which needs to apply instantly and has its own onThemeChange wire).
+    // Settings-only writes (default permission, voice recognition, …) go
+    // through settings-surface.tsx and may not emit externalChanged until the
+    // file watcher fires. Re-read on close so shell chrome matches disk.
     void window.maka.settings
       .get()
       .then((next) => {
-      setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
+        setDefaultPermissionMode(next.chatDefaults?.permissionMode ?? 'ask');
+        applyVoiceCaptureReady(next);
       })
       .catch(() => {});
   }
@@ -2232,11 +2254,13 @@ function AppShellContent({
                   processing={showProcessingIndicator && !activeStreamingLive}
                   continuing={showContinuingIndicator && !activeStreamingLive}
                   voiceCaptureState={voiceInput.captureState}
-                  realtimeVoiceState={voiceInput.realtimeState}
                   voiceProviderLabel={voiceInput.providerLabel}
-                  onToggleVoiceCapture={voiceInput.toggleCapture}
-                  onCancelVoiceCapture={voiceInput.cancelCapture}
-                  onToggleRealtimeVoice={voiceInput.toggleRealtime}
+                  onToggleVoiceCapture={
+                    composerVoiceCaptureReady ? voiceInput.toggleCapture : undefined
+                  }
+                  onCancelVoiceCapture={
+                    composerVoiceCaptureReady ? voiceInput.cancelCapture : undefined
+                  }
                   onSend={sendWithAttachments}
                   onStop={stop}
                   revisionNotice={
@@ -2540,8 +2564,7 @@ function AppShellContent({
                 onDismiss={() => setWorkbarCollapsed(true)}
                 activeTab={workbarTab}
                 onActiveTabChange={setWorkbarTab}
-                startWorkbarResize={startWorkbarResize}
-                onWorkbarResizeHandleKeyDown={onWorkbarResizeHandleKeyDown}
+                workbarResizable={workbarResizable}
                 quote={
                   quotePanel && quotePanel.sourceSessionId === activeId ? quotePanel : null
                 }

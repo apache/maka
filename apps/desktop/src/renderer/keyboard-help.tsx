@@ -87,7 +87,6 @@ export function KeyboardHelpModal(props: {
       className="maka-help-modal"
       width={560}
       maxHeight="calc(100dvh - 96px)"
-      padding={0}
       purpose="info"
     >
       <Layout

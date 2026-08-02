@@ -27,6 +27,7 @@
 .settingsWebSearchStatusCluster small {
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-family: var(--font-mono);
   white-space: nowrap;
 }
@@ -51,7 +52,7 @@
 .settingsWebSearchDisabledReason {
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
   text-align: right;
   /* #1364: the hint names an env var (TAVILY_API_KEY) — an unbreakable token
      wider than the whole content column at the 480px window floor. */
@@ -87,6 +88,7 @@
 .settingsWebSearchResult small {
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     text-transform: uppercase;
     letter-spacing: var(--tracking-wider);
     /* #1364: the source is a hostname — one unbreakable token, and long ones
@@ -97,7 +99,7 @@
     margin: 0;
     font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
-    line-height: var(--leading-normal);
+    line-height: var(--text-body-leading);
     white-space: pre-wrap;
     word-break: break-word;
   }

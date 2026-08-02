@@ -14,7 +14,12 @@ export function ToolCodeBlock(props: {
       code={props.code}
       language={props.language}
       title={props.title}
-      maxHeight={props.maxHeight ?? '16rem'}
+      // Absolute, like every other length the type-scale convergence
+      // touched. This was `16rem`, which rendered 208px under the old 13px
+      // root and would have become 256px once the root went back to the
+      // browser default. rem was never expressing "relative to the type
+      // size" here — it was a habit that happened to be a density knob.
+      maxHeight={props.maxHeight ?? '208px'}
       width="100%"
       size="sm"
       isWrapped

@@ -65,6 +65,60 @@ describe('sidebar subtraction', () => {
     assert.doesNotMatch(markup, /maka-nav-count/);
   });
 
+  it('pins permanent destinations in SideNav topContent outside the scroll history', () => {
+    const session: SessionSummary = {
+      id: 'session-1',
+      name: '侧栏置顶导航',
+      status: 'active',
+      isFlagged: false,
+      isArchived: false,
+      labels: [],
+      hasUnread: false,
+      lastMessageAt: 1,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'anthropic-main',
+      connectionLocked: false,
+      model: 'claude-sonnet-4-5',
+      permissionMode: 'ask',
+    };
+    const expanded = renderToStaticMarkup(
+      <LocaleProvider locale="zh">
+        <SessionListPanel
+          selection={{ section: 'sessions', filter: 'chats' }}
+          sessions={[session]}
+          onSelectSession={() => {}}
+          onSelect={() => {}}
+          onOpenSettings={() => {}}
+          onNew={() => {}}
+        />
+      </LocaleProvider>,
+    );
+    assert.match(expanded, /maka-session-panel-top/);
+    assert.ok(
+      expanded.indexOf('maka-session-panel-top') < expanded.indexOf('maka-session-list'),
+      'permanent nav top slot must precede scrollable session history',
+    );
+    assert.match(expanded, /maka-session-panel-top[\s\S]*?>新任务</);
+    assert.match(expanded, /maka-session-list[\s\S]*侧栏置顶导航/);
+
+    const collapsed = renderToStaticMarkup(
+      <LocaleProvider locale="zh">
+        <SessionListPanel
+          collapsed
+          selection={{ section: 'sessions', filter: 'chats' }}
+          sessions={[session]}
+          onSelectSession={() => {}}
+          onSelect={() => {}}
+          onOpenSettings={() => {}}
+          onNew={() => {}}
+        />
+      </LocaleProvider>,
+    );
+    assert.match(collapsed, /maka-session-panel-top/);
+    assert.doesNotMatch(collapsed, /maka-session-list/);
+    assert.doesNotMatch(collapsed, /侧栏置顶导航/);
+  });
+
   it('renders each pair of peer modules as localized view navigation', () => {
     const extensions = renderToStaticMarkup(
       <LocaleProvider locale="zh">
@@ -121,7 +175,7 @@ describe('sidebar subtraction', () => {
       </LocaleProvider>,
     );
 
-    assert.match(markup, /class="maka-session-list-heading"[^>]*>会话</);
+    assert.match(markup, /maka-session-heading-section/);
     assert.match(markup, /aria-label="会话分组方式"/);
     assert.doesNotMatch(markup, />按状态</);
     assert.match(markup, /role="menuitemradio"[\s\S]*>按项目</);
@@ -144,11 +198,12 @@ describe('sidebar subtraction', () => {
       </LocaleProvider>,
     );
 
-    assert.match(markup, /class="maka-session-list-heading"[^>]*>会话</);
+    assert.match(markup, /maka-session-heading-section/);
+    assert.match(markup, />会话</);
     assert.match(markup, /aria-label="会话分组方式"/);
   });
 
-  it('labels only the exceptional pinned section in the flat conversation list', () => {
+  it('labels pinned and recent as two SideNav sections in the conversation list', () => {
     const makeSession = (
       session: Pick<SessionSummary, 'id' | 'name' | 'status' | 'isFlagged' | 'lastMessageAt'>,
     ): SessionSummary => ({
@@ -207,11 +262,12 @@ describe('sidebar subtraction', () => {
       </LocaleProvider>,
     );
 
-    const groupLabels = [...markup.matchAll(/class="maka-list-group-label"[^>]*><span>([^<]+)<\/span>/g)]
-      .map((match) => match[1]);
-    assert.deepEqual(groupLabels, ['置顶']);
+    assert.match(markup, />置顶</);
+    assert.match(markup, />最近</);
+    assert.ok(markup.indexOf('置顶') < markup.indexOf('最近'));
     assert.ok(markup.indexOf('最近置顶') < markup.indexOf('较早置顶'));
     assert.ok(markup.indexOf('最近会话') < markup.indexOf('较早会话'));
-    assert.doesNotMatch(markup, /maka-list-group-toggle|maka-list-group-count/);
+    assert.ok(markup.indexOf('最近置顶') < markup.indexOf('最近会话'));
+    assert.doesNotMatch(markup, /maka-list-group-toggle/);
   });
 });

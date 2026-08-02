@@ -17,30 +17,37 @@ export interface MainWindowPermissionRequest {
 }
 
 /**
- * The product renderer only needs one Chromium permission: microphone audio
- * for the local Voice capture check. Keep this policy explicit because
- * Electron otherwise leaves a session's permission behavior to permissive
- * defaults, and the default session is also shared by auxiliary windows.
+ * The product renderer needs exactly two Chromium permissions:
+ * - microphone audio for the local Voice capture check;
+ * - clipboard writes so the code-block / message / settings copy buttons
+ *   (`navigator.clipboard.writeText`) can reach the OS clipboard.
+ *
+ * Keep this policy explicit because Electron otherwise leaves a session's
+ * permission behavior to permissive defaults, and the default session is also
+ * shared by auxiliary windows. Clipboard write is granted only when
+ * `navigator.clipboard.writeText` asks for it (Chromium reports the sanitized
+ * text path as `clipboard-sanitized-write`; the unsanitized name is accepted
+ * too so the exact version never regresses copy).
  */
-export function allowsMainWindowPermissionCheck(input: MainWindowPermissionCheck): boolean {
+function isAllowedPermission(permission: string): boolean {
   return (
-    input.ownerMatches
-    && input.rendererUrlMatches
-    && input.isMainFrame
-    && input.permission === 'media'
-    && input.mediaType === 'audio'
+    permission === 'clipboard-sanitized-write'
+    || permission === 'clipboard-write'
   );
 }
 
+export function allowsMainWindowPermissionCheck(input: MainWindowPermissionCheck): boolean {
+  if (!(input.ownerMatches && input.rendererUrlMatches && input.isMainFrame)) return false;
+  if (input.permission === 'media') return input.mediaType === 'audio';
+  return isAllowedPermission(input.permission);
+}
+
 export function allowsMainWindowPermissionRequest(input: MainWindowPermissionRequest): boolean {
-  return (
-    input.ownerMatches
-    && input.rendererUrlMatches
-    && input.isMainFrame
-    && input.permission === 'media'
-    && input.mediaTypes?.length === 1
-    && input.mediaTypes[0] === 'audio'
-  );
+  if (!(input.ownerMatches && input.rendererUrlMatches && input.isMainFrame)) return false;
+  if (input.permission === 'media') {
+    return input.mediaTypes?.length === 1 && input.mediaTypes[0] === 'audio';
+  }
+  return isAllowedPermission(input.permission);
 }
 
 /**

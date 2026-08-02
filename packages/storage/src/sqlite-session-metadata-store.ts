@@ -150,6 +150,35 @@ export interface SessionAuthoritySnapshot {
   boundary: ExecutionBoundary;
 }
 
+export interface VersionedSessionIdentity {
+  readonly sessionId: string;
+  readonly expectedVersion: number;
+}
+
+export type SessionRemovalProbe =
+  | { readonly kind: 'present'; readonly record: SessionMetadataRecord }
+  | { readonly kind: 'removed' }
+  | { readonly kind: 'absent' };
+
+function uniqueVersionedSessionIdentities(
+  sessions: readonly VersionedSessionIdentity[],
+): VersionedSessionIdentity[] {
+  if (sessions.length === 0) throw new Error('Session lifecycle requires at least one Session');
+  const unique = new Map<string, VersionedSessionIdentity>();
+  for (const identity of sessions) {
+    assertSafeSessionId(identity.sessionId);
+    if (!Number.isSafeInteger(identity.expectedVersion) || identity.expectedVersion < 1) {
+      throw new Error(`Invalid Session metadata version: ${identity.expectedVersion}`);
+    }
+    const existing = unique.get(identity.sessionId);
+    if (existing && existing.expectedVersion !== identity.expectedVersion) {
+      throw new Error(`Conflicting Session metadata versions for ${identity.sessionId}`);
+    }
+    unique.set(identity.sessionId, identity);
+  }
+  return [...unique.values()].sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+}
+
 export interface IdempotentSubagentSessionMetadataResult {
   record: SessionMetadataRecord;
   created: boolean;
@@ -936,6 +965,79 @@ export class SqliteSessionMetadataStore {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     return this.hasTombstone(sessionId);
+  }
+
+  async probeRemoval(sessionId: string): Promise<SessionRemovalProbe> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    return this.readTransaction(() => {
+      const record = this.readRecordSync(sessionId);
+      if (record) return { kind: 'present', record };
+      return this.hasTombstone(sessionId) ? { kind: 'removed' } : { kind: 'absent' };
+    });
+  }
+
+  async listPendingSessionRetirementCleanupIds(sessionId?: string): Promise<string[]> {
+    this.assertOpen();
+    if (sessionId !== undefined) assertSafeSessionId(sessionId);
+    const rows =
+      sessionId === undefined
+        ? this.db
+            .prepare(`
+              SELECT session_id AS sessionId
+              FROM session_metadata_tombstones
+              WHERE cleanup_pending = 1
+              ORDER BY session_id
+            `)
+            .all()
+        : this.db
+            .prepare(`
+              SELECT pending.session_id AS sessionId
+              FROM session_metadata_tombstones target
+              JOIN session_metadata_tombstones pending
+                ON pending.retirement_unit_id = target.retirement_unit_id
+              WHERE target.session_id = ?
+                AND pending.cleanup_pending = 1
+              ORDER BY pending.session_id
+            `)
+            .all(sessionId);
+    return (rows as unknown as Array<{ readonly sessionId: string }>).map((row) => row.sessionId);
+  }
+
+  async listTombstonedSessionIdsAmong(sessionIds: readonly string[]): Promise<string[]> {
+    this.assertOpen();
+    const unique = [...new Set(sessionIds)].sort();
+    for (const sessionId of unique) assertSafeSessionId(sessionId);
+    const tombstoned: string[] = [];
+    for (let offset = 0; offset < unique.length; offset += 100) {
+      const batch = unique.slice(offset, offset + 100);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => '?').join(', ');
+      const rows = this.db
+        .prepare(`
+          SELECT session_id AS sessionId
+          FROM session_metadata_tombstones
+          WHERE session_id IN (${placeholders})
+          ORDER BY session_id
+        `)
+        .all(...batch) as unknown as Array<{ readonly sessionId: string }>;
+      tombstoned.push(...rows.map((row) => row.sessionId));
+    }
+    return tombstoned.sort();
+  }
+
+  async completeSessionRetirementCleanup(sessionId: string): Promise<void> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    this.transaction(() => {
+      this.db
+        .prepare(`
+          UPDATE session_metadata_tombstones
+          SET cleanup_pending = 0
+          WHERE session_id = ?
+        `)
+        .run(sessionId);
+    });
   }
 
   async list(filter: SessionListFilter = {}): Promise<SessionMetadataRecord[]> {
@@ -2081,32 +2183,107 @@ export class SqliteSessionMetadataStore {
     return this.transaction(() => this.updateHeaderSync(sessionId, patch, options));
   }
 
+  async setLifecycleVersioned(
+    sessions: readonly VersionedSessionIdentity[],
+    state: 'active' | 'archived',
+  ): Promise<SessionMetadataRecord[]> {
+    this.assertOpen();
+    const identities = uniqueVersionedSessionIdentities(sessions);
+    const now = this.now();
+    const patch: Partial<SessionHeader> =
+      state === 'archived'
+        ? {
+            isArchived: true,
+            archivedAt: now,
+            status: 'archived',
+            statusUpdatedAt: now,
+          }
+        : {
+            isArchived: false,
+            archivedAt: undefined,
+            status: 'active',
+            blockedReason: undefined,
+            statusUpdatedAt: now,
+          };
+    return this.transaction(() =>
+      identities.map(({ sessionId, expectedVersion }) =>
+        this.updateHeaderSync(sessionId, patch, {
+          expectedVersion,
+          skipNoop: true,
+        }),
+      ),
+    );
+  }
+
+  async removeVersioned(sessions: readonly VersionedSessionIdentity[]): Promise<string[]> {
+    this.assertOpen();
+    const identities = uniqueVersionedSessionIdentities(sessions);
+    const retirementUnitId = identities[0]!.sessionId;
+    return this.transaction(() => {
+      const present: VersionedSessionIdentity[] = [];
+      for (const identity of identities) {
+        const record = this.readRecordSync(identity.sessionId);
+        if (!record) {
+          if (this.hasTombstone(identity.sessionId)) continue;
+          throw new SessionNotFoundError(identity.sessionId);
+        }
+        if (record.metadataVersion !== identity.expectedVersion) {
+          throw new SessionMetadataVersionConflictError(
+            identity.sessionId,
+            identity.expectedVersion,
+            record.metadataVersion,
+          );
+        }
+        this.assertSessionCanBeRemoved(identity.sessionId);
+        present.push(identity);
+      }
+      const deletedAt = this.now();
+      for (const { sessionId } of present) {
+        const deleted = this.db
+          .prepare('DELETE FROM session_metadata WHERE session_id = ?')
+          .run(sessionId);
+        if (deleted.changes !== 1) {
+          throw new SessionMetadataConflictError(
+            `Session metadata remove lost its admitted row: ${sessionId}`,
+          );
+        }
+        this.db
+          .prepare(`
+            INSERT INTO session_metadata_tombstones(
+              session_id,
+              deleted_at,
+              retirement_unit_id,
+              cleanup_pending
+            )
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(session_id) DO NOTHING
+          `)
+          .run(sessionId, deletedAt, retirementUnitId);
+      }
+      return identities.map((identity) => identity.sessionId);
+    });
+  }
+
   async remove(sessionId: string): Promise<boolean> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
     return this.transaction(() => {
-      const graphOwner = this.db
-        .prepare(`
-          SELECT graph_id AS graphId, work_id AS workId
-          FROM agent_graph_operator_provisions
-          WHERE target_session_id = ?
-        `)
-        .get(sessionId) as { graphId: string; workId: string } | undefined;
-      if (graphOwner) {
-        throw new SessionMetadataConflictError(
-          `Cannot remove graph operator Session ${sessionId}; owned by ${graphOwner.graphId}/${graphOwner.workId}`,
-        );
-      }
+      this.assertSessionCanBeRemoved(sessionId);
       const deleted =
         this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(sessionId)
           .changes === 1;
       this.db
         .prepare(`
-          INSERT INTO session_metadata_tombstones(session_id, deleted_at)
-          VALUES (?, ?)
+          INSERT INTO session_metadata_tombstones(
+            session_id,
+            deleted_at,
+            retirement_unit_id,
+            cleanup_pending
+          )
+          VALUES (?, ?, ?, 1)
           ON CONFLICT(session_id) DO NOTHING
         `)
-        .run(sessionId, this.now());
+        .run(sessionId, this.now(), sessionId);
       return deleted;
     });
   }
@@ -3194,6 +3371,21 @@ export class SqliteSessionMetadataStore {
         .prepare('SELECT 1 AS found FROM session_metadata_tombstones WHERE session_id = ?')
         .get(sessionId) !== undefined
     );
+  }
+
+  private assertSessionCanBeRemoved(sessionId: string): void {
+    const graphOwner = this.db
+      .prepare(`
+        SELECT graph_id AS graphId, work_id AS workId
+        FROM agent_graph_operator_provisions
+        WHERE target_session_id = ?
+      `)
+      .get(sessionId) as { graphId: string; workId: string } | undefined;
+    if (graphOwner) {
+      throw new SessionMetadataConflictError(
+        `Cannot remove graph operator Session ${sessionId}; owned by ${graphOwner.graphId}/${graphOwner.workId}`,
+      );
+    }
   }
 
   private transaction<T>(operation: () => T): T {

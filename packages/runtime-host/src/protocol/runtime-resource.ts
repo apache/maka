@@ -32,6 +32,7 @@ const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
   'operation_unavailable',
+  'not_found',
   'invalid_request',
   'internal_failure',
 ] as const;

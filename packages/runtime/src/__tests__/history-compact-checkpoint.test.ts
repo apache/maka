@@ -3,7 +3,6 @@ import { describe, test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
-  HISTORY_COMPACT_SOURCE_POLICY_VERSION,
   buildHistoryCompactCheckpoint,
   canReplaceHistoryCompactCheckpoint,
   historyCompactCheckpointToRuntimeEvent,
@@ -29,7 +28,7 @@ describe('history compact checkpoint', () => {
     assert.equal(checkpoint.coverage.eventCount, 10_000);
     assert.equal(checkpoint.coverage.turnCount, 5_000);
     assert.equal(checkpoint.coverage.through.runtimeEventId, 'event-9999');
-    assert.equal(checkpoint.source?.policyVersion, HISTORY_COMPACT_SOURCE_POLICY_VERSION);
+    assert.equal(checkpoint.source?.policyVersion, 'maka.compactable_runtime_event_projection.v1');
     assert.deepEqual(checkpoint.source?.coverage, {
       lowWater: {
         ledger: 'runtime_event_projection',

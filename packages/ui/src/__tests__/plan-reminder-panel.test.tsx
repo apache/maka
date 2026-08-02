@@ -80,6 +80,20 @@ describe('Plan Reminder scanning hierarchy', () => {
     assert.match(markup, /aria-label="定时任务页面设置"/);
   });
 
+  // The page renders identically whether keep-awake is on or off — that is the
+  // point of the assertion above — so the settings item is the only thing that
+  // carries the state, and it is what a story could never have proven cheaply.
+  it('reflects the persisted keep-awake state on the settings menu item', () => {
+    const checkbox = (markup: string) => {
+      const items = markup.match(/<[^>]*role="menuitemcheckbox"[^>]*>/g) ?? [];
+      assert.equal(items.length, 1, 'expected exactly one page-settings checkbox');
+      return items[0];
+    };
+
+    assert.match(checkbox(render([], true)), /aria-checked="true"/);
+    assert.match(checkbox(render([], false)), /aria-checked="false"/);
+  });
+
   it('renders list selectors with Astryx-owned visible labels', () => {
     const markup = render(
       Array.from({ length: 8 }, (_, index) =>

@@ -36,18 +36,18 @@ test('model options preserve declared effort and off-wire facts', () => {
   assert.equal(thinkingOptionsForModel('openai', 'unknown-model'), undefined);
 });
 
-test('model variants are derived from the same options contract', () => {
-  for (const [provider, model] of [
-    ['openai', 'gpt-5.5'],
-    ['anthropic', 'claude-opus-4-8'],
-    ['google', 'gemini-2.5-flash'],
-    ['deepseek', 'deepseek-v4-flash'],
-    ['cohere', 'command-a-plus-05-2026'],
-    ['ollama', 'llama3'],
+test("model variants expose each provider model's declared choices", () => {
+  for (const [provider, model, expected] of [
+    ['openai', 'gpt-5.5', ['off', 'low', 'medium', 'high', 'xhigh']],
+    ['anthropic', 'claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['google', 'gemini-2.5-flash', ['off']],
+    ['deepseek', 'deepseek-v4-flash', ['high', 'max']],
+    ['cohere', 'command-a-plus-05-2026', ['off']],
+    ['ollama', 'llama3', []],
   ] as const) {
     assert.deepEqual(
       [...thinkingVariantsForModel(provider, model)],
-      [...deriveThinkingChoices(thinkingOptionsForModel(provider, model))],
+      expected,
       `${provider}:${model}`,
     );
   }

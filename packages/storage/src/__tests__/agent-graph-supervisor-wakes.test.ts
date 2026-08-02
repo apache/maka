@@ -171,6 +171,9 @@ describe('SQLite Agent Graph supervisor wakes', () => {
 
       const v11 = new DatabaseSync(path);
       v11.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
       `);

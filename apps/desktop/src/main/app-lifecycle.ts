@@ -17,6 +17,7 @@ import type {
   createSessionStore,
   createSettingsStore,
   createSqliteArtifactStore,
+  createSqliteModelCallLedger,
   createSqliteTelemetryRepo,
   openRuntimeEventPersistence,
 } from '@maka/storage';
@@ -44,7 +45,7 @@ import { resumeSafeBoundaryContinuationsOnStartup } from './startup-safe-boundar
 
 type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 export interface AppLifecycleDeps {
-  // Whether this run stays out of the developer's way. main.ts owns the
+  // Whether this run stays out of the developer's way. boot.ts owns the
   // condition; the dock icon follows it so window visibility and dock
   // presence can never drift apart. A fixture window someone asked to see
   // (MAKA_E2E_SHOW_WINDOW) opts out of both together: as an accessory app it
@@ -60,6 +61,7 @@ export interface AppLifecycleDeps {
   settingsStore: ReturnType<typeof createSettingsStore>;
   telemetryRepo: ReturnType<typeof createSqliteTelemetryRepo>;
   artifactStore: ReturnType<typeof createSqliteArtifactStore>;
+  modelCallLedger: ReturnType<typeof createSqliteModelCallLedger>;
   ensureUsageReady: () => Promise<void>;
   keepSystemAwake: KeepSystemAwakeController;
   botRegistry: BotRegistry;
@@ -80,14 +82,14 @@ export interface AppLifecycleDeps {
   agentGraphSupervisorWakeCoordinator: AgentGraphSupervisorWakeCoordinator;
   agentGraphControlStore: ReturnType<typeof createAgentGraphControlStore>;
   streamEvents: StreamEvents;
-  /** Focus-or-create for the main window; stays in main.ts next to the
+  /** Focus-or-create for the main window; stays in boot.ts next to the
    *  controller and is registered here on `second-instance` / `activate`. */
   focusOrCreateMainWindow: (signal: AbortSignal) => void;
   emitConnectionListChanged: () => void;
   emitSessionsChanged: (reason: 'migrated') => void;
   handleExternalSettingsChange: () => Promise<void>;
   /** Accessor for the settings IPC handle, which is assigned inside
-   *  main.ts's `registerIpc()`; teardown disposes it if present. */
+   *  boot.ts's `registerIpc()`; teardown disposes it if present. */
   getSettingsIpc: () => SettingsIpcHandle | undefined;
 }
 
@@ -99,9 +101,10 @@ export interface AppLifecycleDeps {
  * `recoverInterruptedSessionsOnStartup`, the `window-all-closed` and `before-quit`
  * handlers, and `runBeforeQuitCleanup`. Startup ORDER is the product, so the
  * bodies stay behaviorally identical to their in-main.ts originals; every
- * process-scoped collaborator is injected. The single-instance lock and
- * `registerIpc()` anchor stay in main.ts. Call this once, at the same point the
- * inline `app.whenReady()` used to sit (immediately after `registerIpc()`).
+ * process-scoped collaborator is injected. The single-instance lock stays in
+ * main.ts; the `registerIpc()` anchor stays in boot.ts. Call this once, at
+ * the same point the inline `app.whenReady()` used to sit (immediately after
+ * `registerIpc()`).
  */
 export function wireAppLifecycle(deps: AppLifecycleDeps): void {
   const {
@@ -115,6 +118,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     settingsStore,
     telemetryRepo,
     artifactStore,
+    modelCallLedger,
     ensureUsageReady,
     keepSystemAwake,
     botRegistry,
@@ -236,7 +240,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
     // renderer via the existing `sessions:changed` / `connections:event`
     // / `settings:bots:statusChanged` channels, so the UI converges lazily.
     // E2E fixture workspaces are wiped and seeded before stores open in
-    // main.ts. SQLite keeps live file handles, so resetting the workspace
+    // boot.ts. SQLite keeps live file handles, so resetting the workspace
     // here after store construction would detach the canonical database.
     await runCredentialStartup();
     const initialWindowSignal = quitCoordinator.getWindowCreationSignal();
@@ -392,6 +396,7 @@ export function wireAppLifecycle(deps: AppLifecycleDeps): void {
       agentGraphSupervisorWakeCoordinator.close(),
       telemetryRepo.close(),
       Promise.resolve().then(() => artifactStore.close?.()),
+      modelCallLedger.close(),
     ]);
     for (const result of results) {
       if (result.status === 'rejected') console.error('[shutdown] cleanup failed:', result.reason);

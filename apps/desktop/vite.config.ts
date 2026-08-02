@@ -2,7 +2,6 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 
 /**
  * PR-ICONS-FULL-REPLACE-0 (WAWQAQ msg `60064e2d` 2026-06-24): point the
@@ -19,7 +18,7 @@ const UI_SRC = resolve(REPO_ROOT, 'packages/ui/src');
 export default defineConfig({
   root: 'src/renderer',
   base: './',
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: [

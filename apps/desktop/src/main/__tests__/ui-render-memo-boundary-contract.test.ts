@@ -15,6 +15,7 @@ type SessionHistoryModule = {
   SessionHistoryList(props: {
     sessions: SessionSummary[];
     activeId?: string;
+    groups?: ReadonlyArray<{ id: string; label: string; sessions: SessionSummary[] }>;
     streamingSessionIds?: Set<string>;
     staleSessionIds?: Set<string>;
     onSelectSession(sessionId: string): void;
@@ -31,92 +32,77 @@ type RendererWindow = Window & typeof globalThis;
 type MemoTestGlobal = typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean;
 };
-type ResettableTimestamp = number & { reset(): void };
+type CountedTimestamp = number & { readCount(): number };
 
 const cleanupTasks: Array<() => void> = [];
 
 afterEach(() => {
-  while (cleanupTasks.length > 0) {
-    cleanupTasks.pop()?.();
-  }
+  while (cleanupTasks.length > 0) cleanupTasks.pop()?.();
 });
 
 describe('UI render memo boundary contract', () => {
-  it('keeps sidebar session rows from rendering on unrelated parent updates with row actions present', async () => {
+  it('memoized session metadata ignores parent updates and follows only the target streaming flag', async () => {
     const { LocaleProvider, SessionHistoryList } = await importSessionHistoryList();
     const root = installReactRenderer();
-    let rowRenderCount = 0;
     const sessions = [
-      createSession('session-a', 'Alpha', () => {
-        rowRenderCount += 1;
-      }),
-      createSession('session-b', 'Beta', () => {
-        rowRenderCount += 1;
-      }),
+      createSession('session-a', 'Alpha'),
+      createSession('session-b', 'Beta'),
     ];
-    const streamingSessionIds = new Set<string>();
-    const staleSessionIds = new Set<string>();
-    const rowActions = createRowActions();
-    const onSelectSession = () => {};
-
-    resetTimestampCounters(sessions);
-    await render(root, createElement(RenderHost, {
+    const groups = [{ id: 'all', label: '', sessions }];
+    // Omit rowActions: permanent MoreMenu mounts Astryx DropdownMenu, which
+    // needs a full focusable DOM (hasAttribute). This contract only measures
+    // SessionNavRow identity for formatSessionMeta under stable props.
+    const stableProps = {
       SessionHistoryList,
       LocaleProvider,
+      activeId: 'session-a',
+      groups,
+      onSelectSession: () => {},
+      sessions,
+      staleSessionIds: new Set<string>(),
+    };
+
+    await render(root, createElement(RenderHost, {
+      ...stableProps,
       label: 'first parent render',
-      onSelectSession,
-      rowActions,
-      sessions,
-      staleSessionIds,
-      streamingSessionIds,
+      streamingSessionIds: new Set<string>(),
     }));
-    assert.equal(rowRenderCount, 2);
+    const initialReads = timestampReads(sessions);
+    assert.ok(initialReads.every((count) => count > 0));
 
-    resetTimestampCounters(sessions);
+    const stableStreamingIds = new Set<string>();
     await render(root, createElement(RenderHost, {
-      SessionHistoryList,
-      LocaleProvider,
+      ...stableProps,
+      label: 'stable parent render',
+      streamingSessionIds: stableStreamingIds,
+    }));
+    const stableBaseline = timestampReads(sessions);
+
+    await render(root, createElement(RenderHost, {
+      ...stableProps,
       label: 'unrelated parent render',
-      onSelectSession,
-      rowActions,
-      sessions,
-      staleSessionIds,
-      streamingSessionIds,
+      streamingSessionIds: stableStreamingIds,
     }));
+    assert.deepEqual(timestampReads(sessions), stableBaseline);
 
-    assert.equal(
-      rowRenderCount,
-      2,
-      'stable session rows should not recompute row meta when only sibling parent content changes',
-    );
-
-    const nextStreamingSessionIds = new Set<string>(['session-a']);
-    resetTimestampCounters(sessions);
     await render(root, createElement(RenderHost, {
-      SessionHistoryList,
-      LocaleProvider,
+      ...stableProps,
       label: 'streaming session update',
-      onSelectSession,
-      rowActions,
-      sessions,
-      staleSessionIds,
-      streamingSessionIds: nextStreamingSessionIds,
+      streamingSessionIds: new Set<string>(['session-a']),
     }));
-
-    assert.equal(
-      rowRenderCount,
-      3,
-      'streaming updates should only recompute the row whose streaming flag changed',
-    );
+    const streamingReads = timestampReads(sessions);
+    assert.ok(streamingReads[0] > stableBaseline[0]);
+    assert.equal(streamingReads[1], stableBaseline[1]);
   });
 });
 
 function RenderHost(props: {
   LocaleProvider: SessionHistoryModule['LocaleProvider'];
   SessionHistoryList: SessionHistoryModule['SessionHistoryList'];
+  activeId: string;
+  groups: ReadonlyArray<{ id: string; label: string; sessions: SessionSummary[] }>;
   label: string;
   onSelectSession(sessionId: string): void;
-  rowActions: NonNullable<Parameters<SessionHistoryModule['SessionHistoryList']>[0]['rowActions']>;
   sessions: SessionSummary[];
   staleSessionIds: Set<string>;
   streamingSessionIds: Set<string>;
@@ -129,17 +115,17 @@ function RenderHost(props: {
       createElement('p', null, props.label),
       createElement(props.SessionHistoryList, {
         sessions: props.sessions,
-        activeId: 'session-a',
+        groups: props.groups,
+        activeId: props.activeId,
         streamingSessionIds: props.streamingSessionIds,
         staleSessionIds: props.staleSessionIds,
         onSelectSession: props.onSelectSession,
-        rowActions: props.rowActions,
       }),
     ),
   });
 }
 
-function createSession(id: string, name: string, onRender: () => void): SessionSummary {
+function createSession(id: string, name: string): SessionSummary {
   return {
     id,
     name,
@@ -147,7 +133,7 @@ function createSession(id: string, name: string, onRender: () => void): SessionS
     isArchived: false,
     labels: [],
     hasUnread: false,
-    lastMessageAt: createCountedTimestamp(1_700_000_000_000, onRender) as unknown as number,
+    lastMessageAt: createCountedTimestamp(1_700_000_000_000),
     status: 'active',
     backend: 'fake',
     llmConnectionSlug: 'fake',
@@ -157,45 +143,31 @@ function createSession(id: string, name: string, onRender: () => void): SessionS
   };
 }
 
-function createCountedTimestamp(value: number, onRender: () => void): ResettableTimestamp {
-  let counted = false;
+function createCountedTimestamp(value: number): CountedTimestamp {
+  let reads = 0;
   return {
-    reset() {
-      counted = false;
-    },
+    readCount: () => reads,
     valueOf() {
-      // The parent also reads lastMessageAt for bucketing; only row rendering
-      // calls the compact timestamp formatter.
-      if (!counted && new Error().stack?.includes('formatCompactTimestamp')) {
-        counted = true;
-        onRender();
-      }
+      reads += 1;
       return value;
     },
     [Symbol.toPrimitive]() {
       return this.valueOf();
     },
-  } as unknown as ResettableTimestamp;
+  } as unknown as CountedTimestamp;
 }
 
-function resetTimestampCounters(sessions: SessionSummary[]): void {
-  for (const session of sessions) {
-    (session.lastMessageAt as ResettableTimestamp).reset();
-  }
-}
-
-function createRowActions(): NonNullable<Parameters<SessionHistoryModule['SessionHistoryList']>[0]['rowActions']> {
-  return {
-    onToggleFlag() {},
-    onArchive() {},
-    onUnarchive() {},
-    onRename() {},
-    onDelete() {},
-  };
+function timestampReads(sessions: SessionSummary[]): number[] {
+  return sessions.map((session) =>
+    (session.lastMessageAt as CountedTimestamp).readCount()
+  );
 }
 
 async function importSessionHistoryList(): Promise<SessionHistoryModule> {
-  const outfile = resolve(REPO_ROOT, 'apps/desktop/dist/main/__tests__/session-history-list.memo-bundle.mjs');
+  const outfile = resolve(
+    REPO_ROOT,
+    'apps/desktop/dist/main/__tests__/session-history-list.memo-bundle.mjs',
+  );
   await build({
     stdin: {
       contents: [
@@ -207,7 +179,14 @@ async function importSessionHistoryList(): Promise<SessionHistoryModule> {
     },
     outfile,
     bundle: true,
-    external: ['@maka/core', LUCIDE_REACT_PACKAGE, 'react', 'react-dom', 'react-dom/*', 'react/jsx-runtime'],
+    external: [
+      '@maka/core',
+      LUCIDE_REACT_PACKAGE,
+      'react',
+      'react-dom',
+      'react-dom/*',
+      'react/jsx-runtime',
+    ],
     platform: 'node',
     format: 'esm',
     target: 'node20',
@@ -221,9 +200,7 @@ function installReactRenderer(): Root {
   const container = new FakeElement('div', document);
   const root = createRoot(container as unknown as Element);
   cleanupTasks.push(() => {
-    act(() => {
-      root.unmount();
-    });
+    act(() => root.unmount());
   });
   return root;
 }
@@ -335,9 +312,7 @@ class FakeElement {
 
   removeChild<T extends FakeElement | FakeText>(node: T): T {
     const index = this.childNodes.indexOf(node);
-    if (index >= 0) {
-      this.childNodes.splice(index, 1);
-    }
+    if (index >= 0) this.childNodes.splice(index, 1);
     node.parentNode = null;
     return node;
   }

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 17;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 18;
 
 const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
@@ -682,6 +682,21 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
             AND labels.label = OLD.label
         );
     END;
+  `,
+  ],
+  [
+    18,
+    `
+    ALTER TABLE session_metadata_tombstones ADD COLUMN retirement_unit_id TEXT;
+    ALTER TABLE session_metadata_tombstones
+      ADD COLUMN cleanup_pending INTEGER NOT NULL DEFAULT 0
+      CHECK (cleanup_pending IN (0, 1));
+
+    UPDATE session_metadata_tombstones
+    SET retirement_unit_id = session_id, cleanup_pending = 1;
+
+    CREATE INDEX session_metadata_tombstones_by_retirement_unit
+      ON session_metadata_tombstones(retirement_unit_id, cleanup_pending, session_id);
   `,
   ],
 ]);

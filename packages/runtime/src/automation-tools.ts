@@ -8,10 +8,20 @@
  */
 
 import { z } from 'zod';
+import {
+  AUTOMATION_CRON_EXPRESSION_LIMIT,
+  AUTOMATION_CRON_EXPRESSION_MAX_CODE_UNITS,
+  AUTOMATION_NAME_LIMIT,
+  AUTOMATION_NAME_MAX_CODE_UNITS,
+  AUTOMATION_PROMPT_LIMIT,
+  AUTOMATION_PROMPT_MAX_CODE_UNITS,
+  isAutomationTextWithinLimit,
+} from '@maka/core/automation';
 import type { MakaTool } from './tool-runtime.js';
 import type { AutomationManager, AutomationDefinition } from './automation-state.js';
 
 export const AUTOMATION_TOOL_NAME = 'Automation';
+export const AUTOMATION_MODEL_LIST_MAX_ITEMS = 100;
 
 export interface AutomationToolDeps {
   automationManager: AutomationManager;
@@ -21,13 +31,38 @@ export interface AutomationToolDeps {
   cronEnabled?: boolean;
 }
 
+export interface AutomationToolAuthority {
+  create(input: {
+    kind: AutomationDefinition['kind'];
+    name: string;
+    prompt: string;
+    sessionId: string;
+    schedule: AutomationDefinition['schedule'];
+    maxFires?: number;
+    durable?: boolean;
+  }): Promise<AutomationDefinition | { error: string }>;
+  delete(id: string, sessionId: string): Promise<boolean>;
+  pause(id: string, sessionId: string): Promise<AutomationDefinition | undefined>;
+  resume(id: string, sessionId: string): Promise<AutomationDefinition | undefined>;
+  get(id: string, sessionId: string): Promise<AutomationDefinition | undefined>;
+  listVisibleForSession(sessionId: string): Promise<readonly AutomationDefinition[]>;
+}
+
+export interface AutomationAuthorityToolDeps {
+  readonly authority: AutomationToolAuthority;
+  readonly cronEnabled?: boolean;
+}
+
 const scheduleSchema = z.union([
   z.object({
     type: z.literal('cron'),
     expression: z
       .string()
       .min(9)
-      .max(100)
+      .max(AUTOMATION_CRON_EXPRESSION_MAX_CODE_UNITS)
+      .refine((value) => isAutomationTextWithinLimit(value, AUTOMATION_CRON_EXPRESSION_LIMIT), {
+        message: 'Cron expression exceeds the Automation text limit.',
+      })
       .describe(
         '5-field cron expression: "minute hour day-of-month month day-of-week". Example: "*/5 * * * *" = every 5 min, "0 9 * * 1-5" = weekdays at 9am.',
       ),
@@ -68,14 +103,22 @@ function makeAutomationSchema(kindSchema: z.ZodType) {
       .string()
       .trim()
       .min(1)
-      .max(100)
+      .max(AUTOMATION_NAME_MAX_CODE_UNITS)
+      .refine(
+        (value) => isAutomationTextWithinLimit(value, AUTOMATION_NAME_LIMIT, { nonblank: true }),
+        { message: 'Automation name exceeds the text limit.' },
+      )
       .optional()
       .describe('[create] Short human-readable name.'),
     prompt: z
       .string()
       .trim()
       .min(1)
-      .max(2000)
+      .max(AUTOMATION_PROMPT_MAX_CODE_UNITS)
+      .refine(
+        (value) => isAutomationTextWithinLimit(value, AUTOMATION_PROMPT_LIMIT, { nonblank: true }),
+        { message: 'Automation prompt exceeds the text limit.' },
+      )
       .optional()
       .describe('[create] The prompt to execute on each fire.'),
     schedule: scheduleSchema
@@ -121,6 +164,32 @@ const AUTOMATION_SCHEMA_HEARTBEAT_ONLY = makeAutomationSchema(
 type AutomationInput = z.infer<typeof AUTOMATION_SCHEMA_WITH_CRON>;
 
 export function buildAutomationTool(deps: AutomationToolDeps): MakaTool<AutomationInput, string> {
+  const changed = <T>(value: T): T => {
+    deps.onAutomationChange?.();
+    return value;
+  };
+  return buildAutomationAuthorityTool({
+    cronEnabled: deps.cronEnabled,
+    authority: {
+      create: async (input) => changed(deps.automationManager.create(input)),
+      delete: async (id, sessionId) => changed(deps.automationManager.delete(id, sessionId)),
+      pause: async (id, sessionId) => changed(deps.automationManager.pause(id, sessionId)),
+      resume: async (id, sessionId) => changed(deps.automationManager.resume(id, sessionId)),
+      get: async (id, sessionId) => {
+        const automation = deps.automationManager.get(id);
+        return automation && (automation.sessionId === sessionId || automation.durable === true)
+          ? automation
+          : undefined;
+      },
+      listVisibleForSession: async (sessionId) =>
+        deps.automationManager.listVisibleForSession(sessionId),
+    },
+  });
+}
+
+export function buildAutomationAuthorityTool(
+  deps: AutomationAuthorityToolDeps,
+): MakaTool<AutomationInput, string> {
   const cronEnabled = deps.cronEnabled === true;
   return {
     name: AUTOMATION_TOOL_NAME,
@@ -133,24 +202,24 @@ export function buildAutomationTool(deps: AutomationToolDeps): MakaTool<Automati
         : '') +
       'Automations auto-expire after 7 days unless deleted earlier.',
     parameters: cronEnabled ? AUTOMATION_SCHEMA_WITH_CRON : AUTOMATION_SCHEMA_HEARTBEAT_ONLY,
-    impl: (input, ctx) => {
+    impl: async (input, ctx) => {
       let result: string;
       switch (input.mode) {
         case 'create':
-          result = handleCreate(deps, input, ctx.sessionId, cronEnabled);
+          result = await handleCreate(deps.authority, input, ctx.sessionId, cronEnabled);
           break;
         case 'delete':
-          result = handleById(input, (id) =>
-            deps.automationManager.delete(id, ctx.sessionId)
+          result = await handleById(input, async (id) =>
+            (await deps.authority.delete(id, ctx.sessionId))
               ? `Automation "${id}" deleted.`
               : `Automation "${id}" not found or not owned by this session.`,
           );
           break;
         case 'list':
-          return handleList(deps, ctx.sessionId);
+          return handleList(deps.authority, ctx.sessionId);
         case 'pause': {
-          result = handleById(input, (id) => {
-            const r = deps.automationManager.pause(id, ctx.sessionId);
+          result = await handleById(input, async (id) => {
+            const r = await deps.authority.pause(id, ctx.sessionId);
             return r
               ? `Automation "${r.name}" paused. Use mode "resume" to reactivate.`
               : `Cannot pause "${id}": not found, not owned, or not active.`;
@@ -158,14 +227,14 @@ export function buildAutomationTool(deps: AutomationToolDeps): MakaTool<Automati
           break;
         }
         case 'resume': {
-          result = handleById(input, (id) => {
-            const r = deps.automationManager.resume(id, ctx.sessionId);
+          result = await handleById(input, async (id) => {
+            const r = await deps.authority.resume(id, ctx.sessionId);
             if (r) {
               return `Automation "${r.name}" resumed. Next fire: ${r.nextFireAt ? new Date(r.nextFireAt).toLocaleString() : 'N/A'}`;
             }
             // Distinguish a spent fire budget from other resume failures so the
             // agent doesn't keep retrying a cap that can never be revived.
-            const existing = deps.automationManager.get(id);
+            const existing = await deps.authority.get(id, ctx.sessionId);
             if (existing && existing.status === 'paused') {
               const spent =
                 (existing.maxFires != null && existing.fireCount >= existing.maxFires) ||
@@ -179,23 +248,25 @@ export function buildAutomationTool(deps: AutomationToolDeps): MakaTool<Automati
           break;
         }
       }
-      deps.onAutomationChange?.();
       return result;
     },
   };
 }
 
-function handleById(input: AutomationInput, run: (id: string) => string): string {
+async function handleById(
+  input: AutomationInput,
+  run: (id: string) => Promise<string>,
+): Promise<string> {
   if (!input.id) return 'Error: "id" is required for delete/pause/resume.';
-  return run(input.id);
+  return await run(input.id);
 }
 
-function handleCreate(
-  deps: AutomationToolDeps,
+async function handleCreate(
+  authority: AutomationToolAuthority,
   input: AutomationInput,
   sessionId: string,
   cronEnabled: boolean,
-): string {
+): Promise<string> {
   if (!input.kind) return 'Error: "kind" is required for create.';
   if (!input.name) return 'Error: "name" is required for create.';
   if (!input.prompt) return 'Error: "prompt" is required for create.';
@@ -208,7 +279,7 @@ function handleCreate(
       ? { type: 'once' as const, delaySeconds: input.schedule.delay_seconds }
       : input.schedule;
 
-  const result = deps.automationManager.create({
+  const result = await authority.create({
     kind: input.kind as 'heartbeat' | 'cron',
     name: input.name,
     prompt: input.prompt,
@@ -234,14 +305,18 @@ function handleCreate(
   ].join('\n');
 }
 
-function handleList(deps: AutomationToolDeps, sessionId: string): string {
+async function handleList(authority: AutomationToolAuthority, sessionId: string): Promise<string> {
   // Includes this session's automations plus every durable (app-global) one,
   // so persisted cron jobs stay queryable and manageable after a restart even
   // from a fresh session.
-  const automations = deps.automationManager.listVisibleForSession(sessionId);
+  const automations = await authority.listVisibleForSession(sessionId);
   if (automations.length === 0) return 'No automations for this session.';
-
-  return automations.map((a) => formatAutomation(a)).join('\n---\n');
+  const visible = automations.slice(0, AUTOMATION_MODEL_LIST_MAX_ITEMS);
+  const formatted = visible.map((a) => formatAutomation(a));
+  if (automations.length > visible.length) {
+    formatted.push(`${automations.length - visible.length} additional automations omitted.`);
+  }
+  return formatted.join('\n---\n');
 }
 
 function formatAutomation(a: AutomationDefinition): string {

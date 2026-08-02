@@ -6,7 +6,7 @@ import type { TelemetryRepoLite } from './types.js';
 const ARGS_SUMMARY_MAX = 512;
 
 export interface ToolRecorderDeps {
-  repo: TelemetryRepoLite;
+  repo: Pick<TelemetryRepoLite, 'insertToolInvocation'>;
 }
 
 export async function recordToolInvocation(

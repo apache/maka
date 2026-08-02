@@ -5,7 +5,7 @@
 // skills' span-row (label + N 个), daily-review's h4 with a colored
 // accent bar, and permission's h4 + small + trailing button.
 //
-// Styled with Tailwind utilities (portable, like DialogHeader/StatTile);
+// Styled with package-owned semantic classes; call sites keep their wrapper
 // call sites keep their wrapper classes for page-pinned CSS placement.
 
 import type { ReactNode } from 'react';
@@ -41,23 +41,22 @@ export function SectionHeader({
 }: SectionHeaderProps) {
   return (
     <div
-      className={cn('flex min-w-0 items-center justify-between gap-3', className)}
+      className={cn('maka-section-header', className)}
       data-slot="section-header"
     >
-      <div className="min-w-0">
+      <div className="maka-section-header-content">
         <Tag
           id={titleId}
           className={cn(
-            'm-0 inline-flex items-center gap-2 text-[length:var(--font-size-ui)] font-semibold text-foreground',
-            accent &&
-              'before:inline-block before:h-3 before:w-[3px] before:rounded-[var(--radius-pill)] before:bg-[oklch(from_var(--status-running)_l_c_h_/_0.85)] before:content-[""]',
+            'maka-section-header-title',
+            accent && 'maka-section-header-title-accent',
           )}
           data-slot="section-header-title"
         >
           {title}
           {count != null && (
             <small
-              className="text-[length:var(--font-size-caption)] font-normal text-[color:var(--muted-foreground)] [font-variant-numeric:tabular-nums]"
+              className="maka-section-header-count"
               data-slot="section-header-count"
             >
               {count}
@@ -66,7 +65,7 @@ export function SectionHeader({
         </Tag>
         {subtitle != null && (
           <small
-            className="mt-0.5 block text-[length:var(--font-size-caption)] font-normal text-[color:var(--foreground-secondary)]"
+            className="maka-section-header-subtitle"
             data-slot="section-header-subtitle"
           >
             {subtitle}
@@ -74,7 +73,7 @@ export function SectionHeader({
         )}
       </div>
       {action != null && (
-        <div className="flex shrink-0 items-center gap-2" data-slot="section-header-action">
+        <div className="maka-section-header-action" data-slot="section-header-action">
           {action}
         </div>
       )}

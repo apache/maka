@@ -30,6 +30,7 @@ import type {
   ToolResultArchiveRecorderInput,
   buildPricingLookup,
 } from '@maka/runtime';
+import type { createSqliteModelCallLedger } from '@maka/storage';
 import {
   type ArtifactStore,
   createAttachmentByteReader,
@@ -54,6 +55,7 @@ type AssembledTools = ReturnType<typeof assembleDesktopTools>;
 type SystemPromptMainService = ReturnType<typeof createSystemPromptMainService>;
 type SubscriptionModelFetchBuilder = ReturnType<typeof createSubscriptionModelFetch>;
 type GoalWiring = ReturnType<typeof createMainGoalWiring>;
+type ModelCallLedger = ReturnType<typeof createSqliteModelCallLedger>;
 type PricingLookup = ReturnType<typeof buildPricingLookup>;
 type RuntimeCommitStore = Awaited<ReturnType<typeof openRuntimeEventPersistence>>['runtimeCommitStore'];
 const SKILL_CATALOG_TRACE_DECISION_LIMIT = 100;
@@ -62,6 +64,7 @@ export interface AiSdkBackendFactoryDeps extends DesktopBackendToolSurfaceDeps {
   buildSubscriptionModelFetch: SubscriptionModelFetchBuilder;
   systemPromptService: SystemPromptMainService;
   telemetryRepo: TelemetryRepo;
+  modelCallLedger: ModelCallLedger;
   ensureUsageReady: () => Promise<void>;
   artifactStore: ArtifactStore;
   desktopSessionSkillHosts: Map<string, HostCapabilities>;
@@ -90,6 +93,7 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
     buildSubscriptionModelFetch,
     systemPromptService,
     telemetryRepo,
+    modelCallLedger,
     ensureUsageReady,
     artifactStore,
     desktopSessionSkillHosts,
@@ -278,6 +282,24 @@ export function createAiSdkBackendFactory(deps: AiSdkBackendFactoryDeps): Backen
       shellRunContextSummary: ctx.shellRunContextSummary,
       lookupPricing: getLookupPricing(),
       recordLlmCall: (event: LlmCallRecord) => recordLlmCall({ repo: telemetryRepo, lookupPricing: getLookupPricing() }, event),
+      // One canonical record, one commit point (#1679): the AgentRun stream is
+      // the only durable authority, and the ledger is a projection written only
+      // after the authority holds the record. A failed projection marks the run
+      // so the Usage read path re-derives it from the stream. Settlement runs
+      // after the provider call completed and billed, so neither step may fail
+      // the turn — the seam swallows what is thrown here.
+      recordModelCallAttempt: async (attempt) => {
+        await ctx.recordModelCallAttempt?.(attempt);
+        // Marked before the projection, so a crash between the two still
+        // leaves a run the repair path can find.
+        await modelCallLedger
+          .markRunPendingReprojection(attempt.sessionId, attempt.runId)
+          .catch(() => undefined);
+        await modelCallLedger.record(attempt);
+        await modelCallLedger
+          .clearPendingReprojection(attempt.sessionId, attempt.runId)
+          .catch(() => undefined);
+      },
       recordToolInvocation: (event: ToolInvocationRecord) =>
         recordToolInvocation(
           { repo: telemetryRepo },
@@ -481,8 +503,8 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
       goalBoundary: options.goalBoundary,
       activities: sessionActivities,
       ...(options.activity ? { activity: options.activity } : {}),
-      beginExternalTurn: (externalSessionId, externalTurnId) =>
-        goalWiring.coordinator.beginExternalTurn(externalSessionId, externalTurnId),
+      beginObservedTurn: (externalSessionId, externalTurnId) =>
+        goalWiring.coordinator.beginObservedTurn(externalSessionId, externalTurnId),
       onEvent: (event) => {
         if (!userAppendBroadcasted) {
           emitSessionsChanged('message-appended', sessionId);

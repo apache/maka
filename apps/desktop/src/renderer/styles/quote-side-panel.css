@@ -72,6 +72,7 @@
   background: var(--card-bg);
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   white-space: pre-wrap;
 }
 
@@ -79,6 +80,7 @@
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-quote-companion-error {
@@ -86,6 +88,7 @@
   padding: var(--space-1) var(--space-3);
   color: var(--destructive-text);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-quote-companion-actions {

@@ -24,7 +24,10 @@ import { buildAgentSettingsTools } from './agent-settings-tools.js';
 import { buildRiveWorkflowTool } from './rive-workflow-tool.js';
 import { buildExploreAgentTool } from './explore-agent-tool.js';
 import { buildBrowserTools } from './browser/browser-tools.js';
-import { createComputerUseHost } from './computer-use-host.js';
+import {
+  createComputerUseHost,
+  createDesktopPhysicalInputGuard,
+} from './computer-use-host.js';
 import { createCursorOverlayController } from './computer-use/cursor-overlay-window.js';
 import {
   applyComputerUseRealModelPolicy,
@@ -145,7 +148,9 @@ export function assembleDesktopTools(deps: DesktopToolAssemblyDeps) {
         return { base64, mimeType: 'image/png' };
       }
     },
-    physicalInputRecentlyActive: () => powerMonitor.getSystemIdleTime() < 1,
+    physicalInputRecentlyActive: createDesktopPhysicalInputGuard(
+      () => powerMonitor.getSystemIdleTime(),
+    ),
     ...(isComputerUseRealModelE2e
       ? {
           onTrace: (event) => {

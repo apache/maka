@@ -34,7 +34,11 @@ const ALLOW = new Map([
     'apps/desktop/src/renderer/error-boundary.tsx',
     'React error boundary; DevTools-only, surfaces uncaught render errors.',
   ],
-  ['apps/desktop/src/main/main.ts', 'dev-gated by VITE_DEV_SERVER_URL / NODE_ENV (PR100).'],
+  ['apps/desktop/src/main/main.ts', 'thin ESM entry; pre-ready config, [startup] ready/fatal diagnostics (moved from boot, PR1880).'],
+  [
+    'apps/desktop/src/main/boot.ts',
+    'startup chain diagnostics (e2e-fixture fatal/scenario, window create failure, repair/cleanup paths); no secrets (moved from main.ts, PR1880).',
+  ],
   [
     'apps/desktop/src/main/app-lifecycle.ts',
     'startup/shutdown diagnostics (dock icon, credential migration, e2e-fixture marker, cleanup failures); no secrets (moved from main.ts, arch R6).',

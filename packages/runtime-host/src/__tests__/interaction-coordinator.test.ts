@@ -60,6 +60,7 @@ describe('HostInteractionCoordinator', () => {
         continuation,
       });
       assert.deepEqual(order, ['preflight', 'refresh:pending']);
+      assert.equal(await coordinator.hasPendingSession(RUN.sessionId), true);
 
       const answer = {
         interactionId: 'question_1',
@@ -72,6 +73,7 @@ describe('HostInteractionCoordinator', () => {
       assert.equal(first.ok, true);
       assert.equal(second.ok, true);
       assert.deepEqual(order, ['preflight', 'refresh:pending', 'refresh:answered', 'apply:Yes']);
+      assert.equal(await coordinator.hasPendingSession(RUN.sessionId), false);
 
       const conflicting = await coordinator.handlers['interaction.answer'](
         {
@@ -82,6 +84,50 @@ describe('HostInteractionCoordinator', () => {
       );
       assert.equal(conflicting.ok, false);
       if (!conflicting.ok) assert.equal(conflicting.error.code, 'already_resolved');
+
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('does not expose settled interactions after Session removal', async () => {
+    await withStore(async ({ store }) => {
+      let sessionState: 'present' | 'removed' = 'present';
+      const coordinator = createCoordinator(store, {
+        sessions: {
+          probeSessionRemoval: async () => ({ kind: sessionState }),
+        },
+      });
+      const owner = coordinator.bindRun(RUN);
+      await owner.acceptUserQuestionRequest({
+        request: questionEvent('question_removed_session', 10),
+        continuation: questionContinuation('question_removed_session'),
+      });
+      const answer = {
+        interactionId: 'question_removed_session',
+        answer: { kind: 'question', answers: ['Yes'] },
+      } as const;
+      assert.equal(
+        (await coordinator.handlers['interaction.answer'](answer, connection())).ok,
+        true,
+      );
+
+      sessionState = 'removed';
+      assert.deepEqual(
+        await coordinator.handlers['interaction.query'](
+          { sessionId: RUN.sessionId, interactionId: answer.interactionId },
+          connection(),
+        ),
+        {
+          ok: false,
+          error: { code: 'not_found', message: 'Interaction was not found' },
+        },
+      );
+      assert.deepEqual(await coordinator.handlers['interaction.answer'](answer, connection()), {
+        ok: false,
+        error: { code: 'not_found', message: 'Interaction was not found' },
+      });
 
       await owner.close('turn_terminal');
       owner.release();
@@ -349,6 +395,9 @@ function createCoordinator(
   return new HostInteractionCoordinator({
     store,
     sessionAdmission: new SessionAdmissionGate(),
+    sessions: {
+      probeSessionRemoval: async () => ({ kind: 'present' }),
+    },
     now: () => ++now,
     preflightSessionSnapshot: () => true,
     refreshCanonicalContinuity: async () => {},

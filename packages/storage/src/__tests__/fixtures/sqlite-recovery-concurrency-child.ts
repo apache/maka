@@ -4,8 +4,10 @@ import {
   runtimePrefixSegment,
   type RuntimeEvent,
   type ToolRecoveryFactEnvelope,
+  type WorkspaceBaselineAuthorityInput,
 } from '@maka/core';
 import { createSqliteRuntimeStore } from '../../sqlite-runtime-store.js';
+import { commitWorkspaceBaselineInternal } from '../../workspace-version-authority-internal.js';
 
 const mode = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_MODE');
 const dbPath = requiredEnv('MAKA_SQLITE_RECOVERY_CONCURRENCY_DB');
@@ -32,6 +34,12 @@ try {
     await store.commitToolRecoveryBundle(parkedBundle());
   } else if (mode === 'rebuild') {
     await store.rebuildToolProjectionsFromRuntimeEvents();
+  } else if (mode === 'workspace_baseline_a' || mode === 'workspace_baseline_b') {
+    const result = await commitWorkspaceBaselineInternal(
+      store,
+      workspaceBaselineInput(mode === 'workspace_baseline_b' ? 'b' : 'a'),
+    );
+    writeSync(1, `BASELINE ${result.created ? 'created' : 'existing'}\n`);
   } else if (mode === 'append_source') {
     await store.ensureTerminalRuntimeEventDurable('session-1', 'run-1', {
       ...baseEvent('concurrent-source-terminal', 3),
@@ -248,4 +256,34 @@ function requiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`Missing ${name}`);
   return value;
+}
+
+function workspaceBaselineInput(variant: 'a' | 'b'): WorkspaceBaselineAuthorityInput {
+  const alternate = variant === 'b';
+  return {
+    epochOpenedEventId: alternate ? 'workspace-epoch-event-b' : 'workspace-epoch-event-a',
+    baselineAcceptedEventId: alternate ? 'workspace-version-event-b' : 'workspace-version-event-a',
+    committedAt: 1_700_000_000_000,
+    epoch: {
+      repositoryId: `repository_${'1'.repeat(32)}`,
+      workspaceId: `workspace_${'2'.repeat(32)}`,
+      workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+      workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+      mode: 'managed_worktree',
+      objectFormat: 'sha1',
+      sourceCommitOid: '1'.repeat(40),
+      sourceTreeOid: '2'.repeat(40),
+      materializationProfileDigest: `sha256:${'3'.repeat(64)}`,
+      materializationSemantics: 'git_tree_materialized_with_fixed_config_v1',
+      policyHash: `sha256:${'4'.repeat(64)}`,
+    },
+    baseline: {
+      workspaceVersionId: `version_${(alternate ? '9' : '5').repeat(32)}`,
+      commitOid: (alternate ? '9' : '5').repeat(40),
+      treeOid: '2'.repeat(40),
+      treeDeltaDigest: `sha256:${'6'.repeat(64)}`,
+      changedFileCount: 7,
+      deletedFileCount: 0,
+    },
+  };
 }

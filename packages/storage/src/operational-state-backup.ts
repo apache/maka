@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ArtifactRecord } from '@maka/core/artifacts';
+import { decodeLegacyAutomationFile, LEGACY_AUTOMATION_FILE } from './automation-authority.js';
 import { decodeArtifactMetadata } from './artifact-metadata-codec.js';
 import {
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
@@ -31,6 +32,7 @@ import {
   OPERATIONAL_STATE_SCHEMA_VERSION,
 } from './operational-state-store.js';
 import { SQLITE_ARTIFACT_SCHEMA_VERSION } from './sqlite-artifact-schema.js';
+import { SQLITE_AUTOMATION_SCHEMA_VERSION } from './sqlite-automation-schema.js';
 import { createSqliteArtifactMetadataRepository } from './sqlite-artifact-metadata.js';
 import { SQLITE_CORE_EXECUTION_SCHEMA_VERSION } from './sqlite-core-execution-schema.js';
 import { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
@@ -42,10 +44,11 @@ import { SQLITE_WORKFLOW_SCHEMA_VERSION } from './sqlite-workflow-schema.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 
 export const OPERATIONAL_BACKUP_FORMAT = 'maka-operational-backup';
-export const OPERATIONAL_BACKUP_SCHEMA_VERSION = 1 as const;
+export const OPERATIONAL_BACKUP_SCHEMA_VERSION = 2 as const;
 export const OPERATIONAL_BACKUP_MANIFEST_FILE = 'operational-backup.json';
 
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
+const LEGACY_OPERATIONAL_BACKUP_SCHEMA_VERSION = 1 as const;
 const require = createRequire(import.meta.url);
 const supportedSchemaVersions = new Map<string, number>([
   ['runtime', SQLITE_RUNTIME_SCHEMA_VERSION],
@@ -54,6 +57,7 @@ const supportedSchemaVersions = new Map<string, number>([
   ['workflow', SQLITE_WORKFLOW_SCHEMA_VERSION],
   ['usage', SQLITE_USAGE_SCHEMA_VERSION],
   ['artifact', SQLITE_ARTIFACT_SCHEMA_VERSION],
+  ['automation', SQLITE_AUTOMATION_SCHEMA_VERSION],
   ['operational', OPERATIONAL_STATE_SCHEMA_VERSION],
 ]);
 
@@ -97,14 +101,26 @@ export interface OperationalBackupArtifact extends OperationalBackupFile {
   readonly record: ArtifactRecord;
 }
 
-export interface OperationalBackupManifest {
+interface OperationalBackupManifestBase {
   readonly format: typeof OPERATIONAL_BACKUP_FORMAT;
-  readonly schemaVersion: typeof OPERATIONAL_BACKUP_SCHEMA_VERSION;
   readonly createdAt: number;
   readonly database: OperationalBackupFile;
   readonly transcripts: readonly OperationalBackupTranscript[];
   readonly artifacts: readonly OperationalBackupArtifact[];
 }
+
+export interface LegacyOperationalBackupManifest extends OperationalBackupManifestBase {
+  readonly schemaVersion: typeof LEGACY_OPERATIONAL_BACKUP_SCHEMA_VERSION;
+}
+
+export interface CurrentOperationalBackupManifest extends OperationalBackupManifestBase {
+  readonly schemaVersion: typeof OPERATIONAL_BACKUP_SCHEMA_VERSION;
+  readonly legacyAutomation: OperationalBackupFile | null;
+}
+
+export type OperationalBackupManifest =
+  | LegacyOperationalBackupManifest
+  | CurrentOperationalBackupManifest;
 
 export interface CreateOperationalBackupInput {
   readonly stateRoot: string;
@@ -130,6 +146,10 @@ interface SourceFileSnapshot extends OperationalBackupFile {
 interface SourceTranscriptSnapshot extends SourceFileSnapshot {
   readonly sessionId: string;
 }
+
+type OptionalSourceFileSnapshot =
+  | { readonly kind: 'present'; readonly snapshot: SourceFileSnapshot }
+  | { readonly kind: 'absent'; readonly sourcePath: string; readonly path: string };
 
 interface ValidatedDatabaseSnapshot {
   readonly artifacts: ArtifactRecord[];
@@ -157,6 +177,13 @@ export async function createOperationalStateBackup(
       const artifactRecords = metadata.readAll();
       const transcriptSnapshots = await snapshotSessionTranscripts(stateRoot);
       const artifactSnapshots = await snapshotArtifactPayloads(stateRoot, artifactRecords);
+      const legacyAutomationSnapshot = await snapshotOptionalSourceFile(
+        stateRoot,
+        LEGACY_AUTOMATION_FILE,
+      );
+      if (legacyAutomationSnapshot.kind === 'present') {
+        await validateLegacyAutomationSourceSnapshot(legacyAutomationSnapshot.snapshot);
+      }
 
       await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
       const databasePath = resolve(stagingRoot, OPERATIONAL_STATE_DATABASE_NAME);
@@ -166,7 +193,10 @@ export async function createOperationalStateBackup(
       await syncFile(databasePath);
       await input.failpoint?.('after_database_snapshot');
 
-      const validated = await validateDatabaseSnapshot(databasePath);
+      const validated = await validateDatabaseSnapshot(
+        databasePath,
+        OPERATIONAL_BACKUP_SCHEMA_VERSION,
+      );
       assertSameArtifactRecords(
         validated.artifacts,
         artifactRecords,
@@ -186,6 +216,10 @@ export async function createOperationalStateBackup(
         artifactSnapshots,
         artifactRecords,
       );
+      const legacyAutomation = await copyOptionalSourceSnapshot(
+        stagingRoot,
+        legacyAutomationSnapshot,
+      );
       assertSameArtifactRecords(
         metadata.readAll(),
         artifactRecords,
@@ -198,13 +232,14 @@ export async function createOperationalStateBackup(
       if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
         throw new OperationalBackupError('invalid_manifest', 'Operational backup time is invalid');
       }
-      const manifest: OperationalBackupManifest = {
+      const manifest: CurrentOperationalBackupManifest = {
         format: OPERATIONAL_BACKUP_FORMAT,
         schemaVersion: OPERATIONAL_BACKUP_SCHEMA_VERSION,
         createdAt,
         database: await describeBackupFile(databasePath, OPERATIONAL_STATE_DATABASE_NAME),
         transcripts,
         artifacts,
+        legacyAutomation,
       };
       const manifestPath = resolve(stagingRoot, OPERATIONAL_BACKUP_MANIFEST_FILE);
       await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
@@ -238,7 +273,10 @@ export async function validateOperationalStateBackup(
   const manifest = await readOperationalBackupManifest(manifestPath);
   await assertBackupTreeExactlyMatchesManifest(backupRoot, manifest);
   await validateManifestFiles(backupRoot, manifest);
-  const validated = await validateDatabaseSnapshot(resolve(backupRoot, manifest.database.path));
+  const validated = await validateDatabaseSnapshot(
+    resolve(backupRoot, manifest.database.path),
+    manifest.schemaVersion,
+  );
   assertSameArtifactRecords(
     validated.artifacts,
     manifest.artifacts.map((artifact) => artifact.record),
@@ -277,7 +315,10 @@ export async function restoreOperationalStateBackup(
     }
     await input.failpoint?.('after_restore_copy');
     await validateManifestFiles(stagingRoot, manifest);
-    const validated = await validateDatabaseSnapshot(resolve(stagingRoot, manifest.database.path));
+    const validated = await validateDatabaseSnapshot(
+      resolve(stagingRoot, manifest.database.path),
+      manifest.schemaVersion,
+    );
     assertSameArtifactRecords(
       validated.artifacts,
       manifest.artifacts.map((artifact) => artifact.record),
@@ -330,6 +371,25 @@ async function snapshotSessionTranscripts(stateRoot: string): Promise<SourceTran
     snapshots.push(snapshot);
   }
   return snapshots;
+}
+
+async function snapshotOptionalSourceFile(
+  stateRoot: string,
+  relativePath: string,
+): Promise<OptionalSourceFileSnapshot> {
+  const sourcePath = resolve(stateRoot, relativePath);
+  try {
+    await lstat(sourcePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { kind: 'absent', sourcePath, path: relativePath };
+    }
+    throw error;
+  }
+  return {
+    kind: 'present',
+    snapshot: await snapshotSourceFile(sourcePath, stateRoot, relativePath),
+  };
 }
 
 async function snapshotArtifactPayloads(
@@ -456,6 +516,42 @@ async function copyArtifactSnapshots(
   return copied;
 }
 
+async function copyOptionalSourceSnapshot(
+  stagingRoot: string,
+  optional: OptionalSourceFileSnapshot,
+): Promise<OperationalBackupFile | null> {
+  if (optional.kind === 'absent') {
+    await assertOptionalSourceStillAbsent(optional);
+    return null;
+  }
+  const { snapshot } = optional;
+  await copySourceSnapshot(stagingRoot, snapshot);
+  return {
+    path: snapshot.path,
+    sizeBytes: snapshot.sizeBytes,
+    sha256: snapshot.sha256,
+  };
+}
+
+async function assertOptionalSourceStillAbsent(
+  snapshot: Extract<OptionalSourceFileSnapshot, { readonly kind: 'absent' }>,
+): Promise<void> {
+  try {
+    await lstat(snapshot.sourcePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw new OperationalBackupError(
+      'source_changed',
+      `Operational backup source changed during copy: ${snapshot.path}`,
+      { cause: error },
+    );
+  }
+  throw new OperationalBackupError(
+    'source_changed',
+    `Operational backup source changed during copy: ${snapshot.path}`,
+  );
+}
+
 async function copySourceSnapshot(
   stagingRoot: string,
   snapshot: SourceFileSnapshot,
@@ -532,7 +628,10 @@ async function hashFile(path: string): Promise<`sha256:${string}`> {
   return `sha256:${hash.digest('hex')}`;
 }
 
-async function validateDatabaseSnapshot(path: string): Promise<ValidatedDatabaseSnapshot> {
+async function validateDatabaseSnapshot(
+  path: string,
+  backupSchemaVersion: OperationalBackupManifest['schemaVersion'],
+): Promise<ValidatedDatabaseSnapshot> {
   const metadata = await lstat(path).catch((error: unknown) => {
     throw new OperationalBackupError('corrupt_backup', 'Backup runtime.sqlite is missing', {
       cause: error,
@@ -562,7 +661,7 @@ async function validateDatabaseSnapshot(path: string): Promise<ValidatedDatabase
     if (foreignKeys.length > 0) {
       throw new OperationalBackupError('corrupt_backup', 'Backup SQLite foreign keys are invalid');
     }
-    validateOperationalSchemaVersions(database);
+    validateOperationalSchemaVersions(database, backupSchemaVersion);
     if (!sqliteTableExists(database, 'artifact_records')) {
       throw new OperationalBackupError('corrupt_backup', 'Backup is missing artifact_records');
     }
@@ -653,7 +752,10 @@ function normalizeStandaloneSqliteSnapshot(path: string): void {
   }
 }
 
-function validateOperationalSchemaVersions(database: DatabaseSync): void {
+function validateOperationalSchemaVersions(
+  database: DatabaseSync,
+  backupSchemaVersion: OperationalBackupManifest['schemaVersion'],
+): void {
   if (!sqliteTableExists(database, 'operational_schema_migrations')) {
     throw new OperationalBackupError('corrupt_backup', 'Backup is missing schema migrations');
   }
@@ -675,6 +777,12 @@ function validateOperationalSchemaVersions(database: DatabaseSync): void {
   for (const [scope, supported] of supportedSchemaVersions) {
     const version = actual.get(scope);
     if (version === undefined) {
+      if (
+        scope === 'automation' &&
+        backupSchemaVersion === LEGACY_OPERATIONAL_BACKUP_SCHEMA_VERSION
+      ) {
+        continue;
+      }
       throw new OperationalBackupError('corrupt_backup', `Backup schema is missing ${scope}`);
     }
     if (version > supported) {
@@ -721,22 +829,23 @@ async function readOperationalBackupManifest(path: string): Promise<OperationalB
 }
 
 function decodeOperationalBackupManifest(value: unknown): OperationalBackupManifest {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      'format',
-      'schemaVersion',
-      'createdAt',
-      'database',
-      'transcripts',
-      'artifacts',
-    ])
-  ) {
+  if (!isRecord(value)) throw invalidManifest();
+  const legacy = value.schemaVersion === LEGACY_OPERATIONAL_BACKUP_SCHEMA_VERSION;
+  const current = value.schemaVersion === OPERATIONAL_BACKUP_SCHEMA_VERSION;
+  const commonKeys = [
+    'format',
+    'schemaVersion',
+    'createdAt',
+    'database',
+    'transcripts',
+    'artifacts',
+  ];
+  if (!legacy && !current) throw invalidManifest();
+  if (!hasExactKeys(value, current ? [...commonKeys, 'legacyAutomation'] : commonKeys)) {
     throw invalidManifest();
   }
   if (
     value.format !== OPERATIONAL_BACKUP_FORMAT ||
-    value.schemaVersion !== OPERATIONAL_BACKUP_SCHEMA_VERSION ||
     typeof value.createdAt !== 'number' ||
     !Number.isSafeInteger(value.createdAt) ||
     value.createdAt < 0 ||
@@ -749,7 +858,20 @@ function decodeOperationalBackupManifest(value: unknown): OperationalBackupManif
   if (database.path !== OPERATIONAL_STATE_DATABASE_NAME) throw invalidManifest();
   const transcripts = value.transcripts.map((entry) => decodeTranscript(entry));
   const artifacts = value.artifacts.map((entry) => decodeArtifact(entry));
-  assertUniqueManifestPaths([database, ...transcripts, ...artifacts]);
+  const legacyAutomation = current
+    ? value.legacyAutomation === null
+      ? null
+      : decodeBackupFile(value.legacyAutomation)
+    : undefined;
+  if (legacyAutomation && legacyAutomation.path !== LEGACY_AUTOMATION_FILE) {
+    throw invalidManifest();
+  }
+  assertUniqueManifestPaths([
+    database,
+    ...transcripts,
+    ...artifacts,
+    ...(legacyAutomation ? [legacyAutomation] : []),
+  ]);
   assertUniqueValues(
     transcripts.map((entry) => entry.sessionId),
     'session id',
@@ -758,14 +880,23 @@ function decodeOperationalBackupManifest(value: unknown): OperationalBackupManif
     artifacts.map((entry) => entry.record.id),
     'Artifact id',
   );
-  return {
+  const common: OperationalBackupManifestBase = {
     format: OPERATIONAL_BACKUP_FORMAT,
-    schemaVersion: OPERATIONAL_BACKUP_SCHEMA_VERSION,
     createdAt: value.createdAt,
     database,
     transcripts,
     artifacts,
   };
+  return current
+    ? {
+        ...common,
+        schemaVersion: OPERATIONAL_BACKUP_SCHEMA_VERSION,
+        legacyAutomation: legacyAutomation ?? null,
+      }
+    : {
+        ...common,
+        schemaVersion: LEGACY_OPERATIONAL_BACKUP_SCHEMA_VERSION,
+      };
 }
 
 function decodeBackupFile(value: unknown): OperationalBackupFile {
@@ -880,6 +1011,43 @@ async function validateManifestFiles(
   for (const transcript of manifest.transcripts) {
     await validateTranscriptFile(resolveBackupPath(root, transcript.path), transcript.sessionId);
   }
+  if (manifest.schemaVersion === OPERATIONAL_BACKUP_SCHEMA_VERSION && manifest.legacyAutomation) {
+    await validateLegacyAutomationBackupFile(
+      resolveBackupPath(root, manifest.legacyAutomation.path),
+    );
+  }
+}
+
+async function validateLegacyAutomationSourceSnapshot(snapshot: SourceFileSnapshot): Promise<void> {
+  const contents = await readFile(snapshot.sourcePath);
+  const sha256 = `sha256:${createHash('sha256').update(contents).digest('hex')}`;
+  if (contents.byteLength !== snapshot.sizeBytes || sha256 !== snapshot.sha256) {
+    throw new OperationalBackupError(
+      'source_changed',
+      `Operational backup source changed during validation: ${snapshot.path}`,
+    );
+  }
+  try {
+    decodeLegacyAutomationFile(contents.toString('utf8'));
+  } catch (error) {
+    throw new OperationalBackupError(
+      'corrupt_backup',
+      'Legacy Automation source cannot be backed up',
+      { cause: error },
+    );
+  }
+}
+
+async function validateLegacyAutomationBackupFile(path: string): Promise<void> {
+  try {
+    decodeLegacyAutomationFile(await readFile(path, 'utf8'));
+  } catch (error) {
+    throw new OperationalBackupError(
+      'corrupt_backup',
+      'Legacy Automation backup payload cannot be restored',
+      { cause: error },
+    );
+  }
 }
 
 async function validateTranscriptFile(path: string, sessionId: string): Promise<void> {
@@ -908,7 +1076,14 @@ async function validateTranscriptFile(path: string, sessionId: string): Promise<
 }
 
 function manifestFiles(manifest: OperationalBackupManifest): OperationalBackupFile[] {
-  return [manifest.database, ...manifest.transcripts, ...manifest.artifacts];
+  return [
+    manifest.database,
+    ...manifest.transcripts,
+    ...manifest.artifacts,
+    ...(manifest.schemaVersion === OPERATIONAL_BACKUP_SCHEMA_VERSION && manifest.legacyAutomation
+      ? [manifest.legacyAutomation]
+      : []),
+  ];
 }
 
 async function listBackupTree(

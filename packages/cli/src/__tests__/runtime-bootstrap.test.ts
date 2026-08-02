@@ -78,6 +78,40 @@ describe('Maka CLI runtime bootstrap', () => {
     });
   });
 
+  test('routes activation resume lifecycle diagnostics to stderr', async () => {
+    await withWorkspace(async (workspaceRoot) => {
+      const connectionStore = createConnectionStore(workspaceRoot);
+      await connectionStore.create({
+        slug: 'local',
+        name: 'Local Ollama',
+        providerType: 'ollama',
+        defaultModel: 'llama3.2',
+      });
+
+      const context = await createMakaCliRuntimeContext({
+        surface: 'activation',
+        workspaceRoot,
+        cwd: workspaceRoot,
+      });
+      const runtimeDeps = (context.runtime as unknown as RuntimeWithPrivateDeps).deps;
+      const info: unknown[] = [];
+      const error: unknown[] = [];
+      const originalInfo = console.info;
+      const originalError = console.error;
+      console.info = (...args: unknown[]) => info.push(args);
+      console.error = (...args: unknown[]) => error.push(args);
+      try {
+        runtimeDeps.onContinuationLifecycleEvent?.({ type: 'plan_approved' });
+        assert.equal(info.length, 0);
+        assert.equal(error.length, 1);
+      } finally {
+        console.info = originalInfo;
+        console.error = originalError;
+        await context.close();
+      }
+    });
+  });
+
   test('loads the default connection and can create an ai-sdk session', async () => {
     await withWorkspace(async (workspaceRoot) => {
       const connectionStore = createConnectionStore(workspaceRoot);
@@ -1107,6 +1141,7 @@ interface RuntimeWithPrivateDeps {
     onSessionTitleChanged?: (sessionId: string) => void;
     childTools?: readonly MakaTool[];
     worktreeChildExecutor?: unknown;
+    onContinuationLifecycleEvent?: (event: unknown) => void;
   };
 }
 

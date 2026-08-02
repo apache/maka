@@ -6,12 +6,15 @@ import {
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeSetCredentialInput,
+  normalizeCredentialSecret,
   type ConnectionCatalogEntry,
+  type ConnectionVersionBasis,
   type ConnectionModelDiscoveryResult,
   type ConnectionTestSummary,
   type CreateCatalogConnectionInput,
   type CredentialLocator,
   type CredentialStatus,
+  type CredentialVersionBasis,
   type DeleteCredentialInput,
   type MutateRuntimePolicyInput,
   type RemoveCatalogConnectionInput,
@@ -35,9 +38,11 @@ import {
 } from './connection-catalog-document.js';
 import {
   credentialMaterial,
+  credentialBasis,
   credentialStatus,
   CredentialVaultDocumentOwner,
   findCredential,
+  sameCredentialBasis,
   vaultSnapshot,
 } from './credential-vault-document.js';
 import { cleanupRuntimePolicyDocumentTemps } from './document-io.js';
@@ -52,10 +57,14 @@ import {
   type CredentialStatusQueryResult,
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
+  type BeginInteractiveOAuthLoginResult,
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
   type ConnectionTestTicket,
+  type InteractiveOAuthLoginCompletionResult,
+  type InteractiveOAuthLoginProvider,
+  type InteractiveOAuthLoginTicket,
   type ModelFetchTicket,
   type RuntimePolicyCredentialMaterial,
   type RuntimePolicyOperationSecretMaterial,
@@ -117,12 +126,22 @@ interface ConnectionTicketRecord {
   state: TicketState;
 }
 
+interface InteractiveOAuthLoginTicketRecord {
+  readonly kind: 'interactive_oauth_login';
+  readonly connectionBasis: ConnectionVersionBasis;
+  readonly providerType: InteractiveOAuthLoginProvider;
+  readonly credentialBasis: CredentialVersionBasis | null;
+  state: TicketState;
+}
+
+type OperationTicketRecord = ConnectionTicketRecord | InteractiveOAuthLoginTicketRecord;
+
 export class RuntimePolicyCoordinator {
   private readonly lane: SerializedOperationLane<string>;
   private readonly policy = new RuntimePolicyDocumentOwner();
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
-  private readonly tickets = new WeakMap<object, ConnectionTicketRecord>();
+  private readonly tickets = new WeakMap<object, OperationTicketRecord>();
 
   constructor(private readonly execute: RootExecutor) {
     this.lane = new SerializedOperationLane(execute);
@@ -320,6 +339,139 @@ export class RuntimePolicyCoordinator {
         revision: prepared.entry.revision,
       });
     });
+  }
+
+  beginInteractiveOAuthLogin(rawConnectionId: string): Promise<BeginInteractiveOAuthLoginResult> {
+    return this.inLane(async (root) => {
+      const connectionId = decodeConnectionInput(() =>
+        decodeRuntimePolicyEntityId(rawConnectionId),
+      );
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, { connectionId });
+      if (!connection) return deepFreeze({ kind: 'connection_not_found' as const });
+      if (!connection.enabled) return deepFreeze({ kind: 'connection_disabled' as const });
+      if (!isInteractiveOAuthLoginProvider(connection.providerType)) {
+        return deepFreeze({
+          kind: 'provider_action_unavailable' as const,
+          availability: 'hidden' as const,
+        });
+      }
+      const contract = deriveProviderAuthContract({
+        providerType: connection.providerType,
+        enabled: true,
+        hasSecret: false,
+        lastTestStatus: connection.lastTest?.status,
+      });
+      if (contract.actionAvailability.start_oauth !== 'available') {
+        return deepFreeze({
+          kind: 'provider_action_unavailable' as const,
+          availability: contract.actionAvailability.start_oauth,
+        });
+      }
+      const prepared = await this.prepareConnectionMaterial(root, connection, false);
+      if (prepared.kind !== 'ready') return prepared;
+      const locator = connectionCredentialLocator(connection.connectionId, 'oauth_token');
+      if (!locator || locator.kind !== 'oauth_token') {
+        throw codecError(
+          'invalid_document',
+          'OAuth login admission produced no OAuth credential locator',
+        );
+      }
+      const existing = findCredential(await this.vault.read(root), locator);
+      const ticket = this.issueInteractiveOAuthLoginTicket(
+        connectionBasis(connection),
+        connection.providerType,
+        existing ? credentialBasis(existing) : null,
+      );
+      return deepFreeze({
+        kind: 'ready' as const,
+        ticket,
+        connection: structuredClone(connection) as ConnectionCatalogEntry & {
+          readonly providerType: InteractiveOAuthLoginProvider;
+        },
+        secretMaterial: prepared.secretMaterial.networkProxy
+          ? { networkProxy: prepared.secretMaterial.networkProxy }
+          : {},
+        networkProxy: structuredClone(prepared.networkProxy),
+      });
+    });
+  }
+
+  async completeInteractiveOAuthLogin(
+    ticket: InteractiveOAuthLoginTicket,
+    rawSecret: string,
+  ): Promise<InteractiveOAuthLoginCompletionResult> {
+    const claimed = this.claimInteractiveOAuthLoginTicket(ticket);
+    return this.completeClaimedTicket(claimed, () =>
+      this.inLane(async (root) => {
+        const secret = decodeCredentialInput(() => normalizeCredentialSecret(rawSecret));
+        const catalog = await this.catalog.read(root);
+        const connection = findConnection(catalog, claimed.connectionBasis);
+        const changed: Array<'connection' | 'credential'> = [];
+        if (
+          !connection ||
+          connection.revision !== claimed.connectionBasis.revision ||
+          connection.providerType !== claimed.providerType ||
+          !connection.enabled
+        ) {
+          changed.push('connection');
+        }
+        const locator = {
+          scope: 'connection',
+          connectionId: claimed.connectionBasis.connectionId,
+          kind: 'oauth_token',
+        } as const;
+        const vault = await this.vault.read(root);
+        const actual = findCredential(vault, locator);
+        if (
+          claimed.credentialBasis
+            ? !sameCredentialBasis(actual, claimed.credentialBasis)
+            : actual !== undefined
+        ) {
+          changed.push('credential');
+        }
+        if (changed.length > 0) {
+          return deepFreeze({ kind: 'superseded' as const, changed });
+        }
+        const prepared = this.vault.prepareSet(vault, {
+          locator,
+          expected: claimed.credentialBasis
+            ? {
+                credentialId: claimed.credentialBasis.credentialId,
+                revision: claimed.credentialBasis.revision,
+              }
+            : null,
+          secret,
+        });
+        if (prepared.kind !== 'ready') {
+          return deepFreeze({
+            kind: 'superseded' as const,
+            changed: ['credential'] as const,
+          });
+        }
+        const cleared = await this.catalog.clearConnectionLastTest(
+          root,
+          catalog,
+          locator.connectionId,
+        );
+        try {
+          await this.vault.commitSet(root, prepared);
+        } catch (error) {
+          if (cleared) {
+            throw commitOutcomeUnknown(
+              'Connection verification was cleared before OAuth login completed',
+              error,
+            );
+          }
+          throw error;
+        }
+        return deepFreeze({
+          kind: 'committed' as const,
+          credentialId: prepared.entry.credentialId,
+          revision: prepared.entry.revision,
+        });
+      }),
+    );
   }
 
   deleteCredential(rawInput: DeleteCredentialInput) {
@@ -661,6 +813,22 @@ export class RuntimePolicyCoordinator {
     return ticket;
   }
 
+  private issueInteractiveOAuthLoginTicket(
+    connectionBasisValue: ConnectionVersionBasis,
+    providerType: InteractiveOAuthLoginProvider,
+    credentialBasisValue: CredentialVersionBasis | null,
+  ): InteractiveOAuthLoginTicket {
+    const ticket = Object.freeze(Object.create(null)) as object;
+    this.tickets.set(ticket, {
+      kind: 'interactive_oauth_login',
+      connectionBasis: connectionBasisValue,
+      providerType,
+      credentialBasis: credentialBasisValue,
+      state: 'available',
+    });
+    return ticket as InteractiveOAuthLoginTicket;
+  }
+
   private claimTicket(ticket: object, expectedKind: ConnectionTicketKind): ConnectionTicketRecord {
     const record = ticket && typeof ticket === 'object' ? this.tickets.get(ticket) : undefined;
     if (!record || record.kind !== expectedKind || record.state !== 'available') {
@@ -673,8 +841,22 @@ export class RuntimePolicyCoordinator {
     return record;
   }
 
+  private claimInteractiveOAuthLoginTicket(
+    ticket: InteractiveOAuthLoginTicket,
+  ): InteractiveOAuthLoginTicketRecord {
+    const record = ticket && typeof ticket === 'object' ? this.tickets.get(ticket) : undefined;
+    if (!record || record.kind !== 'interactive_oauth_login' || record.state !== 'available') {
+      throw codecError(
+        'invalid_credential_input',
+        'Expected an authentic available interactive OAuth login ticket',
+      );
+    }
+    record.state = 'in_flight';
+    return record;
+  }
+
   private async completeClaimedTicket<T>(
-    ticket: ConnectionTicketRecord,
+    ticket: OperationTicketRecord,
     operation: () => Promise<T>,
   ): Promise<T> {
     try {
@@ -832,4 +1014,14 @@ function networkProxyCredentialLocator(): Extract<CredentialLocator, { scope: 'n
 
 function requiresNetworkProxyCredential(networkProxy: RuntimePolicy['networkProxy']): boolean {
   return networkProxy.enabled && networkProxy.authEnabled;
+}
+
+function isInteractiveOAuthLoginProvider(
+  providerType: ProviderType,
+): providerType is InteractiveOAuthLoginProvider {
+  return (
+    providerType === 'claude-subscription' ||
+    providerType === 'openai-codex' ||
+    providerType === 'xai-oauth'
+  );
 }

@@ -6,6 +6,7 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
   canonicalToolArgsHash,
+  buildWorkspaceBaselineAuthorityEvents,
   buildImmutableRuntimePrefix,
   decodeContinuationClaim,
   decodeRuntimeEvent,
@@ -13,10 +14,13 @@ import {
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   RUNTIME_CONTINUATION_AUTHORITY_V1,
+  scanWorkspaceBaselineAuthority,
   scanToolLedger,
   stableJsonStringify,
   TOOL_BOUNDARY_PROTOCOL_V1,
   TOOL_RECOVERY_BUNDLE_CAPABILITY_V1,
+  WORKSPACE_AUTHORITY_SESSION_ID,
+  WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
   validateGenericToolLedgerAppend,
   validateToolLedgerEventLane,
   validateToolLedgerTransition,
@@ -29,8 +33,17 @@ import {
   type RuntimeContinuationAuthorityStore,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
+  type RuntimeWorkspaceVersionAuthorityStore,
+  type ScannedWorkspaceBaselineAuthority,
   type ToolRecoveryDecisionFact,
   type ToolRecoveryMode,
+  type WorkspaceAuthorityLedgerRow,
+  type WorkspaceBaselineAuthorityInput,
+  type WorkspaceBaselineCommitResult,
+  type WorkspaceEpochRecordV1,
+  type WorkspaceHeadRecordV1,
+  type WorkspaceProjectionRebuildResult,
+  type WorkspaceVersionRecordV1,
 } from '@maka/core';
 import {
   assertToolRecoveryEventBundle,
@@ -44,14 +57,18 @@ import {
   RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION,
   RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY,
   RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION,
+  RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY,
+  RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
+import { registerWorkspaceBaselineAuthorityWriterInternal } from './workspace-version-authority-internal.js';
 import type {
   ConversationCopyRuntimeEventBatch,
   ImmutableSteeringMessageProof,
 } from './agent-run-store.js';
 import type { OperationalStateDatabaseLease } from './operational-state-store.js';
 import { immutableSteeringMessageId, isRuntimeStorageSafeId } from './runtime-event-invariants.js';
+import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 
 export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
@@ -83,7 +100,13 @@ export type SqliteRuntimeStoreFailpoint =
   | 'after_recovery_outcome'
   | 'after_recovery_decision'
   | 'after_continuation_claim_insert'
-  | 'after_continuation_start_insert';
+  | 'after_continuation_start_insert'
+  | 'after_workspace_epoch_event_insert'
+  | 'after_workspace_version_event_insert'
+  | 'after_workspace_epoch_projection_insert'
+  | 'after_workspace_version_projection_insert'
+  | 'after_workspace_head_projection_insert'
+  | 'after_workspace_canonical_scan';
 
 export interface SqliteRuntimeStoreOptions {
   failpoint?: (point: SqliteRuntimeStoreFailpoint) => void;
@@ -165,12 +188,16 @@ export function createSqliteRuntimeStore(
 }
 
 export class SqliteRuntimeStore
-  implements RuntimeRecoveryBundleStore, RuntimeContinuationAuthorityStore
+  implements
+    RuntimeRecoveryBundleStore,
+    RuntimeContinuationAuthorityStore,
+    RuntimeWorkspaceVersionAuthorityStore
 {
   readonly durability = 'canonical' as const;
   readonly toolBoundaryProtocol = 't1_after_preflight_v1' as const;
   readonly recoveryBundleCapability = TOOL_RECOVERY_BUNDLE_CAPABILITY_V1;
   readonly continuationAuthorityCapability = RUNTIME_CONTINUATION_AUTHORITY_V1;
+  readonly workspaceVersionAuthorityCapability = WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1;
   private readonly db: DatabaseSync;
   private readonly databaseLease?: OperationalStateDatabaseLease;
   private closed = false;
@@ -187,6 +214,9 @@ export class SqliteRuntimeStore
       this.databaseLease = options.databaseLease;
       this.db = options.databaseLease.database;
       assertRecoveryAuthorityCapability(this.db);
+      assertContinuationAuthorityCapability(this.db);
+      assertWorkspaceVersionAuthorityCapability(this.db);
+      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter();
       return;
     }
     const DatabaseSync = loadDatabaseSync();
@@ -208,6 +238,8 @@ export class SqliteRuntimeStore
       }
       assertRecoveryAuthorityCapability(this.db);
       assertContinuationAuthorityCapability(this.db);
+      assertWorkspaceVersionAuthorityCapability(this.db);
+      if (!options.readOnly) this.registerWorkspaceBaselineAuthorityWriter();
     } catch (error) {
       this.db.close();
       this.closed = true;
@@ -367,6 +399,7 @@ export class SqliteRuntimeStore
     const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
     for (const { runId, events } of canonicalBatches) {
       for (const event of events) {
+        assertNoReservedWorkspaceAuthorityAppend(event);
         if (isPartialRuntimeEvent(event)) {
           throw new Error('Conversation copy cannot import partial RuntimeEvents');
         }
@@ -523,6 +556,14 @@ export class SqliteRuntimeStore
 
   async claimContinuation(input: { claim: ContinuationClaimV1 }): Promise<ContinuationClaimResult> {
     const claim = decodeContinuationClaim(input.claim);
+    if (
+      claim.target.sessionId === WORKSPACE_AUTHORITY_SESSION_ID ||
+      claim.boundary.segments.some(
+        (segment) => segment.identity.sessionId === WORKSPACE_AUTHORITY_SESSION_ID,
+      )
+    ) {
+      throw new Error('Continuation cannot target the reserved workspace authority stream');
+    }
     const boundaryJson = stableJsonStringify(claim.boundary);
     return this.transaction(() => {
       this.assertContinuationAuthorityIntegrity();
@@ -710,6 +751,7 @@ export class SqliteRuntimeStore
   ): ToolCommitResult {
     const claim = decodeContinuationClaim(input.claim);
     const event = canonicalizeRuntimeEventForStorage(input.event);
+    assertNoReservedWorkspaceAuthorityAppend(event);
     assertContinuationStartEvent(claim, event, startKind);
     return this.transaction(() => {
       const row = this.readContinuationClaimRow('boundary_digest = ?', claim.boundaryDigest);
@@ -799,12 +841,447 @@ export class SqliteRuntimeStore
     return ordered.map((item) => item.event);
   }
 
+  async #commitWorkspaceBaseline(
+    input: WorkspaceBaselineAuthorityInput,
+  ): Promise<WorkspaceBaselineCommitResult> {
+    const events = buildWorkspaceBaselineAuthorityEvents(input);
+    return this.transaction(() => {
+      const existingBaselines = this.readCanonicalWorkspaceBaselinesSync();
+      const existing = existingBaselines.find(
+        (candidate) =>
+          candidate.epoch.workspaceId === input.epoch.workspaceId &&
+          candidate.epoch.workspaceEpochId === input.epoch.workspaceEpochId,
+      );
+      if (existing) {
+        this.assertWorkspaceProjectionsMatchSync(existingBaselines);
+        if (
+          !isDeepStrictEqual(
+            [
+              this.readRequiredRuntimeEvent(existing.epochOpenedEventId),
+              this.readRequiredRuntimeEvent(existing.baselineAcceptedEventId),
+            ],
+            [events.epochOpenedEvent, events.baselineAcceptedEvent],
+          )
+        ) {
+          throw new Error('Workspace baseline authority conflict');
+        }
+        return { created: false, head: workspaceHeadRecord(existing) };
+      }
+
+      if (this.workspaceProjectionCountSync() !== 0 || existingBaselines.length !== 0) {
+        this.assertWorkspaceProjectionsMatchSync(existingBaselines);
+      }
+      this.assertWorkspaceAuthorityStreamIsEmpty(events.epochOpenedEvent);
+      this.assertInvocationIdentity([events.epochOpenedEvent, events.baselineAcceptedEvent]);
+      const epochEventSeq = this.insertRuntimeEvent(
+        events.epochOpenedEvent,
+        input.committedAt,
+        false,
+      );
+      if (epochEventSeq !== 1) {
+        throw new Error('Workspace epoch-opened fact must be authority sequence one');
+      }
+      this.options.failpoint?.('after_workspace_epoch_event_insert');
+      const baselineEventSeq = this.insertRuntimeEvent(
+        events.baselineAcceptedEvent,
+        input.committedAt,
+        false,
+      );
+      if (baselineEventSeq !== 2) {
+        throw new Error('Workspace baseline version fact must be authority sequence two');
+      }
+      this.options.failpoint?.('after_workspace_version_event_insert');
+
+      const scanned = this.readCanonicalWorkspaceBaselinesSync();
+      const accepted = scanned.find(
+        (candidate) => candidate.epoch.workspaceEpochId === input.epoch.workspaceEpochId,
+      );
+      if (!accepted) throw new Error('Workspace baseline authority scan lost the committed epoch');
+      this.insertWorkspaceEpochProjection(accepted, input.committedAt);
+      this.options.failpoint?.('after_workspace_epoch_projection_insert');
+      this.insertWorkspaceVersionProjection(accepted, input.committedAt);
+      this.options.failpoint?.('after_workspace_version_projection_insert');
+      this.insertWorkspaceHeadProjection(accepted);
+      this.options.failpoint?.('after_workspace_head_projection_insert');
+      this.assertWorkspaceProjectionsMatchSync(scanned);
+      return { created: true, head: workspaceHeadRecord(accepted) };
+    });
+  }
+
+  private registerWorkspaceBaselineAuthorityWriter(): void {
+    registerWorkspaceBaselineAuthorityWriterInternal(this, (input) =>
+      this.#commitWorkspaceBaseline(input),
+    );
+  }
+
+  async readWorkspaceEpoch(
+    workspaceId: string,
+    workspaceEpochId: string,
+  ): Promise<WorkspaceEpochRecordV1 | undefined> {
+    return this.readTransaction(() => {
+      const baselines = this.readCanonicalWorkspaceBaselinesSync();
+      this.assertWorkspaceProjectionsMatchSync(baselines);
+      const baseline = baselines.find(
+        (candidate) =>
+          candidate.epoch.workspaceId === workspaceId &&
+          candidate.epoch.workspaceEpochId === workspaceEpochId,
+      );
+      return baseline ? workspaceEpochRecord(baseline) : undefined;
+    });
+  }
+
+  async readWorkspaceVersion(
+    workspaceVersionId: string,
+  ): Promise<WorkspaceVersionRecordV1 | undefined> {
+    return this.readTransaction(() => {
+      const baselines = this.readCanonicalWorkspaceBaselinesSync();
+      this.assertWorkspaceProjectionsMatchSync(baselines);
+      const baseline = baselines.find(
+        (candidate) => candidate.baseline.workspaceVersionId === workspaceVersionId,
+      );
+      return baseline ? workspaceVersionRecord(baseline) : undefined;
+    });
+  }
+
+  async readWorkspaceHead(
+    workspaceId: string,
+    workspaceEpochId: string,
+  ): Promise<WorkspaceHeadRecordV1 | undefined> {
+    return this.readTransaction(() => {
+      const baselines = this.readCanonicalWorkspaceBaselinesSync();
+      this.assertWorkspaceProjectionsMatchSync(baselines);
+      const baseline = baselines.find(
+        (candidate) =>
+          candidate.epoch.workspaceId === workspaceId &&
+          candidate.epoch.workspaceEpochId === workspaceEpochId,
+      );
+      return baseline ? workspaceHeadRecord(baseline) : undefined;
+    });
+  }
+
+  async rebuildWorkspaceVersionProjections(): Promise<WorkspaceProjectionRebuildResult> {
+    return this.transaction(() => {
+      const baselines = this.readCanonicalWorkspaceBaselinesSync();
+      this.db.prepare('DELETE FROM runtime_workspace_heads').run();
+      this.db.prepare('DELETE FROM runtime_workspace_versions').run();
+      this.db.prepare('DELETE FROM runtime_workspace_epochs').run();
+      for (const baseline of baselines) {
+        const committedAt = Math.max(
+          this.runtimeEventCommittedAt(baseline.epochOpenedEventId),
+          this.runtimeEventCommittedAt(baseline.baselineAcceptedEventId),
+        );
+        this.insertWorkspaceEpochProjection(baseline, committedAt);
+        this.insertWorkspaceVersionProjection(baseline, committedAt);
+        this.insertWorkspaceHeadProjection(baseline);
+      }
+      this.assertWorkspaceProjectionsMatchSync(baselines);
+      return {
+        epochs: baselines.length,
+        versions: baselines.length,
+        heads: baselines.length,
+      };
+    });
+  }
+
+  private readCanonicalWorkspaceBaselinesSync() {
+    const partial = this.db
+      .prepare(`
+        SELECT stream_key FROM runtime_partial_snapshots
+        WHERE session_id = ?
+        LIMIT 1
+      `)
+      .get(WORKSPACE_AUTHORITY_SESSION_ID) as { stream_key: string } | undefined;
+    if (partial) {
+      throw new Error(
+        `Corrupt workspace RuntimeEvent authority: authority_stream_contamination at ${partial.stream_key}`,
+      );
+    }
+    const rows = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, event_seq, payload_json
+        FROM runtime_events
+        ORDER BY invocation_id ASC, event_seq ASC, event_id ASC
+      `)
+      .all() as unknown as RuntimeEventPrefixStorageRow[];
+    const authorityRows: WorkspaceAuthorityLedgerRow[] = rows.map((row) => ({
+      event: decodeRuntimeEventStorageRow(row),
+      eventSeq: row.event_seq,
+    }));
+    const scan = scanWorkspaceBaselineAuthority(authorityRows);
+    if (scan.hasCorruption) {
+      const issue = scan.issues[0]!;
+      throw new Error(
+        `Corrupt workspace RuntimeEvent authority: ${issue.code} at ${issue.eventId}`,
+      );
+    }
+    this.options.failpoint?.('after_workspace_canonical_scan');
+    return scan.baselines;
+  }
+
+  private assertWorkspaceAuthorityStreamIsEmpty(event: RuntimeEvent): void {
+    const row = this.db
+      .prepare(`
+        SELECT event_id FROM runtime_events
+        WHERE invocation_id = ?
+          OR (session_id = ? AND run_id = ?)
+          OR (session_id = ? AND turn_id = ?)
+        LIMIT 1
+      `)
+      .get(event.invocationId, event.sessionId, event.runId, event.sessionId, event.turnId) as
+      | { event_id: string }
+      | undefined;
+    if (row) throw new Error('Workspace baseline authority conflict');
+  }
+
+  private insertWorkspaceEpochProjection(
+    baseline: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'][number],
+    committedAt: number,
+  ): void {
+    const { epoch, authority } = baseline;
+    this.db
+      .prepare(`
+        INSERT INTO runtime_workspace_epochs (
+          workspace_id,
+          workspace_epoch_id,
+          repository_id,
+          workspace_instance_id,
+          mode,
+          object_format,
+          source_commit_oid,
+          source_tree_oid,
+          initial_workspace_version_id,
+          materialization_profile_digest,
+          materialization_semantics,
+          policy_hash,
+          authority_session_id,
+          authority_invocation_id,
+          authority_run_id,
+          authority_turn_id,
+          epoch_opened_event_id,
+          protocol_version,
+          committed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `)
+      .run(
+        epoch.workspaceId,
+        epoch.workspaceEpochId,
+        epoch.repositoryId,
+        epoch.workspaceInstanceId,
+        epoch.mode,
+        epoch.objectFormat,
+        epoch.sourceCommitOid,
+        epoch.sourceTreeOid,
+        epoch.initialWorkspaceVersionId,
+        epoch.materializationProfileDigest,
+        epoch.materializationSemantics,
+        epoch.policyHash,
+        authority.sessionId,
+        authority.invocationId,
+        authority.runId,
+        authority.turnId,
+        baseline.epochOpenedEventId,
+        committedAt,
+      );
+  }
+
+  private insertWorkspaceVersionProjection(
+    accepted: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'][number],
+    committedAt: number,
+  ): void {
+    const { baseline } = accepted;
+    this.db
+      .prepare(`
+        INSERT INTO runtime_workspace_versions (
+          workspace_version_id,
+          repository_id,
+          workspace_id,
+          workspace_epoch_id,
+          object_format,
+          origin_kind,
+          origin_event_id,
+          parents_json,
+          commit_oid,
+          tree_oid,
+          policy_hash,
+          tree_delta_digest,
+          changed_file_count,
+          deleted_file_count,
+          accepted_event_id,
+          protocol_version,
+          committed_at
+        ) VALUES (?, ?, ?, ?, ?, 'baseline', ?, '[]', ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `)
+      .run(
+        baseline.workspaceVersionId,
+        baseline.repositoryId,
+        baseline.workspaceId,
+        baseline.workspaceEpochId,
+        baseline.objectFormat,
+        baseline.origin.epochOpenedEventId,
+        baseline.commitOid,
+        baseline.treeOid,
+        baseline.policyHash,
+        baseline.treeDeltaDigest,
+        baseline.changedFileCount,
+        baseline.deletedFileCount,
+        accepted.baselineAcceptedEventId,
+        committedAt,
+      );
+  }
+
+  private insertWorkspaceHeadProjection(
+    accepted: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'][number],
+  ): void {
+    const head = workspaceHeadRecord(accepted);
+    this.db
+      .prepare(`
+        INSERT INTO runtime_workspace_heads (
+          workspace_id,
+          workspace_epoch_id,
+          repository_id,
+          workspace_version_id,
+          accepted_event_id,
+          commit_oid,
+          tree_oid,
+          revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        head.workspaceId,
+        head.workspaceEpochId,
+        head.repositoryId,
+        head.workspaceVersionId,
+        head.acceptedEventId,
+        head.commitOid,
+        head.treeOid,
+        head.revision,
+      );
+  }
+
+  private assertWorkspaceProjectionsMatchSync(
+    baselines: ReturnType<typeof scanWorkspaceBaselineAuthority>['baselines'],
+  ): void {
+    const expectedEpochs = baselines
+      .map(workspaceEpochProjectionRow)
+      .sort(compareWorkspaceEpochRow);
+    const expectedVersions = baselines
+      .map(workspaceVersionProjectionRow)
+      .sort(compareWorkspaceVersionRow);
+    const expectedHeads = baselines.map(workspaceHeadProjectionRow).sort(compareWorkspaceHeadRow);
+    const epochs = (
+      this.db
+        .prepare(`
+        SELECT
+          workspace_id,
+          workspace_epoch_id,
+          repository_id,
+          workspace_instance_id,
+          mode,
+          object_format,
+          source_commit_oid,
+          source_tree_oid,
+          initial_workspace_version_id,
+          materialization_profile_digest,
+          materialization_semantics,
+          policy_hash,
+          authority_session_id,
+          authority_invocation_id,
+          authority_run_id,
+          authority_turn_id,
+          epoch_opened_event_id,
+          protocol_version,
+          committed_at
+        FROM runtime_workspace_epochs
+        ORDER BY workspace_id ASC, workspace_epoch_id ASC
+      `)
+        .all() as unknown as WorkspaceEpochProjectionRow[]
+    )
+      .map((row) => ({ ...row }))
+      .sort(compareWorkspaceEpochRow);
+    const versions = (
+      this.db
+        .prepare(`
+        SELECT
+          workspace_version_id,
+          repository_id,
+          workspace_id,
+          workspace_epoch_id,
+          object_format,
+          origin_kind,
+          origin_event_id,
+          parents_json,
+          commit_oid,
+          tree_oid,
+          policy_hash,
+          tree_delta_digest,
+          changed_file_count,
+          deleted_file_count,
+          accepted_event_id,
+          protocol_version,
+          committed_at
+        FROM runtime_workspace_versions
+        ORDER BY workspace_version_id ASC
+      `)
+        .all() as unknown as WorkspaceVersionProjectionRow[]
+    )
+      .map((row) => ({ ...row }))
+      .sort(compareWorkspaceVersionRow);
+    const heads = (
+      this.db
+        .prepare(`
+        SELECT
+          workspace_id,
+          workspace_epoch_id,
+          repository_id,
+          workspace_version_id,
+          accepted_event_id,
+          commit_oid,
+          tree_oid,
+          revision
+        FROM runtime_workspace_heads
+        ORDER BY workspace_id ASC, workspace_epoch_id ASC
+      `)
+        .all() as unknown as WorkspaceHeadProjectionRow[]
+    )
+      .map((row) => ({ ...row }))
+      .sort(compareWorkspaceHeadRow);
+    if (
+      !isDeepStrictEqual(epochs, expectedEpochs) ||
+      !isDeepStrictEqual(versions, expectedVersions) ||
+      !isDeepStrictEqual(heads, expectedHeads)
+    ) {
+      throw new Error('Workspace version projection is incomplete or inconsistent');
+    }
+  }
+
+  private workspaceProjectionCountSync(): number {
+    const row = this.db
+      .prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM runtime_workspace_epochs) +
+          (SELECT COUNT(*) FROM runtime_workspace_versions) +
+          (SELECT COUNT(*) FROM runtime_workspace_heads) AS count
+      `)
+      .get() as { count: number };
+    return row.count;
+  }
+
+  private runtimeEventCommittedAt(eventId: string): number {
+    const row = this.db
+      .prepare('SELECT committed_at FROM runtime_events WHERE event_id = ?')
+      .get(eventId) as { committed_at: number } | undefined;
+    if (!row) throw new Error(`Missing RuntimeEvent committed time for ${eventId}`);
+    return row.committed_at;
+  }
+
   async commitToolPrepared(input: CommitToolPreparedInput): Promise<ToolCommitResult> {
     const canonicalInput: CommitToolPreparedInput = {
       ...input,
       runtimeEvent: canonicalizeRuntimeEventForStorage(input.runtimeEvent),
       dispatchRuntimeEvent: canonicalizeRuntimeEventForStorage(input.dispatchRuntimeEvent),
     };
+    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.runtimeEvent);
+    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.dispatchRuntimeEvent);
     assertPreparedInput(canonicalInput);
     return this.transaction(() => {
       this.assertToolLedgerTransition(
@@ -882,6 +1359,7 @@ export class SqliteRuntimeStore
       ...input,
       runtimeEvent: canonicalizeRuntimeEventForStorage(input.runtimeEvent),
     };
+    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.runtimeEvent);
     assertOutcomeInput(canonicalInput);
     return this.transaction(() => this.commitToolOutcomeSync(canonicalInput));
   }
@@ -895,7 +1373,10 @@ export class SqliteRuntimeStore
         : {}),
       decisionRuntimeEvent: canonicalizeRuntimeEventForStorage(input.decisionRuntimeEvent),
     };
+    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.reconcileRuntimeEvent);
+    assertNoReservedWorkspaceAuthorityAppend(canonicalInput.decisionRuntimeEvent);
     if (canonicalInput.outcomeRuntimeEvent) {
+      assertNoReservedWorkspaceAuthorityAppend(canonicalInput.outcomeRuntimeEvent);
       assertNoReservedRecoveryFact(canonicalInput.outcomeRuntimeEvent);
     }
     this.transaction(() => {
@@ -1351,6 +1832,23 @@ export class SqliteRuntimeStore
         this.db.exec('ROLLBACK');
       } catch {
         // Preserve the protocol failure that caused rollback.
+      }
+      throw error;
+    }
+  }
+
+  private readTransaction<T>(operation: () => T): T {
+    if (this.databaseLease) return this.databaseLease.transaction('read', operation);
+    this.db.exec('BEGIN');
+    try {
+      const result = operation();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Preserve the consistency failure that caused rollback.
       }
       throw error;
     }
@@ -2122,6 +2620,7 @@ function assertNoReservedRecoveryFact(event: RuntimeEvent): void {
 }
 
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
     throw new Error('Continuation start facts require the continuation authority writer');
   }
@@ -2277,6 +2776,199 @@ interface RuntimeEventStorageRow {
   payload_json: string;
 }
 
+function assertWorkspaceVersionAuthorityCapability(db: DatabaseSync): void {
+  const row = db
+    .prepare('SELECT version FROM runtime_capabilities WHERE capability = ?')
+    .get(RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY) as { version?: unknown } | undefined;
+  if (row?.version !== RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION) {
+    throw new Error(
+      `SQLite runtime workspace capability ${RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY}@${RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION} is unavailable`,
+    );
+  }
+}
+
+interface WorkspaceEpochProjectionRow {
+  workspace_id: string;
+  workspace_epoch_id: string;
+  repository_id: string;
+  workspace_instance_id: string;
+  mode: string;
+  object_format: string;
+  source_commit_oid: string;
+  source_tree_oid: string;
+  initial_workspace_version_id: string;
+  materialization_profile_digest: string;
+  materialization_semantics: string;
+  policy_hash: string;
+  authority_session_id: string;
+  authority_invocation_id: string;
+  authority_run_id: string;
+  authority_turn_id: string;
+  epoch_opened_event_id: string;
+  protocol_version: number;
+  committed_at: number;
+}
+
+interface WorkspaceVersionProjectionRow {
+  workspace_version_id: string;
+  repository_id: string;
+  workspace_id: string;
+  workspace_epoch_id: string;
+  object_format: string;
+  origin_kind: string;
+  origin_event_id: string;
+  parents_json: string;
+  commit_oid: string;
+  tree_oid: string;
+  policy_hash: string;
+  tree_delta_digest: string;
+  changed_file_count: number;
+  deleted_file_count: number;
+  accepted_event_id: string;
+  protocol_version: number;
+  committed_at: number;
+}
+
+interface WorkspaceHeadProjectionRow {
+  workspace_id: string;
+  workspace_epoch_id: string;
+  repository_id: string;
+  workspace_version_id: string;
+  accepted_event_id: string;
+  commit_oid: string;
+  tree_oid: string;
+  revision: number;
+}
+
+function workspaceEpochRecord(
+  authority: ScannedWorkspaceBaselineAuthority,
+): WorkspaceEpochRecordV1 {
+  return {
+    ...authority.epoch,
+    epochOpenedEventId: authority.epochOpenedEventId,
+    authority: authority.authority,
+    committedAt: authority.epochOpenedAt,
+  };
+}
+
+function workspaceVersionRecord(
+  authority: ScannedWorkspaceBaselineAuthority,
+): WorkspaceVersionRecordV1 {
+  return {
+    ...authority.baseline,
+    baselineAcceptedEventId: authority.baselineAcceptedEventId,
+    committedAt: authority.baselineAcceptedAt,
+  };
+}
+
+function workspaceHeadRecord(authority: ScannedWorkspaceBaselineAuthority): WorkspaceHeadRecordV1 {
+  return {
+    repositoryId: authority.epoch.repositoryId,
+    workspaceId: authority.epoch.workspaceId,
+    workspaceEpochId: authority.epoch.workspaceEpochId,
+    workspaceVersionId: authority.baseline.workspaceVersionId,
+    acceptedEventId: authority.baselineAcceptedEventId,
+    commitOid: authority.baseline.commitOid,
+    treeOid: authority.baseline.treeOid,
+    revision: 1,
+  };
+}
+
+function workspaceEpochProjectionRow(
+  authority: ScannedWorkspaceBaselineAuthority,
+): WorkspaceEpochProjectionRow {
+  const record = workspaceEpochRecord(authority);
+  return {
+    workspace_id: record.workspaceId,
+    workspace_epoch_id: record.workspaceEpochId,
+    repository_id: record.repositoryId,
+    workspace_instance_id: record.workspaceInstanceId,
+    mode: record.mode,
+    object_format: record.objectFormat,
+    source_commit_oid: record.sourceCommitOid,
+    source_tree_oid: record.sourceTreeOid,
+    initial_workspace_version_id: record.initialWorkspaceVersionId,
+    materialization_profile_digest: record.materializationProfileDigest,
+    materialization_semantics: record.materializationSemantics,
+    policy_hash: record.policyHash,
+    authority_session_id: record.authority.sessionId,
+    authority_invocation_id: record.authority.invocationId,
+    authority_run_id: record.authority.runId,
+    authority_turn_id: record.authority.turnId,
+    epoch_opened_event_id: record.epochOpenedEventId,
+    protocol_version: 1,
+    committed_at: record.committedAt,
+  };
+}
+
+function workspaceVersionProjectionRow(
+  authority: ScannedWorkspaceBaselineAuthority,
+): WorkspaceVersionProjectionRow {
+  const record = workspaceVersionRecord(authority);
+  return {
+    workspace_version_id: record.workspaceVersionId,
+    repository_id: record.repositoryId,
+    workspace_id: record.workspaceId,
+    workspace_epoch_id: record.workspaceEpochId,
+    object_format: record.objectFormat,
+    origin_kind: record.origin.kind,
+    origin_event_id: record.origin.epochOpenedEventId,
+    parents_json: '[]',
+    commit_oid: record.commitOid,
+    tree_oid: record.treeOid,
+    policy_hash: record.policyHash,
+    tree_delta_digest: record.treeDeltaDigest,
+    changed_file_count: record.changedFileCount,
+    deleted_file_count: record.deletedFileCount,
+    accepted_event_id: record.baselineAcceptedEventId,
+    protocol_version: 1,
+    committed_at: record.committedAt,
+  };
+}
+
+function workspaceHeadProjectionRow(
+  authority: ScannedWorkspaceBaselineAuthority,
+): WorkspaceHeadProjectionRow {
+  const record = workspaceHeadRecord(authority);
+  return {
+    workspace_id: record.workspaceId,
+    workspace_epoch_id: record.workspaceEpochId,
+    repository_id: record.repositoryId,
+    workspace_version_id: record.workspaceVersionId,
+    accepted_event_id: record.acceptedEventId,
+    commit_oid: record.commitOid,
+    tree_oid: record.treeOid,
+    revision: record.revision,
+  };
+}
+
+function compareWorkspaceEpochRow(
+  left: WorkspaceEpochProjectionRow,
+  right: WorkspaceEpochProjectionRow,
+): number {
+  return (
+    left.workspace_id.localeCompare(right.workspace_id) ||
+    left.workspace_epoch_id.localeCompare(right.workspace_epoch_id)
+  );
+}
+
+function compareWorkspaceVersionRow(
+  left: WorkspaceVersionProjectionRow,
+  right: WorkspaceVersionProjectionRow,
+): number {
+  return left.workspace_version_id.localeCompare(right.workspace_version_id);
+}
+
+function compareWorkspaceHeadRow(
+  left: WorkspaceHeadProjectionRow,
+  right: WorkspaceHeadProjectionRow,
+): number {
+  return (
+    left.workspace_id.localeCompare(right.workspace_id) ||
+    left.workspace_epoch_id.localeCompare(right.workspace_epoch_id)
+  );
+}
+
 interface RuntimeEventPrefixStorageRow extends RuntimeEventStorageRow {
   event_seq: number;
 }
@@ -2351,6 +3043,7 @@ function runtimeEventKind(event: RuntimeEvent): string {
   return (
     event.content?.kind ??
     event.status ??
+    (event.actions?.workspaceFact ? 'workspace_fact' : undefined) ??
     (event.actions?.toolDispatch ? 'tool_dispatch' : undefined) ??
     (event.actions?.endInvocation ? 'invocation_end' : 'runtime_fact')
   );

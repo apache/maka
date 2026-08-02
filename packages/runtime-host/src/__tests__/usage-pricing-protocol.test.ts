@@ -176,7 +176,9 @@ describe('Usage/Pricing protocol', () => {
   });
 
   test('enforces exact usage results and both page bounds', () => {
-    assert.doesNotThrow(() => usageResponse({ kind: 'summary', summary: validSummary() }));
+    assert.doesNotThrow(() =>
+      usageResponse({ kind: 'summary', summary: validSummary(), provenance: validProvenance() }),
+    );
     assert.doesNotThrow(() =>
       usageResponse({
         kind: 'buckets',
@@ -184,16 +186,18 @@ describe('Usage/Pricing protocol', () => {
         offset: 0,
         total: 2,
         nextOffset: 1,
+        provenance: validProvenance(),
       }),
     );
     assert.doesNotThrow(() =>
       usageResponse({
         kind: 'logs',
         source: 'llm',
-        rows: [validLog(), { ...validLog(1), callKind: 'history_compact' }],
+        rows: [validLog(), { ...validLog(1), callKind: 'goal_evaluation' }],
         offset: 0,
         total: 2,
         nextOffset: null,
+        provenance: validProvenance(),
       }),
     );
     assert.doesNotThrow(() =>
@@ -219,6 +223,7 @@ describe('Usage/Pricing protocol', () => {
       offset: 0,
       total: 50,
       nextOffset: null,
+      provenance: validProvenance(),
     };
     assert.ok(Buffer.byteLength(JSON.stringify(oversized), 'utf8') > USAGE_PAGE_MAX_BYTES);
 
@@ -229,6 +234,7 @@ describe('Usage/Pricing protocol', () => {
         offset: 0,
         total: tooMany.length,
         nextOffset: null,
+        provenance: validProvenance(),
       },
       oversized,
       {
@@ -238,6 +244,7 @@ describe('Usage/Pricing protocol', () => {
         offset: 0,
         total: 1,
         nextOffset: null,
+        provenance: validProvenance(),
       },
       {
         kind: 'logs',
@@ -246,8 +253,13 @@ describe('Usage/Pricing protocol', () => {
         offset: 0,
         total: 1,
         nextOffset: null,
+        provenance: validProvenance(),
       },
-      { kind: 'summary', summary: { ...validSummary(), totalRequests: 0.5 } },
+      {
+        kind: 'summary',
+        summary: { ...validSummary(), totalRequests: 0.5 },
+        provenance: validProvenance(),
+      },
       {
         kind: 'buckets',
         buckets: [{ ...validBucket(), requests: 0.5 }],
@@ -565,6 +577,22 @@ describe('Usage/Pricing protocol', () => {
 function operationMetadata(key: 'usage.query' | 'pricing.query' | 'pricing.mutate') {
   const { mode, availability } = HOST_OPERATION_SPECS[key];
   return { mode, availability };
+}
+
+function validProvenance() {
+  return {
+    coverage: {
+      attempts: 1,
+      pricedAttempts: 1,
+      unpricedAttempts: 0,
+      usageReportedAttempts: 1,
+      usagePartialAttempts: 0,
+      usageMissingAttempts: 0,
+    },
+    legacyRecords: 0,
+    unreadableRecords: 0,
+    pendingRepairs: 0,
+  };
 }
 
 function validSummary() {

@@ -2,6 +2,7 @@
   margin: 0;
   color: var(--foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -9,18 +10,19 @@
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
 }
 
 .catalogTabs strong {
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-semibold);
 }
 
 .catalogTabs small {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-tight);
+  line-height: var(--text-supporting-leading);
 }
 
 /* Provider catalog + OAuth login render as governed Item rows (media ·
@@ -64,6 +66,7 @@
   margin-left: var(--space-2);
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
 }
 
 .providerCatalogChevron {
@@ -82,7 +85,7 @@
   font-size: var(--font-size-caption);
   font-style: normal;
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .providerEditor {
@@ -127,7 +130,7 @@
 
 .providerConnectionIssue span {
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .providerAdvancedSettings {
@@ -174,6 +177,7 @@
   gap: var(--space-1-5);
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-medium);
 }
 
@@ -220,6 +224,7 @@
   width: fit-content;
   color: var(--link);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-medium);
   text-decoration: none;
   /* PR-UI-LAYOUT-33: explicit padding + radius so the focus halo
@@ -327,6 +332,7 @@
 .providerCatalogEmpty {
   color: var(--muted-foreground);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   padding: var(--space-8) var(--space-2);
   text-align: center;
 }
@@ -337,7 +343,7 @@
   background: color-mix(in srgb, var(--warning) 10%, var(--background));
   color: var(--warning-text);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
   padding: var(--space-2) var(--space-3);
 }
 .providerOAuthGrid {
@@ -348,6 +354,7 @@
 
 .providerOAuthCardBadge {
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-medium);
   letter-spacing: var(--tracking-wide);
 }
@@ -392,11 +399,11 @@
 .enabledEmptyChip strong {
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-bold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
 }
 
 .enabledEmptyChip small {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }

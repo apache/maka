@@ -928,6 +928,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'user_stop'
     | 'error'
     | 'plan_handoff'
+    | 'graph_yield'
     | 'permission_handoff'
     | 'step_limit'
     | 'max_tokens'

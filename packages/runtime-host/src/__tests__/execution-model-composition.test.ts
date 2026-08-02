@@ -9,6 +9,7 @@ import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   createWorkspaceWritePermissionProfile,
+  type ModelCallKind,
   type RuntimeEvent,
 } from '@maka/core';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
@@ -34,12 +35,14 @@ import {
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import type { TurnSnapshot, UsageQueryResult } from '../protocol/index.js';
 import type { ClientCapabilityHostFrame } from '../protocol/index.js';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import {
   createHostAiSdkBackend,
   createHostExecutionModelComposition,
+  createHostGoalEvaluator,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
@@ -258,7 +261,7 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   const provider = coordinator.attachConnection('provider-a', { send: async () => undefined });
   const context: ConnectionContext = {
@@ -321,7 +324,7 @@ test('production backend preserves coordinator Client Capability semantics acros
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
     activation: new RuntimePolicyActivationGate(),
-    onRegistryChanged: () => undefined,
+    onModelToolsChanged: () => undefined,
   });
   let connection: ReturnType<HostClientCapabilityCoordinator['attachConnection']> | undefined;
   let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
@@ -652,10 +655,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.deepEqual(toolNames(request?.body), [
       'AskUserQuestion',
+      'Automation',
       'Bash',
       'Edit',
       'FormatJson',
       'Glob',
+      'GoalClear',
+      'GoalPause',
+      'GoalResume',
+      'GoalSet',
+      'GoalStatus',
       'Grep',
       'Read',
       'Skill',
@@ -748,6 +757,144 @@ test('production Host executes a canonical ai-sdk Session against a real provide
         await rm(base, { recursive: true, force: true });
       }
     }
+  }
+});
+
+test('Host Goal evaluator meters provider usage and aborts its physical request', {
+  timeout: 10_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-evaluator-'));
+  const provider = await startProvider();
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+
+  const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+  const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+  const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+  try {
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'goal-evaluator-provider',
+        name: 'Goal evaluator provider',
+        providerType: 'moonshot',
+        baseUrl: provider.baseUrl,
+        enabled: true,
+        enabledModelIds: [MODEL_ID],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await policy.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: API_KEY,
+    });
+    assert.equal(credential.kind, 'committed');
+    await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    const session = await execution.sessionStore.create({
+      cwd: capability.canonicalPath,
+      backend: 'ai-sdk',
+      llmConnectionSlug: 'goal-evaluator-provider',
+      model: MODEL_ID,
+      permissionMode: 'ask',
+    });
+    const evaluatorInput = {
+      runtimePolicy: policy,
+      oauthCredentials: new HostOAuthExecutionAuthority(policy),
+      claudeDeviceId: capability.rootId,
+      usage,
+      requestDrain: () => assert.fail('Goal evaluator telemetry must not drain the Host'),
+      readSessionHeader: (sessionId: string) =>
+        execution.sessionStore.readHeaderSnapshot(sessionId),
+      newId: () => 'call-1',
+    };
+    const evaluator = createHostGoalEvaluator(evaluatorInput);
+    const result = await evaluator.evaluate(
+      'Judge the completed Goal.',
+      session.id,
+      new AbortController().signal,
+    );
+    assert.equal(result, SUMMARY_TEXT);
+    const logs = await usage.telemetry.logs({ range: 'all' });
+    const recorded = logs.rows.find((row) => row.callKind === 'goal_evaluation');
+    assert.ok(recorded);
+    assert.equal(recorded.callId, `goal_evaluation_${session.id}_call-1`);
+    assert.equal(recorded.inputTokens, 7);
+    assert.equal(recorded.outputTokens, 3);
+    assert.equal(recorded.status, 'success');
+    await evaluator.close();
+
+    let providerSignal: AbortSignal | undefined;
+    let transportCloses = 0;
+    const providerDispatched = deferred<void>();
+    const providerRelease = deferred<void>();
+    const stalled = createHostGoalEvaluator({
+      ...evaluatorInput,
+      newId: () => 'call-2',
+      createFetchTransport: () => ({
+        fetch: async (_request, init) => {
+          providerSignal = init?.signal ?? undefined;
+          providerDispatched.resolve();
+          await providerRelease.promise;
+          throw providerSignal?.reason ?? new DOMException('Aborted', 'AbortError');
+        },
+        close: async () => {
+          transportCloses += 1;
+        },
+      }),
+    });
+    const abort = new AbortController();
+    const pending = stalled.evaluate('Wait forever.', session.id, abort.signal);
+    try {
+      await settleWithin(providerDispatched.promise);
+      abort.abort(new DOMException('Goal lane invalidated', 'AbortError'));
+      assert.equal(providerSignal?.aborted, true);
+      let closeSettled = false;
+      const closing = stalled.close().then(() => {
+        closeSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(closeSettled, false);
+
+      providerRelease.resolve();
+      await assert.rejects(settleWithin(pending), (error: unknown) => {
+        assert.notEqual(error instanceof Error ? error.message : undefined, SETTLE_TIMEOUT_MESSAGE);
+        return true;
+      });
+      await closing;
+      assert.equal(transportCloses, 1);
+      const abortedLogs = await usage.telemetry.logs({ range: 'all' });
+      assert.ok(
+        abortedLogs.rows.some(
+          (row) =>
+            row.callId === `goal_evaluation_${session.id}_call-2` && row.status === 'aborted',
+        ),
+      );
+    } finally {
+      abort.abort(new DOMException('Goal evaluator test cleanup', 'AbortError'));
+      providerRelease.resolve();
+      await stalled.close();
+      await pending.catch(() => undefined);
+    }
+  } finally {
+    await usage.close();
+    await execution.sessionStore.close?.();
+    await owner.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
   }
 });
 
@@ -947,6 +1094,12 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     categoryHint: 'client_capability',
     impl: async () => 'capability',
   };
+  const automationTool: MakaTool = {
+    name: 'Automation',
+    description: 'A root-only Host authority outside the exact child ceiling.',
+    parameters: {},
+    impl: async () => 'automation',
+  };
   const composition = createHostExecutionModelComposition({
     policy: {
       getSnapshot: async () => ({
@@ -960,6 +1113,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
     memory: {} as HostMemoryCoordinator,
     taskLedger: {} as TaskLedgerStore,
     boundTools: [boundTool],
+    automationTool,
     builtinTools: {},
     clientCapabilities: {
       tools: [capabilityTool],
@@ -1045,7 +1199,7 @@ async function waitForUsage(
   composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>>,
   context: ConnectionContext,
   connectionSlug: string,
-  callKind: 'main' | 'semantic_compact' | 'history_compact',
+  callKind: ModelCallKind,
 ): Promise<Extract<UsageQueryResult, { kind: 'logs'; source: 'llm' }>['rows'][number]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const queried = await composition.handlers['usage.query'](
@@ -1226,16 +1380,25 @@ function readyExecutionConnection(baseUrl?: string) {
 async function settleWithin<T>(pending: Promise<T>): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error('Backend creation did not settle after abort')),
-      250,
-    );
+    timeout = setTimeout(() => reject(new Error(SETTLE_TIMEOUT_MESSAGE)), 5_000);
   });
   try {
     return await Promise.race([pending, deadline]);
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
+    resolve = next;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 function controlledOAuthTransports(): {

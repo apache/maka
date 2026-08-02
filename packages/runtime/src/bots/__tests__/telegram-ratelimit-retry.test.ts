@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { __TEST__ } from '../simple-bridge.js';
 
-const { classifyTelegramSendResponse, TELEGRAM_RETRY_MIN_MS, TELEGRAM_RETRY_MAX_MS } = __TEST__;
+const { classifyTelegramSendResponse } = __TEST__;
 
 describe('classifyTelegramSendResponse', () => {
   it('returns the optional message id on successful responses', () => {
@@ -20,9 +20,9 @@ describe('classifyTelegramSendResponse', () => {
   it('clamps Telegram retry hints to the bounded retry window', () => {
     for (const [retryAfter, expected] of [
       [5, 5_000],
-      [0, TELEGRAM_RETRY_MIN_MS],
-      [3600, TELEGRAM_RETRY_MAX_MS],
-      ['wat', TELEGRAM_RETRY_MIN_MS],
+      [0, 1_000],
+      [3600, 30_000],
+      ['wat', 1_000],
     ] as const) {
       const result = classifyTelegramSendResponse({
         ok: false,

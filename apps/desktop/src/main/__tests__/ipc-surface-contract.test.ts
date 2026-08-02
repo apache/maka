@@ -1,38 +1,47 @@
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { readMainProcessCombinedSource } from './main-process-contract-source-helpers.js';
 
-const repoRoot = process.cwd().endsWith('apps/desktop')
-  ? join(process.cwd(), '..', '..')
-  : process.cwd();
+const desktopRoot = process.cwd().endsWith(join('apps', 'desktop'))
+  ? process.cwd()
+  : join(process.cwd(), 'apps', 'desktop');
 
-function extractChannels(source: string, pattern: RegExp): string[] {
-  return [...source.matchAll(pattern)].map((match) => match[1]).sort();
+async function findTypeScriptFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      if (entry.isDirectory()) {
+        return entry.name === '__tests__' || entry.name === 'dist'
+          ? []
+          : findTypeScriptFiles(join(directory, entry.name));
+      }
+      return entry.name.endsWith('.ts') ? [join(directory, entry.name)] : [];
+    }),
+  );
+  return files.flat();
+}
+
+function extractChannels(source: string, pattern: RegExp): Set<string> {
+  return new Set([...source.matchAll(pattern)].map((match) => match[1]));
 }
 
 describe('IPC surface contract', () => {
-  it('keeps main handlers paired with preload invocations', async () => {
-    const [main, preload] = await Promise.all([
-      readMainProcessCombinedSource(),
-      readFile(join(repoRoot, 'apps/desktop/src/preload/preload.ts'), 'utf8'),
+  it('keeps main handlers and preload invocations in parity', async () => {
+    const mainFiles = await findTypeScriptFiles(join(desktopRoot, 'src', 'main'));
+    const [mainSources, preloadSource] = await Promise.all([
+      Promise.all(mainFiles.map((file) => readFile(file, 'utf8'))),
+      readFile(join(desktopRoot, 'src', 'preload', 'preload.ts'), 'utf8'),
     ]);
-    const mainChannels = new Set(
-      extractChannels(main, /ipcMain\.handle\(\s*['"]([^'"]+)['"]/g),
+    const mainChannels = extractChannels(
+      mainSources.join('\n'),
+      /ipcMain\.handle\(\s*['"]([^'"]+)['"]/g,
     );
-    const preloadChannels = new Set(
-      extractChannels(preload, /ipcRenderer\.invoke\(\s*['"]([^'"]+)['"]/g),
+    const preloadChannels = extractChannels(
+      preloadSource,
+      /ipcRenderer\.invoke\(\s*['"]([^'"]+)['"]/g,
     );
-    assert.deepEqual(
-      [...preloadChannels].filter((channel) => !mainChannels.has(channel)),
-      [],
-      'every preload invoke channel must have a main handler',
-    );
-    assert.deepEqual(
-      [...mainChannels].filter((channel) => !preloadChannels.has(channel)),
-      [],
-      'main process must not expose stale invoke handlers outside the preload bridge',
-    );
+
+    assert.deepEqual([...mainChannels].sort(), [...preloadChannels].sort());
   });
 });

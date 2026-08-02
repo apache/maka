@@ -493,8 +493,8 @@ export function ChatView(props: {
                   `tailTurnId` is undefined), so the answer never double-renders. */}
               {streamingActive && !tailTurnId && (
                 <section className="maka-turn" data-live-streaming="true">
-                  <ChatMessage sender="assistant" className="maka-chat-message group/answer">
-                    <div className="flex flex-col gap-2">
+                  <ChatMessage sender="assistant" className="maka-chat-message maka-assistant-answer">
+                    <div className="maka-assistant-answer-content">
                       {props.liveTurn?.providerRetry ? (
                         <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
                       ) : (
@@ -504,7 +504,7 @@ export function ChatView(props: {
                         </>
                       )}
                     </div>
-                    <div aria-hidden="true" className="mt-0.5 h-8" />
+                    <div aria-hidden="true" className="maka-live-turn-footer-placeholder" />
                   </ChatMessage>
                 </section>
               )}

@@ -50,6 +50,8 @@ export type AgentRunContinuationSource =
 
 export type RootExecutionDescriptor =
   | { kind: 'external_message' }
+  | { kind: 'automation'; automationId: string }
+  | { kind: 'goal'; goalId: string }
   | {
       kind: 'linked_child_initial';
       agentId: string;
@@ -134,6 +136,8 @@ export interface AgentRunHeader {
   continuationSource?: AgentRunContinuationSource;
   /** Non-user trigger for this run (e.g. a scheduled automation fire). */
   automationId?: string;
+  /** Host-owned Goal generation that triggered this continuation Run. */
+  goalId?: string;
   /** Durable graph milestone that caused this host-authored supervisor turn. */
   agentGraphWakeId?: string;
   /** Durable delivery attempt for this host-authored supervisor turn. */
@@ -142,6 +146,37 @@ export interface AgentRunHeader {
   failureMessage?: string;
   abortSource?: string;
   traceWriteError?: string;
+}
+
+type HostedRootExecutionDescriptor = Extract<
+  RootExecutionDescriptor,
+  { kind: 'automation' | 'goal' }
+>;
+
+export function agentRunMatchesHostedRootExecution(
+  run: AgentRunHeader,
+  execution: HostedRootExecutionDescriptor,
+): boolean {
+  const authorityMatches =
+    execution.kind === 'automation'
+      ? run.automationId === execution.automationId && run.goalId === undefined
+      : run.goalId === execution.goalId && run.automationId === undefined;
+  return (
+    authorityMatches &&
+    run.parentRunId === undefined &&
+    run.resumedFromRunId === undefined &&
+    run.retriedFromRunId === undefined &&
+    run.agentId === undefined &&
+    run.agentName === undefined &&
+    run.parentTurnId === undefined &&
+    run.retriedFromTurnId === undefined &&
+    run.regeneratedFromTurnId === undefined &&
+    run.branchOfTurnId === undefined &&
+    run.parentSessionId === undefined &&
+    run.continuationSource === undefined &&
+    run.agentGraphWakeId === undefined &&
+    run.agentGraphWakeAttemptId === undefined
+  );
 }
 
 export interface AgentRunInputSummary {
@@ -163,12 +198,14 @@ export const AGENT_RUN_EVENT_TYPES = [
   'plan_execution_interrupted',
   'plan_execution_resumed',
   'plan_transition_failed',
+  'graph_supervisor_yielded',
   'run_status_changed',
   'model_resolved',
   'model_resolve_failed',
   'model_stream_started',
   'model_stream_completed',
   'model_stream_failed',
+  'send_diagnostics_recorded',
   'tool_started',
   'tool_completed',
   'tool_failed',
@@ -189,7 +226,6 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_escalation_applied',
   'sandbox_escalation_failed',
   'sandbox_denial_detected',
-  'usage_recorded',
   'provider_request_captured',
   'provider_request_attempt_recorded',
   'model_call_attempt_recorded',
@@ -248,6 +284,7 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'workspaceIdentity',
     'continuationSource',
     'automationId',
+    'goalId',
     'agentGraphWakeId',
     'agentGraphWakeAttemptId',
     'failureClass',
@@ -288,6 +325,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       isEffectiveOrchestrationSource(value.orchestrationSource)) &&
     (value.agentSwarmAuthorization === undefined ||
       isAgentSwarmAuthorizationSource(value.agentSwarmAuthorization)) &&
+    !(value.automationId !== undefined && value.goalId !== undefined) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&
@@ -305,6 +343,7 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       value.parentSessionId,
       value.workspaceIdentity,
       value.automationId,
+      value.goalId,
       value.agentGraphWakeId,
       value.agentGraphWakeAttemptId,
       value.failureClass,

@@ -8,7 +8,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { canonicalToolArgsHash, scanToolLedger, type RuntimeEvent } from '@maka/core';
-import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
+import {
+  SQLITE_RUNTIME_SCHEMA_VERSION,
+  createSqliteRuntimeStore,
+} from '../sqlite-runtime-store.js';
 
 const WORKER_READY_TIMEOUT_MS = 15_000;
 const WORKER_EXECUTION_TIMEOUT_MS = 30_000;
@@ -159,12 +162,65 @@ describe('SQLite recovery authority multi-process races', () => {
     });
   });
 
-  it('serializes concurrent schema 4 to 6 upgrades', async () => {
+  it('makes an exact concurrent workspace baseline open idempotent', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, [
+        'workspace_baseline_a',
+        'workspace_baseline_a',
+      ]);
+      assert.deepEqual(
+        results.map(({ code }) => code),
+        [0, 0],
+      );
+      assert.deepEqual(
+        results
+          .flatMap(({ stdout }) =>
+            stdout.includes('BASELINE created')
+              ? ['created']
+              : stdout.includes('BASELINE existing')
+                ? ['existing']
+                : [],
+          )
+          .sort(),
+        ['created', 'existing'],
+      );
+    });
+  });
+
+  it('accepts only one of two conflicting concurrent workspace baselines', async () => {
+    await withPreparedDatabase(async ({ dbPath, startPath }) => {
+      const results = await runWorkers(dbPath, startPath, [
+        'workspace_baseline_a',
+        'workspace_baseline_b',
+      ]);
+      assert.deepEqual(results.map(({ code }) => code).sort(), [0, 2]);
+      assert.equal(
+        results.filter(({ stderr }) => /Workspace baseline authority conflict/.test(stderr)).length,
+        1,
+      );
+
+      const store = createSqliteRuntimeStore(dbPath);
+      try {
+        const head = await store.readWorkspaceHead(
+          `workspace_${'2'.repeat(32)}`,
+          `epoch_${'3'.repeat(32)}`,
+        );
+        assert.ok(
+          head?.workspaceVersionId === `version_${'5'.repeat(32)}` ||
+            head?.workspaceVersionId === `version_${'9'.repeat(32)}`,
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it('serializes concurrent schema 6 to the current runtime schema', async () => {
     await withPreparedDatabase(async ({ dbPath, startPath }) => {
       const db = new DatabaseSync(dbPath);
       try {
         db.exec(
-          'DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+          "DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DELETE FROM runtime_capabilities WHERE capability = 'runtime_workspace_version_authority'; PRAGMA user_version = 6;",
         );
       } finally {
         db.close();
@@ -178,7 +234,7 @@ describe('SQLite recovery authority multi-process races', () => {
 
       const upgraded = createSqliteRuntimeStore(dbPath);
       try {
-        assert.equal(upgraded.schemaVersion(), 6);
+        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
       } finally {
         upgraded.close();
       }

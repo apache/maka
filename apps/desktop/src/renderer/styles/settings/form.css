@@ -61,10 +61,18 @@
   gap: var(--space-2-5);
 }
 
+.settingsActionWidthXs { min-width: 46px; }
+.settingsActionWidthSm { min-width: 52px; }
+.settingsActionWidthMd { min-width: 65px; }
+.settingsActionWidthLg { min-width: 78px; }
+.settingsActionWidthXl { min-width: 91px; }
+.settingsActionWidth2Xl { min-width: 98px; }
+
 .settingsSubheading {
   margin: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-bold);
   letter-spacing: var(--tracking-wider);
   text-transform: uppercase;

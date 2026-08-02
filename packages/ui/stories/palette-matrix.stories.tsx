@@ -1,3 +1,21 @@
+/**
+ * The one Design System story that survived the token-catalog cut, because the
+ * test that removed the others does not apply to it.
+ *
+ * Those stories were tables of Maka's own `--space-*`, `--font-size-*`,
+ * `--shadow-*` and `--z-*` values. Astryx ships parallel contracts for all of
+ * them and `maka-tokens.css` dies with Slice 13 (#1565), so a catalog of var
+ * names carries little review value and a short remaining life. That is the
+ * reason they went — NOT that Astryx has already taken the domain over, which
+ * is not true today: `maka-tokens.css` is still the single authority and
+ * `makaTheme` is a plain extend of Astryx's neutral theme.
+ *
+ * The palette matrix is different in kind. `THEME_PALETTES` is a product
+ * feature — the palettes a user picks in 设置 → 外观 — and every one of them
+ * except `default` is unreachable from any other story, including the
+ * appearance page's own. The smoke's catalog pass renders wide/light/default
+ * only, so without this story ten palettes have no oracle whatsoever.
+ */
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { useSyncExternalStore } from 'react';
 import { THEME_PALETTES } from '../../../packages/core/src/settings.js';

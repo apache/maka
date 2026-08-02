@@ -125,7 +125,6 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-daily-review',
   'settings-permissions',
   'settings-voice',
-  'settings-search',
   'settings-usage',
   'settings-health',
   'module-skills',
@@ -547,8 +546,6 @@ function buildE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState | nul
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'permissions' };
     case 'settings-voice':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'voice' };
-    case 'settings-search':
-      return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'search' };
     case 'settings-usage':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'usage' };
     case 'settings-health':

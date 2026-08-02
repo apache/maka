@@ -131,9 +131,10 @@ const CONFIGURED_REMINDERS: PlanReminder[] = [
     runs: [CONFIGURED_COMPLETED_LAST_RUN],
     runCount: 1,
   },
-];
-
-const ATTENTION_REMINDERS: PlanReminder[] = [
+  // The blocked row rides along with the healthy ones rather than in a story of
+  // its own: a page whose whole job is scanning a list is only honest about the
+  // attention state when that state has neighbours to stand out from. Same
+  // reason ExtensionsMcpConfigured shows one healthy and one failed server.
   {
     id: 'plan-delivery-blocked',
     title: '发送每日客户反馈摘要',
@@ -244,25 +245,6 @@ const DAILY_REVIEW_SUMMARY: DailyReviewSummary = {
 };
 
 type DailyReviewBridge = NonNullable<ComponentProps<typeof DailyReviewPage>['bridge']>;
-
-const withMcpBridge = withScopedMakaBridge({
-  mcp: {
-    getConfig: async () => ({ version: 1, mcpServers: {} }),
-    listStatuses: async () => [],
-    setConfig: async (config: unknown) => config,
-    upsert: async () => ({ version: 1, mcpServers: {} }),
-    install: async () => ({ version: 1, mcpServers: {} }),
-    remove: async () => ({ version: 1, mcpServers: {} }),
-    cancelInstall: async () => ({ version: 1, mcpServers: {} }),
-    test: async () => {
-      throw new Error('The empty MCP baseline does not test a server');
-    },
-    reconnect: async () => {
-      throw new Error('The empty MCP baseline does not reconnect a server');
-    },
-    subscribeChanges: () => () => {},
-  },
-});
 
 const configuredMcpConfig: McpConfigFile = {
   version: 1,
@@ -387,10 +369,7 @@ function ExtensionsMcpSurface() {
   );
 }
 
-function ScheduledPlanRemindersSurface(props: {
-  reminders?: PlanReminder[];
-  keepSystemAwake?: boolean;
-}) {
+function ScheduledPlanRemindersSurface(props: { reminders?: PlanReminder[] }) {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.automations;
   return (
     <ModuleSurface agentsView="cron">
@@ -401,7 +380,7 @@ function ScheduledPlanRemindersSurface(props: {
           badge: <ModuleHubSelector hub="automations" value="plan-reminders" onChange={() => {}} />,
         }}
         reminders={props.reminders ?? []}
-        keepSystemAwake={props.keepSystemAwake ?? false}
+        keepSystemAwake={false}
         onKeepSystemAwakeChange={async () => {}}
         onRefresh={noop}
         onCreate={noop}
@@ -432,42 +411,9 @@ function ScheduledDailyReviewSurface(props: { bridge: DailyReviewBridge }) {
   );
 }
 
-async function assertKeepAwakeStoryState(canvasElement: HTMLElement) {
-  const document = canvasElement.ownerDocument;
-  const deadline = Date.now() + 2_000;
-  let trigger: HTMLButtonElement | undefined;
-  while (!trigger && Date.now() < deadline) {
-    trigger = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) => {
-      const label = button.getAttribute('aria-label');
-      return label === '定时任务页面设置' || label === 'Scheduled task page settings';
-    });
-    if (!trigger) await new Promise((resolve) => setTimeout(resolve, 16));
-  }
-  if (!trigger) throw new Error('Keep-awake story did not render the page-settings trigger');
-  trigger.click();
-
-  while (Date.now() < deadline) {
-    const item = Array.from(
-      document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]'),
-    ).find((candidate) => /保持系统唤醒|Keep system awake/.test(candidate.textContent ?? ''));
-    if (item?.getAttribute('aria-checked') === 'true') return;
-    await new Promise((resolve) => setTimeout(resolve, 16));
-  }
-  throw new Error('Keep-awake story did not expose a checked contextual control');
-}
-
-// Real path: sidebar → 扩展 → 技能, on a fresh install.
-export const ExtensionsSkills: Story = { render: () => <ExtensionsSkillsSurface /> };
-
 // Real path: sidebar → 扩展 → 技能, with several installed skills.
 export const ExtensionsSkillsInstalled: Story = {
   render: () => <ExtensionsSkillsSurface skills={INSTALLED_SKILLS} />,
-};
-
-// Real path: sidebar → 扩展 → MCP, before any server is installed.
-export const ExtensionsMcp: Story = {
-  decorators: [withMcpBridge],
-  render: () => <ExtensionsMcpSurface />,
 };
 
 // Real path: sidebar → 扩展 → MCP, with one healthy server and one actionable failure.
@@ -487,27 +433,15 @@ export const ScheduledPlanReminders: Story = {
   render: () => <ScheduledPlanRemindersSurface />,
 };
 
-// Real path: sidebar → 定时任务 → 计划提醒, with recurring and completed reminders.
+// Real path: sidebar → 定时任务 → 计划提醒, with recurring, paused, completed and
+// delivery-blocked reminders in one list.
+//
+// 保持系统唤醒 has no story: it is persisted page state the page itself never
+// renders, so a story for it would smoke pixels identical to this one at every
+// viewport. The state lives on the settings menu item, and
+// plan-reminder-panel.test.tsx asserts its aria-checked in both directions.
 export const ScheduledPlanRemindersConfigured: Story = {
   render: () => <ScheduledPlanRemindersSurface reminders={CONFIGURED_REMINDERS} />,
-};
-
-// Real path: sidebar → 定时任务 → 计划提醒, after the latest delivery needs attention.
-export const ScheduledPlanRemindersAttention: Story = {
-  render: () => <ScheduledPlanRemindersSurface reminders={ATTENTION_REMINDERS} />,
-};
-
-// Real path: sidebar → 定时任务 → 计划提醒, after Keep system awake is enabled in page settings.
-export const ScheduledPlanRemindersKeepAwake: Story = {
-  render: () => (
-    <ScheduledPlanRemindersSurface
-      reminders={CONFIGURED_REMINDERS}
-      keepSystemAwake
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    await assertKeepAwakeStoryState(canvasElement);
-  },
 };
 
 // Real path: sidebar → 定时任务 → 计划提醒, with user-authored content at storage limits.
@@ -524,24 +458,3 @@ export const ScheduledDailyReview: Story = {
   ),
 };
 
-// Real path: same page while the review is still being generated or fetched.
-export const ScheduledDailyReviewLoading: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{ fetchDay: async () => new Promise<DailyReviewSummary>(() => {}) }}
-    />
-  ),
-};
-
-// Real path: same page when the main-process bridge fails to return the review.
-export const ScheduledDailyReviewLoadError: Story = {
-  render: () => (
-    <ScheduledDailyReviewSurface
-      bridge={{
-        fetchDay: async () => {
-          throw new Error('每日回顾暂时不可用，请稍后重试。');
-        },
-      }}
-    />
-  ),
-};

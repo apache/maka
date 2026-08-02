@@ -6,41 +6,21 @@
  * - "cron": standalone scheduled runs (create fresh session each time)
  */
 
-export type AutomationKind = 'heartbeat' | 'cron';
-export type AutomationStatus = 'active' | 'paused' | 'completed' | 'expired';
+import type {
+  AutomationDefinition,
+  AutomationExecutionTemplate,
+  AutomationKind,
+  AutomationSchedule,
+} from '@maka/core/automation';
+import { AUTOMATION_LAST_ERROR_LIMIT, truncateAutomationText } from '@maka/core/automation';
 
-export interface AutomationDefinition {
-  id: string;
-  kind: AutomationKind;
-  name: string;
-  status: AutomationStatus;
-  prompt: string;
-  sessionId: string;
-  schedule: AutomationSchedule;
-  createdAt: number;
-  updatedAt: number;
-  nextFireAt: number | null;
-  lastFireAt: number | null;
-  lastRunId: string | null;
-  fireCount: number;
-  maxFires: number | null;
-  expiresAt: number | null;
-  lastError: string | null;
-  consecutiveFailures: number;
-  /** When true, this automation persists across app restarts. */
-  durable?: boolean;
-  /**
-   * Total fire attempts deferred because the target was busy (idle-gate).
-   * Cumulative, in-memory observability — surfaced in the model-facing list
-   * (mirrors the old CronList's fire_attempts / deferred_fires).
-   */
-  deferredFireCount?: number;
-}
-
-export type AutomationSchedule =
-  | { type: 'cron'; expression: string }
-  | { type: 'interval'; seconds: number }
-  | { type: 'once'; delaySeconds: number };
+export type {
+  AutomationDefinition,
+  AutomationExecutionTemplate,
+  AutomationKind,
+  AutomationSchedule,
+  AutomationStatus,
+} from '@maka/core/automation';
 
 export interface AutomationManagerDeps {
   generateId: () => string;
@@ -52,6 +32,7 @@ export interface AutomationManagerDeps {
 const MAX_AUTOMATIONS_PER_SESSION = 20;
 const MAX_CONSECUTIVE_FAILURES = 5;
 const DEFAULT_EXPIRY_DAYS = 7;
+const DEFAULT_AUTOMATION_FAILURE_MESSAGE = 'Automation run failed';
 
 /** Maximum jitter cap for recurring re-schedules: 15 minutes. */
 const MAX_JITTER_MS = 15 * 60 * 1000;
@@ -98,6 +79,7 @@ export class AutomationManager {
     maxFires?: number;
     expiresAt?: number;
     durable?: boolean;
+    execution?: AutomationExecutionTemplate;
   }): AutomationDefinition | { error: string } {
     // Only count active/paused automations toward the limit (not completed/expired).
     const activeCount = this.listForSession(input.sessionId).filter(
@@ -157,6 +139,7 @@ export class AutomationManager {
       lastError: null,
       consecutiveFailures: 0,
       ...(durable ? { durable: true } : {}),
+      ...(input.kind === 'cron' && input.execution ? { execution: input.execution } : {}),
     };
 
     this.automations.set(id, automation);
@@ -333,19 +316,7 @@ export class AutomationManager {
   attemptSucceeded(id: string, runId?: string): void {
     const automation = this.automations.get(id);
     if (!automation) return;
-    if (automation.status !== 'active') return;
-    automation.consecutiveFailures = 0;
-    automation.lastError = null;
-    if (runId) automation.lastRunId = runId;
-    automation.updatedAt = this.deps.now();
-
-    if (automation.schedule.type === 'once') {
-      automation.status = 'completed';
-      automation.nextFireAt = null;
-    } else if (automation.maxFires && automation.fireCount >= automation.maxFires) {
-      automation.status = 'completed';
-      automation.nextFireAt = null;
-    }
+    settleAutomationAttempt(automation, { status: 'completed', runId }, this.deps.now());
   }
 
   /**
@@ -356,18 +327,7 @@ export class AutomationManager {
   attemptFailed(id: string, error: string): void {
     const automation = this.automations.get(id);
     if (!automation) return;
-    if (automation.status !== 'active') return;
-    automation.consecutiveFailures++;
-    automation.lastError = error;
-    automation.updatedAt = this.deps.now();
-
-    if (automation.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      automation.status = 'paused';
-    } else if (automation.nextFireAt === null) {
-      // Nothing will fire this again (one-shot failure) — pause so it is a
-      // visible terminal-ish state, not a silent zombie.
-      automation.status = 'paused';
-    }
+    settleAutomationAttempt(automation, { status: 'failed', error }, this.deps.now());
   }
 
   removeAllForSession(sessionId: string): number {
@@ -412,6 +372,14 @@ export class AutomationManager {
         }
       }
       this.automations.set(automation.id, automation);
+    }
+  }
+
+  /** Replace the projection without applying legacy restart reconciliation. */
+  hydrate(automations: readonly AutomationDefinition[]): void {
+    this.automations.clear();
+    for (const automation of automations) {
+      this.automations.set(automation.id, structuredClone(automation));
     }
   }
 
@@ -461,6 +429,47 @@ export class AutomationManager {
         return base + computeJitter(base - fromTime, true, random);
       }
     }
+  }
+}
+
+export type AutomationAttemptOutcome =
+  | { readonly status: 'completed'; readonly runId?: string }
+  | {
+      readonly status: 'failed' | 'cancelled';
+      readonly error: string;
+      readonly runId?: string;
+    };
+
+/** Settle an attempt that was accepted while the definition was active. */
+export function settleAutomationAttempt(
+  automation: AutomationDefinition,
+  outcome: AutomationAttemptOutcome,
+  now: number,
+): void {
+  if (automation.status === 'completed' || automation.status === 'expired') return;
+  if (outcome.runId) automation.lastRunId = outcome.runId;
+  automation.updatedAt = now;
+  if (outcome.status === 'completed') {
+    automation.consecutiveFailures = 0;
+    automation.lastError = null;
+    if (
+      automation.status === 'active' &&
+      (automation.schedule.type === 'once' ||
+        (automation.maxFires !== null && automation.fireCount >= automation.maxFires))
+    ) {
+      automation.status = 'completed';
+      automation.nextFireAt = null;
+    }
+    return;
+  }
+  automation.consecutiveFailures += 1;
+  const diagnostic = truncateAutomationText(outcome.error, AUTOMATION_LAST_ERROR_LIMIT);
+  automation.lastError = diagnostic.length > 0 ? diagnostic : DEFAULT_AUTOMATION_FAILURE_MESSAGE;
+  if (
+    automation.status === 'active' &&
+    (automation.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES || automation.nextFireAt === null)
+  ) {
+    automation.status = 'paused';
   }
 }
 

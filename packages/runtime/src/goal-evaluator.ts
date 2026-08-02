@@ -11,6 +11,10 @@
  * "done", which is Codex's documented failure mode.
  */
 
+import { truncateGoalText, type GoalTextLimit } from './goal-state.js';
+import { normalizeAiSdkUsage, type AiSdkUsageLike } from './model-adapter.js';
+import { rawFinishReasonString, type NormalizedUsage } from './model-protocol.js';
+
 export interface GoalEvaluation {
   /** Condition is satisfied — stop, success. */
   met: boolean;
@@ -37,7 +41,7 @@ export interface GoalEvaluatorDeps {
    * (the wiring resolves the session's connection from `sessionId`). The
    * evaluator must not run tools or read files — it judges from text only.
    */
-  evaluate: (prompt: string, sessionId: string) => Promise<string>;
+  evaluate: (prompt: string, sessionId: string, signal: AbortSignal) => Promise<string>;
   /** Hard timeout for the evaluator call (ms). Defaults to 30_000 (CC's limit). */
   timeoutMs?: number;
   /** Injectable timer for tests. Defaults to global setTimeout/clearTimeout. */
@@ -45,7 +49,56 @@ export interface GoalEvaluatorDeps {
   clearTimeout?: (handle: unknown) => void;
 }
 
+export interface GoalEvaluatorResource extends GoalEvaluatorDeps {
+  /** Wait until every accepted physical evaluation and its cleanup have settled. */
+  close(): Promise<void>;
+}
+
+export interface GoalEvaluationModelInput {
+  readonly model: unknown;
+  readonly prompt: string;
+  readonly providerOptions?: unknown;
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface GoalEvaluationModelResult {
+  readonly text: string;
+  readonly usage?: NormalizedUsage;
+  readonly finishReason?: string;
+}
+
+/** Runs the bounded, tool-free model call and returns its accounting facts. */
+export async function generateGoalEvaluationModelCall(
+  input: GoalEvaluationModelInput,
+): Promise<GoalEvaluationModelResult> {
+  const ai = (await import('ai')) as unknown as {
+    generateText(options: Record<string, unknown>): Promise<{
+      text: string;
+      usage?: AiSdkUsageLike;
+      finishReason?: unknown;
+    }>;
+  };
+  const result = await ai.generateText({
+    model: input.model,
+    prompt: input.prompt,
+    ...(input.abortSignal === undefined ? {} : { abortSignal: input.abortSignal }),
+    ...(input.providerOptions === undefined ? {} : { providerOptions: input.providerOptions }),
+    maxOutputTokens: 1_024,
+  });
+  const usage = normalizeAiSdkUsage(result.usage, { rawFinishReason: result.finishReason });
+  const finishReason = rawFinishReasonString(result.finishReason);
+  return {
+    text: result.text,
+    ...(usage ? { usage } : {}),
+    ...(finishReason ? { finishReason } : {}),
+  };
+}
+
 const DEFAULT_EVALUATOR_TIMEOUT_MS = 30_000;
+const EVALUATOR_REASON_TEXT_LIMIT: GoalTextLimit = Object.freeze({
+  codeUnits: 200,
+  utf8Bytes: 600,
+});
 
 const EVALUATOR_SYSTEM = `You are a goal evaluation judge for an autonomous coding agent. Given a GOAL CONDITION and recent CONVERSATION CONTEXT, judge the agent's progress.
 
@@ -100,7 +153,7 @@ export function parseGoalEvaluation(raw: string): GoalEvaluation {
       evaluatorFailed: false,
       reason:
         typeof parsed.reason === 'string' && parsed.reason.trim()
-          ? parsed.reason.slice(0, 200)
+          ? truncateGoalText(parsed.reason, EVALUATOR_REASON_TEXT_LIMIT)
           : 'No reason provided',
     };
   } catch {
@@ -118,20 +171,39 @@ export async function evaluateGoal(
   condition: string,
   context: string,
   sessionId: string,
+  abortSignal?: AbortSignal,
 ): Promise<GoalEvaluation> {
   const prompt = buildGoalEvaluationPrompt(condition, context);
   const timeoutMs = deps.timeoutMs ?? DEFAULT_EVALUATOR_TIMEOUT_MS;
   const setT = deps.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
   const clearT = deps.clearTimeout ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
 
+  const controller = new AbortController();
+  const timedOut = Symbol('timed_out');
+  const cancelled = Symbol('cancelled');
   let timer: unknown;
-  const timeout = new Promise<'__timeout__'>((resolve) => {
-    timer = setT(() => resolve('__timeout__'), timeoutMs);
+  let resolveCancellation!: (result: typeof timedOut | typeof cancelled) => void;
+  const cancellation = new Promise<typeof timedOut | typeof cancelled>((resolve) => {
+    resolveCancellation = resolve;
   });
+  const cancel = () => {
+    resolveCancellation(cancelled);
+    controller.abort(abortSignal?.reason);
+  };
+  if (abortSignal?.aborted) cancel();
+  else abortSignal?.addEventListener('abort', cancel, { once: true });
+  timer = setT(() => {
+    resolveCancellation(timedOut);
+    controller.abort(new Error('Goal evaluator timed out'));
+  }, timeoutMs);
 
   try {
-    const result = await Promise.race([deps.evaluate(prompt, sessionId), timeout]);
-    if (result === '__timeout__') {
+    if (abortSignal?.aborted) return cancelledEvaluation();
+    const result = await Promise.race([
+      deps.evaluate(prompt, sessionId, controller.signal),
+      cancellation,
+    ]);
+    if (result === timedOut) {
       return {
         met: false,
         impossible: false,
@@ -141,6 +213,7 @@ export async function evaluateGoal(
         reason: 'Evaluator timed out (continuing)',
       };
     }
+    if (result === cancelled) return cancelledEvaluation();
     return parseGoalEvaluation(result);
   } catch {
     return {
@@ -152,8 +225,20 @@ export async function evaluateGoal(
       reason: 'Evaluator call failed (continuing)',
     };
   } finally {
+    abortSignal?.removeEventListener('abort', cancel);
     clearT(timer);
   }
+}
+
+function cancelledEvaluation(): GoalEvaluation {
+  return {
+    met: false,
+    impossible: false,
+    progress: false,
+    waiting: false,
+    evaluatorFailed: true,
+    reason: 'Evaluator cancelled (continuing)',
+  };
 }
 
 export { DEFAULT_EVALUATOR_TIMEOUT_MS };

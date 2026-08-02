@@ -9,6 +9,7 @@ import {
   type ClientCapabilityHostFrame,
   type ClientCapabilityReplaceInput,
   type ClientCapabilityReplaceResult,
+  type ClientCapabilityServiceCallFrame,
   type ClientCapabilityUnregisterInput,
   type ClientCapabilityUnregisterResult,
 } from '../protocol/index.js';
@@ -18,6 +19,7 @@ interface ClientCapabilityRegistration {
   readonly registrationId: string;
   readonly provider: ClientCapabilityProvider;
   readonly offers: ReturnType<ClientCapabilityProvider['offers']>;
+  readonly services: NonNullable<ReturnType<NonNullable<ClientCapabilityProvider['services']>>>;
 }
 
 interface ClientCapabilityInvocation {
@@ -71,14 +73,17 @@ export class ClientCapabilityChannel {
     const registrationId = randomUUID();
     let registration: ClientCapabilityRegistration | undefined;
     try {
+      const services = provider.services?.() ?? [];
       const canonical = decodeClientCapabilityReplaceInput({
         registrationId,
         offers: provider.offers(),
+        ...(services.length === 0 ? {} : { services }),
       });
       registration = {
         registrationId,
         provider,
         offers: canonical.offers,
+        services: canonical.services ?? [],
       };
       this.#registrations.set(registrationId, registration);
       const result = await this.#options.replace(canonical, timeoutMs);
@@ -126,6 +131,9 @@ export class ClientCapabilityChannel {
     switch (frame.kind) {
       case 'client.capability.call':
         this.#acceptCall(frame);
+        return;
+      case 'client.capability.service_call':
+        this.#acceptServiceCall(frame);
         return;
       case 'client.capability.cancel': {
         const invocation = this.#invocations.get(frame.invocationId);
@@ -188,7 +196,7 @@ export class ClientCapabilityChannel {
     const offered = registration?.offers
       .find((offer) => offer.offerId === frame.offerId)
       ?.tools.some((tool) => tool.serverId === frame.serverId && tool.name === frame.toolName);
-    if (!registration || !offered) {
+    if (!registration || !offered || !registration.provider.call) {
       void this.#options
         .write({
           kind: 'client.capability.rejected',
@@ -203,13 +211,49 @@ export class ClientCapabilityChannel {
       released: false,
     };
     this.#invocations.set(frame.invocationId, invocation);
-    void this.#runCall(frame, registration, invocation);
+    void this.#runInvocation(frame.invocationId, invocation, (options) =>
+      registration.provider.call!(frame, options),
+    );
   }
 
-  async #runCall(
-    frame: ClientCapabilityCallFrame,
-    registration: ClientCapabilityRegistration,
+  #acceptServiceCall(frame: ClientCapabilityServiceCallFrame): void {
+    if (this.#invocations.has(frame.invocationId)) {
+      throw new Error('Runtime Host repeated a Client Capability invocation identity');
+    }
+    const registration = this.#registrations.get(frame.registrationId);
+    const offered = registration?.services.some(
+      (service) => service.serviceId === frame.serviceId && service.version === frame.version,
+    );
+    if (!registration || !offered || !registration.provider.callService) {
+      void this.#options
+        .write({
+          kind: 'client.capability.rejected',
+          invocationId: frame.invocationId,
+          message: 'Client Capability registration or service is unavailable',
+        })
+        .catch((error: unknown) => this.#options.onFailure(asError(error)));
+      return;
+    }
+    const invocation: ClientCapabilityInvocation = {
+      controller: new AbortController(),
+      released: false,
+    };
+    this.#invocations.set(frame.invocationId, invocation);
+    void this.#runInvocation(frame.invocationId, invocation, async (options) =>
+      decodeClientCapabilityResult({
+        content: [],
+        structuredContent: await registration.provider.callService!(frame, options),
+      }),
+    );
+  }
+
+  async #runInvocation(
+    invocationId: string,
     invocation: ClientCapabilityInvocation,
+    execute: (options: {
+      readonly signal: AbortSignal;
+      accept(): Promise<void>;
+    }) => Promise<ReturnType<typeof decodeClientCapabilityResult>>,
   ): Promise<void> {
     let accepted = false;
     let accepting: Promise<void> | undefined;
@@ -221,7 +265,7 @@ export class ClientCapabilityChannel {
       accepting ??= Promise.all([
         this.#options.write({
           kind: 'client.capability.accepted',
-          invocationId: frame.invocationId,
+          invocationId,
         }),
         admission.promise,
       ]).then(() => {
@@ -232,20 +276,20 @@ export class ClientCapabilityChannel {
     };
     try {
       const result = decodeClientCapabilityResult(
-        await registration.provider.call(frame, {
+        await execute({
           signal: invocation.controller.signal,
           accept,
         }),
       );
       if (invocation.released) return;
       await accept();
-      await this.#sendResult(frame.invocationId, result, invocation);
+      await this.#sendResult(invocationId, result, invocation);
     } catch (error) {
       if (invocation.released) return;
       try {
         await this.#options.write({
           kind: accepted ? 'client.capability.failed' : 'client.capability.rejected',
-          invocationId: frame.invocationId,
+          invocationId,
           message: capabilityFailureMessage(error),
         });
       } catch (writeError) {

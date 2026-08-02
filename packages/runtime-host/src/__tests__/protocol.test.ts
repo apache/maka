@@ -47,6 +47,8 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(Object.keys(HOST_OPERATION_SPECS).sort(), [
       'artifact.delete',
       'artifact.query',
+      'automation.mutate',
+      'automation.query',
       'client.capability.replace',
       'client.capability.unregister',
       'connection.catalog.create',
@@ -59,11 +61,16 @@ describe('Runtime Host bootstrap protocol', () => {
       'credential.vault.delete',
       'credential.vault.query',
       'credential.vault.set',
+      'goal.control',
+      'goal.query',
       'host.status',
       'interaction.answer',
       'interaction.query',
       'memory.mutate',
       'memory.query',
+      'oauth.login.cancel',
+      'oauth.login.query',
+      'oauth.login.start',
       'pricing.mutate',
       'pricing.query',
       'queue.retract',
@@ -78,8 +85,10 @@ describe('Runtime Host bootstrap protocol', () => {
       'session.catalog.query',
       'session.configuration.update',
       'session.create',
+      'session.lifecycle.set',
       'session.metadata.update',
       'session.read_marker.set',
+      'session.remove',
       'session.revision.create',
       'skill.catalog.mutate',
       'skill.catalog.preview-update',
@@ -125,7 +134,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('keeps subscription operations closed, ready-only, and queue Epoch correlated', () => {
-    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 2);
+    assert.equal(SESSION_CONTINUITY_SCHEMA_VERSION, 3);
     assert.deepEqual(
       Object.fromEntries(
         (['subscription.open', 'subscription.close'] as const).map((operation) => [
@@ -1070,6 +1079,7 @@ function continuitySnapshot(hostEpoch: string) {
       runId: 'run-1',
       status: 'running' as const,
     },
+    goal: null,
     queue: {
       hostEpoch,
       queueRevision: 1,

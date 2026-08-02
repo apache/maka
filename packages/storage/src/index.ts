@@ -84,6 +84,7 @@ export type {
   ToolUsageQuery,
 } from './telemetry-repo.js';
 export * from './sqlite-usage-store.js';
+export * from './model-call-ledger.js';
 export * from './usage-stores.js';
 export {
   ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES,
@@ -132,6 +133,7 @@ export type {
 } from './deep-research-store.js';
 export * from './config-transfer.js';
 export * from './automation-store.js';
+export * from './automation-authority.js';
 export * from './sqlite-runtime-store.js';
 export * from './runtime-event-transfer.js';
 export * from './operational-state-store.js';
@@ -139,8 +141,10 @@ export * from './operational-state-backup.js';
 export * from './mcp-config-store.js';
 export * from './workspace-identity.js';
 export * from './memory-bundle-store.js';
+export * from './long-term-memory-store.js';
 export * from './project-catalog.js';
 export * from './git-worktree-child-executor.js';
+export * from './git-workspace-service.js';
 export * from './project-session-migration.js';
 export * from './session-bundle-policy.js';
 export * from './session-bundle-contract.js';

@@ -127,10 +127,14 @@ describe('evaluateGoal', () => {
   });
 
   test('fails open on timeout (evaluatorFailed=true, continue)', async () => {
+    let signal: AbortSignal | undefined;
     const r = await evaluateGoal(
       {
         // Never resolves — force the timeout branch.
-        evaluate: () => new Promise<string>(() => {}),
+        evaluate: (_prompt, _sessionId, receivedSignal) => {
+          signal = receivedSignal;
+          return new Promise<string>(() => {});
+        },
         timeoutMs: 10,
         // Injected timer fires immediately so the race resolves to timeout.
         setTimeout: (fn) => {
@@ -147,6 +151,30 @@ describe('evaluateGoal', () => {
     assert.equal(r.progress, false);
     assert.equal(r.evaluatorFailed, true);
     assert.ok(r.reason.includes('timed out'));
+    assert.equal(signal?.aborted, true);
+  });
+
+  test('aborts the physical evaluator call when its owner is invalidated', async () => {
+    const owner = new AbortController();
+    let signal: AbortSignal | undefined;
+    const pending = evaluateGoal(
+      {
+        evaluate: (_prompt, _sessionId, receivedSignal) => {
+          signal = receivedSignal;
+          return new Promise<string>(() => {});
+        },
+      },
+      'finish',
+      'ctx',
+      'sess-1',
+      owner.signal,
+    );
+
+    owner.abort(new Error('lane invalidated'));
+    const result = await pending;
+    assert.equal(result.evaluatorFailed, true);
+    assert.ok(result.reason.includes('cancelled'));
+    assert.equal(signal?.aborted, true);
   });
 
   test('successful parse sets evaluatorFailed=false', async () => {

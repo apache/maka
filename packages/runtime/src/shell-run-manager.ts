@@ -716,8 +716,6 @@ export class ShellRunProcessManager
         },
         onDirty: () => dispatch((target) => this.scheduleAutomaticFlush(target)),
         onFailure: (error) => dispatch((target) => this.handleIntegrityFailure(target, error)),
-        pauseSource: () => driver?.pause(),
-        resumeSource: () => driver?.resume(),
       });
       const plan = buildPtyShellSpawnPlan(input.shell ?? defaultShellPlan(), input.command);
       startingRecord = await this.createStartingRecord(

@@ -2,11 +2,14 @@
  * Product-specific model catalog composition over Astryx Selector.
  *
  * Maka owns provider/model shaping, provider marks, unknown-current display,
- * and the selection action. Astryx exclusively owns search, empty results,
- * option semantics, keyboard navigation, focus, scrolling, and popup behavior.
+ * and the selection action. Astryx owns search, empty results, option
+ * semantics, keyboard navigation, focus, scrolling, and popup behavior.
  */
 
-import { useMemo, type ReactNode } from 'react';
+import {
+  useMemo,
+  type ReactNode,
+} from 'react';
 import {
   Selector,
   SelectorOption,
@@ -42,6 +45,7 @@ export interface ModelPickerProps {
 
 export function ModelPicker(props: ModelPickerProps) {
   const copy = getSharedUiCopy(useUiLocale()).modelPicker;
+
   const options = useMemo(
     () => buildModelPickerOptions(props.groups, props.leadingOption),
     [props.groups, props.leadingOption],
@@ -52,39 +56,41 @@ export function ModelPicker(props: ModelPickerProps) {
   );
 
   return (
-    <Selector
-      label={props.ariaLabel}
-      isLabelHidden
-      options={options}
-      value={props.value}
-      hasSearch
-      searchPlaceholder={props.searchPlaceholder ?? copy.searchPlaceholder}
-      size="sm"
-      placement="above"
-      isDisabled={props.disabled}
-      isLoading={props.loading}
-      className={props.triggerClassName}
-      changeAction={props.onValueChange}
-      renderOption={(option: SelectorOptionData) => {
-        const providerType = providerTypes.get(option.value);
-        const providerMark =
-          providerType && props.renderProviderMark ? (
-            <span
-              className="modelPickerProviderMark"
-              data-provider={providerType}
-              aria-hidden="true"
-            >
-              {props.renderProviderMark(providerType)}
-            </span>
-          ) : undefined;
-        return (
-          <SelectorOption
-            className="modelPickerOption"
-            icon={providerMark}
-            label={<span className="modelPickerOptionLabel">{option.label ?? option.value}</span>}
-          />
-        );
-      }}
-    />
+    <div className="maka-model-picker-root">
+      <Selector
+        label={props.ariaLabel}
+        isLabelHidden
+        options={options}
+        value={props.value}
+        hasSearch
+        searchPlaceholder={props.searchPlaceholder ?? copy.searchPlaceholder}
+        size="sm"
+        placement="above"
+        isDisabled={props.disabled}
+        isLoading={props.loading}
+        className={props.triggerClassName}
+        changeAction={props.onValueChange}
+        renderOption={(option: SelectorOptionData) => {
+          const providerType = providerTypes.get(option.value);
+          const providerMark =
+            providerType && props.renderProviderMark ? (
+              <span
+                className="modelPickerProviderMark"
+                data-provider={providerType}
+                aria-hidden="true"
+              >
+                {props.renderProviderMark(providerType)}
+              </span>
+            ) : undefined;
+          return (
+            <SelectorOption
+              className="modelPickerOption"
+              icon={providerMark}
+              label={<span className="modelPickerOptionLabel">{option.label ?? option.value}</span>}
+            />
+          );
+        }}
+      />
+    </div>
   );
 }

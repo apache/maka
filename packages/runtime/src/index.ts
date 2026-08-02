@@ -151,6 +151,18 @@ export type {
   RenderAgentGraphScheduledWorkPromptInput,
 } from './stream-graph-schedule-reconcile.js';
 export {
+  AGENT_GRAPH_HANDOFF_SCHEMA_VERSION,
+  DEFAULT_AGENT_GRAPH_HANDOFF_MAX_CONCLUSION_BYTES,
+  DEFAULT_AGENT_GRAPH_HANDOFF_MAX_TOTAL_CONCLUSION_BYTES,
+  hydrateAgentGraphInputHandoffs,
+  renderAgentGraphScheduledWorkPrompt,
+} from './stream-graph-handoff.js';
+export type {
+  AgentGraphHandoffRecordReference,
+  AgentGraphInputHandoff,
+  HydrateAgentGraphInputHandoffsInput,
+} from './stream-graph-handoff.js';
+export {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
 } from './agent-graph-supervisor-wake.js';
@@ -164,6 +176,7 @@ export {
   AGENT_GRAPH_SUPERVISOR_TOOL_NAMES,
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   VIEW_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
   buildAgentGraphSupervisorTools,
   compileAgentGraphScheduleUpdate,
   projectAgentGraphSchedule,
@@ -181,6 +194,8 @@ export type {
   BuildAgentGraphSupervisorToolsInput,
   UpdateAgentGraphToolInput,
   UpdateAgentGraphToolResult,
+  YieldAgentGraphToolInput,
+  YieldAgentGraphToolResult,
   ViewAgentGraphToolInput,
   ViewAgentGraphToolResult,
 } from './stream-graph-supervisor-tools.js';
@@ -249,6 +264,7 @@ export { renderSwarmModePrompt } from './swarm-mode.js';
 export { renderGraphModePrompt } from './graph-mode.js';
 export {
   RuntimeHostedRootConflictError,
+  RuntimeHostedRootUnavailableError,
   RuntimeMessageAuthorityInvariantError,
 } from './message-authority.js';
 export type {
@@ -811,6 +827,39 @@ export type {
   ResolveAndPersistOAuthSubscriptionTokensInput,
   ResolveOAuthSubscriptionAccessTokenInput,
 } from './subscription-credentials.js';
+export {
+  OAUTH_LOGIN_PROVIDER_CONFIG,
+  OAuthTokenEndpointError,
+  buildOAuthLoginAuthorization,
+  exchangeOAuthAuthorizationCode,
+  isDeterministicOAuthCredentialRejection,
+  pkceChallengeFromVerifier,
+  readBoundedOAuthJson,
+  requestOAuthEndpointJson,
+  requestOAuthTokenEndpointJson,
+} from './oauth-login.js';
+export { isOAuthEnrollmentProviderEnabled } from './oauth-provider-contracts.js';
+export type { OAuthEnrollmentProvider } from './oauth-provider-contracts.js';
+export {
+  pollXaiDeviceAuthorization,
+  startXaiDeviceAuthorization,
+} from './xai-oauth-enrollment.js';
+export type {
+  PollXaiDeviceAuthorizationInput,
+  StartXaiDeviceAuthorizationInput,
+  XaiDeviceAuthorization,
+} from './xai-oauth-enrollment.js';
+export type {
+  ExchangeOAuthAuthorizationCodeInput,
+  OAuthLoginAuthorization,
+  OAuthLoginAuthorizationInput,
+  OAuthLoginPresentationKind,
+  OAuthLoginProvider,
+  OAuthTokenEndpointErrorCategory,
+  OAuthEndpointJsonResponse,
+  OAuthTokenEndpointJsonRequestInput,
+  OAuthTokenEndpointJsonResponse,
+} from './oauth-login.js';
 export { buildSubscriptionModelFetch } from './subscription-model-fetch.js';
 export type { SubscriptionModelFetchInput } from './subscription-model-fetch.js';
 export { extractCodexAccountId, openAiCodexHeaders } from './subscription-auth.js';
@@ -1066,6 +1115,7 @@ export {
   buildPricingLookup,
   computeCost,
   getBuiltinPricing,
+  llmCallUsageFields,
   recordLlmCall,
   recordToolInvocation,
 } from './telemetry/index.js';
@@ -1385,9 +1435,12 @@ export {
   computeNextCronFire,
   computeJitter,
   matchesCronField,
+  settleAutomationAttempt,
 } from './automation-state.js';
 export type {
+  AutomationAttemptOutcome,
   AutomationDefinition,
+  AutomationExecutionTemplate,
   AutomationKind,
   AutomationSchedule,
   AutomationStatus,
@@ -1399,8 +1452,17 @@ export {
   DEFER_WINDOW_MS,
 } from './automation-scheduler.js';
 export type { AutomationSchedulerDeps, AutomationFireResult } from './automation-scheduler.js';
-export { buildAutomationTool, AUTOMATION_TOOL_NAME } from './automation-tools.js';
-export type { AutomationToolDeps } from './automation-tools.js';
+export {
+  buildAutomationAuthorityTool,
+  buildAutomationTool,
+  AUTOMATION_TOOL_NAME,
+  AUTOMATION_MODEL_LIST_MAX_ITEMS,
+} from './automation-tools.js';
+export type {
+  AutomationAuthorityToolDeps,
+  AutomationToolAuthority,
+  AutomationToolDeps,
+} from './automation-tools.js';
 export { evaluateAutomationCanFire, HEARTBEAT_IDLE_STATUSES } from './automation-can-fire.js';
 export type { CanFireSessionHeader, EvaluateAutomationCanFireDeps } from './automation-can-fire.js';
 
@@ -1412,21 +1474,35 @@ export {
   TERMINAL_GOAL_STATUSES,
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_BLOCK_CAP,
+  GOAL_CONDITION_TEXT_LIMIT,
+  GOAL_REASON_TEXT_LIMIT,
+  goalCheckpoint,
+  isGoalTextWithinLimit,
+  truncateGoalText,
 } from './goal-state.js';
 export type {
   GoalCheckpoint,
+  GoalControlLease,
   GoalManagerDeps,
   GoalPauseOptions,
   GoalState,
   GoalStatus,
+  GoalTextLimit,
 } from './goal-state.js';
 export {
   evaluateGoal,
   buildGoalEvaluationPrompt,
   parseGoalEvaluation,
+  generateGoalEvaluationModelCall,
   DEFAULT_EVALUATOR_TIMEOUT_MS,
 } from './goal-evaluator.js';
-export type { GoalEvaluation, GoalEvaluatorDeps } from './goal-evaluator.js';
+export type {
+  GoalEvaluation,
+  GoalEvaluationModelInput,
+  GoalEvaluationModelResult,
+  GoalEvaluatorDeps,
+  GoalEvaluatorResource,
+} from './goal-evaluator.js';
 export {
   buildGoalTools,
   GOAL_SET_TOOL_NAME,
@@ -1444,8 +1520,8 @@ export {
 export type {
   GoalContinuationDeps,
   GoalContinuationScheduler,
-  GoalExternalTurnStart,
-  GoalExternalTurnSettler,
+  GoalObservedTurnStart,
+  GoalObservedTurnSettler,
   GoalSessionCloseOperation,
   GoalTaskGateDecision,
   GoalTaskGateDeps,

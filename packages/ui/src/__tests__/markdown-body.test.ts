@@ -269,3 +269,24 @@ it('repairs or withholds incomplete Markdown syntax while streaming', () => {
   assert.doesNotMatch(link, /unfinished/);
   assert.match(settled, /Hello \*\*world/);
 });
+
+it('leaves block rhythm to the caller and defaults to document spacing', () => {
+  // The transcript wants compact block spacing; the Daily Review panel, which
+  // renders through the same component, wants document spacing. Hardcoding
+  // `density="compact"` here gave the review transcript rhythm with document
+  // heading sizes — the one combination the scoping rule in
+  // styles/chat-message.css argues against.
+  //
+  // Asserting the SHAPE of the choice rather than Astryx's hashed atoms:
+  // omitting the prop must render exactly as asking for `default`, and
+  // `compact` must render differently. That survives an Astryx restyle and
+  // still fails the moment the default flips back.
+  const render = (density?: 'default' | 'compact') =>
+    renderToStaticMarkup(createElement(MarkdownBody, {
+      text: '# Title\n\nBody\n\n## Second\n\nMore',
+      density,
+    }));
+
+  assert.equal(render(), render('default'));
+  assert.notEqual(render(), render('compact'));
+});

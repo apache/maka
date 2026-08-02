@@ -75,4 +75,39 @@ describe('composer skill picker', () => {
     assert.match(en, /aria-label="Skills"/);
     assert.doesNotMatch(en, /maka-composer-skill-trigger-count/);
   });
+
+  it('hideTrigger mounts nothing when closed (quiet composer opens from ＋)', () => {
+    const closed = render(
+      'zh',
+      <ComposerSkillPicker
+        hideTrigger
+        open={false}
+        onOpenChange={() => {}}
+        skills={skills}
+        selected={[]}
+        onToggle={() => {}}
+        onSelectAll={() => {}}
+        onClearAll={() => {}}
+      />,
+    );
+    assert.equal(closed, '');
+    assert.doesNotMatch(closed, /maka-composer-skill-trigger|maka-composer-skill-panel/);
+
+    const open = render(
+      'zh',
+      <ComposerSkillPicker
+        hideTrigger
+        open
+        onOpenChange={() => {}}
+        skills={skills}
+        selected={[]}
+        onToggle={() => {}}
+        onSelectAll={() => {}}
+        onClearAll={() => {}}
+      />,
+    );
+    assert.match(open, /maka-composer-skill-panel/);
+    assert.match(open, /data-anchored="footer"/);
+    assert.doesNotMatch(open, /maka-composer-skill-trigger/);
+  });
 });

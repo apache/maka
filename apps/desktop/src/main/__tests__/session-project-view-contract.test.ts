@@ -123,12 +123,23 @@ describe('sidebar project view mode', () => {
     });
 
     assert.match(markup, />Active project</);
-    assert.match(markup, /maka-list-project-count[^>]*>1</);
+    assert.match(markup, /astryx-badge[^>]*>1</);
     assert.match(markup, />Missing project</);
     assert.match(markup, /aria-label="Active project 项目操作"/);
     assert.match(markup, /aria-label="Missing project 项目操作"/);
+    // Empty projects are leaves (no fabricated collapsible chrome).
+    const missingChunk = markup.slice(
+      markup.indexOf('data-project-id="project:project-missing"'),
+      markup.indexOf('data-project-id="project:project-missing"') + 1200,
+    );
+    assert.doesNotMatch(missingChunk, /aria-expanded=/);
+    // Active project with sessions is a real disclosure.
+    assert.match(markup, /aria-expanded="true"/);
+    // Archived disclosure stays collapsible: children always mount so Astryx
+    // can keep the chevron; default collapsed hides them with inert/aria-hidden.
     assert.match(markup, />已归档项目</);
-    assert.doesNotMatch(markup, />Archived project</);
+    assert.match(markup, /inert[\s\S]*Archived project|aria-hidden="true"[\s\S]*Archived project/);
+    assert.match(markup, />Archived project</);
     assert.equal((markup.match(/lucide-folder-git-2/g) ?? []).length, 1);
   });
 
@@ -173,7 +184,7 @@ describe('sidebar project view mode', () => {
   it('moves the conversation/project controls into the session-list heading menu', () => {
     const markup = renderSessionListPanel({ viewMode: 'conversation' });
 
-    assert.match(markup, /class="maka-session-list-heading"[^>]*>会话/);
+    assert.match(markup, /maka-session-heading-section/);
     assert.match(markup, /aria-label="会话分组方式"/);
     const trigger = markup.match(/<button(?=[^>]*aria-label="会话分组方式")[\s\S]*?<\/button>/)?.[0] ?? '';
     assert.ok(trigger, 'the grouping trigger must render');
@@ -205,12 +216,14 @@ describe('sidebar project view mode', () => {
     });
 
     assert.equal((markup.match(/>会话</g) ?? []).length, 1);
-    assert.equal((markup.match(/maka-list-group-label/g) ?? []).length, 0);
-    assert.equal((markup.match(/maka-list-row-status-icon/g) ?? []).length, 2);
-    assert.match(markup, /data-status="running"/);
-    assert.match(markup, /data-status="blocked"/);
-    assert.doesNotMatch(markup, /data-status="active"/);
-    assert.doesNotMatch(markup, />进行中|>需要处理|>可继续|>已完成/);
+    assert.equal((markup.match(/data-session-status="running"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-session-status="blocked"/g) ?? []).length, 1);
+    assert.doesNotMatch(markup, /data-session-status="active"/);
+    // Active rows keep an empty end slot; only non-active statuses mount a StatusDot.
+    const activeChunk =
+      markup.match(/data-session-id="active-session"[\s\S]*?(?=data-session-id="|$)/)?.[0] ?? '';
+    assert.ok(activeChunk.includes('Active session'));
+    assert.doesNotMatch(activeChunk, /data-session-status=/);
   });
 
   it('renders linked child sessions directly beneath their parent as normal selectable rows', () => {
@@ -224,7 +237,14 @@ describe('sidebar project view mode', () => {
     assert.ok(markup.indexOf('Parent task') < markup.indexOf('Child agent'));
     assert.match(markup, /data-subagent="true"/);
     assert.match(markup, /data-session-id="child"/);
-    assert.match(markup, /lucide-bot/);
+    assert.match(markup, /data-maka-contract="session-row"/);
+    // Nested subagent rows use native SideNavItem Bot icon (lucide-bot).
+    const childChunk =
+      markup.match(/data-session-id="child"[\s\S]*?(?=data-session-id="|$)/)?.[0] ?? '';
+    assert.match(childChunk, /lucide-bot/);
+    const parentChunk =
+      markup.match(/data-session-id="parent"[\s\S]*?(?=data-session-id="child"|$)/)?.[0] ?? '';
+    assert.doesNotMatch(parentChunk, /lucide-bot/);
   });
 
   it('applies Chats, Flagged, and Archived filters independently to parents and children', () => {
@@ -365,17 +385,22 @@ describe('sidebar project view mode', () => {
     assert.ok(groups.some((g) => g.label === 'repo-a'), 'expected a repo-a label');
     assert.ok(groups.some((g) => g.label === 'x'), 'expected an x label');
 
-    // Astryx TreeList uses the stable group id as its tree identity.
+    // Project SideNav rows carry the session ids under each project; group
+    // identity is the stable project:* id from deriveProjectGroups.
     const markup = renderSessionListPanel({
       sessions,
       groups,
       viewMode: 'project',
     });
-    const treeIds = [...markup.matchAll(/data-tree-id="([^"]*)"/g)].map((m) => m[1]);
-    assert.ok(treeIds.length >= 3, `expected at least 3 tree ids, got ${treeIds.length}`);
-    for (const id of treeIds) {
-      assert.match(id, /^[A-Za-z0-9:_-]+$/, `rendered tree id must be DOM-safe, got: ${id}`);
+    for (const id of ids) {
+      assert.match(
+        markup,
+        new RegExp(`data-project-id="${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`),
+      );
     }
+    assert.match(markup, /data-session-id="a"/);
+    assert.match(markup, /data-session-id="b"/);
+    assert.match(markup, /data-session-id="c"/);
   });
 });
 

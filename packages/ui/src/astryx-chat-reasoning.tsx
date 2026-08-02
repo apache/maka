@@ -38,8 +38,12 @@ function ThinkingIcon() {
   );
 }
 
-/** Match Astryx Icon `size="xsm"` (0.75rem) used by ChatToolCalls chevrons. */
+/** Match Astryx Icon `size="xsm"` (12px) used by ChatToolCalls chevrons. */
 function ChevronDownIcon() {
+  // The attributes carry the size. There used to be a `0.75rem` inline style
+  // beside them, which disagreed with them (9.75px) for as long as the root
+  // was pinned to 13px; the type-scale convergence removed that pin, so the
+  // duplicate is now merely redundant instead of wrong. Drop it either way.
   return (
     <svg
       width="12"
@@ -47,7 +51,6 @@ function ChevronDownIcon() {
       viewBox="0 0 12 12"
       fill="none"
       aria-hidden="true"
-      style={{ width: '0.75rem', height: '0.75rem' }}
     >
       <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>

@@ -17,6 +17,7 @@ import {
   createSqliteSessionMetadataStore,
   SQLITE_SESSION_METADATA_SCHEMA_VERSION,
 } from '../sqlite-session-metadata-store.js';
+import { SQLITE_USAGE_SCHEMA_VERSION } from '../sqlite-usage-schema.js';
 
 describe('operational state database cutover', () => {
   test('keeps the owner alive until an admitted online backup completes', async () => {
@@ -75,11 +76,12 @@ describe('operational state database cutover', () => {
           .map((row) => ({ ...row })),
         [
           { scope: 'artifact', version: 1 },
+          { scope: 'automation', version: 1 },
           { scope: 'core_execution', version: 1 },
           { scope: 'operational', version: 1 },
           { scope: 'runtime', version: SQLITE_RUNTIME_SCHEMA_VERSION },
           { scope: 'session_metadata', version: SQLITE_SESSION_METADATA_SCHEMA_VERSION },
-          { scope: 'usage', version: 1 },
+          { scope: 'usage', version: SQLITE_USAGE_SCHEMA_VERSION },
           { scope: 'workflow', version: 1 },
         ],
       );

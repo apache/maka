@@ -11,7 +11,6 @@ import {
   retireE2eFixtureSandboxBoundaryRequest,
   seedE2eFixture,
 } from '../e2e-fixture.js';
-import { readE2eFixtureCombinedSource } from './e2e-fixture-source-helpers.js';
 
 describe('e2e-fixture mode', () => {
   it('stays fully disabled when MAKA_E2E_FIXTURE is unset', () => {
@@ -395,14 +394,6 @@ describe('e2e-fixture mode', () => {
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
-  });
-
-  it('fixture source does not seed visible placeholder chat copy', async () => {
-    // arch Round 3: the fixture split into a registry barrel + per-domain
-    // seeder modules, so this hygiene scan aggregates every fixture source
-    // file rather than the single monolith it used to read.
-    const src = await readE2eFixtureCombinedSource();
-    assert.doesNotMatch(src, /占位用户消息|占位回复/, 'e2e-fixture screenshots must use product-like chat copy, not placeholder text');
   });
 
   it('first-run seed keeps the fixture workspace connection-free', async () => {

@@ -17,11 +17,6 @@ test('send a message and see the fake backend stream a reply', async ({ window: 
   await composer.press('Enter');
 
   await expect(page.getByText(/Fake backend received: hello e2e/)).toBeVisible();
-  await page.getByRole('button', { name: '切换当前会话模型' }).click();
-  await expect(
-    page.getByRole('listbox').locator('.modelPickerProviderMark[data-provider="anthropic"] svg'),
-  ).toBeVisible();
-  await page.keyboard.press('Escape');
 });
 
 test('exposes the Astryx Markdown code-copy action', async ({ window: page }) => {

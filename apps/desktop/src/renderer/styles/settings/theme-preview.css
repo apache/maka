@@ -150,6 +150,7 @@
 .settingsPaletteGroupHeading {
   margin: 0;
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-medium);
   color: var(--muted-foreground);
   letter-spacing: var(--tracking-normal);

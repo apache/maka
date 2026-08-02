@@ -32,6 +32,7 @@ export {
 } from './runtime-policy/errors.js';
 export type {
   BeginConnectionTestResult,
+  BeginInteractiveOAuthLoginResult,
   BeginModelFetchResult,
   CompareAndSetOAuthCredentialInput,
   CompareAndSetOAuthCredentialResult,
@@ -39,6 +40,9 @@ export type {
   ConnectionEffectCompletionResult,
   ConnectionEffectPreparationFailure,
   ConnectionTestTicket,
+  InteractiveOAuthLoginCompletionResult,
+  InteractiveOAuthLoginProvider,
+  InteractiveOAuthLoginTicket,
   CredentialStatusQueryResult,
   ModelFetchTicket,
   ProviderAuthKind,
@@ -199,6 +203,10 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       resolveExecutionConnection: (connectionSlug) =>
         coordinator.resolveExecutionConnection(connectionSlug),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
+      beginInteractiveOAuthLogin: (connectionId) =>
+        coordinator.beginInteractiveOAuthLogin(connectionId),
+      completeInteractiveOAuthLogin: (ticket, secret) =>
+        coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
       completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
       beginConnectionTest: (connectionId, modelId) =>

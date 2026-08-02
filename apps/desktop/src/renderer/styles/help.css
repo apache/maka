@@ -16,6 +16,7 @@
   margin: 0 0 var(--space-1);
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
   text-transform: none;
@@ -35,7 +36,7 @@
 .maka-help-section dt {
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-help-section dd {
@@ -55,4 +56,5 @@
 .maka-help-plus {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }

@@ -69,8 +69,8 @@ describe('deep-thinking disclosure', () => {
       },
     }));
 
-    assert.match(markup, /class="[^"]*astryx-chat-reasoning[^"]*min-w-0[^"]*"/);
-    assert.match(markup, /class="flex min-w-0 w-full flex-col gap-2"/);
+    assert.match(markup, /class="[^"]*astryx-chat-reasoning[^"]*"/);
+    assert.match(markup, /class="maka-assistant-answer-content"/);
     assert.match(markup, /role="button"[^>]*aria-expanded="false"/);
     assert.match(markup, /private reasoning/);
     assert.doesNotMatch(markup, /data-slot="reasoning-trigger"/);

@@ -85,9 +85,11 @@ export type {
   MessageReceiptStore,
 } from './message-receipt-store.js';
 export type {
+  ProbeSessionRemovalResult,
   SessionCatalogPageCursor,
   SessionCatalogPageResult,
   SessionCatalogRecord,
+  SessionHeaderSnapshot,
 } from './session-store.js';
 
 export type ExecutionSessionWriter = SessionAuthorityStore;
@@ -320,6 +322,7 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readHeaderRecordSnapshot: (sessionId) =>
         run(() => sessionStore.readHeaderRecordSnapshot(sessionId)),
       readCatalogRecord: (sessionId) => run(() => sessionStore.readCatalogRecord(sessionId)),
+      probeSessionRemoval: (sessionId) => run(() => sessionStore.probeSessionRemoval(sessionId)),
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readMessagesForRecovery: (sessionId) =>
         run(() => sessionStore.readMessagesForRecovery(sessionId)),
@@ -348,6 +351,16 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       setGeneratedTitleIfAbsent: (sessionId, title) =>
         run(() => sessionStore.setGeneratedTitleIfAbsent(sessionId, title)),
       remove: (sessionId) => run(() => sessionStore.remove(sessionId)),
+      setSessionsLifecycleVersioned: (sessions, state) =>
+        run(() => sessionStore.setSessionsLifecycleVersioned(sessions, state)),
+      removeSessionsVersioned: (sessions) =>
+        run(() => sessionStore.removeSessionsVersioned(sessions)),
+      listPendingSessionRetirementCleanupIds: (sessionId) =>
+        run(() => sessionStore.listPendingSessionRetirementCleanupIds(sessionId)),
+      purgeRemovedSessionTranscript: (sessionId) =>
+        run(() => sessionStore.purgeRemovedSessionTranscript(sessionId)),
+      completeSessionRetirementCleanup: (sessionId) =>
+        run(() => sessionStore.completeSessionRetirementCleanup(sessionId)),
       close: () =>
         closeExecutionStorePersistence(sessionStore, runtimePersistence, {
           agentRunStore,

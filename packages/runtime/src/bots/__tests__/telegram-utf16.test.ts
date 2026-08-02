@@ -33,13 +33,17 @@ describe('Telegram UTF-16 limits', () => {
   it('splits oversized text within limits, on code points, and preferably at newlines', () => {
     assert.deepEqual(splitForTelegram('hello world'), ['hello world']);
 
-    const chunks = splitForTelegram('a'.repeat(8500));
+    const asciiInput = 'a'.repeat(8500);
+    const chunks = splitForTelegram(asciiInput);
     assert.ok(chunks.length >= 2);
     assert.match(chunks[0]!, /^\[1\/\d+\]\n/);
     assert.match(chunks.at(-1)!, /^\[\d+\/\d+\]\n/);
     for (const chunk of chunks) assert.ok(utf16Len(chunk) <= 4000);
+    assert.equal(chunks.map((chunk) => chunk.replace(/^\[\d+\/\d+\]\n/, '')).join(''), asciiInput);
 
-    for (const chunk of splitForTelegram('😀'.repeat(4000))) {
+    const emojiInput = '😀'.repeat(4000);
+    const emojiChunks = splitForTelegram(emojiInput);
+    for (const chunk of emojiChunks) {
       const body = chunk.replace(/^\[\d+\/\d+\]\n/, '');
       for (let index = 0; index < body.length; ) {
         const codePoint = body.codePointAt(index)!;
@@ -47,6 +51,10 @@ describe('Telegram UTF-16 limits', () => {
         index += codePoint > 0xffff ? 2 : 1;
       }
     }
+    assert.equal(
+      emojiChunks.map((chunk) => chunk.replace(/^\[\d+\/\d+\]\n/, '')).join(''),
+      emojiInput,
+    );
 
     const lineChunks = splitForTelegram('line\n'.repeat(900));
     const firstBody = lineChunks[0]!.replace(/^\[\d+\/\d+\]\n/, '');

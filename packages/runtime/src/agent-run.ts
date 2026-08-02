@@ -9,6 +9,10 @@ import type {
 import { DurableStoreWriteError, isSessionInlineRun, isTerminalRuntimeEvent } from '@maka/core';
 import { isDeepStrictEqual } from 'node:util';
 import { redactSecrets } from '@maka/core/redaction';
+import {
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import type {
   SessionBlockedReason,
   SessionHeader,
@@ -329,6 +333,40 @@ export class AgentRun {
         ts: attempt.completedAt,
         data: { ...attempt },
       });
+    });
+  }
+
+  /**
+   * Canonical accounting record for one physical provider request (#1679).
+   *
+   * Durable, unlike the diagnostic attempt append above: this is the metering
+   * source of truth, and a record lost to a crashed flush is spend nothing else
+   * can reconstruct.
+   *
+   * It reports the failure as `trace_write_failed` and then rejects, so the
+   * caller can tell whether the authority actually holds the record — the Usage
+   * read model must not be written for a call the authority never committed.
+   * Rejecting here is safe: settlement runs inside the model stream's `pull`
+   * handler, and the seam swallows this so a billed, completed response is
+   * never failed by its own bookkeeping.
+   */
+  recordModelCallAttempt(attempt: ModelCallAttempt): Promise<void> {
+    if (!this.input.runStore) return Promise.resolve();
+    return this.enqueueRequiredRunStoreWrite('append model call attempt', async () => {
+      await this.input.runStore?.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          id: attempt.attemptId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: attempt.turnId,
+          ts: attempt.completedAt,
+          data: { ...attempt },
+        },
+        { durable: true },
+      );
     });
   }
 
@@ -1029,6 +1067,9 @@ export class AgentRun {
       ...(this.input.userInput.origin?.kind === 'automation'
         ? { automationId: this.input.userInput.origin.automationId }
         : {}),
+      ...(this.input.userInput.origin?.kind === 'goal'
+        ? { goalId: this.input.userInput.origin.goalId }
+        : {}),
       ...(this.input.userInput.origin?.kind === 'agent_graph'
         ? {
             agentGraphWakeId: this.input.userInput.origin.wakeId,
@@ -1181,7 +1222,9 @@ export class AgentRun {
           { durable: true },
         );
       });
-      this.enqueueRunStore('append run status audit', appendAudit);
+      // The audit remains best-effort, but its physical write belongs to this
+      // required transition and must settle before the resume acknowledgement.
+      await this.enqueueRunStore('append run status audit', appendAudit);
     } else {
       this.enqueueRunStore('record run status', async () => {
         await runStore.updateRun(this.sessionId, this.runId, { status, updatedAt: ts });

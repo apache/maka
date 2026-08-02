@@ -25,6 +25,7 @@
 
 .maka-agent-graph-heading strong {
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -36,7 +37,7 @@
 .maka-agent-graph-results {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-agent-graph-error {
@@ -106,13 +107,14 @@
 
 .maka-agent-graph-operator-copy strong {
   font-size: var(--font-size-ui);
+  line-height: var(--text-body-leading);
   font-weight: var(--font-weight-medium);
 }
 
 .maka-agent-graph-operator-copy span,
 .maka-agent-graph-operator-status {
   font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .maka-agent-graph-wait {

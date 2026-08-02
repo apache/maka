@@ -6,11 +6,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { canonicalToolArgsHash, type RuntimeEvent } from '@maka/core';
+import {
+  canonicalToolArgsHash,
+  type RuntimeEvent,
+  type WorkspaceBaselineAuthorityInput,
+} from '@maka/core';
 import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
+import { commitWorkspaceBaselineInternal } from '../workspace-version-authority-internal.js';
 
 const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
   path: '/workspace/README.md',
@@ -108,6 +113,29 @@ if (childMode) {
         );
       });
     });
+
+    it('rolls back a workspace baseline when killed inside its authority transaction', {
+      timeout: 30_000,
+    }, async () => {
+      await withKilledChild('inside_workspace_baseline', async (store) => {
+        assert.equal(
+          await store.readWorkspaceHead(`workspace_${'2'.repeat(32)}`, `epoch_${'3'.repeat(32)}`),
+          undefined,
+        );
+      });
+    });
+
+    it('retains the complete workspace baseline when killed after COMMIT', {
+      timeout: 30_000,
+    }, async () => {
+      await withKilledChild('after_workspace_baseline_commit', async (store) => {
+        assert.equal(
+          (await store.readWorkspaceHead(`workspace_${'2'.repeat(32)}`, `epoch_${'3'.repeat(32)}`))
+            ?.workspaceVersionId,
+          `version_${'5'.repeat(32)}`,
+        );
+      });
+    });
   });
 }
 
@@ -186,8 +214,16 @@ async function runCrashChild(mode: string): Promise<void> {
     if (point === 'after_recovery_decision' && mode === 'inside_recovery_decision') {
       blockUntilKilled();
     }
+    if (point === 'after_workspace_version_event_insert' && mode === 'inside_workspace_baseline') {
+      blockUntilKilled();
+    }
   };
   const store = createSqliteRuntimeStore(dbPath, { failpoint });
+  if (mode === 'inside_workspace_baseline' || mode === 'after_workspace_baseline_commit') {
+    await commitWorkspaceBaselineInternal(store, workspaceBaselineInput());
+    if (mode === 'after_workspace_baseline_commit') blockUntilKilled();
+    throw new Error(`Workspace baseline crash mode ${mode} missed its failpoint`);
+  }
   await store.commitToolPrepared(preparedCommit());
   if (mode === 'after_effect') {
     writeFileSync(markerPath, 'effect-happened');
@@ -226,6 +262,35 @@ function preparedCommit() {
     canonicalArgsHash: CRASH_READ_ARGS_HASH,
     recoveryMode: 'reconcile' as const,
     committedAt: 1,
+  };
+}
+
+function workspaceBaselineInput(): WorkspaceBaselineAuthorityInput {
+  return {
+    epochOpenedEventId: 'workspace-epoch-event-1',
+    baselineAcceptedEventId: 'workspace-version-event-1',
+    committedAt: 1_700_000_000_000,
+    epoch: {
+      repositoryId: `repository_${'1'.repeat(32)}`,
+      workspaceId: `workspace_${'2'.repeat(32)}`,
+      workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+      workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+      mode: 'managed_worktree',
+      objectFormat: 'sha1',
+      sourceCommitOid: '1'.repeat(40),
+      sourceTreeOid: '2'.repeat(40),
+      materializationProfileDigest: `sha256:${'3'.repeat(64)}`,
+      materializationSemantics: 'git_tree_materialized_with_fixed_config_v1',
+      policyHash: `sha256:${'4'.repeat(64)}`,
+    },
+    baseline: {
+      workspaceVersionId: `version_${'5'.repeat(32)}`,
+      commitOid: '5'.repeat(40),
+      treeOid: '2'.repeat(40),
+      treeDeltaDigest: `sha256:${'6'.repeat(64)}`,
+      changedFileCount: 7,
+      deletedFileCount: 0,
+    },
   };
 }
 

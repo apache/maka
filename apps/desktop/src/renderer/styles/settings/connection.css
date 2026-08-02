@@ -53,6 +53,7 @@
     display: flex;
     justify-content: space-between;
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-variant-numeric: tabular-nums;
   }
 .settingsOauthPastePanel {
@@ -92,18 +93,20 @@
 .settingsConnectionRowText strong {
     color: var(--foreground);
     font-size: var(--font-size-ui);
+    line-height: var(--text-body-leading);
     font-weight: var(--font-weight-semibold);
   }
 .settingsConnectionRowText small {
     color: var(--muted-foreground);
     font-family: var(--font-mono);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
   }
 .settingsConnectionDetail {
     margin: 0;
     color: var(--foreground-secondary);
     font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
+    line-height: var(--text-supporting-leading);
   }
 .settingsConnectionMeta {
     margin: 0;
@@ -111,6 +114,7 @@
     gap: var(--space-3);
     color: var(--muted-foreground);
     font-size: var(--font-size-caption);
+    line-height: var(--text-supporting-leading);
     font-family: var(--font-mono);
   }
 .settingsInlineFileState {

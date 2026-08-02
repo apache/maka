@@ -20,6 +20,7 @@ export * from './agent-graph-client-projection.js';
 export * from './agent-graph-supervisor-wake.js';
 export * from './agent-graph-timeline.js';
 export * from './runtime-policy.js';
+export * from './goal.js';
 export * from './interaction.js';
 export * from './project.js';
 export * from './subagent-workspace.js';
@@ -162,6 +163,42 @@ export {
   createRuntimeEventId,
 } from './runtime-event.js';
 
+export type {
+  RuntimeEventWorkspaceFactEnvelope,
+  ScannedWorkspaceBaselineAuthority,
+  WorkspaceAuthorityIdentity,
+  WorkspaceAuthorityIssue,
+  WorkspaceAuthorityIssueCode,
+  WorkspaceAuthorityLedgerRow,
+  WorkspaceBaselineAuthorityEvents,
+  WorkspaceBaselineAuthorityInput,
+  WorkspaceBaselineAuthorityScanResult,
+  WorkspaceBaselineDescriptorV1,
+  WorkspaceBaselineAcceptedV1,
+  WorkspaceEpochDescriptorV1,
+  WorkspaceEpochOpenedV1,
+  WorkspaceEpochRecordV1,
+  WorkspaceFactEventLaneValidation,
+  WorkspaceGitObjectFormat,
+  WorkspaceHeadRecordV1,
+  WorkspaceBaselineCommitResult,
+  WorkspaceProjectionRebuildResult,
+  WorkspaceVersionRecordV1,
+} from './workspace-version-authority.js';
+export {
+  WORKSPACE_AUTHORITY_SESSION_ID,
+  WORKSPACE_EPOCH_OPENED_FACT_KIND,
+  WORKSPACE_FACT_VERSION,
+  WORKSPACE_MATERIALIZATION_SEMANTICS_V1,
+  WORKSPACE_BASELINE_ACCEPTED_FACT_KIND,
+  WORKSPACE_VERSION_AUTHORITY_CAPABILITY_V1,
+  buildWorkspaceBaselineAuthorityEvents,
+  isRuntimeEventWorkspaceFactEnvelope,
+  scanWorkspaceBaselineAuthority,
+  validateWorkspaceFactEventLane,
+  workspaceAuthorityIdentity,
+} from './workspace-version-authority.js';
+
 // execution-evidence.ts — shared cross-ledger identity and source coverage.
 // This contract references canonical facts; it does not create another fact
 // authority. Subpath `@maka/core/execution-evidence` is preferred.
@@ -198,6 +235,7 @@ export type {
   RuntimeContinuationAuthorityStore,
   RuntimeRecoveryBundleCommit,
   RuntimeRecoveryBundleStore,
+  RuntimeWorkspaceVersionAuthorityStore,
 } from './runtime-event-store.js';
 export {
   RUNTIME_CONTINUATION_AUTHORITY_V1,
@@ -379,6 +417,7 @@ export {
   MODEL_CALL_USAGE_BASES,
   decodeModelCallAttempt,
   dedupeModelCallAttempts,
+  modelCallAttemptsFromRunEvents,
   groupModelCallAttempts,
   isModelCallAttempt,
   settledAttempt,
@@ -1162,6 +1201,9 @@ export {
   validateMemoryWriteRequest,
 } from './memory.js';
 
+// long-term-memory.ts — atomic SQLite-backed memory contracts; no storage/runtime/UI.
+export * from './long-term-memory.js';
+
 // local-memory.ts — transparent user-visible MEMORY.md MVP.
 export type {
   LocalMemoryEntryStatus,
@@ -1741,3 +1783,13 @@ export {
   PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE,
 } from './attachments.js';
 export type { AttachmentByteReader } from './attachments.js';
+
+export type {
+  AutomationAuthoritySnapshot,
+  AutomationDefinition,
+  AutomationExecutionTemplate,
+  AutomationKind,
+  AutomationPendingFire,
+  AutomationSchedule,
+  AutomationStatus,
+} from './automation.js';

@@ -112,14 +112,14 @@ test('preserves session recency when building the project catalog', async () => 
     const betaOnly = await sessions.create(makeInput(beta, 'Beta'));
     const alphaNewest = await sessions.create(makeInput(alpha, 'Alpha newest'));
     await sessions.updateHeader(alphaOlder.id, { lastUsedAt: 100, lastMessageAt: 100 });
-    await sessions.updateHeader(betaOnly.id, { lastUsedAt: 200, lastMessageAt: 200 });
-    await sessions.updateHeader(alphaNewest.id, { lastUsedAt: 300, lastMessageAt: 300 });
+    await sessions.updateHeader(betaOnly.id, { lastUsedAt: 300, lastMessageAt: 300 });
+    await sessions.updateHeader(alphaNewest.id, { lastUsedAt: 200, lastMessageAt: 200 });
 
     await migrateSessionProjects({ sessions, catalog });
 
     assert.deepEqual(
       (await catalog.list()).map((project) => project.name),
-      ['alpha', 'beta'],
+      ['beta', 'alpha'],
     );
   } finally {
     await sessions.close?.();

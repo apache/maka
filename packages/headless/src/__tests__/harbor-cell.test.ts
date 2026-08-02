@@ -4048,47 +4048,80 @@ console.log(JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant', 
     });
   });
 
-  test('env entrypoint passes only Pi provider env to the Pi CLI child', async () => {
-    await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
-      const piCommand = join(outputDir, 'fake-pi-env.mjs');
-      await writeFile(
-        piCommand,
-        `#!/usr/bin/env node
+  for (const { provider, expectedEnv } of [
+    {
+      provider: 'volcengine-plan',
+      expectedEnv: { XIAOMI_TOKEN_PLAN_CN_API_KEY: 'xiaomi-key' },
+    },
+    {
+      provider: 'MiniMax',
+      expectedEnv: {
+        MINIMAX_API_KEY: 'minimax-key',
+        MINIMAX_API_KEY_FILE: '/tmp/minimax-key',
+        MINIMAX_BASE_URL: 'https://api.minimax.test',
+      },
+    },
+    {
+      provider: 'minimax-cn',
+      expectedEnv: {
+        MINIMAX_API_KEY: 'minimax-key',
+        MINIMAX_API_KEY_FILE: '/tmp/minimax-key',
+        MINIMAX_BASE_URL: 'https://api.minimax.test',
+      },
+    },
+  ]) {
+    test(`env entrypoint passes only ${provider} provider env to the Pi CLI child`, async () => {
+      await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
+        const piCommand = join(outputDir, 'fake-pi-env.mjs');
+        await writeFile(
+          piCommand,
+          `#!/usr/bin/env node
 import { writeFileSync } from 'node:fs';
-writeFileSync('pi-env.json', JSON.stringify({
-  openai: process.env.OPENAI_API_KEY,
-  anthropic: process.env.ANTHROPIC_API_KEY,
-  google: process.env.GOOGLE_API_KEY,
-  xiaomi: process.env.XIAOMI_TOKEN_PLAN_CN_API_KEY,
-}));
+const providerEnvNames = [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'GOOGLE_API_KEY',
+  'XIAOMI_TOKEN_PLAN_CN_API_KEY',
+  'MINIMAX_API_KEY',
+  'MINIMAX_API_KEY_FILE',
+  'MINIMAX_BASE_URL',
+];
+writeFileSync('pi-env.json', JSON.stringify(Object.fromEntries(
+  providerEnvNames.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]]),
+)));
 console.log(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'pi ok' } }));
 console.log(JSON.stringify({ type: 'agent_end', messages: [{ role: 'assistant', usage: { input: 5, output: 2, totalTokens: 7 } }] }));
 `,
-        'utf8',
-      );
-      await chmod(piCommand, 0o755);
+          'utf8',
+        );
+        await chmod(piCommand, 0o755);
 
-      const result = await runHarborCellFromEnv({
-        MAKA_BACKEND: 'pi-agent',
-        MAKA_INSTRUCTION: 'solve through scoped pi env',
-        MAKA_MODEL: 'pi-test',
-        MAKA_PI_COMMAND: piCommand,
-        MAKA_PI_PROVIDER: 'volcengine-plan',
-        OPENAI_API_KEY: 'openai-key',
-        ANTHROPIC_API_KEY: 'anthropic-key',
-        GOOGLE_API_KEY: 'google-key',
-        XIAOMI_TOKEN_PLAN_CN_API_KEY: 'xiaomi-key',
-        MAKA_WORKDIR: workspaceDir,
-        MAKA_OUTPUT_DIR: outputDir,
-        MAKA_STORAGE_ROOT: storageRoot,
-      });
+        const result = await runHarborCellFromEnv({
+          MAKA_BACKEND: 'pi-agent',
+          MAKA_INSTRUCTION: 'solve through scoped pi env',
+          MAKA_MODEL: 'pi-test',
+          MAKA_PI_COMMAND: piCommand,
+          MAKA_PI_PROVIDER: provider,
+          OPENAI_API_KEY: 'openai-key',
+          ANTHROPIC_API_KEY: 'anthropic-key',
+          GOOGLE_API_KEY: 'google-key',
+          XIAOMI_TOKEN_PLAN_CN_API_KEY: 'xiaomi-key',
+          MINIMAX_API_KEY: 'minimax-key',
+          MINIMAX_API_KEY_FILE: '/tmp/minimax-key',
+          MINIMAX_BASE_URL: 'https://api.minimax.test',
+          MAKA_WORKDIR: workspaceDir,
+          MAKA_OUTPUT_DIR: outputDir,
+          MAKA_STORAGE_ROOT: storageRoot,
+        });
 
-      assert.equal(result.output.status, 'completed');
-      assert.deepEqual(JSON.parse(await readFile(join(workspaceDir, 'pi-env.json'), 'utf8')), {
-        xiaomi: 'xiaomi-key',
+        assert.equal(result.output.status, 'completed');
+        assert.deepEqual(
+          JSON.parse(await readFile(join(workspaceDir, 'pi-env.json'), 'utf8')),
+          expectedEnv,
+        );
       });
     });
-  });
+  }
 
   test('env entrypoint fails the Pi CLI cell on non-JSON stdout', async () => {
     await withDirs(async ({ workspaceDir, outputDir, storageRoot }) => {
@@ -4816,52 +4849,3 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
     if (timer) clearTimeout(timer);
   }
 }
-
-describe('Harbor pi CLI env passthrough for MiniMax', () => {
-  test('MINIMAX_* rule matches the lowercased provider name', async () => {
-    const src = await readFile(new URL('../../src/harbor-cell.ts', import.meta.url), 'utf8');
-
-    // buildPiCliEnv lowercases the provider before matching against the rule's
-    // `includes` values, so any rule value with uppercase letters can never
-    // match. Guard the MiniMax rule specifically against that regression.
-    const ruleMatch = src.match(/\{\s*includes:\s*\[([^\]]*)\][^}]*MINIMAX_API_KEY[^}]*\}/);
-    assert.notEqual(ruleMatch, null, 'MiniMax MINIMAX_* env rule must exist');
-    const includeValues = ruleMatch![1]
-      .split(',')
-      .map((raw) => raw.trim().replace(/^['"]|['"]$/g, ''))
-      .filter(Boolean);
-    assert.ok(includeValues.length > 0, 'MiniMax env rule must list at least one include token');
-    for (const value of includeValues) {
-      assert.equal(
-        value,
-        value.toLowerCase(),
-        `env rule include "${value}" must be lowercase to match normalized provider`,
-      );
-    }
-    // The normalized provider names ('minimax' / 'minimax-cn') must actually hit the rule.
-    const normalized = ['minimax', 'minimax-cn'];
-    for (const provider of normalized) {
-      assert.ok(
-        includeValues.some((value) => provider.includes(value)),
-        `normalized provider "${provider}" must match the MiniMax env rule`,
-      );
-    }
-  });
-
-  test('buildPiCliEnv lowercases the provider before matching', async () => {
-    const src = await readFile(new URL('../../src/harbor-cell.ts', import.meta.url), 'utf8');
-    const fnIdx = src.indexOf('function buildPiCliEnv');
-    assert.notEqual(fnIdx, -1, 'buildPiCliEnv must exist');
-    const fnRegion = src.slice(fnIdx, src.indexOf('\n}', fnIdx));
-    assert.match(
-      fnRegion,
-      /provider\?\.toLowerCase\(\)/,
-      'buildPiCliEnv must normalize provider to lowercase',
-    );
-    assert.match(
-      fnRegion,
-      /normalizedProvider\.includes\(value\)/,
-      'buildPiCliEnv must match rule values against the normalized provider',
-    );
-  });
-});

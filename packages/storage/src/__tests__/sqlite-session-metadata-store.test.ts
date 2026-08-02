@@ -71,6 +71,110 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('atomically retires a revision family with CAS and tombstone retries', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:', { now: () => 100 });
+    const root = fullHeader({
+      id: 'family-root',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: undefined,
+      revisionParentSessionId: undefined,
+      revisionOfTurnId: undefined,
+      revisionIndex: undefined,
+      revisionState: undefined,
+      isArchived: false,
+      archivedAt: undefined,
+      status: 'active',
+      blockedReason: undefined,
+    });
+    const revision = fullHeader({
+      id: 'family-revision',
+      parentSessionId: undefined,
+      branchOfTurnId: undefined,
+      revisionRootSessionId: root.id,
+      revisionParentSessionId: root.id,
+      revisionOfTurnId: 'turn-1',
+      revisionIndex: 2,
+      revisionState: 'committed',
+      isArchived: false,
+      archivedAt: undefined,
+      status: 'active',
+      blockedReason: undefined,
+    });
+    try {
+      await store.create(root);
+      await store.create(revision);
+
+      await assert.rejects(
+        store.setLifecycleVersioned(
+          [
+            { sessionId: root.id, expectedVersion: 1 },
+            { sessionId: revision.id, expectedVersion: 2 },
+          ],
+          'archived',
+        ),
+        SessionMetadataVersionConflictError,
+      );
+      for (const sessionId of [root.id, revision.id]) {
+        const current = await store.read(sessionId);
+        assert.equal(current.metadataVersion, 1);
+        assert.equal(current.header.isArchived, false);
+      }
+
+      const archived = await store.setLifecycleVersioned(
+        [
+          { sessionId: root.id, expectedVersion: 1 },
+          { sessionId: revision.id, expectedVersion: 1 },
+        ],
+        'archived',
+      );
+      assert.deepEqual(
+        archived.map((record) => ({
+          id: record.header.id,
+          revision: record.metadataVersion,
+          status: record.header.status,
+        })),
+        [
+          { id: revision.id, revision: 2, status: 'archived' },
+          { id: root.id, revision: 2, status: 'archived' },
+        ],
+      );
+
+      await assert.rejects(
+        store.removeVersioned([
+          { sessionId: root.id, expectedVersion: 2 },
+          { sessionId: revision.id, expectedVersion: 3 },
+        ]),
+        SessionMetadataVersionConflictError,
+      );
+      assert.equal((await store.probeRemoval(root.id)).kind, 'present');
+      assert.equal((await store.probeRemoval(revision.id)).kind, 'present');
+
+      const identities = [
+        { sessionId: root.id, expectedVersion: 2 },
+        { sessionId: revision.id, expectedVersion: 2 },
+      ];
+      assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
+      assert.deepEqual(await store.probeRemoval(root.id), { kind: 'removed' });
+      assert.deepEqual(await store.probeRemoval(revision.id), { kind: 'removed' });
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [
+        revision.id,
+        root.id,
+      ]);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(revision.id), [
+        revision.id,
+        root.id,
+      ]);
+      await store.completeSessionRetirementCleanup(revision.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(root.id), [root.id]);
+      await store.completeSessionRetirementCleanup(root.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
+      assert.deepEqual(await store.removeVersioned(identities), [revision.id, root.id]);
+    } finally {
+      store.close();
+    }
+  });
+
   test('coexists with the RuntimeEvent schema in one workspace database', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-runtime-database-'));
     const path = join(root, 'runtime.sqlite');
@@ -113,6 +217,9 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v12 = new DatabaseSync(path);
       v12.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         UPDATE session_metadata_schema
@@ -886,6 +993,9 @@ describe('SqliteSessionMetadataStore', () => {
       // Rewind to the pre-provenance shape a shipped database would have.
       const v13 = new DatabaseSync(path);
       v13.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         ALTER TABLE sandbox_boundary_log DROP COLUMN turn_id;
         ALTER TABLE sandbox_boundary_log DROP COLUMN run_id;
@@ -1020,6 +1130,10 @@ describe('SqliteSessionMetadataStore', () => {
       );
       CREATE INDEX session_metadata_labels_by_label
         ON session_metadata_labels(label, session_id);
+      CREATE TABLE session_metadata_tombstones (
+        session_id TEXT PRIMARY KEY,
+        deleted_at INTEGER NOT NULL
+      );
     `);
     db.prepare(`
       INSERT INTO session_metadata(
@@ -1386,6 +1500,9 @@ describe('SqliteSessionMetadataStore', () => {
 
       const v4 = new DatabaseSync(path);
       v4.exec(`
+        DROP INDEX session_metadata_tombstones_by_retirement_unit;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN cleanup_pending;
+        ALTER TABLE session_metadata_tombstones DROP COLUMN retirement_unit_id;
         DROP TABLE session_create_claims;
         DROP TABLE sandbox_boundary_log;
         DROP TABLE agent_graph_supervisor_wake_attempts;

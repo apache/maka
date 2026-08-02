@@ -156,12 +156,11 @@ async function scrollListToBottom(page: Page): Promise<number> {
 test('sidebar list scrolls independently and keeps the footer in view with 60 sessions', async ({
   sidebarLongSessionsWindow: page,
 }) => {
-  // (0) The fixture seeds 60 `sidebar-long-sessions` rows (named "会话 NN"),
-  // all rendered in the expanded panel. `seedE2eFixture` also always writes a
-  // handful of baseline chat sessions; their exact count is not this
-  // contract's concern — the 60-row pin alone proves the overflow
-  // precondition the geometry assertions depend on.
-  await expect(page.locator('[data-session-id][title^="会话 "]')).toHaveCount(60);
+  // (0) No row-count pin here: its only purpose was to prove the list
+  // overflows, which (1a) asserts directly on the scroller metrics — and the
+  // rows' `title` is session metadata (formatSessionMeta), not the session
+  // name, so a title-based count could not select them anyway. Seed
+  // completeness (60 sessions on disk) lives in the fixture unit tests.
 
   // The list scroller and the chat scroller are distinct elements.
   await expect(page.locator(LIST_CONTENT)).toHaveCount(1);

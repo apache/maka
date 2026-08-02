@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ChatMessageBubble } from '@astryxdesign/core';
-import { Markdown, MakaUriContext } from '../src/markdown.js';
+import { Markdown } from '../src/markdown.js';
 
 // Fidelity convention (#1433): every story below names the real app path
 // that reaches it. See apps/desktop/stories/FIDELITY.md.
@@ -32,43 +32,6 @@ function ProseFrame(props: { children: React.ReactNode; width?: number }) {
   );
 }
 
-// Build a fenced code block without dropping raw backticks into a JS
-// template literal (which makes the closing fence eat the template's
-// terminating backtick).
-function code(lang: string, body: string): string {
-  const open = '```' + lang;
-  const close = '```';
-  return [open, body, close].join('\n');
-}
-
-const noop = () => undefined;
-
-const tsBlock = code('ts', [
-  'type SessionGroup = {',
-  '  id: "pinned" | "recent";',
-  '  label: string;',
-  '  sessions: SessionSummary[];',
-  '};',
-  '',
-  'export function groupConversations(',
-  '  sessions: readonly SessionSummary[],',
-  '): SessionGroup[] {',
-  '  return [];',
-  '}',
-].join('\n'));
-
-const bashBlock = code('bash', 'npm run build && npm run test');
-
-const jsonBlock = code('json', [
-  '{',
-  '  "status": "running",',
-  '  "sessionId": "session-42",',
-  '  "startedAt": 1782000000000',
-  '}',
-].join('\n'));
-
-const plainBlock = code('', 'plain or unknown\nindented sample');
-
 // Real path: chat → an assistant answer that mixes headings, emphasis, a list, a quote
 // and a table — the ordinary shape of a long reply.
 export const RichAssistantAnswer: Story = {
@@ -97,117 +60,6 @@ export const RichAssistantAnswer: Story = {
             '| active | 无图标 | 否 |',
             '',
             '如果后续要加新状态，只需补充对应的行图标，不再扩张侧栏信息架构。',
-          ].join('\n')}
-        />
-      </ChatMessageBubble>
-    </ProseFrame>
-  ),
-};
-
-// Real path: chat → an assistant answer containing fenced code in several languages,
-// plus one unlabelled block.
-export const CodeBlockVariety: Story = {
-  render: () => (
-    <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
-        <Markdown
-          text={[
-            '下面是几种常见代码块，用来核对语言标签和复制按钮。',
-            '',
-            tsBlock,
-            '',
-            bashBlock,
-            '',
-            jsonBlock,
-            '',
-            '未标语言的代码块也会被高亮：',
-            '',
-            plainBlock,
-          ].join('\n')}
-        />
-      </ChatMessageBubble>
-    </ProseFrame>
-  ),
-};
-
-// Real path: chat → an assistant answer built mostly from nested lists and block quotes.
-export const ListsAndQuote: Story = {
-  render: () => (
-    <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
-        <Markdown
-          text={[
-            '可以按下面顺序处理：',
-            '',
-            '- 先确认会话排序的权威时间',
-            '  - 置顶的浮在最上面',
-            '  - 其余会话统一按最近活动排序',
-            '- 再调整侧栏渲染',
-            '- 最后补回归测试',
-            '',
-            '1. 读 `session-history-list.tsx`',
-            '2. 改 `session-list-panel.tsx`',
-            '3. 跑 `npm run test`',
-            '',
-            '> 这里的顺序不是强制的，只要回归测试先跑就行。',
-          ].join('\n')}
-        />
-      </ChatMessageBubble>
-    </ProseFrame>
-  ),
-};
-
-// Real path: chat → an assistant answer containing links. Only ChatView installs
-// MakaUriContext (app-shell.tsx), so this is where maka:// links navigate and unsafe
-// ones render as 链接无效.
-export const LinkRouting: Story = {
-  render: () => (
-    <ProseFrame>
-      <MakaUriContext.Provider value={noop}>
-        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
-          <Markdown
-            text={[
-              '这里有三类链接，用来核对内部路由和安全过滤。',
-              '',
-              '外链会新窗口打开：[项目仓库](https://github.com/example/maka)。',
-              '',
-              '内部链接走应用内导航：',
-              '- [去设置 · 模型](maka://settings?section=models)',
-              '- [把这段写进输入框](maka://compose?text=帮我看看这个)',
-              '',
-              '下面这些会被拦成不可点的"链接无效"：',
-              '',
-              '- 不安全的 scheme：[点我](javascript:alert(1))',
-              '- 内部链接但目标不合法：[坏链接](maka://tool/run)',
-              '',
-              '链接外的正文 `inline code` 和普通文字不受影响。',
-            ].join('\n')}
-          />
-        </ChatMessageBubble>
-      </MakaUriContext.Provider>
-    </ProseFrame>
-  ),
-};
-
-// Tables shrink-wrap to content and only scroll when wider than the prose
-// measure — this story pins the over-wide branch (frameless horizontal
-// scroller) next to the narrow tables in the stories above.
-// Real path: chat → an assistant answer whose table is wider than the prose measure, so
-// it becomes a horizontal scroller.
-export const WideTable: Story = {
-  render: () => (
-    <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
-        <Markdown
-          text={[
-            '列多且内容长的表格会在正文宽度内横向滚动：',
-            '',
-            '| 会话 ID | 连接 | 模型 | 状态 | 最近一条消息时间 | 输入 tokens | 输出 tokens | 费用（USD） |',
-            '| --- | --- | --- | --- | --- | --- | --- | --- |',
-            '| e2e-fixture-turn-control-primary | zai-live | glm-5.1 | waiting_for_user | 2026-07-07 18:42:11 | 125,032 | 32,480 | 0.4210 |',
-            '| e2e-fixture-turn-control-branch-visible | zai-live | glm-5 | running | 2026-07-07 18:40:02 | 98,771 | 21,006 | 0.2988 |',
-            '',
-            '表格后的正文保持正常段落间距。',
           ].join('\n')}
         />
       </ChatMessageBubble>

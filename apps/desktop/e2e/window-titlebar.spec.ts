@@ -6,8 +6,8 @@ import type { Page } from '@playwright/test';
  *
  * `.maka-window-titlebar` is the only element allowed to declare
  * `-webkit-app-region: drag`, and it occupies the shell's first grid row — both
- * static gates live in `app-region-hygiene-contract.test.ts` and
- * `window-titlebar-contract.test.ts`. What no static gate can see is the
+ * static gates live in `app-region-hygiene-contract.test.ts`. What no static
+ * gate can see is the
  * RENDERED rectangle against whatever the window currently contains, and that is
  * where every known defect in this area lived:
  *

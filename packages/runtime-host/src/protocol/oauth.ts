@@ -1,0 +1,258 @@
+import {
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireShapedRecord,
+  requireString,
+} from './codec.js';
+import { invalidProtocolFrame } from './errors.js';
+import { defineOperation } from './operation-spec.js';
+
+export const OAUTH_PRESENTATION_SERVICE_ID = 'oauth_presentation';
+export const OAUTH_PRESENTATION_SERVICE_VERSION = '1';
+export const OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH = 16_384;
+export const OAUTH_PRESENTATION_URL_MAX_LENGTH = 8_192;
+export const OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH = 1_024;
+export const OAUTH_LOGIN_PROVIDERS = ['claude-subscription', 'openai-codex', 'xai-oauth'] as const;
+export const OAUTH_LOGIN_PHASES = [
+  'awaiting_authorization',
+  'exchanging',
+  'committing',
+  'authenticated',
+  'cancelled',
+  'failed',
+] as const;
+export const OAUTH_LOGIN_FAILURE_CODES = [
+  'capability_unavailable',
+  'authorization_failed',
+  'provider_rejected',
+  'credential_changed',
+  'persistence_failed',
+  'internal_failure',
+] as const;
+
+const COMMON_ERRORS = [
+  'host_not_ready',
+  'host_draining',
+  'operation_unavailable',
+  'invalid_request',
+  'internal_failure',
+] as const;
+const START_ERRORS = [
+  ...COMMON_ERRORS,
+  'operation_conflict',
+  'capability_unavailable',
+  'not_found',
+  'persistence_failed',
+] as const;
+const ATTEMPT_ERRORS = [...COMMON_ERRORS, 'not_found'] as const;
+
+export type OAuthLoginProvider = (typeof OAUTH_LOGIN_PROVIDERS)[number];
+export type OAuthLoginPhase = (typeof OAUTH_LOGIN_PHASES)[number];
+export type OAuthLoginFailureCode = (typeof OAUTH_LOGIN_FAILURE_CODES)[number];
+export type OAuthPresentationMethod = 'open_external' | 'request_authorization_code';
+
+export type OAuthPresentationRequest =
+  | {
+      readonly method: 'open_external';
+      readonly url: string;
+      readonly stateHint?: string;
+    }
+  | {
+      readonly method: 'request_authorization_code';
+      readonly url: string;
+      readonly stateHint: string;
+    };
+
+export type OAuthPresentationResult =
+  | { readonly kind: 'presented' }
+  | { readonly kind: 'authorization_code'; readonly authorizationCode: string };
+
+export type OAuthPresentationResultForMethod<Method extends OAuthPresentationMethod> =
+  Method extends 'open_external'
+    ? Extract<OAuthPresentationResult, { readonly kind: 'presented' }>
+    : Extract<OAuthPresentationResult, { readonly kind: 'authorization_code' }>;
+
+export interface OAuthLoginProjection {
+  readonly attemptId: string;
+  readonly connectionId: string;
+  readonly provider: OAuthLoginProvider;
+  readonly phase: OAuthLoginPhase;
+  readonly failure?: OAuthLoginFailureCode;
+}
+
+export interface OAuthLoginStartInput {
+  readonly attemptId: string;
+  readonly connectionId: string;
+}
+
+export interface OAuthLoginAttemptInput {
+  readonly attemptId: string;
+}
+
+export const OAUTH_OPERATION_SPECS = {
+  'oauth.login.start': defineOperation<
+    OAuthLoginStartInput,
+    OAuthLoginProjection,
+    (typeof START_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: START_ERRORS,
+    decodeInput: decodeOAuthLoginStartInput,
+    decodeOutput: decodeOAuthLoginProjection,
+  }),
+  'oauth.login.query': defineOperation<
+    OAuthLoginAttemptInput,
+    OAuthLoginProjection,
+    (typeof ATTEMPT_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: ATTEMPT_ERRORS,
+    decodeInput: decodeOAuthLoginAttemptInput,
+    decodeOutput: decodeOAuthLoginProjection,
+  }),
+  'oauth.login.cancel': defineOperation<
+    OAuthLoginAttemptInput,
+    OAuthLoginProjection,
+    (typeof ATTEMPT_ERRORS)[number]
+  >({
+    mode: 'control',
+    availability: 'ready',
+    errors: ATTEMPT_ERRORS,
+    decodeInput: decodeOAuthLoginAttemptInput,
+    decodeOutput: decodeOAuthLoginProjection,
+  }),
+} as const;
+
+export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput {
+  const input = requireExactRecord(value, 'OAuth login start input', ['attemptId', 'connectionId']);
+  return {
+    attemptId: requireEntityId(input.attemptId, 'attemptId'),
+    connectionId: requireEntityId(input.connectionId, 'connectionId'),
+  };
+}
+
+export function decodeOAuthLoginAttemptInput(value: unknown): OAuthLoginAttemptInput {
+  const input = requireExactRecord(value, 'OAuth login attempt input', ['attemptId']);
+  return { attemptId: requireEntityId(input.attemptId, 'attemptId') };
+}
+
+export function decodeOAuthLoginProjection(value: unknown): OAuthLoginProjection {
+  const projection = requireRecord(value, 'OAuth login projection');
+  const phase = oauthLoginPhase(projection.phase);
+  const exact = requireExactRecord(
+    projection,
+    'OAuth login projection',
+    phase === 'failed'
+      ? ['attemptId', 'connectionId', 'provider', 'phase', 'failure']
+      : ['attemptId', 'connectionId', 'provider', 'phase'],
+  );
+  return {
+    attemptId: requireEntityId(exact.attemptId, 'attemptId'),
+    connectionId: requireEntityId(exact.connectionId, 'connectionId'),
+    provider: oauthLoginProvider(exact.provider),
+    phase,
+    ...(phase === 'failed' ? { failure: oauthLoginFailure(exact.failure) } : {}),
+  };
+}
+
+export function decodeOAuthPresentationRequest(
+  method: unknown,
+  value: unknown,
+): OAuthPresentationRequest {
+  if (method === 'open_external') {
+    const input = requireShapedRecord(value, 'OAuth presentation input', ['url'], ['stateHint']);
+    return {
+      method,
+      url: requireString(input.url, 'OAuth presentation URL', OAUTH_PRESENTATION_URL_MAX_LENGTH),
+      ...(input.stateHint === undefined
+        ? {}
+        : {
+            stateHint: requireString(
+              input.stateHint,
+              'OAuth presentation state hint',
+              OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH,
+            ),
+          }),
+    };
+  }
+  if (method === 'request_authorization_code') {
+    const input = requireExactRecord(value, 'OAuth presentation input', ['url', 'stateHint']);
+    return {
+      method,
+      url: requireString(input.url, 'OAuth presentation URL', OAUTH_PRESENTATION_URL_MAX_LENGTH),
+      stateHint: requireString(
+        input.stateHint,
+        'OAuth presentation state hint',
+        OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH,
+      ),
+    };
+  }
+  throw invalidProtocolFrame('Invalid OAuth presentation method');
+}
+
+export function decodeOAuthPresentationResult(
+  method: 'open_external',
+  value: unknown,
+): OAuthPresentationResultForMethod<'open_external'>;
+export function decodeOAuthPresentationResult(
+  method: 'request_authorization_code',
+  value: unknown,
+): OAuthPresentationResultForMethod<'request_authorization_code'>;
+export function decodeOAuthPresentationResult(
+  method: OAuthPresentationMethod,
+  value: unknown,
+): OAuthPresentationResult;
+export function decodeOAuthPresentationResult(
+  method: OAuthPresentationMethod,
+  value: unknown,
+): OAuthPresentationResult {
+  if (method === 'open_external') {
+    const result = requireExactRecord(value, 'OAuth presentation result', ['kind']);
+    if (result.kind !== 'presented') {
+      throw invalidProtocolFrame('Invalid OAuth presentation result');
+    }
+    return { kind: result.kind };
+  }
+  const result = requireExactRecord(value, 'OAuth presentation result', [
+    'kind',
+    'authorizationCode',
+  ]);
+  if (result.kind !== 'authorization_code') {
+    throw invalidProtocolFrame('Invalid OAuth presentation result');
+  }
+  return {
+    kind: result.kind,
+    authorizationCode: requireString(
+      result.authorizationCode,
+      'OAuth presentation authorization code',
+      OAUTH_PRESENTATION_AUTHORIZATION_CODE_MAX_LENGTH,
+    ),
+  };
+}
+
+function oauthLoginProvider(value: unknown): OAuthLoginProvider {
+  if (typeof value !== 'string' || !OAUTH_LOGIN_PROVIDERS.includes(value as OAuthLoginProvider)) {
+    throw invalidProtocolFrame('Invalid OAuth login provider');
+  }
+  return value as OAuthLoginProvider;
+}
+
+function oauthLoginPhase(value: unknown): OAuthLoginPhase {
+  if (typeof value !== 'string' || !OAUTH_LOGIN_PHASES.includes(value as OAuthLoginPhase)) {
+    throw invalidProtocolFrame('Invalid OAuth login phase');
+  }
+  return value as OAuthLoginPhase;
+}
+
+function oauthLoginFailure(value: unknown): OAuthLoginFailureCode {
+  if (
+    typeof value !== 'string' ||
+    !OAUTH_LOGIN_FAILURE_CODES.includes(value as OAuthLoginFailureCode)
+  ) {
+    throw invalidProtocolFrame('Invalid OAuth login failure');
+  }
+  return value as OAuthLoginFailureCode;
+}

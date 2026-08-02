@@ -41,14 +41,14 @@
   overflow-wrap: anywhere;
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
 }
 
 .plan-proposal-kicker,
 .plan-proposal-revision {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-proposal-kicker {
@@ -68,7 +68,7 @@
   border-radius: var(--radius-pill);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-proposal-status[data-status="pending_approval"] {
@@ -90,7 +90,7 @@
   margin: 0;
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .plan-proposal-section {
@@ -103,7 +103,7 @@
   color: var(--foreground-secondary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-proposal-steps,
@@ -126,7 +126,7 @@
   background: var(--foreground-2);
   color: var(--foreground);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
+  line-height: var(--text-body-leading);
 }
 
 .plan-proposal-step-number {
@@ -142,7 +142,7 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
-  line-height: var(--leading-none);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-proposal-step-content {
@@ -154,7 +154,6 @@
 .plan-proposal-step-content strong {
   overflow-wrap: anywhere;
   font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
 }
 
 .plan-proposal-step-content p {
@@ -166,7 +165,7 @@
 .plan-proposal-risks ul {
   color: var(--warning-text);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-proposal-risks li {
@@ -233,7 +232,7 @@
 .plan-execution-toggle span {
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-execution-toggle strong {
@@ -242,7 +241,7 @@
   color: var(--foreground);
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -295,7 +294,7 @@
   padding: var(--space-1-5) var(--space-2);
   color: var(--foreground-secondary);
   font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
+  line-height: var(--text-body-leading);
 }
 
 .plan-execution-steps li + li {
@@ -323,7 +322,7 @@
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
+  line-height: var(--text-supporting-leading);
 }
 
 .plan-execution-step-marker[data-status="in_progress"] {
@@ -352,4 +351,5 @@
   margin: var(--space-1-5) 0 0;
   color: var(--destructive-text);
   font-size: var(--font-size-caption);
+  line-height: var(--text-supporting-leading);
 }

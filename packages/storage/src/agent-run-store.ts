@@ -22,6 +22,7 @@ import {
 } from './execution-record-codec.js';
 import { classifyJsonRecord } from './json-prefix.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
 import {
@@ -1735,6 +1736,7 @@ function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
 }
 
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
     throw new Error('Continuation start facts require SQLite continuation authority');
   }
@@ -1818,6 +1820,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       };
     });
     const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
+    for (const event of canonicalEvents) assertNoReservedWorkspaceAuthorityAppend(event);
     if (canonicalEvents.some((event) => event.partial)) {
       throw new Error('Conversation copy cannot import partial RuntimeEvents');
     }
@@ -2874,7 +2877,7 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   }
   if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
     throw new Error(
-      'Invalid root turn admission contract: linked child execution cannot have source messages',
+      'Invalid root turn admission contract: host-authored execution cannot have source messages',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {
@@ -2936,6 +2939,26 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   if (value.kind === 'external_message') {
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
     return Object.freeze({ kind: 'external_message' });
+  }
+  if (value.kind === 'automation') {
+    if (
+      !hasExactKeys(value, ['kind', 'automationId']) ||
+      typeof value.automationId !== 'string' ||
+      !isSafeId(value.automationId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'automation', automationId: value.automationId });
+  }
+  if (value.kind === 'goal') {
+    if (
+      !hasExactKeys(value, ['kind', 'goalId']) ||
+      typeof value.goalId !== 'string' ||
+      !isSafeId(value.goalId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'goal', goalId: value.goalId });
   }
   if (value.kind === 'claimed_agent_graph_intent') {
     if (
