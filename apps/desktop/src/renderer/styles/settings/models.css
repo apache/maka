@@ -6,6 +6,16 @@
   opacity: var(--opacity-muted);
 }
 
+/* The icon plate inside the default-connection hint card. Astryx has no
+   primitive for "icon on a tinted square" — the settings-sidebar template
+   builds the same thing from a `Center` plus two declarations, so this is
+   that pair, named. */
+.providerHintIcon {
+  border-radius: var(--radius-container);
+  background: var(--surface-canvas);
+  flex-shrink: 0;
+}
+
 /* Logo plates match the enabled list (compact 32px) so the page reads as
  * one column of provider rows top to bottom. */
 .providerCatalogRow .providerLogo {

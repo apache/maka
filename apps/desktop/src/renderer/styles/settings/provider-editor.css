@@ -1,12 +1,3 @@
-.catalogTabs strong {
-  font: var(--maka-text-heading-5);
-}
-
-.catalogTabs small {
-  font: var(--maka-text-supporting);
-  color: var(--muted-foreground);
-}
-
 /* Gated providers (preview / not-yet-open) stay inert and muted; the
  * provider-surface gate forbids rendering them as actionable. */
 .providerCatalogRow[data-disabled="true"] {
@@ -31,11 +22,4 @@
   }
 }
 
-.providerOAuthCardDescription {
-  display: -webkit-box;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
 

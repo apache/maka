@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight } from '@maka/ui/icons';
-import { Badge, Banner, HStack, List, ListItem, VStack } from '@astryxdesign/core';
-import {
-  type ProviderType,
-} from '@maka/core';
+import { HStack, Text, VStack } from '@astryxdesign/core';
+import { type ProviderType } from '@maka/core';
 import {
   Button,
   useMountedRef,
@@ -11,8 +8,6 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { ProviderLogo } from './provider-display';
-import { ProviderConnectionDialog } from './provider-connection-dialog';
 import { ClaudeSubscriptionCard } from './claude-subscription-card';
 import {
   useOAuthLoginFlow,
@@ -22,53 +17,63 @@ import {
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
 
-type OAuthCardId = 'claude' | 'codex' | 'github-copilot' | 'xai';
-type OAuthServiceId = OAuthCardId;
+export type OAuthCardId = 'claude' | 'codex' | 'github-copilot' | 'xai';
 
-interface ModelOAuthCard {
+export interface OAuthCard {
   id: OAuthCardId;
   providerType: ProviderType;
   name: string;
+  /** Account email once signed in, the static pitch otherwise. */
   description: string;
-  status: 'available';
-  statusLabel: string;
+  /** 已登录 once signed in, 可用 otherwise. */
+  badge: string;
+  isLoggedIn: boolean;
 }
 
-export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(): Promise<void> }) {
+/**
+ * Account sign-in rows for the add-connection dialog, plus the refresh that
+ * keeps their badges live.
+ *
+ * This used to be a self-contained `ModelOAuthSection` that rendered both the
+ * rows and a Dialog per service. Those Dialogs now cannot exist: the rows live
+ * inside the add-connection Dialog, and Astryx's Dialog guidance is explicit —
+ * "Nest dialogs inside other dialogs; restructure the flow into steps within a
+ * single dialog instead." So the hook yields rows, `OAuthLoginPanel` yields the
+ * body that used to sit inside each Dialog, and the add-connection Dialog
+ * sequences the two as steps.
+ */
+export function useOAuthCards(props: { query?: string; onConnectionsChanged(): Promise<void> }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const cards = modelOAuthCards(copy);
-  const [openModal, setOpenModal] = useState<OAuthServiceId | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const modalLifecycleRef = useRef(0);
   const [claudeCatalogEnabled, setClaudeCatalogEnabled] = useState<boolean | null>(null);
   const toast = useToast();
-  const modelOAuthMountedRef = useMountedRef();
-  const modelOAuthRefreshTicketRef = useRef(0);
-  // PR-OAUTH-CARD-LIVE-STATE-0 (WAWQAQ msg d79fd115 follow-up):
-  // before this lift the 3 button cards stayed at the static
-  // "可用 / 预览" label even after the user finished the OAuth
-  // flow in the modal — there was no parent re-fetch. We now
-  // track a runtimeState + email per service so each card can
-  // show "已登录" / the account email inline, and we re-fetch
-  // every time the modal closes (success OR cancel — the user
-  // may have logged out from inside the modal).
-  const [cardStates, setCardStates] = useState<Record<OAuthServiceId, SubscriptionSnapshot | null>>({
+  const mountedRef = useMountedRef();
+  const refreshTicketRef = useRef(0);
+  // PR-OAUTH-CARD-LIVE-STATE-0 (WAWQAQ msg d79fd115 follow-up): before this
+  // lift the cards stayed at the static "可用 / 预览" label even after the
+  // user finished the OAuth flow — there was no parent re-fetch. Each service
+  // now carries a runtimeState + email so its row can show "已登录" and the
+  // account email inline, re-fetched whenever a login step closes (success OR
+  // cancel — the user may have signed out from inside it).
+  const [cardStates, setCardStates] = useState<Record<OAuthCardId, SubscriptionSnapshot | null>>({
     claude: null,
     codex: null,
     'github-copilot': null,
     xai: null,
   });
-  const [cardRefreshError, setCardRefreshError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const normalizedQuery = props.query?.trim().toLocaleLowerCase() ?? '';
-  const visibleCards = cards
-    .filter((card) => card.id !== 'claude' || claudeCatalogEnabled === true)
-    .filter((card) => !normalizedQuery || [card.id, card.name, card.description]
-      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)));
+
+  function matchesQuery(card: { id: string; name: string; description: string }): boolean {
+    if (!normalizedQuery) return true;
+    return [card.id, card.name, card.description]
+      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+  }
 
   async function refreshAllCards() {
-    const ticket = modelOAuthRefreshTicketRef.current + 1;
-    modelOAuthRefreshTicketRef.current = ticket;
+    const ticket = refreshTicketRef.current + 1;
+    refreshTicketRef.current = ticket;
     const claudeGate = await window.maka.claudeSubscription
       .isExperimentalEnabled()
       .then((enabled) => ({ enabled } as const))
@@ -78,8 +83,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
       : claudeCatalogEnabled === true;
     const cardsToRefresh = cards
       .filter((card) => card.id !== 'claude' || claudeEnabledForRefresh)
-      .filter((card) => !normalizedQuery || [card.id, card.name, card.description]
-        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)));
+      .filter(matchesQuery);
     const results = await Promise.all(
       cardsToRefresh.map(async (card) => {
         try {
@@ -90,7 +94,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
         }
       }),
     );
-    if (!modelOAuthMountedRef.current || modelOAuthRefreshTicketRef.current !== ticket) return false;
+    if (!mountedRef.current || refreshTicketRef.current !== ticket) return false;
     if ('enabled' in claudeGate) setClaudeCatalogEnabled(claudeGate.enabled);
     const failures = results.filter((result) => 'error' in result);
     setCardStates((prev) => {
@@ -110,189 +114,105 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
       const message = error
         ? subscriptionActionErrorMessage(error, locale)
         : copy.serviceUnavailable;
-      setCardRefreshError(message);
+      setRefreshError(message);
       toast.error(copy.refreshFailed, message);
       return false;
     }
-    setCardRefreshError(null);
+    setRefreshError(null);
     return true;
   }
 
   async function refreshAfterOAuthChange() {
     const refreshed = await refreshAllCards();
-    if (!modelOAuthMountedRef.current || !refreshed) return;
+    if (!mountedRef.current || !refreshed) return;
     try {
       await props.onConnectionsChanged();
     } catch (error) {
-      if (!modelOAuthMountedRef.current) return;
+      if (!mountedRef.current) return;
       toast.error(copy.refreshConnectionsFailed, subscriptionActionErrorMessage(error, locale));
     }
-  }
-
-  function openOAuthModal(service: OAuthServiceId) {
-    const lifecycle = modalLifecycleRef.current + 1;
-    modalLifecycleRef.current = lifecycle;
-    setIsModalOpen(false);
-    setOpenModal(service);
-    window.requestAnimationFrame(() => {
-      if (!modelOAuthMountedRef.current || modalLifecycleRef.current !== lifecycle) return;
-      setIsModalOpen(true);
-    });
-  }
-
-  function handleModalOpenChange(nextOpen: boolean) {
-    if (nextOpen) {
-      setIsModalOpen(true);
-      return;
-    }
-    const lifecycle = modalLifecycleRef.current + 1;
-    modalLifecycleRef.current = lifecycle;
-    setIsModalOpen(false);
-    window.requestAnimationFrame(() => {
-      if (!modelOAuthMountedRef.current || modalLifecycleRef.current !== lifecycle) return;
-      setOpenModal(null);
-      void refreshAfterOAuthChange();
-    });
   }
 
   useEffect(() => {
     void refreshAllCards();
     return () => {
-      modelOAuthRefreshTicketRef.current += 1;
-      modalLifecycleRef.current += 1;
+      refreshTicketRef.current += 1;
     };
   }, []);
 
-  return (
-    <VStack gap={3} aria-label={copy.aria} data-provider-category="oauth">
-      {cardRefreshError && (
-        <Banner
-          status="warning"
-          role="alert"
-          title={copy.staleState}
-          description={cardRefreshError}
-        />
-      )}
-      <List hasDividers className="providerOAuthGrid">
-        {visibleCards.map((card) => {
-          const snapshot = cardStates[card.id];
-          const runtimeState = snapshot?.runtimeState ?? 'unknown';
-          const isLoggedIn =
-            runtimeState === 'authenticated' ||
-            runtimeState === 'refreshing' ||
-            runtimeState === 'quota_unavailable' ||
-            runtimeState === 'provider_rejected';
-          const liveBadge = isLoggedIn ? copy.signedIn : card.statusLabel;
-          const liveDescription = isLoggedIn && snapshot?.email
-            ? snapshot.email
-            : card.description;
-          return (
-            <ListItem
-              key={card.id}
-              className="providerCatalogRow providerOAuthCard"
-              data-card-id={card.id}
-              data-provider={card.providerType}
-              data-status="ready"
-              data-oauth-status={card.status}
-              data-logged-in={isLoggedIn ? 'true' : undefined}
-              startContent={<ProviderLogo type={card.providerType} />}
-              label={<span aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}>{card.name}</span>}
-              description={<span className="providerOAuthCardDescription">{liveDescription}</span>}
-              endContent={(
-                <HStack gap={2} align="center">
-                  <Badge variant={isLoggedIn ? 'neutral' : 'info'} label={liveBadge} />
-                  <ChevronRight size={15} aria-hidden="true" />
-                </HStack>
-              )}
-              onClick={() => openOAuthModal(card.id)}
-            />
-          );
-        })}
-      </List>
-      {openModal === 'claude' && (
-        <ClaudeSubscriptionModal
-          isOpen={isModalOpen}
-          onOpenChange={handleModalOpenChange}
-        />
-      )}
-      {openModal === 'github-copilot' && (
-        <GitHubCopilotSubscriptionModal
-          isOpen={isModalOpen}
-          onOpenChange={handleModalOpenChange}
-        />
-      )}
-      {openModal === 'codex' && (
-        <SubscriptionLoginModal
-          service="codex"
-          onLoginSuccess={refreshAfterOAuthChange}
-          isOpen={isModalOpen}
-          onOpenChange={handleModalOpenChange}
-        />
-      )}
-      {openModal === 'xai' && (
-        <SubscriptionLoginModal
-          service="xai"
-          onLoginSuccess={refreshAfterOAuthChange}
-          isOpen={isModalOpen}
-          onOpenChange={handleModalOpenChange}
-        />
-      )}
-    </VStack>
-  );
+  const visibleCards: OAuthCard[] = cards
+    .filter((card) => card.id !== 'claude' || claudeCatalogEnabled === true)
+    .filter(matchesQuery)
+    .map((card) => {
+      const snapshot = cardStates[card.id];
+      const runtimeState = snapshot?.runtimeState ?? 'unknown';
+      const isLoggedIn =
+        runtimeState === 'authenticated' ||
+        runtimeState === 'refreshing' ||
+        runtimeState === 'quota_unavailable' ||
+        runtimeState === 'provider_rejected';
+      return {
+        id: card.id,
+        providerType: card.providerType,
+        name: card.name,
+        description: isLoggedIn && snapshot?.email ? snapshot.email : card.description,
+        badge: isLoggedIn ? copy.signedIn : card.statusLabel,
+        isLoggedIn,
+      };
+    });
+
+  return { cards: visibleCards, refreshError, refreshAfterOAuthChange };
 }
 
-function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyArray<ModelOAuthCard> {
+/**
+ * The body of one account sign-in, with no Dialog around it. The
+ * add-connection Dialog renders this as its second step; the header, the
+ * back affordance and the close button all belong to that Dialog.
+ */
+export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): void | Promise<void> }) {
+  if (props.cardId === 'claude') return <ClaudeSubscriptionCard />;
+  if (props.cardId === 'github-copilot') return <GitHubCopilotLoginPanel />;
+  return <SubscriptionLoginPanel service={props.cardId} onLoginSuccess={props.onLoginSuccess} />;
+}
+
+/** The subtitle the Dialog header shows above each login panel. */
+export function oauthPanelSubtitle(cardId: OAuthCardId, copy: ProviderSettingsCopy['oauthSection']): string {
+  if (cardId === 'claude') return copy.claudeSubtitle;
+  if (cardId === 'github-copilot') return copy.copilotSubtitle;
+  if (cardId === 'xai') return copy.xaiDetail;
+  return copy.codexDetail;
+}
+
+function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyArray<{
+  id: OAuthCardId;
+  providerType: ProviderType;
+  name: string;
+  description: string;
+  statusLabel: string;
+}> {
   return [
-    { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription, status: 'available', statusLabel: copy.available },
-    { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription, status: 'available', statusLabel: copy.available },
-    { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription, status: 'available', statusLabel: copy.available },
-    { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription, status: 'available', statusLabel: copy.available },
+    { id: 'claude', providerType: 'claude-subscription', name: 'Claude Code', description: copy.claudeDescription, statusLabel: copy.available },
+    { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription, statusLabel: copy.available },
+    { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription, statusLabel: copy.available },
+    { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription, statusLabel: copy.available },
   ];
 }
 
-function ClaudeSubscriptionModal(props: {
-  isOpen: boolean;
-  onOpenChange(isOpen: boolean): void;
-}) {
-  const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
-  return (
-    <ProviderConnectionDialog
-      title={copy.claudeTitle}
-      subtitle={copy.claudeSubtitle}
-      providerType="claude-subscription"
-      isOpen={props.isOpen}
-      onOpenChange={props.onOpenChange}
-    >
-      <ClaudeSubscriptionCard />
-    </ProviderConnectionDialog>
-  );
-}
-
-function SubscriptionLoginModal(props: {
+function SubscriptionLoginPanel(props: {
   service: 'codex' | 'xai';
-  isOpen: boolean;
-  onOpenChange(isOpen: boolean): void;
   onLoginSuccess(): void | Promise<void>;
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const isXai = props.service === 'xai';
   const display: SubscriptionDisplay = isXai
-    ? {
-        name: 'xAI Grok',
-        shortName: 'SuperGrok / X Premium',
-        detail: copy.xaiDetail,
-      }
-    : {
-        name: 'OpenAI Codex',
-        shortName: 'Codex',
-        detail: copy.codexDetail,
-      };
+    ? { name: 'xAI Grok', shortName: 'SuperGrok / X Premium', detail: copy.xaiDetail }
+    : { name: 'OpenAI Codex', shortName: 'Codex', detail: copy.codexDetail };
   // The whole browser-loopback login/logout controller (getAuthUrl ->
   // openAuthUrl -> refresh -> completeAuthorization, one authRequestId
   // lifecycle, synchronous pending-action guard, cancellation on unmount,
-  // localized toast copy) lives in useOAuthLoginFlow so the model connection
-  // connection dialog can drive the exact same flow behind its relogin button.
+  // localized toast copy) lives in useOAuthLoginFlow so the connection detail
+  // page can drive the exact same flow behind its relogin button.
   const flow = useOAuthLoginFlow({
     bridge: (isXai ? window.maka.xaiOAuth : window.maka.openAiCodex) as unknown as OAuthLoginFlowBridge,
     display: { name: display.name, shortName: display.shortName },
@@ -300,71 +220,38 @@ function SubscriptionLoginModal(props: {
   });
 
   return (
-    <ProviderConnectionDialog
-      title={copy.connectTitle(display.name)}
-      subtitle={display.detail}
-      providerType={isXai ? 'xai-oauth' : 'openai-codex'}
-      isOpen={props.isOpen}
-      onOpenChange={props.onOpenChange}
-    >
-        <div className="settingsConnectionRow" data-status={flow.runtimeState}>
-          <p className="settingsConnectionDetail">
-            {presentSnapshotDetail(flow.state, display, locale)}
-          </p>
-          {flow.stateHint && (
-            <small>
-              {isXai ? copy.deviceCode : copy.stateHint}{' '}
-              <code>{flow.stateHint}</code>{' '}
-              {isXai ? null : copy.startsWith}
-            </small>
-          )}
-          {flow.errorMessage && (
-            <small className="settingsErrorText">{flow.errorMessage}</small>
-          )}
-          <div className="settingsConnectionActions">
-            {!flow.isLoggedIn ? (
-              <Button
-                variant="primary"
-                onClick={() => void flow.startLogin()}
-                isDisabled={flow.actionBusy}
-                label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.login(display.shortName)}
-              />
-            ) : (
-              <Button
-                variant="ghost"
-                onClick={() => void flow.logout()}
-                isDisabled={flow.actionBusy}
-                label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
-              />
-            )}
-          </div>
-        </div>
-    </ProviderConnectionDialog>
+    <VStack gap={3} data-status={flow.runtimeState}>
+      <Text type="body">{presentSnapshotDetail(flow.state, display, locale)}</Text>
+      {flow.stateHint && (
+        <Text type="supporting" color="secondary">
+          {isXai ? copy.deviceCode : copy.stateHint} {flow.stateHint} {isXai ? null : copy.startsWith}
+        </Text>
+      )}
+      {flow.errorMessage && (
+        <Text type="supporting" color="secondary">{flow.errorMessage}</Text>
+      )}
+      <HStack gap={2} hAlign="end">
+        {!flow.isLoggedIn ? (
+          <Button
+            variant="primary"
+            onClick={() => void flow.startLogin()}
+            isDisabled={flow.actionBusy}
+            label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.login(display.shortName)}
+          />
+        ) : (
+          <Button
+            variant="ghost"
+            onClick={() => void flow.logout()}
+            isDisabled={flow.actionBusy}
+            label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
+          />
+        )}
+      </HStack>
+    </VStack>
   );
 }
 
-async function getSubscriptionSnapshot(serviceId: OAuthServiceId): Promise<SubscriptionSnapshot> {
-  if (serviceId === 'claude') {
-    const state = await window.maka.claudeSubscription.getAccountState();
-    return {
-      runtimeState: state.runtimeState,
-      email: state.profile?.email,
-      errorMessage: state.errorMessage,
-    };
-  }
-  if (serviceId === 'github-copilot') {
-    return window.maka.githubCopilotSubscription.getAccountState();
-  }
-  if (serviceId === 'xai') {
-    return window.maka.xaiOAuth.getAccountState();
-  }
-  return (await window.maka.openAiCodex.getAccountState()) as SubscriptionSnapshot;
-}
-
-function GitHubCopilotSubscriptionModal(props: {
-  isOpen: boolean;
-  onOpenChange(isOpen: boolean): void;
-}) {
+function GitHubCopilotLoginPanel() {
   const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
   // The shared login-flow controller owns the snapshot refresh, the
   // synchronous one-shot pending guard, and the unmount safety; Copilot
@@ -382,33 +269,43 @@ function GitHubCopilotSubscriptionModal(props: {
   const refreshTokens = flow.refreshTokens;
   const loggedIn = flow.state?.runtimeState === 'authenticated' || flow.state?.runtimeState === 'refreshing';
   return (
-    <ProviderConnectionDialog
-      title={copy.copilotTitle}
-      subtitle={copy.copilotSubtitle}
-      providerType="github-copilot"
-      isOpen={props.isOpen}
-      onOpenChange={props.onOpenChange}
-    >
-      <div className="settingsConnectionRow" data-status={flow.runtimeState}>
-        <p className="settingsConnectionDetail">
-          {loggedIn
-            ? copy.copilotImported
-            : flow.state?.runtimeState === 'refresh_failed' || flow.state?.runtimeState === 'storage_failed'
-              ? flow.state.errorMessage
-              : copy.copilotSetup}
-        </p>
-        <div className="settingsConnectionActions">
-          <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
-          {loggedIn && (
-            <>
-              <Button variant="secondary" onClick={() => void refreshTokens?.()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify} />
-              <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
-            </>
-          )}
-        </div>
-      </div>
-    </ProviderConnectionDialog>
+    <VStack gap={3} data-status={flow.runtimeState}>
+      <Text type="body">
+        {loggedIn
+          ? copy.copilotImported
+          : flow.state?.runtimeState === 'refresh_failed' || flow.state?.runtimeState === 'storage_failed'
+            ? flow.state.errorMessage
+            : copy.copilotSetup}
+      </Text>
+      <HStack gap={2} hAlign="end">
+        <Button variant="primary" onClick={() => void flow.startLogin()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'login' ? copy.importing : loggedIn ? copy.reimport : copy.importCredential} />
+        {loggedIn && (
+          <>
+            <Button variant="secondary" onClick={() => void refreshTokens?.()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'refresh' ? copy.verifying : copy.reverify} />
+            <Button variant="ghost" onClick={() => void flow.logout()} isDisabled={flow.actionBusy} label={flow.pendingAction === 'logout' ? copy.removing : copy.removeLocal} />
+          </>
+        )}
+      </HStack>
+    </VStack>
   );
+}
+
+async function getSubscriptionSnapshot(serviceId: OAuthCardId): Promise<SubscriptionSnapshot> {
+  if (serviceId === 'claude') {
+    const state = await window.maka.claudeSubscription.getAccountState();
+    return {
+      runtimeState: state.runtimeState,
+      email: state.profile?.email,
+      errorMessage: state.errorMessage,
+    };
+  }
+  if (serviceId === 'github-copilot') {
+    return window.maka.githubCopilotSubscription.getAccountState();
+  }
+  if (serviceId === 'xai') {
+    return window.maka.xaiOAuth.getAccountState();
+  }
+  return (await window.maka.openAiCodex.getAccountState()) as SubscriptionSnapshot;
 }
 
 interface SubscriptionDisplay {

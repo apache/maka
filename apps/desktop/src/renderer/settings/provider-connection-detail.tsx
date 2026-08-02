@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Banner, Collapsible, Divider, HStack, Link, Text, VStack } from '@astryxdesign/core';
+import { Banner, Collapsible, Divider, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Button,
@@ -67,7 +67,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
     }
   }
   return (
-    <VStack gap={3} align="start">
+    <VStack gap={3} hAlign="start">
       <Text>{copy.unknownDescription(connection.providerType)}</Text>
       <Button variant="destructive" onClick={remove} isDisabled={deleting} label={deleting ? copy.deleting : copy.deleteUnused} />
     </VStack>
@@ -137,88 +137,94 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   const canSetDefault = !props.isDefault && connection.enabled;
 
   return (
-    <VStack gap={4}>
-      {supportsApiKey && (
-        <VStack gap={2}>
-          <PasswordInput
-            value={apiKey}
-            onChange={setApiKey}
-            placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
-            label={copy.modelKeyAria(display.name)}
-            description={apiKeyStatusHint}
-            isDisabled={detailActionBusy}
-          />
-          <HStack gap={2} justify="between" align="center">
-            {defaults.signupUrl && (
-              <Link
-                href={defaults.signupUrl}
-                target="_blank"
-                rel="noreferrer noopener"
-                aria-label={copy.getModelKey}
-              >
-                {copy.getModelKey}
-              </Link>
-            )}
-            {/* Persistent button (disabled until a new key is typed) so the
-                credential actions row keeps a fixed height — no jitter when the
-                user starts pasting a key. */}
-            <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
-          </HStack>
-        </VStack>
-      )}
-      {issue && (
-        <Banner
-          status={connectionIssueStatus(issue.tone)}
-          role="status"
-          title={issue.label}
-          description={(lastTestMessage || Number.isFinite(lastTestAtMs)) ? (
-            <>
-              {lastTestMessage && lastTestMessage !== issue.label ? lastTestMessage : null}
-              {lastTestMessage && lastTestMessage !== issue.label && Number.isFinite(lastTestAtMs) ? ' · ' : null}
-              {Number.isFinite(lastTestAtMs) && <RelativeTime ts={lastTestAtMs} />}
-            </>
-          ) : undefined}
-        />
-      )}
-      {needsOAuth && (
-        usesGitHubCopilotLogin ? (
-          <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
-        ) : oauthLoginService ? (
-          <OAuthReloginNotice
-            service={oauthLoginService}
-            hasSecret={hasSecret}
-            onRelogin={refreshAfterRelogin}
-          />
-        ) : (
+    /* Sections, not cards. The page draws its hierarchy the way the
+       settings-sidebar template does — a heading, a rule, then rows — so the
+       only boxes on the page are the inputs themselves. */
+    <VStack gap={8}>
+      <VStack as="section" gap={4} aria-label={copy.credentials}>
+        <SectionRule title={copy.credentials} />
+        {supportsApiKey && (
+          <VStack gap={2}>
+            <PasswordInput
+              value={apiKey}
+              onChange={setApiKey}
+              placeholder={hasSecret === true ? '••••••••' : copy.pasteModelKey}
+              label={copy.modelKeyAria(display.name)}
+              description={apiKeyStatusHint}
+              isDisabled={detailActionBusy}
+            />
+            <HStack gap={2} hAlign="between" vAlign="center">
+              {defaults.signupUrl && (
+                <Link
+                  href={defaults.signupUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  aria-label={copy.getModelKey}
+                >
+                  {copy.getModelKey}
+                </Link>
+              )}
+              {/* Persistent button (disabled until a new key is typed) so the
+                  credential actions row keeps a fixed height — no jitter when the
+                  user starts pasting a key. */}
+              <Button variant="primary" isDisabled={detailActionBusy || !hasApiKeyChange} onClick={save} label={busy ? copy.saving : copy.updateKey} />
+            </HStack>
+          </VStack>
+        )}
+        {issue && (
           <Banner
-            status="info"
-            title={hasSecret === true
-              ? copy.oauthLoggedIn
-              : hasSecret === 'loading'
-                ? copy.oauthLoading
-                : hasSecret === 'error'
-                  ? copy.oauthUnknown
-                  : copy.oauthWaiting}
-            description={hasSecret === true
-              ? copy.oauthLoggedInDetail
-              : hasSecret === 'loading'
-                ? copy.oauthLoadingDetail
-                : hasSecret === 'error'
-                  ? copy.oauthUnknownDetail
-                  : copy.oauthWaitingDetail} />
-        )
-      )}
-      {credentialProbePending && (
-        <Banner
-          status="warning"
-          role="alert"
-          title={hasSecret === 'loading'
-            ? copy.credentialLoadingDetail
-            : copy.credentialUnknownDetail}
-        />
-      )}
-      <Divider />
+            status={connectionIssueStatus(issue.tone)}
+            role="status"
+            title={issue.label}
+            description={(lastTestMessage || Number.isFinite(lastTestAtMs)) ? (
+              <>
+                {lastTestMessage && lastTestMessage !== issue.label ? lastTestMessage : null}
+                {lastTestMessage && lastTestMessage !== issue.label && Number.isFinite(lastTestAtMs) ? ' · ' : null}
+                {Number.isFinite(lastTestAtMs) && <RelativeTime ts={lastTestAtMs} />}
+              </>
+            ) : undefined}
+          />
+        )}
+        {needsOAuth && (
+          usesGitHubCopilotLogin ? (
+            <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
+          ) : oauthLoginService ? (
+            <OAuthReloginNotice
+              service={oauthLoginService}
+              hasSecret={hasSecret}
+              onRelogin={refreshAfterRelogin}
+            />
+          ) : (
+            <Banner
+              status="info"
+              title={hasSecret === true
+                ? copy.oauthLoggedIn
+                : hasSecret === 'loading'
+                  ? copy.oauthLoading
+                  : hasSecret === 'error'
+                    ? copy.oauthUnknown
+                    : copy.oauthWaiting}
+              description={hasSecret === true
+                ? copy.oauthLoggedInDetail
+                : hasSecret === 'loading'
+                  ? copy.oauthLoadingDetail
+                  : hasSecret === 'error'
+                    ? copy.oauthUnknownDetail
+                    : copy.oauthWaitingDetail} />
+          )
+        )}
+        {credentialProbePending && (
+          <Banner
+            status="warning"
+            role="alert"
+            title={hasSecret === 'loading'
+              ? copy.credentialLoadingDetail
+              : copy.credentialUnknownDetail}
+          />
+        )}
+      </VStack>
       <VStack as="section" gap={4} aria-label={copy.modelManagement}>
+        <SectionRule title={copy.modelManagement} />
         <Selector
           label={copy.connectionDefaultModel}
           description={copy.connectionDefaultModelHelp}
@@ -238,44 +244,60 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
-        <HStack gap={2} align="center" wrap="wrap">
+        <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
           {supportsRemoteDiscovery && (
             <Button variant="ghost" isDisabled={detailActionBusy || !hasUsableCredential} onClick={() => void refreshModels()} label={fetchingModels ? copy.updating : copy.updateModels} />
           )}
+          {canSetDefault && (
+            <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
+          )}
         </HStack>
       </VStack>
+      <VStack gap={0}>
+        <Collapsible defaultIsOpen={false} trigger={copy.advanced}>
+          <VStack gap={2} paddingBlock={3}>
+            <ConnectionEndpointField
+              baseUrl={baseUrl}
+              defaultsBaseUrl={defaults.baseUrl}
+              fixedOAuth={hasFixedOAuthBaseUrl}
+              disabled={detailActionBusy}
+              onChange={setBaseUrl}
+            />
+            {/* Persistent button (disabled until the endpoint is edited) so the
+                advanced settings body height stays constant while typing. An
+                OAuth-fixed endpoint is readOnly with no dirty path — no jitter
+                risk — so it renders no permanently-disabled Save at all. */}
+            {!hasFixedOAuthBaseUrl && (
+              <HStack hAlign="end">
+                <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
+              </HStack>
+            )}
+          </VStack>
+        </Collapsible>
+        <Divider />
+      </VStack>
+      {/* Deletion is its own section at the trailing edge, and 设为默认 moved
+          up beside the other model actions — so nothing quiet sits next to the
+          destructive button for a mis-aimed cursor to hit. */}
+      <VStack as="section" gap={4} aria-label={copy.dangerZone}>
+        <SectionRule title={copy.dangerZone} />
+        <HStack gap={4} hAlign="between" vAlign="start">
+          <Text type="supporting" color="secondary">{copy.deleteRowHelp}</Text>
+          <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
+        </HStack>
+      </VStack>
+    </VStack>
+  );
+}
+
+/** A section title with the rule under it — the template's `Heading level={3}`
+ * followed by `<Divider/>`, named once so every section spells it the same. */
+function SectionRule(props: { title: string }) {
+  return (
+    <VStack gap={2}>
+      <Heading level={3}>{props.title}</Heading>
       <Divider />
-      <Collapsible defaultIsOpen={false} trigger={copy.advanced}>
-        <VStack gap={2} paddingBlock={3}>
-          <ConnectionEndpointField
-            baseUrl={baseUrl}
-            defaultsBaseUrl={defaults.baseUrl}
-            fixedOAuth={hasFixedOAuthBaseUrl}
-            disabled={detailActionBusy}
-            onChange={setBaseUrl}
-          />
-          {/* Persistent button (disabled until the endpoint is edited) so the
-              advanced settings body height stays constant while typing. An
-              OAuth-fixed endpoint is readOnly with no dirty path — no jitter
-              risk — so it renders no permanently-disabled Save at all. */}
-          {!hasFixedOAuthBaseUrl && (
-            <HStack justify="end">
-              <Button variant="primary" isDisabled={detailActionBusy || !hasBaseUrlChange} onClick={save} label={busy ? copy.saving : copy.saveEndpoint} />
-            </HStack>
-          )}
-        </VStack>
-      </Collapsible>
-      <Divider />
-      {/* Delete stays at the trailing edge whether or not "set as default" is
-          offered, so the destructive action never slides under the cursor that
-          was aiming at the quiet one. */}
-      <HStack gap={2} align="center" justify={canSetDefault ? 'between' : 'end'} wrap="wrap">
-        {canSetDefault && (
-          <Button variant="ghost" isDisabled={detailActionBusy} onClick={setAsDefault} label={settingDefault ? copy.setting : copy.setDefault} />
-        )}
-        <Button variant="destructive" isDisabled={detailActionBusy} onClick={remove} label={deleting ? copy.deleting : copy.deleteConnection} />
-      </HStack>
     </VStack>
   );
 }

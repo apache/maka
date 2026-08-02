@@ -3,122 +3,104 @@ import {
   Badge,
   Banner,
   Button,
-  Divider,
+  Card,
+  Center,
   EmptyState,
+  Heading,
   HStack,
+  Icon,
+  IconButton,
   List,
   ListItem,
   Skeleton,
-  Tab,
-  TabList,
+  Text,
+  Toolbar,
   VStack,
 } from '@astryxdesign/core';
-import { ChevronRight, Search } from '@maka/ui/icons';
+import { ArrowLeft, ChevronRight, Info } from '@maka/ui/icons';
 import {
-  CATALOG_PROVIDER_TYPES,
-  PROVIDER_DEFAULTS,
-  RECOMMENDED_PROVIDER_TYPES,
   type LlmConnection,
-  type ProviderCatalogGroup,
   type ProviderType,
-  type UiLocale,
 } from '@maka/core';
-import {
-  TextInput,
-  SectionHeader,
-  useMountedRef,
-  useUiLocale,
-  useToast,
-} from '@maka/ui';
+import { useMountedRef, useUiLocale, useToast } from '@maka/ui';
 import { connectionChipStatus } from './provider-connection-status';
 import { statusBadgeVariant } from './settings-status-badge';
-import { AddProviderForm } from './provider-add-form';
-import { ProviderCatalogCard } from './provider-catalog';
-import { ProviderConnectionDialog } from './provider-connection-dialog';
+import { AddConnectionDialog } from './provider-add-dialog';
 import { ConnectionDetail } from './provider-connection-detail';
 import { ProviderLogo, providerDisplay } from './provider-display';
-import { ModelOAuthSection } from './provider-oauth-section';
-import { categoryLabel, providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
+import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
 export type { ConnectionsBridge } from './provider-panel-shared';
 export { ProviderLogo, providerDisplay } from './provider-display';
 
-type ProviderDialogState =
-  | { kind: 'create'; providerType: ProviderType; session: number }
-  | { kind: 'manage'; connection: LlmConnection; session: number }
-  | null;
-
-type ProviderDialogInput =
-  | { kind: 'create'; providerType: ProviderType }
-  | { kind: 'manage'; connection: LlmConnection };
-
-type CatalogCategory = ProviderCatalogGroup | 'accounts';
-
-const CATALOG_TABS: CatalogCategory[] = ['recommended', 'accounts', 'plans', 'api', 'aggregators', 'local'];
+/**
+ * Where the panel is: the connection list, or one connection's detail.
+ *
+ * Detail is a route rather than a dialog because Astryx says so — "Keep
+ * dialogs focused on a single task; if the content grows beyond what fits,
+ * consider a full page instead." Credentials, the default model, the enabled
+ * model list, advanced settings and deletion are five tasks, not one.
+ */
+type PanelRoute = { kind: 'list' } | { kind: 'detail'; slug: string };
 
 export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCreateProviderConsumed }: {
   bridge: ConnectionsBridge;
   initialPage?: 'connections' | 'catalog';
   /**
-   * When set, auto-open the connection detail sheet for this slug once the
-   * connection list has loaded. Used by the `oauth-relogin` e2e-fixture
-   * fixture so the re-login affordance in the detail sheet is captured; a
-   * real user reaches the same sheet by clicking the connection row.
+   * When set, open this connection's detail once the list has loaded. Used by
+   * the `oauth-relogin` e2e fixture so the re-login affordance is captured; a
+   * real user reaches the same page by clicking the connection row.
    */
   initialConnectionSlug?: string;
   /**
-   * When set, auto-open the create-connection dialog for this provider once
-   * the panel has loaded. Used by the first-run hero so clicking a provider
-   * row lands directly in that provider's form; a real user reaches the
-   * same dialog by clicking the provider's catalog card. One-shot: the
-   * caller retires the request via onInitialCreateProviderConsumed.
+   * When set, open the add dialog straight on this provider's form once the
+   * panel has loaded. Used by the first-run hero so clicking a provider row
+   * lands directly in that provider's form. One-shot: the caller retires the
+   * request via onInitialCreateProviderConsumed.
    */
   initialCreateProviderType?: ProviderType;
-  /** Called once the auto-opened create dialog has been raised. */
+  /** Called once the auto-opened add dialog has been raised. */
   onInitialCreateProviderConsumed?: () => void;
 }) {
   const [connections, setConnections] = useState<LlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
-  const [dialogState, setDialogState] = useState<ProviderDialogState>(null);
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [catalogCategory, setCatalogCategory] = useState<CatalogCategory>('recommended');
-  const [catalogQuery, setCatalogQuery] = useState('');
+  const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
+  const [addDialog, setAddDialog] = useState<{ session: number; providerType?: ProviderType } | null>(null);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const providersPanelMountedRef = useMountedRef();
   const providersReloadTicketRef = useRef(0);
-  const providerDialogLifecycleRef = useRef(0);
-  const focusProviderSearchAfterCloseRef = useRef(false);
-  const providerCatalogRef = useRef<HTMLElement>(null);
-  const providerCatalogSearchRef = useRef<HTMLInputElement>(null);
+  const addDialogLifecycleRef = useRef(0);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
   const locale = useUiLocale();
   const providerCopy = getProviderSettingsCopy(locale);
   const copy = providerCopy.panel;
   const toast = useToast();
 
-  function openDialog(nextState: ProviderDialogInput) {
-    const lifecycle = providerDialogLifecycleRef.current + 1;
-    providerDialogLifecycleRef.current = lifecycle;
-    setIsDialogOpen(false);
-    setDialogState({ ...nextState, session: lifecycle });
+  function openAddDialog(providerType?: ProviderType) {
+    const lifecycle = addDialogLifecycleRef.current + 1;
+    addDialogLifecycleRef.current = lifecycle;
+    setIsAddDialogOpen(false);
+    setAddDialog({ session: lifecycle, providerType });
     window.requestAnimationFrame(() => {
-      if (!providersPanelMountedRef.current || providerDialogLifecycleRef.current !== lifecycle) return;
-      setIsDialogOpen(true);
+      if (!providersPanelMountedRef.current || addDialogLifecycleRef.current !== lifecycle) return;
+      setIsAddDialogOpen(true);
     });
   }
 
-  function requestDialogClose() {
-    providerDialogLifecycleRef.current += 1;
-    setIsDialogOpen(false);
+  function requestAddDialogClose() {
+    addDialogLifecycleRef.current += 1;
+    setIsAddDialogOpen(false);
   }
 
-  function handleDialogOpenChange(nextOpen: boolean) {
+  function handleAddDialogOpenChange(nextOpen: boolean) {
     if (nextOpen) {
-      setIsDialogOpen(true);
+      setIsAddDialogOpen(true);
       return;
     }
-    requestDialogClose();
+    requestAddDialogClose();
   }
 
   async function reload(): Promise<boolean> {
@@ -151,68 +133,40 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     });
     return () => {
       providersReloadTicketRef.current += 1;
-      providerDialogLifecycleRef.current += 1;
+      addDialogLifecycleRef.current += 1;
       unsubscribe?.();
     };
   }, [bridge]);
 
+  // `initialPage: 'catalog'` used to scroll to a catalog section further down
+  // the page. The catalog is a dialog now, so the same intent is simply
+  // raising it.
+  const initialCatalogOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || initialPage !== 'catalog') return;
-    providerCatalogRef.current?.scrollIntoView({ block: 'start' });
-    providerCatalogSearchRef.current?.focus({ preventScroll: true });
+    if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
+    initialCatalogOpenedRef.current = true;
+    openAddDialog();
   }, [initialPage, loading]);
-
-  useEffect(() => {
-    if (isDialogOpen || !focusProviderSearchAfterCloseRef.current) return;
-    focusProviderSearchAfterCloseRef.current = false;
-    const frame = window.requestAnimationFrame(() => {
-      providerCatalogSearchRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [isDialogOpen]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
     if (loading || !initialConnectionSlug || initialConnectionDetailOpenedRef.current) return;
-    const connection = connections.find((candidate) => candidate.slug === initialConnectionSlug);
-    if (!connection) return;
+    if (!connections.some((candidate) => candidate.slug === initialConnectionSlug)) return;
     initialConnectionDetailOpenedRef.current = true;
-    openDialog({ kind: 'manage', connection });
+    setRoute({ kind: 'detail', slug: initialConnectionSlug });
   }, [loading, initialConnectionSlug, connections]);
 
   useEffect(() => {
     if (loading || !initialCreateProviderType) return;
-    openDialog({ kind: 'create', providerType: initialCreateProviderType });
+    openAddDialog(initialCreateProviderType);
     onInitialCreateProviderConsumed?.();
   }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
-  const selected = dialogState?.kind === 'manage'
-    ? connections.find((connection) => connection.slug === dialogState.connection.slug)
-      ?? dialogState.connection
-    : null;
-
-  function chipAriaLabel(connection: LlmConnection): string {
-    const provider = providerDisplay(connection.providerType, locale).name;
-    const status = connectionChipStatus(connection, locale);
-    return copy.chipAria(connection.name, provider, connection.slug === defaultSlug, status?.label);
-  }
-
-  const configuredByType = (type: ProviderType) =>
-    connections.filter((connection) => connection.providerType === type).length;
-
-  function providersForCategory(category: CatalogCategory): ProviderType[] {
-    if (category === 'accounts') return [];
-    const source = category === 'recommended' ? RECOMMENDED_PROVIDER_TYPES : CATALOG_PROVIDER_TYPES;
-    const normalizedQuery = catalogQuery.trim().toLocaleLowerCase();
-    return source.filter((type) => {
-      if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
-      if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
-      if (category !== 'recommended' && PROVIDER_DEFAULTS[type].catalogGroup !== category) return false;
-      if (!normalizedQuery) return true;
-      const display = providerDisplay(type, locale);
-      return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
-        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
-    });
+  function backToList() {
+    setRoute({ kind: 'list' });
+    // Return focus to the page's primary action rather than the top of the
+    // document — the row the user came from may no longer exist (deletion).
+    window.requestAnimationFrame(() => addButtonRef.current?.focus());
   }
 
   if (loading) {
@@ -223,187 +177,221 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           <Skeleton width="52%" height={9} radius="rounded" index={1} />
         </VStack>
         <VStack gap={2}>
-          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={92} radius={3} index={index + 2} />)}
+          {[0, 1, 2, 3, 4, 5].map((index) => <Skeleton key={index} height={64} radius={3} index={index + 2} />)}
         </VStack>
       </VStack>
     );
   }
 
-  const createType = dialogState?.kind === 'create' ? dialogState.providerType : null;
+  const selected = route.kind === 'detail'
+    ? connections.find((connection) => connection.slug === route.slug) ?? null
+    : null;
+
+  // A detail route whose connection vanished (deleted in another window, or
+  // the slug never resolved) falls back to the list rather than rendering an
+  // empty page with a back button.
+  if (route.kind === 'detail' && !selected) {
+    if (route.slug) queueMicrotask(() => setRoute({ kind: 'list' }));
+  }
 
   return (
     <VStack className="providersPanel" gap={6} data-maka-contract="providers-panel">
-      <VStack as="section" gap={3} aria-label={copy.connectionsAria}>
-        <SectionHeader
-          as="h3"
-          title={copy.connected}
-          subtitle={copy.connectedHelp}
-          count={connections.length > 0 ? copy.count(connections.length) : undefined}
+      {selected ? (
+        <ConnectionDetailRoute
+          bridge={bridge}
+          connection={selected}
+          isDefault={selected.slug === defaultSlug}
+          onBack={backToList}
+          onChanged={async () => { await reload(); }}
+          onDeleted={async () => {
+            const reloaded = await reload();
+            if (!reloaded || !providersPanelMountedRef.current) return;
+            backToList();
+          }}
         />
-        {loadError ? (
-          <Banner
-            status="error"
-            title={copy.loadFailed}
-            description={loadError}
-            endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+      ) : (
+        <>
+          <Toolbar
+            label={copy.connectionsAria}
+            gap={2}
+            startContent={(
+              <HStack gap={2} vAlign="center">
+                <Heading level={3}>{copy.connected}</Heading>
+                {connections.length > 0 && (
+                  <Text type="supporting" color="secondary">{copy.count(connections.length)}</Text>
+                )}
+              </HStack>
+            )}
+            endContent={(
+              <Button
+                ref={addButtonRef}
+                variant="primary"
+                label={copy.addConnection}
+                onClick={() => openAddDialog()}
+                data-maka-contract="add-connection"
+              />
+            )}
           />
-        ) : connections.length === 0 ? (
-          <EmptyState isCompact title={copy.empty} description={copy.emptyHelp} />
-        ) : (
-          <List hasDividers className="connectionList">
-            {connections.map((connection) => {
-              const status = connectionChipStatus(connection, locale);
-              return (
-                <ListItem
-                  key={connection.slug}
-                  className="connectionRow"
-                  isSelected={connection.slug === defaultSlug}
-                  data-connection-slug={connection.slug}
-                  data-disabled={connection.enabled ? undefined : 'true'}
-                  startContent={<ProviderLogo type={connection.providerType} compact />}
-                  label={(
-                    <HStack gap={2} align="center">
-                      <span aria-label={chipAriaLabel(connection)}>{connection.name}</span>
-                      {connection.slug === defaultSlug && <Badge variant="neutral" label={copy.default} />}
-                    </HStack>
-                  )}
-                  description={providerDisplay(connection.providerType, locale).name}
-                  endContent={(
-                    <HStack gap={2} align="center">
-                      {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
-                      <ChevronRight size={16} aria-hidden="true" />
-                    </HStack>
-                  )}
-                  onClick={() => openDialog({ kind: 'manage', connection })}
-                />
-              );
-            })}
-          </List>
-        )}
-      </VStack>
-
-      <Divider />
-
-      <VStack as="section" ref={providerCatalogRef} gap={3} aria-labelledby="provider-catalog-title">
-        <SectionHeader
-          as="h3"
-          titleId="provider-catalog-title"
-          title={copy.add}
-          subtitle={copy.addHelp}
-        />
-        <TabList
-          value={catalogCategory}
-          onChange={(value) => setCatalogCategory(value as CatalogCategory)}
-          className="catalogTabs"
-          aria-label={copy.categoriesAria}
-        >
-          {CATALOG_TABS.map((tab) => (
-            <Tab key={tab} value={tab} label={copy.tabs[tab]} data-catalog-tab={tab} />
-          ))}
-        </TabList>
-        <TextInput
-          ref={providerCatalogSearchRef}
-          value={catalogQuery}
-          onChange={setCatalogQuery}
-          placeholder={copy.searchPlaceholder}
-          label={copy.searchAria}
-          isLabelHidden
-          startIcon={<Search aria-hidden="true" />}
-          width="min(100%, 360px)"
-        />
-        {(catalogCategory === 'recommended' || catalogCategory === 'accounts') && (
-          <ModelOAuthSection
-            query={catalogQuery}
-            onConnectionsChanged={async () => { await reload(); }}
-          />
-        )}
-        {catalogCategory !== 'accounts' && (() => {
-          const providers = providersForCategory(catalogCategory);
-          return providers.length > 0 ? (
-            <List hasDividers className="providerMarketGrid">
-              {providers.map((type) => (
-                <ProviderCatalogCard
-                  key={type}
-                  type={type}
-                  count={configuredByType(type)}
-                  onSelect={() => openDialog({ kind: 'create', providerType: type })}
-                />
-              ))}
-            </List>
+          {loadError ? (
+            <Banner
+              status="error"
+              title={copy.loadFailed}
+              description={loadError}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
+          ) : connections.length === 0 ? (
+            <EmptyState
+              title={copy.empty}
+              description={copy.emptyHelp}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={() => openAddDialog()} />}
+            />
           ) : (
-            <EmptyState isCompact title={copy.noMatch} />
-          );
-        })()}
-      </VStack>
-
-      {createType && (
-        <ProviderConnectionDialog
-          key={dialogState?.session}
-          title={copy.connectTitle(providerDisplay(createType, locale).name)}
-          subtitle={copy.createSubtitle}
-          providerType={createType}
-          headerEndContent={<Badge variant="neutral" label={categoryLabel(PROVIDER_DEFAULTS[createType].category, locale)} />}
-          isOpen={isDialogOpen}
-          onOpenChange={handleDialogOpenChange}
-        >
-          <AddProviderForm
-            key={createType}
-            bridge={bridge}
-            providerType={createType}
-            existingSlugs={connections.map((connection) => connection.slug)}
-            onCancel={requestDialogClose}
-            onCreated={async (_slug, modelDiscoveryError) => {
-              const lifecycle = providerDialogLifecycleRef.current;
-              const reloaded = await reload();
-              if (!reloaded || !providersPanelMountedRef.current || providerDialogLifecycleRef.current !== lifecycle) return;
-              requestDialogClose();
-              if (modelDiscoveryError) {
-                const providerName = providerDisplay(createType, locale).name;
-                toast.error(
-                  providerCopy.detail.modelsFetchFailed(providerName),
-                  providerCopy.detail.modelsFetchFailedDetail(
-                    providerPanelActionErrorMessage(modelDiscoveryError, locale),
-                    providerCopy.detail.endpointTroubleshooting,
-                  ),
+            <List hasDividers className="connectionList">
+              {connections.map((connection) => {
+                const status = connectionChipStatus(connection, locale);
+                const isDefault = connection.slug === defaultSlug;
+                return (
+                  <ListItem
+                    key={connection.slug}
+                    className="connectionRow"
+                    data-connection-slug={connection.slug}
+                    data-disabled={connection.enabled ? undefined : 'true'}
+                    startContent={<ProviderLogo type={connection.providerType} compact />}
+                    label={(
+                      <HStack gap={2} vAlign="center">
+                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connection.name}</span>
+                        {isDefault && <Badge variant="neutral" label={copy.default} />}
+                      </HStack>
+                    )}
+                    description={connectionSubtitle(connection, locale)}
+                    endContent={(
+                      <HStack gap={2} vAlign="center">
+                        {status && <Badge variant={statusBadgeVariant(status.tone)} label={status.label} />}
+                        <ChevronRight size={16} aria-hidden="true" />
+                      </HStack>
+                    )}
+                    onClick={() => setRoute({ kind: 'detail', slug: connection.slug })}
+                  />
                 );
-              }
-            }}
-          />
-        </ProviderConnectionDialog>
+              })}
+            </List>
+          )}
+          {connections.length > 0 && (
+            /* The one card on the page, and it is the one thing Astryx's Card
+               guidance calls a card: explanatory content beside the rows it
+               explains, not a container drawn around them. */
+            <Card variant="muted" padding={4}>
+              <HStack gap={4} vAlign="start">
+                <Center width={40} height={40} className="providerHintIcon">
+                  <Icon icon={Info} />
+                </Center>
+                <VStack gap={1}>
+                  <Text type="body" weight="semibold">{copy.defaultHintTitle}</Text>
+                  <Text type="supporting" color="secondary">{copy.defaultHintBody}</Text>
+                </VStack>
+              </HStack>
+            </Card>
+          )}
+        </>
       )}
 
-      {selected && (
-        <ProviderConnectionDialog
-          key={dialogState?.session}
-          title={selected.name}
-          subtitle={connectionDialogSubtitle(selected, selected.slug === defaultSlug, locale)}
-          providerType={selected.providerType}
-          isOpen={isDialogOpen}
-          onOpenChange={handleDialogOpenChange}
-        >
-          <ConnectionDetail
-            key={selected.slug}
-            bridge={bridge}
-            connection={selected}
-            isDefault={selected.slug === defaultSlug}
-            onChanged={async () => { await reload(); }}
-            onDeleted={async () => {
-              const reloaded = await reload();
-              if (!reloaded || !providersPanelMountedRef.current) return;
-              focusProviderSearchAfterCloseRef.current = true;
-              requestDialogClose();
-            }}
-          />
-        </ProviderConnectionDialog>
+      {addDialog && (
+        <AddConnectionDialog
+          key={addDialog.session}
+          bridge={bridge}
+          existingSlugs={connections.map((connection) => connection.slug)}
+          isOpen={isAddDialogOpen}
+          onOpenChange={handleAddDialogOpenChange}
+          initialProviderType={addDialog.providerType}
+          onConnectionsChanged={async () => { await reload(); }}
+          onCreated={async (providerType, modelDiscoveryError) => {
+            const lifecycle = addDialogLifecycleRef.current;
+            const reloaded = await reload();
+            if (!reloaded || !providersPanelMountedRef.current || addDialogLifecycleRef.current !== lifecycle) return;
+            requestAddDialogClose();
+            if (modelDiscoveryError) {
+              const providerName = providerDisplay(providerType, locale).name;
+              toast.error(
+                providerCopy.detail.modelsFetchFailed(providerName),
+                providerCopy.detail.modelsFetchFailedDetail(
+                  providerPanelActionErrorMessage(modelDiscoveryError, locale),
+                  providerCopy.detail.endpointTroubleshooting,
+                ),
+              );
+            }
+          }}
+        />
       )}
+    </VStack>
+  );
+
+  function chipAriaLabel(connection: LlmConnection, isDefault: boolean): string {
+    const provider = providerDisplay(connection.providerType, locale).name;
+    const status = connectionChipStatus(connection, locale);
+    return copy.chipAria(connection.name, provider, isDefault, status?.label);
+  }
+}
+
+/**
+ * The detail page's own frame: a back affordance beside the connection name,
+ * then the connection's sections. Modelled on the settings-sidebar template's
+ * detail view, which puts the same Toolbar inside the content area rather than
+ * reaching for a second page shell.
+ */
+function ConnectionDetailRoute(props: {
+  bridge: ConnectionsBridge;
+  connection: LlmConnection;
+  isDefault: boolean;
+  onBack(): void;
+  onChanged(): Promise<void>;
+  onDeleted(): Promise<void>;
+}) {
+  const locale = useUiLocale();
+  const copy = getProviderSettingsCopy(locale).panel;
+  return (
+    <VStack gap={5} data-maka-contract="connection-detail">
+      <Toolbar
+        label={props.connection.name}
+        gap={2}
+        startContent={(
+          <>
+            <IconButton
+              variant="ghost"
+              label={copy.backToList}
+              tooltip={copy.backToList}
+              icon={<ArrowLeft size={16} aria-hidden="true" />}
+              onClick={props.onBack}
+              data-maka-contract="connection-detail-back"
+            />
+            <ProviderLogo type={props.connection.providerType} compact />
+            <VStack gap={0}>
+              <HStack gap={2} vAlign="center">
+                <Heading level={3}>{props.connection.name}</Heading>
+                {props.isDefault && <Badge variant="neutral" label={copy.default} />}
+              </HStack>
+              <Text type="supporting" color="secondary">
+                {connectionSubtitle(props.connection, locale)}
+              </Text>
+            </VStack>
+          </>
+        )}
+      />
+      <ConnectionDetail
+        key={props.connection.slug}
+        bridge={props.bridge}
+        connection={props.connection}
+        isDefault={props.isDefault}
+        onChanged={props.onChanged}
+        onDeleted={props.onDeleted}
+      />
     </VStack>
   );
 }
 
-function connectionDialogSubtitle(connection: LlmConnection, isDefault: boolean, locale: UiLocale): string {
-  const copy = getProviderSettingsCopy(locale).panel;
+/** Provider · default model — the row's second line, and the detail's subtitle. */
+function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): string {
   const providerName = providerDisplay(connection.providerType, locale).name;
-  const parts = providerName === connection.name ? [] : [providerName];
-  parts.push(isDefault ? copy.defaultConnection : copy.connection);
+  const parts = [providerName];
+  if (connection.defaultModel) parts.push(connection.defaultModel);
   return parts.join(' · ');
 }

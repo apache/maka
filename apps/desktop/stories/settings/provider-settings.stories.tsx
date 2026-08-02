@@ -24,7 +24,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type AutoOpenTarget = 'detail' | 'add' | 'oauth' | 'xai-device';
+type AutoOpenTarget = 'detail' | 'add' | 'catalog' | 'oauth' | 'xai-device';
 
 function makeConnection(input: {
   slug: string;
@@ -318,42 +318,63 @@ function ProviderStoryFrame(props: {
   );
 }
 
+/** The add dialog is portalled out of the story root, so its rows are found on
+ *  `document`, not on `root`. */
+function addDialogRoot(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('.providerConnectionDialog');
+}
+
+function openAddDialog(root: HTMLElement): boolean {
+  const addButton = root.querySelector<HTMLButtonElement>('button[data-maka-contract="add-connection"]');
+  addButton?.click();
+  return Boolean(addButton);
+}
+
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
   if (target === 'detail') {
-    const detailButton = root.querySelector<HTMLButtonElement>('button[aria-label*="模型连接：Z.AI Live"]');
+    // ListItem's clickable surface is an invisible button inside the row, so
+    // the row is located by its slug hook and the button taken from within it.
+    const row = root.querySelector<HTMLElement>('[data-connection-slug="zai-live"]');
+    const detailButton = row?.querySelector('button') ?? null;
     detailButton?.click();
     return Boolean(detailButton);
   }
-  if (target === 'oauth') {
-    const oauthTab = root.querySelector<HTMLButtonElement>('button[data-catalog-tab="oauth"]');
-    oauthTab?.click();
-    return Boolean(oauthTab);
+  if (target === 'catalog' || target === 'oauth') {
+    // Account sign-ins are rows in the add dialog now, not a tab on the page,
+    // so both targets rest on step one of the same dialog.
+    if (addDialogRoot()) return true;
+    openAddDialog(root);
+    return false;
   }
   if (target === 'xai-device') {
-    const dialog = document.querySelector<HTMLElement>(
-      '[aria-labelledby="provider-connection-dialog-xai-oauth"]',
-    );
-    if (dialog) {
-      const code = dialog.querySelector('code');
-      if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
-      const loginButton = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
-      if (loginButton && !loginButton.disabled) loginButton.click();
+    const dialog = addDialogRoot();
+    if (!dialog) {
+      openAddDialog(root);
       return false;
     }
-    const xaiCard = root.querySelector<HTMLButtonElement>('button[data-card-id="xai"]');
-    if (xaiCard) {
-      xaiCard.click();
+    const code = dialog.querySelector('code');
+    if (code?.textContent?.trim() === 'ABCD-EFGH') return true;
+    const loginButton = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('SuperGrok / X Premium'));
+    if (loginButton && !loginButton.disabled) {
+      loginButton.click();
       return false;
     }
-    root.querySelector<HTMLButtonElement>('button[data-catalog-tab="oauth"]')?.click();
+    const xaiCard = dialog.querySelector<HTMLButtonElement>('button[data-card-id="xai"]');
+    xaiCard?.click();
     return false;
   }
 
-  const addButton = Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
-    .find((button) => button.textContent?.trim() === '自定义');
-  addButton?.click();
-  return Boolean(addButton);
+  // 'add': raise the dialog and step into one provider's form.
+  const dialog = addDialogRoot();
+  if (!dialog) {
+    openAddDialog(root);
+    return false;
+  }
+  const providerRow = dialog.querySelector<HTMLButtonElement>('.providerCatalogRow[data-provider="deepseek"] button, button.providerCatalogRow[data-provider="deepseek"]')
+    ?? dialog.querySelector<HTMLButtonElement>('[data-provider="deepseek"] button');
+  providerRow?.click();
+  return Boolean(providerRow);
 }
 
 function ProviderStory(props: {
@@ -374,7 +395,27 @@ export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
-// Real path: 设置 → 模型 → 添加 → the provider catalog and the add form.
+// Real path: 设置 → 模型 → click a connection row — the detail page it routes to.
+export const ConnectionDetailPage: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="detail"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 — step one of the dialog, the provider list.
+export const AddConnectionCatalog: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
+      autoOpen="catalog"
+    />
+  ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → pick a provider — step two, its form.
 export const AddProvider: Story = {
   render: () => (
     <ProviderStory
