@@ -22,7 +22,11 @@ import {
   type RuntimeInteractionRunClosureReason,
   type RuntimeMessageAuthority,
 } from '@maka/runtime';
-import type { AgentBackend, BackendSendInput } from '@maka/core/backend-types';
+import type {
+  AgentBackend,
+  BackendCompactHistoryInput,
+  BackendSendInput,
+} from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime';
 import {
@@ -52,8 +56,12 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
+const HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT = 'hold follow-up before context recovery';
 const NO_GOAL_ROOT_AUTHORITY: HostGoalRootAuthority = {
-  beginObservedTurn: () => ({ kind: 'unavailable', reason: 'Goal authority is not composed.' }),
+  beginObservedTurn: () => ({
+    kind: 'unavailable',
+    reason: 'Goal authority is not composed.',
+  }),
   matchesActive: () => false,
 };
 
@@ -256,7 +264,9 @@ test('worktree child Sessions reject roots outside managed child execution', asy
 
     backend?.release();
     await managed;
-    assert.deepEqual(fixture.coordinator.readRootState(child.id), { kind: 'idle' });
+    assert.deepEqual(fixture.coordinator.readRootState(child.id), {
+      kind: 'idle',
+    });
 
     await fixture.coordinator.close();
     await fixture.stores.agentRunStore.admitRootTurn({
@@ -327,7 +337,10 @@ test('hosted Automation roots preserve one admission, UserMessage, and AgentRun 
       turnId,
     );
     assert.ok(admission);
-    assert.deepEqual(admission?.execution, { kind: 'automation', automationId });
+    assert.deepEqual(admission?.execution, {
+      kind: 'automation',
+      automationId,
+    });
     assert.equal(admission?.runId, runId);
     assert.equal(admission?.userMessageId, userMessageId);
     const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
@@ -434,12 +447,230 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
     );
     assert.ok(userMessage?.type === 'user');
     if (userMessage?.type === 'user') {
-      assert.deepEqual(userMessage.origin, { kind: 'agent_graph', graphId, wakeId, attemptId });
+      assert.deepEqual(userMessage.origin, {
+        kind: 'agent_graph',
+        graphId,
+        wakeId,
+        attemptId,
+      });
       assert.equal(userMessage.displayText, 'Agent graph reached a supervisor checkpoint.');
     }
     assert.equal(fixture.drainRequested(), false);
   } finally {
     backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph supervisor wake preserves structured context-overflow outcomes', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => new ContextFailureBackend(context.sessionId)),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  try {
+    for (const [index, text] of [
+      'provider context overflow',
+      'local context budget exhausted',
+    ].entries()) {
+      const turnId = `turn-graph-context-${index}`;
+      const outcome = await fixture.coordinator.runAgentGraphSupervisorTurn(
+        fixture.sessionId,
+        {
+          turnId,
+          text,
+          turnOrchestration: { mode: 'graph', source: 'host_api' },
+          origin: {
+            kind: 'agent_graph',
+            graphId,
+            wakeId: `${graphId}:context-${index}`,
+            attemptId: `context-attempt-${index}`,
+          },
+        },
+        new AbortController().signal,
+        async () => true,
+      );
+
+      assert.deepEqual(outcome, {
+        kind: 'context_overflow',
+        turnId,
+        reason: index === 0 ? 'context_overflow' : 'context_budget_exhausted',
+      });
+    }
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph context recovery fences competing root turns while compaction runs', async () => {
+  let backend: BlockingContextRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new BlockingContextRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const compactTurnId = 'turn-graph-context-recovery';
+  try {
+    const recovery = fixture.coordinator.recoverAgentGraphSupervisorContextOverflow(
+      fixture.sessionId,
+      compactTurnId,
+      new AbortController().signal,
+    );
+    await waitUntil(() => backend !== undefined);
+    await backend?.compactStarted.promise;
+
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'reserved',
+    });
+    const competing = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-racing-context-recovery',
+        content: { text: 'Do not overlap the recovery compaction.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(competing.ok, false);
+    if (!competing.ok) assert.equal(competing.error.code, 'session_busy');
+
+    backend?.releaseCompact();
+    assert.equal(await recovery, undefined);
+    assert.equal(backend?.compactInput?.turnId, compactTurnId);
+    assert.equal(backend?.compactInput?.minRecentTurns, 0);
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
+
+    const following = await fixture.coordinator.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-after-context-recovery',
+        content: { text: 'Continue after recovery.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(following.ok, true);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.releaseCompact();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph context recovery abort stops compaction and releases Host close', async () => {
+  let backend: BlockingContextRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new BlockingContextRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const abortController = new AbortController();
+  try {
+    const recovery = fixture.coordinator.recoverAgentGraphSupervisorContextOverflow(
+      fixture.sessionId,
+      'turn-aborted-graph-context-recovery',
+      abortController.signal,
+    );
+    await waitUntil(() => backend !== undefined);
+    await backend?.compactStarted.promise;
+
+    const closed = fixture.coordinator.close();
+    abortController.abort();
+    await assert.rejects(recovery, (error) => {
+      assert.ok(error instanceof DOMException);
+      assert.equal(error.name, 'AbortError');
+      return true;
+    });
+    await closed;
+    assert.equal(backend?.stopCount, 1);
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'idle' });
+  } finally {
+    abortController.abort();
+    backend?.releaseCompact();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('Agent Graph context recovery waits for a confirmed follow-up root', async () => {
+  let backend: GraphFollowupRecoveryBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new GraphFollowupRecoveryBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  const graphId = agentGraphIdForRootSession(fixture.sessionId);
+  const graphTurnId = 'turn-graph-context-before-follow-up';
+  try {
+    const graphTurn = fixture.coordinator.runAgentGraphSupervisorTurn(
+      fixture.sessionId,
+      {
+        turnId: graphTurnId,
+        text: 'Overflow after a follow-up is confirmed.',
+        turnOrchestration: { mode: 'graph', source: 'host_api' },
+        origin: {
+          kind: 'agent_graph',
+          graphId,
+          wakeId: `${graphId}:context-follow-up`,
+          attemptId: 'context-follow-up-attempt',
+        },
+      },
+      new AbortController().signal,
+      async () => true,
+    );
+    await waitUntil(() => backend !== undefined);
+    await backend?.graphTurnStarted.promise;
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'message-before-context-recovery',
+        content: { text: HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queued.ok && queued.result.disposition, 'followup');
+    backend?.releaseGraphTurn();
+    assert.deepEqual(await graphTurn, {
+      kind: 'context_overflow',
+      turnId: graphTurnId,
+      reason: 'context_overflow',
+    });
+
+    const recovery = fixture.coordinator.recoverAgentGraphSupervisorContextOverflow(
+      fixture.sessionId,
+      'turn-context-recovery-after-follow-up',
+      new AbortController().signal,
+    );
+    await backend?.followupStarted.promise;
+    assert.equal(backend?.compactStartedCount, 0);
+
+    backend?.releaseFollowup();
+    await backend?.compactStarted.promise;
+    assert.equal(backend?.compactStartedCount, 1);
+    backend?.releaseCompact();
+    assert.equal(await recovery, undefined);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    backend?.releaseGraphTurn();
+    backend?.releaseFollowup();
+    backend?.releaseCompact();
     await fixture.coordinator.close();
     await fixture.messages.close();
     await fixture.dispose();
@@ -539,11 +770,18 @@ test('Agent Graph supervisor recovery closes a durable admission that has no Run
     );
     assert.ok(message?.type === 'user');
     if (message?.type === 'user') {
-      assert.deepEqual(message.origin, { kind: 'agent_graph', graphId, wakeId, attemptId });
+      assert.deepEqual(message.origin, {
+        kind: 'agent_graph',
+        graphId,
+        wakeId,
+        attemptId,
+      });
       assert.equal(message.text, 'Inspect the durable graph after restart.');
       assert.equal(message.displayText, 'Agent graph reached a supervisor checkpoint.');
     }
-    assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
+    assert.deepEqual(recovery.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
     assert.equal(fixture.drainRequested(), false);
   } finally {
     await recovery?.close();
@@ -564,7 +802,10 @@ test('hosted root target unavailability is retryable without poisoning the Host'
           turnId: 'turn-missing-root',
           runId: 'run-missing-root',
           userMessageId: 'message-missing-root',
-          execution: { kind: 'automation', automationId: 'automation-missing-root' },
+          execution: {
+            kind: 'automation',
+            automationId: 'automation-missing-root',
+          },
           content: { text: 'Retry later.' },
           start: async function* () {},
         }),
@@ -961,7 +1202,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       ).some((event) => event.actions?.continuationStart !== undefined),
       false,
     );
-    assert.deepEqual(coordinator.readRootState(child.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(child.childSessionId), {
+      kind: 'idle',
+    });
 
     const callbackAbortController = new AbortController();
     const stopClosureObserved = deferred<void>();
@@ -994,7 +1237,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     assert.ok(stoppedReady);
     assert.equal(callbackStopped.status, 'cancelled');
     assert.equal(callbackStopped.runId, stoppedReady.runId);
-    assert.deepEqual(coordinator.readRootState(stoppedReady.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(stoppedReady.childSessionId), {
+      kind: 'idle',
+    });
     assert.equal(interactions.isPoisoned(), false);
     assert.equal(drainRequested, false);
 
@@ -1047,7 +1292,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     );
     assert.equal(drainRequested, false);
     await coordinator.stopRoot(followupState);
-    assert.deepEqual(coordinator.readRootState(child.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(child.childSessionId), {
+      kind: 'idle',
+    });
 
     const failedResume = await manager.resumeChildAgent(parent.id, {
       parentRunId: parentStarted.result.runId,
@@ -1122,7 +1369,9 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     if (interruptedTerminal.kind === 'fact') {
       assert.equal(interruptedTerminal.fact.runStatus, 'cancelled');
     }
-    assert.deepEqual(coordinator.readRootState(interrupted.childSessionId), { kind: 'idle' });
+    assert.deepEqual(coordinator.readRootState(interrupted.childSessionId), {
+      kind: 'idle',
+    });
     assert.equal(drainRequested, false);
 
     const answered = await interactions.handlers['interaction.answer'](
@@ -1252,7 +1501,9 @@ test('pre-bind startup failure fail-stops without orphaning an admitted queued M
       return true;
     });
     await fixture.messages.close();
-    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'idle' });
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
     assert.equal(fixture.liveResidencies(), 0);
   } finally {
     await fixture.dispose();
@@ -1419,7 +1670,9 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
         originHostEpoch: fixture.hostEpoch,
         sessionId: fixture.sessionId,
         messageId: 'message-close-followup',
-        content: { text: 'start successor while shutdown drains Interaction authority' },
+        content: {
+          text: 'start successor while shutdown drains Interaction authority',
+        },
         placement: 'next_turn',
       },
       operationContext(fixture.hostEpoch, fixture.acquireResidency),
@@ -1437,7 +1690,9 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
     await fixture.interactions.close();
     closed = true;
 
-    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), { kind: 'idle' });
+    assert.deepEqual(fixture.coordinator.readRootState(fixture.sessionId), {
+      kind: 'idle',
+    });
     assert.equal(fixture.liveResidencies(), 0);
     assert.equal(fixture.drainRequested(), false);
     assert.equal(fixture.interactions.isPoisoned(), false);
@@ -1480,8 +1735,12 @@ test('Client Capability ambiguity fails before durable root admission', async ()
       backends.register('fake', (context) => new FakeBackend(context));
     },
   });
-  const first = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
-  const second = clientCapabilities.attachConnection('provider-b', { send: async () => {} });
+  const first = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+  const second = clientCapabilities.attachConnection('provider-b', {
+    send: async () => {},
+  });
 
   try {
     for (const [connectionId, registrationId] of [
@@ -1552,8 +1811,12 @@ test('an exact active retry preserves the Client Capability admission binding', 
       });
     },
   });
-  const first = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
-  const second = clientCapabilities.attachConnection('provider-b', { send: async () => {} });
+  const first = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+  const second = clientCapabilities.attachConnection('provider-b', {
+    send: async () => {},
+  });
 
   try {
     for (const [connectionId, registrationId] of [
@@ -1637,8 +1900,12 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
       });
     },
   });
-  const first = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
-  const second = clientCapabilities.attachConnection('provider-b', { send: async () => {} });
+  const first = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
+  const second = clientCapabilities.attachConnection('provider-b', {
+    send: async () => {},
+  });
 
   try {
     for (const [connectionId, registrationId] of [
@@ -1948,7 +2215,9 @@ test('an exact terminal retry does not require a live Client Capability binding'
       backends.register('fake', (context) => new FakeBackend(context));
     },
   });
-  const provider = clientCapabilities.attachConnection('provider-a', { send: async () => {} });
+  const provider = clientCapabilities.attachConnection('provider-a', {
+    send: async () => {},
+  });
 
   try {
     const replaced = await clientCapabilities.handlers['client.capability.replace'](
@@ -2160,7 +2429,10 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
             reject(context.abortSignal?.reason ?? new Error('backend factory aborted'));
           };
           if (context.abortSignal?.aborted) abort();
-          else context.abortSignal?.addEventListener('abort', abort, { once: true });
+          else
+            context.abortSignal?.addEventListener('abort', abort, {
+              once: true,
+            });
         });
       });
     },
@@ -3171,6 +3443,164 @@ class LinkedChildAuthorityBackend implements AgentBackend {
 
   async dispose(): Promise<void> {
     this.releaseWait?.();
+  }
+}
+
+class ContextFailureBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (input.text === 'provider context overflow') {
+      yield {
+        type: 'error',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        recoverable: false,
+        reason: 'context_overflow',
+        message: 'Context window exceeded',
+      };
+      yield {
+        type: 'complete',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        stopReason: 'error',
+      };
+      return;
+    }
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'context_budget_exhausted',
+      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+    };
+  }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {}
+}
+
+class BlockingContextRecoveryBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly compactStarted = deferred<void>();
+  readonly #compactReleased = deferred<void>();
+  compactInput: BackendCompactHistoryInput | undefined;
+  stopCount = 0;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'end_turn',
+    };
+  }
+
+  async compactHistory(input: BackendCompactHistoryInput) {
+    this.compactInput = input;
+    this.compactStarted.resolve();
+    await this.#compactReleased.promise;
+    return {};
+  }
+
+  releaseCompact(): void {
+    this.#compactReleased.resolve();
+  }
+
+  async stop(): Promise<void> {
+    this.stopCount += 1;
+    this.releaseCompact();
+  }
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {
+    this.releaseCompact();
+  }
+}
+
+class GraphFollowupRecoveryBackend implements AgentBackend {
+  readonly kind = 'fake' as const;
+  readonly graphTurnStarted = deferred<void>();
+  readonly followupStarted = deferred<void>();
+  readonly compactStarted = deferred<void>();
+  readonly #graphTurnReleased = deferred<void>();
+  readonly #followupReleased = deferred<void>();
+  readonly #compactReleased = deferred<void>();
+  compactStartedCount = 0;
+
+  constructor(readonly sessionId: string) {}
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    if (input.text === HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT) {
+      this.followupStarted.resolve();
+      await this.#followupReleased.promise;
+      yield {
+        type: 'complete',
+        id: randomUUID(),
+        turnId: input.turnId,
+        ts: Date.now(),
+        stopReason: 'end_turn',
+      };
+      return;
+    }
+
+    this.graphTurnStarted.resolve();
+    await this.#graphTurnReleased.promise;
+    yield {
+      type: 'error',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      recoverable: false,
+      reason: 'context_overflow',
+      message: 'Context window exceeded',
+    };
+    yield {
+      type: 'complete',
+      id: randomUUID(),
+      turnId: input.turnId,
+      ts: Date.now(),
+      stopReason: 'error',
+    };
+  }
+
+  async compactHistory(_input: BackendCompactHistoryInput) {
+    this.compactStartedCount += 1;
+    this.compactStarted.resolve();
+    await this.#compactReleased.promise;
+    return {};
+  }
+
+  releaseGraphTurn(): void {
+    this.#graphTurnReleased.resolve();
+  }
+
+  releaseFollowup(): void {
+    this.#followupReleased.resolve();
+  }
+
+  releaseCompact(): void {
+    this.#compactReleased.resolve();
+  }
+
+  async stop(): Promise<void> {
+    this.releaseGraphTurn();
+    this.releaseFollowup();
+  }
+
+  async respondToSandboxBoundary(): Promise<void> {}
+  async dispose(): Promise<void> {
+    this.releaseGraphTurn();
+    this.releaseFollowup();
+    this.releaseCompact();
   }
 }
 

@@ -38,6 +38,7 @@ import {
 import {
   AGENT_GRAPH_CLIENT_TERMINAL_PAGE_SIZE,
   advanceMaterializedAgentGraphClientProjection,
+  buildAgentGraphClientSnapshot,
   decodeAgentGraphTerminalCursor,
   decodeMaterializedAgentGraphClientActivity,
   decodeMaterializedAgentGraphClientSnapshot,
@@ -264,8 +265,8 @@ export class AgentGraphCoordinator {
   }
 
   async hasLiveSessionState(rootSessionId: string): Promise<boolean> {
-    const snapshot = await this.getSnapshot(rootSessionId);
-    return snapshot.scheduleRevision > 0 && !snapshot.closed;
+    const snapshot = buildAgentGraphClientSnapshot(await this.#readClientModelInput(rootSessionId));
+    return snapshot.scheduleRevision > 0 && (!snapshot.closed || snapshot.status === 'closing');
   }
 
   /**

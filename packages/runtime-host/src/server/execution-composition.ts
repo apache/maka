@@ -450,6 +450,12 @@ export async function createExecutionRuntimeHostComposition(
         }
         return runs[0]?.status ?? 'missing';
       },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        coordinator.recoverAgentGraphSupervisorContextOverflow(
+          rootSessionId,
+          randomUUID(),
+          abortSignal,
+        ),
       newId: randomUUID,
       isSessionDeliverable: async (sessionId) => {
         try {

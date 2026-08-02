@@ -44,6 +44,7 @@ import {
   generateSessionTitle as generateRuntimeSessionTitle,
   loadHistoryCompactBlocksFromArtifacts,
   replayPlanItemsToModelMessages,
+  recoverAgentGraphSupervisorContextOverflow,
   resolveSkillDiscoveryPaths,
   resolveSelectedModelContextWindow,
   projectEffectiveProductToolSurface,
@@ -936,41 +937,13 @@ export async function createMakaCliRuntimeContext(
         }
         return runs[0]?.status ?? 'missing';
       },
-      recoverContextOverflow: async (rootSessionId, { abortSignal }) => {
-        abortSignal.throwIfAborted();
-        let recovery:
-          | {
-              estimatedTokensBefore?: number;
-              estimatedTokensAfter?: number;
-              droppedTurns?: number;
-              droppedEvents?: number;
-              historyCompactedEvents?: number;
-              historyCompactBlocksWritten?: number;
-            }
-          | undefined;
-        for await (const event of runtime.compactSession(rootSessionId, {
-          turnId: randomUUID(),
-          minRecentTurns: 0,
-        })) {
-          abortSignal.throwIfAborted();
-          if (event.type === 'token_usage' && event.contextBudget) {
-            const diagnostic = event.contextBudget;
-            recovery = {
-              estimatedTokensBefore: diagnostic.estimatedTokensBefore,
-              estimatedTokensAfter: diagnostic.estimatedTokensAfter,
-              droppedTurns: diagnostic.droppedTurns,
-              droppedEvents: diagnostic.droppedEvents,
-              ...(diagnostic.historyCompactedEvents !== undefined
-                ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
-                : {}),
-              ...(diagnostic.historyCompactBlocksWritten !== undefined
-                ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
-                : {}),
-            };
-          }
-        }
-        return recovery;
-      },
+      recoverContextOverflow: (rootSessionId, { abortSignal }) =>
+        recoverAgentGraphSupervisorContextOverflow({
+          rootSessionId,
+          compactTurnId: randomUUID(),
+          abortSignal,
+          compactSession: (sessionId, input) => runtime.compactSession(sessionId, input),
+        }),
       newId: randomUUID,
       onDiagnostic: (diagnostic) => {
         console.warn('[agent-graph-supervisor-wake]', JSON.stringify(diagnostic));

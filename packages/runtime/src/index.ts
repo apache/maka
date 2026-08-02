@@ -165,6 +165,7 @@ export type {
 export {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
+  recoverAgentGraphSupervisorContextOverflow,
 } from './agent-graph-supervisor-wake.js';
 export type {
   AgentGraphSupervisorContextRecoveryDiagnostic,

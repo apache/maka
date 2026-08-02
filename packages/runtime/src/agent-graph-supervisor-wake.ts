@@ -3,6 +3,7 @@ import {
   type AgentRunHeader,
   type AgentGraphSupervisorWakeRecord,
   type AgentGraphSupervisorWakeStore,
+  type SessionEvent,
   type UserMessageInput,
 } from '@maka/core';
 import type {
@@ -77,7 +78,43 @@ export interface AgentGraphSupervisorContextRecoveryDiagnostic {
 
 export type AgentGraphSupervisorTurnOutcome =
   | GoalTurnOutcome
+  | { kind: 'context_overflow'; turnId: string; reason: string }
   | { kind: 'superseded'; turnId: string; reason: string };
+
+export async function recoverAgentGraphSupervisorContextOverflow(input: {
+  rootSessionId: string;
+  compactTurnId: string;
+  abortSignal: AbortSignal;
+  compactSession(
+    sessionId: string,
+    input: { turnId: string; minRecentTurns: number },
+  ): AsyncIterable<SessionEvent>;
+}): Promise<AgentGraphSupervisorContextRecoveryDiagnostic | undefined> {
+  input.abortSignal.throwIfAborted();
+  let recovery: AgentGraphSupervisorContextRecoveryDiagnostic | undefined;
+  for await (const event of input.compactSession(input.rootSessionId, {
+    turnId: input.compactTurnId,
+    minRecentTurns: 0,
+  })) {
+    input.abortSignal.throwIfAborted();
+    if (event.type !== 'token_usage' || !event.contextBudget) continue;
+    const diagnostic = event.contextBudget;
+    recovery = {
+      estimatedTokensBefore: diagnostic.estimatedTokensBefore,
+      estimatedTokensAfter: diagnostic.estimatedTokensAfter,
+      droppedTurns: diagnostic.droppedTurns,
+      droppedEvents: diagnostic.droppedEvents,
+      ...(diagnostic.historyCompactedEvents !== undefined
+        ? { historyCompactedEvents: diagnostic.historyCompactedEvents }
+        : {}),
+      ...(diagnostic.historyCompactBlocksWritten !== undefined
+        ? { historyCompactBlocksWritten: diagnostic.historyCompactBlocksWritten }
+        : {}),
+    };
+  }
+  input.abortSignal.throwIfAborted();
+  return recovery;
+}
 
 export type AgentGraphSupervisorWakeDiagnostic =
   | {
@@ -405,7 +442,7 @@ export class AgentGraphSupervisorWakeCoordinator {
           }
           lastFailure = wakeOutcomeFailure(outcome);
           await this.#markRetryable(wake.graphId, wake.wakeId, attemptId, lastFailure);
-          if (isSupervisorContextOverflow(lastFailure)) {
+          if (outcome.kind === 'context_overflow' || isSupervisorContextOverflow(lastFailure)) {
             overflowAttempt = { attemptId, turnId, failureReason: lastFailure };
           }
         } catch (error) {
@@ -632,6 +669,7 @@ export function isAgentGraphSupervisorMilestone(
 function wakeOutcomeFailure(
   outcome: Exclude<AgentGraphSupervisorTurnOutcome, { kind: 'completed' | 'superseded' }>,
 ): string {
+  if (outcome.kind === 'context_overflow') return outcome.reason;
   if (outcome.kind === 'errored' || outcome.kind === 'suspended') {
     return `${outcome.kind}: ${outcome.reason}`;
   }

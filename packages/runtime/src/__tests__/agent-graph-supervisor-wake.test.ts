@@ -4,13 +4,58 @@ import { createSqliteSessionMetadataStore } from '@maka/storage';
 import {
   AgentGraphSupervisorContextOverflowError,
   AgentGraphSupervisorWakeCoordinator,
+  recoverAgentGraphSupervisorContextOverflow,
   type AgentGraphSupervisorWakeDiagnostic,
+  type AgentGraphSupervisorTurnOutcome,
 } from '../agent-graph-supervisor-wake.js';
 import { SessionActivityRegistry, type GoalTurnOutcome } from '../goal-turn-lifecycle.js';
 import type { AgentGraphClientSnapshot } from '../stream-graph-read-model.js';
 import type { AgentGraphScheduleReconciliationResult } from '../stream-graph-schedule-reconcile.js';
 
 describe('Agent Graph supervisor wake delivery', () => {
+  test('uses the shared aggressive compaction adapter for overflow recovery', async () => {
+    const calls: Array<{ sessionId: string; turnId: string; minRecentTurns: number }> = [];
+    const recovery = await recoverAgentGraphSupervisorContextOverflow({
+      rootSessionId: 'root-session',
+      compactTurnId: 'compact-turn',
+      abortSignal: new AbortController().signal,
+      compactSession: async function* (sessionId, input) {
+        calls.push({ sessionId, ...input });
+        yield {
+          type: 'token_usage',
+          id: 'compact-usage',
+          turnId: input.turnId,
+          ts: 1,
+          input: 10,
+          output: 2,
+          contextBudget: {
+            enabled: true,
+            estimatedTokensBefore: 700_000,
+            estimatedTokensAfter: 12_000,
+            keptTurns: 2,
+            droppedTurns: 20,
+            keptEvents: 4,
+            droppedEvents: 80,
+            historyCompactedEvents: 75,
+            historyCompactBlocksWritten: 1,
+          },
+        };
+      },
+    });
+
+    assert.deepEqual(calls, [
+      { sessionId: 'root-session', turnId: 'compact-turn', minRecentTurns: 0 },
+    ]);
+    assert.deepEqual(recovery, {
+      estimatedTokensBefore: 700_000,
+      estimatedTokensAfter: 12_000,
+      droppedTurns: 20,
+      droppedEvents: 80,
+      historyCompactedEvents: 75,
+      historyCompactBlocksWritten: 1,
+    });
+  });
+
   test('retries failures before and after prompt persistence, delivering only a completed turn', async () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     const persistedAttempts: string[] = [];
@@ -59,10 +104,10 @@ describe('Agent Graph supervisor wake delivery', () => {
       activityRegistry: new SessionActivityRegistry(),
       wakeStore: store,
       readSnapshot: async () => snapshot(),
-      startTurn: async (_sessionId, input): Promise<GoalTurnOutcome> => {
+      startTurn: async (_sessionId, input): Promise<AgentGraphSupervisorTurnOutcome> => {
         turns += 1;
         return turns === 1
-          ? { kind: 'errored', turnId: input.turnId, reason: 'Context window exceeded' }
+          ? { kind: 'context_overflow', turnId: input.turnId, reason: 'context_overflow' }
           : { kind: 'completed', turnId: input.turnId };
       },
       inspectAttempt: async () => 'missing',

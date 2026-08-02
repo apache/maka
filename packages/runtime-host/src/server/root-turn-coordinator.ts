@@ -24,9 +24,11 @@ import {
   RuntimeInteractionInvariantError,
   RuntimeMessageAuthorityInvariantError,
   RuntimeOwnerCleanupError,
+  recoverAgentGraphSupervisorContextOverflow,
   type RuntimeHostedRootExecutionInput,
   type RuntimeMessageRunIdentity,
   type SessionManager,
+  type AgentGraphSupervisorContextRecoveryDiagnostic,
   type AgentGraphSupervisorTurnOutcome,
   type GoalObservedTurnSettler,
   type GoalObservedTurnStart,
@@ -516,7 +518,10 @@ export class RootTurnCoordinator {
     text: string,
   ): GoalTurnAdmission {
     if (this.#draining) {
-      return { kind: 'unavailable', reason: 'Runtime Host root authority is draining.' };
+      return {
+        kind: 'unavailable',
+        reason: 'Runtime Host root authority is draining.',
+      };
     }
     const active = this.#activeBySession.get(sessionId);
     if (active) return { kind: 'busy', whenIdle: active.done };
@@ -623,13 +628,70 @@ export class RootTurnCoordinator {
     });
   }
 
+  async recoverAgentGraphSupervisorContextOverflow(
+    sessionId: string,
+    compactTurnId: string,
+    abortSignal: AbortSignal,
+  ): Promise<AgentGraphSupervisorContextRecoveryDiagnostic | undefined> {
+    let reservation: RootTurnReservation;
+    for (;;) {
+      throwIfAborted(abortSignal);
+      if (this.#draining) {
+        throw new Error('Runtime Host root authority is draining.');
+      }
+      const available = this.reserveRootTurn(sessionId);
+      if (available) {
+        reservation = available;
+        break;
+      }
+      const active = this.#activeBySession.get(sessionId);
+      const pending = this.#reservationsBySession.get(sessionId);
+      const whenIdle = active?.done ?? pending?.whenIdle.promise;
+      if (whenIdle) {
+        await waitForRootIdleOrAbort(whenIdle, abortSignal);
+      }
+    }
+
+    try {
+      return await this.sessionAdmission.run(sessionId, async () => {
+        throwIfAborted(abortSignal);
+        if (
+          this.#draining ||
+          this.#reservationsBySession.get(sessionId) !== reservation ||
+          !this.beginRootAdmission(reservation)
+        ) {
+          throw new Error('Agent graph context recovery lost its root reservation.');
+        }
+        return this.#runWithAbortStop(
+          abortSignal,
+          () =>
+            this.deliverRuntimeStopIntent(sessionId, {
+              source: 'graph_supervisor',
+            }),
+          () =>
+            recoverAgentGraphSupervisorContextOverflow({
+              rootSessionId: sessionId,
+              compactTurnId,
+              abortSignal,
+              compactSession: (targetSessionId, input) =>
+                this.manager.compactSession(targetSessionId, input),
+            }),
+        );
+      });
+    } finally {
+      this.releaseRootReservation(reservation);
+    }
+  }
+
   async #runHostedRootReservation(
     reservation: GoalRootReservation,
     options: HostedRootReservationOptions & { isCurrent?: undefined },
   ): Promise<GoalTurnOutcome>;
   async #runHostedRootReservation(
     reservation: AgentGraphRootReservation,
-    options: HostedRootReservationOptions & { isCurrent: () => Promise<boolean> },
+    options: HostedRootReservationOptions & {
+      isCurrent: () => Promise<boolean>;
+    },
   ): Promise<AgentGraphSupervisorTurnOutcome>;
   async #runHostedRootReservation(
     reservation: GoalRootReservation | AgentGraphRootReservation,
@@ -717,11 +779,13 @@ export class RootTurnCoordinator {
             : disposition.outcome.error.message,
         );
       }
-      return await this.#awaitHostedRootOutcome(
+      const outcome = await this.#awaitHostedRootOutcome(
         reservation,
         disposition.active,
         options.abortSignal,
       );
+      if (!('input' in reservation)) return outcome;
+      return await this.#classifyAgentGraphSupervisorOutcome(reservation, outcome);
     } catch (error) {
       if (options.abortSignal && isAbortError(error)) throw error;
       this.requestHostDrain();
@@ -737,26 +801,63 @@ export class RootTurnCoordinator {
     abortSignal?: AbortSignal,
   ): Promise<GoalTurnOutcome> {
     if (!abortSignal) return active.goalOutcome.promise;
+    return this.#runWithAbortStop(
+      abortSignal,
+      () =>
+        this.stopRoot(
+          {
+            sessionId: reservation.sessionId,
+            turnId: reservation.turnId,
+            runId: reservation.runId,
+          },
+          { source: 'graph_supervisor' },
+        ),
+      () => active.goalOutcome.promise,
+    );
+  }
+
+  async #runWithAbortStop<T>(
+    abortSignal: AbortSignal,
+    requestStop: () => Promise<void>,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     let stopTask: Promise<void> | undefined;
     const stop = (): void => {
-      stopTask ??= this.stopRoot(
-        {
-          sessionId: reservation.sessionId,
-          turnId: reservation.turnId,
-          runId: reservation.runId,
-        },
-        { source: 'graph_supervisor' },
-      );
+      stopTask ??= requestStop();
       void stopTask.catch(() => undefined);
     };
     abortSignal.addEventListener('abort', stop, { once: true });
     if (abortSignal.aborted) stop();
     try {
-      return await active.goalOutcome.promise;
+      return await operation();
     } finally {
       abortSignal.removeEventListener('abort', stop);
       await stopTask;
     }
+  }
+
+  async #classifyAgentGraphSupervisorOutcome(
+    reservation: AgentGraphRootReservation,
+    outcome: GoalTurnOutcome,
+  ): Promise<AgentGraphSupervisorTurnOutcome> {
+    if (outcome.kind !== 'errored') return outcome;
+    const snapshot = await this.readCanonicalSnapshot(
+      reservation.sessionId,
+      reservation.turnId,
+      reservation.runId,
+    );
+    if (
+      snapshot.status === 'failed' &&
+      (snapshot.failureClass === 'context_overflow' ||
+        snapshot.failureClass === 'context_budget_exhausted')
+    ) {
+      return {
+        kind: 'context_overflow',
+        turnId: reservation.turnId,
+        reason: snapshot.failureClass,
+      };
+    }
+    return outcome;
   }
 
   executeRoot(input: RuntimeHostedRootExecutionInput): Promise<void> {
@@ -1990,7 +2091,9 @@ function assertTrustedAgentIdentity(
   turnId: string,
   execution: Exclude<
     RootTurnAdmission['execution'],
-    { kind: 'external_message' | 'automation' | 'goal' | 'agent_graph_supervisor_wake' }
+    {
+      kind: 'external_message' | 'automation' | 'goal' | 'agent_graph_supervisor_wake';
+    }
   >,
 ): void {
   if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
@@ -2081,7 +2184,10 @@ function recoveryUserMessageOriginMatches(
 function rootExecutionMessageOrigin(execution: RootExecutionDescriptor) {
   switch (execution.kind) {
     case 'automation':
-      return { kind: 'automation' as const, automationId: execution.automationId };
+      return {
+        kind: 'automation' as const,
+        automationId: execution.automationId,
+      };
     case 'goal':
       return { kind: 'goal' as const, goalId: execution.goalId };
     case 'agent_graph_supervisor_wake':
