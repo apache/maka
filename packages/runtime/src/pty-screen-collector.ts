@@ -8,7 +8,6 @@ export const PTY_INITIAL_COLS = 80;
 export const PTY_INITIAL_ROWS = 24;
 export const PTY_SCROLLBACK_ROWS = 500;
 export const PTY_PARSER_HIGH_WATER_BYTES = 1024 * 1024;
-export const PTY_PARSER_LOW_WATER_BYTES = 256 * 1024;
 export const PTY_PROTOCOL_REPLY_MAX_BYTES = 1024 * 1024;
 
 const REDACTED_MARKER = '[redacted]';
@@ -20,6 +19,12 @@ interface RawRow {
   isWrapped: boolean;
   region: 'scrollback' | 'screen';
   screenIndex?: number;
+}
+
+interface PendingEntry {
+  data: string;
+  bytes: number;
+  dropped: boolean;
 }
 
 interface SanitizedBuffer {
@@ -41,8 +46,6 @@ export interface PtyScreenCollectorOptions {
   onProtocolReply: (data: string) => void;
   onDirty: (generation: number) => void;
   onFailure: (error: Error) => void;
-  pauseSource: () => void;
-  resumeSource: () => void;
 }
 
 export class PtyScreenCollector {
@@ -52,7 +55,7 @@ export class PtyScreenCollector {
   private admittedGeneration = 0;
   private parsedGeneration = 0;
   private pendingBytes = 0;
-  private sourcePaused = false;
+  private pending: PendingEntry[] = [];
   private dataOpen = true;
   private disposed = false;
   private cursorVisible = true;
@@ -92,23 +95,42 @@ export class PtyScreenCollector {
     }
     const generation = ++this.admittedGeneration;
     const bytes = Buffer.byteLength(data, 'utf8');
+    const entry: PendingEntry = { data, bytes, dropped: false };
     this.pendingBytes += bytes;
-    this.applyBackpressure();
+    this.pending.push(entry);
+    this.evictOldestIfOverBudget();
     this.options.onDirty(generation);
 
-    const parse = this.sequence.then(() => this.write(data));
+    const parse = this.sequence.then(() => (entry.dropped ? undefined : this.write(data)));
     this.sequence = parse.then(
       () => {
+        if (entry.dropped) return;
         this.parsedGeneration = generation;
         this.pendingBytes -= bytes;
-        this.applyBackpressure();
+        const index = this.pending.indexOf(entry);
+        if (index >= 0) this.pending.splice(index, 1);
       },
       (error: unknown) => {
-        this.pendingBytes -= bytes;
-        this.applyBackpressure();
+        if (!entry.dropped) this.pendingBytes -= bytes;
         this.fail(asError(error, 'PTY parser failed'));
       },
     );
+  }
+
+  private evictOldestIfOverBudget(): void {
+    // The parse queue is a newest-first bounded buffer: when it exceeds its
+    // budget, evict the oldest queued data instead of pausing the source.
+    // The source is never paused, so process exit can never strand unread
+    // bytes behind node-pty's socket-destroy fence; only the newest frame is
+    // ever guaranteed to reach the terminal. Eviction marks the output
+    // truncated, matching scrollback eviction semantics.
+    while (this.pendingBytes > PTY_PARSER_HIGH_WATER_BYTES && this.pending.length > 1) {
+      const oldest = this.pending.shift();
+      if (!oldest) break;
+      oldest.dropped = true;
+      this.pendingBytes -= oldest.bytes;
+      this.historyTruncated = true;
+    }
   }
 
   mutateAtCut<T>(mutation: () => T | Promise<T>): Promise<T> {
@@ -313,20 +335,6 @@ export class PtyScreenCollector {
     this.normalBufferAtScrollbackLimit = atLimit;
   }
 
-  private applyBackpressure(): void {
-    try {
-      if (!this.sourcePaused && this.pendingBytes >= PTY_PARSER_HIGH_WATER_BYTES) {
-        this.options.pauseSource();
-        this.sourcePaused = true;
-      } else if (this.sourcePaused && this.pendingBytes <= PTY_PARSER_LOW_WATER_BYTES) {
-        this.options.resumeSource();
-        this.sourcePaused = false;
-      }
-    } catch (error) {
-      this.fail(asError(error, 'PTY parser backpressure failed'));
-    }
-  }
-
   private throwIfUnavailable(): void {
     if (this.failure) throw this.failure;
     if (this.disposed) throw new Error('PTY collector is disposed');
@@ -336,14 +344,6 @@ export class PtyScreenCollector {
     if (this.failure || this.disposed) return;
     this.failure = error;
     this.dataOpen = false;
-    if (this.sourcePaused) {
-      try {
-        this.options.resumeSource();
-      } catch {
-        // Termination owns recovery once the collector has failed.
-      }
-      this.sourcePaused = false;
-    }
     this.options.onFailure(error);
   }
 }

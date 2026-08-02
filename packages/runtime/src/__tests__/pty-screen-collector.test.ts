@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { PTY_SCROLLBACK_ROWS, PtyScreenCollector } from '../pty-screen-collector.js';
+import {
+  PTY_PARSER_HIGH_WATER_BYTES,
+  PTY_SCROLLBACK_ROWS,
+  PtyScreenCollector,
+} from '../pty-screen-collector.js';
 import { loadPtyStack } from '../pty-stack.js';
 
 describe('PtyScreenCollector', () => {
@@ -13,6 +17,22 @@ describe('PtyScreenCollector', () => {
 
       collector.accept('\u001b[!p');
       assert.equal((await collector.snapshotAtCut()).output.cursor.visible, true);
+      assert.deepEqual(failures, []);
+    } finally {
+      collector.dispose();
+    }
+  });
+
+  test('keeps the newest frame and evicts the oldest queued data when the parse queue exceeds its budget', async () => {
+    const { collector, failures } = await createCollector();
+    try {
+      const flood = 'x'.repeat(PTY_PARSER_HIGH_WATER_BYTES + 128 * 1024);
+      collector.accept(flood);
+      collector.accept('FINAL-DRAIN\n');
+      const output = (await collector.snapshotAtCut()).output;
+      assert.match([output.scrollback, output.screen].filter(Boolean).join('\n'), /FINAL-DRAIN/);
+      assert.equal(output.truncated, true);
+      assert.doesNotMatch(output.scrollback, /x{80}/);
       assert.deepEqual(failures, []);
     } finally {
       collector.dispose();
@@ -56,8 +76,6 @@ async function createCollector(): Promise<{
     onProtocolReply: () => {},
     onDirty: () => {},
     onFailure: (error) => failures.push(error),
-    pauseSource: () => {},
-    resumeSource: () => {},
   });
   return { collector, failures };
 }
