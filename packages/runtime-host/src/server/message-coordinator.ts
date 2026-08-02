@@ -534,14 +534,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         }
         if (!header) return failure('not_found', 'Session does not exist');
         if (header.isArchived) return failure('session_archived', 'Session is archived');
+        if (header.unavailableReason) {
+          return failure('operation_unavailable', header.unavailableReason);
+        }
         const rootState = await this.#root.readRootState(input.sessionId);
         if (this.#failStopped) {
           return failure('host_draining', 'Runtime Host message authority has failed');
         }
         if (rootState.kind === 'idle') {
-          if (header.unavailableReason) {
-            return failure('operation_unavailable', header.unavailableReason);
-          }
           const existingState = this.#sessions.get(input.sessionId);
           if (existingState && hasLiveMessageState(existingState)) {
             throw new RuntimeMessageAuthorityInvariantError(

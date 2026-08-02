@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import {
   AgentGraphCoordinator,
@@ -20,6 +20,7 @@ import {
 } from '@maka/storage/artifact-stores';
 import { openInteractiveAutomationAuthorityForWrite } from '@maka/storage/automation-authority';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import {
   type InteractiveLongTermMemoryWriter,
   openInteractiveLongTermMemoryStoreForWrite,
@@ -99,6 +100,9 @@ export async function createExecutionRuntimeHostComposition(
     usageStores = openedUsageStores;
     const openedShellRunStore = await openInteractiveShellRunStoreForWrite(context.owner.lease);
     shellRunStore = openedShellRunStore;
+    const worktreeChildExecutor = createGitWorktreeChildExecutor({
+      storageRoot: context.owner.capability.canonicalPath,
+    });
     await stores.messageReceiptStore.beginHostEpoch(context.hostEpoch);
     const backends = new BackendRegistry();
     backends.register('fake', (backendContext) => new FakeBackend(backendContext));
@@ -156,6 +160,7 @@ export async function createExecutionRuntimeHostComposition(
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
+      worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
       context.owner.capability.canonicalPath,
@@ -325,8 +330,28 @@ export async function createExecutionRuntimeHostComposition(
       canonicalPermissionOutcomes,
       shellRuns,
       childTools: childAgentTools.childTools,
+      worktreeChildExecutor,
       listArtifactsForTurn: (sessionId, turnId) =>
         openedArtifactStore.listTurnArtifacts(sessionId, turnId),
+      publishChildWorkspacePatch: ({ sessionId, turnId, binding, patch }) =>
+        openedArtifactStore.create({
+          id: subagentWritebackArtifactId(sessionId, turnId),
+          sessionId,
+          turnId,
+          name: 'workspace.patch',
+          kind: 'diff',
+          content: patch,
+          mimeType: 'text/x-diff; charset=utf-8',
+          source: 'subagent_writeback',
+          summary: `Workspace changes relative to ${binding.baseCommit}.`,
+        }),
+      assertChildWorkspaceQuiescent: async (sessionId) => {
+        if (await runtimeResources!.hasLiveSessionResources(sessionId)) {
+          throw new Error(
+            `Child Session ${sessionId} still owns live Runtime Resources; patch publication requires a quiescent workspace`,
+          );
+        }
+      },
     });
     const graphCoordinator = new AgentGraphCoordinator({
       sessionStore: stores.sessionStore,
@@ -479,6 +504,7 @@ export async function createExecutionRuntimeHostComposition(
       artifacts: openedArtifactStore,
       taskLedger: taskLedgerStore,
       purgeOperationalState: (sessionId) => stores.purgeConversationOperationalState(sessionId),
+      worktrees: worktreeChildExecutor,
       requestDrain: context.requestDrain,
     });
     const artifacts = new HostArtifactCoordinator(
@@ -514,9 +540,14 @@ export async function createExecutionRuntimeHostComposition(
         await requireMemory(memory).recover();
         await skills.recover();
         await openedArtifactStore.recover();
+        const sessions = await stores.sessionStore.listForRecovery();
+        await worktreeChildExecutor.recover(
+          sessions.flatMap((session) =>
+            session.subagentWorkspace ? [session.subagentWorkspace] : [],
+          ),
+        );
         await sessionRetirement.recover();
         await sessionRevisions.recover();
-        const sessions = await stores.sessionStore.listForRecovery();
         for (const session of sessions) {
           await stores.runtimeEventStore.repairImmutableSteeringMessageProofsForRecovery(
             session.id,
@@ -530,6 +561,7 @@ export async function createExecutionRuntimeHostComposition(
         await coordinator.prepareRecovery();
         await interactions.recoverPendingAfterHostRestart();
         await manager.recoverInterruptedSessionsStrict(stores);
+        await manager.recoverChildWorkspacePatches(sessions.map((session) => session.id));
         await graphCoordinator.recover();
         await coordinator.recover();
         rootRecoveryCompleted = true;
@@ -737,6 +769,17 @@ export async function createExecutionRuntimeHostComposition(
 function requireRootCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
   if (!coordinator) throw new Error('Runtime Host root coordinator is not composed');
   return coordinator;
+}
+
+function subagentWritebackArtifactId(sessionId: string, turnId: string): string {
+  const digest = createHash('sha256')
+    .update('maka-subagent-writeback-v1\0')
+    .update(sessionId)
+    .update('\0')
+    .update(turnId)
+    .digest('hex')
+    .slice(0, 32);
+  return `subagent_writeback_${digest}`;
 }
 
 function requireContinuity(

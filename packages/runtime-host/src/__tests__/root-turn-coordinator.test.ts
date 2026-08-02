@@ -9,6 +9,7 @@ import {
   classifyTerminalRuntimeLedger,
   FakeBackend,
   FAKE_ASK_USER_QUESTION_PROMPT,
+  IMPLEMENTATION_AGENT_DEFINITION,
   LOCAL_READ_AGENT_PROFILE,
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
@@ -99,6 +100,188 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
     assert.equal(conflict.ok, false);
     if (!conflict.ok) assert.equal(conflict.error.code, 'operation_conflict');
   } finally {
+    await fixture.dispose();
+  }
+});
+
+test('worktree child Sessions reject roots outside managed child execution', async () => {
+  let backend: LinkedChildAuthorityBackend | undefined;
+  let recoveryCoordinator: RootTurnCoordinator | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('fake', (context) => {
+        backend = new LinkedChildAuthorityBackend(context.sessionId);
+        return backend;
+      }),
+    childTools: IMPLEMENTATION_AGENT_DEFINITION.tools.map(testTool),
+  });
+  const binding = {
+    schemaVersion: 1 as const,
+    kind: 'git_worktree' as const,
+    leaseId: `subagent_worktree_${'a'.repeat(32)}`,
+    gitCommonDir: '/tmp/project/.git',
+    worktreePath: '/tmp/worktrees/managed-child',
+    branch: `maka/subagent/${'a'.repeat(32)}`,
+    baseCommit: 'b'.repeat(40),
+  };
+  try {
+    const { header: child } = await fixture.stores.sessionStore.createSubagent({
+      cwd: binding.worktreePath,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'execute',
+      collaborationMode: 'agent',
+      orchestrationMode: 'default',
+      subagentParent: {
+        kind: 'subagent',
+        parentSessionId: fixture.sessionId,
+        spawnedBy: {
+          parentRunId: 'parent-run',
+          parentTurnId: 'parent-turn',
+          toolCallId: 'implementation-spawn',
+        },
+        lifecycle: 'foreground',
+      },
+      subagentRuntime: {
+        schemaVersion: 1,
+        definitionVersion: IMPLEMENTATION_AGENT_DEFINITION.definitionVersion,
+        agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+        agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+        profile: 'implementation',
+        systemPrompt: IMPLEMENTATION_AGENT_DEFINITION.systemPrompt,
+        toolNames: [...IMPLEMENTATION_AGENT_DEFINITION.tools],
+        categoryPolicy: {},
+      },
+      subagentSpawn: {
+        schemaVersion: 1,
+        requestFingerprint: 'c'.repeat(64),
+        initialTurnId: 'managed-child-turn',
+        initialRunId: 'managed-child-run',
+      },
+      subagentWorkspace: binding,
+    });
+    const unavailableMessage =
+      'Worktree child Sessions must be continued through their parent agent.';
+
+    assert.deepEqual(
+      await fixture.coordinator.handlers['turn.start'](
+        {
+          sessionId: child.id,
+          turnId: 'external-child-turn',
+          content: { text: 'Modify the child directly.' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+      {
+        ok: false,
+        error: { code: 'operation_unavailable', message: unavailableMessage },
+      },
+    );
+    assert.equal(
+      (await fixture.coordinator.readSessionHeader(child.id))?.unavailableReason,
+      unavailableMessage,
+    );
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeRoot({
+          sessionId: child.id,
+          turnId: 'automation-child-turn',
+          runId: 'automation-child-run',
+          userMessageId: 'automation-child-message',
+          execution: { kind: 'automation', automationId: 'automation-child' },
+          content: { text: 'Modify the child from Automation.' },
+          start: async function* () {},
+        }),
+      RuntimeHostedRootUnavailableError,
+    );
+
+    const managed = fixture.coordinator.executeRoot({
+      sessionId: child.id,
+      turnId: 'managed-child-turn',
+      runId: 'managed-child-run',
+      userMessageId: 'managed-child-message',
+      execution: {
+        kind: 'linked_child_initial',
+        agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+        agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+      },
+      content: { text: HOLD_EXTERNAL_PROMPT },
+      start: ({ runId, userMessageId, onRunStarted }) =>
+        fixture.manager.sendMessage(
+          child.id,
+          {
+            turnId: 'managed-child-turn',
+            text: HOLD_EXTERNAL_PROMPT,
+            agentId: IMPLEMENTATION_AGENT_DEFINITION.id,
+            agentName: IMPLEMENTATION_AGENT_DEFINITION.name,
+          },
+          {
+            runId,
+            userMessageId: userMessageId ?? undefined,
+            durability: 'required',
+            onRunStarted,
+          },
+        ),
+    });
+    await waitUntil(() => backend !== undefined);
+    await backend?.externalHoldStarted.promise;
+
+    for (const placement of ['current_turn', 'next_turn'] as const) {
+      assert.deepEqual(
+        await fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: child.id,
+            messageId: randomUUID(),
+            content: { text: `External ${placement} mutation.` },
+            placement,
+          },
+          operationContext(fixture.hostEpoch, fixture.acquireResidency),
+        ),
+        {
+          ok: false,
+          error: { code: 'operation_unavailable', message: unavailableMessage },
+        },
+      );
+    }
+    assert.deepEqual(fixture.messages.projection(child.id).steering, []);
+    assert.deepEqual(fixture.messages.projection(child.id).followup, []);
+    assert.equal(
+      (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(child.id)).length,
+      1,
+    );
+    assert.equal((await fixture.stores.agentRunStore.listSessionRuns(child.id)).length, 1);
+
+    backend?.release();
+    await managed;
+    assert.deepEqual(fixture.coordinator.readRootState(child.id), { kind: 'idle' });
+
+    await fixture.coordinator.close();
+    await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: child.id,
+      turnId: 'legacy-external-child-turn',
+      proposedRunId: 'legacy-external-child-run',
+      proposedUserMessageId: 'legacy-external-child-message',
+      execution: { kind: 'external_message' },
+      normalizedInput: { text: 'Recover an unmanaged child Turn.' },
+      sourceMessages: [],
+      admittedAt: Date.now(),
+      previousRootTurnId: 'managed-child-turn',
+    });
+    const recovery = fixture.createRecoveryCoordinator();
+    recoveryCoordinator = recovery;
+    await recovery.prepareRecovery();
+    await assert.rejects(
+      () => recovery.recover(),
+      /Unable to recover admitted Turn legacy-external-child-turn: operation_unavailable/,
+    );
+    assert.equal((await fixture.stores.agentRunStore.listSessionRuns(child.id)).length, 1);
+  } finally {
+    backend?.release();
+    await recoveryCoordinator?.close();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
     await fixture.dispose();
   }
 });
@@ -2445,6 +2628,7 @@ function executeClaimedGraphRoot(
 
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
+  childTools?: MakaTool[];
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
   wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
   withInteractions?: boolean;
@@ -2560,6 +2744,7 @@ async function createFailureFixture(options: {
     runStore: stores.agentRunStore,
     runtimeEventStore: stores.runtimeEventStore,
     backends,
+    ...(options.childTools ? { childTools: options.childTools } : {}),
     newId: randomUUID,
     now: Date.now,
     messageAuthority: options.wrapMessageAuthority?.(messages) ?? messages,

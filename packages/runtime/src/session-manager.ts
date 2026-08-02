@@ -736,6 +736,15 @@ interface SessionManagerBaseDeps {
   /** Host-owned filesystem isolation for worktree-backed child Sessions. */
   worktreeChildExecutor?: SubagentWorktreeExecutor;
   listArtifactsForTurn?: (sessionId: string, turnId: string) => Promise<ArtifactRecord[]>;
+  /** Durable publication boundary for terminal worktree-child patches. */
+  publishChildWorkspacePatch?: (input: {
+    sessionId: string;
+    turnId: string;
+    binding: SubagentWorkspaceBinding;
+    patch: Uint8Array;
+  }) => Promise<ArtifactRecord>;
+  /** Reject patch publication while the child still owns live Runtime Resources. */
+  assertChildWorkspaceQuiescent?: (sessionId: string) => Promise<void>;
   runtimeSource?: InvocationSource;
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
   runtimeKernel?: RuntimeKernelLike;
@@ -818,6 +827,9 @@ export class SessionManager {
     if (deps.runStore && !deps.runtimeEventStore) {
       throw new Error('RuntimeEventStore is required when AgentRunStore is configured');
     }
+    if (deps.publishChildWorkspacePatch && !deps.listArtifactsForTurn) {
+      throw new Error('Child workspace patch publication requires Artifact turn listing');
+    }
     if (deps.runStore && deps.runtimeEventStore) {
       this.runtimeLedgerRepair = new RuntimeLedgerRepair({
         runStore: deps.runStore,
@@ -898,6 +910,86 @@ export class SessionManager {
       throw new Error(`Child Session ${header.id} workspace binding disagrees with its cwd`);
     }
     await executor.ensure(binding);
+  }
+
+  private hasWorktreePatchWriteBack(): boolean {
+    return Boolean(
+      this.deps.worktreeChildExecutor &&
+        this.deps.listArtifactsForTurn &&
+        this.deps.publishChildWorkspacePatch &&
+        this.deps.assertChildWorkspaceQuiescent,
+    );
+  }
+
+  private hasWorktreeChildExecutor(): boolean {
+    return this.deps.worktreeChildExecutor !== undefined;
+  }
+
+  private async finalizeAndListChildTurnArtifacts(
+    sessionId: string,
+    turnId: string,
+    status: AgentRunHeader['status'],
+  ): Promise<ArtifactRecord[]> {
+    const list = this.deps.listArtifactsForTurn;
+    if (!list) return [];
+    const artifacts = await list(sessionId, turnId);
+    if (!isTerminalRunStatus(status) || !this.hasWorktreePatchWriteBack()) return artifacts;
+    const header = await this.deps.store.readHeader(sessionId);
+    if (!header.subagentWorkspace) return artifacts;
+    const existing = artifacts.find((artifact) => artifact.source === 'subagent_writeback');
+    if (existing) return artifacts;
+
+    await this.finalizeChildWorkspacePatches(sessionId);
+    const finalized = await list(sessionId, turnId);
+    if (!finalized.some((artifact) => artifact.source === 'subagent_writeback')) {
+      throw new Error(
+        `Child Session ${sessionId} cannot reconstruct the historical workspace patch for Turn ${turnId}`,
+      );
+    }
+    return finalized;
+  }
+
+  /** Publish the recoverable write-back owed by the latest terminal worktree child Run. */
+  async finalizeChildWorkspacePatches(sessionId: string): Promise<void> {
+    if (!this.hasWorktreePatchWriteBack() || !this.deps.runStore) return;
+    const header = await this.deps.store.readHeader(sessionId);
+    const binding = header.subagentWorkspace;
+    if (!binding) return;
+
+    const latest = (await this.deps.runStore.listSessionRuns(sessionId))
+      .filter(isSessionInlineRun)
+      .sort(
+        (left, right) => right.createdAt - left.createdAt || right.runId.localeCompare(left.runId),
+      )[0];
+    if (!latest) return;
+    if (!isTerminalRunStatus(latest.status)) {
+      throw new Error(
+        `Child Session ${sessionId} cannot finalize its workspace while Run ${latest.runId} is nonterminal`,
+      );
+    }
+    const artifacts = await this.deps.listArtifactsForTurn!(sessionId, latest.turnId);
+    if (artifacts.some((artifact) => artifact.source === 'subagent_writeback')) return;
+
+    await this.deps.assertChildWorkspaceQuiescent!(sessionId);
+    await this.ensureChildWorkspace(header);
+    const patch = await this.deps.worktreeChildExecutor!.capturePatch(binding);
+    const published = await this.deps.publishChildWorkspacePatch!({
+      sessionId,
+      turnId: latest.turnId,
+      binding,
+      patch,
+    });
+    if (
+      published.sessionId !== sessionId ||
+      published.turnId !== latest.turnId ||
+      published.source !== 'subagent_writeback'
+    ) {
+      throw new Error('Child workspace patch publisher returned a mismatched Artifact');
+    }
+  }
+
+  async recoverChildWorkspacePatches(sessionIds: readonly string[]): Promise<void> {
+    for (const sessionId of sessionIds) await this.finalizeChildWorkspacePatches(sessionId);
   }
 
   /** Invalidate backend snapshots now, or immediately after active turns settle. */
@@ -2096,7 +2188,7 @@ export class SessionManager {
     assertAgentDefinitionRunnable({
       definition,
       tools: this.deps.childTools ?? [],
-      worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
+      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
     });
     const childPermissionMode =
       parentHeader.permissionMode === 'bypass' ? 'bypass' : definition.permissionMode;
@@ -2429,6 +2521,8 @@ export class SessionManager {
       return claimedAgentGraphIntentResult(claim, await this.projectExistingChildSpawn(child, run));
     }
 
+    await this.finalizeChildWorkspacePatches(child.id);
+
     const [runs, messages] = await Promise.all([
       this.deps.runStore.listSessionRuns(child.id),
       this.deps.store.readMessages(child.id),
@@ -2518,9 +2612,11 @@ export class SessionManager {
     const completedRun = await this.deps.runStore.readRun(child.id, claim.targetRunId);
     this.assertClaimedAgentGraphRun(child, snapshot, claim, completedRun);
     const failureClass = completedRun.failureClass ?? summary.failureClass;
-    const artifacts = this.deps.listArtifactsForTurn
-      ? await this.deps.listArtifactsForTurn(child.id, claim.targetTurnId)
-      : [];
+    const artifacts = await this.finalizeAndListChildTurnArtifacts(
+      child.id,
+      claim.targetTurnId,
+      completedRun.status,
+    );
     return {
       claimId: claim.claimId,
       graphId: claim.graphId,
@@ -2662,7 +2758,7 @@ export class SessionManager {
     assertAgentDefinitionRunnable({
       definition,
       tools: availableChildTools,
-      worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
+      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
     });
 
     const proposedTurnId = input.turnId ?? this.deps.newId();
@@ -2844,8 +2940,8 @@ export class SessionManager {
       const completedAt = this.deps.now();
       const run = await this.findRunByTurnId(child.id, turnId);
       const failureClass = run?.failureClass ?? summary.failureClass;
-      const artifacts = this.deps.listArtifactsForTurn
-        ? await this.deps.listArtifactsForTurn(child.id, turnId)
+      const artifacts = run
+        ? await this.finalizeAndListChildTurnArtifacts(child.id, turnId, run.status)
         : [];
       return {
         childSessionId: child.id,
@@ -2913,9 +3009,7 @@ export class SessionManager {
     const [messages, runtimeEvents, artifacts] = await Promise.all([
       this.deps.store.readMessages(child.id),
       this.deps.runtimeEventStore.readRuntimeEvents(child.id, run.runId),
-      this.deps.listArtifactsForTurn
-        ? this.deps.listArtifactsForTurn(child.id, run.turnId)
-        : Promise.resolve([]),
+      this.finalizeAndListChildTurnArtifacts(child.id, run.turnId, run.status),
     ]);
     const storedSummary =
       messages
@@ -2995,7 +3089,7 @@ export class SessionManager {
     assertAgentDefinitionRunnable({
       definition,
       tools: this.deps.childTools ?? [],
-      worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
+      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
     });
     const visited = new Set<string>();
     let cursor: AgentRunHeader | undefined = source;
@@ -3118,6 +3212,7 @@ export class SessionManager {
     ) {
       throw new Error(`Child AgentRun resume source ${sourceRunId} was not found`);
     }
+    await this.ensureChildWorkspace(child);
     await this.assertLinkedChildBoundaryMatchesParent(parentSessionId, child.id);
     const runnableTools = buildToolsForAgentDefinition(this.deps.childTools ?? [], {
       id: snapshot.agentId,
@@ -3188,6 +3283,8 @@ export class SessionManager {
     if (!first || first.kind !== 'text' || first.role !== 'user') {
       throw new Error(`Child AgentRun resume source ${sourceRunId} has no user-anchored history`);
     }
+    await this.effectiveRunHeaderFromRuntimeLedger(source);
+    await this.finalizeChildWorkspacePatches(child.id);
     this.assertChildRunHasNoSuccessor(runs, sourceRunId);
     return {
       sourceRunId,
@@ -3387,8 +3484,8 @@ export class SessionManager {
     const completedAt = this.deps.now();
     const run = await this.findRunByTurnId(child.id, turnId);
     const failureClass = run?.failureClass ?? summary.failureClass;
-    const artifacts = this.deps.listArtifactsForTurn
-      ? await this.deps.listArtifactsForTurn(child.id, turnId)
+    const artifacts = run
+      ? await this.finalizeAndListChildTurnArtifacts(child.id, turnId, run.status)
       : [];
     return {
       childSessionId: child.id,
@@ -3468,8 +3565,8 @@ export class SessionManager {
     const completedAt = this.deps.now();
     const run = await this.findRunByTurnId(sessionId, turnId);
     const failureClass = run?.failureClass ?? summary.failureClass;
-    const artifacts = this.deps.listArtifactsForTurn
-      ? await this.deps.listArtifactsForTurn(sessionId, turnId)
+    const artifacts = run
+      ? await this.finalizeAndListChildTurnArtifacts(sessionId, turnId, run.status)
       : [];
     return {
       agentId: definition.id,
@@ -3605,6 +3702,7 @@ export class SessionManager {
       ) {
         throw new Error('Child agent retry source does not belong to the parent Session');
       }
+      await this.ensureChildWorkspace(child);
       await this.assertLinkedChildBoundaryMatchesParent(sessionId, child.id);
       definition = {
         id: snapshot.agentId,
@@ -3638,6 +3736,9 @@ export class SessionManager {
       throw new Error(
         'Child agent retry source must be a provider rate-limit failure or a proven pre-provider continuation abandonment',
       );
+    }
+    if (execution.kind === 'child_session') {
+      await this.finalizeChildWorkspacePatches(targetSessionId);
     }
     this.assertChildRunHasNoSuccessor(runs, sourceRun.runId);
 
@@ -3782,8 +3883,8 @@ export class SessionManager {
     const completedAt = this.deps.now();
     const run = await this.findRunByTurnId(targetSessionId, turnId);
     const failureClass = run?.failureClass ?? summary.failureClass;
-    const artifacts = this.deps.listArtifactsForTurn
-      ? await this.deps.listArtifactsForTurn(targetSessionId, turnId)
+    const artifacts = run
+      ? await this.finalizeAndListChildTurnArtifacts(targetSessionId, turnId, run.status)
       : [];
     return {
       ...(execution.kind === 'child_session' ? { childSessionId: execution.sessionId } : {}),
@@ -3964,7 +4065,7 @@ export class SessionManager {
   async listChildAgents(sessionId: string): Promise<AgentListResult> {
     const definitions = listBuiltinAgentDefinitions({
       tools: this.deps.childTools ?? [],
-      worktreeChildExecutorAvailable: this.deps.worktreeChildExecutor !== undefined,
+      worktreeChildExecutorAvailable: this.hasWorktreeChildExecutor(),
     });
     if (!this.deps.runStore) return { definitions, executions: [], runs: [] };
     const runs = await this.deps.runStore.listSessionRuns(sessionId);
@@ -4087,9 +4188,11 @@ export class SessionManager {
         header,
       },
     );
-    const artifacts = this.deps.listArtifactsForTurn
-      ? await this.deps.listArtifactsForTurn(header.sessionId, header.turnId)
-      : [];
+    const artifacts = await this.finalizeAndListChildTurnArtifacts(
+      header.sessionId,
+      header.turnId,
+      inspected.header.status,
+    );
     const maxEvents = normalizeAgentOutputMaxEvents(input.maxEvents);
     const maxBytes = normalizeAgentOutputMaxBytes(input.maxBytes);
     const view = input.view ?? 'runtime_events';

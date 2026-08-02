@@ -65,7 +65,10 @@ import {
   SessionContinuityCoordinator,
 } from './session-continuity-coordinator.js';
 import type { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
-import { runtimeHostSessionUnavailableReason } from './host-session-availability.js';
+import {
+  runtimeHostExecutionUnavailableReason,
+  runtimeHostExternalTurnUnavailableReason,
+} from './host-session-availability.js';
 
 type RootTerminalInteractionFence = Pick<
   HostInteractionCoordinator,
@@ -417,7 +420,7 @@ export class RootTurnCoordinator {
       if (header.conversationCopy?.state === 'preparing') return null;
       return {
         isArchived: header.isArchived || header.status === 'archived',
-        unavailableReason: runtimeHostSessionUnavailableReason(header),
+        unavailableReason: runtimeHostExternalTurnUnavailableReason(header),
       };
     } catch (error) {
       if (isSessionNotFoundError(error)) return null;
@@ -544,7 +547,7 @@ export class RootTurnCoordinator {
           throw error;
         }
         if (header.status === 'archived' || header.isArchived) return undefined;
-        if (runtimeHostSessionUnavailableReason(header)) return undefined;
+        if (runtimeHostExternalTurnUnavailableReason(header)) return undefined;
         if (
           !this.resolveGoal().matchesActive(
             reservation.sessionId,
@@ -679,7 +682,7 @@ export class RootTurnCoordinator {
             'Cannot start a hosted root execution in an archived Session',
           );
         }
-        const unavailableReason = runtimeHostSessionUnavailableReason(header);
+        const unavailableReason = runtimeHostExecutionUnavailableReason(header, input.execution);
         if (unavailableReason) {
           throw new RuntimeHostedRootUnavailableError(input.sessionId, unavailableReason);
         }
@@ -752,6 +755,12 @@ export class RootTurnCoordinator {
         if (!disposition.outcome.ok) {
           if (disposition.outcome.error.code === 'session_busy') {
             throw new RuntimeHostedRootConflictError(
+              input.sessionId,
+              disposition.outcome.error.message,
+            );
+          }
+          if (disposition.outcome.error.code === 'operation_unavailable') {
+            throw new RuntimeHostedRootUnavailableError(
               input.sessionId,
               disposition.outcome.error.message,
             );
@@ -873,6 +882,9 @@ export class RootTurnCoordinator {
       const reservation = this.reserveRootTurn(input.sessionId);
       if (!reservation) return { error: 'Another root Turn is being admitted' };
       try {
+        const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+        const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+        if (unavailableReason) return { error: unavailableReason };
         const binding = await this.clientCapabilities?.bindSession(
           input.sessionId,
           input.initiatingConnectionId,
@@ -1033,7 +1045,7 @@ export class RootTurnCoordinator {
         if (header.status === 'archived' || header.isArchived) {
           return completedStart(sessionArchived('Cannot start a new Turn in an archived Session'));
         }
-        const unavailableReason = runtimeHostSessionUnavailableReason(header);
+        const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
         if (unavailableReason) {
           return completedStart(operationUnavailable(unavailableReason));
         }
@@ -1234,6 +1246,11 @@ export class RootTurnCoordinator {
       throw new RuntimeMessageAuthorityInvariantError(
         'Root Turn admission payload does not match its input',
       );
+    }
+    const session = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+    const unavailableReason = runtimeHostExecutionUnavailableReason(session, admission.execution);
+    if (unavailableReason) {
+      return completedStart(operationUnavailable(unavailableReason));
     }
     const { runId } = admission;
     const existingRun = await this.readRunIfPresent(input.sessionId, runId);

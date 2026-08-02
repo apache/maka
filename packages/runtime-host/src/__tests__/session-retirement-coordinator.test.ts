@@ -126,6 +126,93 @@ describe('Host Session retirement coordinator', () => {
     });
   });
 
+  test('retires a bound child worktree only after the Session tombstone commits', async () => {
+    await withHarness(async (harness) => {
+      const binding = {
+        schemaVersion: 1 as const,
+        kind: 'git_worktree' as const,
+        leaseId: `subagent_worktree_${'a'.repeat(32)}`,
+        gitCommonDir: '/tmp/project/.git',
+        worktreePath: '/tmp/maka-subagent-worktree',
+        branch: `maka/subagent/${'a'.repeat(32)}`,
+        baseCommit: 'b'.repeat(40),
+      };
+      const { header: child } = await harness.store.createSubagent(
+        sessionInput('Worktree child', {
+          permissionMode: 'execute',
+          subagentParent: {
+            kind: 'subagent',
+            parentSessionId: harness.rootId,
+            spawnedBy: {
+              parentRunId: 'parent-run',
+              parentTurnId: 'parent-turn',
+              toolCallId: 'spawn-call',
+            },
+            lifecycle: 'foreground',
+          },
+          subagentRuntime: {
+            schemaVersion: 1,
+            definitionVersion: 1,
+            agentId: 'implementation',
+            agentName: 'Implementation',
+            profile: 'implementation',
+            systemPrompt: 'Implement the task.',
+            toolNames: ['Read', 'Write'],
+            categoryPolicy: {},
+          },
+          subagentSpawn: {
+            schemaVersion: 1,
+            requestFingerprint: 'c'.repeat(64),
+            initialTurnId: 'child-turn',
+            initialRunId: 'child-run',
+          },
+          cwd: binding.worktreePath,
+          subagentWorkspace: binding,
+        }),
+      );
+      harness.retireWorktree = async (retired) => {
+        assert.deepEqual(harness.actions.finalizedWorkspacePatches, [child.id]);
+        assert.deepEqual(await harness.store.probeSessionRemoval(child.id), { kind: 'removed' });
+        harness.actions.retiredWorktrees.push(retired.leaseId);
+      };
+      const target = await harness.store.readHeaderRecordSnapshot(child.id);
+
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: child.id, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(removed.ok, true);
+      assert.deepEqual(await harness.store.probeSessionRemoval(child.id), {
+        kind: 'removed',
+      });
+      await waitFor(
+        () => harness.actions.retiredWorktrees.length === 1,
+        'Worktree cleanup did not run',
+      );
+      assert.deepEqual(harness.actions.retiredWorktrees, [binding.leaseId]);
+    });
+  });
+
+  test('keeps the Session when workspace patch finalization fails', async () => {
+    await withHarness(async (harness) => {
+      harness.finalizeWorkspacePatches = async () => {
+        throw new Error('injected write-back failure');
+      };
+      const target = await harness.store.readHeaderRecordSnapshot(harness.rootId);
+
+      const removed = await harness.coordinator.handlers['session.remove'](
+        { sessionId: harness.rootId, expectedRevision: target.revision },
+        CONNECTION_CONTEXT,
+      );
+
+      assert.equal(removed.ok, false);
+      assert.equal((await harness.store.probeSessionRemoval(harness.rootId)).kind, 'present');
+      assert.deepEqual(harness.actions.disposed, []);
+      assert.deepEqual(harness.actions.retiredWorktrees, []);
+    });
+  });
+
   test('re-resolves a revision family that changes before admission', async () => {
     await withHarness(async (harness) => {
       harness.hideRevisionFromNextFamilyRead = true;
@@ -361,6 +448,8 @@ interface RetirementActions {
   readonly purgedArtifacts: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
+  readonly retiredWorktrees: string[];
+  readonly finalizedWorkspacePatches: string[];
   goalCommits: number;
   goalRollbacks: number;
   automationCommits: number;
@@ -394,6 +483,8 @@ async function withHarness(
       purgedArtifacts: [],
       purgedTasks: [],
       purgedOperationalState: [],
+      retiredWorktrees: [],
+      finalizedWorkspacePatches: [],
       goalCommits: 0,
       goalRollbacks: 0,
       automationCommits: 0,
@@ -423,6 +514,8 @@ async function withHarness(
       updateMetadataDuringNextDispose: false,
       updateSiblingBeforeRemoveCommit: false,
       disposeBackend: undefined,
+      finalizeWorkspacePatches: undefined,
+      retireWorktree: undefined,
       coordinator: undefined as unknown as HostSessionRetirementCoordinator,
     };
     harness.coordinator = new HostSessionRetirementCoordinator({
@@ -484,6 +577,12 @@ async function withHarness(
         hasLiveSessionResources: async (sessionId) => blockers.resource.has(sessionId),
       },
       manager: {
+        finalizeChildWorkspacePatches: async (sessionId) => {
+          if (harness.finalizeWorkspacePatches) {
+            await harness.finalizeWorkspacePatches(sessionId);
+          }
+          actions.finalizedWorkspacePatches.push(sessionId);
+        },
         disposeSessionBackend: async (sessionId) => {
           if (harness.disposeBackend) return harness.disposeBackend(sessionId);
           actions.disposed.push(sessionId);
@@ -522,6 +621,12 @@ async function withHarness(
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
       },
+      worktrees: {
+        retire: async (binding) => {
+          if (harness.retireWorktree) return harness.retireWorktree(binding);
+          actions.retiredWorktrees.push(binding.leaseId);
+        },
+      },
       requestDrain: () => {
         actions.drains += 1;
       },
@@ -558,6 +663,10 @@ interface RetirementHarness {
   updateMetadataDuringNextDispose: boolean;
   updateSiblingBeforeRemoveCommit: boolean;
   disposeBackend: ((sessionId: string) => Promise<void>) | undefined;
+  finalizeWorkspacePatches: ((sessionId: string) => Promise<void>) | undefined;
+  retireWorktree:
+    | ((binding: import('@maka/core').SubagentWorkspaceBinding) => Promise<void>)
+    | undefined;
 }
 
 async function waitFor(

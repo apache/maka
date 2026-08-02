@@ -41,10 +41,14 @@ export interface HostChildAgentToolComposition {
 export function createHostChildAgentToolComposition(input: {
   readonly taskLedger: TaskLedgerStore;
   readonly builtinTools: BuildBuiltinToolsOptions;
+  readonly worktreePatchWriteBackAvailable?: boolean;
 }): HostChildAgentToolComposition {
   const builtinTools = buildBuiltinTools(input.builtinTools);
   const childTools = buildChildAgentTools(builtinTools);
-  const definitions = listRunnableBuiltinAgentDefinitions({ tools: childTools });
+  const definitions = listRunnableBuiltinAgentDefinitions({
+    tools: childTools,
+    worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
+  });
   return Object.freeze({
     parentTools: Object.freeze(
       buildParentAgentTools({ taskLedger: input.taskLedger, definitions }),
