@@ -2132,7 +2132,8 @@ describe('ShellRunProcessManager', () => {
               pty: true,
             }),
           ),
-        /Live PTY capacity is full \(1\)/,
+        // Names the tool that frees a slot, which the old wording did not.
+        /No free interactive \(PTY\) background task slot: 1 are already running.*StopBackgroundTask/s,
       );
 
       const pipeRun = await manager.runBackgroundBash(
@@ -2153,7 +2154,7 @@ describe('ShellRunProcessManager', () => {
               command: waitForeverCommand(),
             }),
           ),
-        /Live background task capacity is full \(2\)/,
+        /No free background task slot: 2 are already running.*StopBackgroundTask/s,
       );
 
       await manager.stopBackgroundTask('session-1', ptyRun.ref, NO_ABORT);
