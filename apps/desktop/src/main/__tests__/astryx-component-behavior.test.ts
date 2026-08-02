@@ -27,6 +27,7 @@ type RendererComponents = {
   OnboardingHero(props: {
     state: OnboardingState;
     onOpenSettings(): void;
+    onOpenConnectionDetail(connectionSlug: string): void;
     onAddProvider(): void;
     onBrowseProviders(): void;
   }): ReactNode;
@@ -94,14 +95,31 @@ describe('Astryx component behavior', () => {
     const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
       state: { kind: 'needs_connection' },
       onOpenSettings: () => undefined,
+      onOpenConnectionDetail: () => undefined,
       onAddProvider: () => undefined,
       onBrowseProviders: () => undefined,
     }));
 
     assert.match(
       markup,
-      /maka-firstrun-row[^>]*>[\s\S]*?<button type="button"[^>]*>[\s\S]*?OpenCode Zen[\s\S]*?<\/button>/,
+      /data-provider="opencode-free"[^>]*>[\s\S]*?<button type="button"[^>]*>[\s\S]*?OpenCode Zen[\s\S]*?<\/button>/,
     );
+    assert.equal(markup.match(/<li[^>]*data-provider=/g)?.length, 4);
+  });
+
+  it('shows the current connection recovery without a progress checklist', async () => {
+    const { LocaleProvider, OnboardingHero } = await rendererComponents;
+    const markup = renderWithLocale(LocaleProvider, createElement(OnboardingHero, {
+      state: { kind: 'needs_connection_credentials', connectionSlug: 'anthropic-live' },
+      onOpenSettings: () => undefined,
+      onOpenConnectionDetail: () => undefined,
+      onAddProvider: () => undefined,
+      onBrowseProviders: () => undefined,
+    }));
+
+    assert.match(markup, /data-maka-contract="onboarding-card"/);
+    assert.match(markup, /<button[^>]*data-connection-slug="anthropic-live"/);
+    assert.doesNotMatch(markup, /配置 AI 进度|当前步骤|待完成/);
   });
 
   it('opens WeChat advanced settings only when advanced values already exist', async () => {

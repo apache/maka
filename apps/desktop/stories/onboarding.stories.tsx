@@ -1,22 +1,16 @@
-import { type ReactNode } from 'react';
+import { type ComponentProps, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import type { LlmConnection, OnboardingState, ProviderType, SettingsSection } from '@maka/core';
 import { ChatSurfaceLayout, ChatView } from '@maka/ui';
-import { expect } from 'storybook/test';
+import { expect, fn, userEvent, within } from 'storybook/test';
 import { OnboardingHero } from '../src/renderer/OnboardingHero';
-
-// Fidelity convention (#1433): every story below names the real app path
-// that reaches it. See apps/desktop/stories/FIDELITY.md.
 
 const meta = {
   title: 'Product/Onboarding',
-  parameters: {
-    layout: 'fullscreen',
-  },
+  parameters: { layout: 'fullscreen' },
 } satisfies Meta;
 
 export default meta;
-
 type Story = StoryObj<typeof meta>;
 
 function makeConnection(input: {
@@ -43,27 +37,14 @@ const connections: LlmConnection[] = [
 ];
 
 /**
- * The hero's real frame, not an approximation of it.
- *
- * #1433, first pass: this used to end in `maxWidth: 720; padding: 48px 32px`,
- * which is nothing the app renders. That is how #1433 produced a 135px offset
- * and a centring bug that neither reproduced in the built app.
- *
- * #1433, second pass: the replacement claimed to be the app's chain "class for
- * class" and was not — it nested `.mainColumn` OUTSIDE `.maka-panel-detail`
- * (the app nests it inside), and dropped `.maka-detail-with-artifacts`,
- * ChatView's session-owned chrome, and the scroll viewport. Writing
- * a chain out by hand is the same mistake one level down.
- *
- * So only the part that cannot be imported is written out: app-shell.tsx owns
- * the three outer wrappers, and stories may not import it (see
- * storybook-baseline-contract). Everything from `<main>` inward is the real
- * `ChatView`, rendered in its empty state with the hero passed through
- * `emptyOverride` exactly as `chat-message-surface.tsx` passes it — including
- * the `.maka-onboarding-surface` wrapper, whose two `:has(.maka-firstrun)`
- * rules in onboarding.css own the hero's height, padding and alignment.
+ * Everything from `<main>` inward is the real ChatView empty-state path. The
+ * three wrappers outside it mirror the app shell because app-shell.tsx itself
+ * cannot be mounted as a story without its main-process orchestration.
  */
-function DetailPane(props: { children: ReactNode }) {
+function DetailPane(props: { children?: ReactNode }) {
+  const emptyOverride = props.children === undefined
+    ? undefined
+    : <div className="maka-onboarding-surface">{props.children}</div>;
   return (
     <div
       className="app maka-shell-astryx agents-layout-body"
@@ -77,11 +58,7 @@ function DetailPane(props: { children: ReactNode }) {
         <div className="maka-detail-with-artifacts">
           <div className="mainColumn" data-home-surface="true">
             <ChatSurfaceLayout composer={null}>
-              <ChatView
-                messages={[]}
-                onNew={() => undefined}
-                emptyOverride={<div className="maka-onboarding-surface">{props.children}</div>}
-              />
+              <ChatView messages={[]} onNew={() => undefined} emptyOverride={emptyOverride} />
             </ChatSurfaceLayout>
           </div>
         </div>
@@ -90,21 +67,24 @@ function DetailPane(props: { children: ReactNode }) {
   );
 }
 
-function heroProps(state: OnboardingState) {
+function heroProps(
+  state: OnboardingState,
+  overrides: Partial<ComponentProps<typeof OnboardingHero>> = {},
+): ComponentProps<typeof OnboardingHero> {
   return {
     state,
     onOpenSettings: (_section?: SettingsSection) => undefined,
+    onOpenConnectionDetail: (_connectionSlug: string) => undefined,
     onAddProvider: () => undefined,
     onBrowseProviders: () => undefined,
     connections,
     onRefreshConnections: async () => undefined,
     onSkip: () => undefined,
+    ...overrides,
   };
 }
 
-// Real path: first launch with no sessions — the hero fills the chat surface's empty
-// area (chat-message-surface.tsx) while onboarding is unfinished, gated in
-// app-shell.tsx. This is the fresh-install state: no model connection exists at all.
+// Real path: a fresh workspace has no model connection and no sessions.
 export const NeedsConnection: Story = {
   render: () => (
     <DetailPane>
@@ -112,10 +92,93 @@ export const NeedsConnection: Story = {
     </DetailPane>
   ),
   play: async ({ canvasElement }) => {
-    const providerRow = canvasElement.querySelector<HTMLElement>('.maka-firstrun-row');
+    const providerRow = canvasElement.querySelector<HTMLElement>('.maka-onboarding-provider-row');
     await expect(providerRow).not.toBeNull();
     const style = getComputedStyle(providerRow as HTMLElement);
     await expect(style.paddingTop).toBe('8px');
-    await expect(style.paddingRight).toBe('14px');
+    await expect(style.paddingRight).toBe('8px');
+    await expect(canvasElement.querySelectorAll('[data-maka-contract="onboarding-card"]')).toHaveLength(1);
   },
+};
+
+// Real path: a ready connection exists but none is selected as the default.
+export const NeedsDefaultConnection: Story = {
+  render: () => (
+    <DetailPane>
+      <OnboardingHero {...heroProps({ kind: 'needs_default_connection' })} />
+    </DetailPane>
+  ),
+};
+
+const openConnectionDetail = fn();
+
+// Real path: the default connection exists but its credential is unavailable.
+export const NeedsCredentials: Story = {
+  render: () => (
+    <DetailPane>
+      <OnboardingHero
+        {...heroProps(
+          { kind: 'needs_connection_credentials', connectionSlug: 'zai-live' },
+          { onOpenConnectionDetail: openConnectionDetail },
+        )}
+      />
+    </DetailPane>
+  ),
+  play: async ({ canvasElement }) => {
+    openConnectionDetail.mockClear();
+    await userEvent.click(within(canvasElement).getByRole('button', { name: '配置连接凭据' }));
+    await expect(openConnectionDetail).toHaveBeenCalledWith('zai-live');
+  },
+};
+
+// Real path: the snapshot references a connection before the renderer list catches up.
+export const NeedsCredentialsUnknownSlug: Story = {
+  render: () => (
+    <DetailPane>
+      <OnboardingHero
+        {...heroProps(
+          { kind: 'needs_connection_credentials', connectionSlug: 'ghost-connection' },
+          { connections: [] },
+        )}
+      />
+    </DetailPane>
+  ),
+};
+
+// Real path: credentials work but the connection has no chat-capable default model.
+export const NeedsDefaultModel: Story = {
+  render: () => (
+    <DetailPane>
+      <OnboardingHero
+        {...heroProps({ kind: 'needs_default_model', connectionSlug: 'zai-live' })}
+      />
+    </DetailPane>
+  ),
+};
+
+// Real path: every configured connection fails readiness checks.
+export const Blocked: Story = {
+  render: () => (
+    <DetailPane>
+      <OnboardingHero
+        {...heroProps({ kind: 'blocked', reason: 'all_connections_unhealthy' })}
+      />
+    </DetailPane>
+  ),
+};
+
+// Real path: a configured workspace with no sessions gets the ordinary empty chat.
+export const ReadyEmpty: Story = {
+  render: () => <DetailPane />,
+};
+
+// Real path: the desktop window is at its 480px width floor during first run.
+export const NarrowWindow: Story = {
+  parameters: { viewport: { defaultViewport: 'mobile1' } },
+  globals: { viewport: { value: 'mobile1' } },
+  render: () => (
+    <DetailPane>
+      <OnboardingHero {...heroProps({ kind: 'needs_connection' })} />
+    </DetailPane>
+  ),
 };

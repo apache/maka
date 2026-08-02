@@ -227,6 +227,7 @@ async function withE2eWindow(
 
 export const test = base.extend<{
   window: Page;
+  firstRunWindow: Page;
   modelPickerLongWindow: Page;
   longTranscriptWindow: Page;
   sidebarLongSessionsWindow: Page;
@@ -247,6 +248,19 @@ export const test = base.extend<{
   // Used by chat / session / settings / attachment specs.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  // No connection: the real main process derives `needs_connection`, and the
+  // renderer replaces the empty chat with the first-task activation card.
+  firstRunWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '[data-maka-contract="onboarding-card"]',
+        e2eFixtureScenario: 'first-run',
+        locale: 'zh',
+      },
+      use,
+    );
   },
   modelPickerLongWindow: async ({}, use) => {
     await withE2eWindow(

@@ -1,10 +1,8 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { OnboardingState } from '@maka/core';
-import {
-  getOnboardingHeroCopy,
-  getOnboardingSetupSteps,
-} from '../../renderer/onboarding-hero-copy.js';
+import { getOnboardingHeroCopy } from '../../renderer/onboarding-hero-copy.js';
+import { getOnboardingCopy } from '../../renderer/locales/onboarding-copy.js';
 
 const configuredStates: OnboardingState[] = [
   { kind: 'ready_empty', defaultConnectionSlug: 'a', defaultModel: 'm' },
@@ -20,12 +18,19 @@ describe('onboarding hero copy', () => {
     { kind: 'blocked', reason: 'all_connections_unhealthy' },
   ];
 
-  it('maps incomplete states to the models recovery flow', () => {
-    for (const state of onboardingStates) {
+  it('maps each incomplete state to its shortest recovery destination', () => {
+    const expectedTargets = [
+      { kind: 'provider_catalog' },
+      { kind: 'models' },
+      { kind: 'connection', connectionSlug: 'anthropic-live' },
+      { kind: 'connection', connectionSlug: 'openai-live' },
+      { kind: 'models' },
+    ];
+    for (const [index, state] of onboardingStates.entries()) {
       const copy = getOnboardingHeroCopy(state, 'zh');
       assert.ok(copy, state.kind);
       assert.equal(copy.kind, state.kind);
-      assert.equal(copy.cta.settingsSection, 'models');
+      assert.deepEqual(copy.cta.target, expectedTargets[index]);
       assert.match(`${copy.title}${copy.body}${copy.cta.label}`, /[一-鿿]/);
       assert.equal(copy.tone, state.kind === 'blocked' ? 'destructive' : undefined);
     }
@@ -43,10 +48,18 @@ describe('onboarding hero copy', () => {
     }
   });
 
-  it('does not render onboarding copy or steps for configured users', () => {
+  it('names the recovery action instead of the Settings container', () => {
+    const labels = onboardingStates.map((state) => getOnboardingHeroCopy(state, 'zh')?.cta.label);
+    assert.match(labels[1] ?? '', /默认/);
+    assert.match(labels[2] ?? '', /凭据/);
+    assert.match(labels[3] ?? '', /模型/);
+    assert.match(labels[4] ?? '', /修复/);
+    assert.equal(getOnboardingCopy('zh').skip, '跳过引导');
+  });
+
+  it('does not render onboarding copy for configured users', () => {
     for (const state of configuredStates) {
       assert.equal(getOnboardingHeroCopy(state, 'zh'), null);
-      assert.equal(getOnboardingSetupSteps(state, 'zh'), null);
     }
   });
 

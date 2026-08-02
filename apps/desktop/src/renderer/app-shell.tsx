@@ -2538,6 +2538,7 @@ function AppShellContent({
                   if (section) openSettingsSection(section);
                   else openSettings();
                 }}
+                onOpenConnectionDetail={openConnectionDetail}
                 onAddProvider={openProviderCreate}
                 onBrowseProviders={openProviderCatalog}
                 connections={connections}

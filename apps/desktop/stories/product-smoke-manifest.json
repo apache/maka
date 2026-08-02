@@ -6,6 +6,13 @@
     "floor": { "width": 480, "height": 900 }
   },
   "surfaces": {
+    "onboarding": {
+      "storyId": "product-onboarding--needs-connection",
+      "productionHost": "ChatView > OnboardingHero",
+      "state": "Fresh workspace choosing its first model provider",
+      "viewports": ["wide", "compact", "floor"],
+      "colorSchemes": ["light", "dark"]
+    },
     "settings": {
       "storyId": "product-settings-pages--general",
       "productionHost": "SettingsSurface",

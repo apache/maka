@@ -31,6 +31,7 @@ interface ChatMessageSurfaceProps extends Omit<
   onboardingState: OnboardingState | undefined;
   isOnboardingLoading: boolean;
   onOpenSettings: (section?: SettingsSection) => void;
+  onOpenConnectionDetail: (connectionSlug: string) => void;
   onAddProvider: (providerType: ProviderType) => void;
   onBrowseProviders: () => void;
   connections: LlmConnection[];
@@ -44,6 +45,7 @@ export function ChatMessageSurface({
   onboardingState,
   isOnboardingLoading,
   onOpenSettings,
+  onOpenConnectionDetail,
   onAddProvider,
   onBrowseProviders,
   connections,
@@ -66,6 +68,7 @@ export function ChatMessageSurface({
         <OnboardingHero
           state={onboardingState}
           onOpenSettings={onOpenSettings}
+          onOpenConnectionDetail={onOpenConnectionDetail}
           onAddProvider={onAddProvider}
           onBrowseProviders={onBrowseProviders}
           connections={connections}
