@@ -66,6 +66,7 @@ import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
+import { createHostWebSearchTool } from './web-search-tool.js';
 
 export async function createExecutionRuntimeHostComposition(
   context: RuntimeHostCompositionContext,
@@ -157,9 +158,11 @@ export async function createExecutionRuntimeHostComposition(
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
+    const hostTools = [createHostWebSearchTool({ policy: runtimePolicyStores.operations })];
     const childAgentTools = createHostChildAgentToolComposition({
       taskLedger,
       builtinTools,
+      hostTools,
       worktreePatchWriteBackAvailable: true,
     });
     const openedGraphControlStore = createAgentGraphControlStore(
@@ -289,6 +292,7 @@ export async function createExecutionRuntimeHostComposition(
         automationTool: requireAutomationCoordinator(automations).modelTool,
         goalTools: requireGoal(goal).tools,
         builtinTools,
+        hostTools,
         parentAgentTools: childAgentTools.parentTools,
         childAgents: bindHostChildAgentBackend(
           requireSessionManager(manager),

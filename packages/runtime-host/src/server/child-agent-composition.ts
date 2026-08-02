@@ -41,10 +41,11 @@ export interface HostChildAgentToolComposition {
 export function createHostChildAgentToolComposition(input: {
   readonly taskLedger: TaskLedgerStore;
   readonly builtinTools: BuildBuiltinToolsOptions;
+  readonly hostTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
 }): HostChildAgentToolComposition {
   const builtinTools = buildBuiltinTools(input.builtinTools);
-  const childTools = buildChildAgentTools(builtinTools);
+  const childTools = buildChildAgentTools([...builtinTools, ...(input.hostTools ?? [])]);
   const definitions = listRunnableBuiltinAgentDefinitions({
     tools: childTools,
     worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,

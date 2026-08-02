@@ -2338,10 +2338,19 @@ function providerToolErrorMessage(output: unknown): string | undefined {
 }
 
 function summarizeArgs(toolName: string, args: unknown): string {
-  const projected = projectToolActivityArgs(toolName, args);
+  const projected =
+    toolName === 'WebSearch'
+      ? projectWebSearchTelemetryArgs(args)
+      : projectToolActivityArgs(toolName, args);
   const raw = typeof projected === 'string' ? projected : JSON.stringify(projected ?? null);
   const text = toolName === 'WriteStdin' ? raw : redactSecrets(raw);
   return text.length <= 512 ? text : `${text.slice(0, 511)}…`;
+}
+
+function projectWebSearchTelemetryArgs(args: unknown): Record<string, number> {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return {};
+  const limit = (args as { limit?: unknown }).limit;
+  return typeof limit === 'number' && Number.isFinite(limit) ? { limit } : {};
 }
 
 function summarizePersistedArgs(args: unknown): string {

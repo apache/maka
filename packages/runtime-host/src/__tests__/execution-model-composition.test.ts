@@ -62,6 +62,7 @@ const RESPONSE_TEXT = 'Hosted real-model execution completed.';
 const SUMMARY_TEXT = '## Goal\nContinue hosted real-model execution.';
 const CLIENT_CAPABILITY_RESULT_TEXT = 'HOSTED_CLIENT_CAPABILITY_RESULT_SENTINEL';
 const CHILD_AGENT_RESULT_TEXT = 'HOSTED_CHILD_AGENT_RESULT_SENTINEL';
+const WEB_RESEARCH_CHILD_RESULT_TEXT = 'HOSTED_WEB_RESEARCH_RESULT_SENTINEL';
 const execFileAsync = promisify(execFile);
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -676,6 +677,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
+      'WebSearch',
       'Write',
       'WriteStdin',
       'load_tools',
@@ -869,20 +871,28 @@ test('production Host executes a durable runnable child with an exact tool ceili
     );
 
     const requests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(requests.length, 4);
+    assert.equal(requests.length, 7);
     assert.ok(toolNames(requests[0]?.body).includes('load_tools'));
     assert.equal(toolNames(requests[0]?.body).includes('agent_spawn'), false);
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
       'local_read',
+      'web_research',
       'implementation',
     ]);
     assert.deepEqual(toolNames(requests[2]?.body), ['Glob', 'Grep', 'Read']);
     assert.ok(toolNames(requests[3]?.body).includes('agent_spawn'));
+    assert.deepEqual(toolNames(requests[4]?.body), ['WebSearch']);
+    assert.deepEqual(toolNames(requests[5]?.body), ['WebSearch']);
+    assert.ok(toolNames(requests[6]?.body).includes('agent_spawn'));
 
     const sessions = await execution.sessionStore.listForRecovery();
-    const child = sessions.find((session) => session.id !== parent.id);
+    const child = sessions.find((session) => session.subagentRuntime?.profile === 'local_read');
+    const webChild = sessions.find(
+      (session) => session.subagentRuntime?.profile === 'web_research',
+    );
     assert.ok(child);
+    assert.ok(webChild);
     assert.equal(child?.subagentRuntime?.profile, 'local_read');
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
@@ -897,6 +907,31 @@ test('production Host executes a durable runnable child with an exact tool ceili
       childMessages.find((message) => message.type === 'assistant')?.text,
       CHILD_AGENT_RESULT_TEXT,
     );
+    if (!webChild) return;
+    const webChildRuns = await execution.agentRunStore.listSessionRuns(webChild.id);
+    assert.equal(webChildRuns.length, 1);
+    assert.equal(webChildRuns[0]?.status, 'completed');
+    const webChildMessages = await execution.sessionStore.readMessagesSnapshot(webChild.id);
+    assert.equal(
+      webChildMessages.find((message) => message.type === 'assistant')?.text,
+      WEB_RESEARCH_CHILD_RESULT_TEXT,
+    );
+    const webChildEvents = await execution.runtimeEventStore.readRuntimeEvents(
+      webChild.id,
+      webChildRuns[0]!.runId,
+    );
+    const searchResult = webChildEvents.find(
+      (event) => event.content?.kind === 'function_response' && event.content.name === 'WebSearch',
+    );
+    assert.ok(searchResult?.content?.kind === 'function_response');
+    assert.deepEqual(decodeCanonicalToolResultContent(searchResult.content.result), {
+      kind: 'web_search_error',
+      ok: false,
+      provider: 'tavily',
+      query: 'latest hosted web result',
+      reason: 'not_configured',
+      message: 'Enable web search before using this tool.',
+    });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const childArtifacts = await artifacts.listTurnArtifacts(child.id, childRuns[0]!.turnId);
     assert.equal(childArtifacts.length, 1);
@@ -1052,6 +1087,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.ok(toolNames(requests[1]?.body).includes('agent_spawn'));
     assert.deepEqual(toolParameterEnum(requests[1]?.body, 'agent_spawn', 'profile'), [
       'local_read',
+      'web_research',
       'implementation',
     ]);
     assert.deepEqual(toolNames(requests[2]?.body), [
@@ -2087,6 +2123,29 @@ async function handleProviderRequest(
   if (flow.kind === 'child_agent' && streamRequestIndex === 3) {
     assert.deepEqual(toolNames(body), ['Glob', 'Grep', 'Read']);
     respondProviderText(response, CHILD_AGENT_RESULT_TEXT);
+    return;
+  }
+  if (flow.kind === 'child_agent' && streamRequestIndex === 4) {
+    assert.ok(toolNames(body).includes('agent_spawn'));
+    respondProviderToolCall(response, streamRequestIndex, 'agent_spawn', {
+      profile: 'web_research',
+      task: 'Find one current hosted web result.',
+      isolation: 'same_workspace',
+      write_back: 'summary',
+    });
+    return;
+  }
+  if (flow.kind === 'child_agent' && streamRequestIndex === 5) {
+    assert.deepEqual(toolNames(body), ['WebSearch']);
+    respondProviderToolCall(response, streamRequestIndex, 'WebSearch', {
+      query: 'latest hosted web result',
+      limit: 1,
+    });
+    return;
+  }
+  if (flow.kind === 'child_agent' && streamRequestIndex === 6) {
+    assert.deepEqual(toolNames(body), ['WebSearch']);
+    respondProviderText(response, WEB_RESEARCH_CHILD_RESULT_TEXT);
     return;
   }
   if (flow.kind === 'implementation_child_agent' && streamRequestIndex === 3) {
