@@ -122,15 +122,3 @@
     gap: var(--space-2);
     margin-top: var(--space-1);
   }
-/* .settingsRow states + hint moved to rows.css
-   (PR-SETTINGS-ROWS-CONVERGENCE-0). */
-.providersPanel {
-    min-height: 420px;
-    display: grid;
-    grid-template-columns: minmax(190px, 0.82fr) minmax(0, 1.5fr);
-    gap: var(--space-3);
-  }
-.settingsSurface[data-modal="true"] .providersPanel {
-    min-height: 480px;
-    grid-template-columns: minmax(190px, 0.7fr) minmax(250px, 1fr);
-  }

@@ -1,10 +1,17 @@
-import { ChevronRight } from '@maka/ui/icons';
 import { PROVIDER_DEFAULTS, isWiredOAuthProvider, type ProviderType } from '@maka/core';
-import { Item } from '@astryxdesign/core';
-import { Badge, useUiLocale } from '@maka/ui';
+import { Badge, HStack, ListItem, Text } from '@astryxdesign/core';
+import { ChevronRight } from '@maka/ui/icons';
+import { useUiLocale } from '@maka/ui';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 
+/**
+ * One catalog row. Geometry — row padding, the gap between media, copy and
+ * actions, label and description type — belongs to Astryx `Item`; this file
+ * only decides what goes in each slot. The `providerCatalogRow` class and the
+ * `data-provider` / `data-status` attributes stay as test and brand hooks
+ * (`providers.spec.ts` locates rows through them); neither carries geometry.
+ */
 export function ProviderCatalogCard(props: { type: ProviderType; count: number; onSelect(): void }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).catalog;
@@ -14,7 +21,7 @@ export function ProviderCatalogCard(props: { type: ProviderType; count: number; 
   const disabledStatus = providerDisabledStatus(props.type);
   if (disabled) {
     return (
-      <Item
+      <ListItem
         className="providerCatalogRow"
         data-provider={props.type}
         data-status={disabledStatus}
@@ -22,12 +29,11 @@ export function ProviderCatalogCard(props: { type: ProviderType; count: number; 
         isDisabled
         aria-label={isWiredOAuthProvider(props.type) ? copy.wiredTitle(display.name) : copy.unwiredTitle(display.name)}
         startContent={<ProviderLogo type={props.type} />}
-        label={<span className="providerCatalogTitle">{display.name}</span>}
-        description={<span className="providerCatalogDesc">{display.description}</span>}
+        label={display.name}
+        description={display.description}
         endContent={(
           <Badge
             variant={disabledStatus === 'experimental' ? 'warning' : 'info'}
-            className="providerCatalogStateBadge"
             aria-hidden="true"
             label={disabledStatus === 'experimental' ? copy.experiment : copy.unavailable}
           />
@@ -37,22 +43,26 @@ export function ProviderCatalogCard(props: { type: ProviderType; count: number; 
   }
 
   return (
-    <Item
+    <ListItem
       className="providerCatalogRow"
       data-provider={props.type}
       data-status="ready"
       startContent={<ProviderLogo type={props.type} />}
-      label={<span className="providerCatalogTitle" aria-label={copy.cardAria(display.name, display.badge, display.description, props.count)}>{display.name}</span>}
+      label={<span aria-label={copy.cardAria(display.name, display.badge, display.description, props.count)}>{display.name}</span>}
       description={(
-        <span className="providerCatalogDesc">
+        <>
           {display.description}
-          {props.count > 0 && <span className="providerCatalogCount">{copy.configured(props.count)}</span>}
-        </span>
+          {props.count > 0 && (
+            <Text as="span" size="sm" color="secondary">{` · ${copy.configured(props.count)}`}</Text>
+          )}
+        </>
       )}
-      endContent={<span className="providerCatalogActions">
-        {display.badge && <span className="providerCatalogBadge">{display.badge}</span>}
-        <ChevronRight className="providerCatalogChevron" size={15} aria-hidden="true" />
-      </span>}
+      endContent={(
+        <HStack gap={2} align="center">
+          {display.badge && <Badge variant="neutral" label={display.badge} />}
+          <ChevronRight size={15} aria-hidden="true" />
+        </HStack>
+      )}
       onClick={props.onSelect}
     />
   );

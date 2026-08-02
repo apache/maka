@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight } from '@maka/ui/icons';
-import { Item } from '@astryxdesign/core';
+import { Badge, Banner, HStack, List, ListItem, VStack } from '@astryxdesign/core';
 import {
   type ProviderType,
 } from '@maka/core';
@@ -164,13 +164,16 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
   }, []);
 
   return (
-    <div className="providerOAuthCatalog" aria-label={copy.aria} data-provider-category="oauth">
+    <VStack gap={3} aria-label={copy.aria} data-provider-category="oauth">
       {cardRefreshError && (
-        <div className="providerOAuthError" role="alert">
-          {copy.staleState}{cardRefreshError}
-        </div>
+        <Banner
+          status="warning"
+          role="alert"
+          title={copy.staleState}
+          description={cardRefreshError}
+        />
       )}
-      <div className="providerOAuthGrid">
+      <List hasDividers className="providerOAuthGrid">
         {visibleCards.map((card) => {
           const snapshot = cardStates[card.id];
           const runtimeState = snapshot?.runtimeState ?? 'unknown';
@@ -184,7 +187,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
             ? snapshot.email
             : card.description;
           return (
-            <Item
+            <ListItem
               key={card.id}
               className="providerCatalogRow providerOAuthCard"
               data-card-id={card.id}
@@ -193,17 +196,19 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
               data-oauth-status={card.status}
               data-logged-in={isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
-              label={<span className="providerCatalogTitle" aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}>{card.name}</span>}
-              description={<span className="providerCatalogDesc providerOAuthCardDescription">{liveDescription}</span>}
-              endContent={<span className="providerCatalogActions">
-                <span className="providerCatalogBadge providerOAuthCardBadge">{liveBadge}</span>
-                <ChevronRight className="providerCatalogChevron" size={15} aria-hidden="true" />
-              </span>}
+              label={<span aria-label={copy.cardAria(card.name, liveBadge, liveDescription)}>{card.name}</span>}
+              description={<span className="providerOAuthCardDescription">{liveDescription}</span>}
+              endContent={(
+                <HStack gap={2} align="center">
+                  <Badge variant={isLoggedIn ? 'neutral' : 'info'} label={liveBadge} />
+                  <ChevronRight size={15} aria-hidden="true" />
+                </HStack>
+              )}
               onClick={() => openOAuthModal(card.id)}
             />
           );
         })}
-      </div>
+      </List>
       {openModal === 'claude' && (
         <ClaudeSubscriptionModal
           isOpen={isModalOpen}
@@ -232,7 +237,7 @@ export function ModelOAuthSection(props: { query?: string; onConnectionsChanged(
           onOpenChange={handleModalOpenChange}
         />
       )}
-    </div>
+    </VStack>
   );
 }
 

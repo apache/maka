@@ -113,24 +113,6 @@
   gap: var(--space-2-5);
 }
 
-.providersLoading {
-  display: grid;
-  align-content: start;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-1);
-}
-
-.providersLoadingStrip {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.providersLoadingGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(198px, 1fr));
-  gap: var(--space-2-5);
-}
-
 /* PR-SETTINGS-REVIEW-0 (2026-06-23, WAWQAQ msgs `f97ed407` + `8577326c`):
    pull the page header into the same centered max-w-3xl column as the
    content. Before this, the header sat in `.settingsMainPane` padding

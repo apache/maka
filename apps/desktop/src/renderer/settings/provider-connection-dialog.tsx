@@ -23,6 +23,11 @@ export function ProviderConnectionDialog(props: {
       width={520}
       maxHeight="calc(100dvh - 80px)"
       purpose="form"
+      /* The dialog's own inset, not a header override: at the 16px default the
+       * provider mark and the close button sit one plate-height from the top
+       * edge and read as pinned to it. Astryx exposes this as a parameter, so
+       * the fix stays inside the primitive's vocabulary. */
+      padding={6}
     >
       <Layout
         header={
@@ -34,10 +39,8 @@ export function ProviderConnectionDialog(props: {
           />
         }
         content={
-          <LayoutContent padding={0}>
-            <div className="providerConnectionDialogBody">
-              {props.children}
-            </div>
+          <LayoutContent padding={6} isScrollable>
+            {props.children}
           </LayoutContent>
         }
       />

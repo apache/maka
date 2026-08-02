@@ -19,24 +19,6 @@
   color: var(--muted-foreground);
 }
 
-/* Provider catalog + OAuth login render as governed Item rows (media ·
- * content · actions) — the same shadcn primitive the enabled connections
- * use — inside a seamless hairline list. This replaces the hand-written
- * .providerCatalogCard grid so the whole 模型 page speaks one component
- * language (component governance). */
-.catalogGrid {
-  min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr;
-  align-content: start;
-  overflow: auto;
-}
-
-.providerCatalogRow {
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-1-5);
-}
-
 /* Gated providers (preview / not-yet-open) stay inert and muted; the
  * provider-surface gate forbids rendering them as actionable. */
 .providerCatalogRow[data-disabled="true"] {
@@ -45,56 +27,16 @@
   filter: grayscale(0.28);
 }
 
-.providerCatalogTitle {
-  font: var(--maka-text-heading-4);
-}
-
-/* Trailing badge + chevron live in ItemActions (a direct child of the row),
- * so they sit vertically centered against the full two-line row rather than
- * pinned to the title line. */
-.providerCatalogActions {
-  gap: var(--space-2-5);
-}
-
-.providerCatalogCount {
-  font: var(--maka-text-body);
-  margin-left: var(--space-2);
-  color: var(--muted-foreground);
-}
-
-.providerCatalogChevron {
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-}
-
-/* category / preview / login badges — compact squared corners, never pills */
-.providerCatalogBadge {
-  font: var(--maka-text-heading-5);
-  flex: 0 0 auto;
-  width: fit-content;
-  border-radius: var(--radius-control);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  padding: var(--space-0-5) var(--space-1-5);
-  font-style: normal;
-}
-
 .providerEditor {
   display: grid;
   gap: var(--space-3);
 }
 
-.providerConnectionDialog .providerLogo[data-compact="true"] {
-  width: 24px;
-  height: 24px;
-}
-
-.providerConnectionDialogBody {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-2) var(--space-4) var(--space-4);
-}
+/* The dialog mark keeps the compact 32px plate the catalog rows use. It used
+ * to be squeezed to 24px here, which left it shorter than the 36px two-line
+ * title block beside it; DialogHeader top-aligns startContent, so the shrunk
+ * plate and the close button both read as pinned to the dialog's top edge
+ * while the header's own 16px padding was never the problem. */
 
 .providerConnectionManager {
   gap: var(--space-4);
@@ -267,85 +209,6 @@
   }
 }
 
-@media (max-width: 980px) {
-  .catalogGrid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Provider market refresh */
-.providersMarketPanel,
-.settingsSurface[data-modal="true"] .providersMarketPanel {
-  position: relative;
-  min-height: 500px;
-  display: block;
-}
-
-.providerMarket {
-  min-height: 500px;
-  display: grid;
-  align-content: start;
-  gap: var(--space-6);
-}
-
-/* Account connections and provider transports share the same inline catalog
-   and centered connection-dialog flow. */
-.providerOAuthCatalog {
-  min-height: 0;
-  display: grid;
-  gap: var(--space-3);
-  overflow: auto;
-  padding-right: var(--space-1);
-}
-
-/* Polish wave: .providerRootHeader (connected + catalog section titles)
-   converged onto the shared SectionHeader primitive — the fourth bespoke
-   section-header dialect retired. The primitive owns the title/subtitle/
-   count recipe (count keeps tabular-nums baked in). */
-
-.providerCatalogSection {
-  display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-5);
-  border-top: var(--border-width-hairline) solid var(--border);
-}
-
-.providerCatalogSearch {
-  width: min(100%, 360px);
-  margin-top: var(--space-3);
-}
-
-.providerCatalogEmpty {
-  font: var(--maka-text-body);
-  color: var(--muted-foreground);
-  padding: var(--space-8) var(--space-2);
-  text-align: center;
-}
-
-.providerOAuthError {
-  font: var(--maka-text-body);
-  border: var(--border-width-hairline) solid color-mix(in srgb, var(--warning) 32%, transparent);
-  border-radius: var(--radius-surface);
-  background: color-mix(in srgb, var(--warning) 10%, var(--background));
-  color: var(--warning-text);
-  padding: var(--space-2) var(--space-3);
-}
-.providerOAuthGrid {
-  display: grid;
-  grid-template-columns: 1fr;
-  overflow: auto;
-}
-
-.providerOAuthCardBadge {
-  font: var(--maka-text-heading-5);
-  letter-spacing: var(--tracking-wide);
-}
-
-.providerOAuthCard[data-logged-in="true"] .providerOAuthCardBadge {
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-}
-
 .providerOAuthCardDescription {
   display: -webkit-box;
   overflow: hidden;
@@ -354,35 +217,3 @@
   -webkit-line-clamp: 2;
 }
 
-.enabledStrip {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2-5);
-}
-
-/* Empty state shown when there are no connections yet.
-   Despite the name this is a full-width two-line card (16px padding,
-   <strong> heading + <small> body), not a chip — surface tier, matching
-   its structural twin .settingsWechatQrState. The control tier here came
-   from reading the class name rather than the element. */
-.enabledEmptyChip {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1-5);
-  border: var(--border-width-hairline) solid var(--border);
-  border-radius: var(--radius-surface);
-  background: var(--background-elevated);
-  color: var(--foreground);
-  padding: var(--space-4) var(--space-4);
-  text-align: left;
-}
-
-.enabledEmptyChip strong {
-  font: var(--maka-text-heading-4);
-}
-
-.enabledEmptyChip small {
-  font: var(--maka-text-supporting);
-  color: var(--muted-foreground);
-}
