@@ -217,16 +217,38 @@ describe('createOnboardingSnapshotPoller', () => {
 });
 
 describe('onboarding mounted snapshot handoff', () => {
-  it('latches B when B and a later C are reduced before React commits', () => {
+  it('keeps a session created while mounted snapshots wait for React to commit', () => {
     const snapshotA = READY_SNAPSHOT;
-    const snapshotB = { ...READY_SNAPSHOT, defaultSlug: 'b' };
-    const snapshotC = { ...READY_SNAPSHOT, defaultSlug: 'c' };
+    const snapshotB = { ...READY_SNAPSHOT };
+    const snapshotC: OnboardingSnapshot = {
+      ...READY_SNAPSHOT,
+      sessions: [
+        {
+          id: 'created-during-bootstrap',
+          name: 'New session',
+          isFlagged: false,
+          isArchived: false,
+          labels: [],
+          hasUnread: false,
+          status: 'active' as const,
+          backend: 'fake',
+          llmConnectionSlug: 'default',
+          connectionLocked: false,
+          model: 'fake-model',
+          permissionMode: 'ask' as const,
+          projectId: null,
+        },
+      ],
+    };
 
     const afterB = advanceOnboardingSnapshotState(createOnboardingSnapshotState(snapshotA), snapshotB);
     const afterC = advanceOnboardingSnapshotState(afterB, snapshotC);
 
     assert.equal(afterC.snapshot, snapshotC);
-    assert.equal(afterC.firstMountedSnapshot, snapshotB);
+    assert.deepEqual(
+      afterC.mountedSnapshotHandoff?.sessions.map(({ id }) => id),
+      ['created-during-bootstrap'],
+    );
   });
 });
 

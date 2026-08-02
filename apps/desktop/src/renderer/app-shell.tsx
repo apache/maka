@@ -1101,7 +1101,7 @@ function AppShellContent({
     if (
       onboarding.error &&
       !initialOnboardingSnapshot &&
-      !onboarding.firstMountedSnapshot &&
+      !onboarding.mountedSnapshotHandoff &&
       !bootstrapFallbackStartedRef.current
     ) {
       bootstrapFallbackStartedRef.current = true;
@@ -1117,10 +1117,10 @@ function AppShellContent({
     } else if (
       !bootstrapFallbackStartedRef.current &&
       !mountedSnapshotSeededRef.current &&
-      onboarding.firstMountedSnapshot
+      onboarding.mountedSnapshotHandoff
     ) {
       mountedSnapshotSeededRef.current = true;
-      snapshot = onboarding.firstMountedSnapshot;
+      snapshot = onboarding.mountedSnapshotHandoff;
       releaseSelectionLease = true;
     }
     if (!snapshot) return;
@@ -1135,7 +1135,7 @@ function AppShellContent({
     setConnections(snapshot.connections);
     setDefaultConnection(snapshot.defaultSlug);
     if (releaseSelectionLease) bootstrapSelectionLease.release();
-  }, [initialOnboardingSnapshot, onboarding.firstMountedSnapshot, onboarding.error]);
+  }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
   // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
   // while the initial snapshot is in flight. Otherwise sessions.length===0
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before

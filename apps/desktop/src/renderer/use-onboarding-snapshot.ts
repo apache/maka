@@ -29,8 +29,8 @@ import { getOnboardingCopy } from './locales/onboarding-copy.js';
  */
 export interface UseOnboardingSnapshotResult {
   snapshot: OnboardingSnapshot | null;
-  /** First successful mounted pull, latched until AppShell consumes the bootstrap handoff. */
-  firstMountedSnapshot: OnboardingSnapshot | null;
+  /** Latest mounted pull, handed to AppShell once for bootstrap reconciliation. */
+  mountedSnapshotHandoff: OnboardingSnapshot | null;
   error: string | null;
   refresh: () => void;
   /** Sessions from the snapshot — populated on first load, before the separate sessions:list IPC. */
@@ -54,20 +54,20 @@ export interface UseOnboardingSnapshotDeps {
 
 export interface OnboardingSnapshotState {
   snapshot: OnboardingSnapshot | null;
-  firstMountedSnapshot: OnboardingSnapshot | null;
+  mountedSnapshotHandoff: OnboardingSnapshot | null;
 }
 
 export function createOnboardingSnapshotState(initialSnapshot: OnboardingSnapshot | null): OnboardingSnapshotState {
-  return { snapshot: initialSnapshot, firstMountedSnapshot: null };
+  return { snapshot: initialSnapshot, mountedSnapshotHandoff: null };
 }
 
 export function advanceOnboardingSnapshotState(
-  current: OnboardingSnapshotState,
+  _current: OnboardingSnapshotState,
   next: OnboardingSnapshot,
 ): OnboardingSnapshotState {
   return {
     snapshot: next,
-    firstMountedSnapshot: current.firstMountedSnapshot ?? next,
+    mountedSnapshotHandoff: next,
   };
 }
 
@@ -133,7 +133,7 @@ export function useOnboardingSnapshotImpl(
 
   return {
     snapshot: snapshotState.snapshot,
-    firstMountedSnapshot: snapshotState.firstMountedSnapshot,
+    mountedSnapshotHandoff: snapshotState.mountedSnapshotHandoff,
     error,
     refresh,
     getSessions,
