@@ -16,6 +16,7 @@ import type { RuntimeWorkspaceVersionAuthorityStore, WorkspaceHeadRecordV1 } fro
 import {
   assertInteractiveRootOwner,
   authenticateInteractiveRootOwner,
+  createStorageRootLeaseIdentityGuard,
   runWithStorageRootLease,
   type InteractiveRootOwner,
 } from './root-authority.js';
@@ -129,6 +130,7 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
   #state: 'ready' | 'closing' | 'closed' = 'ready';
   #activeOperations = 0;
   readonly #drainWaiters = new Set<() => void>();
+  readonly #assertCurrentRootIdentity: () => Promise<void>;
   #closeTask: Promise<void> | undefined;
 
   constructor(
@@ -136,7 +138,16 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
     private readonly service: GitWorkspaceService,
     private readonly receiptAuthority: ManagedBaselineReceiptAuthorityInternal,
     private readonly failpoint?: (point: ManagedWorkspaceOwnerFailpoint) => void | Promise<void>,
-  ) {}
+  ) {
+    // Capture the identity guard while the lease is active. Unlike a fresh
+    // admission check, this guard remains valid for an already-admitted
+    // operation while owner.close() waits for that operation to drain.
+    this.#assertCurrentRootIdentity = createStorageRootLeaseIdentityGuard(
+      rootOwner.lease,
+      'interactive',
+      'write',
+    );
+  }
 
   get state(): 'ready' | 'closing' | 'closed' {
     return this.#state;
@@ -212,9 +223,9 @@ class ManagedWorkspaceOwnerImpl implements ManagedWorkspaceOwner {
       await this.receiptAuthority.verify(durableReceipt);
       await this.failpoint?.('after_post_commit_artifact_verification');
       // The root marker is mutable host state and is not covered by receipt
-      // verification. Re-authenticate the lifecycle owner at the final return
-      // gate so a concurrently replaced marker cannot publish a usable cwd.
-      await assertInteractiveRootOwner(this.rootOwner);
+      // verification. Revalidate its identity at the final return gate without
+      // rejecting an operation that owner.close() is legitimately draining.
+      await this.#assertCurrentRootIdentity();
       return { ...committed, binding, receipt: durableReceipt };
     });
   }

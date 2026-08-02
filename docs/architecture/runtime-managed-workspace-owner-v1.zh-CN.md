@@ -79,7 +79,7 @@ receipt 与 canonical workspace authority 绑定 exact identity；未接受 Git 
 | operation admission 后 close | close 等待 operation；新 operation 被拒绝 |
 | root owner 同时 close | root close 与 managed close 都等待同一 lease-bound operation |
 | external drift 后 reopen | receipt/artifact 复验 fail closed；若发生在复验与 reopen 之间则 durable quarantine |
-| post-commit artifact 复验后 root marker 被替换 | 最终 `assertInteractiveRootOwner` 拒绝；保留 canonical head，不发布 cwd |
+| post-commit artifact 复验后 root marker 被替换 | admission 时捕获的 lease identity guard 最终复验并拒绝；保留 canonical head，不发布 cwd；owner closing 只阻止新 admission，不误杀正在 drain 的操作 |
 | repeated close | exact no-op，不重复释放外层 root owner |
 
 Git artifact create/quarantine 的进程崩溃矩阵继续由 `GitWorkspaceService` 负责；本 owner 不复制第二套
