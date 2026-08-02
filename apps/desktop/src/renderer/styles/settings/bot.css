@@ -42,16 +42,15 @@
 
 .settingsRemoteAccessSectionHeader h3,
 .settingsBotConfigurationHeader h4 {
+  font: var(--maka-text-heading-4);
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
 .settingsRemoteAccessSectionHeader span,
 .settingsBotConfigurationHeader span {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .settingsRemoteAccessActiveList {
@@ -141,36 +140,35 @@
 }
 
 .settingsBotDetailHeader h3 {
+  font: var(--maka-text-heading-3);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin: 0 0 var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-heading);
 }
 
 .settingsBotDetailHeader p {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .settingsBotEnableHint {
+  font: var(--maka-text-supporting);
   display: block;
   margin-top: var(--space-1);
   color: var(--warning-text, var(--foreground-secondary));
-  font-size: var(--font-size-caption);
 }
 
 .settingsBotConfigDocLink {
+  font: var(--maka-text-label);
   grid-column: 2;
   grid-row: 2;
   justify-self: start;
   color: var(--link);
   text-decoration: none;
-  font-weight: var(--font-weight-medium);
   white-space: nowrap;
 }
 .settingsBotConfigDocLink:hover {
@@ -193,16 +191,15 @@
 }
 
 .settingsBotRuntimeHeader h4 {
+  font: var(--maka-text-heading-4);
   margin: 0 0 var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
 }
 
 .settingsBotRuntimeHeader p {
+  font: var(--maka-text-supporting);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
 }
 
 .settingsBotStatusGrid {
@@ -215,15 +212,15 @@
   min-width: 0;
 }
 .settingsBotStatusGrid dt {
+  font: var(--maka-text-supporting);
   margin-bottom: var(--space-1);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 .settingsBotStatusGrid dd {
+  font: var(--maka-text-body);
   min-width: 0;
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
   overflow-wrap: anywhere;
 }
 
@@ -363,26 +360,23 @@
 }
 
 .settingsUsageDetailToggle {
+  font: var(--maka-text-label);
   min-height: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-1-5);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-none);
   white-space: nowrap;
 }
 
 .settingsUsageRecordCount {
+  font: var(--maka-text-supporting);
   font-variant-numeric: tabular-nums;
   min-height: 34px;
   display: inline-flex;
   align-items: center;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
   white-space: nowrap;
 }
 
@@ -425,8 +419,8 @@
 }
 
 /* #520 PR9: .settingsStatsTable retired onto the local native
-   SimpleStatsTable in usage-settings-page.tsx (inline Tailwind classes,
-   no public primitive — a single HTML <table> consumer did not justify one). */
+   SimpleStatsTable in usage-settings-page.tsx; a single HTML <table>
+   consumer did not justify a public primitive. */
 
 /* .settingsRow / .settingsRows moved to rows.css — the single style home
    for the settings-rows.tsx primitives (PR-SETTINGS-ROWS-CONVERGENCE-0). */
@@ -456,18 +450,17 @@
 }
 
 .settingsBotQuickSetup strong {
+  font: var(--maka-text-heading-4);
   display: block;
   margin-bottom: var(--space-1);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
 }
 
 .settingsBotQuickSetup p {
+  font: var(--maka-text-supporting);
   max-width: 58ch;
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .settingsBotQuickSetup .settingsBotBrandChoice {
@@ -536,9 +529,8 @@
 }
 
 .settingsBotOnboardingStatus {
+  font: var(--maka-text-label);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
 }
 
 .settingsBotOnboardingStatus[data-state="error"],
@@ -547,8 +539,8 @@
 }
 
 .settingsBotOnboardingPrivacy {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .settingsBotOnboardingActions {

@@ -9,30 +9,28 @@
 }
 
 .maka-search-modal-result-title {
+  font: var(--maka-text-heading-4);
   min-width: 0;
   overflow: hidden;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .maka-search-modal-result-meta {
+  font: var(--maka-text-supporting);
   min-width: 0;
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .maka-search-modal-result-snippet {
+  font: var(--maka-text-supporting);
   display: -webkit-box;
   overflow: hidden;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }

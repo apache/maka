@@ -145,6 +145,11 @@ export interface HarborCellExecutionIdentity {
   systemPromptMode?: HeadlessSystemPromptMode;
   systemPromptHash: string;
   pricingProfile: string;
+  /** Resolved OpenCode benchmark config path and content hash (opencode adapter
+   * cells only); lets A/B arms prove which config bytes ran. Present on
+   * artifacts written after config provenance was introduced. */
+  opencodeConfigPath?: string;
+  opencodeConfigHash?: string;
   /** Present on artifacts written after Headless Agent tool gating was introduced. */
   agentTools?: boolean;
   /** Exact catalog-owned product surface after host binding and run policy. */
@@ -398,6 +403,22 @@ export function validateHarborCellExecutionIdentity(value: unknown): HarborCellE
       : {}),
     systemPromptHash: requireString(value.systemPromptHash, 'executionIdentity.systemPromptHash'),
     pricingProfile: requireString(value.pricingProfile, 'executionIdentity.pricingProfile'),
+    ...('opencodeConfigPath' in value
+      ? {
+          opencodeConfigPath: requireString(
+            value.opencodeConfigPath,
+            'executionIdentity.opencodeConfigPath',
+          ),
+        }
+      : {}),
+    ...('opencodeConfigHash' in value
+      ? {
+          opencodeConfigHash: requireString(
+            value.opencodeConfigHash,
+            'executionIdentity.opencodeConfigHash',
+          ),
+        }
+      : {}),
     ...('agentTools' in value
       ? { agentTools: requireBoolean(value.agentTools, 'executionIdentity.agentTools') }
       : {}),

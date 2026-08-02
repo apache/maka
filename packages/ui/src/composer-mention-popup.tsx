@@ -59,7 +59,7 @@ export function ComposerMentionPopup(props: {
     <div
       className={cn(
         'maka-composer-mention-popup',
-        'z-[var(--z-overlay)] rounded-md bg-popover text-popover-foreground shadow-maka-panel',
+        'maka-composer-mention-panel',
       )}
       role="listbox"
       id={listboxId}

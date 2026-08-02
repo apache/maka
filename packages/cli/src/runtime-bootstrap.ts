@@ -53,6 +53,7 @@ import {
   type HostCapabilitiesResolver,
   type MakaTool,
   type InvocationResult,
+  type InvocationSource,
   type ShellRunUpdate,
   type SkillSource,
   type ModelMessage,
@@ -161,7 +162,7 @@ export interface SessionRecapGenerator {
 }
 
 export interface CreateMakaCliRuntimeContextInput {
-  surface: 'tui' | 'run';
+  surface: 'tui' | 'run' | 'activation';
   /** Legacy root; both new roots default to this path. */
   workspaceRoot: string;
   /** Optional portable session-owned state root. */
@@ -177,6 +178,10 @@ export interface CreateMakaCliRuntimeContextInput {
   /** Canonical cwd used for one resumed session without rewriting its stored header. */
   sessionCwdOverride?: { sessionId: string; cwd: string };
   runtimeInvocationObserver?: (result: InvocationResult) => void | Promise<void>;
+  /** Invocation provenance used by hosted activation callers. */
+  runtimeSource?: InvocationSource;
+  /** Enables authoritative safe-boundary continuation for hosted activation callers. */
+  safeBoundaryResumeEnabled?: boolean;
   onSessionTitleChanged?: (sessionId: string) => void;
   /**
    * Optional cron executor. When provided, the Automation tool advertises the
@@ -803,9 +808,13 @@ export async function createMakaCliRuntimeContext(
       : {}),
     shellRuns,
     backends,
-    safeBoundaryResumeEnabled: process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1',
+    runtimeSource: input.runtimeSource ?? (input.surface === 'activation' ? 'gateway' : undefined),
+    safeBoundaryResumeEnabled:
+      input.safeBoundaryResumeEnabled ??
+      (input.surface === 'activation' || process.env.MAKA_RUNTIME_SAFE_BOUNDARY_RESUME === '1'),
     onContinuationLifecycleEvent: (event) => {
-      console.info('[runtime-resume]', JSON.stringify(event));
+      const writeDiagnostic = input.surface === 'activation' ? console.error : console.info;
+      writeDiagnostic('[runtime-resume]', JSON.stringify(event));
     },
     inspectContinuationSafety: createLocalContinuationSafetyInspector({
       readSessionCwd: async (sessionId) => (await store.readHeader(sessionId)).cwd,

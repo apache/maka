@@ -119,17 +119,28 @@ describe('stale session CSS contract (@kenji review gate)', () => {
 
   it('inactive stale row dims, active stale row restores opacity', async () => {
     const css = await readRendererContractCss();
-    // Inactive stale dimming rule must exist.
+    // SideNav session rows: stale dims only this row's item (child combinators);
+    // current page on that item restores opacity.
     assert.match(
       css,
-      /\.maka-session-item-label\[data-stale="true"\]\s*\{[\s\S]*?opacity:\s*var\(--opacity-muted\)/,
-      'expected stale product content to use the muted opacity token',
+      /\.maka-session-row\[data-stale="true"\]\s*>\s*div\s*>\s*\.astryx-side-nav-item\s*\{[\s\S]*?opacity:\s*var\(--opacity-muted\)/,
+      'expected stale SideNav session rows to dim only the direct SideNavItem',
     );
-    // Active stale restoration rule must exist.
     assert.match(
       css,
-      /\[role="treeitem"\]\[aria-selected="true"\][\s\S]*?\.maka-session-item-label\[data-stale="true"\][\s\S]*?opacity:\s*1/,
-      'expected Astryx-selected stale content to restore full opacity',
+      /\.maka-session-row\[data-stale="true"\]\s*>\s*div\s*>\s*\.astryx-side-nav-item\[aria-current="page"\]/,
+      'expected the active stale leaf SideNav row to restore full opacity',
+    );
+    assert.match(
+      css,
+      /\.maka-session-row\[data-stale="true"\]\s*>\s*div\s*>\s*\.astryx-side-nav-item:has\(\s*>\s*\[aria-current="page"\]\s*\)/,
+      'expected the active stale collapsible SideNav row to restore full opacity',
+    );
+    // A bare descendant selector would mute healthy subagents under a stale parent.
+    assert.doesNotMatch(
+      css,
+      /\.maka-session-row\[data-stale="true"\](?![^\n{]*\s*>\s*div\s*>)\s+\.astryx-side-nav-item/,
+      'stale opacity must not use an unbounded descendant selector',
     );
   });
 
@@ -143,6 +154,42 @@ describe('stale session CSS contract (@kenji review gate)', () => {
       css,
       PILL_HIDE,
       'no CSS rule may hide `.maka-list-row-stale-pill` (active stale row must still show pill)',
+    );
+  });
+
+  it('staleSessionIds wires data-stale and pill only on marked sessions', async () => {
+    const { makeSessionSummary, renderSessionListPanel } = await import(
+      './session-list-render-helpers.js'
+    );
+    const parent = makeSessionSummary({ id: 'parent', name: 'Parent' });
+    const child = makeSessionSummary({ id: 'child', name: 'Child' });
+    const html = renderSessionListPanel({
+      sessions: [parent],
+      childSessionsByParentId: new Map([['parent', [child]]]),
+      staleSessionIds: new Set(['parent']),
+    });
+
+    const parentChunk = html.match(
+      /data-session-id="parent"[\s\S]*?(?=data-session-id="child"|$)/,
+    )?.[0];
+    const childChunk = html.match(/data-session-id="child"[\s\S]*?(?=data-session-id=|$)/)?.[0];
+    assert.ok(parentChunk, 'expected parent session row markup');
+    assert.ok(childChunk, 'expected child session row markup');
+    assert.match(parentChunk, /data-stale="true"/, 'stale parent must set data-stale');
+    assert.match(
+      parentChunk,
+      /maka-list-row-stale-pill/,
+      'stale parent must render the stale pill',
+    );
+    assert.doesNotMatch(
+      childChunk,
+      /data-stale="true"/,
+      'healthy child must not inherit data-stale from parent',
+    );
+    assert.doesNotMatch(
+      childChunk,
+      /maka-list-row-stale-pill/,
+      'healthy child must not render a stale pill',
     );
   });
 });

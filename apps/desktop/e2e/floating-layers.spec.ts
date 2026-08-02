@@ -89,48 +89,11 @@ test('model picker only exposes a rendered active descendant', async ({
   await expect(page.locator(`#${activeDescendant}`)).toHaveRole('option');
 });
 
-test('model picker keeps keyboard highlight inside the scroll viewport', async ({
-  modelPickerLongWindow: page,
-}) => {
-  await page.getByRole('button', { name: /选择新对话模型/ }).click();
+// Model-picker mark geometry / label ellipsis: CSS contract
+// (chat-shell-layout-contract). Listbox scroll-into-view is Astryx-owned.
+// Keep focus restore + real session model/thinking persistence below.
 
-  const search = page.getByPlaceholder('搜索模型');
-  const listbox = page.getByRole('listbox');
-  const popup = listbox.locator('xpath=ancestor::*[@popover][1]');
-  const options = listbox.getByRole('option');
-  const optionCount = await options.count();
-  expect(optionCount).toBeGreaterThan(8);
-  await expect
-    .poll(() => popup.evaluate((element) => element.getBoundingClientRect().height))
-    .toBeLessThanOrEqual(420);
-  await expect
-    .poll(() =>
-      listbox.evaluate((element) => element.scrollHeight > element.clientHeight),
-    )
-    .toBe(true);
-
-  for (let index = 0; index < optionCount; index += 1) {
-    await search.press('ArrowDown');
-  }
-
-  const activeDescendant = await search.getAttribute('aria-activedescendant');
-  expect(activeDescendant).not.toBeNull();
-  const activeOption = page.locator(`[id="${activeDescendant}"]`);
-  await expect.poll(() => listbox.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-  await expect
-    .poll(() =>
-      activeOption.evaluate((element) => {
-        const list = element.closest('[role="listbox"]');
-        if (!list) return false;
-        const optionRect = element.getBoundingClientRect();
-        const listRect = list.getBoundingClientRect();
-        return optionRect.top >= listRect.top - 0.5 && optionRect.bottom <= listRect.bottom + 0.5;
-      }),
-    )
-    .toBe(true);
-});
-
-test('model Selector owns hit testing, focus restoration, and aligned long rows', async ({
+test('model Selector restores focus to its opener on Escape', async ({
   window: page,
 }) => {
   const trigger = page.getByRole('button', { name: /选择新对话模型/ });
@@ -140,34 +103,7 @@ test('model Selector owns hit testing, focus restoration, and aligned long rows'
   const listbox = page.getByRole('listbox');
   const popup = listbox.locator('xpath=ancestor::*[@popover][1]');
   await expect(search).toBeFocused();
-  await expect
-    .poll(() => trigger.evaluate((element) => getComputedStyle(element).pointerEvents))
-    .toBe('auto');
-  await expect
-    .poll(() => popup.evaluate((element) => getComputedStyle(element).pointerEvents))
-    .toBe('auto');
-
-  const brandedRow = listbox.getByRole('option').filter({ has: page.locator('.modelPickerProviderMark') }).first();
-  await expect(brandedRow).toBeVisible();
-  await expect
-    .poll(() =>
-      brandedRow.evaluate((element) => {
-        const mark = element.querySelector('.modelPickerProviderMark');
-        const label = element.querySelector('.modelPickerOptionLabel');
-        if (!mark || !label) return false;
-        const markRect = mark.getBoundingClientRect();
-        const labelRect = label.getBoundingClientRect();
-        return Math.abs(markRect.top + markRect.height / 2 - (labelRect.top + labelRect.height / 2)) <= 1;
-      }),
-    )
-    .toBe(true);
-
-  await search.fill('sonnet');
-  const longLabel = listbox.locator('.modelPickerOptionLabel').first();
-  await expect(longLabel).toBeVisible();
-  await expect
-    .poll(() => longLabel.evaluate((element) => getComputedStyle(element).textOverflow))
-    .toBe('ellipsis');
+  await expect(listbox.getByRole('option').first()).toBeVisible();
 
   await page.keyboard.press('Escape');
   await expect(popup).toBeHidden();

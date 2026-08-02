@@ -11,6 +11,7 @@
 }
 
 .maka-task-ledger-row {
+  font: var(--maka-text-supporting);
   display: grid;
   grid-template-columns: 14px minmax(34px, auto) minmax(100px, 1fr) auto;
   align-items: center;
@@ -19,7 +20,6 @@
   padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) + var(--task-depth) * var(--space-5));
   border-radius: var(--radius-control);
   color: var(--foreground-dimmed);
-  font-size: var(--font-size-caption);
 }
 
 .maka-task-ledger-group {
@@ -35,9 +35,8 @@
 .maka-task-ledger-row[data-status="failed"] > svg { color: var(--destructive); }
 
 .maka-task-ledger-key {
+  font: var(--maka-text-supporting);
   color: var(--foreground-dimmed);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
   white-space: nowrap;
 }
 
@@ -49,10 +48,14 @@
   white-space: nowrap;
 }
 
-.maka-task-ledger-subject { color: var(--foreground); font-size: var(--font-size-base); }
+.maka-task-ledger-subject {
+  font: var(--maka-text-body);
+ color: var(--foreground); }
 .maka-task-ledger-meta { display: inline-flex; justify-content: flex-end; gap: var(--space-1-5); white-space: nowrap; }
 .maka-task-ledger-meta > span + span::before { content: "·"; margin-right: var(--space-1-5); }
-.maka-task-ledger-detail { grid-column: 3 / -1; color: var(--foreground-dimmed); font-size: var(--font-size-caption); }
+.maka-task-ledger-detail {
+  font: var(--maka-text-supporting);
+ grid-column: 3 / -1; color: var(--foreground-dimmed); }
 
 .maka-task-ledger-terminal {
   margin-top: var(--space-1);
@@ -60,6 +63,7 @@
 }
 
 .maka-task-ledger-terminal-trigger {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
@@ -68,19 +72,18 @@
   justify-content: space-between;
   padding: var(--space-1) var(--space-2);
   color: var(--foreground-dimmed);
-  font-size: var(--font-size-caption);
 }
 
 .maka-task-ledger-terminal-trigger > span { display: inline-flex; align-items: center; gap: var(--space-1-5); }
 
 .maka-task-ledger-message {
+  font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   justify-content: space-between;
   min-height: 34px;
   padding: var(--space-1) var(--space-2);
   color: var(--foreground-dimmed);
-  font-size: var(--font-size-caption);
 }
 
 .maka-task-ledger-retry {

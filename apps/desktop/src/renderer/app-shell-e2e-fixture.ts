@@ -176,23 +176,16 @@ export function createAppShellE2eFixtureActions(options: {
       composerRef.current?.setSkills(state.composerSkills);
       await nextVisualSmokeFrame();
     }
-    // PR-SIDEBAR-IA-0 Phase 3 P0 fixup v4 (WAWQAQ msg `5dd1c348`,
-    // kenji `b3d156e9`): when the fixture sets `focusActiveRow`,
-    // focus the active ListItem action through Maka's stable row hook after
-    // the next paint. The actionable descendant is located semantically, not
-    // through Astryx implementation classes or child structure.
-    // Two RAFs let React
-    // commit the active selection before we query the DOM.
+    // focusActiveRow: SideNavItem marks the selected control with
+    // aria-current="page" on the primary button itself (not a ListItem
+    // aria-current=true). Focus that control after paint.
     if (state.focusActiveRow) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const activeRow = document.querySelector<HTMLElement>(
-            '[data-maka-contract="list-row"][aria-current="true"]',
+          const activeControl = document.querySelector<HTMLElement>(
+            '[data-maka-contract="session-row"] [aria-current="page"]',
           );
-          const activeRowAction = activeRow?.querySelector<HTMLElement>(
-            'button, a[href], [tabindex]:not([tabindex="-1"])',
-          );
-          activeRowAction?.focus({ preventScroll: true });
+          activeControl?.focus({ preventScroll: true });
         });
       });
     }

@@ -156,12 +156,11 @@ async function scrollListToBottom(page: Page): Promise<number> {
 test('sidebar list scrolls independently and keeps the footer in view with 60 sessions', async ({
   sidebarLongSessionsWindow: page,
 }) => {
-  // (0) The fixture seeds 60 `sidebar-long-sessions` rows (named "会话 NN"),
-  // all rendered in the expanded panel. `seedE2eFixture` also always writes a
-  // handful of baseline chat sessions; their exact count is not this
-  // contract's concern — the 60-row pin alone proves the overflow
-  // precondition the geometry assertions depend on.
-  await expect(page.locator('[data-session-id][title^="会话 "]')).toHaveCount(60);
+  // (0) No row-count pin here: its only purpose was to prove the list
+  // overflows, which (1a) asserts directly on the scroller metrics — and the
+  // rows' `title` is session metadata (formatSessionMeta), not the session
+  // name, so a title-based count could not select them anyway. Seed
+  // completeness (60 sessions on disk) lives in the fixture unit tests.
 
   // The list scroller and the chat scroller are distinct elements.
   await expect(page.locator(LIST_CONTENT)).toHaveCount(1);
@@ -280,6 +279,7 @@ test('titlebar restores the chosen SideNav width across a collapse round trip', 
 }) => {
   const shell = page.locator('.appFrame');
   const panel = page.locator('.maka-session-panel');
+  const motion = page.locator('.maka-sidenav-motion');
   const handle = page.getByTestId('astryx-sidenav-resize-handle');
   const panelWidth = () => panel.evaluate((element) => element.getBoundingClientRect().width);
 
@@ -290,11 +290,300 @@ test('titlebar restores the chosen SideNav width across a collapse round trip', 
   await handle.press('ArrowRight');
   await expect.poll(panelWidth).toBe(chosenWidth);
 
+  // Brand the node the ease is declared on. A CSS transition interpolates only
+  // when the SAME element holds a previously-rendered value, and the whole
+  // reason `.maka-sidenav-motion` exists is that SideNav's own root does not
+  // qualify: it swaps element type across the toggle (`showResizeHandle =
+  // isResizable && !collapsed`), so React remounts that subtree. Survival is
+  // therefore the invariant — a declared `transition-property` proves nothing,
+  // because the nav on main declared it too and still snapped.
+  await motion.evaluate((element) => {
+    (element as HTMLElement & { __motionBrand?: number }).__motionBrand = 1;
+  });
+
   await page.getByRole('button', { name: '收起侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'collapsed');
+
+  // The collapsed rail is 48px, and that number is load-bearing rather than
+  // cosmetic: the column edge is dropped in this state precisely BECAUSE the
+  // traffic lights (~62px) are wider than the rail, so an edge there would cut
+  // through the light cluster. A wider rail silently invalidates that argument.
+  // Astryx owns the value (`rootCollapsed` → --spacing-12); the product's own
+  // collapsed rule reads the same token, so this asserts they agree.
+  await expect.poll(panelWidth).toBe(48);
+
+  // At 48px there is no history column left for the two hairlines to separate,
+  // so both go transparent. Asserted here because this is the only test that
+  // stands in the collapsed state; the rhythm test below owns them expanded.
+  await expect
+    .poll(() =>
+      panel.evaluate((nav) => {
+        const topHost = [...nav.children].find((child) =>
+          child.querySelector('.maka-session-panel-top'),
+        );
+        const footHost = nav.querySelector('.maka-session-panel-footer')?.parentElement;
+        if (!topHost || !footHost) return null;
+        return [
+          getComputedStyle(topHost).borderBottomColor,
+          getComputedStyle(footHost).borderTopColor,
+        ];
+      }),
+    )
+    .toEqual(['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)']);
 
   await page.getByRole('button', { name: '展开侧边栏' }).click();
   await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
   await expect.poll(panelWidth).toBe(chosenWidth);
   expect(chosenWidth).toBeGreaterThanOrEqual(180);
+
+  // Same node, both toggles later. Moving the class back inside SideNav, or
+  // hanging it off the nav, loses the brand here while every width assertion
+  // above still passes — which is exactly the shipped defect.
+  expect(
+    await motion.evaluate(
+      (element) => (element as HTMLElement & { __motionBrand?: number }).__motionBrand,
+    ),
+  ).toBe(1);
+
+  // And the ease is declared on that surviving node.
+  await expect
+    .poll(() => motion.evaluate((element) => getComputedStyle(element).transitionProperty))
+    .toBe('width');
+
+  // ...and that a pointer drag suppresses it, so the rail does not trail the
+  // cursor by one 280ms ease per pointer-move. The suppression is derived from
+  // the handle's own `data-resizing` rather than stored in React, so it is
+  // asserted by setting exactly the attribute Astryx sets while dragging.
+  // Driving a real drag is not available: since the Astryx 0.2.0 upgrade the
+  // handle ignores synthesised pointer input (see the round-trip test above),
+  // so this pins the CSS contract the drag depends on.
+  await handle.evaluate((element) => element.setAttribute('data-resizing', 'true'));
+  await expect
+    .poll(() => motion.evaluate((element) => getComputedStyle(element).transitionProperty))
+    .toBe('none');
+  await handle.evaluate((element) => element.removeAttribute('data-resizing'));
+  await expect
+    .poll(() => motion.evaluate((element) => getComputedStyle(element).transitionProperty))
+    .toBe('width');
+
+  // Focus alone must NOT suppress it. `:focus` answers "the handle was used at
+  // some point", not "is being used now", so gating on it left the ease dead for
+  // every later collapse until something else took focus.
+  await handle.focus();
+  await expect(handle).toBeFocused();
+  await expect
+    .poll(() => motion.evaluate((element) => getComputedStyle(element).transitionProperty))
+    .toBe('width');
+});
+
+/**
+ * The rail actually animates.
+ *
+ * Everything above runs on `sidebarLongSessionsWindow`, an e2e-fixture window —
+ * and `base.css` caps every transition there to 0.01ms so screenshots and
+ * geometry are deterministic. Nothing in that window can prove an ease runs; a
+ * declared `transition-property` survives a zeroed duration, a suppressed gate,
+ * and a remounted node alike. This is the one place with the product's real
+ * durations, so it is where the animation itself gets locked.
+ *
+ * `getAnimations()` is the discriminating probe rather than sampling widths:
+ * the browser creates a CSSTransition object only when a real interpolation
+ * starts on that element between two different used values. A zero duration, a
+ * `transition: none` gate, or a fresh node with no before-change style each
+ * produce no object at all — which is exactly the set of ways this has broken.
+ */
+test('collapsing the rail starts a real width transition', async ({ window: page }) => {
+  const shell = page.locator('.appFrame');
+  const motion = page.locator('.maka-sidenav-motion');
+
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
+  // Let the expand settle, so the collapse below starts from a resting width
+  // and the transition it creates is unambiguously its own.
+  await expect
+    .poll(() => motion.evaluate((element) => element.getAnimations().length))
+    .toBe(0);
+
+  await page.getByRole('button', { name: '收起侧边栏' }).click();
+
+  const running = await motion.evaluate((element) =>
+    element.getAnimations().map((animation) => ({
+      property: (animation as CSSTransition).transitionProperty,
+      duration: Number(animation.effect?.getTiming().duration ?? 0),
+    })),
+  );
+  expect(running, JSON.stringify(running)).toContainEqual(
+    expect.objectContaining({ property: 'width' }),
+  );
+  expect(
+    running.find((animation) => animation.property === 'width')!.duration,
+    'a capped or zeroed duration is not an ease',
+  ).toBeGreaterThan(50);
+});
+
+/**
+ * Column-edge contract.
+ *
+ * The session column is separated from the content column by two things and no
+ * others: the material difference AppShell paints from the theme's
+ * `--color-background-body` / `--color-background-surface`, and the 1px rule
+ * makaTheme.ts adds to the nav panel. Both were absent before this landed —
+ * Maka ran `variant="surface"`, which paints both columns the same and draws no
+ * divider — and the boundary was invisible.
+ *
+ * Neither half has a static gate: the material comes from a generated theme
+ * file, the rule from a component override inside it, and a CSS grep would pass
+ * on declarations that never reach the element. This asserts the rendered
+ * result instead, in both sidebar states, because collapsed deliberately drops
+ * BOTH halves — the traffic lights are wider than the 48px rail, so any column
+ * edge there cuts through the light cluster.
+ *
+ * Both samples are taken off AppShell's OWN elements — the nav panel and
+ * `.astryx-layout-content` — because those are what the theme paints. Sampling
+ * the product's `.maka-panel-detail` inside the content column measured a copy:
+ * it declared the same color itself, so the assertion held even when AppShell
+ * painted nothing at all.
+ */
+test('the session column carries an edge expanded and drops it collapsed', async ({
+  window: page,
+}) => {
+  const shell = page.locator('.appFrame');
+  const navColumn = page.locator('.astryx-app-shell-sidenav');
+  const contentColumn = page.locator('.maka-shell-astryx .astryx-layout-content');
+  const edge = () =>
+    navColumn.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        background: style.backgroundColor,
+        borderWidth: style.borderInlineEndWidth,
+        borderColor: style.borderInlineEndColor,
+      };
+    });
+  const contentBackground = () =>
+    contentColumn.evaluate((element) => getComputedStyle(element).backgroundColor);
+
+  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'expanded');
+
+  // Both halves of the edge ease between states, so settle on the resting
+  // value rather than sampling mid-interpolation (the transition passes through
+  // oklab() on the way).
+  await expect
+    .poll(async () => (await edge()).background === (await contentBackground()))
+    .toBe(false);
+  const expanded = await edge();
+  expect(expanded.borderWidth).toBe('1px');
+  expect(expanded.borderColor).not.toBe('rgba(0, 0, 0, 0)');
+
+  await page.getByRole('button', { name: '收起侧边栏' }).click();
+  await expect(shell).toHaveAttribute('data-sidebar-state', 'collapsed');
+
+  await expect
+    .poll(async () => (await edge()).background === (await contentBackground()))
+    .toBe(true);
+  await expect.poll(async () => (await edge()).borderColor).toBe('rgba(0, 0, 0, 0)');
+});
+
+/**
+ * Rail rhythm: the two hairlines that bracket the session history must read as
+ * one component, and the group labels as peers of the rows they label.
+ *
+ * Both were off in the shipped rail. The top line was an Astryx <Divider> placed
+ * inside `topContent`, so it drew at --color-border — twice the footer rule's
+ * alpha — and sat inside the sticky shell's inline padding, stopping 8px short at
+ * each end (x=8 w=244 against the footer's x=0 w=260); it also sat flush against
+ * 定时任务 while the footer's line cleared its icon by 9px. And SideNavSection
+ * titles came from Astryx's `supporting` tier, a step below the rows they label,
+ * which at Maka's 14px body reads as a caption rather than a heading.
+ *
+ * Neither has a static gate that would bite: a CSS grep passes on declarations
+ * that never reach the element, and the type tier resolves through two levels of
+ * custom property. Measure what rendered, and measure the two lines AGAINST EACH
+ * OTHER rather than against fixed numbers — the invariant is that they match,
+ * not what they match at.
+ */
+test('the sidebar rail keeps its hairlines and group labels on one rhythm', async ({
+  sidebarLongSessionsWindow: page,
+}) => {
+  const sidebar = page.getByRole('navigation', { name: '对话列表' });
+  await expect(sidebar).toBeVisible();
+
+  const lines = await sidebar.evaluate((nav) => {
+    const topHost = [...nav.children].find((child) =>
+      child.querySelector('.maka-session-panel-top'),
+    );
+    const footHost = nav.querySelector('.maka-session-panel-footer')?.parentElement;
+    if (!topHost || !footHost) return null;
+    const topStyle = getComputedStyle(topHost);
+    const footStyle = getComputedStyle(footHost);
+    const items = topHost.querySelectorAll('.astryx-side-nav-item');
+    const lastNavItem = items[items.length - 1];
+    const settings = footHost.querySelector('.astryx-side-nav-item');
+    const rect = (element: Element) => element.getBoundingClientRect();
+    return {
+      top: {
+        width: rect(topHost).width,
+        thickness: topStyle.borderBottomWidth,
+        color: topStyle.borderBottomColor,
+        // Distance from the line to the control it separates.
+        clearance: Math.round(rect(topHost).bottom - rect(lastNavItem).bottom),
+      },
+      foot: {
+        width: rect(footHost).width,
+        thickness: footStyle.borderTopWidth,
+        color: footStyle.borderTopColor,
+        clearance: settings ? Math.round(rect(settings).top - rect(footHost).top) : -1,
+      },
+      panelWidth: rect(nav).width,
+    };
+  });
+
+  expect(lines, 'both sticky zones must render').not.toBeNull();
+  const { top, foot, panelWidth } = lines!;
+  expect(top.thickness).toBe(foot.thickness);
+  expect(top.color).toBe(foot.color);
+  expect(top.clearance).toBe(foot.clearance);
+  // Full-bleed: a line inset from the panel edge reads as a box border rather
+  // than a separator, which is exactly how the Divider version read. Drawing
+  // both on their zone shells makes this structural, so the assertion is a
+  // regression guard against the line moving back inside a padded element.
+  expect(top.width).toBe(panelWidth);
+  expect(foot.width).toBe(panelWidth);
+
+  // 会话 / 最近 sit on the same step as the rows beneath them, with weight and
+  // color carrying the hierarchy instead of size.
+  const type = await sidebar.evaluate((nav) => {
+    const read = (element: Element | null) => {
+      if (!element) return null;
+      const style = getComputedStyle(element);
+      return {
+        size: style.fontSize,
+        leading: style.lineHeight,
+        weight: Number(style.fontWeight),
+      };
+    };
+    const label = nav.querySelector('.maka-session-group [id$="-title"]');
+    const row = nav.querySelector('.maka-session-row .astryx-side-nav-item span');
+    return { label: read(label), row: read(row) };
+  });
+  expect(type.label, 'a group label must render').not.toBeNull();
+  expect(type.row, 'a session row must render').not.toBeNull();
+  expect(type.label!.size).toBe(type.row!.size);
+  // Both halves of the tier, not just size: leaving the supporting multiplier
+  // on a 14px font lands the line box at 23.33px, off the 4px grid.
+  expect(type.label!.leading).toBe(type.row!.leading);
+  expect(type.label!.weight).toBeGreaterThan(type.row!.weight);
+
+  // The tier is rebound for the section HEADER, and must stop there.
+  // SideNavSection wraps the whole list body in the same element as its title,
+  // and custom properties inherit, so binding it on the section root instead
+  // pulls row metadata up with it — measured live, this badge went 12px → 14px.
+  // Project grouping is where that metadata renders.
+  await page.getByRole('radio', { name: '按项目' }).click();
+  const badge = sidebar.locator('.astryx-badge').first();
+  await expect(badge).toBeVisible();
+  const badgeSize = await badge.evaluate((element) => getComputedStyle(element).fontSize);
+  expect(Number.parseFloat(badgeSize), 'the tier must not reach row metadata').toBeLessThan(
+    Number.parseFloat(type.row!.size),
+  );
 });

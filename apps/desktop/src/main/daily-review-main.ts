@@ -21,13 +21,16 @@ import type {
 } from '@maka/core';
 import { providerAuthRequiresSecret, type LlmConnection } from '@maka/core/llm-connections';
 import { buildProviderOptions, getAIModel } from '@maka/runtime';
-import type { createConnectionStore, TelemetryRepo } from '@maka/storage';
+import { resolveUsageRange } from '@maka/core/model-call-usage-projection';
+import { mergeUsageBuckets, mergeUsageSummary } from '@maka/core/usage-ledger-merge';
+import type { createConnectionStore, createSqliteModelCallLedger, TelemetryRepo } from '@maka/storage';
 import type { createDailyReviewArchiveStore } from './daily-review-archive-store.js';
 
 const DAILY_REVIEW_ARCHIVE_LIMIT = 180;
 
 type ConnectionStore = ReturnType<typeof createConnectionStore>;
 type DailyReviewArchiveStore = ReturnType<typeof createDailyReviewArchiveStore>;
+type ModelCallLedger = ReturnType<typeof createSqliteModelCallLedger>;
 
 export interface DailyReviewMainService {
   buildSummaryForRange(offsetDays: number, daySpan: number): Promise<DailyReviewSummary>;
@@ -45,6 +48,7 @@ interface DailyReviewMainServiceDeps {
   archiveStore: DailyReviewArchiveStore;
   connectionStore: ConnectionStore;
   telemetryRepo: TelemetryRepo;
+  modelCallLedger: ModelCallLedger;
   ensureUsageReady(): Promise<void>;
   listSessions(): Promise<readonly SessionSummary[]>;
   resolveConnectionSecret(slug: string): Promise<string | null>;
@@ -74,10 +78,32 @@ export function createDailyReviewMainService(deps: DailyReviewMainServiceDeps): 
         : localDayBoundsAt(Date.now(), offset - (span - 1));
     const range = { fromMs: startDay.fromMs, toMs: endDay.toMs };
     const usageQuery = dailyUsageQuery(range);
+    // The day's model spend sums the canonical ledger and the frozen table the
+    // unrouted compaction calls still write to (#1679). Tool buckets are tool
+    // invocations, which the ledger does not describe.
+    const now = Date.now();
+    const ledgerPage = deps.modelCallLedger.read(resolveUsageRange(usageQuery.range, now));
+    const canonical = {
+      attempts: ledgerPage.attempts,
+      unreadableRecords: ledgerPage.unreadableRecords,
+      // The Daily Review reads the ledger as it stands; repairing it is the
+      // Usage authority's job on its own read path.
+      pendingRepairs: deps.modelCallLedger.pendingReprojections().length,
+    };
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
-      Promise.resolve(deps.telemetryRepo.summary(usageQuery)),
+      Promise.resolve(
+        mergeUsageSummary(deps.telemetryRepo.summary(usageQuery), canonical, usageQuery, now),
+      ),
       Promise.resolve(deps.telemetryRepo.buckets(usageQuery, 'tool')),
-      Promise.resolve(deps.telemetryRepo.buckets(usageQuery, 'model')),
+      Promise.resolve(
+        mergeUsageBuckets(
+          deps.telemetryRepo.buckets(usageQuery, 'model'),
+          canonical,
+          usageQuery,
+          'model',
+          now,
+        ).buckets,
+      ),
       Promise.resolve(deps.listSessions()),
     ]);
     return buildDailyReviewSummary({

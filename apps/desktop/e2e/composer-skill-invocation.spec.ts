@@ -15,7 +15,7 @@ async function selectStarterSkill(page: Page): Promise<void> {
   await expect(listbox).toBeVisible();
   await expect(listbox.getByRole('option', { name: /示例技能/ })).toBeVisible();
   await composer.press('Enter');
-  await expect(page.locator('.maka-composer-skill-chip')).toContainText('示例技能');
+  await expect(page.locator('.maka-composer-skill-token')).toContainText('示例技能');
   await expect(composer).toHaveValue('');
 }
 
@@ -26,18 +26,17 @@ test('the composer selects a structured Skill from slash suggestions', async ({
   await selectStarterSkill(page);
 
   const composer = page.locator('.maka-composer-textarea');
-  const chip = page.locator('.maka-composer-skill-chip');
-  await expect(chip).toHaveCSS('min-height', '32px');
-  const removeButton = chip.getByRole('button');
-  await expect(removeButton).toHaveCSS('height', '32px');
+  const token = page.locator('.maka-composer-skill-token');
+  await expect(token).toContainText('示例技能');
+  const removeButton = token.getByRole('button');
   await removeButton.focus();
   await removeButton.press('Enter');
-  await expect(chip).toHaveCount(0);
+  await expect(token).toHaveCount(0);
   await expect(composer).toBeFocused();
 
   await selectStarterSkill(page);
   await composer.press('Backspace');
-  await expect(chip).toHaveCount(0);
+  await expect(token).toHaveCount(0);
 });
 
 test('slash suggestions follow Runtime project discovery and host gating', async ({
@@ -137,7 +136,7 @@ test('a blocked Skill invocation keeps the complete composer draft', async ({
 
   await expect(page.getByText('Skill 调用失败，消息未发送')).toBeVisible();
   await expect(composer).toHaveValue('run it');
-  await expect(page.locator('.maka-composer-skill-chip')).toContainText('示例技能');
+  await expect(page.locator('.maka-composer-skill-token')).toContainText('示例技能');
   await expect(page.locator('.maka-turn')).toHaveCount(0);
   // #1433: the composer creates the session BEFORE it sends, so a rejected
   // first send has to remove it again. Otherwise every blocked invocation

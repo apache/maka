@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { decodeRuntimeEvent } from '@maka/core';
 import { HARBOR_CELL_CONTEXT_ENV_KEYS } from '../harbor-cell.js';
 import { isBudgetExhaustedTrialException } from '../harbor-task-runner.js';
+import { DEFAULT_HEADLESS_SYSTEM_PROMPT } from '../system-prompts.js';
 
 const repoRoot = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 const execFileAsync = promisify(execFile);
@@ -502,6 +503,31 @@ describe('Harbor adapter contract', () => {
     }
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /opencode_estimated_cost_usd/);
+  });
+
+  test('opencode-benchmark-makaprompt.json mirrors the benchmark config with only the prompt swapped', async () => {
+    const harborDir = resolve(repoRoot, 'packages/headless/harbor');
+    const baseline = JSON.parse(
+      await readFile(resolve(harborDir, 'opencode-benchmark.json'), 'utf8'),
+    );
+    const ablation = JSON.parse(
+      await readFile(resolve(harborDir, 'opencode-benchmark-makaprompt.json'), 'utf8'),
+    );
+    const expected = {
+      ...baseline,
+      agent: {
+        ...baseline.agent,
+        build: {
+          ...baseline.agent?.build,
+          prompt: DEFAULT_HEADLESS_SYSTEM_PROMPT,
+        },
+      },
+    };
+    assert.deepEqual(
+      ablation,
+      expected,
+      'the ablation config must differ from the benchmark config only by agent.build.prompt, byte-identical to the headless default system prompt',
+    );
   });
 
   test('kimi_code_agent.py runs the pinned CLI contract without Harbor installed', (t: TestContext) => {
@@ -3054,6 +3080,7 @@ print("trajectory-harbor-contract ok")
 function pythonOpenCodeAdapterSmokeScript(root: string): string {
   return String.raw`
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -3193,6 +3220,17 @@ try:
                 identity_path = Path(tmp) / "maka-cell-execution-identity.json"
                 assert identity_path.exists(), "sampling identity must be durable before OpenCode starts"
             environment.agent_commands.append((command, env or {}))
+            if command.startswith("sha256sum "):
+                # Emulate the container: /opt/maka-agent is the repo bind mount.
+                probe_container_path = command.split(" ", 1)[1]
+                host_path = Path(probe_container_path.replace("/opt/maka-agent", str(root)))
+                if not host_path.is_file():
+                    raise RuntimeError(f"sha256sum: {probe_container_path}: No such file or directory")
+                digest = hashlib.sha256(host_path.read_bytes()).hexdigest()
+                return types.SimpleNamespace(
+                    stdout=f"{digest}  {probe_container_path}\n", stderr="", return_code=0
+                )
+            return None
         agent.exec_as_agent = exec_as_agent
 
         asyncio.run(agent.install(environment))
@@ -3224,6 +3262,17 @@ try:
         assert env["ZAI_API_KEY"] == "ephemeral-proxy-token", env
         assert env["ZAI_BASE_URL"] == "http://host.docker.internal:43210", env
         assert env["OPENCODE_CONFIG"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark.json", env
+        baseline_identity = json.loads(
+            (Path(tmp) / "maka-cell-execution-identity.json").read_text(encoding="utf-8")
+        )
+        expected_baseline_hash = "sha256:" + hashlib.sha256(
+            (root / "packages" / "headless" / "harbor" / "opencode-benchmark.json").read_bytes()
+        ).hexdigest()
+        assert baseline_identity["opencodeConfigPath"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark.json", baseline_identity
+        assert baseline_identity["opencodeConfigHash"] == expected_baseline_hash, baseline_identity
+        baseline_main_index = next(i for i, item in enumerate(environment.agent_commands) if "opencode --model=" in item[0])
+        probe_command, _ = environment.agent_commands[baseline_main_index - 1]
+        assert probe_command == "sha256sum /opt/maka-agent/packages/headless/harbor/opencode-benchmark.json", probe_command
         benchmark_config = json.loads(
             (root / "packages" / "headless" / "harbor" / "opencode-benchmark.json").read_text(encoding="utf-8")
         )
@@ -3291,6 +3340,47 @@ try:
             "baseURL": "{env:DEEPSEEK_BASE_URL}",
         }, benchmark_config
         assert "KIMI_API_KEY" not in deepseek_env, deepseek_env
+        override_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-proxy-token",
+            "MAKA_LLM_CONNECTION_SLUG": "zai-coding-plan",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_REASONING_EFFORT": "max",
+            "MAKA_OPENCODE_VARIANT": "max",
+            "MAKA_OPENCODE_CONFIG_PATH": "/opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json",
+        }, prompt_template_path=template_path, model_name="zai-coding-plan/glm-5.2")
+        override_agent.exec_as_agent = exec_as_agent
+        asyncio.run(override_agent.run("hi", environment, AgentContext()))
+        _, override_env = environment.agent_commands[-1]
+        assert override_env["OPENCODE_CONFIG"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json", override_env
+        override_probe, _ = environment.agent_commands[-2]
+        assert override_probe == "sha256sum /opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json", override_probe
+        override_identity = json.loads(
+            (Path(tmp) / "maka-cell-execution-identity.json").read_text(encoding="utf-8")
+        )
+        expected_override_hash = "sha256:" + hashlib.sha256(
+            (root / "packages" / "headless" / "harbor" / "opencode-benchmark-makaprompt.json").read_bytes()
+        ).hexdigest()
+        assert override_identity["opencodeConfigPath"] == "/opt/maka-agent/packages/headless/harbor/opencode-benchmark-makaprompt.json", override_identity
+        assert override_identity["opencodeConfigHash"] == expected_override_hash, override_identity
+        assert override_identity["opencodeConfigHash"] != expected_baseline_hash, override_identity
+        missing_agent = MakaOpenCodeAgent(Path(tmp), extra_env={
+            "MAKA_PROVIDER_PROXY_URL": "http://host.docker.internal:43210",
+            "MAKA_PROVIDER_PROXY_TOKEN": "ephemeral-proxy-token",
+            "MAKA_LLM_CONNECTION_SLUG": "deepseek",
+            "MAKA_SYSTEM_PROMPT": "",
+            "MAKA_OPENCODE_CONFIG_PATH": "/opt/maka-agent/packages/headless/harbor/does-not-exist.json",
+        }, prompt_template_path=template_path, model_name="deepseek/deepseek-v4-flash")
+        missing_agent.exec_as_agent = exec_as_agent
+        commands_before = len(environment.agent_commands)
+        try:
+            asyncio.run(missing_agent.run("hi", environment, AgentContext()))
+            raise AssertionError("a missing MAKA_OPENCODE_CONFIG_PATH must fail closed")
+        except RuntimeError as error:
+            assert "does-not-exist.json" in str(error), error
+        assert not any(
+            "opencode --model=" in recorded for recorded, _ in environment.agent_commands[commands_before:]
+        ), "OpenCode must never launch when the resolved config is absent"
         assert environment.uploaded_files == [], environment.uploaded_files
         assert 'cat --' not in command, command
         assert "test-zai-key" not in command, command

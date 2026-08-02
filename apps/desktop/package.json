@@ -62,7 +62,6 @@
     "@fontsource-variable/geist-mono": "^5.2.8",
     "@playwright/test": "^1.61.1",
     "@storybook/react-vite": "^10.4.6",
-    "@tailwindcss/vite": "^4.3.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
@@ -70,9 +69,9 @@
     "electron": "43.1.1",
     "electron-builder": "26.8.1",
     "esbuild": "^0.27.7",
+    "postcss": "^8.5.20",
     "simple-icons": "15.22.0",
     "storybook": "^10.4.6",
-    "tailwindcss": "^4.3.1",
     "vite": "^8.1.5"
   }
 }

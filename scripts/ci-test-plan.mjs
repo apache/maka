@@ -13,9 +13,7 @@ const FULL_SUITE_FILES = new Set([
   'package-lock.json',
   'package.json',
   'scripts/ci-test-plan.mjs',
-  'scripts/ci-test-plan.test.mjs',
   'scripts/run-workspace-tests-parallel.mjs',
-  'scripts/run-workspace-tests-parallel.test.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([
@@ -25,6 +23,32 @@ const TYPECHECK_ONLY_FILES = new Set([
   'tsconfig.base.json',
   'tsconfig.lib.json',
 ]);
+
+// Scripts the Electron e2e job runs. Editing one of these changes what that
+// job verifies, so it has to re-run — a unit test on the runner is not
+// evidence that the run it drives still works.
+const E2E_DRIVING_SCRIPTS = new Set(['scripts/audit-alignment.mjs']);
+
+// Scripts / paths that can break Storybook without touching product ship
+// gates. Storybook is a catalog harness, not the product: typecheck already
+// typechecks stories and checks annotations, unit/e2e cover product behavior.
+// Running build+smoke on every desktop/ui PR taxes CI for almost no unique
+// signal — only the catalog and its wiring need this job.
+const STORYBOOK_DRIVING_SCRIPTS = new Set(['scripts/storybook-visual-smoke.mjs']);
+
+// .storybook/preview.tsx imports THEME_PALETTES from this module. Narrower
+// than "any packages/core change".
+const STORYBOOK_CORE_SETTINGS = 'packages/core/src/settings.ts';
+
+function isStorybookPath(path) {
+  if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
+  if (path === 'apps/desktop/.storybook' || path.startsWith('apps/desktop/.storybook/'))
+    return true;
+  if (path === 'apps/desktop/stories' || path.startsWith('apps/desktop/stories/')) return true;
+  // packages/ui also ships its own story tree (see .storybook/main.ts).
+  if (path === 'packages/ui/stories' || path.startsWith('packages/ui/stories/')) return true;
+  return false;
+}
 
 const EXTENDED_SCRIPT_FILES = new Set([
   'scripts/check-cua-driver-bundle.mjs',
@@ -104,6 +128,7 @@ export function planTests(changedFiles, options = {}) {
       runtimeSandbox: graph.dirs.includes('packages/cli'),
       scriptMode: 'full',
       storageStress: graph.dirs.includes('packages/storage'),
+      storybook: true,
       workspaces: [...graph.dirs],
     };
   }
@@ -156,7 +181,16 @@ export function planTests(changedFiles, options = {}) {
 
   return {
     code,
-    e2e: directWorkspaces.has('apps/desktop') || directWorkspaces.has('packages/ui'),
+    // Electron E2E + alignment audit. Direct desktop/ui only — a storage or
+    // runtime change must not drag cold Electron boots.
+    //
+    // Scripts that DRIVE the suite belong here too. `scripts/**` only sets
+    // scriptMode, so without this a change to the auditor itself was verified
+    // by its unit tests and never by the run it orchestrates.
+    e2e:
+      directWorkspaces.has('apps/desktop') ||
+      directWorkspaces.has('packages/ui') ||
+      files.some((path) => E2E_DRIVING_SCRIPTS.has(path)),
     full: false,
     headless: workspaces.includes('packages/headless'),
     // packages/cli/src/__tests__/runtime-bootstrap.test.ts executes real sandboxed
@@ -166,6 +200,10 @@ export function planTests(changedFiles, options = {}) {
     runtimeSandbox: workspaces.includes('packages/cli'),
     scriptMode,
     storageStress,
+    // Storybook build + smoke: catalog/harness only. Not every desktop/ui/core
+    // PR — product ship gates are typecheck, unit, and Electron e2e. See
+    // isStorybookPath.
+    storybook: files.some((path) => isStorybookPath(path)),
     workspaces,
   };
 }
@@ -179,6 +217,7 @@ export function formatGitHubOutputs(plan) {
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `script_mode=${plan.scriptMode}`,
     `storage_stress=${plan.storageStress}`,
+    `storybook=${plan.storybook}`,
     `unit=${plan.workspaces.length > 0}`,
     `workspaces=${plan.workspaces.join(',')}`,
   ].join('\n');

@@ -20,12 +20,12 @@ export function WorkspaceInstructionsSection(props: {
       <div className="settingsConnectionMeta">
         {props.state.files.map((file) => (
           <span key={file.file} className="settingsInlineFileState">
-            <span>{file.file} · {workspaceInstructionStatusLabel(file.status, file.chars, file.truncated, props.copy)}</span>
+            <span><code>{file.file}</code> · {workspaceInstructionStatusLabel(file.status, file.chars, file.truncated, props.copy)}</span>
             {(file.status === 'available' || file.status === 'empty') && (
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[4rem]"
+                className="settingsActionWidthSm"
                 aria-label={props.copy.openInstructionAria(file.file)}
                 isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:open`)}
                 onClick={() => void props.onOpen(file.file)}
@@ -36,7 +36,7 @@ export function WorkspaceInstructionsSection(props: {
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[4rem]"
+                className="settingsActionWidthSm"
                 aria-label={props.copy.createInstructionAria(file.file)}
                 isDisabled={props.disabled || props.isActionPending(`instruction:${file.file}:create`)}
                 onClick={() => void props.onCreate(file.file)}
@@ -69,7 +69,7 @@ export function MemoryPromptPreviewSection(props: {
           <Button
             variant="secondary"
             size="sm"
-            className="min-w-[5rem]"
+            className="settingsActionWidthMd"
             isDisabled={!props.preview || props.copyPending}
             onClick={() => void props.onCopy()}
             label={props.copyPending ? props.copy.text.copying : props.copy.text.copyContext}

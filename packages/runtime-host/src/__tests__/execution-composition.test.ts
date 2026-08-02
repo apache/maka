@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -18,6 +19,10 @@ import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readin
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import {
+  LONG_TERM_MEMORY_DATABASE_NAME,
+  openInteractiveLongTermMemoryStoreForWrite,
+} from '@maka/storage/long-term-memory-store';
+import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
@@ -25,6 +30,72 @@ import {
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
+
+const require = createRequire(import.meta.url);
+
+test('production composition owns the long-term memory database lifecycle', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const databasePath = join(root, LONG_TERM_MEMORY_DATABASE_NAME);
+    await assert.rejects(stat(databasePath), { code: 'ENOENT' });
+
+    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
+    const memory = await openInteractiveLongTermMemoryStoreForWrite(owner.lease);
+    assert.equal((await stat(databasePath)).isFile(), true);
+
+    await composition.close();
+    await assert.rejects(memory.readItem('after-close'), /closed/);
+    const Database = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+    const database = new Database(databasePath);
+    try {
+      const counts = database
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM memory_items) AS item_count,
+             (SELECT COUNT(*) FROM memory_write_operations) AS operation_count`,
+        )
+        .get() as { item_count?: unknown; operation_count?: unknown };
+      assert.equal(counts.item_count, 0);
+      assert.equal(counts.operation_count, 0);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test('production composition closes long-term memory after a later startup failure', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const session = await stores.sessionStore.create({
+      cwd: root,
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const sessionRoot = join(root, 'sessions', session.id);
+    await mkdir(sessionRoot, { recursive: true });
+    await writeFile(join(sessionRoot, 'task-events.jsonl'), '{not-json}\n');
+    const memory = await openInteractiveLongTermMemoryStoreForWrite(owner.lease);
+
+    await assert.rejects(createExecutionRuntimeHostComposition(compositionContext(owner)));
+    await assert.rejects(memory.readItem('after-failed-start'), /closed/);
+
+    await writeFile(join(sessionRoot, 'task-events.jsonl'), '');
+    await owner.close();
+    const recoveredCapability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+    const recoveredOwner = await tryAcquireInteractiveRootOwner(recoveredCapability);
+    assert.ok(recoveredOwner);
+    if (!recoveredOwner) return;
+    try {
+      const recovered = await createExecutionRuntimeHostComposition(
+        compositionContext(recoveredOwner),
+      );
+      await recovered.close();
+    } finally {
+      await recoveredOwner.close();
+    }
+  });
+});
 
 test('composition drain preserves usage admission until active Runtime work settles', async () => {
   await withCompositionRoot(async ({ owner }) => {

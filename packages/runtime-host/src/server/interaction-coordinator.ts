@@ -40,10 +40,12 @@ import {
 } from './interaction-projection.js';
 import type { InteractionOperationHandlerMap } from './operation-dispatcher.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
+import type { SessionPresenceReader } from './session-presence.js';
 
 export interface HostInteractionCoordinatorOptions {
   readonly store: InteractiveInteractionStoreWriterFacade;
   readonly sessionAdmission: SessionAdmissionGate;
+  readonly sessions: SessionPresenceReader;
   readonly now?: () => number;
   readonly preflightSessionSnapshot: (
     sessionId: string,
@@ -97,6 +99,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   readonly #store: InteractiveInteractionStoreWriterFacade;
   readonly #sessionAdmission: SessionAdmissionGate;
+  readonly #sessions: SessionPresenceReader;
   readonly #now: () => number;
   readonly #preflightSessionSnapshot: HostInteractionCoordinatorOptions['preflightSessionSnapshot'];
   readonly #refreshCanonicalContinuity: HostInteractionCoordinatorOptions['refreshCanonicalContinuity'];
@@ -109,6 +112,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   constructor(options: HostInteractionCoordinatorOptions) {
     this.#store = authenticateInteractionStoreWriter(options.store);
     this.#sessionAdmission = options.sessionAdmission;
+    this.#sessions = options.sessions;
     this.#now = options.now ?? Date.now;
     this.#preflightSessionSnapshot = options.preflightSessionSnapshot;
     this.#refreshCanonicalContinuity = options.refreshCanonicalContinuity;
@@ -159,6 +163,14 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
 
   recoverPendingAfterHostRestart(): Promise<void> {
     return observed(this.#recoverPendingAfterHostRestart());
+  }
+
+  async hasPendingSession(sessionId: string): Promise<boolean> {
+    this.#throwIfPoisoned();
+    for (const entry of this.#live.values()) {
+      if (entry.request.sessionId === sessionId) return true;
+    }
+    return (await this.#readPending({ sessionId })).length > 0;
   }
 
   assertTerminalFence(
@@ -400,13 +412,13 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
   ): ReturnType<InteractionOperationHandlerMap['interaction.query']> {
     return observed(
       this.#sessionAdmission.run(sessionId, async () => {
+        if ((await this.#sessions.probeSessionRemoval(sessionId)).kind !== 'present') {
+          return interactionNotFound();
+        }
         const record = await this.#readInteraction(interactionId);
         return record?.request.sessionId === sessionId
           ? { ok: true, result: projectInteractionRecord(record) }
-          : {
-              ok: false,
-              error: { code: 'not_found', message: 'Interaction was not found' },
-            };
+          : interactionNotFound();
       }),
     );
   }
@@ -426,6 +438,11 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         }
         return this.#sessionAdmission.run(routed.request.sessionId, async (admission) => {
           this.#throwIfPoisoned();
+          if (
+            (await this.#sessions.probeSessionRemoval(routed.request.sessionId)).kind !== 'present'
+          ) {
+            return interactionNotFound();
+          }
           const record = await this.#readInteraction(input.interactionId);
           if (!record) {
             throw this.#poison(
@@ -868,6 +885,13 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     }
     return error;
   }
+}
+
+function interactionNotFound() {
+  return {
+    ok: false,
+    error: { code: 'not_found', message: 'Interaction was not found' },
+  } as const;
 }
 
 function runKey(identity: RuntimeInteractionRunIdentity): string {

@@ -1,9 +1,8 @@
 import { lazy, Suspense } from 'react';
-import type { KeyboardEvent, PointerEvent } from 'react';
+import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { useUiLocale, type ChatModelChoice } from '@maka/ui';
 import type { SessionSummary } from '@maka/core';
 import type { SessionWorkbarTab } from './session-workbar-layout';
-import { SESSION_WORKBAR_MAX_WIDTH, SESSION_WORKBAR_MIN_WIDTH } from './session-workbar-layout';
 import { getShellCopy } from './locales/shell-copy';
 import type {
   CompanionQuoteTarget,
@@ -40,8 +39,8 @@ interface ChatWorkbarProps {
   activeTab: SessionWorkbarTab;
   onActiveTabChange: (tab: SessionWorkbarTab) => void;
   onDismiss: () => void;
-  startWorkbarResize: (event: PointerEvent<HTMLDivElement>) => void;
-  onWorkbarResizeHandleKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+  /** Resize region from `useShellLayout`; drives drag and arrow-key sizing. */
+  workbarResizable: ResizableProps;
   /** Active quote side panel: staged excerpts + source; threads to the workbar's
    *  "追问引用" tab. */
   quote?: QuoteCompanionPanelState | null;
@@ -61,8 +60,7 @@ export function ChatWorkbar({
   activeTab,
   onActiveTabChange,
   onDismiss,
-  startWorkbarResize,
-  onWorkbarResizeHandleKeyDown,
+  workbarResizable,
   quote,
   onClearQuote,
   onQuotesConsumed,
@@ -74,17 +72,21 @@ export function ChatWorkbar({
   const copy = getShellCopy(useUiLocale()).app;
   return (
     <>
-      <div
+      <ResizeHandle
         className="maka-workbar-resize-handle"
-        role="separator"
-        aria-label={copy.resizeWorkbar}
-        aria-orientation="vertical"
-        aria-valuemin={SESSION_WORKBAR_MIN_WIDTH}
-        aria-valuemax={SESSION_WORKBAR_MAX_WIDTH}
-        aria-valuenow={width}
-        tabIndex={0}
-        onPointerDown={startWorkbarResize}
-        onKeyDown={onWorkbarResizeHandleKeyDown}
+        resizable={workbarResizable}
+        direction="horizontal"
+        // The workbar sits at the end of the row, so dragging toward the start
+        // must widen it.
+        isReversed
+        isAlwaysVisible={false}
+        // Astryx offsets a side-placed horizontal grab zone with
+        // `translateY(-50%)` on top of `top: 0; bottom: 0`, which lifts it half
+        // its height off the divider and makes the lower half undraggable.
+        // Centering keeps the full-height hit area. Still unfixed on astryx
+        // HEAD as of 0.2.0 — verify upstream before removing this.
+        pillPlacement="center"
+        label={copy.resizeWorkbar}
       />
       <Suspense fallback={<SessionWorkbarFallback />}>
         <SessionWorkbar

@@ -25,6 +25,7 @@ import type {
   ProvisionAgentGraphOperatorResult,
 } from './session-manager.js';
 import type { AgentGraphRecord } from './stream-graph-projection.js';
+import type { AgentGraphInputHandoff } from './stream-graph-handoff.js';
 import type { AgentGraphRunnableIntent } from './stream-graph-readiness.js';
 import {
   projectAgentGraphSchedule,
@@ -44,6 +45,7 @@ export interface AgentGraphScheduleStopController {
 export interface RenderAgentGraphScheduledWorkPromptInput {
   work: AgentGraphScheduleWorkView;
   inputRecords: AgentGraphRecord[];
+  inputHandoffs: AgentGraphInputHandoff[];
 }
 
 export interface ReconcileAgentGraphScheduleInput {
@@ -57,6 +59,7 @@ export interface ReconcileAgentGraphScheduleInput {
   provisionOperator?(
     input: ProvisionAgentGraphOperatorInput,
   ): Promise<ProvisionAgentGraphOperatorResult>;
+  hydrateInputHandoffs?(records: readonly AgentGraphRecord[]): Promise<AgentGraphInputHandoff[]>;
   renderPrompt(input: RenderAgentGraphScheduledWorkPromptInput): string | Promise<string>;
   abortSignal?: AbortSignal;
   supervisor?: AgentGraphSupervisorObserver;
@@ -319,11 +322,16 @@ export async function reconcileAgentGraphSchedule(
 
     const rendered = await Promise.allSettled(
       selected.map(async ({ work, intent }): Promise<PreparedWork> => {
+        const inputRecords = work.inputIds.map((recordId) =>
+          clonePlain(committedRecords.get(recordId)!),
+        );
+        const inputHandoffs = input.hydrateInputHandoffs
+          ? await input.hydrateInputHandoffs(inputRecords)
+          : [];
         const prompt = await input.renderPrompt({
           work: clonePlain(work),
-          inputRecords: work.inputIds.map((recordId) =>
-            clonePlain(committedRecords.get(recordId)!),
-          ),
+          inputRecords,
+          inputHandoffs,
         });
         if (!prompt.trim()) {
           throw new Error(`Agent graph scheduled work ${work.workId} rendered an empty prompt`);

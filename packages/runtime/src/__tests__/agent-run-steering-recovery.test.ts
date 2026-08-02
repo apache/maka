@@ -188,14 +188,23 @@ test('awaits canonical Run status persistence before accepting an interaction re
     });
     const updateStarted = deferred<void>();
     const allowUpdate = deferred<void>();
+    const auditStarted = deferred<void>();
+    const allowAudit = deferred<void>();
     const delayedRunStore = {
       updateRun: async (...args: Parameters<typeof runStore.updateRun>) => {
         updateStarted.resolve();
         await allowUpdate.promise;
         return await runStore.updateRun(...args);
       },
-      appendEvent: runStore.appendEvent.bind(runStore),
+      appendEvent: async (...args: Parameters<typeof runStore.appendEvent>) => {
+        if (args[2].type === 'run_status_changed') {
+          auditStarted.resolve();
+          await allowAudit.promise;
+        }
+        return await runStore.appendEvent(...args);
+      },
     } as typeof runStore;
+    let sessionUpdateStarted = false;
     const run = new AgentRun({
       sessionId: session.id,
       header: session,
@@ -215,6 +224,7 @@ test('awaits canonical Run status persistence before accepting an interaction re
         unregisterRun: () => {},
         updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
         updateStatus: async (sessionId, status, blockedReason, ts = 0) => {
+          sessionUpdateStarted = true;
           await store.updateHeader(sessionId, buildStatusPatch(status, ts, blockedReason));
         },
         appendTurnState: async () => {},
@@ -234,13 +244,26 @@ test('awaits canonical Run status persistence before accepting an interaction re
         accepted = true;
       });
 
-    await updateStarted.promise;
-    assert.equal(accepted, false);
-    assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
-    allowUpdate.resolve();
-    await accepting;
-    assert.equal((await runStore.readRun(session.id, runId))?.status, 'running');
-    assert.equal((await store.readHeader(session.id)).status, 'running');
+    try {
+      await updateStarted.promise;
+      assert.equal(accepted, false);
+      assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
+      allowUpdate.resolve();
+      await auditStarted.promise;
+      await Promise.resolve();
+      assert.equal(accepted, false);
+      assert.equal(sessionUpdateStarted, false);
+      assert.equal((await store.readHeader(session.id)).status, 'waiting_for_user');
+      allowAudit.resolve();
+      await accepting;
+      assert.equal(sessionUpdateStarted, true);
+      assert.equal((await runStore.readRun(session.id, runId))?.status, 'running');
+      assert.equal((await store.readHeader(session.id)).status, 'running');
+    } finally {
+      allowUpdate.resolve();
+      allowAudit.resolve();
+      await accepting.catch(() => undefined);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

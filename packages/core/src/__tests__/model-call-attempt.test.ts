@@ -49,6 +49,13 @@ describe('ModelCallAttempt codec', () => {
     assert.equal(decoded.costUsd, 0.004);
   });
 
+  test('accepts Goal evaluator attribution', () => {
+    assert.equal(
+      decodeModelCallAttempt(attempt({ callKind: 'goal_evaluation' })).callKind,
+      'goal_evaluation',
+    );
+  });
+
   test('accepts an unpriced attempt that carries usage but no cost', () => {
     const decoded = decodeModelCallAttempt(attempt({ costBasis: 'unpriced', costUsd: undefined }));
     assert.equal(decoded.costBasis, 'unpriced');

@@ -208,7 +208,12 @@ class MakaOpenCodeAgent(OpenCode):
         base_url_env, api_key_env = provider_env_names[provider]
         env[base_url_env] = proxy_url
         env[api_key_env] = proxy_token
-        env["OPENCODE_CONFIG"] = self._opencode_config_path()
+        config_path = self._opencode_config_path()
+        env["OPENCODE_CONFIG"] = config_path
+        self._resolved_opencode_config_path = config_path
+        self._opencode_config_hash = await self._probe_opencode_config(
+            environment, config_path, env
+        )
         env["OPENCODE_FAKE_VCS"] = "git"
 
         skills_command = self._build_register_skills_command()
@@ -250,6 +255,12 @@ class MakaOpenCodeAgent(OpenCode):
         )
 
     def _opencode_config_path(self) -> str:
+        # Harness A/B prompt/config ablations point one arm at an alternate
+        # benchmark config (e.g. agent.build.prompt overrides) without
+        # shadowing the whole MAKA_REPO_ROOT tree.
+        override = self._get_env("MAKA_OPENCODE_CONFIG_PATH")
+        if override:
+            return override
         maka_repo = self._get_env("MAKA_REPO_ROOT") or "/opt/maka-agent"
         return str(
             Path(maka_repo)
@@ -258,6 +269,27 @@ class MakaOpenCodeAgent(OpenCode):
             / "harbor"
             / "opencode-benchmark.json"
         )
+
+    async def _probe_opencode_config(
+        self, environment: BaseEnvironment, config_path: str, env: dict[str, str]
+    ) -> str:
+        # Fail closed: harbor raises RuntimeError on non-zero exit, so a
+        # mistyped MAKA_OPENCODE_CONFIG_PATH aborts the cell here instead of
+        # silently launching OpenCode with its built-in default config (the
+        # wrong ablation arm). The digest goes into the execution identity so
+        # each cell can prove which exact config bytes it ran.
+        result = await self.exec_as_agent(
+            environment,
+            command=f"sha256sum {shlex.quote(config_path)}",
+            env=env,
+        )
+        stdout = (getattr(result, "stdout", None) or "").strip()
+        digest = stdout.split()[0] if stdout else ""
+        if not digest:
+            raise ValueError(
+                f"Could not hash the resolved OpenCode benchmark config: {config_path}"
+            )
+        return "sha256:" + digest
 
     def _stop_grace_ms(self) -> int:
         raw = self._get_env("MAKA_OPENCODE_STOP_GRACE_MS")
@@ -427,7 +459,7 @@ class MakaOpenCodeAgent(OpenCode):
         ).hexdigest()
         pricing_profile = self._get_env("MAKA_TRIAL_PRICING_SOURCE") or "unconfigured"
         reasoning_effort = self._get_env("MAKA_REASONING_EFFORT")
-        return {
+        identity = {
             "llmConnectionSlug": self._get_env("MAKA_LLM_CONNECTION_SLUG") or provider,
             "model": model,
             **({"reasoningEffort": reasoning_effort} if reasoning_effort else {}),
@@ -435,6 +467,12 @@ class MakaOpenCodeAgent(OpenCode):
             "pricingProfile": pricing_profile,
             "agentTools": False,
         }
+        resolved_config = getattr(self, "_resolved_opencode_config_path", None)
+        config_hash = getattr(self, "_opencode_config_hash", None)
+        if resolved_config and config_hash:
+            identity["opencodeConfigPath"] = resolved_config
+            identity["opencodeConfigHash"] = config_hash
+        return identity
 
     def _write_execution_identity(self) -> None:
         self.logs_dir.mkdir(parents=True, exist_ok=True)

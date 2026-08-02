@@ -7,10 +7,10 @@
 
 .settingsReadOnlyValue,
 .settingsReadOnlyValueGroup {
+  font: var(--maka-text-body);
   min-width: 0;
   max-width: min(320px, 45cqi);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
   text-align: end;
@@ -25,10 +25,14 @@
   gap: var(--space-2);
 }
 
-.settingsReadOnlyValue[data-mono="true"] {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
+code.settingsReadOnlyValue {
+  font: var(--maka-text-supporting);
+  /* Restated because the shorthand above resets it: the base rule's
+     tabular-nums is a sub-property `font:` does not carry, and this selector
+     outranks it. Harmless in practice — the value is a <code> in Geist Mono,
+     whose digits are already fixed-width — but the rule is that a role and a
+     font sub-property may not be split across selectors without saying so. */
+  font-variant-numeric: tabular-nums;
   text-align: start;
   word-break: break-all;
 }
@@ -49,6 +53,6 @@
   .settingsActionRow > button {
     flex-shrink: 1;
     height: auto;
-    min-height: 2rem;
+    min-height: 26px;
   }
 }

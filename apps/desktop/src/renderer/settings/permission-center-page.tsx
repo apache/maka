@@ -170,7 +170,7 @@ export function PermissionCenterPage() {
         subtitle={copy.subtitle}
         action={
           <>
-            <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
+            <small className="settingsPermissionMetaLabel">
               {copy.lastRead}<RelativeTime ts={checkedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
@@ -332,7 +332,7 @@ function CapabilityRow(props: { capability: CapabilitySnapshot; copy: Permission
       <div className="settingsCapabilityHeader">
         <div className="settingsCapabilityHeading">
           <strong>{capabilityLabel}</strong>
-          <small className="settingsCapabilityId">{prettyCapabilityId(capability.id)}</small>
+          <code className="settingsCapabilityId">{prettyCapabilityId(capability.id)}</code>
         </div>
         <Badge variant={statusBadgeVariant(readinessCopy.tone)} label={readinessCopy.label} />
       </div>

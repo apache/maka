@@ -2,8 +2,8 @@ import type { SessionEvent } from '@maka/core';
 import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import {
   drainGoalTurn,
-  type GoalExternalTurnStart,
-  type GoalExternalTurnSettler,
+  type GoalObservedTurnStart,
+  type GoalObservedTurnSettler,
   type GoalTurnOutcome,
   type SessionActivityLease,
   type SessionActivityRegistry,
@@ -12,7 +12,7 @@ import type { MakaSessionDriver } from './session-driver.js';
 
 export interface MakaPiTuiTurnLifecycle {
   activities: SessionActivityRegistry;
-  beginExternalTurn: (sessionId: string, turnId: string) => GoalExternalTurnStart;
+  beginObservedTurn: (sessionId: string, turnId: string) => GoalObservedTurnStart;
 }
 
 export type MakaPiTuiTurnRequest =
@@ -52,7 +52,7 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
   const { request } = input;
   let activity = request.kind === 'coordinator' ? request.activity : undefined;
   let preparedTurnId = request.kind === 'coordinator' ? request.turnId : undefined;
-  let settleExternalTurn: GoalExternalTurnSettler | undefined;
+  let settleExternalTurn: GoalObservedTurnSettler | undefined;
 
   const notifySettlement = (outcome: GoalTurnOutcome): void => {
     if (!settleExternalTurn) return;
@@ -96,7 +96,7 @@ export async function runMakaPiTuiTurn(input: RunMakaPiTuiTurnInput): Promise<Go
     }
 
     if (request.kind === 'external') {
-      const registration = input.lifecycle.beginExternalTurn(turn.sessionId, turn.turnId);
+      const registration = input.lifecycle.beginObservedTurn(turn.sessionId, turn.turnId);
       if (registration.kind !== 'registered') {
         throw new Error(registration.reason);
       }

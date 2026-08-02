@@ -295,7 +295,7 @@ export function DailyReviewPanel(props: {
           <UiButton
             variant="secondary"
             size="sm"
-            className="maka-daily-review-copy min-w-[4rem]"
+            className="maka-daily-review-copy"
             onClick={() => void runDailyReviewAction('copy', async () => {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onCopyMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
@@ -311,7 +311,7 @@ export function DailyReviewPanel(props: {
           <UiButton
             variant="secondary"
             size="sm"
-            className="maka-daily-review-append min-w-[5rem]"
+            className="maka-daily-review-append"
             onClick={() => void runDailyReviewAction('append', async () => {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onAppendMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
@@ -327,7 +327,7 @@ export function DailyReviewPanel(props: {
           <UiButton
             variant="secondary"
             size="sm"
-            className="maka-daily-review-save min-w-[4rem]"
+            className="maka-daily-review-save"
             onClick={() => void runDailyReviewAction('save', async () => {
               const md = formatDailyReviewMarkdown(visibleSummary, dayLabel, locale);
               await props.onSaveMarkdown?.({ markdown: md, label: dayLabel, summary: visibleSummary });
@@ -372,7 +372,7 @@ export function DailyReviewPanel(props: {
             <UiButton
               variant="primary"
               size="sm"
-              className="maka-daily-review-quick-run min-w-[6rem]"
+              className="maka-daily-review-quick-run"
               onClick={() => void triggerManualRun('daily')}
               isDisabled={dailyReviewActionBusy}
               data-pending={pendingDailyReviewAction === 'run:daily' ? 'true' : undefined}
@@ -382,7 +382,7 @@ export function DailyReviewPanel(props: {
             <UiButton
               variant="secondary"
               size="sm"
-              className="maka-daily-review-quick-run min-w-[6rem]"
+              className="maka-daily-review-quick-run"
               onClick={() => void triggerManualRun('deep')}
               isDisabled={dailyReviewActionBusy}
               data-pending={pendingDailyReviewAction === 'run:deep' ? 'true' : undefined}

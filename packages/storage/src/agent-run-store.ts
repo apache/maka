@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import {
   appendFile,
   link,
@@ -8,6 +9,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   unlink,
   writeFile,
 } from 'node:fs/promises';
@@ -22,6 +24,7 @@ import {
 } from './execution-record-codec.js';
 import { classifyJsonRecord } from './json-prefix.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import { syncDirectory, syncDirectoryChain, syncFile } from './stable-storage.js';
 import { chainWrite } from './write-queue.js';
 import {
@@ -30,6 +33,12 @@ import {
   type OperationalStateDatabaseLease,
   type OperationalStoreCutoverFailpoint,
 } from './operational-state-store.js';
+import {
+  assertEvidenceReadBudget,
+  measureEvidenceRows,
+  type BoundedEvidenceReadResult,
+  type EvidenceReadBudget,
+} from './bounded-evidence.js';
 import {
   DurableStoreWriteError,
   decodeAgentGraphIntentClaim,
@@ -122,6 +131,13 @@ export interface RootTurnAdmissionStore {
 }
 
 export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionStore {
+  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
+  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
+  readEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
   listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
@@ -139,12 +155,24 @@ export interface DurableAgentRunStore extends AgentRunStore, RootTurnAdmissionSt
   close?(): void;
 }
 
+export interface AgentRunIdentitySearchResult {
+  readonly runs: readonly AgentRunHeader[];
+  readonly truncated: boolean;
+}
+
+export type { BoundedEvidenceReadResult, EvidenceReadBudget } from './bounded-evidence.js';
+
 export interface ConversationCopyRuntimeEventBatch {
   readonly runId: string;
   readonly events: readonly RuntimeEvent[];
 }
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
+  readRuntimeEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   importConversationCopyRuntimeEvents(
     sessionId: string,
     batches: readonly ConversationCopyRuntimeEventBatch[],
@@ -292,6 +320,55 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     return this.listSessionRunsForRecovery(sessionId);
   }
 
+  async findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult> {
+    assertSafeId(runId, 'Invalid run id');
+    assertIdentitySearchLimit(limit);
+    await this.#ready;
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT session_id, record_json
+        FROM core_agent_runs
+        WHERE run_id = ?
+        ORDER BY session_id
+        LIMIT ?
+      `)
+      .all(runId, limit + 1) as Array<{ session_id?: unknown; record_json?: unknown }>;
+    const truncated = rows.length > limit;
+    const runs = rows.slice(0, limit).map((row) => {
+      if (typeof row.session_id !== 'string' || typeof row.record_json !== 'string') {
+        throw new Error('Invalid SQLite AgentRun identity row');
+      }
+      return normalizeAgentRunHeader(JSON.parse(row.record_json), row.session_id, runId);
+    });
+    return { runs, truncated };
+  }
+
+  async listSessionRunsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<AgentRunIdentitySearchResult> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertIdentitySearchLimit(limit);
+    await this.#ready;
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT run_id, record_json
+        FROM core_agent_runs
+        WHERE session_id = ?
+        ORDER BY created_at, run_id
+        LIMIT ?
+      `)
+      .all(sessionId, limit + 1) as Array<{ run_id?: unknown; record_json?: unknown }>;
+    const truncated = rows.length > limit;
+    const runs = rows.slice(0, limit).map((row) => {
+      if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
+        throw new Error('Invalid SQLite AgentRun row');
+      }
+      return normalizeAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
+    });
+    return { runs, truncated };
+  }
+
   async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {
     assertSafeId(sessionId, 'Invalid session id');
     await this.#ready;
@@ -343,6 +420,37 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   async readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
     return this.readEventsForRecovery(sessionId, runId);
+  }
+
+  async readEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    assertEvidenceReadBudget(budget);
+    await this.#ready;
+    const rows = this.#lease.database
+      .prepare(`
+        SELECT length(CAST(record_json AS BLOB)) AS stored_bytes
+        FROM core_agent_run_events
+        WHERE session_id = ? AND run_id = ?
+        ORDER BY sequence
+        LIMIT ?
+      `)
+      .all(sessionId, runId, budget.maxRecords + 1) as Array<{ stored_bytes?: unknown }>;
+    const measurement = measureEvidenceRows(
+      rows,
+      budget,
+      'Invalid SQLite AgentRun evidence measurement row',
+    );
+    if (!measurement) return { status: 'limit_exceeded' };
+    return {
+      status: 'complete',
+      records: readSqliteAgentRunEventsForEvidence(this.#lease.database, sessionId, runId),
+      ...measurement,
+    };
   }
 
   async readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
@@ -749,6 +857,67 @@ class FileAgentRunStore implements DurableAgentRunStore {
     return headers.sort((a, b) => a.createdAt - b.createdAt || a.runId.localeCompare(b.runId));
   }
 
+  async findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult> {
+    assertSafeId(runId, 'Invalid run id');
+    assertIdentitySearchLimit(limit);
+    let sessions;
+    try {
+      sessions = await readdir(this.sessionsRoot, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingFile(error)) return { runs: [], truncated: false };
+      throw error;
+    }
+    const runs: AgentRunHeader[] = [];
+    for (const entry of sessions.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() || !isSafeId(entry.name)) continue;
+      try {
+        runs.push(await this.readRunUnlocked(entry.name, runId));
+      } catch (error) {
+        if (isMissingFile(error)) continue;
+        throw error;
+      }
+      if (runs.length > limit) {
+        return { runs: runs.slice(0, limit), truncated: true };
+      }
+    }
+    return { runs, truncated: false };
+  }
+
+  async listSessionRunsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<AgentRunIdentitySearchResult> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertIdentitySearchLimit(limit);
+    let entries;
+    try {
+      entries = await readdir(this.runsRoot(sessionId), { withFileTypes: true });
+    } catch (error) {
+      if (isMissingFile(error)) return { runs: [], truncated: false };
+      throw error;
+    }
+    const runs: AgentRunHeader[] = [];
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory() || !isSafeId(entry.name)) continue;
+      try {
+        runs.push(await this.readRunUnlocked(sessionId, entry.name));
+      } catch {
+        // Malformed run folders should not hide the rest of the session.
+      }
+      if (runs.length > limit) break;
+    }
+    const truncated = runs.length > limit;
+    return {
+      runs: runs
+        .slice(0, limit)
+        .sort(
+          (left, right) =>
+            left.createdAt - right.createdAt || left.runId.localeCompare(right.runId),
+        ),
+      truncated,
+    };
+  }
+
   async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {
     assertSafeId(sessionId, 'Invalid session id');
     const runsRoot = this.runsRoot(sessionId);
@@ -829,6 +998,32 @@ class FileAgentRunStore implements DurableAgentRunStore {
 
   async readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
     return this.readEventsWithPolicy(sessionId, runId, false);
+  }
+
+  async readEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<AgentRunEvent>> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    assertEvidenceReadBudget(budget);
+    const path = this.eventsPath(sessionId, runId);
+    let storedBytes = 0;
+    try {
+      storedBytes = (await stat(path)).size;
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+    }
+    if (storedBytes > budget.maxBytes) return { status: 'limit_exceeded' };
+    const records = await this.readEventsWithPolicy(sessionId, runId, false, true);
+    if (records.length > budget.maxRecords) return { status: 'limit_exceeded' };
+    return {
+      status: 'complete',
+      records,
+      sourceRecordCount: records.length,
+      storedBytes,
+    };
   }
 
   async readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]> {
@@ -1735,6 +1930,7 @@ function historyCompactProjectionIsSourceBound(event: AgentRunEvent): boolean {
 }
 
 function assertNoReservedToolLedgerFact(event: RuntimeEvent): void {
+  assertNoReservedWorkspaceAuthorityAppend(event);
   if (event.actions?.continuationStart !== undefined) {
     throw new Error('Continuation start facts require SQLite continuation authority');
   }
@@ -1818,6 +2014,7 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       };
     });
     const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
+    for (const event of canonicalEvents) assertNoReservedWorkspaceAuthorityAppend(event);
     if (canonicalEvents.some((event) => event.partial)) {
       throw new Error('Conversation copy cannot import partial RuntimeEvents');
     }
@@ -2065,6 +2262,41 @@ class FileRuntimeEventStore implements DurableRuntimeEventStore {
       return !key || !completedPartialKeys.has(key);
     });
     return mergeRuntimePartialSnapshots(events, visiblePartials);
+  }
+
+  async readRuntimeEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>> {
+    assertSafeId(sessionId, 'Invalid session id');
+    assertSafeId(runId, 'Invalid run id');
+    assertEvidenceReadBudget(budget);
+    let storedBytes = await fileSizeOrZero(this.runtimeEventsPath(sessionId, runId));
+    let partialEntries: Dirent[];
+    try {
+      partialEntries = await readdir(this.runtimePartialsDir(sessionId, runId), {
+        withFileTypes: true,
+      });
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
+      partialEntries = [];
+    }
+    for (const entry of partialEntries) {
+      if (!entry.isFile() || !entry.name.endsWith('.partial')) continue;
+      storedBytes += await fileSizeOrZero(
+        join(this.runtimePartialsDir(sessionId, runId), entry.name),
+      );
+      if (storedBytes > budget.maxBytes) return { status: 'limit_exceeded' };
+    }
+    const records = await this.readRuntimeEvents(sessionId, runId);
+    if (records.length > budget.maxRecords) return { status: 'limit_exceeded' };
+    return {
+      status: 'complete',
+      records,
+      sourceRecordCount: records.length,
+      storedBytes,
+    };
   }
 
   async readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
@@ -2575,6 +2807,12 @@ function assertSafeId(value: string, message: string): void {
   if (!isSafeId(value)) throw new Error(message);
 }
 
+function assertIdentitySearchLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
+    throw new RangeError('AgentRun identity search limit must be an integer between 1 and 256');
+  }
+}
+
 function isSafeId(value: string): boolean {
   return SAFE_ID_PATTERN.test(value);
 }
@@ -2874,7 +3112,7 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   }
   if (execution.kind !== 'external_message' && admission.sourceMessages.length !== 0) {
     throw new Error(
-      'Invalid root turn admission contract: linked child execution cannot have source messages',
+      'Invalid root turn admission contract: host-authored execution cannot have source messages',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {
@@ -2936,6 +3174,26 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   if (value.kind === 'external_message') {
     if (!hasExactKeys(value, ['kind'])) throw new Error('Invalid root execution descriptor');
     return Object.freeze({ kind: 'external_message' });
+  }
+  if (value.kind === 'automation') {
+    if (
+      !hasExactKeys(value, ['kind', 'automationId']) ||
+      typeof value.automationId !== 'string' ||
+      !isSafeId(value.automationId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'automation', automationId: value.automationId });
+  }
+  if (value.kind === 'goal') {
+    if (
+      !hasExactKeys(value, ['kind', 'goalId']) ||
+      typeof value.goalId !== 'string' ||
+      !isSafeId(value.goalId)
+    ) {
+      throw new Error('Invalid root execution descriptor');
+    }
+    return Object.freeze({ kind: 'goal', goalId: value.goalId });
   }
   if (value.kind === 'claimed_agent_graph_intent') {
     if (
@@ -3049,6 +3307,15 @@ async function syncDirectoryIfPresent(path: string): Promise<void> {
     await syncDirectory(path);
   } catch (error) {
     if (!isMissingFile(error)) throw error;
+  }
+}
+
+async function fileSizeOrZero(path: string): Promise<number> {
+  try {
+    return (await stat(path)).size;
+  } catch (error) {
+    if (isMissingFile(error)) return 0;
+    throw error;
   }
 }
 

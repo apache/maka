@@ -348,8 +348,17 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return ledger.filter((event) => event.turnId === turnId);
     },
     allowMidTurnHistoryCompaction: true,
-    recordLlmCall: (record) => {
-      llmCalls.push(record as (typeof llmCalls)[number]);
+    // The send-level record is gone (#1679); its diagnostics moved to the run
+    // trace, which is what these assertions observe now.
+    recordRunTrace: (event) => {
+      if (event.type !== 'send_diagnostics_recorded') return;
+      // Same fail-closed rule the send-level record enforced: a send with no
+      // usable usage evidence produces no usage row at all (#972). The trace
+      // still fires for its context diagnostics; only usage-bearing sends land
+      // here.
+      const data = event.data as (typeof llmCalls)[number] | undefined;
+      if (data?.totalTokens === undefined) return;
+      llmCalls.push(data);
     },
     newId: idGenerator(),
     now: monotonicClock(),

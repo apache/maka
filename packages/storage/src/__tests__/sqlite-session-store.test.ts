@@ -20,6 +20,7 @@ import {
   SQLITE_SESSION_METADATA_DATABASE_NAME,
   type StableSessionCreateInput,
 } from '../session-store.js';
+import { createSessionStoreForTest } from '../session-store-test-support.js';
 import {
   createSqliteSessionMetadataStore,
   SessionMetadataVersionConflictError,
@@ -1017,6 +1018,7 @@ describe('default SQLite session metadata store', () => {
     try {
       header = await store.create(makeInput({ name: 'Delete me' }));
       await store.remove(header.id);
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), [header.id]);
     } finally {
       await store.close?.();
     }
@@ -1029,6 +1031,81 @@ describe('default SQLite session metadata store', () => {
     try {
       assert.deepEqual(await reopened.list(), []);
       await assert.rejects(() => reopened.readHeader(header.id), /not found/);
+      assert.deepEqual(await reopened.listPendingSessionRetirementCleanupIds(), [header.id]);
+      await reopened.purgeRemovedSessionTranscript(header.id);
+      await reopened.completeSessionRetirementCleanup(header.id);
+      await waitForMissingPath(sessionDir);
+    } finally {
+      await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('commits family removal before aggregate retirement cleanup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-family-cleanup-'));
+    const store = createSessionStore(root);
+    try {
+      const familyRoot = await store.create(makeInput({ name: 'Family root' }));
+      const familyRevision = await store.create(
+        makeInput({
+          name: 'Family revision',
+          revisionRootSessionId: familyRoot.id,
+          revisionParentSessionId: familyRoot.id,
+          revisionOfTurnId: 'turn-1',
+          revisionIndex: 2,
+          revisionState: 'committed',
+        }),
+      );
+      const familyIds = [familyRoot.id, familyRevision.id];
+      const identities = await Promise.all(
+        familyIds.map(async (sessionId) => {
+          const snapshot = await store.readHeaderRecordSnapshot(sessionId);
+          return { sessionId, expectedVersion: snapshot.revision };
+        }),
+      );
+
+      assert.deepEqual(
+        new Set(await store.removeSessionsVersioned(identities)),
+        new Set(familyIds),
+      );
+      assert.deepEqual(
+        new Set(await store.listPendingSessionRetirementCleanupIds(familyRevision.id)),
+        new Set(familyIds),
+      );
+      for (const sessionId of familyIds) {
+        assert.deepEqual(await store.probeSessionRemoval(sessionId), { kind: 'removed' });
+        await store.purgeRemovedSessionTranscript(sessionId);
+        await store.completeSessionRetirementCleanup(sessionId);
+        await assert.rejects(stat(join(root, 'sessions', sessionId)), { code: 'ENOENT' });
+      }
+      assert.deepEqual(await store.listPendingSessionRetirementCleanupIds(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps aggregate retirement cleanup pending across storage restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-startup-cleanup-'));
+    const seed = createSessionStore(root);
+    let sessionId = '';
+    try {
+      const session = await seed.create(makeInput({ name: 'Startup cleanup' }));
+      sessionId = session.id;
+      const snapshot = await seed.readHeaderRecordSnapshot(sessionId);
+      await seed.removeSessionsVersioned([{ sessionId, expectedVersion: snapshot.revision }]);
+    } finally {
+      await seed.close?.();
+    }
+
+    const reopened = createSessionStore(root);
+    try {
+      assert.deepEqual(await reopened.list(), []);
+      assert.deepEqual(await reopened.listPendingSessionRetirementCleanupIds(), [sessionId]);
+      await reopened.purgeRemovedSessionTranscript(sessionId);
+      await reopened.completeSessionRetirementCleanup(sessionId);
+      await assert.rejects(stat(join(root, 'sessions', sessionId)), { code: 'ENOENT' });
+      assert.deepEqual(await reopened.listPendingSessionRetirementCleanupIds(), []);
     } finally {
       await reopened.close?.();
       await rm(root, { recursive: true, force: true });
@@ -1155,6 +1232,20 @@ function assertCatalogQueryPlan(
       true,
       details.join('\n'),
     );
+  }
+}
+
+async function waitForMissingPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (true) {
+    try {
+      await stat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for removal: ${path}`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 

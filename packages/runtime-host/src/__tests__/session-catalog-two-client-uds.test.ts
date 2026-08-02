@@ -6,6 +6,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
@@ -14,6 +15,7 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
+import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -43,8 +45,15 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-session-catalog-'));
   const root = join(base, 'root');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
-  const { connectionId, largeLabelSessionId, oversizedSessionId, unreadSessionId } =
-    await seedAuthority(root, capability);
+  const {
+    connectionId,
+    largeLabelSessionId,
+    oversizedSessionId,
+    unreadSessionId,
+    retirementSessionId,
+    retirementRevision,
+    recoverySessionId,
+  } = await seedAuthority(root, capability);
   let host: ExecutionHostHandle | undefined;
   try {
     host = await startHost(root, capability.rootId);
@@ -105,6 +114,45 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
             kind: 'unsupported_legacy_record',
             id: oversizedSessionId,
             revision: 2,
+            reason: 'not_wire_representable',
+          },
+        },
+      );
+      assert.deepEqual(
+        await desktop.request('session.lifecycle.set', {
+          sessionId: oversizedSessionId,
+          state: 'archived',
+        }),
+        {
+          kind: 'unsupported_legacy_record',
+          id: oversizedSessionId,
+          revision: 3,
+          reason: 'not_wire_representable',
+        },
+      );
+      assert.deepEqual(
+        await tui.request('session.lifecycle.set', {
+          sessionId: oversizedSessionId,
+          state: 'active',
+        }),
+        {
+          kind: 'unsupported_legacy_record',
+          id: oversizedSessionId,
+          revision: 4,
+          reason: 'not_wire_representable',
+        },
+      );
+      assert.deepEqual(
+        await desktop.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: oversizedSessionId,
+        }),
+        {
+          kind: 'session',
+          session: {
+            kind: 'unsupported_legacy_record',
+            id: oversizedSessionId,
+            revision: 4,
             reason: 'not_wire_representable',
           },
         },
@@ -325,7 +373,7 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       if (continuation.kind !== 'page') {
         assert.fail('Stable Session catalog continuation must return a page');
       }
-      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 4);
+      assert.equal(firstPage.sessions.length + continuation.sessions.length, bulk.length + 5);
 
       const filteredStart = await desktop.request('session.catalog.query', {
         kind: 'list_start',
@@ -394,11 +442,170 @@ test('two UDS Clients share stable Session creation, CAS configuration, and cata
       );
 
       await subscription.close();
+      const retirementSubscription = await tui.openSessionSubscription({
+        sessionId: created.id,
+      });
+      const retirementIterator = retirementSubscription[Symbol.asyncIterator]();
+      const beforeArchive = await querySession(desktop, created.id);
+      const heartbeat = await desktop.request('automation.mutate', {
+        kind: 'create',
+        sessionId: created.id,
+        automationKind: 'heartbeat',
+        name: 'Retirement blocker',
+        prompt: 'Remain attached to this Session.',
+        schedule: { type: 'interval', seconds: 3_600 },
+      });
+      assert.equal(heartbeat.kind, 'committed');
+      if (heartbeat.kind !== 'committed' || !heartbeat.automation) {
+        assert.fail('Heartbeat creation must commit');
+      }
+      await assert.rejects(
+        tui.request('session.lifecycle.set', {
+          sessionId: created.id,
+          state: 'archived',
+        }),
+        operationError('session_busy'),
+      );
+      const deletedHeartbeat = await tui.request('automation.mutate', {
+        kind: 'delete',
+        sessionId: created.id,
+        automationId: heartbeat.automation.id,
+      });
+      assert.equal(deletedHeartbeat.kind, 'committed');
+      const archived = requireSessionProjection(
+        await desktop.request('session.lifecycle.set', {
+          sessionId: created.id,
+          state: 'archived',
+        }),
+      );
+      assert.equal(archived.isArchived, true);
+      assert.equal((await querySession(tui, created.id)).isArchived, true);
+      const archivedContinuity = await nextProjection(retirementIterator);
+      assert.equal(archivedContinuity.snapshot.session.isArchived, true);
+      assert.ok(archived.revision > beforeArchive.revision);
+
+      const restored = requireSessionProjection(
+        await tui.request('session.lifecycle.set', {
+          sessionId: created.id,
+          state: 'active',
+        }),
+      );
+      assert.equal(restored.isArchived, false);
+      const restoredContinuity = await nextProjection(retirementIterator);
+      assert.equal(restoredContinuity.snapshot.session.isArchived, false);
+
+      assert.deepEqual(
+        await desktop.request('session.remove', {
+          sessionId: created.id,
+          expectedRevision: restored.revision,
+        }),
+        { kind: 'removed', sessionId: created.id },
+      );
+      const closed = await withTimeout(
+        retirementIterator.next(),
+        PROCESS_TIMEOUT_MS,
+        'Session removal did not close continuity',
+      );
+      assert.equal(closed.done, false);
+      assert.equal(closed.value?.kind, 'subscription.closed');
+      if (closed.value?.kind !== 'subscription.closed') {
+        assert.fail('Session removal must close its continuity subscription');
+      }
+      assert.equal(closed.value.reason, 'session_removed');
+      assert.deepEqual(
+        await tui.request('session.catalog.query', {
+          kind: 'get',
+          sessionId: created.id,
+        }),
+        { kind: 'session', session: null },
+      );
+      await assert.rejects(
+        desktop.request('runtime.resource.query', {
+          kind: 'list_start',
+          sessionId: created.id,
+        }),
+        operationError('not_found'),
+      );
+      await assert.rejects(
+        tui.request('automation.query', {
+          kind: 'list_start',
+          sessionId: created.id,
+        }),
+        operationError('not_found'),
+      );
+      assert.deepEqual(
+        await tui.request('session.remove', {
+          sessionId: created.id,
+          expectedRevision: restored.revision,
+        }),
+        { kind: 'removed', sessionId: created.id },
+      );
+
+      const artifactBeforeRemoval = await desktop.request('artifact.query', {
+        kind: 'get',
+        sessionId: retirementSessionId,
+        artifactId: 'retirement-artifact',
+      });
+      assert.equal(artifactBeforeRemoval.kind, 'artifact');
+      if (artifactBeforeRemoval.kind !== 'artifact') {
+        assert.fail('Retirement Artifact must be readable before Session removal');
+      }
+      assert.equal(artifactBeforeRemoval.artifact?.id, 'retirement-artifact');
+      const tasksBeforeRemoval = await tui.request('task.ledger.query', {
+        kind: 'list_start',
+        sessionId: retirementSessionId,
+      });
+      assert.equal(tasksBeforeRemoval.kind, 'page');
+      if (tasksBeforeRemoval.kind !== 'page') {
+        assert.fail('Retirement Task Ledger must be readable before Session removal');
+      }
+      assert.equal(tasksBeforeRemoval.tasks.length, 1);
+
+      assert.deepEqual(
+        await desktop.request('session.remove', {
+          sessionId: retirementSessionId,
+          expectedRevision: retirementRevision,
+        }),
+        { kind: 'removed', sessionId: retirementSessionId },
+      );
+      for (const connection of [desktop, tui]) {
+        await assert.rejects(
+          connection.request('artifact.query', {
+            kind: 'get',
+            sessionId: retirementSessionId,
+            artifactId: 'retirement-artifact',
+          }),
+          operationError('not_found'),
+        );
+        await assert.rejects(
+          connection.request('task.ledger.query', {
+            kind: 'list_start',
+            sessionId: retirementSessionId,
+          }),
+          operationError('not_found'),
+        );
+      }
+      await assert.rejects(
+        desktop.request('artifact.query', {
+          kind: 'get',
+          sessionId: recoverySessionId,
+          artifactId: 'recovery-artifact',
+        }),
+        operationError('not_found'),
+      );
+      await assert.rejects(
+        tui.request('task.ledger.query', {
+          kind: 'list_start',
+          sessionId: recoverySessionId,
+        }),
+        operationError('not_found'),
+      );
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
     }
     await stopHost(host);
     host = undefined;
+    await assertRetirementCleanup(root, capability, [retirementSessionId, recoverySessionId]);
   } finally {
     await terminateHost(host);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
@@ -469,6 +676,9 @@ async function seedAuthority(
   readonly largeLabelSessionId: string;
   readonly oversizedSessionId: string;
   readonly unreadSessionId: string;
+  readonly retirementSessionId: string;
+  readonly retirementRevision: number;
+  readonly recoverySessionId: string;
 }> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -527,6 +737,53 @@ async function seedAuthority(
       model: 'fake-model',
       permissionMode: 'ask',
     });
+    const retirement = await execution.sessionStore.create({
+      cwd: root,
+      name: 'Retirement sidecars',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const recovery = await execution.sessionStore.create({
+      cwd: root,
+      name: 'Retirement recovery',
+      backend: 'fake',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    await artifacts.recover();
+    await Promise.all([
+      artifacts.create({
+        id: 'retirement-artifact',
+        sessionId: retirement.id,
+        turnId: 'retirement-turn',
+        name: 'retirement.txt',
+        kind: 'file',
+        content: 'remove me',
+        mimeType: 'text/plain',
+        source: 'fixture',
+        now: 1,
+      }),
+      artifacts.create({
+        id: 'recovery-artifact',
+        sessionId: recovery.id,
+        turnId: 'recovery-turn',
+        name: 'recovery.txt',
+        kind: 'file',
+        content: 'recover cleanup',
+        mimeType: 'text/plain',
+        source: 'fixture',
+        now: 2,
+      }),
+      tasks.create(retirement.id, [{ subject: 'Remove retirement task' }]),
+      tasks.create(recovery.id, [{ subject: 'Recover retirement task cleanup' }]),
+    ]);
+    const retirementSnapshot = await execution.sessionStore.readHeaderRecordSnapshot(retirement.id);
+    await execution.sessionStore.remove(recovery.id);
 
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
     const initial = await policy.connectionCatalog.getSnapshot();
@@ -582,7 +839,33 @@ async function seedAuthority(
       largeLabelSessionId: largeLabels.id,
       oversizedSessionId: oversized.id,
       unreadSessionId: unread.id,
+      retirementSessionId: retirement.id,
+      retirementRevision: retirementSnapshot.revision,
+      recoverySessionId: recovery.id,
     };
+  } finally {
+    await owner.close();
+  }
+}
+
+async function assertRetirementCleanup(
+  root: string,
+  capability: StorageRootCapability<'interactive'>,
+  sessionIds: readonly string[],
+): Promise<void> {
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to inspect Session retirement cleanup');
+  try {
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    await artifacts.recover();
+    assert.deepEqual(await execution.sessionStore.listPendingSessionRetirementCleanupIds(), []);
+    for (const sessionId of sessionIds) {
+      assert.equal((await artifacts.listPage(sessionId, { offset: 0, limit: 1 })).total, 0);
+      assert.deepEqual(await tasks.list(sessionId, { includeTerminal: true }), []);
+    }
   } finally {
     await owner.close();
   }

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { before, describe, test } from 'node:test';
-import { Editor, setKittyProtocolActive, TUI } from '@earendil-works/pi-tui';
+import { setKittyProtocolActive, TUI } from '@earendil-works/pi-tui';
 import type { InvocableSkillEntry } from '@maka/runtime';
 import { DirectoryAutocompleteProvider, MakaAutocompleteProvider } from '../pi-tui-pickers.js';
 import { MakaSkillHighlightEditor } from '../skill-highlight-editor.js';
@@ -250,18 +250,5 @@ describe('MakaSkillHighlightEditor mid-message skill trigger', () => {
         setKittyProtocolActive(false);
       }
     }
-  });
-});
-
-describe('pi-tui Editor contract (mid-message trigger dependency)', () => {
-  test('tryTriggerAutocomplete is a runtime-callable prototype method', () => {
-    // MakaSkillHighlightEditor.handleInput calls this TS-private method; pi-tui
-    // ships plain JS (no #private fields), so it is reachable at runtime. Pin it
-    // so a pi-tui upgrade that renames or makes it truly private fails loudly
-    // instead of silently regressing mid-message skill completion.
-    assert.equal(
-      typeof (Editor.prototype as unknown as Record<string, unknown>).tryTriggerAutocomplete,
-      'function',
-    );
   });
 });

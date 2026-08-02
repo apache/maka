@@ -85,14 +85,6 @@
       }
     }
   },
-  "css": {
-    // apps/desktop/src/renderer/styles.css uses Tailwind CSS 4 `@import`/
-    // `@source` directives; without this the parser errors on them even
-    // though no CSS lint rule is currently enabled.
-    "parser": {
-      "tailwindDirectives": true
-    }
-  },
   // Import-sorting / organize-imports assist actions stay disabled; they are
   // a formatting concern and belong with the formatter baseline PR (#415).
   "assist": {

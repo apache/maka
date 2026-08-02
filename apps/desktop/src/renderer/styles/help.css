@@ -1,57 +1,29 @@
 /* ============================================================================
    Help modal
    ----------------------------------------------------------------------------
-   Astryx owns the dialog and keyboard-key primitives. Maka owns only the
-   product-specific responsive cheat-sheet layout.                       */
-
-.maka-help-modal {
-  overflow: clip;
-  border: 1px solid var(--border-strong);
-  border-radius: calc(var(--radius-modal) + var(--space-1));
-  background: var(--background-elevated);
-  box-shadow:
-    var(--shadow-modal),
-    0 24px 72px -24px oklch(from var(--foreground) l c h / 0.26);
-}
-
-.maka-help-modal::backdrop {
-  background: oklch(from var(--foreground) l c h / 0.3);
-  backdrop-filter: blur(8px) saturate(0.82);
-}
-
-.maka-help-header h2:focus-visible {
-  box-shadow: none;
-}
+   Split out of chat-header.css (#546 PR2, relocate — zero visual change).
+   The keyboard-shortcut help content (`.maka-help-*`) previously lived
+   in chat-header.css. Astryx owns the surrounding dialog surface.       */
 
 .maka-help-body {
-  columns: 2 280px;
-  column-gap: var(--space-3);
-  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-3) var(--space-3);
   overflow-y: auto;
-  background: var(--foreground-3);
-}
-
-.maka-help-section {
-  break-inside: avoid;
-  margin: 0 0 var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-modal);
-  background: var(--background);
 }
 
 .maka-help-section h3 {
-  margin: 0 0 var(--space-2);
-  color: var(--foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--tracking-wide);
+  font: var(--maka-text-heading-5);
+  margin: 0 0 var(--space-1);
+  color: var(--foreground-secondary);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
 }
 
 .maka-help-section dl {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-1-5) var(--space-3);
+  gap: var(--space-0-5) var(--space-3);
   margin: 0;
 }
 
@@ -60,26 +32,25 @@
 }
 
 .maka-help-section dt {
+  font: var(--maka-text-supporting);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .maka-help-section dd {
   margin: 0;
   display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   justify-self: end;
 }
 
-.maka-help-shortcuts {
+.maka-help-section dd > span {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1-5);
+  gap: var(--space-1);
 }
 
-@media (max-width: 680px) {
-  .maka-help-body {
-    columns: 1;
-  }
+.maka-help-plus {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
 }

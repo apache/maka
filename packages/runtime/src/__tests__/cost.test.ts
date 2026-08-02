@@ -85,7 +85,6 @@ describe('recordLlmCall', () => {
           insertLlmCall: async (record) => {
             inserted.push(record);
           },
-          insertToolInvocation: async () => {},
         },
         lookupPricing: () => {
           throw new Error('lookup should not run when costUsd is already present');
@@ -122,7 +121,6 @@ describe('recordLlmCall', () => {
             inserted.push(record);
             return publication;
           },
-          insertToolInvocation: async () => {},
         },
         lookupPricing: () => null,
       },
@@ -220,7 +218,6 @@ describe('recordLlmCall', () => {
               insertLlmCall: async () => {
                 throw new Error('publication failed');
               },
-              insertToolInvocation: async () => {},
             },
             lookupPricing: () => null,
           },
@@ -256,7 +253,6 @@ describe('recordToolInvocation', () => {
     const recording = recordToolInvocation(
       {
         repo: {
-          insertLlmCall: async () => {},
           insertToolInvocation: (record) => {
             inserted.push(record);
             return publication;
@@ -304,7 +300,6 @@ describe('recordToolInvocation', () => {
         recordToolInvocation(
           {
             repo: {
-              insertLlmCall: async () => {},
               insertToolInvocation: async () => {
                 throw new Error('publication failed');
               },

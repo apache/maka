@@ -62,6 +62,47 @@ export interface ConnectionTestTicket {
   readonly [operationTicketBrand]: 'connection_test';
 }
 
+export interface InteractiveOAuthLoginTicket {
+  readonly [operationTicketBrand]: 'interactive_oauth_login';
+}
+
+export type InteractiveOAuthLoginProvider = Extract<
+  ConnectionCatalogEntry['providerType'],
+  'claude-subscription' | 'openai-codex' | 'xai-oauth'
+>;
+
+export type BeginInteractiveOAuthLoginResult =
+  | { readonly kind: 'connection_not_found' }
+  | { readonly kind: 'connection_disabled' }
+  | {
+      readonly kind: 'provider_action_unavailable';
+      readonly availability: UnavailableProviderActionAvailability;
+    }
+  | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
+  | {
+      readonly kind: 'ready';
+      readonly ticket: InteractiveOAuthLoginTicket;
+      readonly connection: ConnectionCatalogEntry & {
+        readonly providerType: InteractiveOAuthLoginProvider;
+      };
+      readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
+      readonly networkProxy: RuntimePolicy['networkProxy'];
+    };
+
+export type InteractiveOAuthLoginCompletionResult =
+  | {
+      readonly kind: 'committed';
+      readonly credentialId: string;
+      readonly revision: number;
+    }
+  | {
+      readonly kind: 'superseded';
+      readonly changed: readonly Extract<
+        ConnectionEffectChangedDomain,
+        'connection' | 'credential'
+      >[];
+    };
+
 export type ConnectionEffectPreparationFailure =
   | { readonly kind: 'connection_not_found' }
   | { readonly kind: 'connection_disabled' }
@@ -115,6 +156,11 @@ export interface RuntimePolicyOperationCoordinator {
   compareAndSetOAuthCredential(
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;
+  beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
+  completeInteractiveOAuthLogin(
+    ticket: InteractiveOAuthLoginTicket,
+    secret: string,
+  ): Promise<InteractiveOAuthLoginCompletionResult>;
   beginModelFetch(connectionId: string): Promise<BeginModelFetchResult>;
   completeModelFetch(
     ticket: ModelFetchTicket,

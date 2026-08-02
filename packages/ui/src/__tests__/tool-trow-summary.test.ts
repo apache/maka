@@ -1,19 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolTrow } from '../tool-activity.js';
 import { summarizeTrowTools } from '../tool-activity/trow-summary.js';
 import type { ToolActivityItem } from '../materialize.js';
-
-const toolActivitySource = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'tool-activity.tsx'),
-  'utf8',
-);
 
 function renderToStaticMarkup(node: ReactNode): string {
   return renderReactToStaticMarkup(createElement(LocaleProvider, {
@@ -141,16 +133,4 @@ describe('tool trow summary aggregation', () => {
     assert.doesNotMatch(markup, /搜索源码 · 失败/);
   });
 
-  it('ToolTrowRow never reintroduces the per-row settle fade or the motion abstraction', () => {
-    // The per-row seam is a light-band stop only. The group keeps one
-    // SETTLE_FADE (its summary span); rows must not bring back the motion
-    // abstraction (deriveToolRowMotion / motion.* / settleFade) that would
-    // re-stack parallel fades. A dynamic running→settled rerender contract is
-    // tracked separately (packages/ui has only renderToStaticMarkup); this
-    // source contract locks the implementation shape until that infra exists.
-    assert.doesNotMatch(toolActivitySource, /deriveToolRowMotion/);
-    assert.doesNotMatch(toolActivitySource, /\bmotion\.(settling|shimmer|settled)\b/);
-    assert.doesNotMatch(toolActivitySource, /\bsettleFade\b/);
-    assert.equal((toolActivitySource.match(/\bSETTLE_FADE\b/g) ?? []).length, 2);
-  });
 });

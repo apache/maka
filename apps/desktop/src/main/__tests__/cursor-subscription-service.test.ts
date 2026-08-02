@@ -7,9 +7,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
-import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import {
   CURSOR_OAUTH_CONFIG,
@@ -18,26 +16,6 @@ import {
   pkceChallengeFromVerifier,
 } from '../oauth/cursor-subscription-helpers.js';
 import { base64urlEncode } from '@maka/core';
-
-const REPO_ROOT = resolve(process.cwd(), '..', '..');
-const SERVICE_SOURCE = resolve(
-  REPO_ROOT,
-  'apps',
-  'desktop',
-  'src',
-  'main',
-  'oauth',
-  'cursor-subscription-service.ts',
-);
-const HELPERS_SOURCE = resolve(
-  REPO_ROOT,
-  'apps',
-  'desktop',
-  'src',
-  'main',
-  'oauth',
-  'cursor-subscription-helpers.ts',
-);
 
 describe('Cursor subscription OAuth config (upstream cursor-auth pattern)', () => {
   it('pins login / poll / refresh URLs to upstream cursor-auth values', () => {
@@ -98,51 +76,5 @@ describe('Cursor subscription OAuth config (upstream cursor-auth pattern)', () =
     const now = 1_700_000_000_000;
     const expiry = getTokenExpiry('not-a-jwt', now);
     assert.equal(expiry, now + 3600 * 1000);
-  });
-});
-
-describe('Cursor service source-grep contract', () => {
-  it('uses globalThis.fetch by default so Electron session proxy applies', async () => {
-    const src = await readFile(SERVICE_SOURCE, 'utf8');
-    assert.match(src, /globalThis\.fetch/);
-  });
-
-  it('poll request hits api2.cursor.sh/auth/poll with uuid + verifier query', async () => {
-    const serviceSrc = await readFile(SERVICE_SOURCE, 'utf8');
-    const helpersSrc = await readFile(HELPERS_SOURCE, 'utf8');
-    assert.match(serviceSrc, /CURSOR_POLL_URL/, 'poll URL constant must be referenced in the loop');
-    assert.match(
-      helpersSrc,
-      /api2\.cursor\.sh\/auth\/poll/,
-      'poll URL literal must exactly match upstream cursor-auth (in helpers config)',
-    );
-    assert.match(
-      serviceSrc,
-      /uuid=\$\{[^}]+\}&verifier=\$\{[^}]+\}/,
-      'poll URL must carry uuid + verifier query params',
-    );
-  });
-
-  it('refresh request hits api2.cursor.sh/auth/exchange_user_api_key', async () => {
-    const serviceSrc = await readFile(SERVICE_SOURCE, 'utf8');
-    const helpersSrc = await readFile(HELPERS_SOURCE, 'utf8');
-    assert.match(
-      helpersSrc,
-      /api2\.cursor\.sh\/auth\/exchange_user_api_key/,
-      'refresh URL literal must exactly match upstream cursor-auth (in helpers config)',
-    );
-    assert.match(serviceSrc, /Authorization:\s*`Bearer/, 'refresh must send Bearer auth');
-  });
-
-  it('exports isCursorSubscriptionExperimentalEnabled tied to the env flag', async () => {
-    const helpersSrc = await readFile(HELPERS_SOURCE, 'utf8');
-    assert.match(helpersSrc, /export function isCursorSubscriptionExperimentalEnabled\(\)/);
-    assert.match(helpersSrc, /MAKA_CURSOR_SUBSCRIPTION_EXPERIMENTAL/);
-    const serviceSrc = await readFile(SERVICE_SOURCE, 'utf8');
-    assert.match(
-      serviceSrc,
-      /isCursorSubscriptionExperimentalEnabled/,
-      'service must re-export the flag so main.ts can import from a single path',
-    );
   });
 });

@@ -42,27 +42,23 @@
 }
 
 .maka-plan-eyebrow {
+  font: var(--maka-text-heading-5);
   margin: 0;
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
 }
 
 .maka-plan-heading h2 {
+  font: var(--maka-text-display-2);
   margin: 0;
   color: var(--foreground);
-  font-size: 2em;
-  font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-normal);
-  line-height: var(--leading-tight);
 }
 
 .maka-plan-heading p:last-child {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .maka-plan-top-actions {
@@ -193,11 +189,9 @@
 }
 
 .maka-plan-form-title {
+  font: var(--maka-text-heading-4);
   margin: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-tight);
 }
 
 .maka-plan-presets {
@@ -214,20 +208,17 @@
 }
 
 .maka-plan-delivery-help {
+  font: var(--maka-text-supporting);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
 }
 
 .maka-plan-search,
 .maka-plan-compact-select {
+  font: var(--maka-text-heading-5);
   display: grid;
   gap: var(--space-1);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-plan-search {
@@ -244,6 +235,7 @@
 }
 
 .maka-plan-search-summary {
+  font: var(--maka-text-heading-5);
   font-variant-numeric: tabular-nums;
   display: flex;
   min-width: 0;
@@ -251,8 +243,6 @@
   justify-content: space-between;
   gap: var(--space-1-5);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
 }
 
 .maka-plan-empty {
@@ -269,23 +259,20 @@
 }
 
 .maka-plan-card-title {
+  font: var(--maka-text-heading-3);
   margin: 0;
   min-width: 0;
   color: var(--foreground);
-  font-size: var(--font-size-heading);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
   overflow-wrap: anywhere;
 }
 
 .maka-plan-card-run {
+  font: var(--maka-text-supporting);
   display: flex;
   min-width: 0;
   gap: var(--space-1);
   align-items: flex-start;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-plan-card-run > :first-child {
@@ -298,6 +285,7 @@
 }
 
 .maka-plan-card-schedule {
+  font: var(--maka-text-supporting);
   display: flex;
   min-width: 0;
   flex-wrap: wrap;
@@ -305,8 +293,6 @@
   column-gap: var(--space-1);
   row-gap: var(--space-0-5);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .maka-plan-card-schedule > span {
@@ -325,21 +311,19 @@
    accent-tinted — colour is reserved for genuinely exceptional states
    (e.g. an overdue run), which would opt in via a data-attribute. */
 .maka-plan-card-countdown {
+  font: var(--maka-text-heading-5);
   display: inline-block;
   margin-left: var(--space-1);
   padding: 0 var(--space-1);
   border-radius: var(--radius-pill);
   background: oklch(from var(--foreground) l c h / 0.08);
   color: var(--foreground-secondary);
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-caption);
   letter-spacing: var(--tracking-normal);
 }
 
 .maka-plan-card-note {
+  font: var(--maka-text-body);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
   margin: 0;
   padding: 0;
   overflow-wrap: anywhere;
@@ -364,9 +348,9 @@
 }
 
 .maka-plan-run-main strong {
+  font: var(--maka-text-heading-4);
   min-width: 0;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -374,9 +358,8 @@
 
 .maka-plan-run-main span,
 .maka-plan-run-row time {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
 }
 
 .maka-plan-run-row time {

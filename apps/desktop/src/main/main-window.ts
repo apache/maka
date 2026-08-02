@@ -83,8 +83,8 @@ const SHOW_FALLBACK_TIMEOUT_MS = 4000;
 
 // PR-WINDOW-TITLEBAR-0: the titleBarOverlay height matches the renderer
 // `--h-titlebar: 36px` token so the native control strip and the in-app top
-// chrome share a baseline; `window-titlebar-contract.test.ts` fails if the two
-// numbers drift. The overlay color/symbolColor are reused both at window
+// chrome share a baseline; `app-region-hygiene-contract.test.ts` fails if the
+// two numbers drift. The overlay color/symbolColor are reused both at window
 // creation (to avoid a first-frame flash against the window `backgroundColor`)
 // and on runtime mode/palette changes via `setTitleBarOverlayTheme` — Windows
 // only, which is why macOS passes the height alone.

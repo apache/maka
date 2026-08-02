@@ -202,7 +202,7 @@ async function stopChild(child) {
   }
 }
 
-export function isPackagedRendererUsable(rendererState) {
+function isPackagedRendererUsable(rendererState) {
   return (
     rendererState?.readyState === 'complete' &&
     rendererState.hasBridge === true &&

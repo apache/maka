@@ -80,7 +80,7 @@ export function TaskLedgerPanel(props: TaskLedgerPanelProps) {
               <TaskLedgerTree tasks={model.activeTree} copy={copy} />
             </div>
           ) : (
-            <p className="m-0 text-[length:var(--font-size-ui)] leading-normal text-[color:var(--muted-foreground)]">{copy.empty}</p>
+            <p className="maka-task-ledger-empty">{copy.empty}</p>
           )}
           {model.recentTerminalCount > 0 && (
             <Collapsible
@@ -160,7 +160,7 @@ function TaskLedgerRow({ task, copy, level, position, setSize, children }: {
       style={{ '--task-depth': Math.min(depth, 6) } as CSSProperties}
     >
       <StatusIcon size={14} aria-hidden="true" />
-      <span className="maka-task-ledger-key">{task.key}</span>
+      <code className="maka-task-ledger-key">{task.key}</code>
       <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
       <span className="maka-task-ledger-meta">
         <span>{copy.status[task.status]}</span>

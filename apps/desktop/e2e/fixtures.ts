@@ -218,8 +218,6 @@ export const test = base.extend<{
   window: Page;
   modelPickerLongWindow: Page;
   longTranscriptWindow: Page;
-  chatChromeDarwinWindow: Page;
-  chatChromeWin32Window: Page;
   sidebarLongSessionsWindow: Page;
   disclosureOutputWindow: Page;
   sandboxBoundaryWindow: Page;
@@ -227,11 +225,8 @@ export const test = base.extend<{
   staleSessionsWindow: Page;
   sessionWorkbarWindow: Page;
   botSettingsWindow: Page;
+  /** #1361: Permissions page with the typed OS-permission snapshot fixture. */
   permissionSettingsWindow: Page;
-  usageSettingsWindow: Page;
-  searchSettingsWindow: Page;
-  zhLocaleWindow: Page;
-  enLocaleWindow: Page;
   localeSwitchWindow: Page;
   invocableSkillsWindow: Page;
   planRemindersWindow: Page;
@@ -316,23 +311,6 @@ export const test = base.extend<{
       use,
     );
   },
-  // Chat-chrome contract (#1312): the long-transcript shell booted with a
-  // FORCED platform (app:info override), so `data-os` — and with it the
-  // darwin glass cascade vs the opaque base cascade — is native from the
-  // first frame on any host. No post-boot attribute flip, which Chromium's
-  // style recalc resolves relative colors against stale values for.
-  chatChromeDarwinWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-turn', e2eFixtureScenario: 'long-transcript', locale: 'zh', platform: 'darwin' },
-      use,
-    );
-  },
-  chatChromeWin32Window: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.maka-turn', e2eFixtureScenario: 'long-transcript', locale: 'zh', platform: 'win32' },
-      use,
-    );
-  },
   // Sandbox-boundary takeover: boots a deterministic expansion request in the
   // real desktop shell so the composer-slot placement and non-modal behavior
   // are covered without a provider or test-only renderer state path.
@@ -382,11 +360,9 @@ export const test = base.extend<{
       use,
     );
   },
-  // #1361: Permission Center with a typed OS-permission snapshot (see
-  // `main/permission-snapshot-e2e-fixture.ts`). The narrow-layout contract is
-  // about rows that carry grant buttons, which the host's real TCC state cannot
-  // guarantee — a granted dev machine renders none, and Linux CI reports most
-  // permissions as `unsupported`.
+  // One live window-floor smoke: permission rows with the three-button guided
+  // screen-recording shape. CSS contracts pin declarations; this measures
+  // scrollWidth containment at SAFE_MIN_WIDTH (480).
   permissionSettingsWindow: async ({}, use) => {
     await withE2eWindow(
       {
@@ -395,52 +371,6 @@ export const test = base.extend<{
         e2eFixtureScenario: 'settings-permissions',
         locale: 'zh',
       },
-      use,
-    );
-  },
-  // #1364: Usage with seeded request traffic + details-on settings, so the
-  // request-log Table actually renders (the default window fixture keeps
-  // `showDetails` false and has no logs — the table CSS could regress without
-  // failing anything).
-  usageSettingsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        // The tabs bar, not the table: the renderer's first stats fetch can
-        // race the fixture seeding, so the spec refreshes until the seeded
-        // request log lands.
-        readinessSelector: '.settingsUsageTabsBar',
-        e2eFixtureScenario: 'settings-usage',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  // #1364: Web Search with a configured Tavily key; queries are answered by
-  // the typed fixture in `main/web-search-e2e-fixture.ts` (e2e runs offline),
-  // so the hostile-width result list is reachable deterministically.
-  searchSettingsWindow: async ({}, use) => {
-    await withE2eWindow(
-      {
-        seed: false,
-        readinessSelector: '.settingsWebSearchQueryInputRow',
-        e2eFixtureScenario: 'settings-search',
-        locale: 'zh',
-      },
-      use,
-    );
-  },
-  // Representative e2e-fixture renderer launches in both supported locales.
-  // These use the same production LocaleProvider override path as screenshot capture.
-  zhLocaleWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.appFrame', e2eFixtureScenario: 'all', locale: 'zh' },
-      use,
-    );
-  },
-  enLocaleWindow: async ({}, use) => {
-    await withE2eWindow(
-      { seed: false, readinessSelector: '.appFrame', e2eFixtureScenario: 'all', locale: 'en' },
       use,
     );
   },

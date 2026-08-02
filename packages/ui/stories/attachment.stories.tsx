@@ -188,35 +188,3 @@ export const ImageThumbnails: Story = {
   ),
 };
 
-// Real path: attach a file → the skeleton shown while its bytes are still being
-// ingested.
-export const PendingSkeleton: Story = {
-  render: () => (
-    <Frame>
-      {/* No reader wired — the thumbnail stays in the pending skeleton state. */}
-      <AttachmentChat
-        {...baseChat}
-        onReadAttachmentBytes={undefined}
-        messages={[user('u3', 't3', '这张图还在读。', [attachment('image', 'loading.png', 'image/png', 1024)])]}
-      />
-    </Frame>
-  ),
-};
-
-// Real path: click an image attachment in a turn → the lightbox.
-export const Lightbox: Story = {
-  render: () => (
-    <Frame>
-      <AttachmentChat
-        {...baseChat}
-        messages={[user('u4', 't4', '点击图片放大查看。', [imageAttachment])]}
-      />
-    </Frame>
-  ),
-  play: async ({ canvasElement }) => {
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-    await new Promise((resolve) => window.setTimeout(resolve, 100));
-    const btn = canvasElement.querySelector<HTMLButtonElement>('button[aria-label^="查看图片"]');
-    btn?.click();
-  },
-};

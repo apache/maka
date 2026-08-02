@@ -1,7 +1,11 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { decodePersistedRuntimeEvent, type RuntimeEvent } from '@maka/core';
-import { createRuntimeEventStore } from './agent-run-store.js';
+import {
+  createRuntimeEventStore,
+  type BoundedEvidenceReadResult,
+  type EvidenceReadBudget,
+} from './agent-run-store.js';
 import { classifyJsonRecord } from './json-prefix.js';
 import type { SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import { createSqliteRuntimeStore } from './sqlite-runtime-store.js';
@@ -33,6 +37,11 @@ export interface RuntimeEventExportSource {
 }
 
 export interface RuntimeEventReadStore extends RuntimeEventExportSource {
+  readRuntimeEventsBounded(
+    sessionId: string,
+    runId: string,
+    budget: EvidenceReadBudget,
+  ): Promise<BoundedEvidenceReadResult<RuntimeEvent>>;
   readImmutableRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
 }
@@ -122,6 +131,8 @@ function asRuntimeEventReader(store: RuntimeEventReadStore): RuntimeEventReadSto
   return Object.freeze({
     readRuntimeEvents: (sessionId: string, runId: string) =>
       store.readRuntimeEvents(sessionId, runId),
+    readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>
+      store.readRuntimeEventsBounded(sessionId, runId, budget),
     readImmutableRuntimeEvents: (sessionId: string, runId: string) =>
       store.readImmutableRuntimeEvents(sessionId, runId),
     readSessionRuntimeEvents: (sessionId: string) => store.readSessionRuntimeEvents(sessionId),

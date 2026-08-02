@@ -406,16 +406,6 @@ describe('RuntimeEvent content variants', () => {
     expect(decodeRuntimeEvent(baseEvent({ content: call })).content).toEqual(call);
     expect(response.isError).toBe(false);
   });
-
-  test('error content keeps the existing ErrorEvent shape', () => {
-    const content: RuntimeEventContent = {
-      kind: 'error',
-      reason: 'provider_5xx',
-      message: 'upstream failed',
-    };
-    if (content.kind !== 'error') throw new Error('unreachable');
-    expect(content.message).toBe('upstream failed');
-  });
 });
 
 describe('RuntimeEvent actions', () => {

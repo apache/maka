@@ -11,15 +11,11 @@ import { defineConfig } from '@playwright/test';
  * count here — the previous note carried a stale one that outlived two rounds
  * of pruning. `playwright test --list` is the only figure that cannot rot.
  *
- * What parallel windows DO share is OS focus. A run at 2 workers showed it:
- * composer-mode-indicator compares hover backgrounds and plan-reminders
- * asserts `toBeFocused()`, and both fail when another window steals activation
- * mid-assertion — Chromium blurs the document when its window deactivates.
- *
- * So CI stays at 1 until those two specs are hardened (bring the window to
- * front before asserting hover/focus, or assert without needing activation).
- * Local runs take the parallel win now, where the dev loop feels it most; a
- * local hover/focus failure is reproducible by re-running that spec alone.
+ * What parallel windows DO share is OS focus. Specs that assert
+ * `toBeFocused()` (e.g. plan-reminders) fail when another window steals
+ * activation mid-assertion — Chromium blurs the document when its window
+ * deactivates. CI stays at 1 until those are hardened; local runs take the
+ * parallel win, and a local focus failure re-runs alone to confirm.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */

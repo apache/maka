@@ -96,7 +96,7 @@ export function HealthCenterPage() {
         action={
           <>
             <Badge variant="neutral" label={copy.badge} />
-            <small className="whitespace-nowrap text-[length:var(--font-size-caption)] text-foreground-secondary">
+            <small className="settingsHealthMetaLabel">
               {copy.lastRead}<RelativeTime ts={healthCheckedAtMs} className="settingsHelpInlineTime" />
             </small>
             <Button
@@ -190,8 +190,8 @@ function HealthSignalRow(props: { signal: HealthSignal; copy: HealthCenterCopy }
       className="settingsHealthSignalRow"
       label={(
         <span className="settingsHealthSignalIdentity">
-            <strong className="text-[length:var(--font-size-ui)] font-semibold text-foreground">{copy.signalLabel(signal)}</strong>
-            <small className="text-[length:var(--font-size-caption)] uppercase tracking-wider text-muted-foreground">{copy.scopes[signal.scope]}</small>
+            <strong className="settingsHealthSignalLabel">{copy.signalLabel(signal)}</strong>
+            <small className="settingsHealthSignalScope">{copy.scopes[signal.scope]}</small>
         </span>
       )}
       description={(

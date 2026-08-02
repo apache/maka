@@ -8,13 +8,27 @@
 import { useEffect, useState } from 'react';
 import { Keyboard } from '@maka/ui/icons';
 import { useUiLocale } from '@maka/ui';
+import { Kbd } from '@astryxdesign/core/Kbd';
 import {
   Dialog,
   DialogHeader,
 } from '@astryxdesign/core/Dialog';
-import { Kbd } from '@astryxdesign/core/Kbd';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { getShellCopy } from './locales/shell-copy';
+
+const ASTRYX_KEY_TOKENS: Readonly<Record<string, string>> = {
+  '⌘': 'mod',
+  '↑': 'up',
+  '↓': 'down',
+  '←': 'left',
+  '→': 'right',
+  esc: 'escape',
+};
+
+function toAstryxKeyToken(key: string): string {
+  const normalized = key.toLowerCase();
+  return ASTRYX_KEY_TOKENS[key] ?? ASTRYX_KEY_TOKENS[normalized] ?? normalized;
+}
 
 /**
  * Manages the global key listener that opens and closes the help modal.
@@ -71,15 +85,13 @@ export function KeyboardHelpModal(props: {
       isOpen={props.isOpen}
       onOpenChange={props.onOpenChange}
       className="maka-help-modal"
-      width="min(720px, calc(100vw - 32px))"
-      maxHeight="min(760px, calc(100dvh - 64px))"
+      width={560}
+      maxHeight="calc(100dvh - 96px)"
       purpose="info"
     >
       <Layout
-        height="auto"
         header={
           <DialogHeader
-            className="maka-help-header"
             startContent={<Keyboard aria-hidden="true" />}
             title={copy.title}
             onOpenChange={props.onOpenChange}
@@ -88,28 +100,30 @@ export function KeyboardHelpModal(props: {
         content={
           <LayoutContent padding={0}>
             <div className="maka-help-body">
-              {copy.sections.map((section) => (
-                <section key={section.heading} className="maka-help-section">
-                  <h3>{section.heading}</h3>
-                  <dl>
-                    {section.rows.map((row) => (
-                      <div key={row.description}>
-                        <dt>{row.description}</dt>
-                        <dd>
-                          <span className="maka-help-shortcuts">
-                            {row.shortcuts.map((shortcut) => (
-                              <Kbd
-                                key={`${row.description}:${shortcut}`}
-                                keys={shortcut}
-                              />
-                            ))}
-                          </span>
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </section>
-              ))}
+          {copy.sections.map((section) => (
+            <section key={section.heading} className="maka-help-section">
+              <h3>{section.heading}</h3>
+              <dl>
+                {section.rows.map((row) => (
+                  <div key={row.description}>
+                    <dt>{row.description}</dt>
+                    <dd>
+                      {row.keys.map((key, index) => (
+                        <span key={`${row.description}:${key}:${index}`}>
+                          {index > 0 && (
+                            <span className="maka-help-plus" aria-hidden="true">
+                              +
+                            </span>
+                          )}
+                          <Kbd keys={toAstryxKeyToken(key)} />
+                        </span>
+                      ))}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+          ))}
             </div>
           </LayoutContent>
         }

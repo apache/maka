@@ -1,6 +1,6 @@
 /**
  * Composer workspace row (issue #1044) — the workspace picker + git branch
- * picker rendered below the composer card. Extracted from `composer.tsx`;
+ * picker rendered above the composer card. Extracted from `composer.tsx`;
  * purely presentational: both pickers are standard compact menu triggers fed
  * by host-injected props. Shared Button owns their visual and interaction
  * states; local classes only constrain layout and label truncation.

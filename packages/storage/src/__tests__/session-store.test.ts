@@ -3,20 +3,25 @@ import { mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, test } from 'node:test';
-import type {
-  CreateSessionInput,
-  SessionHeader,
-  StoredMessage,
-  SubagentSessionParent,
-  SubagentSessionRuntime,
-  SubagentSessionSpawn,
+import {
+  WORKSPACE_AUTHORITY_SESSION_ID,
+  type CreateSessionInput,
+  type SessionHeader,
+  type StoredMessage,
+  type SubagentSessionParent,
+  type SubagentSessionRuntime,
+  type SubagentSessionSpawn,
 } from '@maka/core';
 import {
+  assertSafeSessionId,
   createLegacyFileSessionStore as createSessionStore,
   createSessionStore as createSqliteSessionStore,
 } from '../session-store.js';
 
 describe('FileSessionStore CRUD', () => {
+  test('reserves the workspace authority control-plane session id', () => {
+    assert.throws(() => assertSafeSessionId(WORKSPACE_AUTHORITY_SESSION_ID), /Invalid session id/);
+  });
   test('list on a missing workspace is observational and does not create session storage', async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-session-list-'));
     try {

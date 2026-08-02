@@ -2058,6 +2058,74 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('interactive OAuth login commits only against its frozen connection and credential basis', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const claude = await createConnection(
+        stores,
+        0,
+        connectionDraft('claude-login', 'claude-subscription', 'Claude login'),
+      );
+      const first = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      const second = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      assert.equal(first.kind, 'ready');
+      assert.equal(second.kind, 'ready');
+      if (first.kind !== 'ready' || second.kind !== 'ready') return;
+      assert.equal(first.secretMaterial.networkProxy, undefined);
+      const committed = await stores.operations.completeInteractiveOAuthLogin(
+        second.ticket,
+        'oauth-secret-v1',
+      );
+      assert.equal(committed.kind, 'committed');
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(first.ticket, 'stale-secret'),
+        { kind: 'superseded', changed: ['credential'] },
+      );
+      const status = await getCredentialStatus(
+        stores.credentialVault,
+        connectionCredential(claude, 'oauth_token'),
+      );
+      assert.equal(status.configured, true);
+      await assert.rejects(
+        () => stores.operations.completeInteractiveOAuthLogin(second.ticket, 'ticket-replay'),
+        isStoreError('invalid_credential_input'),
+      );
+
+      const beforeUpdate = await stores.operations.beginInteractiveOAuthLogin(claude.connectionId);
+      assert.equal(beforeUpdate.kind, 'ready');
+      if (beforeUpdate.kind !== 'ready') return;
+      const current = (await stores.connectionCatalog.getSnapshot()).connections.find(
+        (connection) => connection.connectionId === claude.connectionId,
+      );
+      assert.ok(current);
+      const updated = await stores.connectionCatalog.update({
+        expected: connectionBasis(current),
+        changes: {
+          name: 'Claude renamed',
+          enabled: current.enabled,
+          enabledModelIds: current.enabledModelIds,
+        },
+      });
+      assert.equal(updated.kind, 'committed');
+      assert.deepEqual(
+        await stores.operations.completeInteractiveOAuthLogin(
+          beforeUpdate.ticket,
+          'connection-stale-secret',
+        ),
+        { kind: 'superseded', changed: ['connection'] },
+      );
+
+      const copilot = await createConnection(
+        stores,
+        2,
+        connectionDraft('copilot-import', 'github-copilot', 'Copilot import'),
+      );
+      assert.deepEqual(await stores.operations.beginInteractiveOAuthLogin(copilot.connectionId), {
+        kind: 'provider_action_unavailable',
+        availability: 'hidden',
+      });
+    });
+  });
+
   test('rejects headless leases, forged facades, and operations after interactive lease close', async () => {
     await withTempDir(async (base) => {
       const headlessRoot = join(base, 'headless');

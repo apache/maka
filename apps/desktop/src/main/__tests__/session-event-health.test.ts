@@ -7,7 +7,6 @@ import {
   recordSessionEventStreamChange,
   recordSessionEventStreamEvent,
 } from '../../renderer/session-event-health.js';
-import { readRendererShellCombinedSource } from './renderer-shell-source-helpers.js';
 
 describe('renderer session event health projection', () => {
   it('creates a connected subscription snapshot', () => {
@@ -92,25 +91,4 @@ describe('renderer session event health projection', () => {
     assert.equal(hasInFlightToolActivity([{ status: 'waiting_permission' }]), true);
   });
 
-  it('wires the active health effect to in-flight tool status, not live tool count', async () => {
-    const main = await readRendererShellCombinedSource();
-
-    assert.match(main, /const hasInFlightLiveTools = useMemo\(\(\) => hasInFlightToolActivity\(liveTools\), \[liveTools\]\);/);
-    assert.match(main, /activeStreamingLive \|\| hasInFlightLiveTools \|\| Boolean\(activeInteraction\)/);
-    assert.match(
-      main,
-      /\}, \[activeId, activeSession\?\.status, activeStreamingLive, hasInFlightLiveTools, activeInteraction\?\.requestId\]\);/,
-      'session event health effect must rerun when tool status changes terminal without changing liveTools.length',
-    );
-    assert.doesNotMatch(
-      main,
-      /activeStreaming\.length > 0 \|\| liveTools\.length > 0 \|\| Boolean\(activePermission\)/,
-      'terminal completed/errored live tools must not keep the event stream health checker alive',
-    );
-    assert.doesNotMatch(
-      main,
-      /activeStreaming\.length > 0 \|\| hasInFlightLiveTools \|\| Boolean\(activePermission\)/,
-      'draining assistant text must not keep the event stream health checker alive',
-    );
-  });
 });

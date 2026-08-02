@@ -1,3 +1,11 @@
+export const MODEL_CALL_KINDS = [
+  'main',
+  'semantic_compact',
+  'history_compact',
+  'goal_evaluation',
+] as const;
+export type ModelCallKind = (typeof MODEL_CALL_KINDS)[number];
+
 export type TimeRange = '24h' | '7d' | '30d' | 'all' | { from: number; to: number };
 
 export type UsageGroupBy = 'provider' | 'model' | 'tool' | 'day' | 'hour';
@@ -49,7 +57,7 @@ export interface UsageBucket {
 export interface UsageLogRow {
   id: string;
   ts: number;
-  callKind?: 'main' | 'semantic_compact' | 'history_compact';
+  callKind?: ModelCallKind;
   callId?: string;
   connectionSlug?: string;
   providerId: string;
@@ -62,7 +70,17 @@ export interface UsageLogRow {
   cacheWriteTokens: number;
   reasoningTokens: number;
   totalTokens: number;
-  costUsd: number;
+  /**
+   * Absent when `costBasis` is `'unpriced'`. Zero means the call was genuinely
+   * free — it must never stand in for a price that could not be resolved.
+   */
+  costUsd?: number;
+  /**
+   * Whether a price could be resolved for this row. Rows from the frozen
+   * pre-cutover table have no recorded basis and leave this undefined, which is
+   * itself the honest answer for them.
+   */
+  costBasis?: 'priced' | 'unpriced';
   latencyMs: number;
   status: 'success' | 'error' | 'aborted';
   errorClass?: string;
@@ -94,7 +112,7 @@ export interface LlmCallRecord {
    * Distinguishes the main agent stream from auxiliary model calls such as
    * semantic or history compaction. Omitted means the historical main stream call.
    */
-  callKind?: 'main' | 'semantic_compact' | 'history_compact';
+  callKind?: ModelCallKind;
   /** Stable id for auxiliary calls so multiple records in one turn do not collide. */
   callId?: string;
   connectionSlug?: string;

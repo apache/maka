@@ -215,7 +215,7 @@ export function BrowserPanel(props: { sessionId: string; hidden: boolean }) {
       <div className="maka-browser-strip" ref={stripRef}>
         {!state.hasPage && (
           <EmptyState
-            className="maka-browser-empty absolute inset-0 py-10 md:py-12"
+            className="maka-browser-empty"
             icon={<Globe aria-hidden="true" />}
             title={copy.title}
             description={copy.description}

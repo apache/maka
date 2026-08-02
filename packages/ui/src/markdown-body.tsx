@@ -32,7 +32,11 @@ const MAKA_MARKDOWN_COMPONENTS = {
   image: MarkdownImage,
 } satisfies Partial<MarkdownComponents>;
 
-export function MarkdownBody(props: { text: string; streaming?: boolean }) {
+export function MarkdownBody(props: {
+  text: string;
+  streaming?: boolean;
+  density?: 'default' | 'compact';
+}) {
   const parseableText = props.streaming
     ? trimStreamingArtifacts(props.text)
     : props.text;
@@ -48,6 +52,19 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
     >
       <AstryxMarkdown
         autolink="gfm"
+        // Chosen by the caller, and defaulting to document rhythm.
+        //
+        // The transcript passes `compact`: Astryx's default heading spacing
+        // assumes a page with a handful of sections, while an agent turn
+        // emits headings every few lines, so the default margins push each
+        // one into its own visual slab. That is the same argument that
+        // flattens transcript heading SIZES in styles/chat-message.css — and
+        // that rule is scoped to `.maka-turn` precisely because the other
+        // caller, the Daily Review panel, renders a report, which is a
+        // document. Hardcoding `compact` here contradicted that scoping: the
+        // review kept full heading sizes but got transcript block spacing,
+        // the one combination neither half of the argument asks for.
+        density={props.density ?? 'default'}
         components={MAKA_MARKDOWN_COMPONENTS}
       >
         {safeText}
@@ -58,9 +75,9 @@ export function MarkdownBody(props: { text: string; streaming?: boolean }) {
 
 function MarkdownImage(props: { src: string; alt: string }) {
   if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
-  // Astryx calls this component only for images inside a paragraph. Tailwind
-  // preflight makes bare images block-level, so preserve the inline flow that
-  // badges and sentence-level icons require; preflight keeps max-width/height.
+  // Astryx calls this component only for images inside a paragraph. The shared
+  // reset makes bare images block-level, so preserve inline flow for badges and
+  // sentence-level icons; the reset keeps max-width/height.
   return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
 }
 

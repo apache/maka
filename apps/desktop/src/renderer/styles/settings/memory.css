@@ -18,18 +18,17 @@
     background: var(--foreground-3);
   }
 .settingsMemoryPreview strong {
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 .settingsMemoryPreview small {
-    font-size: var(--font-size-caption);
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
   }
 .settingsMemoryPreview p {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -56,8 +55,8 @@
     gap: var(--space-3);
   }
 .settingsMemoryPromptPreviewHeader strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
   }
 .settingsMemoryPromptPreviewHeader div {
     display: inline-flex;
@@ -65,23 +64,23 @@
     gap: var(--space-2-5);
   }
 .settingsMemoryPromptPreviewHeader span {
+    font: var(--maka-text-supporting);
     flex-shrink: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
   }
 .settingsMemoryPromptPreview[data-active="true"] .settingsMemoryPromptPreviewHeader span {
     color: var(--foreground);
   }
 .settingsMemoryPromptPreview small {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
   }
 .settingsMemoryPromptPreviewBudget {
-    font-family: var(--font-mono);
+    font: var(--maka-text-supporting);
     color: var(--foreground-secondary);
   }
 .settingsMemoryPromptPreview pre {
+    font: var(--maka-text-supporting);
     max-height: 220px;
     margin: 0;
     padding: var(--space-2-5);
@@ -90,17 +89,13 @@
     border-radius: var(--radius-control);
     background: var(--background);
     color: var(--foreground-secondary);
-    font-family: var(--font-mono);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-normal);
     white-space: pre-wrap;
     word-break: break-word;
   }
 .settingsMemoryPromptPreview p {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
   }
 .settingsMemoryEntryPreviewNotice {
     display: grid;
@@ -111,13 +106,12 @@
     background: oklch(from var(--warning) l c h / 0.08);
   }
 .settingsMemoryEntryPreviewNotice strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
   }
 .settingsMemoryEntryPreviewNotice small {
+    font: var(--maka-text-supporting);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
   }
 .settingsMemorySaveSummary {
     display: grid;
@@ -128,16 +122,16 @@
     background: var(--foreground-3);
   }
 .settingsMemorySaveSummary strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
   }
 .settingsMemorySaveSummary small {
+    font: var(--maka-text-body);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
   }
 .settingsMemorySaveSummaryTime {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
   }
 .settingsMemoryBackupState {
     color: var(--foreground-secondary);
@@ -156,8 +150,8 @@
     background: var(--foreground-3);
   }
 .settingsMemoryBackupList strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
   }
 /* PR-MEMORY-BACKUP-LIST-A11Y-0 (round 16/30): selector
      targeted the old `<div role="list">`. Container is now a
@@ -177,11 +171,11 @@
     padding: 0;
   }
 .settingsMemoryBackupList small {
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
   }
 .settingsMemoryBackupCandidate {
+    font: var(--maka-text-supporting);
     display: inline-flex;
     align-items: center;
     /* #1363 review follow-up: text + three action buttons are ~218px
@@ -194,7 +188,6 @@
     border-radius: var(--radius-pill);
     background: var(--background);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
   }
 
 .settingsMemoryEntryGroups {
@@ -212,29 +205,28 @@
   }
 
 .settingsMemoryEntryGroupHeader {
+    font: var(--maka-text-body);
     font-variant-numeric: tabular-nums;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
-    font-size: var(--font-size-ui);
     color: var(--foreground-secondary);
   }
 
 .settingsMemoryEntryGroupHeader strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
   }
 
 .settingsMemoryEntryDraftNotice {
+    font: var(--maka-text-body);
     margin: 0;
     padding: var(--space-1-5) var(--space-2);
     border: var(--border-width-hairline) solid oklch(from var(--warning) l c h / 0.30);
     border-radius: var(--radius-surface);
     background: oklch(from var(--warning) l c h / 0.08);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
   }
 
 .settingsMemoryEntryList {
@@ -285,12 +277,12 @@
   }
 
 .settingsMemoryEntryCard strong {
-    font-size: var(--font-size-ui);
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
   }
 
 .settingsMemoryEntryCard small {
-    font-size: var(--font-size-caption);
+    font: var(--maka-text-supporting);
     color: var(--muted-foreground);
   }
 
@@ -305,6 +297,7 @@
   }
 
 .settingsMemoryPromptScope {
+    font: var(--maka-text-supporting);
     width: max-content;
     max-width: 100%;
     padding: var(--space-0-5) var(--space-1-5);
@@ -312,8 +305,6 @@
     border-radius: var(--radius-control);
     background: var(--foreground-5);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-caption);
-    line-height: var(--leading-snug);
   }
 
 .settingsMemoryPromptScope[data-active="true"] {
@@ -323,16 +314,15 @@
   }
 
 .settingsMemoryDirtyState[data-dirty="true"] {
+    font: var(--maka-text-heading-4);
     color: var(--warning-text, var(--info-text));
-    font-weight: var(--font-weight-semibold);
   }
 
 .settingsMemoryEntryCard p,
   .settingsMemoryEntryEmpty {
+    font: var(--maka-text-body);
     margin: 0;
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
     white-space: pre-wrap;
     word-break: break-word;
   }
@@ -353,8 +343,8 @@
 }
 
 .settingsMemoryFilter small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
   white-space: nowrap;
 }
 
@@ -370,15 +360,14 @@
 
 .settingsMemoryFilterEmpty strong,
   .settingsMemoryListEmpty strong {
+    font: var(--maka-text-heading-4);
     color: var(--foreground);
-    font-size: var(--font-size-ui);
   }
 
 .settingsMemoryFilterEmpty small,
   .settingsMemoryListEmpty small {
+    font: var(--maka-text-body);
     color: var(--foreground-secondary);
-    font-size: var(--font-size-ui);
-    line-height: var(--leading-normal);
   }
 
 .settingsMemoryManualAdd {
@@ -396,13 +385,13 @@
 }
 
 .settingsMemoryManualAddHeader strong {
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
 }
 
 .settingsMemoryManualAddHeader small {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
 }
 
 .settingsMemoryDraftWarning {
@@ -415,14 +404,13 @@
 }
 
 .settingsMemoryDraftWarning strong {
+  font: var(--maka-text-heading-4);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
 }
 
 .settingsMemoryDraftWarning small {
+  font: var(--maka-text-supporting);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
 }
 
 /* Memory page meta row — relocated from connection.css — issue #546 PR1. */

@@ -27,6 +27,7 @@ import {
 } from '../protocol/index.js';
 import type { TaskLedgerOperationHandlerMap } from './operation-dispatcher.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
+import type { SessionPresenceReader } from './session-presence.js';
 
 const CANONICAL_LIST_OPTIONS = Object.freeze({
   includeTerminal: true,
@@ -45,6 +46,7 @@ export class HostTaskLedgerCoordinator implements TaskLedgerStore {
   constructor(
     writer: InteractiveTaskLedgerWriter,
     private readonly sessionAdmission: SessionAdmissionGate,
+    private readonly sessions: SessionPresenceReader,
   ) {
     this.#writer = authenticateInteractiveTaskLedgerWriter(writer);
   }
@@ -118,6 +120,9 @@ export class HostTaskLedgerCoordinator implements TaskLedgerStore {
 
   #query(input: TaskLedgerQueryInput): Promise<OperationOutcome<'task.ledger.query'>> {
     return this.sessionAdmission.run(input.sessionId, async () => {
+      if ((await this.sessions.probeSessionRemoval(input.sessionId)).kind !== 'present') {
+        return notFound('Session was not found');
+      }
       const tasks = (await this.#writer.list(input.sessionId, CANONICAL_LIST_OPTIONS)).map(
         encodeTaskLedgerTask,
       );
@@ -214,6 +219,10 @@ function success(result: TaskLedgerQueryResult): OperationOutcome<'task.ledger.q
 
 function invalidRequest(message: string): OperationOutcome<'task.ledger.query'> {
   return { ok: false, error: { code: 'invalid_request', message } };
+}
+
+function notFound(message: string): OperationOutcome<'task.ledger.query'> {
+  return { ok: false, error: { code: 'not_found', message } };
 }
 
 function invariantFailure(message: string): Error {

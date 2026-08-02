@@ -476,23 +476,41 @@ describe('ShellRunProcessManager', () => {
     );
   });
 
-  test('latches timeout while POSIX process discovery is pending', {
+  test('latches timeout when the root exits during POSIX process discovery', {
     skip: process.platform === 'win32' ? 'POSIX process discovery only' : false,
   }, async (context) => {
     const processDiscovery = delayPosixProcessDiscovery(context);
-
+    const cwd = await workspace();
+    const rootPidPath = join(cwd, 'root.pid');
+    const rootScript = `
+      const { writeFileSync } = require('node:fs');
+      writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid));
+      process.once('SIGUSR1', () => process.exit(0));
+      setInterval(() => {}, 1000);
+    `;
     const manager = await createTestManager();
     try {
       const initial = await manager.runBackgroundBash(
         shellInput({
-          cwd: await workspace(),
-          command: nodeCommand('setTimeout(() => process.exit(0), 80);'),
+          cwd,
+          command: 'exit when the test releases the root process',
+          argv: [process.execPath, '-e', rootScript],
           timeoutMs: 50,
         }),
       );
       assert.equal(initial.kind, 'shell_run');
+      await waitUntil(async () => {
+        try {
+          return Number.isSafeInteger(Number.parseInt(await readFile(rootPidPath, 'utf8'), 10));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        }
+      });
       await processDiscovery.started;
-      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      const rootPid = Number.parseInt(await readFile(rootPidPath, 'utf8'), 10);
+      assert.ok(Number.isSafeInteger(rootPid) && rootPid > 0);
+      process.kill(rootPid, 'SIGUSR1');
       processDiscovery.release();
 
       const result = await waitForTerminalShellRun(manager, initial.ref);

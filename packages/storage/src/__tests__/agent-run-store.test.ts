@@ -57,6 +57,66 @@ describe('AgentRunStore', () => {
     });
   });
 
+  it('finds a duplicate run identity across sessions with a bounded result', async () => {
+    await withStore(async (store) => {
+      await store.createRun(makeHeader({ sessionId: 'session-c', runId: 'shared-run' }));
+      await store.createRun(makeHeader({ sessionId: 'session-a', runId: 'shared-run' }));
+      await store.createRun(makeHeader({ sessionId: 'session-b', runId: 'shared-run' }));
+      await store.createRun(makeHeader({ sessionId: 'session-a', runId: 'other-run' }));
+
+      const bounded = await store.findRunsById('shared-run', 2);
+      assert.equal(bounded.truncated, true);
+      assert.deepEqual(
+        bounded.runs.map((run) => run.sessionId),
+        ['session-a', 'session-b'],
+      );
+      assert.deepEqual(await store.findRunsById('missing-run', 2), {
+        runs: [],
+        truncated: false,
+      });
+      await assert.rejects(() => store.findRunsById('shared-run', 0), RangeError);
+    });
+  });
+
+  it('bounds Session headers and evidence before returning records', async () => {
+    await withStores(async (runStore, runtimeEventStore) => {
+      await runStore.createRun(makeHeader({ runId: 'run-2', createdAt: 2 }));
+      await runStore.createRun(makeHeader({ runId: 'run-1', createdAt: 1 }));
+      assert.deepEqual(await runStore.listSessionRunsBounded('session-1', 1), {
+        runs: [makeHeader({ runId: 'run-1', createdAt: 1 })],
+        truncated: true,
+      });
+
+      await runStore.appendEvent('session-1', 'run-1', makeEvent({ id: 'event-1' }));
+      await runStore.appendEvent('session-1', 'run-1', makeEvent({ id: 'event-2', ts: 2 }));
+      assert.deepEqual(
+        await runStore.readEventsBounded('session-1', 'run-1', {
+          maxRecords: 1,
+          maxBytes: 1024,
+        }),
+        { status: 'limit_exceeded' },
+      );
+
+      await runtimeEventStore.appendRuntimeEvent(
+        'session-1',
+        'run-1',
+        makeRuntimeEvent({ id: 'runtime-1' }),
+      );
+      const runtimeResult = await runtimeEventStore.readRuntimeEventsBounded('session-1', 'run-1', {
+        maxRecords: 2,
+        maxBytes: 1024,
+      });
+      assert.equal(runtimeResult.status, 'complete');
+      if (runtimeResult.status !== 'complete') return;
+      assert.deepEqual(
+        runtimeResult.records.map((event) => event.id),
+        ['runtime-1'],
+      );
+      assert.equal(runtimeResult.sourceRecordCount, 1);
+      assert.ok(runtimeResult.storedBytes > 0);
+    });
+  });
+
   it('rejects duplicate run creation without replacing the existing header', async () => {
     await withStore(async (store) => {
       const original = makeHeader({ invocationId: 'invocation-original' });

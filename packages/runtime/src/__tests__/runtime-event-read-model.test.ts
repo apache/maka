@@ -1684,6 +1684,27 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
     },
     event: { refs: { toolCallId: 'coverage-tool', operationId: 'coverage-op' } },
   },
+  workspaceFact: {
+    action: {
+      kind: 'maka.workspace.epoch_opened',
+      version: 1,
+      payload: {
+        protocol: 'workspace_epoch_opened_v1',
+        repositoryId: `repository_${'1'.repeat(32)}`,
+        workspaceId: `workspace_${'2'.repeat(32)}`,
+        workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+        workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+        initialWorkspaceVersionId: `version_${'5'.repeat(32)}`,
+        mode: 'managed_worktree',
+        objectFormat: 'sha1',
+        sourceCommitOid: '1'.repeat(40),
+        sourceTreeOid: '2'.repeat(40),
+        materializationProfileDigest: `sha256:${'3'.repeat(64)}`,
+        materializationSemantics: 'git_tree_materialized_with_fixed_config_v1',
+        policyHash: `sha256:${'4'.repeat(64)}`,
+      },
+    },
+  },
   runtimeProtocol: { action: { toolBoundary: 't1_after_preflight_v1' } },
 };
 

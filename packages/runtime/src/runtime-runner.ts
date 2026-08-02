@@ -341,11 +341,13 @@ export class RuntimeRunner {
     //    non-completed terminal status, denied permission, non-terminal error,
     //    or incomplete model finish maps the result to 'failed'.
     let failure: InvocationFailure | undefined;
+    let rawFinishFailure: InvocationFailure | undefined;
     let terminalSeen = false;
     try {
       for await (const ev of this.flow.run(ctx, flowInput)) {
         events.push(ev);
         failure ??= failureFromRuntimeEvent(ev);
+        rawFinishFailure ??= failureFromRawFinishReason(ev.actions?.tokenUsage?.rawFinishReason);
         if (isTerminalRuntimeEvent(ev)) {
           terminalSeen = true;
           if (this.stopOnTerminal) {
@@ -366,9 +368,15 @@ export class RuntimeRunner {
       };
     }
 
+    // A cooperative Graph yield intentionally ends on a tool-call step and
+    // carries no final assistant text. Its explicit completed terminal fact is
+    // authoritative over the provider's raw `tool-calls` finish reason.
+    const graphYielded = hasCompletedGraphYield(events);
+    if (!failure && !graphYielded) failure = rawFinishFailure;
+
     let status: InvocationResultStatus = failure ? 'failed' : 'completed';
     const finalOutput = status === 'completed' ? finalOutputFromEvents(events) : undefined;
-    if (status === 'completed' && finalOutput === undefined) {
+    if (status === 'completed' && finalOutput === undefined && !graphYielded) {
       status = 'failed';
       failure = {
         class: 'missing_final_output',
@@ -799,11 +807,16 @@ function failureFromRuntimeEvent(event: RuntimeEvent): InvocationFailure | undef
     };
   }
 
-  const rawFinishReason = event.actions?.tokenUsage?.rawFinishReason;
-  const finishFailure = failureFromRawFinishReason(rawFinishReason);
-  if (finishFailure) return finishFailure;
-
   return undefined;
+}
+
+function hasCompletedGraphYield(events: readonly RuntimeEvent[]): boolean {
+  return events.some(
+    (event) =>
+      isTerminalRuntimeEvent(event) &&
+      event.status === 'completed' &&
+      event.actions?.stateDelta?.stopReason === 'graph_yield',
+  );
 }
 
 function failureFromTerminalEvent(event: RuntimeEvent): InvocationFailure | undefined {

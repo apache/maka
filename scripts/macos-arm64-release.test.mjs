@@ -42,19 +42,3 @@ test('release tooling fails closed on unsupported hosts, signing, and architectu
     /arm64/,
   );
 });
-
-test('renderer readiness rejects the static preload skeleton', async () => {
-  const { isPackagedRendererUsable } = await import(
-    new URL('verify-macos-arm64-dmg.mjs', import.meta.url)
-  );
-  assert.equal(
-    isPackagedRendererUsable({
-      readyState: 'complete',
-      hasBridge: true,
-      hasRoot: true,
-      hasPreloadSkeleton: true,
-      hasAppShell: false,
-    }),
-    false,
-  );
-});

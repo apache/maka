@@ -1,6 +1,5 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import tailwindcss from '@tailwindcss/vite';
 import type { StorybookConfig } from '@storybook/react-vite';
 import { mergeConfig, type UserConfig } from 'vite';
 
@@ -25,7 +24,6 @@ const config: StorybookConfig = {
   },
   async viteFinal(baseConfig) {
     return mergeConfig(baseConfig, {
-      plugins: [tailwindcss()],
       resolve: {
         alias: [
           // @maka/core's public barrel also exports the Node-only runtime

@@ -350,6 +350,14 @@ describe('FileTelemetryRepo', () => {
         ),
         repo.insertLlmCall(
           llmRecord({
+            id: 'usage_goal_evaluation_session_1_3',
+            callKind: 'goal_evaluation',
+            callId: 'goal_evaluation_session_1_3',
+            ts: 3,
+          }),
+        ),
+        repo.insertLlmCall(
+          llmRecord({
             id: 'usage_semantic_compact_turn_1_2_3',
             callKind: 'semantic_compact',
             callId: 'semantic_compact_turn_1_2_3',
@@ -362,6 +370,7 @@ describe('FileTelemetryRepo', () => {
       assert.deepEqual(
         rows.map((row) => [row.callKind, row.callId]),
         [
+          ['goal_evaluation', 'goal_evaluation_session_1_3'],
           ['semantic_compact', 'semantic_compact_turn_1_2_3'],
           ['history_compact', 'history_compact_turn_1_1_2'],
         ],

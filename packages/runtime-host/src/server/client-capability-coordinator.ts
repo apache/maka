@@ -9,6 +9,7 @@ import {
 import {
   type ClientCapabilityOffer,
   type ClientCapabilityReplaceInput,
+  type ClientCapabilityServiceOffer,
   type ClientCapabilityToolDescriptor,
   type ClientCapabilityUnregisterInput,
 } from '../protocol/index.js';
@@ -53,6 +54,7 @@ interface CapabilityRegistration {
   readonly connectionId: string;
   readonly registrationId: string;
   readonly offersByContract: ReadonlyMap<string, FrozenOfferBinding>;
+  readonly servicesByContract: ReadonlyMap<string, ClientCapabilityServiceOffer>;
   current: boolean;
   snapshotRefs: number;
 }
@@ -91,7 +93,17 @@ interface SnapshotOfferBinding {
 
 export interface HostClientCapabilityCoordinatorOptions {
   readonly activation: RuntimePolicyActivationGate;
-  readonly onRegistryChanged: () => void;
+  readonly onModelToolsChanged: () => void;
+}
+
+export interface ClientCapabilityServiceInvocationInput {
+  readonly connectionId: string;
+  readonly serviceId: string;
+  readonly version: string;
+  readonly method: string;
+  readonly input: Record<string, unknown>;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -105,7 +117,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   };
 
   readonly #activation: RuntimePolicyActivationGate;
-  readonly #onRegistryChanged: () => void;
+  readonly #onModelToolsChanged: () => void;
   readonly #providers = new Map<string, ClientProviderState>();
   readonly #sessions = new Map<string, SessionCapabilityState>();
   readonly #invocations: ClientCapabilityInvocationBroker<CapabilityRegistration>;
@@ -114,7 +126,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
   constructor(options: HostClientCapabilityCoordinatorOptions) {
     this.#activation = options.activation;
-    this.#onRegistryChanged = options.onRegistryChanged;
+    this.#onModelToolsChanged = options.onModelToolsChanged;
     this.#invocations = new ClientCapabilityInvocationBroker({
       senderFor: (connectionId) => this.#providers.get(connectionId)?.sender,
       onRegistrationIdle: (registration) => this.#releaseRegistrationIfUnused(registration),
@@ -282,7 +294,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         previousInitiatingConnection !== initiatingConnectionId &&
         [...eligible.values()].some((candidates) => candidates[0]?.offer.offer.affinity === 'call');
       if (bindingsChanged || turnBindingsChanged || callSelectionChanged) {
-        this.#onRegistryChanged();
+        this.#onModelToolsChanged();
       }
       return { ok: true };
     });
@@ -381,17 +393,67 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     });
   }
 
+  async callService(
+    input: ClientCapabilityServiceInvocationInput,
+  ): Promise<Record<string, unknown>> {
+    const provider = this.#providers.get(input.connectionId);
+    const registration = provider?.current;
+    const service = registration?.servicesByContract.get(
+      serviceContract(input.serviceId, input.version),
+    );
+    if (!provider?.sender || !registration || !service) {
+      throw new ClientCapabilityInvocationError(
+        'capability_lost',
+        'Client Capability service is unavailable on the initiating connection',
+      );
+    }
+    const result = await this.#invocations.invokeService(
+      registration,
+      service.serviceId,
+      service.version,
+      input.method,
+      input.input,
+      input.signal,
+      input.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+    );
+    if (
+      result.content.length !== 0 ||
+      !result.structuredContent ||
+      typeof result.structuredContent !== 'object' ||
+      Array.isArray(result.structuredContent)
+    ) {
+      throw new ClientCapabilityInvocationError(
+        'provider_failed',
+        'Client Capability service returned an invalid payload',
+      );
+    }
+    return result.structuredContent as Record<string, unknown>;
+  }
+
+  hasService(connectionId: string, serviceId: string, version: string): boolean {
+    const provider = this.#providers.get(connectionId);
+    return Boolean(
+      provider?.sender &&
+        provider.current?.servicesByContract.has(serviceContract(serviceId, version)),
+    );
+  }
+
+  retireSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of new Set(sessionIds)) this.#sessions.delete(sessionId);
+  }
+
   releaseConnection(connectionId: string): void {
     const provider = this.#providers.get(connectionId);
     if (!provider) return;
     provider.sender = undefined;
     if (provider.current) {
-      provider.current.current = false;
+      const registration = provider.current;
+      registration.current = false;
       provider.current = undefined;
       this.#markBindingsLost(connectionId);
       this.#removeTurnBindings(connectionId);
       this.#revision += 1;
-      this.#onRegistryChanged();
+      if (hasModelToolOffers(registration)) this.#onModelToolsChanged();
     }
     this.#invocations.releaseConnection(connectionId);
     for (const registration of [...provider.registrations.values()]) {
@@ -483,7 +545,9 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       }
       provider.registrations.set(registration.registrationId, registration);
       this.#revision += 1;
-      this.#onRegistryChanged();
+      if (hasModelToolOffers(previous) || hasModelToolOffers(registration)) {
+        this.#onModelToolsChanged();
+      }
       if (previous) this.#releaseRegistrationIfUnused(previous);
       this.#pruneEmptySessions();
       return {
@@ -517,7 +581,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.#retireBindings(context.connectionId, new Set(registration.offersByContract.keys()));
       this.#removeTurnBindings(context.connectionId, new Set(registration.offersByContract.keys()));
       this.#revision += 1;
-      this.#onRegistryChanged();
+      if (hasModelToolOffers(registration)) this.#onModelToolsChanged();
       this.#releaseRegistrationIfUnused(registration);
       this.#pruneEmptySessions();
       return {
@@ -771,6 +835,7 @@ function freezeRegistration(
     }),
   );
   const offersByContract = new Map<string, FrozenOfferBinding>();
+  const servicesByContract = new Map<string, ClientCapabilityServiceOffer>();
   const proxyNames = new Map<string, string>();
   for (const offer of offers) {
     const toolsByIdentity = new Map<string, FrozenToolBinding>();
@@ -797,13 +862,28 @@ function freezeRegistration(
       toolsByIdentity,
     });
   }
+  for (const service of input.services ?? []) {
+    servicesByContract.set(
+      serviceContract(service.serviceId, service.version),
+      Object.freeze({ ...service }),
+    );
+  }
   return {
     connectionId,
     registrationId: input.registrationId,
     offersByContract,
+    servicesByContract,
     current: true,
     snapshotRefs: 0,
   };
+}
+
+function serviceContract(serviceId: string, version: string): string {
+  return `${serviceId}\0${version}`;
+}
+
+function hasModelToolOffers(registration: CapabilityRegistration | undefined): boolean {
+  return (registration?.offersByContract.size ?? 0) > 0;
 }
 
 function toolIdentity(serverId: string, toolName: string): string {

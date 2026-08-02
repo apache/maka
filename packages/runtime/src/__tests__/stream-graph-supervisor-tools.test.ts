@@ -6,14 +6,15 @@ import type { MakaToolContext } from '../tool-runtime.js';
 import {
   UPDATE_AGENT_GRAPH_TOOL_NAME,
   VIEW_AGENT_GRAPH_TOOL_NAME,
+  YIELD_AGENT_GRAPH_TOOL_NAME,
   buildAgentGraphSupervisorTools,
   projectAgentGraphSchedule,
 } from '../stream-graph-supervisor-tools.js';
 
 describe('stream graph supervisor tools', () => {
-  test('exposes one compact read tool and one durable schedule update tool', async () => {
+  test('exposes compact read, durable update, and cooperative yield tools', async () => {
     const store = createSqliteSessionMetadataStore(':memory:', { now: nextNumber(100) });
-    const [viewTool, updateTool] = buildAgentGraphSupervisorTools({
+    const [viewTool, updateTool, yieldTool] = buildAgentGraphSupervisorTools({
       graphId: 'graph-supervised',
       scheduleStore: store,
       observeGraph: async () => observationWithRecords('graph-supervised', ['verified-result']),
@@ -21,8 +22,19 @@ describe('stream graph supervisor tools', () => {
     try {
       assert.equal(viewTool.name, VIEW_AGENT_GRAPH_TOOL_NAME);
       assert.equal(updateTool.name, UPDATE_AGENT_GRAPH_TOOL_NAME);
+      assert.equal(yieldTool.name, YIELD_AGENT_GRAPH_TOOL_NAME);
       assert.equal(viewTool.recoveryMode, 'replay_safe');
       assert.equal(updateTool.recoveryMode, 'idempotent');
+      assert.equal(yieldTool.recoveryMode, 'replay_safe');
+
+      await assert.rejects(
+        async () =>
+          await yieldTool.impl(
+            { reason: 'Nothing has been scheduled.' },
+            toolContext('yield-empty'),
+          ),
+        /no pending scheduled work/,
+      );
 
       const firstInput = {
         add_work: [
@@ -50,6 +62,18 @@ describe('stream graph supervisor tools', () => {
         { kind: 'input_route', upstreamOperatorIds: ['researcher'] },
       ]);
       assert.doesNotMatch(JSON.stringify(first), /graph-supervised|updateId|"revision"/);
+      assert.deepEqual(
+        await yieldTool.impl(
+          { reason: 'The scheduled operators are still executing.' },
+          toolContext('yield-running'),
+        ),
+        {
+          kind: 'agent_graph_yielded',
+          pendingWorkCount: 2,
+          liveOperatorCount: 1,
+          reason: 'The scheduled operators are still executing.',
+        },
+      );
 
       const [firstWork, secondWork] = first.schedule.work;
       assert.ok(firstWork);
@@ -113,6 +137,10 @@ describe('stream graph supervisor tools', () => {
       );
       assert.equal(finished.schedule.closed, true);
       assert.deepEqual(finished.schedule.finish?.resultIds, ['verified-result']);
+      await assert.rejects(
+        async () => await yieldTool.impl({ reason: 'Already done.' }, toolContext('yield-closed')),
+        /already finished/,
+      );
 
       const viewed = await viewTool.impl({}, toolContext('tool-view'));
       assert.deepEqual(viewed.schedule, finished.schedule);
@@ -199,6 +227,109 @@ describe('stream graph supervisor tools', () => {
         }).success,
         false,
       );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('rejects yield when requested work is already terminal and no future wake is pending', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const observation = terminalObservation('graph-terminal-only');
+    const [, updateTool, yieldTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-terminal-only',
+      scheduleStore: store,
+      observeGraph: async () => observation,
+      prepareYieldPermit: () => ({
+        acquire: async () => false,
+        cancel() {},
+      }),
+    });
+    try {
+      await updateTool.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'existing_operator',
+              operator_id: 'writer',
+              instruction: 'Follow up on the completed activation.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+          ],
+        },
+        toolContext('tool-terminal-work'),
+      );
+
+      await assert.rejects(
+        async () =>
+          await yieldTool.impl(
+            { reason: 'There is nothing left in flight.' },
+            toolContext('yield-terminal-only'),
+          ),
+        /no in-flight work or pending reconciliation.*future supervisor checkpoint/,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test('registers yield admission before reading a terminal runtime transition', async () => {
+    const store = createSqliteSessionMetadataStore(':memory:');
+    const observation = terminalObservation('graph-terminal-race');
+    let yielding = false;
+    let permitRegistered = false;
+    let terminalProofCaptured = false;
+    const [, updateTool, yieldTool] = buildAgentGraphSupervisorTools({
+      graphId: 'graph-terminal-race',
+      scheduleStore: store,
+      observeGraph: async () => {
+        if (yielding) {
+          assert.equal(permitRegistered, true, 'the waiter must exist before observation starts');
+          terminalProofCaptured = true;
+        }
+        return observation;
+      },
+      prepareYieldPermit: () => {
+        permitRegistered = true;
+        return {
+          acquire: async () => terminalProofCaptured,
+          cancel() {
+            permitRegistered = false;
+          },
+        };
+      },
+    });
+    try {
+      await updateTool.impl(
+        {
+          operation: 'add_work',
+          add_work: [
+            {
+              target_kind: 'existing_operator',
+              operator_id: 'writer',
+              instruction: 'Follow up after the terminal transition.',
+              input_ids: [],
+              replacement_mode: 'none',
+            },
+          ],
+        },
+        toolContext('tool-terminal-race'),
+      );
+      yielding = true;
+      assert.deepEqual(
+        await yieldTool.impl(
+          { reason: 'The registered waiter captured the terminal checkpoint.' },
+          toolContext('yield-terminal-race'),
+        ),
+        {
+          kind: 'agent_graph_yielded',
+          pendingWorkCount: 1,
+          liveOperatorCount: 0,
+          reason: 'The registered waiter captured the terminal checkpoint.',
+        },
+      );
+      assert.equal(permitRegistered, false);
     } finally {
       store.close();
     }
@@ -462,6 +593,15 @@ function observationWithRecords(
     },
     claims: [],
   };
+}
+
+function terminalObservation(graphId: string): AgentGraphSupervisorObservation {
+  const observation = observationWithRecords(graphId, ['terminal-result']);
+  const writer = observation.projection.state.operators.writer;
+  assert.ok(writer);
+  writer.status = 'completed';
+  writer.activations[writer.currentActivationId]!.status = 'completed';
+  return observation;
 }
 
 function toolContext(toolCallId: string): MakaToolContext {

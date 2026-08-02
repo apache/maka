@@ -217,6 +217,24 @@ describe('AutomationManager', () => {
       assert.equal(mgr.get(auto.id)?.status, 'completed'); // 2/2
     });
 
+    test('an accepted attempt still records its outcome when paused in flight', () => {
+      const mgr = createManager();
+      const auto = mgr.create({
+        kind: 'heartbeat',
+        name: 'in flight',
+        prompt: 'p',
+        sessionId: 'sess-1',
+        schedule: { type: 'once', delaySeconds: 30 },
+      });
+      assert.ok(!('error' in auto));
+      mgr.attemptStarted(auto.id);
+      mgr.pause(auto.id, 'sess-1');
+      mgr.attemptSucceeded(auto.id, 'run-in-flight');
+      assert.equal(mgr.get(auto.id)?.status, 'paused');
+      assert.equal(mgr.get(auto.id)?.lastRunId, 'run-in-flight');
+      assert.equal(mgr.get(auto.id)?.lastError, null);
+    });
+
     test('a failed fire does NOT complete (even at maxFires)', () => {
       const mgr = createManager();
       const auto = mgr.create({
@@ -277,6 +295,21 @@ describe('AutomationManager', () => {
       mgr.attemptStarted(auto.id); // nextFireAt → null
       mgr.attemptFailed(auto.id, 'boom');
       assert.equal(mgr.get(auto.id)?.status, 'paused');
+    });
+
+    test('an empty accepted failure gets a stable diagnostic', () => {
+      const mgr = createManager();
+      const auto = mgr.create({
+        kind: 'heartbeat',
+        name: 'empty failure',
+        prompt: 'p',
+        sessionId: 'sess-1',
+        schedule: { type: 'once', delaySeconds: 10 },
+      });
+      assert.ok(!('error' in auto));
+      mgr.attemptStarted(auto.id);
+      mgr.attemptFailed(auto.id, '');
+      assert.equal(mgr.get(auto.id)?.lastError, 'Automation run failed');
     });
 
     test('attemptSucceeded resets failure count', () => {

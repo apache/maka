@@ -18,6 +18,7 @@ import {
   createSessionContinuitySnapshot,
 } from '../server/canonical-session-projection.js';
 import { type HostMessageRootPort, HostMessageCoordinator } from '../server/message-coordinator.js';
+import { worstCaseGoalProjection } from '../server/goal-projection.js';
 import { RootAdmissionOwner } from '../server/root-admission-owner.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
@@ -43,6 +44,7 @@ test('projects the canonical root lifecycle and the attachment queue from real S
         isArchived: false,
       },
       rootTurn: null,
+      goal: null,
       queue: { hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] },
       interactions: { pending: [] },
     });
@@ -210,22 +212,29 @@ test('preflights queued steering at the exact in-flight snapshot boundary', asyn
     });
     const canonical = await reader.read(session.id);
     assert.ok(canonical);
+    const capacityCanonical = {
+      ...canonical,
+      goal: worstCaseGoalProjection(session.id),
+    };
 
-    const inFlightBoundary = largestFittingInFlightSteeringText(canonical);
+    const inFlightBoundary = largestFittingInFlightSteeringText(capacityCanonical);
     const rejectedQueued = {
       ...steeringQueue(inFlightBoundary + 1, 'queued'),
       queueRevision: 1,
     };
     assert.deepEqual(
       createSessionContinuitySnapshot(
-        { ...canonical, queue: rejectedQueued },
+        { ...capacityCanonical, queue: rejectedQueued },
         Number.MAX_SAFE_INTEGER,
       ).queue,
       rejectedQueued,
     );
     assert.throws(() =>
       createSessionContinuitySnapshot(
-        { ...canonical, queue: steeringQueue(inFlightBoundary + 1, 'in_flight') },
+        {
+          ...capacityCanonical,
+          queue: steeringQueue(inFlightBoundary + 1, 'in_flight'),
+        },
         Number.MAX_SAFE_INTEGER,
       ),
     );
@@ -247,7 +256,7 @@ test('preflights queued steering at the exact in-flight snapshot boundary', asyn
     const allowedInFlight = steeringQueue(inFlightBoundary, 'in_flight');
     assert.deepEqual(
       createSessionContinuitySnapshot(
-        { ...canonical, queue: allowedInFlight },
+        { ...capacityCanonical, queue: allowedInFlight },
         Number.MAX_SAFE_INTEGER,
       ).queue,
       allowedInFlight,

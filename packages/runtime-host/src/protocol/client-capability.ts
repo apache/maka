@@ -53,6 +53,7 @@ export interface ClientCapabilityCallResult {
 export type ClientCapabilityAffinity = 'call' | 'turn' | 'session';
 
 export const CLIENT_CAPABILITY_MAX_OFFERS = 32;
+export const CLIENT_CAPABILITY_MAX_SERVICES = 32;
 export const CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER = 64;
 export const CLIENT_CAPABILITY_MAX_TOOLS = 256;
 export const CLIENT_CAPABILITY_MAX_MANIFEST_BYTES = 56 * 1024;
@@ -82,9 +83,15 @@ export interface ClientCapabilityOffer {
   readonly tools: readonly ClientCapabilityToolDescriptor[];
 }
 
+export interface ClientCapabilityServiceOffer {
+  readonly serviceId: string;
+  readonly version: string;
+}
+
 export interface ClientCapabilityReplaceInput {
   readonly registrationId: string;
   readonly offers: readonly ClientCapabilityOffer[];
+  readonly services?: readonly ClientCapabilityServiceOffer[];
 }
 
 export interface ClientCapabilityReplaceResult {
@@ -115,6 +122,16 @@ export interface ClientCapabilityCallFrame {
   readonly cwd: string;
 }
 
+export interface ClientCapabilityServiceCallFrame {
+  readonly kind: 'client.capability.service_call';
+  readonly invocationId: string;
+  readonly registrationId: string;
+  readonly serviceId: string;
+  readonly version: string;
+  readonly method: string;
+  readonly input: Record<string, unknown>;
+}
+
 export interface ClientCapabilityCancelFrame {
   readonly kind: 'client.capability.cancel';
   readonly invocationId: string;
@@ -137,6 +154,7 @@ export interface ClientCapabilityAdmittedFrame {
 
 export type ClientCapabilityHostFrame =
   | ClientCapabilityCallFrame
+  | ClientCapabilityServiceCallFrame
   | ClientCapabilityCancelFrame
   | ClientCapabilityReleaseFrame
   | ClientCapabilityRegistrationReleaseFrame
@@ -213,19 +231,27 @@ export const CLIENT_CAPABILITY_OPERATION_SPECS = {
 } as const;
 
 export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabilityReplaceInput {
-  const record = requireExactRecord(value, 'Client Capability replacement', [
-    'registrationId',
-    'offers',
-  ]);
-  if (
-    !Array.isArray(record.offers) ||
-    record.offers.length === 0 ||
-    record.offers.length > CLIENT_CAPABILITY_MAX_OFFERS
-  ) {
+  const record = requireRecord(value, 'Client Capability replacement');
+  assertOptionalExactKeys(
+    record,
+    'Client Capability replacement',
+    ['registrationId', 'offers'],
+    ['services'],
+  );
+  if (!Array.isArray(record.offers) || record.offers.length > CLIENT_CAPABILITY_MAX_OFFERS) {
     throw invalidProtocolFrame('Invalid Client Capability offers');
   }
+  const serviceValues = record.services ?? [];
+  if (!Array.isArray(serviceValues) || serviceValues.length > CLIENT_CAPABILITY_MAX_SERVICES) {
+    throw invalidProtocolFrame('Invalid Client Capability services');
+  }
+  if (record.offers.length === 0 && serviceValues.length === 0) {
+    throw invalidProtocolFrame('Client Capability registration is empty');
+  }
   const offers = record.offers.map((offer) => decodeClientCapabilityOffer(offer));
+  const services = serviceValues.map((service) => decodeClientCapabilityServiceOffer(service));
   const offerIds = new Set<string>();
+  const serviceContracts = new Set<string>();
   const toolIdentities = new Set<string>();
   let toolCount = 0;
   for (const offer of offers) {
@@ -245,9 +271,17 @@ export function decodeClientCapabilityReplaceInput(value: unknown): ClientCapabi
   if (toolCount > CLIENT_CAPABILITY_MAX_TOOLS) {
     throw invalidProtocolFrame('Too many Client Capability tools');
   }
+  for (const service of services) {
+    const contract = `${service.serviceId}\0${service.version}`;
+    if (serviceContracts.has(contract)) {
+      throw invalidProtocolFrame('Duplicate Client Capability service');
+    }
+    serviceContracts.add(contract);
+  }
   const decoded = {
     registrationId: requireEntityId(record.registrationId, 'registrationId'),
     offers,
+    ...(record.services === undefined ? {} : { services }),
   };
   if (jsonByteLength(decoded) > CLIENT_CAPABILITY_MAX_MANIFEST_BYTES) {
     throw invalidProtocolFrame('Client Capability manifest is too large');
@@ -426,6 +460,30 @@ export function decodeClientCapabilityHostFrame(value: unknown): ClientCapabilit
         cwd: requireString(frame.cwd, 'cwd', 4_096),
       };
     }
+    case 'client.capability.service_call': {
+      assertExactKeys(frame, 'Client Capability service call frame', [
+        'kind',
+        'invocationId',
+        'registrationId',
+        'serviceId',
+        'version',
+        'method',
+        'input',
+      ]);
+      const input = decodeJsonRecord(frame.input, 'input');
+      if (jsonByteLength(input) > 40 * 1024) {
+        throw invalidProtocolFrame('Client Capability service input is too large');
+      }
+      return {
+        kind: frame.kind,
+        invocationId: requireEntityId(frame.invocationId, 'invocationId'),
+        registrationId: requireEntityId(frame.registrationId, 'registrationId'),
+        serviceId: requireEntityId(frame.serviceId, 'serviceId'),
+        version: requireString(frame.version, 'version', 64),
+        method: requireEntityId(frame.method, 'method'),
+        input,
+      };
+    }
     case 'client.capability.cancel':
     case 'client.capability.release':
     case 'client.capability.admitted':
@@ -494,6 +552,17 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
           description: requireString(record.description, 'description', 1_024),
         }),
     tools: record.tools.map(decodeToolDescriptor),
+  };
+}
+
+function decodeClientCapabilityServiceOffer(value: unknown): ClientCapabilityServiceOffer {
+  const record = requireExactRecord(value, 'Client Capability service offer', [
+    'serviceId',
+    'version',
+  ]);
+  return {
+    serviceId: requireEntityId(record.serviceId, 'serviceId'),
+    version: requireString(record.version, 'version', 64),
   };
 }
 
@@ -944,6 +1013,7 @@ const CLIENT_CAPABILITY_CLIENT_FRAME_KINDS = new Set<ClientCapabilityClientFrame
 
 const CLIENT_CAPABILITY_HOST_FRAME_KINDS = new Set<ClientCapabilityHostFrame['kind']>([
   'client.capability.call',
+  'client.capability.service_call',
   'client.capability.cancel',
   'client.capability.release',
   'client.capability.registration_release',

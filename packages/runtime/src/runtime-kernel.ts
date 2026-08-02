@@ -2624,6 +2624,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'recordRunTrace'
     | 'recordProviderRequestCapture'
     | 'recordProviderRequestAttempt'
+    | 'recordModelCallAttempt'
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadTurnRuntimeEvents'
@@ -2650,6 +2651,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
             },
             recordProviderRequestAttempt: (attempt) => {
               runFor(attempt.turnId)?.recordProviderRequestAttempt(attempt);
+            },
+            // Resolved by runId rather than turnId: the canonical record names
+            // the run it belongs to, so it needs no turn-to-run indirection.
+            recordModelCallAttempt: (attempt) => {
+              const run = resolveActive()?.activeRuns.get(attempt.runId);
+              return run?.recordModelCallAttempt(attempt) ?? Promise.resolve();
             },
             loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
             recordHistoryCompactCheckpoint: (

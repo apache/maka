@@ -334,7 +334,10 @@ function SkillLibraryPanel(props: {
                   </span>
                   <div className="maka-skill-market-card-title">
                     <h3>{source.name}</h3>
-                    <small>{source.id}</small>
+                    {/* The source id is an identifier, not an aside — and it
+                        is the markup, not a call-site font-family, that puts
+                        it in the code family now. */}
+                    <code>{source.id}</code>
                   </div>
                   {/* + install acts; the card itself is inert (honest
                       affordance). Disabled once the source is in the
@@ -395,7 +398,7 @@ function SkillLibraryPanel(props: {
                   </span>
                   <div className="maka-skill-market-card-title">
                     <h3>{entry.name}</h3>
-                    <small>{entry.id}</small>
+                    <code>{entry.id}</code>
                   </div>
                   {/* Install copies the shipped body into the workspace. Disabled
                       once installed, so the button reads as a state, not a toggle. */}
@@ -509,7 +512,7 @@ function SkillLibraryPanel(props: {
                       <span className="maka-skill-library-name">
                         {displayName}
                         {!isDiscoveryDiagnostic && (skillNameCounts.get(skill.name) ?? 0) > 1 && (
-                          <span className="maka-skill-library-slug">{skill.id}</span>
+                          <code className="maka-skill-library-slug">{skill.id}</code>
                         )}
                       </span>
                       {description && (

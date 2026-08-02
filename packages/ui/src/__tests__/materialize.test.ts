@@ -43,6 +43,28 @@ describe('materializeChat attachments', () => {
     assert.equal(items[0].attachments, undefined);
   });
 
+  test('preserves Host provenance on a Goal continuation', () => {
+    const messages: StoredMessage[] = [
+      {
+        type: 'user',
+        id: 'm1',
+        turnId: 't1',
+        ts: 1,
+        text: '[Goal continuation] Keep working.',
+        origin: { kind: 'goal', goalId: 'goal-1' },
+      },
+    ];
+
+    assert.deepEqual(materializeChat(messages)[0]?.hostOrigin, {
+      kind: 'goal',
+      goalId: 'goal-1',
+    });
+    assert.deepEqual(materializeTurns(messages)[0]?.user?.hostOrigin, {
+      kind: 'goal',
+      goalId: 'goal-1',
+    });
+  });
+
   test('surfaces automatic context compaction system notes inline', () => {
     const messages: StoredMessage[] = [
       { type: 'system_note', id: 'note-1', turnId: 't1', ts: 1, kind: 'context_compacted' },

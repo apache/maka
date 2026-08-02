@@ -38,37 +38,33 @@
 }
 
 .plan-proposal-title strong {
+  font: var(--maka-text-heading-4);
   overflow-wrap: anywhere;
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
 }
 
-.plan-proposal-kicker,
-.plan-proposal-revision {
-  color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
-}
-
+/* The eyebrow above the proposal title. 12px/500 on main, which the 12px tier
+   does not offer — it has 400 and 600 — and this is a section label sitting
+   over a heading, so it takes the 600. Grouping it with the revision chip and
+   then overriding the role one rule later left the group's role dead and moved
+   the eyebrow up a size tier; a role is not a base to override. */
 .plan-proposal-kicker {
-  font-weight: var(--font-weight-medium);
+  font: var(--maka-text-heading-5);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-revision {
+  font: var(--maka-text-supporting);
+  color: var(--muted-foreground);
   padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-pill);
   background: var(--foreground-5);
-  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
 .plan-proposal-status {
+  font: var(--maka-text-supporting);
   padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-pill);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
 }
 
 .plan-proposal-status[data-status="pending_approval"] {
@@ -87,10 +83,9 @@
 }
 
 .plan-proposal-overview {
+  font: var(--maka-text-body);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .plan-proposal-section {
@@ -99,11 +94,9 @@
 }
 
 .plan-proposal-section h3 {
+  font: var(--maka-text-heading-5);
   margin: 0;
   color: var(--foreground-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
 }
 
 .plan-proposal-steps,
@@ -116,6 +109,7 @@
 }
 
 .plan-proposal-steps li {
+  font: var(--maka-text-body);
   display: grid;
   grid-template-columns: var(--h-control-sm) minmax(0, 1fr);
   align-items: start;
@@ -125,11 +119,10 @@
   border-radius: var(--radius-control);
   background: var(--foreground-2);
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-normal);
 }
 
 .plan-proposal-step-number {
+  font: var(--maka-text-supporting);
   width: var(--h-control-sm);
   height: var(--h-control-sm);
   display: inline-flex;
@@ -139,10 +132,7 @@
   border-radius: var(--radius-pill);
   background: oklch(from var(--status-running) l c h / 0.10);
   color: var(--foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
   font-variant-numeric: tabular-nums;
-  line-height: var(--leading-none);
 }
 
 .plan-proposal-step-content {
@@ -152,9 +142,8 @@
 }
 
 .plan-proposal-step-content strong {
+  font: var(--maka-text-heading-4);
   overflow-wrap: anywhere;
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--leading-snug);
 }
 
 .plan-proposal-step-content p {
@@ -164,9 +153,8 @@
 }
 
 .plan-proposal-risks ul {
+  font: var(--maka-text-supporting);
   color: var(--warning-text);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-normal);
 }
 
 .plan-proposal-risks li {
@@ -231,18 +219,15 @@
 }
 
 .plan-execution-toggle span {
+  font: var(--maka-text-supporting);
   color: var(--muted-foreground);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-snug);
 }
 
 .plan-execution-toggle strong {
+  font: var(--maka-text-label);
   min-width: 0;
   overflow: hidden;
   color: var(--foreground);
-  font-size: var(--font-size-ui);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--leading-snug);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -265,8 +250,8 @@
 }
 
 .plan-execution-count {
+  font: var(--maka-text-supporting);
   flex: 0 0 auto;
-  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -287,6 +272,7 @@
 }
 
 .plan-execution-steps li {
+  font: var(--maka-text-body);
   display: grid;
   grid-template-columns: var(--h-control-xs) minmax(0, 1fr);
   align-items: center;
@@ -294,8 +280,6 @@
   min-height: var(--h-control-lg);
   padding: var(--space-1-5) var(--space-2);
   color: var(--foreground-secondary);
-  font-size: var(--font-size-ui);
-  line-height: var(--leading-snug);
 }
 
 .plan-execution-steps li + li {
@@ -313,6 +297,7 @@
 }
 
 .plan-execution-step-marker {
+  font: var(--maka-text-supporting);
   width: var(--h-control-xs);
   height: var(--h-control-xs);
   display: inline-flex;
@@ -321,9 +306,6 @@
   border: var(--border-width-hairline) solid var(--border-strong);
   border-radius: var(--radius-pill);
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  line-height: var(--leading-none);
 }
 
 .plan-execution-step-marker[data-status="in_progress"] {
@@ -349,7 +331,7 @@
 }
 
 .plan-mode-error {
+  font: var(--maka-text-supporting);
   margin: var(--space-1-5) 0 0;
   color: var(--destructive-text);
-  font-size: var(--font-size-caption);
 }

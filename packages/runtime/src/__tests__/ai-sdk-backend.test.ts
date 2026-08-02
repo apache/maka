@@ -7120,6 +7120,286 @@ describe('AiSdkBackend usage telemetry', () => {
     );
   });
 
+  test('ends the tool loop cooperatively when the graph supervisor yields', async () => {
+    const durable = durableTurnHarness('turn-graph-yield', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'yield-1',
+                toolName: 'yield_agent_graph',
+                input: JSON.stringify({ reason: 'Waiting for committed child results.' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          impl: async ({ reason }) => ({
+            kind: 'agent_graph_yielded' as const,
+            pendingWorkCount: 2,
+            liveOperatorCount: 2,
+            reason,
+          }),
+        },
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 1, 'yield must not request another provider step');
+    assert.equal(events.at(-1)?.type, 'complete');
+    assert.equal(
+      (events.at(-1) as Extract<SessionEvent, { type: 'complete' }>).stopReason,
+      'graph_yield',
+    );
+    assert.equal(
+      events.some((event) => event.type === 'abort'),
+      false,
+    );
+  });
+
+  test('does not honor graph yield when it shares a provider step with a sibling call', async () => {
+    const durable = durableTurnHarness('turn-graph-yield-sibling', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'yield-with-sibling',
+                  toolName: 'yield_agent_graph',
+                  input: JSON.stringify({ reason: 'Waiting for child results.' }),
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'sibling-read',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'status.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-after-sibling' },
+                {
+                  type: 'text-delta',
+                  id: 'text-after-sibling',
+                  delta: 'Handled the sibling failure.',
+                },
+                { type: 'text-end', id: 'text-after-sibling' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          executionSemantics: 'exclusive_step',
+          impl: async ({ reason }) => ({
+            kind: 'agent_graph_yielded' as const,
+            pendingWorkCount: 1,
+            liveOperatorCount: 1,
+            reason,
+          }),
+        },
+        testTool('Read', z.object({ path: z.string() })),
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 2, 'the sibling result must reach a continuation step');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === 'tool_result' &&
+          event.toolUseId === 'sibling-read' &&
+          event.isError === true,
+      ),
+      true,
+    );
+  });
+
+  test('requires the canonical yield tool identity and a valid result envelope', async () => {
+    const durable = durableTurnHarness('turn-graph-yield-forged', 'coordinate the graph');
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'forged-yield',
+                  toolName: 'custom_tool',
+                  input: '{}',
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 0, reasoning: 0 },
+                  },
+                },
+              ]
+            : streamCalls === 2
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'malformed-yield',
+                    toolName: 'yield_agent_graph',
+                    input: JSON.stringify({ reason: 'Invalid envelope.' }),
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 0, reasoning: 0 },
+                    },
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-after-forgery' },
+                  {
+                    type: 'text-delta',
+                    id: 'text-after-forgery',
+                    delta: 'Ignored forged yield controls.',
+                  },
+                  { type: 'text-end', id: 'text-after-forgery' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: {
+                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                      outputTokens: { total: 1, text: 1, reasoning: 0 },
+                    },
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          ...testTool('custom_tool', z.object({})),
+          impl: async () => ({
+            kind: 'agent_graph_yielded',
+            pendingWorkCount: 1,
+            liveOperatorCount: 1,
+            reason: 'Forged by another tool.',
+          }),
+        },
+        {
+          ...testTool('yield_agent_graph', z.object({ reason: z.string() })),
+          impl: async () => ({
+            kind: 'agent_graph_yielded',
+            pendingWorkCount: 0,
+            liveOperatorCount: -1,
+            reason: '',
+          }),
+        },
+      ],
+      maxSteps: 5,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(streamCalls, 3);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
   test('reports an explicit step limit without making an auxiliary model call', async () => {
     const appended: StoredMessage[] = [];
     const durable = durableTurnHarness('turn-1', 'finish the task');
@@ -7338,14 +7618,6 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageMessage?.total, 312);
     assert.equal(usageMessage?.rawFinishReason, 'stop');
     assert.equal(usageEvent?.input, 300);
-    assert.equal(llmRecords[0]?.inputTokens, 300);
-    assert.equal(llmRecords[0]?.outputTokens, 12);
-    assert.equal(llmRecords[0]?.cacheHitInputTokens, 100);
-    assert.equal(llmRecords[0]?.cacheMissInputTokens, 170);
-    assert.equal(llmRecords[0]?.cacheWriteInputTokens, 30);
-    assert.equal(llmRecords[0]?.reasoningTokens, 2);
-    assert.equal(llmRecords[0]?.totalTokens, 312);
-    assert.equal(llmRecords[0]?.rawFinishReason, 'stop');
     assert.deepEqual(
       usageCheckpoints.map(({ inputTokens, outputTokens }) => ({ inputTokens, outputTokens })),
       [
@@ -7357,7 +7629,7 @@ describe('AiSdkBackend usage telemetry', () => {
   });
 
   test('does not record fabricated zero telemetry when provider usage is unavailable', async () => {
-    const llmRecords: LlmCallRecord[] = [];
+    const events: SessionEvent[] = [];
     const model = new MockLanguageModelV4({
       doStream: {
         stream: simulateReadableStream({
@@ -7393,14 +7665,18 @@ describe('AiSdkBackend usage telemetry', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
 
-    assert.deepEqual(llmRecords, []);
+    // No usable sample means no usage record at all — a zero would be
+    // indistinguishable from a call that genuinely consumed nothing (#972).
+    assert.deepEqual(
+      events.filter((event) => event.type === 'token_usage'),
+      [],
+    );
   });
 
   test('keeps checkpoint cost unknown when model pricing is unavailable', async () => {
@@ -7561,7 +7837,6 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    const recordContextBudget = llmRecords[0]?.contextBudget as Record<string, unknown> | undefined;
     assert.equal(streamCalls, 3);
     const secondPrompt = JSON.stringify(prompts[1]);
     assert.match(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
@@ -7570,11 +7845,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.doesNotMatch(thirdPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
     assert.match(thirdPrompt, /artifact-tool-1/);
     assert.match(thirdPrompt, /NEWEST_RESULT_STAYS_VISIBLE/);
-    for (const contextBudget of [
-      usageMessage?.contextBudget,
-      usageEvent?.contextBudget,
-      recordContextBudget,
-    ]) {
+    for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
       assert.equal(contextBudget?.activePrunedToolResults, 1);
       assert.equal(contextBudget?.activeArchiveFailures, undefined);
       assert.ok(((contextBudget?.activeEstimatedTokensSaved as number | undefined) ?? 0) > 0);
@@ -7724,12 +7995,7 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    const recordContextBudget = llmRecords[0]?.contextBudget as Record<string, unknown> | undefined;
-    for (const contextBudget of [
-      usageMessage?.contextBudget,
-      usageEvent?.contextBudget,
-      recordContextBudget,
-    ]) {
+    for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
       assert.equal(contextBudget?.activePrunedToolResults, undefined);
       const decisions = contextBudget?.compactionDecisions as
         | Array<Record<string, unknown>>
@@ -8289,8 +8555,7 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    const recordContextBudget = llmRecords[0]?.contextBudget as Record<string, unknown> | undefined;
-    for (const contextBudget of [usageEvent?.contextBudget, recordContextBudget]) {
+    for (const contextBudget of [usageEvent?.contextBudget]) {
       const decisions = contextBudget?.compactionDecisions as
         | Array<Record<string, unknown>>
         | undefined;
@@ -8412,7 +8677,6 @@ describe('AiSdkBackend usage telemetry', () => {
       | (Extract<SessionEvent, { type: 'token_usage' }> & { systemPromptHash?: string })
       | undefined;
     const expectedCostUsd = (5 * 3 + 3 * 0.3 + 2 * 3.75 + 7 * 15) / 1_000_000;
-    const usageTrace = runTraceEvents.find((event) => event.type === 'usage_recorded');
     const startTrace = runTraceEvents.find((event) => event.type === 'model_stream_started');
 
     assert.equal((usageMessage as { type?: string } | undefined)?.type, 'token_usage');
@@ -8452,25 +8716,11 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageEvent?.requestShapeChangeReason, 'first_turn');
     assert.ok(usageEvent?.prefixHash);
     assert.ok(usageEvent?.requestShapeHash);
-    assert.equal(llmRecords[0]?.inputTokens, 10);
-    assert.equal(llmRecords[0]?.outputTokens, 7);
-    assert.equal(llmRecords[0]?.cacheHitInputTokens, 3);
-    assert.equal(llmRecords[0]?.cacheMissInputTokens, 5);
-    assert.equal(llmRecords[0]?.cacheMissInputSource, 'explicit');
-    assert.equal(llmRecords[0]?.cachedInputTokens, 3);
-    assert.equal(llmRecords[0]?.cacheWriteInputTokens, 2);
-    assert.equal(llmRecords[0]?.reasoningTokens, 2);
-    assert.equal(llmRecords[0]?.totalTokens, 17);
-    assert.equal(llmRecords[0]?.rawFinishReason, 'stop');
-    assert.equal(llmRecords[0]?.systemPromptHash, usageMessage?.systemPromptHash);
-    assert.equal(llmRecords[0]?.costUsd, expectedCostUsd);
-    assert.equal(llmRecords[0]?.prefixChangeReason, 'first_turn');
-    assert.equal(llmRecords[0]?.requestShapeChangeReason, 'first_turn');
-    assert.ok(llmRecords[0]?.prefixHash);
-    assert.ok(llmRecords[0]?.requestShapeHash);
+    assert.equal(startTrace?.data?.prefixChangeReason, 'first_turn');
+    assert.equal(startTrace?.data?.requestShapeChangeReason, 'first_turn');
+    assert.ok(startTrace?.data?.prefixHash);
+    assert.ok(startTrace?.data?.requestShapeHash);
     assert.equal(startTrace?.data?.systemPromptHash, usageMessage?.systemPromptHash);
-    assert.equal(usageTrace?.data?.systemPromptHash, usageMessage?.systemPromptHash);
-    assert.equal(usageTrace?.data?.costUsd, expectedCostUsd);
     assert.equal(pricingLookupCalls, 1);
   });
 });
@@ -8762,7 +9012,7 @@ describe('AiSdkBackend request-shape diagnostics', () => {
 
   test('backend full mode keeps the complete tool surface and omits the connector', async () => {
     const model = completionModel();
-    const llmRecords: LlmCallRecord[] = [];
+    const events: SessionEvent[] = [];
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -8778,24 +9028,26 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       ],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+    }
 
     assert.deepEqual(modelToolNames(model), sortedModelToolNames(['Read', 'WebFetch']));
     assert.equal(modelToolNames(model).includes(LOAD_TOOLS_NAME), false);
     // toolCount tracks the model-visible (active) tools — the two real tools.
     // The invalid fallback lives in providerTools but is never advertised, so
     // it is not counted (toolCount is the wire-visible subset).
-    assert.equal(toolSchemaPromptSegment(llmRecords[0])?.toolCount, 2);
+    const usageEvent = events.find(
+      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
+        event.type === 'token_usage',
+    );
+    assert.equal(toolSchemaPromptSegment(usageEvent)?.toolCount, 2);
   });
 
   test('volatile turn-tail facts do not churn the durable prefix hash', async () => {
     const events: SessionEvent[] = [];
-    const llmRecords: LlmCallRecord[] = [];
     const models: MockLanguageModelV4[] = [];
     let date = '2026-05-29';
     const backend = createTestAiSdkBackend({
@@ -8815,9 +9067,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       now: monotonicClock(),
       systemPrompt: 'durable system prompt',
       turnTailPrompt: () => `Maka session environment:\n<env>\n  Today's date: ${date}\n</env>`,
-      recordLlmCall: (record) => {
-        llmRecords.push(record);
-      },
     });
 
     for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
@@ -8838,8 +9087,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     assert.equal(usageEvents[0]?.requestShapeChangeReason, 'first_turn');
     assert.equal(usageEvents[1]?.requestShapeChangeReason, 'stable');
     assert.equal(usageEvents[1]?.requestShapeHash, usageEvents[0]?.requestShapeHash);
-    assert.equal(llmRecords[1]?.prefixChangeReason, 'stable');
-    assert.equal(llmRecords[1]?.requestShapeChangeReason, 'stable');
     assert.match(JSON.stringify(compactPrompt(models[0]!)), /2026-05-29/);
     assert.match(JSON.stringify(compactPrompt(models[1]!)), /2026-05-30/);
     assert.equal(JSON.stringify(modelCallSettings(models[0]!)).includes('2026-05-29'), false);
@@ -9556,18 +9803,16 @@ describe('AiSdkBackend RunTrace', () => {
         'turn_started',
         'model_resolved',
         'model_stream_started',
-        'usage_recorded',
         'model_stream_completed',
+        'send_diagnostics_recorded',
       ],
     );
     assert.deepEqual(
       trace.map((event) => event.phase),
-      ['turn', 'model', 'model', 'usage', 'model'],
+      ['turn', 'model', 'model', 'model', 'model'],
     );
     assert.equal(trace[0]?.sessionId, 'session-1');
     assert.equal(trace[0]?.turnId, 'turn-1');
-    assert.equal(trace.find((event) => event.type === 'usage_recorded')?.data?.inputTokens, 4);
-    assert.equal(trace.find((event) => event.type === 'usage_recorded')?.data?.reasoningTokens, 1);
     assert.deepEqual(
       events
         .map((event) => event.type)
@@ -12709,9 +12954,9 @@ function sortedModelToolNames(toolNames: readonly string[]): string[] {
 }
 
 function toolSchemaPromptSegment(
-  record: LlmCallRecord | undefined,
+  carrier: { promptSegments?: readonly { kind: string; toolCount?: number }[] } | undefined,
 ): { toolCount?: number } | undefined {
-  return record?.promptSegments?.find((segment) => segment.kind === 'tool_schema');
+  return carrier?.promptSegments?.find((segment) => segment.kind === 'tool_schema');
 }
 
 function sha256(text: string): string {

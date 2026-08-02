@@ -5,7 +5,7 @@ import type { NavModuleMemory, NavSelection } from './nav-selection.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { Button } from '@astryxdesign/core/Button';
-import { SideNavItem } from '@astryxdesign/core/SideNav';
+import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 
 export function SessionSidebarNav(props: {
   selection: NavSelection;
@@ -23,8 +23,11 @@ export function SessionSidebarNav(props: {
     (reminder) => reminder.status !== 'completed',
   ).length;
 
+  // Always SideNavItem — expanded and collapsed. Astryx collapse context turns
+  // these into icon-only slots without remounting a different control recipe
+  // (which read as a squeeze when the rail previously swapped to IconButton).
   return (
-    <nav className="maka-sidebar-modules" aria-label={copy.mainLabel}>
+    <>
       <SideNavItem
         label={copy.newTask}
         icon={SquarePen}
@@ -48,7 +51,7 @@ export function SessionSidebarNav(props: {
         isSelected={automationsActive}
         onClick={() => props.onSelect({ section: 'automations', module: moduleMemory.automations })}
       />
-    </nav>
+    </>
   );
 }
 
@@ -78,8 +81,10 @@ export function SessionSidebarFooter(props: {
       : props.updateReminder
         ? copy.updateAvailable(props.updateReminder.latestVersion)
         : copy.update;
+  // shell-side-nav footer authority: SideNavSection + SideNavItem, not a
+  // product grid that re-lays out nav chrome beside the update chip.
   return (
-    <footer className="maka-session-panel-footer">
+    <SideNavSection title={copy.settings} isHeaderHidden className="maka-session-panel-footer">
       <SideNavItem
         label={copy.settings}
         icon={Settings}
@@ -102,6 +107,6 @@ export function SessionSidebarFooter(props: {
           <span>{updateLabel}</span>
         </Button>
       )}
-    </footer>
+    </SideNavSection>
   );
 }
