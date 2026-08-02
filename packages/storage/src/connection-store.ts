@@ -140,7 +140,11 @@ class FileConnectionStore implements ConnectionStore {
         Object.prototype.hasOwnProperty.call(patch, 'models') && patch.modelSource === 'fetched';
       if (writesFetchedModels && models && models.length > 0) {
         const reconciled = reconcileConnectionAfterModelFetch(
-          { defaultModel, enabledModelIds, hasModelInventory: current.models !== undefined },
+          {
+            defaultModel,
+            enabledModelIds,
+            hasModelInventory: (current.models?.length ?? 0) > 0,
+          },
           models,
         );
         defaultModel = reconciled.defaultModel;
@@ -199,6 +203,15 @@ class FileConnectionStore implements ConnectionStore {
     // save() is a full-snapshot boundary, so callers providing authoritative
     // fetched models must already reconcile defaultModel/enabledModelIds.
     // update() performs that reconciliation for partial fetched-model patches.
+    //
+    // What it does NOT delegate is the selection rule itself. A snapshot that
+    // states `enabledModelIds` is written as stated, exactly as in update():
+    // this is the path the OAuth account sync writes on, and it re-derives
+    // `defaultModel` from the provider fallbacks (`existing?.defaultModel ||
+    // fallbackModels[0]`, where '' is falsy). Merging that default back into a
+    // list the user just emptied resurrected the selection they had removed
+    // seconds earlier — `connections:list` runs the sync before every read, so
+    // the detail page's own reload undid its own write.
     let saved: LlmConnection | null = null;
     await this.withQueue(async () => {
       const file = await this.readUnlocked();
@@ -209,20 +222,34 @@ class FileConnectionStore implements ConnectionStore {
       // connection to the current default.
       const baseUrl = persistedBaseUrl(connection.providerType, connection.baseUrl);
       const { baseUrl: _omit, ...rest } = connection;
+      const selection = connection.enabledModelIds
+        ? reconcileConnectionAfterEnabledModelsChange(connection, connection.enabledModelIds)
+        : {
+            defaultModel: connection.defaultModel,
+            enabledModelIds: connectionEnabledModelIds(connection),
+          };
       const next: LlmConnection = {
         ...rest,
         ...(baseUrl ? { baseUrl } : {}),
         enabled: connection.enabled ?? true,
-        enabledModelIds: connectionEnabledModelIds(connection),
+        defaultModel: selection.defaultModel,
+        enabledModelIds: selection.enabledModelIds,
         createdAt: connection.createdAt ?? now,
         updatedAt: connection.updatedAt ?? now,
       };
       if (index >= 0) file.connections[index] = next;
       else file.connections.push(next);
-      if (file.defaultSlug === connection.slug && next.enabled === false) {
+      // Same {connection, model} pair as in update(): a connection with no
+      // default model supplies only half of it, so it can neither keep the slug
+      // nor claim a vacant one. Without this an OAuth resync re-pointed the
+      // workspace default at a connection whose model list the user had just
+      // emptied, and the list showed a 默认 badge over 未设置.
+      if (file.defaultSlug === connection.slug && (next.enabled === false || !next.defaultModel)) {
         file.defaultSlug = null;
       }
-      if (!file.defaultSlug && next.enabled !== false) file.defaultSlug = connection.slug;
+      if (!file.defaultSlug && next.enabled !== false && next.defaultModel) {
+        file.defaultSlug = connection.slug;
+      }
       await this.write(file);
       saved = next;
     });

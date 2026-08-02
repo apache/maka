@@ -185,17 +185,19 @@ export function reconcileConnectionAfterEnabledModelsChange(
  * the connection breaks" regression. Prefer an already-enabled id that is
  * still live; otherwise take the first discovered id.
  *
- * Bootstrapping a default from the inventory is a FIRST-fetch affordance, not
- * a repair. Four providers ship no `fallbackModels` (LM Studio and the three
- * *-compatible ones), so their first discovery is the only place a default can
- * come from. Once a connection has an inventory, an empty selection is the
- * user's answer and re-seeding it would undo the choice on the next refresh.
+ * Bootstrapping a default from the inventory is an affordance for a connection
+ * that has never had models to choose from, not a repair. Four providers ship
+ * no `fallbackModels` (LM Studio and the three *-compatible ones), so for them
+ * discovery is the only place a default can come from. Once the connection has
+ * a non-empty inventory — fetched or a cached fallback catalog, since either
+ * one is a list the user could pick from — an empty selection is their answer,
+ * and re-seeding it would undo the choice on the next refresh.
  */
 export function reconcileConnectionAfterModelFetch(
   connection: {
     defaultModel?: unknown;
     enabledModelIds?: unknown;
-    /** Whether this connection already had an inventory before this fetch. */
+    /** Whether this connection already had a non-empty inventory before this fetch. */
     hasModelInventory?: boolean;
   },
   models: readonly { id?: unknown }[],
@@ -228,8 +230,8 @@ export function reconcileConnectionAfterModelFetch(
     };
   }
 
-  // No enabled models and no default on a connection that already has an
-  // inventory is a stated choice, not a gap to fill.
+  // No enabled models and no default on a connection that already had a list
+  // to choose from is a stated choice, not a gap to fill.
   if (connection.hasModelInventory && previousEnabled.length === 0 && !previousDefault) {
     return { defaultModel: '', enabledModelIds: [] };
   }

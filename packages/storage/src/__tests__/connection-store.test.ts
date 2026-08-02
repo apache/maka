@@ -146,6 +146,67 @@ describe('FileConnectionStore', () => {
     });
   });
 
+  test('an emptied selection survives an OAuth account resync', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'claude-subscription',
+        name: 'Claude OAuth',
+        providerType: 'claude-subscription',
+      });
+      await store.update(created.slug, { enabledModelIds: [] });
+
+      // What `syncClaudeSubscriptionConnection` writes, verbatim in shape: a
+      // full snapshot whose default is re-derived from the provider fallbacks
+      // because '' is falsy. `connections:list` runs that sync before every
+      // read, so this ran inside the same interaction that emptied the list —
+      // the detail page's own reload used to undo its own write.
+      const existing = (await store.get(created.slug))!;
+      const fallback = PROVIDER_DEFAULTS['claude-subscription'].fallbackModels[0]!;
+      const synced = await store.save({
+        ...existing,
+        defaultModel: existing.defaultModel || fallback,
+        enabledModelIds: existing.enabledModelIds,
+        enabled: true,
+        models: [{ id: fallback }],
+        modelSource: 'fallback',
+      });
+
+      assert.deepEqual(synced.enabledModelIds, []);
+      assert.equal(synced.defaultModel, '');
+      assert.equal(await store.getDefault(), null);
+    });
+  });
+
+  test('a cached fallback catalog is an inventory too', async () => {
+    await withConnectionStore(async (store) => {
+      const created = await store.create({
+        slug: 'openai-main',
+        name: 'OpenAI',
+        providerType: 'openai',
+        defaultModel: 'gpt-4o-mini',
+      });
+      // Providers without live discovery only ever cache a fallback catalog.
+      // That list is still a list the user picked from, so emptying it is an
+      // answer — keying the bootstrap on `modelSource === 'fetched'` would have
+      // treated the next fetch as a first fetch and re-seeded it.
+      await store.update(created.slug, {
+        models: [{ id: 'gpt-4o' }, { id: 'gpt-4o-mini' }],
+        modelSource: 'fallback',
+        modelsFetchedAt: 1,
+      });
+      await store.update(created.slug, { enabledModelIds: [] });
+
+      const refreshed = await store.update(created.slug, {
+        models: [{ id: 'gpt-5' }],
+        modelSource: 'fetched',
+        modelsFetchedAt: 2,
+      });
+
+      assert.deepEqual(refreshed.enabledModelIds, []);
+      assert.equal(refreshed.defaultModel, '');
+    });
+  });
+
   test('the first model fetch still seeds a provider that ships no fallback models', async () => {
     await withConnectionStore(async (store) => {
       // LM Studio and the three *-compatible providers have no
