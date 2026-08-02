@@ -69,7 +69,7 @@ export interface ConnectionDetailProps {
 
 // Controller for the API/OAuth model connection detail sheet. Owns the whole
 // mutually-exclusive action state machine (save / test / fetch-models /
-// save-enabled-models / set-default-model / delete, all gated through one keyed
+// save-enabled-models / delete, all gated through one keyed
 // action guard) plus the credential-presence probe and the prop-sync effects.
 // The sheet view (provider-connection-detail.tsx) is a thin render over this
 // return; extracting it kept the 12 useState + 4 refs + 4 effects together so
@@ -99,10 +99,9 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const [testing, setTesting] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingEnabledModels, setSavingEnabledModels] = useState(false);
-  const [settingDefaultModel, setSettingDefaultModel] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const connectionDetailActionGuard = useKeyedActionGuard<
-    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'set-default-model' | 'delete'
+    'save' | 'test' | 'fetch-models' | 'save-enabled-models' | 'delete'
   >();
   const connectionDetailMountedRef = useMountedRef();
   const connectionDetailLifecycleRef = useRef(0);
@@ -145,7 +144,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     testing ||
     fetchingModels ||
     savingEnabledModels ||
-    settingDefaultModel ||
     deleting;
   const issue = connectionChipStatus(connection, locale);
   const lastTestMessage = connectionLastTestMessageDisplay(connection.lastTestMessage, locale);
@@ -286,10 +284,15 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
 
   async function updateEnabledModels(nextIds: string[]) {
     if (connectionDetailActionGuard.has('save-enabled-models') || detailActionBusy) return;
-    const next = connectionEnabledModelIds({
-      defaultModel: connection.defaultModel,
-      enabledModelIds: nextIds,
-    });
+    // An emptied selection is passed through as-is. Merging the default back in
+    // here would undo the user's clear before it ever reached the store, which
+    // now persists an empty list (and clears the default with it).
+    const next = nextIds.length === 0
+      ? []
+      : connectionEnabledModelIds({
+          defaultModel: connection.defaultModel,
+          enabledModelIds: nextIds,
+        });
     if (modelIdListsEqual(next, enabledModelIds)) return;
     const previous = enabledModelIds;
     const lifecycle = connectionDetailLifecycleRef.current;
@@ -313,33 +316,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     } finally {
       releaseSaveModels();
       if (isConnectionDetailCurrent(lifecycle)) setSavingEnabledModels(false);
-    }
-  }
-
-  async function updateDefaultModel(nextModel: string) {
-    const model = nextModel.trim();
-    if (!model || model === connection.defaultModel) return;
-    const releaseSetDefaultModel = connectionDetailActionGuard.beginExclusive('set-default-model');
-    if (!releaseSetDefaultModel) return;
-    const lifecycle = connectionDetailLifecycleRef.current;
-    setSettingDefaultModel(true);
-    let saved = false;
-    try {
-      await props.bridge.update(connection.slug, { defaultModel: model });
-      saved = true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      await props.onChanged();
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.success(copy.defaultModelSet(model));
-    } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      toast.error(
-        saved ? copy.refreshFailed : copy.defaultModelSaveFailed,
-        providerPanelActionErrorMessage(error, locale),
-      );
-    } finally {
-      releaseSetDefaultModel();
-      if (isConnectionDetailCurrent(lifecycle)) setSettingDefaultModel(false);
     }
   }
 
@@ -490,7 +466,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
-    settingDefaultModel,
     deleting,
     detailActionBusy,
     supportsApiKey,
@@ -510,7 +485,6 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     lastTestAtMs,
     save,
     updateEnabledModels,
-    updateDefaultModel,
     runTest,
     refreshModels,
     remove,

@@ -4,7 +4,6 @@ import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
   Button,
   RelativeTime,
-  Selector,
   TextInput,
   useMountedRef,
   useToast,
@@ -91,7 +90,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     busy,
     testing,
     fetchingModels,
-    settingDefaultModel,
     deleting,
     detailActionBusy,
     supportsApiKey,
@@ -111,7 +109,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     savedBaseUrl,
     save,
     updateEnabledModels,
-    updateDefaultModel,
     runTest,
     refreshModels,
     remove,
@@ -119,32 +116,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   } = useConnectionDetail(props);
   // One row is a form at a time, the way the settings-sidebar template does it.
   const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
-  // The default is one OF the enabled models, so the two fields read as one
-  // question and its refinement rather than two parallel model pickers. Listing
-  // every catalog model here let the user pick a default they had not enabled —
-  // saving it silently enabled it, which is the page changing an answer the
-  // user gave one field up.
-  const enabledSet = new Set(enabledModelIds);
-  const defaultModelOptions = modelChoices
-    .filter((entry) => entry.canUseAsChatDefault && enabledSet.has(entry.id))
-    .map((entry) => ({
-      value: entry.id,
-      label: entry.displayName?.trim() || entry.id,
-    }));
-  if (
-    connection.defaultModel &&
-    !defaultModelOptions.some((option) => option.value === connection.defaultModel)
-  ) {
-    defaultModelOptions.push({
-      value: connection.defaultModel,
-      label: connection.defaultModel,
-    });
-  }
-  // With one enabled model there is nothing to choose: the default IS that
-  // model, and a select with a single locked option is a field that only
-  // restates the field above it.
-  const showsDefaultModel = defaultModelOptions.length > 1;
-
   // 52 of the 60 providers publish a fixed endpoint; editing it there can only
   // break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in a
   // per-connection URL. So the row exists only where the address is genuinely
@@ -291,28 +262,13 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           still needs one. Two rules with a gap between them read as an empty
           row, so only ever one. */}
       {!supportsApiKey && !showsEndpoint && <Divider />}
-      <DetailSection
-        title={copy.modelManagement}
-        description={showsDefaultModel ? copy.modelManagementHelp : copy.modelManagementHelpSingle}
-      >
+      <DetailSection title={copy.modelManagement} description={copy.modelManagementHelp}>
         <EnabledModelManager
           modelChoices={modelChoices}
           enabledModelIds={enabledModelIds}
-          defaultModel={connection.defaultModel}
           disabled={detailActionBusy}
           onChange={(next) => void updateEnabledModels(next)}
         />
-        {showsDefaultModel && (
-          <Selector
-            label={copy.connectionDefaultModel}
-            options={defaultModelOptions}
-            value={connection.defaultModel}
-            onChange={(model) => void updateDefaultModel(model)}
-            isDisabled={detailActionBusy}
-            isLoading={settingDefaultModel}
-            width="100%"
-          />
-        )}
         <HStack gap={2} vAlign="center" wrap="wrap">
           <Button variant="secondary" isDisabled={detailActionBusy || !hasUsableCredential} onClick={runTest} label={testing ? copy.testing : copy.testConnection} />
           {supportsRemoteDiscovery && (

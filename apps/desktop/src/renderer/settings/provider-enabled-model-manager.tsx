@@ -17,7 +17,6 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 export function EnabledModelManager(props: {
   modelChoices: ModelCatalogEntry[];
   enabledModelIds: string[];
-  defaultModel: string;
   disabled: boolean;
   onChange(ids: string[]): void;
 }) {
@@ -28,14 +27,7 @@ export function EnabledModelManager(props: {
     const list: Array<{ value: string; label: string; disabled?: boolean }> = [];
     const push = (id: string, label: string) => {
       seen.add(id);
-      list.push({
-        value: id,
-        // The default model is always enabled by construction, so its row is
-        // shown but not un-checkable — it explains itself instead of silently
-        // refusing the click.
-        label: id === props.defaultModel ? `${label} · ${copy.defaultModel}` : label,
-        disabled: id === props.defaultModel,
-      });
+      list.push({ value: id, label });
     };
     for (const model of props.modelChoices) {
       if (!model.canUseAsChatDefault) continue;
