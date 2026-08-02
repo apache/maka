@@ -220,4 +220,56 @@ test('resolves one type scale from the root down to the transcript', async ({
       }),
     ).toContain('Geist Mono');
   });
+
+  await test.step('a role token composes against the element that reads it', async () => {
+    // The invariant the role table's second anchor exists for, and the one
+    // that reads as obviously true in CSS and is false: var() inside a custom
+    // property is substituted where the property is DECLARED, and the resolved
+    // string is what inherits. A table composed only on `:root` therefore
+    // freezes the sans stack into every role, and a `<pre>` that names a role
+    // renders sans however its own --maka-font-family reads. Measured before
+    // the second anchor landed, that is exactly what `.maka-tool-diff-body`
+    // did. Asserting the CSS text cannot catch it — this has to be a document.
+    const composed = await page.evaluate(() => {
+      const pre = document.createElement('pre');
+      const div = document.createElement('div');
+      for (const el of [pre, div]) {
+        el.style.font = 'var(--maka-text-supporting)';
+        document.body.append(el);
+      }
+      const read = (el: HTMLElement) => {
+        const s = getComputedStyle(el);
+        return { family: s.fontFamily, size: s.fontSize, weight: s.fontWeight, leading: s.lineHeight };
+      };
+      const out = { pre: read(pre), div: read(div) };
+      pre.remove();
+      div.remove();
+      return out;
+    });
+    // Same role, same three other axes — only the family differs, and only
+    // because the element differs.
+    expect(composed.pre.family).toContain('Geist Mono');
+    expect(composed.div.family).not.toContain('Geist Mono');
+    expect(composed.pre.size).toBe(composed.div.size);
+    expect(composed.pre.weight).toBe(composed.div.weight);
+    expect(composed.pre.leading).toBe(composed.div.leading);
+  });
+
+  await test.step('naming the family axis re-composes the role the element carries', async () => {
+    // A <kbd> composes the mono variant of every role. The ⌘N hint in the
+    // sidebar has always opted out — it read `font-family: inherit` before the
+    // roles landed. The opt-out is now one declaration on the family axis, and
+    // it works only because the axis is read on the element itself: this is
+    // the same substitution-timing fact as the step above, used deliberately.
+    expect(
+      await page.evaluate(() => {
+        const kbd = document.createElement('kbd');
+        kbd.className = 'maka-nav-kbd';
+        document.body.append(kbd);
+        const family = getComputedStyle(kbd).fontFamily;
+        kbd.remove();
+        return family;
+      }),
+    ).not.toContain('Geist Mono');
+  });
 });

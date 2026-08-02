@@ -66,6 +66,19 @@ export async function readAllRendererCss(): Promise<string> {
   return expandCssImports(RENDERER_STYLES_ENTRY, new Set([RENDERER_STYLES_ENTRY]));
 }
 
+export const RENDERER_TOKENS = resolve(REPO_ROOT, 'apps', 'desktop', 'src', 'renderer', 'maka-tokens.css');
+
+/** Every renderer stylesheet EXCEPT the role table.
+ *
+ * Pre-seeding `seen` is the same mechanism the import walk already uses for
+ * cycles, so there is no second traversal to keep in step with the first.
+ * maka-tokens.css is where the roles are composed and where the family axis
+ * is pinned, so it is the one file that must write font longhands; every
+ * other sheet is a call site. */
+export async function readCallSiteCss(): Promise<string> {
+  return expandCssImports(RENDERER_STYLES_ENTRY, new Set([RENDERER_STYLES_ENTRY, RENDERER_TOKENS]));
+}
+
 export function stripCssComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '');
 }
@@ -144,35 +157,63 @@ export function assertCssRuleDecls(
   }
 }
 
-/** Ban non-literal `font:` shorthand in renderer CSS.
+/** The one text-style vocabulary check.
  *
- * `font:` shorthand can hide bare font-weight (`font: 600 12px sans-serif`),
- * bare line-height (`font: 12px/1.4 sans-serif`), or token-bypassing sizes
- * (`font: 600 var(--font-size-ui) var(--font-sans)`). Per-property converge
- * contracts only scan longhand declarations, so any `font:` shorthand that
- * isn't a literal (`inherit` / `initial` / `unset` / `revert`) is a bypass
- * vector. Renderer CSS today only uses `font: inherit`, so the whitelist is
- * literals-only — no regex arms race over which shorthand component is bare.
+ * A text style is one indivisible role — size, leading, weight and family
+ * chosen together — so the call site names a role and nothing else. Three
+ * things have to hold for that to be true, and all three are text:
  *
- * The value is extracted and checked against the literal set rather than
- * using a negative lookahead: `\s*` backtracking lets a lookahead succeed at
- * the `:` position and would match `font: inherit` as an offender. */
-const FONT_SHORTHAND_RE = /\bfont:\s*[^;}\n]+/gi;
+ *   1. no call site declares font-size, line-height, font-weight or
+ *      font-family. Four independent properties are four independent
+ *      choices; the previous two convergences (#1857 sizes, #1878 leadings)
+ *      removed the divergence that existed without removing the ability to
+ *      diverge again, because the properties stayed separate.
+ *   2. every `font:` value is a role token or a whole-inheritance literal.
+ *      `font: 600 12px/1.4 sans-serif` is the same four choices written on
+ *      one line, and it is what the shorthand is normally banned for.
+ *   3. every role named is a role defined. A `var()` that resolves to
+ *      nothing makes the whole `font:` declaration invalid at computed-value
+ *      time, so the element silently keeps whatever it inherits — measured,
+ *      `--maka-text-display-1` was referenced by the hero and defined
+ *      nowhere, and every other check in this file stayed green.
+ *
+ * Scoped to the call sites: the role table itself has to write a family
+ * longhand (see maka-tokens.css), so the tokens file is excluded from the
+ * scan and its shape is asserted separately.
+ */
+const FONT_LONGHANDS = ['font-size', 'line-height', 'font-weight', 'font-family'] as const;
 const FONT_LITERAL_OK = /^(?:inherit|initial|unset|revert)$/i;
+const ROLE_TOKEN_RE = /^var\(\s*(--maka-text-[\w-]+)\s*\)$/;
 
-export function findFontShorthandOffenders(css: string, label: string): string[] {
-  const stripped = stripCssComments(css);
+export function findTextRoleOffenders(
+  callSiteCss: string,
+  tokensCss: string,
+  label: string,
+): string[] {
+  const defined = new Set(parseCssCustomProps(tokensCss).keys());
   const offenders: string[] = [];
-  for (const m of stripped.matchAll(FONT_SHORTHAND_RE)) {
-    const decl = m[0].trim();
-    const value = decl.replace(/^font:\s*/i, '').trim();
-    if (FONT_LITERAL_OK.test(value)) continue;
-    offenders.push(`${label}: ${decl} (non-literal font: shorthand — use longhand + tokens)`);
+  for (const { selector, body } of parseCssBlocks(callSiteCss)) {
+    for (const prop of FONT_LONGHANDS) {
+      const value = lastDecl(body, prop);
+      if (value === undefined) continue;
+      offenders.push(`${label}: ${selector} declares ${prop}: ${value} — name a text role instead`);
+    }
+    const font = lastDecl(body, 'font');
+    if (font === undefined) continue;
+    if (FONT_LITERAL_OK.test(font)) continue;
+    const token = ROLE_TOKEN_RE.exec(font)?.[1];
+    if (!token) {
+      offenders.push(`${label}: ${selector} declares font: ${font} — only var(--maka-text-*) or inherit/initial/unset/revert`);
+      continue;
+    }
+    if (!defined.has(token)) {
+      offenders.push(`${label}: ${selector} names ${token}, which the role table does not define`);
+    }
   }
   return offenders;
 }
 
-// --- size ↔ leading pairing ------------------------------------------------
+// --- block + declaration parsing -------------------------------------------
 
 /** Every style rule's own declarations, at any nesting depth.
  *
@@ -230,94 +271,6 @@ export function parseCssBlocks(css: string): { selector: string; body: string }[
 function lastDecl(body: string, prop: string): string | undefined {
   const matches = [...body.matchAll(new RegExp(`(?:^|[;{])\\s*${prop}\\s*:\\s*([^;}]+)`, 'g'))];
   return matches.at(-1)?.[1].trim();
-}
-
-/**
- * Report blocks whose `font-size` and `line-height` name different tiers.
- *
- * The rule is not "leading must be token X": Astryx's leading is a pure
- * function of size (`expandTypeScale.ts` snaps each tier to the 4px grid), so
- * several role names share one value at one size and the choice between them
- * is a readability one. What must hold is that the role whose leading a block
- * names is the role sized like the size the block declares — checked by
- * resolving both through the generated theme rather than against a hand-copied
- * table, so an Astryx scale change moves this contract with it instead of
- * failing it.
- *
- * Bidirectional. An earlier revision checked only size→leading and deferred
- * leading-without-size to the e2e sweep — but that sweep measures one window,
- * and measured, none of the three leading-only blocks in the tree rendered in
- * it, so the class had no coverage anywhere. It is also the exact shape
- * maka-tokens.css bans in prose ("leading belongs on the element that sets the
- * size, never on a container above it"), and one of the three
- * (`.maka-stat-tile-value`) was dead code overridden by both of its own
- * variants. A rule that declares only a leading is either redundant with what
- * it inherits or a ratio waiting to meet a size it was not chosen for.
- *
- * `inherit`/`unset`/`revert` are a legal pair when BOTH sides use them: the
- * block is deferring the whole pairing upward, not splitting it.
- */
-export function findLeadingPairingOffenders(
-  css: string,
-  themeCss: string,
-  tokensCss: string,
-): string[] {
-  const theme = parseCssCustomProps(themeCss);
-  const tokens = parseCssCustomProps(tokensCss);
-  const first = (map: Map<string, string[]>, name: string) => map.get(name)?.[0];
-
-  // Raw size token → length. Product aliases resolve through one hop.
-  const sizeOf = (token: string): string | undefined => {
-    const direct = first(theme, token);
-    if (direct && !direct.startsWith('var(')) return direct;
-    const alias = first(tokens, token) ?? direct;
-    const inner = alias?.match(/var\((--[\w-]+)\)/)?.[1];
-    return inner ? first(theme, inner) : undefined;
-  };
-  // Role leading token → the length of the tier that role is sized at.
-  const leadingTierOf = (token: string): string | undefined => {
-    if (token === '--maka-line-body') return sizeOf('--text-body-size');
-    const role = token.match(/^--text-(.+)-leading$/)?.[1];
-    if (!role) return undefined;
-    const sized = first(theme, `--text-${role}-size`)?.match(/var\((--[\w-]+)\)/)?.[1];
-    return sized ? sizeOf(sized) : undefined;
-  };
-
-  const DEFER = /^(?:inherit|unset|revert)$/;
-  const offenders: string[] = [];
-  for (const { selector, body } of parseCssBlocks(css)) {
-    const size = lastDecl(body, 'font-size');
-    const leading = lastDecl(body, 'line-height');
-    if (!size && !leading) continue;
-    if (size && leading && DEFER.test(size) && DEFER.test(leading)) continue;
-    if (!leading) {
-      offenders.push(`${selector}: declares font-size ${size} and no line-height`);
-      continue;
-    }
-    if (!size) {
-      offenders.push(`${selector}: declares line-height ${leading} and no font-size`);
-      continue;
-    }
-    // Naming a token is the whole mechanism: a literal is a copy of what the
-    // tier happened to compute before the last scale change. `18px` typed out
-    // is how `.maka-onboarding-setup header h1` drifted in the first place,
-    // and the em/rem ban alone never saw it.
-    const sizeToken = /^var\((--[\w-]+)/.exec(size)?.[1];
-    const leadingToken = /^var\((--[\w-]+)/.exec(leading)?.[1];
-    if (!sizeToken || !leadingToken) {
-      offenders.push(
-        `${selector}: font-size ${size} / line-height ${leading} — both must name a scale token`,
-      );
-      continue;
-    }
-    const want = sizeOf(sizeToken);
-    const got = leadingTierOf(leadingToken);
-    if (want && got && want === got) continue;
-    offenders.push(
-      `${selector}: font-size ${sizeToken} (${want}) paired with ${leadingToken} (${got})`,
-    );
-  }
-  return offenders;
 }
 
 // --- token pin (exact-once) -----------------------------------------------

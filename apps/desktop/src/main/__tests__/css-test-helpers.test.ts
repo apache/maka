@@ -10,11 +10,13 @@
  *    entry file. Otherwise a converge contract could pass while skipping
  *    every `styles/*` file the convergence is supposed to cover.
  *
- * 2. `findFontShorthandOffenders` bans every non-literal `font:` shorthand
- *    (only `inherit` / `initial` / `unset` / `revert` allowed). This is the
- *    shared backstop for the font-weight and line-height converge contracts,
- *    which scan longhand declarations only and would otherwise miss bare
- *    weight or line-height smuggled in via `font:` shorthand.
+ * 2. `findTextRoleOffenders` is the whole text-style vocabulary: a call site
+ *    names one role and declares no font longhand. The shorthand inverted
+ *    here — it used to be the bypass vector and is now the only legal form,
+ *    because it is the one CSS mechanism that makes size, leading, weight and
+ *    family inseparable. The undefined-role arm matters most: a `var()` that
+ *    resolves to nothing makes the declaration invalid at computed-value time
+ *    and the element silently keeps what it inherits.
  *
  * 3. `parseCssBlocks` reports every rule's OWN declarations at any nesting
  *    depth, and reads the last declaration of a repeated property. Both are
@@ -30,7 +32,7 @@ import { join } from 'node:path';
 import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
-  findFontShorthandOffenders,
+  findTextRoleOffenders,
   parseCssBlocks,
   assertCustomPropPinnedOnce,
   cssRuleBody,
@@ -67,24 +69,47 @@ describe('css-test-helpers', () => {
     });
   });
 
-  describe('findFontShorthandOffenders', () => {
-    it('accepts literal font: shorthand (inherit / initial / unset / revert)', () => {
-      assert.deepEqual(findFontShorthandOffenders('font: inherit', 'test'), []);
-      assert.deepEqual(findFontShorthandOffenders('font: initial', 'test'), []);
-      assert.deepEqual(findFontShorthandOffenders('font: unset', 'test'), []);
-      assert.deepEqual(findFontShorthandOffenders('font: revert', 'test'), []);
+  describe('findTextRoleOffenders', () => {
+    const TOKENS = ':root { --maka-text-body: 400 14px/1.4 sans; --maka-text-code: 400 14px/1.4 mono; }';
+    const find = (css: string) => findTextRoleOffenders(css, TOKENS, 'test');
+
+    it('accepts a defined role token and the whole-inheritance literals', () => {
+      assert.deepEqual(find('.a { font: var(--maka-text-body); }'), []);
+      assert.deepEqual(find('.a { font: var( --maka-text-code ); }'), []);
+      for (const literal of ['inherit', 'initial', 'unset', 'revert']) {
+        assert.deepEqual(find(`.a { font: ${literal}; }`), []);
+      }
     });
 
-    it('rejects non-literal font: shorthand (bare weight, line-height, var() size)', () => {
-      assert.ok(findFontShorthandOffenders('font: 600 12px sans-serif', 'test').length > 0, 'bare weight must fail');
-      assert.ok(findFontShorthandOffenders('font: bold 12px sans-serif', 'test').length > 0, 'bold keyword must fail');
-      assert.ok(findFontShorthandOffenders('font: 12px/1.4 sans-serif', 'test').length > 0, 'bare line-height must fail');
-      assert.ok(findFontShorthandOffenders('font: 600 var(--font-size-ui) var(--font-sans)', 'test').length > 0, 'var() size with bare weight must fail');
-      assert.ok(findFontShorthandOffenders('font: var(--font-size-ui)/1.4 var(--font-sans)', 'test').length > 0, 'var() size with bare line-height must fail');
+    it('rejects every font longhand at a call site', () => {
+      for (const decl of [
+        'font-size: var(--font-size-ui)',
+        'line-height: 1.4286',
+        'font-weight: var(--font-weight-medium)',
+        'font-family: var(--font-mono)',
+      ]) {
+        assert.equal(find(`.a { ${decl}; }`).length, 1, `${decl} must be reported`);
+      }
     });
 
-    it('ignores font: inside comments', () => {
-      assert.deepEqual(findFontShorthandOffenders('/* font: 600 12px sans-serif */', 'test'), []);
+    it('rejects a hand-composed shorthand — the four choices on one line', () => {
+      assert.equal(find('.a { font: 600 12px/1.4 sans-serif; }').length, 1);
+      assert.equal(find('.a { font: 600 var(--font-size-ui)/1.4 var(--font-sans); }').length, 1);
+      assert.equal(find('.a { font: var(--font-size-ui); }').length, 1);
+    });
+
+    it('rejects a role the table does not define', () => {
+      const offenders = find('.a { font: var(--maka-text-display-1); }');
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /--maka-text-display-1/);
+    });
+
+    it('reads the last declaration, so a longhand after a role is still caught', () => {
+      assert.equal(find('.a { font: var(--maka-text-body); font-weight: 700; }').length, 1);
+    });
+
+    it('ignores declarations inside comments', () => {
+      assert.deepEqual(find('.a { /* font-size: 12px; */ font: var(--maka-text-body); }'), []);
     });
   });
 

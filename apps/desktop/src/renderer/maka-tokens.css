@@ -1077,6 +1077,7 @@ html[data-os="darwin"].dark {
   --maka-text-heading-3: var(--text-heading-3-weight) var(--text-heading-3-size)/var(--text-heading-3-leading) var(--maka-font-family);
   --maka-text-heading-4: var(--text-heading-4-weight) var(--text-heading-4-size)/var(--text-heading-4-leading) var(--maka-font-family);
   --maka-text-heading-5: var(--text-heading-5-weight) var(--text-heading-5-size)/var(--text-heading-5-leading) var(--maka-font-family);
+  --maka-text-display-1: var(--text-display-1-weight) var(--text-display-1-size)/var(--text-display-1-leading) var(--maka-font-family);
   --maka-text-display-2: var(--text-display-2-weight) var(--text-display-2-size)/var(--text-display-2-leading) var(--maka-font-family);
   --maka-text-display-3: var(--text-display-3-weight) var(--text-display-3-size)/var(--text-display-3-leading) var(--maka-font-family);
     --maka-text-code: var(--text-code-weight) var(--text-code-size)/var(--text-code-leading) var(--font-family-code);
@@ -1096,8 +1097,9 @@ html[data-os="darwin"].dark {
        here rather than on `html` because the role it names is the document's,
        not the root's; the root stays free of typography, per the contract
        above. Naming the role here is also what makes the deletions in this
-       branch safe: 78 blocks measured redundant against what they inherit are
-       inheriting it from this line. */
+       branch safe: measured across 86 surfaces, 79 of the 371 role-declaring
+       rules change nothing when removed, and they inherit their role from
+       this line. */
     font: var(--maka-text-body);
     background: var(--background);
     color: var(--foreground);
