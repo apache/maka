@@ -23,7 +23,6 @@
 @import "./styles/prompt-suggestions.css" layer(components);
 @import "./styles/deep-research.css" layer(components);
 @import "./styles/onboarding.css" layer(components);
-@import "./styles/empty-state.css" layer(components);
 @import "./styles/module-pages.css" layer(components);
 @import "./styles/settings/select.css" layer(components);
 @import "./styles/model-switcher.css" layer(components);
