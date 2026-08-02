@@ -71,7 +71,13 @@
 
 .maka-quote-chip { display: inline-flex; gap: 4px; padding-left: 8px; background: var(--foreground-alpha-6); box-shadow: inset 0 0 0 1px var(--foreground-alpha-12); }
 .maka-quote-chip-expanded { width: 100%; max-width: 100%; align-items: flex-start; padding-block: 4px; border-radius: var(--radius-surface); }
-.maka-quote-chip-collapsed { max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
+/* #1879: measured 24px natural — a 20px line box plus 2 x 2px padding — and
+   `--h-control-sm` IS 24, so the pin is pixel-neutral today and load-bearing
+   the next time a leading moves. This is the collapsed state only; the
+   expanded twin above wraps to many lines and must keep growing. The chip's
+   type lives on `.maka-quote-chip-text`, which is why the derived scan needed
+   two arms rather than three to see it at all. */
+.maka-quote-chip-collapsed { height: var(--h-control-sm); max-width: 240px; align-items: center; padding-block: 2px; border-radius: var(--radius-pill); }
 .maka-quote-chip-removable { padding-right: 2px; }
 .maka-quote-chip-readonly { padding-right: 8px; }
 .maka-quote-chip-icon { width: 12px; height: 12px; flex: 0 0 auto; color: var(--muted-foreground); }

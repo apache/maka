@@ -111,6 +111,66 @@ export async function readTsxTree(dir: string): Promise<string[]> {
 }
 
 /**
+ * The opening tags of one JSX element, as raw text.
+ *
+ * A brace/quote-aware walk to the tag's real `>`, NOT `/<Tag\b[^>]*?>/`. That
+ * form ends at the first `>` ANYWHERE, including one inside a prop expression,
+ * so `<Badge label={a > b ? 'x' : 'y'} className="evil" />` matched as
+ * `<Badge label={a >` — and the truncated text contains neither
+ * `className="` nor `className={`, which took the call site out of BOTH Badge
+ * contracts while they reported green. A scan whose entire job is to stop a
+ * call site slipping out quietly cannot have a quiet exit of its own.
+ */
+function jsxOpeningTags(src: string, tagName: string): string[] {
+  const out: string[] = [];
+  const opener = new RegExp(`<${tagName}\\b`, 'g');
+  for (const match of src.matchAll(opener)) {
+    let depth = 0;
+    let quote: string | undefined;
+    let closed = false;
+    for (let i = match.index; i < src.length; i += 1) {
+      const ch = src[i];
+      if (quote) {
+        if (ch === '\\') i += 1;
+        else if (ch === quote) quote = undefined;
+        continue;
+      }
+      // Comments BEFORE quotes. A JSX prop comment is ordinary prose and
+      // ordinary prose has apostrophes: measured, `/* the Tooltip's popover */`
+      // inside two real `<Badge>` tags put this walk into string mode at the
+      // apostrophe and carried the tag end past its own `/>`, dropping both
+      // call sites from a scan that then reported green on 16 of 18. A
+      // hand-rolled scanner that mis-parses is worse than the regex it
+      // replaced, because it fails silently in the same direction.
+      if (ch === '/' && src[i + 1] === '*') {
+        const end = src.indexOf('*/', i + 2);
+        if (end === -1) break;
+        i = end + 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') quote = ch;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') depth -= 1;
+      else if (ch === '>' && depth === 0) {
+        out.push(src.slice(match.index, i + 1));
+        closed = true;
+        break;
+      }
+    }
+    // Fail loudly. A tag this walk cannot finish is a tag the Badge contracts
+    // silently stop governing, which is the failure mode they exist to prevent.
+    assert.ok(closed, `unterminated <${tagName}> tag at offset ${match.index}`);
+  }
+  return out;
+}
+
+/** `className="a b"` on a JSX tag. Whitespace around `=` is legal JSX and both
+ * quote styles are, so all three are read; keying on one spelling would make
+ * the contract a formatter preference rather than an invariant. */
+const STATIC_CLASS_NAME = /\bclassName\s*=\s*(["'])([^"']*)\1/g;
+const DYNAMIC_CLASS_NAME = /\bclassName\s*=\s*\{/;
+
+/**
  * The `className`s handed to an Astryx `<Badge>`, with the file that does it.
  *
  * Deliberately a source scan and not a render: the invariant is about what
@@ -124,9 +184,9 @@ export async function findBadgeClassNames(roots: string[]): Promise<{ file: stri
   for (const root of roots) {
     for (const file of await readTsxTree(root)) {
       const src = await readFile(file, 'utf8');
-      for (const tag of src.matchAll(/<Badge\b[^>]*?\/?>/gs)) {
-        for (const attr of tag[0].matchAll(/\bclassName="([^"]*)"/g)) {
-          for (const one of attr[1].split(/\s+/).filter(Boolean)) {
+      for (const tag of jsxOpeningTags(src, 'Badge')) {
+        for (const attr of tag.matchAll(STATIC_CLASS_NAME)) {
+          for (const one of attr[2].split(/\s+/).filter(Boolean)) {
             out.push({ file, className: one });
           }
         }
@@ -142,8 +202,8 @@ export async function findDynamicBadgeClassNames(roots: string[]): Promise<strin
   for (const root of roots) {
     for (const file of await readTsxTree(root)) {
       const src = await readFile(file, 'utf8');
-      for (const tag of src.matchAll(/<Badge\b[^>]*?\/?>/gs)) {
-        if (/\bclassName=\{/.test(tag[0])) out.push(file);
+      for (const tag of jsxOpeningTags(src, 'Badge')) {
+        if (DYNAMIC_CLASS_NAME.test(tag)) out.push(file);
       }
     }
   }
@@ -465,18 +525,26 @@ const CONDITIONAL_AT = /^@(?:media|supports|container)\b/;
  *     neither relaxes nor triggers a check on `.chip`. Qualified overrides are
  *     invisible here by construction. What covers them is the Badge call-site
  *     contract and the live e2e measurements, not this.
- *   - Conditional rules are skipped entirely rather than folded in. Folding
- *     them made a chip pinned only inside a breakpoint read as pinned
- *     everywhere (false green) AND made a deliberate responsive unpin illegal
- *     (false red); dropping them keeps the unconditional box honest, which is
- *     the box every contract here is about.
+ *   - Conditional rules are skipped by DEFAULT, not by nature. Folding them in
+ *     makes a chip pinned only inside a breakpoint read as pinned everywhere
+ *     (false green) and makes a deliberate responsive unpin illegal (false
+ *     red), so the box contracts — which are about the unconditional box —
+ *     take the default view. But a caller asking "does ANY rule, under any
+ *     condition, restate what this component computes?" has no such
+ *     distinction, and on the default view its answer is silently empty for a
+ *     rule that lives only inside a breakpoint. `includeConditional` is that
+ *     second question, and it is a parameter rather than a second helper
+ *     because the merge is otherwise identical.
  *   - `!important` is not modelled. Nothing in this tree uses it on the
  *     properties these contracts read.
  */
-export function mergeBySelector(css: string): Map<string, string> {
+export function mergeBySelector(
+  css: string,
+  options: { includeConditional?: boolean } = {},
+): Map<string, string> {
   const merged = new Map<string, string>();
   for (const { rule, conditions, decls } of parseCssBlocks(css)) {
-    if (conditions.some((c) => CONDITIONAL_AT.test(c))) continue;
+    if (!options.includeConditional && conditions.some((c) => CONDITIONAL_AT.test(c))) continue;
     const body = decls.map((d) => `${d.prop}: ${d.value};`).join(' ');
     for (const one of splitSelectorList(rule)) {
       merged.set(one, `${merged.get(one) ?? ''}${body} `);

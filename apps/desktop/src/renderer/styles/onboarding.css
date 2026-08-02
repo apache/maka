@@ -98,7 +98,15 @@
   list-style: none;
 }
 
+/* #1879: measured 29px natural — its 21px dot, not its 20px line box, is what
+   decides that today, so the defect here is latent rather than live: bump the
+   leading past 21px and the line box takes over and the stepper grows. Pinned
+   to `--h-control-lg` (32px) because that is the smallest rung that clears the
+   29px floor; `md` (28px) would clip the dot by a pixel. Costs 3px of height
+   on the hero stepper, which is the price of the box no longer being decided
+   by whichever of two children happens to be tallest. */
 .maka-firstrun-step {
+  height: var(--h-control-lg);
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);

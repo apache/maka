@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures.js';
 
 // The one thing the type-scale CSS contracts cannot prove.
@@ -27,6 +28,53 @@ import { expect, test } from './fixtures.js';
 // `<code>` gets is decided by `reset` preceding `base` — an ordering no
 // contract in this repo asserts. Asserting the rule's text only proves it was
 // written, not that it wins.
+/**
+ * A chip's box, its parent's box, and its own natural floor, measured before
+ * and after its leading is forced to 40px.
+ *
+ * One helper rather than the same twenty lines pasted at each call site: the
+ * probe is subtle (it must restore what it mutates, read the floor with the
+ * pin lifted, and measure the PARENT as well as the box) and two copies of a
+ * subtle probe drift into two different measurements of the same thing.
+ *
+ * Bumped to 40px rather than nudged, so the assertion is "did not move at all"
+ * instead of "moved within tolerance". Measured on the parent as well, because
+ * a non-replaced `display: inline` chip's own border-box height is its font
+ * content area and does not track leading at all — a probe that reads only the
+ * chip reports "did not move" for a chip whose line box is pushing its row
+ * open. The parent delta is the one measure that covers inline, block and flex.
+ *
+ * `natural` is the floor, measured rather than computed: what this box would be
+ * if it were not pinned — its line box plus its own padding and border. A tier
+ * below that number does not clip visibly (the line box centres and the ink
+ * still fits) but it silently voids the padding the rule declares, which is how
+ * eleven chips shipped 2-4px shorter than they read.
+ */
+async function measureUnderLeadingBump(page: Page, selector: string) {
+  return page.locator(selector).first().evaluate((el: HTMLElement) => {
+    const parent = el.parentElement!;
+    const before = el.getBoundingClientRect().height;
+    const parentBefore = parent.getBoundingClientRect().height;
+    el.style.setProperty('height', 'auto', 'important');
+    const natural = el.getBoundingClientRect().height;
+    el.style.removeProperty('height');
+    el.style.setProperty('line-height', '40px', 'important');
+    const after = el.getBoundingClientRect().height;
+    const parentAfter = parent.getBoundingClientRect().height;
+    el.style.removeProperty('line-height');
+    return { before, after, natural, parentBefore, parentAfter };
+  });
+}
+
+/** The four assertions every pinned chip owes, in one place so a new chip is a
+ * one-line addition rather than another copy of the probe. */
+function expectHoldsItsBox(box: Awaited<ReturnType<typeof measureUnderLeadingBump>>, selector: string, tier: number) {
+  expect(box.before, `${selector} sits on its declared tier`).toBe(tier);
+  expect(box.after, `${selector} must not move with its leading`).toBe(box.before);
+  expect(box.parentAfter, `${selector} must not push its row open`).toBe(box.parentBefore);
+  expect(box.natural, `${selector} must sit on a tier that holds its own floor`).toBeLessThanOrEqual(box.before);
+}
+
 test('resolves one type scale from the root down to the transcript', async ({
   disclosureOutputWindow: page,
 }) => {
@@ -225,50 +273,21 @@ test('resolves one type scale from the root down to the transcript', async ({
     // the question that outlives any particular leading — can a leading change
     // still be a layout change? A pinned box says no by construction, and the
     // only way to show it is to move the leading and remeasure, which is what
-    // no text contract can do: `height: var(--h-control-xs)` next to
-    // `line-height: var(--text-supporting-leading)` reads as pinned whether or
-    // not the two resolve to compatible lengths in a live document.
+    // no text contract can do: `height: var(--h-control-xs)` next to a
+    // supporting role reads as pinned whether or not the two resolve to
+    // compatible lengths in a live document.
     //
-    // Bumped to 40px rather than nudged, so the assertion is "did not move at
-    // all" instead of "moved within tolerance".
-    // Measured on the PARENT as well as the box. A non-replaced `display:
-    // inline` chip's own border-box height is its font content area and does
-    // not track leading at all, so a probe that reads only the chip reports
-    // "did not move" for a chip whose line box is pushing its row open. The
-    // parent delta is the one measure that covers inline, block and flex.
-    const time = await page
-      .locator('.maka-message-time-inline')
-      .first()
-      .evaluate((el: HTMLElement) => {
-        const parent = el.parentElement!;
-        const before = el.getBoundingClientRect().height;
-        const parentBefore = parent.getBoundingClientRect().height;
-        // The floor, measured rather than computed: what this box would be if
-        // it were not pinned — its line box plus its own padding and border.
-        // A tier below that number does not clip visibly (the line box centres
-        // and the ink still fits) but it silently voids the padding the rule
-        // declares, which is how eleven chips shipped 2-4px shorter than they
-        // read.
-        el.style.setProperty('height', 'auto', 'important');
-        const natural = el.getBoundingClientRect().height;
-        el.style.removeProperty('height');
-        el.style.setProperty('line-height', '40px', 'important');
-        const after = el.getBoundingClientRect().height;
-        const parentAfter = parent.getBoundingClientRect().height;
-        el.style.removeProperty('line-height');
-        return { before, after, natural, parentBefore, parentAfter };
-      });
-    expect(time.before).toBe(20); // --h-control-xs
-    expect(time.after).toBe(time.before); // was 20 -> 40 before the pin
-    expect(time.parentAfter).toBe(time.parentBefore); // and took the meta row with it
-
     // "Did not move" and "holds its content" are different claims, and a pin
     // converts the first failure mode into the second. An earlier revision
     // asserted `scrollHeight <= clientHeight` and was inert twice over: it read
     // both values AFTER restoring the leading, and on an `overflow: visible`
     // box the two are equal even while the line box overflows. The tier vs its
-    // own floor is the measure that can actually fail.
-    expect(time.natural).toBeLessThanOrEqual(time.before);
+    // own floor is the measure that can actually fail — see the helper.
+    expectHoldsItsBox(
+      await measureUnderLeadingBump(page, '.maka-message-time-inline'),
+      '.maka-message-time-inline',
+      20, // --h-control-xs; was 20 -> 40 before the pin, and took the meta row with it
+    );
   });
 
   await test.step('code elements resolve the theme mono stack, not the reset one', async () => {
@@ -403,34 +422,15 @@ test('pins single-line chips without pinning the boxes that wrap', async ({
   });
 
   await test.step('the pinned chips hold their box against a 40px leading', async () => {
-    // Both measured at 20px holding a 20px line box, and both doubled under
-    // this bump before the pin. `.maka-plan-card-countdown` is in none of
-    // #1879's lists — it was found by measuring, and it is one of the "12px
-    // badges" that issue's scope names: real pill chrome, no height of its own.
-    for (const selector of ['.maka-nav-kbd', '.maka-plan-card-countdown']) {
-      const box = await page.locator(selector).first().evaluate((el: HTMLElement) => {
-        const parent = el.parentElement!;
-        const before = el.getBoundingClientRect().height;
-        const parentBefore = parent.getBoundingClientRect().height;
-        // The floor, measured rather than computed: what this box would be if
-        // it were not pinned — its line box plus its own padding and border.
-        // A tier below that number does not clip visibly (the line box centres
-        // and the ink still fits) but it silently voids the padding the rule
-        // declares, which is how eleven chips shipped 2-4px shorter than they
-        // read.
-        el.style.setProperty('height', 'auto', 'important');
-        const natural = el.getBoundingClientRect().height;
-        el.style.removeProperty('height');
-        el.style.setProperty('line-height', '40px', 'important');
-        const after = el.getBoundingClientRect().height;
-        const parentAfter = parent.getBoundingClientRect().height;
-        el.style.removeProperty('line-height');
-        return { before, after, natural, parentBefore, parentAfter };
-      });
-      expect(box.before, `${selector} sits on --h-control-xs`).toBe(20);
-      expect(box.after, `${selector} must not move with its leading`).toBe(box.before);
-      expect(box.parentAfter, `${selector} must not push its row open`).toBe(box.parentBefore);
-      expect(box.natural, `${selector} must sit on a tier that holds its own floor`).toBeLessThanOrEqual(box.before);
+    // Each doubled under this bump before its pin. `.maka-plan-card-countdown`
+    // is in none of #1879's lists — it was found by measuring, and it is one of
+    // the "12px badges" that issue's scope names: real pill chrome, no height
+    // of its own.
+    for (const [selector, tier] of [
+      ['.maka-nav-kbd', 20],
+      ['.maka-plan-card-countdown', 20],
+    ] as const) {
+      expectHoldsItsBox(await measureUnderLeadingBump(page, selector), selector, tier);
     }
   });
 

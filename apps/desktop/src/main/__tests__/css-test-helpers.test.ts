@@ -35,6 +35,8 @@ import { join } from 'node:path';
 import { describe, it, after } from 'node:test';
 import {
   expandCssImports,
+  findBadgeClassNames,
+  findDynamicBadgeClassNames,
   findTextRoleOffenders,
   mergeBySelector,
   parseCssBlocks,
@@ -497,6 +499,50 @@ describe('css-test-helpers', () => {
       const merged = mergeBySelector('.a { height: 20px; }\n.wrap .a { height: auto; }');
       assert.doesNotMatch(merged.get('.a') ?? '', /auto/);
       assert.match(merged.get('.wrap .a') ?? '', /auto/);
+    });
+  });
+
+  describe('findBadgeClassNames (a scanner that cannot quietly stop seeing a call site)', () => {
+    // A fresh dir per case: one shared root would let each case see every
+    // other case's fixture, and `deepEqual` on the whole result would then be
+    // asserting the suite's execution order rather than the scanner.
+    const dirs: string[] = [];
+    const write = async (name: string, src: string) => {
+      const dir = await mkdtemp(join(tmpdir(), 'badge-scan-'));
+      dirs.push(dir);
+      await writeFile(join(dir, name), src, 'utf8');
+      return dir;
+    };
+    after(async () => {
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    it('reads a className past a `>` inside a prop expression', async () => {
+      // `/<Badge\b[^>]*?>/` ended the tag at the `>` in the ternary, and the
+      // truncated text held neither `className="` nor `className={` — so the
+      // call site left BOTH Badge contracts while they reported green.
+      const root = await write('gt.tsx', `<Badge label={a > b ? 'x' : 'y'} className="evil" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['evil']);
+    });
+
+    it('reads a className past an apostrophe inside a prop comment', async () => {
+      // Measured on the real tree: `/* the Tooltip's popover */` inside a
+      // `<Badge>` put a quote-aware walk into string mode at the apostrophe and
+      // carried the tag end past its own `/>`. Three live call sites silently
+      // left the scan, which still reported green on the other 16.
+      const root = await write('apos.tsx', `<Badge\n  label="x"\n  /* the Tooltip's popover is display:none */\n  className="quiet"\n/>`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['quiet']);
+    });
+
+    it('reads both quote styles and whitespace around `=`', async () => {
+      const root = await write('quotes.tsx', `<Badge className = 'spaced' label="x" />`);
+      assert.deepEqual((await findBadgeClassNames([root])).map((f) => f.className), ['spaced']);
+    });
+
+    it('still routes a computed className to the dynamic scanner', async () => {
+      const root = await write('dyn.tsx', `<Badge label={a > b} className={cls} />`);
+      assert.deepEqual(await findBadgeClassNames([root]), []);
+      assert.equal((await findDynamicBadgeClassNames([root])).length, 1);
     });
   });
 });

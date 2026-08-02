@@ -721,9 +721,15 @@
                                       round FAB (jump-to-bottom)          */
   --h-control-lg:  var(--size-element-md);  /* 32px — default button, input, tab,
                                       sidebar nav row, session row,
-                                      settings nav row, select            */
-  --h-control-xl:  var(--size-element-lg);  /* 36px — prominent button,
-                                      first-run checklist row             */
+                                      settings nav row, select, first-run
+                                      stepper item                        */
+  /* #1879: this tier used to name "first-run checklist row" as a consumer.
+     Nothing in the renderer reads it — that row is the stepper item above, and
+     measured, its floor is 29px, so it takes `lg`. A tier documenting a
+     consumer it does not have is the same defect as an exemption documenting a
+     rule it does not govern; the tier stays (Astryx defines it and a prominent
+     button is a real future need) but it is honest about having no reader. */
+  --h-control-xl:  var(--size-element-lg);  /* 36px — no consumer today     */
   --h-control-2xl: var(--space-10); /* 40px — toolbar, large touch target  */
 
   /* === content measure (#520 PR4 item 16) ================================
