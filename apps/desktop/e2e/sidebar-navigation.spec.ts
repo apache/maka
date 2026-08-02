@@ -88,12 +88,28 @@ test('project rename owns Enter without toggling the project disclosure', async 
   const project = sidebar.locator('[data-project-id]').first();
   const projectToggle = project.locator('button[aria-expanded]').first();
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'true');
-  await project.getByRole('button', { name: /项目操作$/ }).click();
+  // Capture the disclosure state while the disclosure control is mounted:
+  // starting a rename swaps the whole project row for the rename input, so
+  // `button[aria-expanded]` does not exist while editing (SideNavItem rows
+  // replace the row, unlike the pre-#1860 TreeList that kept it mounted).
+  const disclosureState = await projectToggle.getAttribute('aria-expanded');
+  // SideNavItem renders `endContent` inside the row's primary <button>, so
+  // the row button's accessible name is its composite contents and ends with
+  // the actions trigger's label — a plain name query matches both (strict
+  // mode violation). The trigger is the only button inside the project's own
+  // end content, so scope the name query there. (The nesting is Astryx
+  // SideNavItem's own DOM — SideNavItem also drops extra props in expanded
+  // mode, so the parent's name cannot be overridden — and pulling the
+  // trigger out of the item button would need sidebar.css, frozen by
+  // in-review PR #1857.)
+  const projectActions = project
+    .locator('.maka-project-item-end')
+    .getByRole('button', { name: /项目操作$/ });
+  await projectActions.click();
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
 
   const rename = project.getByRole('textbox', { name: '重命名' });
   await expect(rename).toBeFocused();
-  const disclosureState = await projectToggle.getAttribute('aria-expanded');
   const originalName = await rename.inputValue();
   await rename.press('A');
   await expect(rename).toBeFocused();
@@ -119,7 +135,9 @@ test('double-clicking the flat ListItem menu does not enter rename', async ({
   const sidebar = await expandedSidebar(page);
   const row = sidebar.locator('[data-maka-contract="session-row"]').filter({ hasText: '会话 00' }).first();
 
-  await row.getByRole('button', { name: '对话操作' }).dispatchEvent('dblclick');
+  // exact: SideNavItem computes the row button's name from its contents, so
+  // a substring name query matches both the row button and this trigger.
+  await row.getByRole('button', { name: '对话操作', exact: true }).dispatchEvent('dblclick');
 
   await expect(sidebar.getByRole('textbox', { name: '重命名对话' })).toHaveCount(0);
 });
@@ -134,7 +152,9 @@ test('session delete intent opens only after its menu closes and restores the tr
   await expect(rowButton).toHaveCount(1);
   await rowButton.focus();
 
-  const trigger = row.getByRole('button', { name: '对话操作' });
+  // Same composite-name ambiguity as the project row above: match the
+  // trigger's own name exactly, not the row button's computed name.
+  const trigger = row.getByRole('button', { name: '对话操作', exact: true });
   await trigger.press('Enter');
   const menu = page.getByRole('menu').filter({ has: page.getByRole('menuitem', { name: '删除', exact: true }) });
   await expect(menu).toBeVisible();
