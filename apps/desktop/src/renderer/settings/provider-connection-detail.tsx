@@ -1,4 +1,4 @@
-import { useState, type MouseEvent, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Banner, Divider, Grid, Heading, HStack, Link, Text, VStack } from '@astryxdesign/core';
 import { PROVIDER_DEFAULTS } from '@maka/core';
 import {
@@ -115,7 +115,15 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     refreshAfterRelogin,
   } = useConnectionDetail(props);
   // One row is a form at a time, the way the settings-sidebar template does it.
+  // Opening a row discards the other's draft: leaving an abandoned draft in
+  // state meant it reappeared when the user came back to that row, and — until
+  // `save` became per-field — rode along with the next save.
   const [editingRow, setEditingRow] = useState<'key' | 'endpoint' | null>(null);
+  function openRow(row: 'key' | 'endpoint') {
+    if (row === 'key') setBaseUrl(savedBaseUrl);
+    else setApiKey('');
+    setEditingRow(row);
+  }
   // 52 of the 60 providers publish a fixed endpoint; editing it there can only
   // break the connection, and a proxy belongs in 设置 · 通用 · 网络, not in a
   // per-connection URL. So the row exists only where the address is genuinely
@@ -206,9 +214,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 canSave={hasApiKeyChange}
                 saveLabel={busy ? copy.saving : copy.save}
                 cancelLabel={copy.cancel}
-                onEdit={() => setEditingRow('key')}
+                onEdit={() => openRow('key')}
                 onCancel={() => { setApiKey(''); setEditingRow(null); }}
-                onSave={async () => { await save(); setEditingRow(null); }}
+                onSave={async () => { if (await save('key')) setEditingRow(null); }}
               >
                 <PasswordInput
                   value={apiKey}
@@ -240,9 +248,9 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                 canSave={hasBaseUrlChange}
                 saveLabel={busy ? copy.saving : copy.save}
                 cancelLabel={copy.cancel}
-                onEdit={() => setEditingRow('endpoint')}
+                onEdit={() => openRow('endpoint')}
                 onCancel={() => { setBaseUrl(savedBaseUrl); setEditingRow(null); }}
-                onSave={async () => { await save(); setEditingRow(null); }}
+                onSave={async () => { if (await save('endpoint')) setEditingRow(null); }}
               >
                 <TextInput
                   label={copy.endpoint}
@@ -341,15 +349,11 @@ function SettingRow(props: {
             <Text type="body" weight="semibold">{props.label}</Text>
             <Text type="supporting" color="secondary">{props.value}</Text>
           </VStack>
-          <Link
-            href="#"
-            onClick={(event: MouseEvent) => {
-              event.preventDefault();
-              props.onEdit();
-            }}
-          >
-            {props.actionLabel}
-          </Link>
+          {/* A button, not a Link: this opens a form, it does not navigate. As
+              a link it announced itself as one, ignored Space, and pointed at
+              "#". Astryx has no link-styled variant, and ghost is the right
+              weight for a row affordance anyway. */}
+          <Button variant="ghost" size="sm" isDisabled={props.isDisabled} onClick={props.onEdit} label={props.actionLabel} />
         </HStack>
       )}
       <Divider />

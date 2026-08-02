@@ -235,26 +235,36 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     modelsFetchedAt: connection.modelsFetchedAt,
   });
 
-  async function save() {
+  /**
+   * Save ONE row. The patch used to carry both fields whichever row asked for
+   * it, so an abandoned endpoint draft rode along with the next key save — the
+   * user typed an address, changed their mind without cancelling, replaced the
+   * key, and the address they never confirmed was written. A row owns its own
+   * field; nothing else travels with it.
+   *
+   * Returns whether the write landed, so a failed save keeps the row open with
+   * the draft intact instead of collapsing as if it had succeeded.
+   */
+  async function save(field: 'key' | 'endpoint'): Promise<boolean> {
     const releaseSave = connectionDetailActionGuard.beginExclusive('save');
-    if (!releaseSave) return;
+    if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
     setBusy(true);
     let saved = false;
     try {
-      await props.bridge.update(connection.slug, {
-        baseUrl,
-        ...(apiKey ? { apiKey } : {}),
-      });
+      await props.bridge.update(
+        connection.slug,
+        field === 'key' ? { apiKey } : { baseUrl },
+      );
       saved = true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
-      const wroteNewKey = apiKey.length > 0;
-      setApiKey('');
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
+      const wroteNewKey = field === 'key' && apiKey.length > 0;
+      if (wroteNewKey) setApiKey('');
       const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connection.slug) : true;
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
       setHasSecret(nextHasSecret);
       await props.onChanged();
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return true;
       // Auto-fetch live model list as soon as the secret is in place. Without
       // this, the user lands on a Settings · 模型 row whose `defaultModel`
       // dropdown only contains the static fallback list (e.g. Z.ai → just
@@ -263,12 +273,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       if (
         supportsRemoteDiscovery &&
         (!requiresCredential || nextHasSecret) &&
-        (wroteNewKey || hasBaseUrlChange || models.length === 0)
+        (wroteNewKey || field === 'endpoint' || models.length === 0)
       ) {
         void refreshModels({ silent: true });
       }
+      return true;
     } catch (error) {
-      if (!isConnectionDetailCurrent(lifecycle)) return;
+      if (!isConnectionDetailCurrent(lifecycle)) return saved;
       if (saved && probesCredential) {
         setHasSecret('error');
       }
@@ -276,6 +287,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         saved ? copy.refreshFailed : copy.saveFailed,
         providerPanelActionErrorMessage(error, locale),
       );
+      return saved;
     } finally {
       releaseSave();
       if (isConnectionDetailCurrent(lifecycle)) setBusy(false);

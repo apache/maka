@@ -135,12 +135,12 @@ test('adds a catalog provider through the canonical API-key setup page', async (
 
   await test.step('the detail replaces a key and manages enabled and default models', async () => {
     // A settled credential is a row, not a form: it reports its state and
-    // carries one link. The input only exists while the user is changing it.
+    // carries one control. The input only exists while the user is changing it.
     const connectionSection = detail.getByRole('region', { name: '连接' });
     await expect(connectionSection.getByText('已设置', { exact: true })).toBeVisible();
     await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveCount(0);
 
-    await connectionSection.getByRole('link', { name: '更换', exact: true }).click();
+    await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
     const detailKeyField = connectionSection.getByRole('textbox', { name: /模型密钥/ });
     await expect(detailKeyField).toBeVisible();
     const saveKey = connectionSection.getByRole('button', { name: '保存', exact: true });
@@ -150,6 +150,13 @@ test('adds a catalog provider through the canonical API-key setup page', async (
     // Cancel restores the row, discarding the draft.
     await connectionSection.getByRole('button', { name: '取消', exact: true }).click();
     await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveCount(0);
+
+    // An abandoned draft does not survive leaving the row. It used to sit in
+    // state until the next save carried it along — reopening the row showed a
+    // key the user never confirmed.
+    await connectionSection.getByRole('button', { name: '更换', exact: true }).click();
+    await expect(connectionSection.getByRole('textbox', { name: /模型密钥/ })).toHaveValue('');
+    await connectionSection.getByRole('button', { name: '取消', exact: true }).click();
 
     const modelSection = detail.getByRole('region', { name: '模型' });
     await expect(modelSection).toBeVisible();
