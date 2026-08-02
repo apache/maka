@@ -198,6 +198,16 @@ export function findTextRoleOffenders(
       if (value === undefined) continue;
       offenders.push(`${label}: ${selector} declares ${prop}: ${value} — name a text role instead`);
     }
+    // Count before reading: `lastDecl` reports what the browser uses, so a
+    // block that declares a role and then `font: inherit` after it reads as
+    // legal while the role line is dead. Measured, `.maka-session-rename-input`
+    // was exactly that — it declared `font: inherit` before its longhands, and
+    // migrating the longhands to a role left the reset winning.
+    const declared = [...body.matchAll(/(?:^|[;{])\s*font\s*:/g)].length;
+    if (declared > 1) {
+      offenders.push(`${label}: ${selector} declares font ${declared} times — a role is not a base to override`);
+      continue;
+    }
     const font = lastDecl(body, 'font');
     if (font === undefined) continue;
     if (FONT_LITERAL_OK.test(font)) continue;

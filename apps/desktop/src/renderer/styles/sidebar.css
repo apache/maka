@@ -217,7 +217,6 @@
   border-bottom: var(--border-width-hairline) solid oklch(from var(--focus-ring) l c h / 0.4);
   background: transparent;
   color: var(--foreground);
-  font: inherit;
   outline: 0;
   padding: 1px 0;
 }

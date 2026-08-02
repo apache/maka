@@ -78,19 +78,30 @@ describe('type scale contracts', () => {
     assert.equal(layers.at(-1), 'components', 'product CSS must stay last');
   });
 
-  it('keeps the product size names as aliases of the ladder', async () => {
-    const tokens = await read('maka-tokens.css');
-    assertCustomPropPinnedOnce(tokens, '--font-size-heading', 'var(--font-size-lg)');
-    assertCustomPropPinnedOnce(tokens, '--font-size-stat', 'var(--font-size-2xl)');
-    assertCustomPropPinnedOnce(tokens, '--font-size-ui', 'var(--font-size-base)');
-    assertCustomPropPinnedOnce(tokens, '--font-size-caption', 'var(--font-size-sm)');
-    assertCustomPropPinnedOnce(tokens, '--font-sans', 'var(--font-family-body)');
-    assertCustomPropPinnedOnce(tokens, '--font-mono', 'var(--font-family-code)');
-    assert.equal(
-      parseCssCustomProps(tokens).get('--font-size-base'),
-      undefined,
-      '--font-size-base IS the Astryx token; redefining it here shadows the scale and makes --font-size-ui self-referential',
-    );
+  it('keeps no product name for a size or a family', async () => {
+    // The previous shape of this test pinned six aliases —
+    // --font-size-heading/stat/ui/caption, --font-sans, --font-mono — because
+    // a call site named a size or a family and the alias was what kept that
+    // name pointing at the ladder. A call site names a role now, so all six
+    // reached zero consumers (check-dead-css found them) and are deleted. What
+    // has to hold is the stronger thing the aliases were only approximating:
+    // there is no product name for a size or a family at all, so there is
+    // nothing to drift from the Astryx one.
+    const tokens = parseCssCustomProps(await read('maka-tokens.css'));
+    for (const gone of [
+      '--font-size-heading',
+      '--font-size-stat',
+      '--font-size-ui',
+      '--font-size-caption',
+      '--font-sans',
+      '--font-mono',
+      '--font-default',
+      // --font-size-base was never defined here: it IS the Astryx token, and
+      // redefining the name would shadow the scale.
+      '--font-size-base',
+    ]) {
+      assert.equal(tokens.get(gone), undefined, `${gone} is superseded by the role table — do not reintroduce it`);
+    }
   });
 
   it('derives the transcript baseline instead of typing it in', async () => {
@@ -160,15 +171,15 @@ describe('type scale contracts', () => {
       'the role table must be anchored on :root AND the code element group',
     );
     assertCssRuleDecls(tokens, ':where(code, kbd, samp, pre)', [
-      /--maka-font-family:\s*var\(--font-mono\)/,
-      /font-family:\s*var\(--font-mono\)/,
+      /--maka-font-family:\s*var\(--font-family-code\)/,
+      /font-family:\s*var\(--font-family-code\)/,
     ]);
     // Twice, not once: the axis is declared on each anchor, and that is the
     // whole point of the second anchor. A third declaration would be a third
     // family authority, which is what the pin exists to prevent.
     assert.deepEqual(parseCssCustomProps(tokens).get('--maka-font-family'), [
       'var(--font-family-body)',
-      'var(--font-mono)',
+      'var(--font-family-code)',
     ]);
   });
 

@@ -86,7 +86,7 @@ describe('css-test-helpers', () => {
         'font-size: var(--font-size-ui)',
         'line-height: 1.4286',
         'font-weight: var(--font-weight-medium)',
-        'font-family: var(--font-mono)',
+        'font-family: var(--font-family-code)',
       ]) {
         assert.equal(find(`.a { ${decl}; }`).length, 1, `${decl} must be reported`);
       }
@@ -94,7 +94,7 @@ describe('css-test-helpers', () => {
 
     it('rejects a hand-composed shorthand — the four choices on one line', () => {
       assert.equal(find('.a { font: 600 12px/1.4 sans-serif; }').length, 1);
-      assert.equal(find('.a { font: 600 var(--font-size-ui)/1.4 var(--font-sans); }').length, 1);
+      assert.equal(find('.a { font: 600 var(--font-size-lg)/1.4 sans-serif; }').length, 1);
       assert.equal(find('.a { font: var(--font-size-ui); }').length, 1);
     });
 
@@ -106,6 +106,12 @@ describe('css-test-helpers', () => {
 
     it('reads the last declaration, so a longhand after a role is still caught', () => {
       assert.equal(find('.a { font: var(--maka-text-body); font-weight: 700; }').length, 1);
+    });
+
+    it('rejects a second font declaration, which would make the role line dead', () => {
+      const offenders = find('.a { font: var(--maka-text-body); font: inherit; }');
+      assert.equal(offenders.length, 1);
+      assert.match(offenders[0], /declares font 2 times/);
     });
 
     it('ignores declarations inside comments', () => {
