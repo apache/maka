@@ -25,13 +25,11 @@ import { createServer } from 'vite';
 import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
 import {
-  clearDevelopmentSession,
-  createDevelopmentSession,
+  createDevelopmentEnvironmentFile,
+  isDevelopmentAppRunning,
   quitMacosDevelopmentApp,
-  recoverStaleDevelopmentSession,
   resolveMacosDevelopmentLaunch,
-  waitForMacosDevelopmentApp,
-  writeDevelopmentSession,
+  writeDevelopmentEnvironment,
 } from './dev-app-runtime.mjs';
 
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -152,17 +150,17 @@ if (!devUrl) {
 
 log('electron', `launching against ${devUrl} (renderer HMR live)`);
 const appArgs = [DESKTOP_DIR, ...process.argv.slice(2)];
+const cliArgs = process.argv.slice(2);
 const macosLaunch = await resolveMacosDevelopmentLaunch();
 if (macosLaunch) {
-  await recoverStaleDevelopmentSession();
-  const userDataArg = process.argv.slice(2).find((arg) => arg.startsWith('--user-data-dir='));
-  writeDevelopmentSession(createDevelopmentSession({
-    supervisorPid: process.pid,
+  const userDataArg = cliArgs.find((arg) => arg.startsWith('--user-data-dir='));
+  writeDevelopmentEnvironment(createDevelopmentEnvironmentFile({
     viteUrl: devUrl,
     env: process.env,
     userDataDir: userDataArg?.slice('--user-data-dir='.length),
-    electronArgs: process.argv.slice(2).filter((arg) => !arg.startsWith('--user-data-dir=')),
+    electronArgs: cliArgs.filter((arg) => !arg.startsWith('--user-data-dir=')),
   }));
+  log('electron', 'launching Maka Dev.app through LaunchServices (main-process logs go to Console.app)');
 }
 const electron = spawn(macosLaunch?.command ?? resolveElectronBin(), macosLaunch?.args ?? appArgs, {
   cwd: DESKTOP_DIR,
@@ -174,10 +172,7 @@ let shuttingDown = false;
 async function shutdown(code, options = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (macosLaunch) {
-    await quitMacosDevelopmentApp();
-    clearDevelopmentSession();
-  }
+  if (macosLaunch) await quitMacosDevelopmentApp();
   if (options.killElectron !== false) {
     await terminateProcessTree(electron);
   }
@@ -212,13 +207,13 @@ electron.on('error', (err) => {
   shutdown(1);
 });
 if (macosLaunch) {
-  void waitForMacosDevelopmentApp().then(
-    () => log('electron', 'Maka Dev startup handshake complete'),
-    (error) => {
-      console.error(`[dev] ${error.message}`);
-      shutdown(1);
-    },
-  );
+  // `open` exits 0 at the LaunchServices handoff, so its exit code says nothing
+  // about whether the app came up. Check once that a process actually exists.
+  setTimeout(() => {
+    if (shuttingDown || isDevelopmentAppRunning()) return;
+    console.error('[dev] Maka Dev.app did not stay running; see Console.app for its output');
+    shutdown(1);
+  }, 5_000).unref();
 }
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));

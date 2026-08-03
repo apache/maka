@@ -4,41 +4,52 @@ The Electron desktop app: `main` (Node/Electron main process) + `preload` (conte
 
 ## macOS development permissions
 
-`npm run dev` and `npm start` launch macOS development builds through a generated, ad-hoc-signed
-`apps/desktop/.maka-dev/Maka Dev.app`. The stable bundle identity lets macOS TCC
-retain Accessibility and Screen Recording grants while renderer and main-process
-code change. The generated app is ignored by Git and is rebuilt automatically
-when the installed Electron version changes. Run
+`npm run dev` and `npm start` use the plain Electron executable on every
+platform. Working on Accessibility or Screen Recording is the exception: macOS
+TCC will not keep a grant for an unsigned executable launched from a terminal.
+Set `MAKA_DEV_TCC=1` to launch through a generated, ad-hoc-signed
+`apps/desktop/.maka-dev/Maka Dev.app` instead.
+
+```sh
+MAKA_DEV_TCC=1 npm run dev
+```
+
+The bundle gives TCC a stable identity (`com.maka.dev`), a verifiable
+signature, and a responsible process that is the app rather than the terminal.
+It is launched through LaunchServices for the same reason — running its inner
+binary directly puts the terminal back in the responsibility chain. The
+generated app is ignored by Git and rebuilt when the installed Electron version
+or this repository's path changes; run
 `npm --workspace @maka/desktop run prepare:dev-app` to prepare it explicitly.
 
-The scripts launch the bundle through macOS LaunchServices rather than executing
-its internal binary from a terminal. This is required for TCC to attribute the
-running process to `Maka Dev` and recognize the stored grants.
-The launcher remains alive as the development-session supervisor until the
-terminal receives Ctrl-C or SIGTERM. The generated bundle contains a small local
-bootstrap that reads a PID-validated, per-worktree session file, restoring the
-Vite URL and a curated environment-variable allowlist before importing the main
-process. macOS's Screen Recording “Quit & Reopen” action can therefore reconnect
-to the same HMR session without relying on command-line arguments that the
-system restart discards. Session files live in the ignored
-`apps/desktop/.maka-dev-session/` directory, outside the rebuildable app bundle,
-and are written atomically with mode `0600`. Startup is acknowledged only after
-the single-instance lock and main-process boot succeed; failures and timeouts are
-reported in the terminal instead of leaving a windowless supervisor running.
+This workflow is opt-in because LaunchServices detaches the app from the
+terminal: main-process logs go to Console.app instead of your shell. It also
+costs a codesign rebuild. Developers who are not touching OS permissions should
+not pay either.
 
-The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`.
-This keeps development isolated from the packaged Maka profile and lets separate
-worktrees run concurrently. An explicit `--user-data-dir` still takes precedence.
+Everything the bundle needs is fixed when it is built, so a launch with no
+arguments and no environment — the Dock, Spotlight, or Screen Recording's
+“Quit & Reopen” — produces a correct app. There is no session protocol or
+supervising process: the app instance and the dev session are separate
+lifecycles. Application-control variables (API keys, `MAKA_*`, the Vite URL)
+are published to an ignored `0600` file at `.maka-dev/dev-env.json`, never on a
+command line. `PATH` is deliberately not forwarded — `shell-env.ts` resolves the
+login-shell `PATH` in the main process, which is exactly the case a
+GUI-launched app needs.
 
-Only one supervised Maka Dev session can use a worktree at a time. Runtime
-preparation is protected by a PID lock, and shutdown targets the app PID recorded
-by that supervisor rather than every process sharing the development bundle ID.
-Runtime rebuilds refuse to proceed while that worktree has a live supervisor.
+Because the bootstrap is built from constants, the bundle's cdhash is stable
+across rebuilds, so rebuilding does not invalidate a grant you already gave.
 
-Grant permissions to **Maka Dev**, not a generic Electron entry. Screen Recording
-changes require restarting the development app. Recreating the app or changing
-its Electron version may require granting permissions again. Other platforms
-continue to use their normal Electron development executable.
+The default profile is `~/Library/Application Support/Maka Dev-<worktree-id>`,
+which keeps development isolated from the packaged Maka profile and lets
+separate worktrees run concurrently; an explicit `--user-data-dir` takes
+precedence. Shutdown matches this worktree's own bundle path, so a concurrent
+worktree's app is unaffected.
+
+Grant permissions to **Maka Dev**, not a generic Electron entry. Screen
+Recording changes require restarting the development app. Without
+`MAKA_DEV_TCC`, the permission overlay still runs, but its drag target is the
+npm Electron bundle, which macOS will not accept as a durable grant.
 
 ## Three layers
 

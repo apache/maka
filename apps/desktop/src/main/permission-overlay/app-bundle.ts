@@ -11,10 +11,11 @@
  *   /Applications/Maka.app/Contents
  *   /Applications/Maka.app                       <- what we drag
  *
- * In the supported macOS development workflow the same walk lands on the
- * generated, signed `Maka Dev.app`, which is also the TCC identity the user
- * grants. The only genuinely
- * unresolvable case is a layout where the walk doesn't end in `.app`
+ * Under `MAKA_DEV_TCC=1` the same walk lands on the generated, signed
+ * `Maka Dev.app`, which is also the TCC identity the user grants. Under a plain
+ * `electron .` it lands on the npm `Electron.app`, which is the honest answer
+ * for that setup even though macOS will not keep a grant for it. The only
+ * genuinely unresolvable case is a layout where the walk doesn't end in `.app`
  * (e.g. an unpacked CI tree), and the caller degrades explicitly there
  * instead of starting a drag that can never be accepted.
  *
