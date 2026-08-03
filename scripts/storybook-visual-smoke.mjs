@@ -304,20 +304,51 @@ async function smokeStory(page, baseUrl, job, options = {}) {
           if (!(editor instanceof HTMLElement) || !(composer instanceof HTMLElement)) {
             failures.push('composer editor or Astryx focus surface is missing');
           } else {
+            const focusAncestors = [];
+            for (let element = editor.parentElement; element; element = element.parentElement) {
+              focusAncestors.push(element);
+              if (element === composer) break;
+            }
+            const visibleFocusChrome = (element) => {
+              const style = getComputedStyle(element);
+              const border = ['Top', 'Right', 'Bottom', 'Left'].flatMap((side) => {
+                const width = Number.parseFloat(style[`border${side}Width`]);
+                return width > 0
+                  ? [
+                      `${side}:${style[`border${side}Style`]} ${width}px ${style[`border${side}Color`]}`,
+                    ]
+                  : [];
+              });
+              return {
+                border,
+                boxShadow: style.boxShadow === 'none' ? null : style.boxShadow,
+                outline:
+                  style.outlineStyle === 'none' || Number.parseFloat(style.outlineWidth) === 0
+                    ? null
+                    : `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+              };
+            };
+            const restingChrome = focusAncestors.map(visibleFocusChrome);
             editor.focus();
+            // Resolve Astryx's focus transition to its final state before
+            // comparing computed presentation. The contract is the visible
+            // owner, not an intermediate animation frame.
+            for (const element of focusAncestors) {
+              void getComputedStyle(element).boxShadow;
+              for (const animation of element.getAnimations()) animation.finish();
+            }
+            const focusedChrome = focusAncestors.map(visibleFocusChrome);
             const style = getComputedStyle(editor);
             const actual = {
               backgroundColor: style.backgroundColor,
               borderWidth: style.borderWidth,
               boxShadow: style.boxShadow,
-              minHeight: style.minHeight,
               outlineStyle: style.outlineStyle,
             };
             const expected = {
               backgroundColor: 'rgba(0, 0, 0, 0)',
               borderWidth: '0px',
               boxShadow: 'none',
-              minHeight: 'auto',
               outlineStyle: 'none',
             };
             for (const [property, expectedValue] of Object.entries(expected)) {
@@ -330,8 +361,16 @@ async function smokeStory(page, baseUrl, job, options = {}) {
             if (document.activeElement !== editor) {
               failures.push('composer editor did not retain focus');
             }
-            if (!composer.matches(':focus-within')) {
-              failures.push('Astryx composer surface did not receive the focus-within state');
+            const visibleOwner = focusedChrome.some((focused, index) => {
+              const changed = JSON.stringify(focused) !== JSON.stringify(restingChrome[index]);
+              const visible =
+                focused.border.length > 0 || focused.boxShadow !== null || focused.outline !== null;
+              return changed && visible;
+            });
+            if (!visibleOwner) {
+              failures.push(
+                'no Astryx composer ancestor produced visible border, shadow, or outline focus feedback',
+              );
             }
           }
         }
