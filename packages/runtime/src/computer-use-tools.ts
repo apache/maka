@@ -793,6 +793,10 @@ export function buildComputerUseTools(deps: {
   const tool: MakaTool<ComputerParams, ComputerToolResult> = {
     name: 'maka_computer',
     displayName: 'Maka Computer',
+    // The kind every other builtin declares, and the reason `'computer'` is on
+    // the wire at all. Without it the renderer had to recognise this tool by
+    // name, which is the recognition-by-string the kind exists to replace.
+    activityKind: 'computer',
     description:
       'Maka semantic computer harness. Use action=observe to read the current computer state before acting, then use the same function ' +
       'for semantic element actions, exact Electron page actions, wait, zoom, or another observation. Every successful mutating action returns a fresh screenshot when available ' +

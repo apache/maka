@@ -770,6 +770,11 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
       }
       break;
     }
+    case 'maka_computer': {
+      const line = computerCallSummary(obj);
+      if (line) return line;
+      break;
+    }
   }
   if (input === undefined) return '';
   // Generic fallback: use the shared invocation-line formatter instead of
@@ -781,4 +786,42 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
   if (line) return limitText(line, 600);
   // Absolute last resort — still single-line for the compact header contract.
   return `input: ${limitText(formatUnknownInline(input), 600)}`;
+}
+
+/**
+ * What one Computer Use call did, for the row that names it.
+ *
+ * Every other tool's row is legible from its name plus one headline argument.
+ * This tool's name is `Maka Computer` for observing a window, clicking a
+ * button and observing again alike, so ten calls in a turn printed ten
+ * identical headers; the generic fallback then spelled the arguments out as
+ * `action: … / approvalClass: … / rememberForTurnAllowed: …`, which names the
+ * host's own approval bookkeeping rather than anything the model asked for.
+ *
+ * The arguments here are a `ComputerUseApprovalSummary`, not the wire call:
+ * `ToolRuntime` substitutes that projection for any tool declaring
+ * `categoryHint: 'computer_use'` before anything is persisted. So the action,
+ * the app, the window and the element are available and a typed value, a key
+ * name and a coordinate are not — deliberately, and the same fields the desktop
+ * row can use.
+ */
+function computerCallSummary(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined;
+  const text = (key: string): string | undefined => {
+    const value = args[key];
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  };
+  const action = text('action');
+  if (!action) return undefined;
+  const parts = [action];
+  const elementId = text('elementId');
+  if (elementId) parts.push(`element ${elementId}`);
+  const app = text('app');
+  const windowId = args.windowId;
+  const target =
+    app && typeof windowId === 'number'
+      ? `${app} window ${windowId}`
+      : (app ?? (typeof windowId === 'number' ? `window ${windowId}` : undefined));
+  if (target) parts.push(target);
+  return limitText(parts.join(' · '), 600);
 }

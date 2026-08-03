@@ -216,6 +216,108 @@ test('the record a model reads back is the call it made, in the names the tool a
   assert.deepEqual(call?.type === 'tool_call' ? call.args : undefined, persisted);
 });
 
+/**
+ * The other half of the same boundary. Withholding a typed value is correct;
+ * withholding which element was acted on is not, and it is what made every
+ * element row in a turn read the same. This asserts on the events the runtime
+ * emits, not on a hand-built row: the renderer only ever sees this projection,
+ * so a label test that builds its own `args` cannot notice the field is gone.
+ */
+test('Computer Use persists which element a call targeted', async () => {
+  const messages: StoredMessage[] = [];
+  const events: SessionEvent[] = [];
+  const runtime = createTestToolRuntime({
+    sessionId: 'session-1',
+    header: header(),
+    connection: connection(),
+    modelId: 'mock-model',
+    appendMessage: async (message) => {
+      messages.push(message);
+    },
+    newId: nextId(),
+    now: () => 1,
+    getPermissionPauseTarget: () => null,
+  });
+  const tool: MakaTool = {
+    name: 'maka_computer',
+    description: 'test',
+    parameters: {},
+    categoryHint: 'computer_use',
+    impl: async () => ({ ok: true }),
+  };
+  const persisted = async (elementId: string): Promise<unknown> => {
+    messages.length = 0;
+    events.length = 0;
+    await runtime.settleToolCall({
+      tool,
+      turnId: 'turn-1',
+      toolCallId: `tool-${elementId}`,
+      input: {
+        action: 'click_element',
+        app: 'Calculator',
+        window_id: 7,
+        observation_id: 'frame-1',
+        element_id: elementId,
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+    const start = events.find((event) => event.type === 'tool_start');
+    const call = messages.find((message) => message.type === 'tool_call');
+    // The two surfaces a renderer can read must agree.
+    assert.deepEqual(
+      start?.type === 'tool_start' ? start.args : undefined,
+      call?.type === 'tool_call' ? call.args : undefined,
+    );
+    return start?.type === 'tool_start' ? start.args : undefined;
+  };
+
+  // This object is the dialect, not an example of it. `computerActionLabel` in
+  // `packages/ui/src/tool-activity/computer-action-label.ts` reads these exact
+  // key names off the persisted args, and it is the only thing that turns a
+  // Computer Use row into a sentence. Respell them at the seam — `windowId` to
+  // `window_id`, `elementId` to `element_id` — and the renderer silently falls
+  // back to "点击该元素" on every row, which is the defect this projection
+  // exists to prevent. Change this assertion and that file in one commit.
+  assert.deepEqual(await persisted('e7'), {
+    action: 'click_element',
+    approvalClass: 'semantic_mutation',
+    rememberForTurnAllowed: true,
+    app: 'Calculator',
+    windowId: 7,
+    observationId: 'frame-1',
+    elementId: 'e7',
+  });
+  // Two clicks in one turn have to be distinguishable, which is the whole
+  // reason the field is carried.
+  assert.equal(((await persisted('e9')) as { elementId?: string }).elementId, 'e9');
+  // Anything under that key that is not an identifier is dropped rather than
+  // persisted: an accessibility label is screen content.
+  assert.equal(
+    ((await persisted('Customer SSN 123-45-6789')) as { elementId?: string }).elementId,
+    undefined,
+  );
+  // A shape filter is not a privacy boundary. Arguments are not validated
+  // before this projection runs — the test below asserts an invalid call still
+  // persists a summary — so a model that put a key under `element_id` reaches
+  // here, and `[A-Za-z0-9._:-]{1,256}` admits one. It has to be redacted at the
+  // seam, on the same terms `observation_id` and `app` already are, because
+  // this is the object that lands in the transcript.
+  assert.equal(
+    (
+      (await persisted('sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGh')) as {
+        elementId?: string;
+      }
+    ).elementId,
+    '[redacted]',
+  );
+});
+
 test('Computer Use validation failures still persist a redacted call and result', async () => {
   const messages: StoredMessage[] = [];
   const events: SessionEvent[] = [];

@@ -3,6 +3,7 @@ import { before, describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { _setColorLevelForTesting } from '../tui-ansi.js';
 import type { PipeShellOutput, PtyShellOutput, ShellRunToolResult } from '@maka/core';
+import { computerUseApprovalSummary } from '@maka/core';
 import type { SessionEvent, ToolResultContent } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
@@ -4646,6 +4647,78 @@ describe('Maka Pi TUI activity strip', () => {
       text: 'recovered',
     });
     assert.equal(state.providerRetry, undefined);
+  });
+});
+
+describe('Maka Pi TUI Computer Use rows', () => {
+  /**
+   * The desktop is not the only renderer of tool activity, and the row that
+   * reads `Maka Computer` reads it in both. The arguments are put through
+   * `computerUseApprovalSummary`, because that is what the runtime persists and
+   * emits for this tool — a fixture written as the wire call would assert a
+   * label from fields the TUI can never receive.
+   */
+  test('says what each Computer Use call did instead of repeating the tool name', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'add seven and eight');
+    const calls = [
+      { action: 'observe', app: 'Calculator', window_id: 7 },
+      {
+        action: 'click_element',
+        app: 'Calculator',
+        window_id: 7,
+        observation_id: 'frame-1',
+        element_id: 'e7',
+      },
+      {
+        action: 'click_element',
+        app: 'Calculator',
+        window_id: 7,
+        observation_id: 'frame-1',
+        element_id: 'e9',
+      },
+    ];
+    calls.forEach((wireArgs, index) => {
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_start',
+          toolUseId: `cu-${index}`,
+          toolName: 'maka_computer',
+          displayName: 'Maka Computer',
+          activityKind: 'computer',
+          args: computerUseApprovalSummary(wireArgs),
+        }),
+      );
+      applyMakaSessionEventToTranscript(
+        state,
+        event({
+          type: 'tool_result',
+          toolUseId: `cu-${index}`,
+          isError: false,
+          content: { kind: 'text', text: 'ok' },
+        }),
+      );
+    });
+
+    const rendered = renderMakaPiTranscript(state, meta(), 120).map(stripAnsi);
+    const rows = rendered.filter((line) => line.includes('Maka Computer'));
+    assert.equal(rows.length, 3, 'one row per call');
+    assert.equal(
+      new Set(rows.map((row) => row.trim())).size,
+      3,
+      'three rows that read differently',
+    );
+    assert.ok(
+      rows.some((row) => /click_element · element e7 · Calculator window 7/.test(row)),
+      `expected the first click to name its element, got:\n${rows.join('\n')}`,
+    );
+    assert.ok(rows.some((row) => /click_element · element e9/.test(row)));
+    assert.ok(rows.some((row) => /observe · Calculator window 7/.test(row)));
+    // The host's own approval bookkeeping is not something the model asked for
+    // and has no business in a transcript row.
+    const all = rows.join('\n');
+    assert.equal(/approvalClass|rememberForTurnAllowed|observationId/.test(all), false, all);
   });
 });
 

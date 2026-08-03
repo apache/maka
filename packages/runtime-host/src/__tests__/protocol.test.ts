@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import {
   decodeClientFrame,
   decodeHostFrame,
@@ -309,6 +309,48 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       isInvalidFrame,
     );
+  });
+
+  /**
+   * The decoder is the worst place to keep a second copy of a vocabulary: a
+   * kind added anywhere else made this reject the whole frame, and the failure
+   * arrived as a protocol violation naming nothing. `requireToolActivityKind`
+   * was a hand-written chain that had already fallen behind — it threw on
+   * `'computer'` — and nothing in this package exercised it, so putting it back
+   * would have cost no test at all.
+   *
+   * Every kind on the wire decodes; a plausible one that is not on it does not.
+   */
+  test('accepts every declared tool activity kind and nothing else', () => {
+    const envelope = {
+      kind: 'subscription.session_event' as const,
+      hostEpoch: 'epoch-1',
+      subscriptionId: 'subscription-1',
+      sequence: 1,
+      sessionId: 'session-1',
+      runId: 'run-1',
+    };
+    const start = {
+      id: 'event-1',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      type: 'tool_start' as const,
+      toolName: 'maka_computer',
+    };
+    assert.ok(TOOL_ACTIVITY_KINDS.includes('computer'));
+    for (const activityKind of TOOL_ACTIVITY_KINDS) {
+      assert.doesNotThrow(
+        () => decodeHostFrame({ ...envelope, event: { ...start, activityKind } }),
+        `the wire declares ${activityKind}, so the decoder must accept it`,
+      );
+    }
+    for (const activityKind of ['desktop', 'Computer', '', 7]) {
+      assert.throws(
+        () => decodeHostFrame({ ...envelope, event: { ...start, activityKind } }),
+        isInvalidFrame,
+      );
+    }
   });
 
   test('enforces UTF-8 snapshot, live field, and whole-frame byte bounds', () => {

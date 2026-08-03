@@ -247,6 +247,14 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
     assert.ok(tool.parameters, 'carries a zod parameter schema');
   });
 
+  test('declares the activity kind the renderer buckets it by', () => {
+    // Without this the `computer` kind has no producer at all, and every
+    // surface has to recognise Computer Use by its tool name instead — which
+    // is the recognition-by-string the kind was added to replace.
+    const [tool] = buildComputerUseTools({ backend: fakeBackend() });
+    assert.equal(tool.activityKind, 'computer');
+  });
+
   test('waits for presentation readiness before dispatch without waiting for finish', async () => {
     const events: string[] = [];
     let ready!: () => void;
