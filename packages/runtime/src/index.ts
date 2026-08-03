@@ -298,6 +298,8 @@ export type {
   RuntimeInteractionRunFacet,
   RuntimeInteractionRunIdentity,
   RuntimeInteractionRunOwner,
+  RuntimeSandboxBoundaryContinuation,
+  RuntimeSandboxBoundaryOutcome,
   RuntimeUserQuestionAnswer,
   RuntimeUserQuestionClosureReason,
   RuntimeUserQuestionContinuation,
@@ -1133,6 +1135,7 @@ export type { ToolActivityItem, ChatItem, SessionViewModel } from './materialize
 export { AsyncEventQueue } from './async-queue.js';
 export {
   FAKE_ASK_USER_QUESTION_PROMPT,
+  FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
   FakeBackend,
 } from './fake-backend.js';

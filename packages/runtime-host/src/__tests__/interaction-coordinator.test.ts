@@ -3,15 +3,20 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type { UserQuestionRequestEvent } from '@maka/core/events';
+import type { SandboxBoundaryRequest } from '@maka/core';
+import type { SandboxBoundaryRequestEvent, UserQuestionRequestEvent } from '@maka/core/events';
 import {
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   type RuntimeInteractionRunIdentity,
+  type RuntimeSandboxBoundaryContinuation,
   type RuntimeUserQuestionContinuation,
 } from '@maka/runtime';
 import {
-  openSqliteInteractiveInteractionStoreForWrite,
+  openInteractiveExecutionStoresForWrite,
+  type ExecutionStoresWriter,
+} from '@maka/storage/execution-stores';
+import {
   type InteractiveInteractionStoreWriterFacade,
   type StoredInteractionRequest,
 } from '@maka/storage/interaction-store';
@@ -63,6 +68,7 @@ describe('HostInteractionCoordinator', () => {
       assert.equal(await coordinator.hasPendingSession(RUN.sessionId), true);
 
       const answer = {
+        sessionId: RUN.sessionId,
         interactionId: 'question_1',
         answer: { kind: 'question', answers: ['Yes'] },
       } as const;
@@ -77,6 +83,7 @@ describe('HostInteractionCoordinator', () => {
 
       const conflicting = await coordinator.handlers['interaction.answer'](
         {
+          sessionId: RUN.sessionId,
           interactionId: 'question_1',
           answer: { kind: 'question', answers: ['No'] },
         },
@@ -87,6 +94,213 @@ describe('HostInteractionCoordinator', () => {
 
       await owner.close('turn_terminal');
       owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('settles a sandbox boundary once through the canonical boundary Store and wakes its graph', async () => {
+    await withStore(async ({ owner, store, stores }) => {
+      const workspace = join(owner.capability.canonicalPath, 'workspace');
+      await mkdir(workspace);
+      const session = await stores.sessionStore.create({
+        cwd: workspace,
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const identity = { ...RUN, sessionId: session.id };
+      const requestId = 'boundary_1';
+      const expansion = {
+        filesystem: {
+          entries: [
+            {
+              path: join(owner.capability.canonicalPath, 'outside.txt'),
+              access: 'read' as const,
+              scope: 'exact' as const,
+            },
+          ],
+        },
+      };
+      const candidate: SandboxBoundaryRequest = {
+        sessionId: session.id,
+        requestId,
+        status: 'pending',
+        baseRevision: 0,
+        turnId: identity.turnId,
+        runId: identity.runId,
+        expansion,
+        justification: 'Read the selected file.',
+        createdAt: 1,
+      };
+      const applied: string[] = [];
+      let graphWakes = 0;
+      const coordinator = new HostInteractionCoordinator({
+        store,
+        sandboxBoundaries: stores.sessionStore,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: stores.sessionStore,
+        preflightSessionSnapshot: (_sessionId, projection) => {
+          assert.equal(projection.pending.length, 1);
+          assert.equal(projection.pending[0]?.request.kind, 'sandbox_boundary');
+          return true;
+        },
+        refreshCanonicalContinuity: async () => {},
+        onSandboxBoundarySettled: async (sessionId) => {
+          assert.equal(sessionId, session.id);
+          graphWakes += 1;
+        },
+        onPoison: () => {},
+      });
+      const ownerRun = coordinator.bindRun(identity);
+      assert.equal(
+        await stores.sessionStore.readSandboxBoundaryRequest(session.id, requestId),
+        undefined,
+      );
+      await ownerRun.acceptSandboxBoundaryRequest({
+        request: sandboxBoundaryEvent(candidate),
+        continuation: sandboxBoundaryContinuation(identity, requestId, {
+          decision: (status) => applied.push(status),
+        }),
+      });
+
+      const pending = await coordinator.handlers['interaction.query'](
+        { sessionId: session.id, interactionId: requestId },
+        connection(),
+      );
+      assert.equal(pending.ok, true);
+      if (!pending.ok) return;
+      assert.equal(pending.result.status, 'pending');
+      assert.equal(pending.result.request.kind, 'sandbox_boundary');
+
+      const answer = {
+        sessionId: session.id,
+        interactionId: requestId,
+        answer: { kind: 'sandbox_boundary', decision: 'allow' },
+      } as const;
+      const [first, second] = await Promise.all([
+        coordinator.handlers['interaction.answer'](answer, connection()),
+        coordinator.handlers['interaction.answer'](answer, connection()),
+      ]);
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      if (!first.ok || !second.ok) return;
+      assert.deepEqual(first.result, second.result);
+      assert.equal(first.result.status, 'answered');
+      assert.equal(first.result.outcome.kind, 'sandbox_boundary_decision');
+      assert.deepEqual(applied, ['approved']);
+      assert.equal(graphWakes, 1);
+      assert.equal((await stores.sessionStore.readExecutionBoundary(session.id)).revision, 1);
+      assert.equal(await coordinator.hasPendingSession(session.id), false);
+
+      const closingRequest: SandboxBoundaryRequest = {
+        sessionId: session.id,
+        requestId: 'boundary_closing',
+        status: 'pending',
+        baseRevision: 1,
+        turnId: identity.turnId,
+        runId: identity.runId,
+        expansion: {
+          filesystem: {
+            entries: [
+              {
+                path: join(owner.capability.canonicalPath, 'another.txt'),
+                access: 'read',
+                scope: 'exact',
+              },
+            ],
+          },
+        },
+        justification: 'Read another selected file.',
+        createdAt: 2,
+      };
+      const closures: string[] = [];
+      await ownerRun.acceptSandboxBoundaryRequest({
+        request: sandboxBoundaryEvent(closingRequest),
+        continuation: sandboxBoundaryContinuation(identity, closingRequest.requestId, {
+          closure: (reason) => closures.push(reason),
+        }),
+      });
+      await ownerRun.close('turn_stopped');
+      assert.deepEqual(closures, ['turn_stopped']);
+      const closed = await coordinator.handlers['interaction.query'](
+        { sessionId: session.id, interactionId: closingRequest.requestId },
+        connection(),
+      );
+      assert.equal(closed.ok, true);
+      if (!closed.ok) return;
+      assert.equal(closed.result.status, 'closed');
+      assert.equal(closed.result.outcome.kind, 'closure');
+      if (closed.result.outcome.kind === 'closure') {
+        assert.equal(closed.result.outcome.reason, 'turn_stopped');
+      }
+      assert.equal(graphWakes, 1);
+      ownerRun.release();
+      await coordinator.close();
+    });
+  });
+
+  test('rejects a hosted sandbox boundary before publication when its snapshot does not fit', async () => {
+    await withStore(async ({ owner, store, stores }) => {
+      const workspace = join(owner.capability.canonicalPath, 'workspace');
+      await mkdir(workspace);
+      const session = await stores.sessionStore.create({
+        cwd: workspace,
+        backend: 'fake',
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+      });
+      const identity = { ...RUN, sessionId: session.id };
+      const request: SandboxBoundaryRequest = {
+        sessionId: session.id,
+        requestId: 'boundary_too_large',
+        status: 'pending',
+        baseRevision: 0,
+        turnId: identity.turnId,
+        runId: identity.runId,
+        expansion: {
+          filesystem: {
+            entries: [
+              {
+                path: join(owner.capability.canonicalPath, 'outside.txt'),
+                access: 'read',
+                scope: 'exact',
+              },
+            ],
+          },
+        },
+        justification: 'Read the selected file.',
+        createdAt: 1,
+      };
+      const coordinator = new HostInteractionCoordinator({
+        store,
+        sandboxBoundaries: stores.sessionStore,
+        sessionAdmission: new SessionAdmissionGate(),
+        sessions: stores.sessionStore,
+        preflightSessionSnapshot: () => false,
+        refreshCanonicalContinuity: async () => {},
+        onPoison: () => {},
+      });
+      const ownerRun = coordinator.bindRun(identity);
+
+      await assert.rejects(
+        ownerRun.acceptSandboxBoundaryRequest({
+          request: sandboxBoundaryEvent(request),
+          continuation: sandboxBoundaryContinuation(identity, request.requestId),
+        }),
+        (error: unknown) =>
+          error instanceof RuntimeInteractionAdmissionRejectedError &&
+          error.reason === 'capacity_exceeded',
+      );
+      assert.equal(
+        await stores.sessionStore.readSandboxBoundaryRequest(session.id, request.requestId),
+        undefined,
+      );
+      assert.equal(coordinator.isPoisoned(), false);
+
+      await ownerRun.close('turn_terminal');
+      ownerRun.release();
       await coordinator.close();
     });
   });
@@ -105,6 +319,7 @@ describe('HostInteractionCoordinator', () => {
         continuation: questionContinuation('question_removed_session'),
       });
       const answer = {
+        sessionId: RUN.sessionId,
         interactionId: 'question_removed_session',
         answer: { kind: 'question', answers: ['Yes'] },
       } as const;
@@ -156,6 +371,7 @@ describe('HostInteractionCoordinator', () => {
       await assert.rejects(
         coordinator.handlers['interaction.answer'](
           {
+            sessionId: RUN.sessionId,
             interactionId: 'question_rejected_apply',
             answer: { kind: 'question', answers: ['Yes'] },
           },
@@ -394,6 +610,17 @@ function createCoordinator(
   let now = 100;
   return new HostInteractionCoordinator({
     store,
+    sandboxBoundaries: {
+      createSandboxBoundaryRequest: async () => {
+        throw new Error('Unexpected sandbox boundary publication');
+      },
+      readSandboxBoundaryRequest: async () => undefined,
+      listPendingSandboxBoundaryRequests: async () => [],
+      settleSandboxBoundaryRequest: async () => {
+        throw new Error('Unexpected sandbox boundary settlement');
+      },
+      listHeaders: async () => [],
+    },
     sessionAdmission: new SessionAdmissionGate(),
     sessions: {
       probeSessionRemoval: async () => ({ kind: 'present' }),
@@ -435,6 +662,42 @@ function questionContinuation(
     requestId,
     applyAnswer: async (answer) => {
       await callbacks.answer?.(answer.answers);
+    },
+    applyClosure: async (reason) => {
+      await callbacks.closure?.(reason);
+    },
+  };
+}
+
+function sandboxBoundaryEvent(request: SandboxBoundaryRequest): SandboxBoundaryRequestEvent {
+  assert.ok(request.turnId);
+  return {
+    id: `event_${request.requestId}`,
+    type: 'sandbox_boundary_request',
+    turnId: request.turnId,
+    ts: request.createdAt,
+    requestId: request.requestId,
+    toolUseId: `tool_${request.requestId}`,
+    expansion: request.expansion,
+    justification: request.justification,
+  };
+}
+
+function sandboxBoundaryContinuation(
+  identity: RuntimeInteractionRunIdentity,
+  requestId: string,
+  callbacks: {
+    decision?: (status: string) => unknown;
+    closure?: (
+      reason: Parameters<RuntimeSandboxBoundaryContinuation['applyClosure']>[0],
+    ) => unknown;
+  } = {},
+): RuntimeSandboxBoundaryContinuation {
+  return {
+    ...identity,
+    requestId,
+    applyDecision: async (settlement) => {
+      await callbacks.decision?.(settlement.request.status);
     },
     applyClosure: async (reason) => {
       await callbacks.closure?.(reason);
@@ -548,6 +811,7 @@ function connection(): ConnectionContext {
 interface StoreContext {
   readonly owner: InteractiveRootOwner;
   readonly store: InteractiveInteractionStoreWriterFacade;
+  readonly stores: ExecutionStoresWriter<'interactive'>;
 }
 
 async function withStore(run: (context: StoreContext) => Promise<void>): Promise<void> {
@@ -558,9 +822,10 @@ async function withStore(run: (context: StoreContext) => Promise<void>): Promise
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
   if (!owner) return;
-  const store = await openSqliteInteractiveInteractionStoreForWrite(owner.lease);
+  const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+  const store = stores.interactionStore;
   try {
-    await run({ owner, store });
+    await run({ owner, store, stores });
   } finally {
     if (!owner.closed) await owner.close();
     await rm(owner.controlDirectory, { recursive: true, force: true });

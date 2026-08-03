@@ -13228,6 +13228,7 @@ async function hostedInteractionBinding(overrides: Partial<RuntimeInteractionRun
     {
       bindRun: (identity) => ({
         ...identity,
+        acceptSandboxBoundaryRequest: async () => {},
         acceptUserQuestionRequest: async () => {},
         close: async () => {},
         release: () => {},

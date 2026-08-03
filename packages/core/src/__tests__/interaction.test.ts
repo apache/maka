@@ -15,6 +15,7 @@ import {
   isInteractionCanonicalOutcomeValidForRequest,
   projectInteractionPermissionRequest,
   projectInteractionQuestionRequest,
+  projectInteractionSandboxBoundaryRequest,
 } from '../interaction.js';
 import type { PermissionRequest, PermissionRequestPayload } from '../permission.js';
 
@@ -702,6 +703,46 @@ describe('Interaction projection', () => {
 });
 
 describe('Interaction decoding and validity', () => {
+  test('keeps sandbox boundary answers tied to exact boundary outcome semantics', () => {
+    const request = projectInteractionSandboxBoundaryRequest({
+      expansion: {
+        filesystem: {
+          entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+        },
+      },
+      justification: 'Read the selected file.',
+    });
+    const answer = decodeInteractionAnswer({ kind: 'sandbox_boundary', decision: 'allow' });
+    const outcome = decodeInteractionCanonicalOutcome({
+      kind: 'sandbox_boundary_decision',
+      decision: 'allow',
+      status: 'approved',
+      committedAt: 2,
+    });
+    assert.equal(isInteractionAnswerValidForRequest(request, answer), true);
+    assert.equal(isInteractionCanonicalOutcomeValidForRequest(request, outcome), true);
+    assert.deepEqual(decodeInteractionRequest(request), request);
+    assert.throws(() =>
+      decodeInteractionCanonicalOutcome({
+        kind: 'sandbox_boundary_decision',
+        decision: 'deny',
+        status: 'approved',
+        committedAt: 2,
+      }),
+    );
+    assert.equal(
+      isInteractionCanonicalOutcomeValidForRequest(
+        request,
+        decodeInteractionCanonicalOutcome({
+          kind: 'closure',
+          reason: 'timed_out',
+          committedAt: 3,
+        }),
+      ),
+      false,
+    );
+  });
+
   const permission = projectInteractionPermissionRequest(toolPermission);
   const question = projectInteractionQuestionRequest({
     toolUseId: 'q1',

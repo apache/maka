@@ -13,11 +13,12 @@ import type {
   MessageContent,
   QuoteRef,
   SessionEvent,
+  SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
 import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
-import type { SandboxBoundaryResponse } from './sandbox-boundary.js';
+import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, BackendKind } from './session.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
@@ -103,6 +104,11 @@ export interface HostedUserQuestionSettlement {
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
+export interface HostedSandboxBoundarySettlement {
+  applyDecision(settlement: SandboxBoundarySettlement): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
 /**
  * Optional producer capability scoped to one exact hosted Run. Admission must
  * complete before a backend publishes the request or starts any local winner.
@@ -115,6 +121,10 @@ export interface HostedInteractionBridge {
   admitUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
+  }): Promise<void>;
+  admitSandboxBoundaryRequest(input: {
+    request: SandboxBoundaryRequestEvent;
+    settlement: HostedSandboxBoundarySettlement;
   }): Promise<void>;
 }
 

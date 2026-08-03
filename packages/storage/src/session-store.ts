@@ -206,6 +206,10 @@ export interface SessionAuthorityStore extends SessionStore {
   createSandboxBoundaryRequest(
     input: CreateSandboxBoundaryRequest,
   ): Promise<SandboxBoundaryRequest>;
+  readSandboxBoundaryRequest(
+    sessionId: string,
+    requestId: string,
+  ): Promise<SandboxBoundaryRequest | undefined>;
   listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   /** Requests already closed against the user because the host restarted. */
   listSandboxBoundaryRestartClosures(sessionId: string): Promise<SandboxBoundaryRequest[]>;
@@ -460,6 +464,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<SandboxBoundaryRequest> {
     await this.ensureReady();
     return this.metadata.createSandboxBoundaryRequest(input);
+  }
+
+  async readSandboxBoundaryRequest(
+    sessionId: string,
+    requestId: string,
+  ): Promise<SandboxBoundaryRequest | undefined> {
+    await this.ensureReady();
+    return this.metadata.readSandboxBoundaryRequest(sessionId, requestId);
   }
 
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {

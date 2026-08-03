@@ -42,6 +42,7 @@ const allowedServerExternalImports = new Set([
   '@maka/core/runtime-policy',
   '@maka/core/runtime-event',
   '@maka/core/runtime-inputs',
+  '@maka/core/sandbox-boundary',
   '@maka/core/session',
   '@maka/core/session-name',
   '@maka/core/shell-run',

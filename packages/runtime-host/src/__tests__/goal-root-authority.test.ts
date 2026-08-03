@@ -573,6 +573,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   );
   const interactions = new HostInteractionCoordinator({
     store: stores.interactionStore,
+    sandboxBoundaries: stores.sessionStore,
     sessionAdmission: admission,
     sessions: stores.sessionStore,
     preflightSessionSnapshot: (sessionId, interactions) =>

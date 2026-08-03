@@ -17990,6 +17990,7 @@ describe('SessionManager steering and followup queues', () => {
           identities.push(identity);
           return {
             ...identity,
+            acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
             close: async (reason) => {
               lifecycle.push(`close:${reason}`);
@@ -18031,6 +18032,7 @@ describe('SessionManager steering and followup queues', () => {
       interactionAuthority: {
         bindRun: (identity) => ({
           ...identity,
+          acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async ({ continuation }) => {
             question = continuation;
           },
@@ -18083,6 +18085,7 @@ describe('SessionManager steering and followup queues', () => {
       interactionAuthority: {
         bindRun: (identity) => ({
           ...identity,
+          acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async () => {},
           close: async () => {},
           release: () => {
@@ -22352,6 +22355,7 @@ function testInteractionAuthority(): RuntimeInteractionAuthority {
   return {
     bindRun: (identity) => ({
       ...identity,
+      acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       close: async () => {},
       release: () => {},

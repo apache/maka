@@ -11,6 +11,11 @@ import {
   type SessionEvent,
   type SessionHeader,
 } from '@maka/core';
+import type {
+  HostedInteractionBridge,
+  HostedSandboxBoundarySettlement,
+} from '@maka/core/backend-types';
+import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
@@ -150,6 +155,111 @@ describe('ToolRuntime session sandbox boundary', () => {
     const result = (await pending).result as SandboxBoundarySettlement;
     assert.equal(result.request.status, 'approved');
     assert.equal(result.boundary.revision, 1);
+  });
+
+  test('publishes a hosted boundary only after admission and settles only through its continuation', async () => {
+    const events: SessionEvent[] = [];
+    const admissionStarted = deferred<void>();
+    const releaseAdmission = deferred<void>();
+    const managed: ExecutionBoundary = {
+      kind: 'managed',
+      profile: createWorkspaceWritePermissionProfile(),
+      revision: 0,
+    };
+    let admittedRequest: SandboxBoundaryRequestEvent | undefined;
+    let captured: HostedSandboxBoundarySettlement | undefined;
+    const hostedInteraction: HostedInteractionBridge = {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      admitUserQuestionRequest: async () => {
+        throw new Error('Unexpected user question');
+      },
+      admitSandboxBoundaryRequest: async ({ request, settlement }) => {
+        admittedRequest = request;
+        captured = settlement;
+        admissionStarted.resolve();
+        await releaseAdmission.promise;
+      },
+    };
+    const runtime = new ToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => managed,
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+      getCurrentRunId: () => 'run-1',
+    });
+    runtime.beginTurn('turn-1', hostedInteraction);
+    const pending = runtime.settleToolCall({
+      tool: buildRequestSandboxBoundaryTool(),
+      turnId: 'turn-1',
+      toolCallId: 'tool-boundary',
+      input: {
+        expansion: {
+          filesystem: {
+            entries: [{ path: '/outside/file.txt', access: 'read', scope: 'exact' }],
+          },
+        },
+        justification: 'Read the user-selected file.',
+      },
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    await admissionStarted.promise;
+    assert.equal(
+      events.some((event) => event.type === 'sandbox_boundary_request'),
+      false,
+    );
+    await assert.rejects(
+      runtime.respondToSandboxBoundaryRequest('turn-1', {
+        requestId: admittedRequest!.requestId,
+        decision: 'allow',
+      }),
+      /captured continuation/,
+    );
+    releaseAdmission.resolve();
+    const requestEvent = await waitForBoundaryRequest(events);
+    assert.ok(captured);
+    await captured.applyDecision({
+      request: {
+        sessionId: 'session-1',
+        requestId: requestEvent.requestId,
+        status: 'approved',
+        baseRevision: 0,
+        expansion: requestEvent.expansion,
+        justification: requestEvent.justification,
+        createdAt: requestEvent.ts,
+        settledAt: 2,
+        appliedRevision: 1,
+        turnId: 'turn-1',
+        runId: 'run-1',
+      },
+      boundary: { ...managed, revision: 1 },
+      changed: true,
+    });
+    const result = (await pending).result as SandboxBoundarySettlement;
+    assert.equal(result.request.status, 'approved');
+    assert.deepEqual(
+      events
+        .filter(
+          (event) =>
+            event.type === 'sandbox_boundary_request' ||
+            event.type === 'sandbox_boundary_decision_ack',
+        )
+        .map((event) => event.type),
+      ['sandbox_boundary_request', 'sandbox_boundary_decision_ack'],
+    );
   });
 
   test('rejects an invalid expansion before creating durable pending state', async () => {
@@ -674,4 +784,15 @@ async function waitForBoundaryRequest(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error('Sandbox boundary request was not emitted');
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

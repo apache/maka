@@ -20,6 +20,7 @@ import {
   decodeAgentGraphIntentClaim,
   decodeExecutionBoundary,
   createGenesisExecutionBoundary,
+  SANDBOX_BOUNDARY_CLOSURE_REASONS,
   SANDBOX_BOUNDARY_HOST_RESTART_CLOSURE_REASON,
   validateSandboxBoundaryExpansion,
   isSubagentSessionParent,
@@ -426,6 +427,19 @@ export class SqliteSessionMetadataStore {
     });
   }
 
+  async readSandboxBoundaryRequest(
+    sessionId: string,
+    requestId: string,
+  ): Promise<SandboxBoundaryRequest | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeBoundaryRequestId(requestId);
+    return this.transaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      return this.readSandboxBoundaryRequestSync(sessionId, requestId);
+    });
+  }
+
   async listPendingSandboxBoundaryRequests(sessionId: string): Promise<SandboxBoundaryRequest[]> {
     this.assertOpen();
     assertSafeSessionId(sessionId);
@@ -484,6 +498,12 @@ export class SqliteSessionMetadataStore {
     assertSafeBoundaryRequestId(input.requestId);
     if (input.decision !== 'allow' && input.decision !== 'deny') {
       throw new Error('Invalid sandbox boundary decision');
+    }
+    if (
+      input.closureReason !== undefined &&
+      !SANDBOX_BOUNDARY_CLOSURE_REASONS.includes(input.closureReason)
+    ) {
+      throw new Error('Invalid sandbox boundary closure reason');
     }
 
     return this.transaction(() => {

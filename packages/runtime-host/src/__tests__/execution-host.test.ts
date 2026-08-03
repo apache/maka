@@ -29,6 +29,7 @@ import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitTerminalRunWithRuntimeFact,
+  FAKE_ASK_SANDBOX_BOUNDARY_PROMPT,
   FAKE_ASK_USER_QUESTION_PROMPT,
   FAKE_WAIT_FOR_STEERING_PROMPT,
   type MakaTool,
@@ -715,6 +716,85 @@ test('a disconnected Client leaves a durable Interaction that another Client can
         answer,
       }),
       winner,
+    );
+    assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
+    await observer.close();
+    await fixture.stopHost(secondHost);
+  });
+});
+
+test('two UDS Clients settle one hosted sandbox boundary and resume its exact Run', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const firstHost = await fixture.startHost();
+    const starter = await connectClient(fixture.root, 'desktop');
+    const first = await connectClient(fixture.root, 'tui');
+    const second = await connectClient(fixture.root, 'run');
+    const subscription = await first.openSessionSubscription({ sessionId: fixture.sessionId });
+    const probe = new SubscriptionProbe(subscription);
+    const turnId = randomUUID();
+    const started = await starter.startTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      content: { text: FAKE_ASK_SANDBOX_BOUNDARY_PROMPT },
+    });
+    await starter.close();
+
+    const pending = await waitForPendingInteraction(subscription, probe, started.runId);
+    assert.equal(pending.sessionId, fixture.sessionId);
+    assert.equal(pending.turnId, turnId);
+    assert.equal(pending.runId, started.runId);
+    assert.equal(pending.status, 'pending');
+    assert.equal(pending.request.kind, 'sandbox_boundary');
+    if (pending.request.kind !== 'sandbox_boundary') return;
+    assert.deepEqual(pending.request.expansion, { network: { enabled: true } });
+
+    const answer = {
+      sessionId: fixture.sessionId,
+      interactionId: pending.interactionId,
+      answer: { kind: 'sandbox_boundary', decision: 'allow' },
+    } as const;
+    const [firstWinner, secondWinner] = await Promise.all([
+      first.request('interaction.answer', answer),
+      second.request('interaction.answer', answer),
+    ]);
+    assert.deepEqual(firstWinner, secondWinner);
+    assert.equal(firstWinner.status, 'answered');
+    assert.equal(firstWinner.outcome.kind, 'sandbox_boundary_decision');
+    if (firstWinner.outcome.kind !== 'sandbox_boundary_decision') return;
+    assert.equal(firstWinner.outcome.decision, 'allow');
+    assert.equal(firstWinner.outcome.status, 'approved');
+    assert.equal(Number.isSafeInteger(firstWinner.outcome.committedAt), true);
+    assert.deepEqual(
+      await first.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      firstWinner,
+    );
+    await probe.waitFor(
+      (frame) =>
+        frame.kind === 'subscription.session_projection' &&
+        frame.snapshot.rootTurn?.runId === started.runId &&
+        frame.snapshot.interactions.pending.length === 0,
+      'continuity did not publish the resumed Turn after the sandbox boundary answer',
+    );
+    const completed = await waitForTerminalTurn(first, fixture.sessionId, turnId);
+    assert.equal(completed.runId, started.runId);
+    assert.equal(completed.status, 'completed');
+
+    await subscription.close();
+    await probe.done;
+    await Promise.allSettled([first.close(), second.close()]);
+    await fixture.stopHost(firstHost);
+
+    const secondHost = await fixture.startHost();
+    const observer = await connectClient(fixture.root, 'desktop');
+    assert.deepEqual(
+      await observer.request('interaction.query', {
+        sessionId: fixture.sessionId,
+        interactionId: pending.interactionId,
+      }),
+      firstWinner,
     );
     assert.deepEqual(await observer.queryTurn({ sessionId: fixture.sessionId, turnId }), completed);
     await observer.close();

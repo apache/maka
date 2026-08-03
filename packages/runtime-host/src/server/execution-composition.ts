@@ -62,6 +62,7 @@ import type { DomainOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
+import { sandboxBoundaryGraphWakeRoot } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
@@ -263,6 +264,7 @@ export async function createExecutionRuntimeHostComposition(
     };
     const interactions = new HostInteractionCoordinator({
       store: stores.interactionStore,
+      sandboxBoundaries: stores.sessionStore,
       sessionAdmission,
       sessions: stores.sessionStore,
       preflightSessionSnapshot: (sessionId, interactionProjection) =>
@@ -277,6 +279,13 @@ export async function createExecutionRuntimeHostComposition(
         context.retainUntilProcessExit();
         beginDrain();
         context.requestDrain();
+      },
+      onSandboxBoundarySettled: async (sessionId) => {
+        const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
+        const rootSessionId = sandboxBoundaryGraphWakeRoot(header);
+        if (rootSessionId) {
+          await graphSupervisorWake?.notifyPermissionResponse(rootSessionId);
+        }
       },
     });
     const canonicalPermissionOutcomes = new HostCanonicalPermissionOutcomeReader({
