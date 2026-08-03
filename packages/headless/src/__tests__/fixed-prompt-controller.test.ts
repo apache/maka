@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -3318,6 +3319,65 @@ describe('fixed prompt controller', () => {
       assert.equal(result.events[0]?.scored, false);
       assert.equal(result.events[0]?.eligible, false);
       assert.equal(result.events[0]?.errorClass, 'network');
+    });
+  });
+
+  test('projects a legacy heldInTaskSetHash into canonical codepoint order on read', async () => {
+    // Legacy WALs written before the codepoint unification sorted heldInTaskIds
+    // with localeCompare. For mixed-case ids the localeCompare and codepoint
+    // orders diverge, so the persisted hash disagrees with the codepoint
+    // re-hash done at replay. readFixedPromptWal must re-derive the hash so a
+    // resume after upgrade does not hard-fail.
+    await withDir(async (dir) => {
+      const resultsJsonlPath = join(dir, 'results.jsonl');
+      const heldInTaskIds = ['apple', 'Banana', 'cherry', 'Date'];
+      const localeCompareHash = `sha256:${createHash('sha256')
+        .update(
+          JSON.stringify(
+            [...new Set(heldInTaskIds)].sort((a, b) => a.localeCompare(b)),
+          ),
+        )
+        .digest('hex')}`;
+      const codepointHash = `sha256:${createHash('sha256')
+        .update(
+          JSON.stringify(
+            [...new Set(heldInTaskIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+          ),
+        )
+        .digest('hex')}`;
+      assert.notEqual(localeCompareHash, codepointHash);
+
+      await appendFile(
+        resultsJsonlPath,
+        `${JSON.stringify({
+          schemaVersion: 1,
+          type: 'prompt_candidate_committed',
+          id: 'legacy-commit',
+          ts: 100,
+          runId: 'run-1',
+          roundId: 'round-1',
+          commitSha: 'legacy-sha',
+          summary: 'legacy candidate',
+          promptHash: 'sha256:prompt',
+          heldInTaskSetHash: localeCompareHash,
+          heldInTaskIds: [...new Set(heldInTaskIds)].sort((a, b) =>
+            a.localeCompare(b),
+          ),
+          candidateRationaleHash: 'sha256:rationale',
+          candidateRationale: {
+            failurePattern: 'held_in_within_noise',
+            summary: 'legacy',
+            evidenceRefs: [],
+            predictedFixes: [],
+            riskTasks: [],
+          },
+        })}\n`,
+        'utf8',
+      );
+
+      const [event] = await readFixedPromptWal(resultsJsonlPath);
+      assert.equal(event?.type, 'prompt_candidate_committed');
+      assert.equal(event.heldInTaskSetHash, codepointHash);
     });
   });
 
