@@ -536,9 +536,11 @@ export function createSessionStreamer(deps: SessionStreamerDeps): StreamEvents {
         if (isTurnStatusChangingSessionEvent(event)) {
           emitSessionsChanged('turn-status-change', sessionId, { turnId });
           computerUseOverlay.clearForSession(sessionId);
-          // The mirror lingers rather than vanishing: a person watching
-          // background work looks over at the moment the answer arrives, which
-          // is the moment an immediate teardown would take the window away.
+          // The turn ended, which is what the mirror calls a run. It lingers
+          // rather than vanishing: a person watching background work looks
+          // over at the moment the answer arrives, which is the moment an
+          // immediate teardown would take the window away. A dismissal expires
+          // here too, alongside the two clears either side of this line.
           computerUsePip?.complete(sessionId);
           computerUseTools.clearSession(sessionId);
         }

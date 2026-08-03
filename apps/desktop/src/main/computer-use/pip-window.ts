@@ -63,8 +63,10 @@ export interface ComputerUsePipController {
   /** Draw the agent cursor inside the mirror, in target-window coordinates. */
   setCursor(input: { sessionId: string; x: number; y: number } | { sessionId: string }): void;
   /**
-   * The run finished. Marks the mirror complete and retires it after a while,
-   * instead of taking it away at the moment a person looks over.
+   * The run finished — one turn, not the whole session. Marks the mirror
+   * complete and retires it after a while, instead of taking it away at the
+   * moment a person looks over, and expires a dismissal so the next turn
+   * starts from a mirror the user can see.
    */
   complete(sessionId: string): void;
   clearForSession(sessionId: string): void;
@@ -252,6 +254,7 @@ export function createComputerUsePipController(
    *
    * A session id rather than a flag: `teardown` clears `sessionId`, so a flag
    * would be un-set by the very next frame of the run it was meant to dismiss.
+   * `complete` clears it, because that is where a run ends — see `hide`.
    */
   let hiddenSessionId: string | null = null;
   /** Pending retirement of a finished run's mirror. */
@@ -559,6 +562,9 @@ export function createComputerUsePipController(
           return;
         }
         if (control === 'hide') {
+          // Dismissed for the rest of this run. `complete` puts it back, so
+          // the next turn of the same conversation is a fresh decision — see
+          // the note on `hiddenSessionId`.
           hiddenSessionId = session;
           teardown();
         }
@@ -636,7 +642,8 @@ export function createComputerUsePipController(
       if (typeof input.sessionId !== 'string' || input.sessionId.length === 0) return;
       if (!input.base64) return;
       // Dismissed for this run. The next run gets a mirror again — hiding it
-      // is a statement about this run, not a setting.
+      // is a statement about this run, not a setting. A run is a turn, which
+      // is what `complete` marks the end of.
       if (hiddenSessionId === input.sessionId) return;
       const nextAspect =
         input.widthPx > 0 && input.heightPx > 0 ? input.widthPx / input.heightPx : aspect;
@@ -682,8 +689,20 @@ export function createComputerUsePipController(
      *
      * Not the same thing as stopping or deleting a session — those still tear
      * down immediately, because there the user has said they are done.
+     *
+     * This is also where a dismissal expires, and the reason it happens before
+     * the early return: a hidden mirror has no window, so anything after the
+     * `!win` check would never run for the case that needs it. `hide` is scoped
+     * to a run and a run is a turn — the same turn end that brings
+     * `computerUseOverlay.clearForSession` and `computerUseTools.clearSession`
+     * brings this. Holding it for the whole session instead would leave a
+     * follow-up driving another app for minutes with no mirror and no way to
+     * ask for one back, short of stopping, archiving or deleting the session.
+     * Between a control the user has to press twice and one they cannot undo,
+     * the recoverable one wins.
      */
     complete(endedSessionId: string): void {
+      if (hiddenSessionId === endedSessionId) hiddenSessionId = null;
       if (!win || sessionId !== endedSessionId) return;
       push('pip:completed', {});
       if (retire) clearTimeout(retire);

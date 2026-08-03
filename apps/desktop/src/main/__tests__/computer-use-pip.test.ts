@@ -537,7 +537,87 @@ test('Computer Use picture-in-picture mirror', async (t) => {
     assert.equal(pip.isVisible(), false, 'and stays dismissed for the rest of the run');
 
     pip.present({ sessionId: 's2', ...FRAME });
-    assert.equal(pip.isVisible(), true, 'the next run is a fresh decision');
+    assert.equal(pip.isVisible(), true, 'a different session is a fresh decision');
+  });
+
+  await t.test('a follow-up turn in the same session gets its mirror back', () => {
+    // A run is a turn. `session-stream` calls `complete` at every turn end,
+    // next to the overlay and tool-session clears, and a dismissal expires with
+    // them.
+    //
+    // Scoped to the session instead, this is the shape of it: the user hides
+    // the mirror during turn one, asks a follow-up, and turn two drives another
+    // app for minutes with nothing on screen and no control to bring it back —
+    // stop, archive and delete are the only things that clear the flag, and all
+    // three end the thing they wanted to keep watching. Re-hiding costs one
+    // click; not being able to un-hide costs the whole point of the mirror.
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+
+    windows[0]!.fireMessage('pip:control', { id: 'hide' });
+    assert.equal(pip.isVisible(), false);
+    assert.equal(windows.length, 1);
+
+    // The turn ends while the mirror is dismissed, so there is no window for
+    // `complete` to mark — the dismissal still has to expire.
+    pip.complete('s1');
+
+    pip.present({ sessionId: 's1', ...FRAME });
+    assert.equal(pip.isVisible(), true, 'the next turn is a fresh decision');
+    assert.equal(windows.length, 2, 'and it is a real window, not a stale handle');
+  });
+
+  await t.test('a dismissal does not survive into a mirror it was not aimed at', () => {
+    // `complete` for some other session must leave this run dismissed;
+    // otherwise a second session finishing un-hides the one the user is
+    // watching.
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+    windows[0]!.fireMessage('pip:control', { id: 'hide' });
+
+    pip.complete('other-session');
+    pip.present({ sessionId: 's1', ...FRAME });
+    assert.equal(pip.isVisible(), false, 'someone else finishing is not this run ending');
+  });
+
+  await t.test('a finished run is retired once the linger elapses', (t) => {
+    // The linger only ever got asserted as "not destroyed synchronously",
+    // which is also true of a timer that never fires, of a body that does
+    // nothing, and of a zero-length linger. The first two leave the mirror on
+    // screen forever and the third takes it away at the moment a person looks
+    // over, which is the whole reason the linger exists. Run the clock, and
+    // pin both sides of it.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+
+    pip.complete('s1');
+    assert.equal(pip.isVisible(), true, 'not taken away at the moment the answer lands');
+
+    t.mock.timers.tick(29_999);
+    assert.equal(pip.isVisible(), true, 'still there a moment before the linger is up');
+
+    t.mock.timers.tick(1);
+    assert.equal(pip.isVisible(), false, 'and gone once it is');
+    assert.equal(windows[0]!.isDestroyed(), true);
+  });
+
+  await t.test('a run that resumes keeps the mirror the linger was going to take', (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { pip, windows } = makePip();
+    pip.present({ sessionId: 's1', ...FRAME });
+    windows[0]!.fireReady();
+
+    pip.complete('s1');
+    t.mock.timers.tick(20_000);
+    pip.present({ sessionId: 's1', ...FRAME });
+    t.mock.timers.tick(30_000);
+
+    assert.equal(pip.isVisible(), true, 'a frame cancels the retirement, it does not delay it');
+    assert.equal(windows.length, 1, 'and does so without rebuilding the window');
   });
 
   await t.test('an unknown control identifier does nothing', () => {
