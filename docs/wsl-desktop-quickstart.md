@@ -1,41 +1,112 @@
-# 在 WSL 中运行 Maka：CLI 与 Desktop 快速指南
+# Running Maka in WSL: CLI and Desktop Quickstart
 
-本文说明如何在 WSL2 中开发和运行 Maka。安装过程分为三层：
+This guide explains how to develop and run Maka in WSL2. The setup is divided into three layers:
 
-1. CLI 与 Desktop 都需要的基础环境；
-2. 仅 Desktop 需要的 WSLg、Electron、字体和输入法；
-3. 只在特定任务中需要的可选工具。
+1. The base environment required by both CLI and Desktop;
+2. WSLg, Electron, fonts, and input methods required only by Desktop;
+3. Optional tools needed only for specific tasks.
 
-如果只运行 CLI，完成“共同基础环境”和“运行 CLI”即可，不需要安装 Electron
-图形库、CJK 字体、Fcitx5 或 X11 测试工具。
+If you only use the CLI, complete the “Shared base environment” and “Run the CLI” sections. You do not need to install Electron graphics libraries, CJK fonts, Fcitx5, or X11 test tools.
 
-当前边界：WSL 版不提供 Computer Use，也不能控制 Windows 原生应用。
+Current limitation: the WSL build does not provide Computer Use and cannot control native Windows applications.
 
-## 1. 先选择运行方式
+## 0. Fast path
 
-| 项目 | CLI | Desktop |
+The following is the shortest startup path for the currently verified environment. Continue with the rest of this guide if you need to troubleshoot or understand why each step is required.
+
+### Verified environment
+
+- Ubuntu 26.04;
+- WSL2: `Linux Admin 6.18.33.2-microsoft-standard-WSL2`;
+- Node.js: `v22.23.2`;
+- npm: `10.9.8` (works; npm 11 is recommended);
+- Git: `2.53.0`;
+- ripgrep: `15.1.0`.
+
+### Install Git and ripgrep
+
+Maka calls Git and ripgrep. If they are not installed, run the following in WSL:
+
+```bash
+sudo apt update
+sudo apt install -y git ripgrep ca-certificates
+```
+
+### Install dependencies and build
+
+Run these commands from an existing clone of the repository. Prefer the WSL Linux filesystem, such as `~/maka-agent`, and do not build under `/mnt/c`:
+
+```bash
+npm ci
+npm run build
+```
+
+### Start the CLI
+
+```bash
+npm --workspace maka-agent exec -- maka
+```
+
+### Start Desktop
+
+```bash
+npm run dev
+```
+
+If startup succeeds, the Maka UI appears. In the currently tested WSL environment, `npm run dev` behaves like the XWayland path: Pinyin input is unavailable until an input method is configured.
+
+### Enable Pinyin input in Desktop
+
+Install Fcitx5 and D-Bus, then enter a new child shell:
+
+```bash
+sudo apt update
+sudo apt install -y fcitx5 fcitx5-chinese-addons fcitx5-config-qt dbus-x11
+dbus-run-session -- bash
+```
+
+In the new child shell, run:
+
+```bash
+fcitx5 -d -k
+sleep 2
+pgrep -af fcitx5
+fcitx5-remote -n
+fcitx5-configtool
+```
+
+Add Pinyin in the configuration window, then press `Ctrl + Space` to switch between English and Pinyin. Still in the same child shell, run:
+
+```bash
+npm run dev
+```
+
+Pinyin input should now be available.
+
+## 1. Choose how to run Maka
+
+| Component | CLI | Desktop |
 | --- | --- | --- |
-| WSL2 + Ubuntu | 必需 | 必需 |
-| Node.js、npm、Git、ripgrep | 必需 | 必需 |
-| WSLg | 不需要 | 必需 |
-| Electron Linux 运行库 | 不需要 | 必需，按缺失项安装 |
-| CJK 字体 | 终端能显示中文即可 | 建议安装 |
-| Fcitx5、D-Bus、XWayland | 不需要 | 仅中文输入需要 |
-| Python、Poppler | 按任务选装 | 按任务选装 |
+| WSL2 + Ubuntu | Required | Required |
+| Node.js, npm, Git, and ripgrep | Required | Required |
+| WSLg | Not required | Required |
+| Electron Linux runtime libraries | Not required | Required; install missing libraries as needed |
+| CJK fonts | The terminal only needs to display Chinese correctly | Recommended |
+| Fcitx5, D-Bus, and XWayland | Not required | Required only for Chinese input |
+| Python and Poppler | Install as needed for the task | Install as needed for the task |
 
-推荐环境：
+Recommended environment:
 
-- WSL2（不是 WSL1）；
-- Ubuntu 22.04 或 24.04；
-- Node.js 22.19 或更新版本；
-- 项目放在 WSL 的 Linux 文件系统，例如 `~/src/maka-agent`，不要优先放在
-  `/mnt/c`。Linux 文件系统中的依赖安装、构建和文件监听通常更可靠。
+- WSL2, not WSL1;
+- Ubuntu 26.04;
+- Node.js 22.19 or later;
+- Store the project in the WSL Linux filesystem, such as `~/src/maka-agent`, instead of preferring `/mnt/c`. Dependency installation, builds, and file watching are generally more reliable on the Linux filesystem.
 
-## 2. CLI 与 Desktop 的共同基础环境
+## 2. Shared base environment for CLI and Desktop
 
-### 2.1 检查 WSL 和基础命令
+### 2.1 Check WSL and the base commands
 
-在 WSL 中运行：
+Run in WSL:
 
 ```bash
 uname -a
@@ -45,49 +116,46 @@ git --version
 rg --version
 ```
 
-在 Windows PowerShell 中可用下面的命令确认 WSL 版本：
+In Windows PowerShell, use the following commands to confirm the WSL version:
 
 ```powershell
 wsl.exe --version
 wsl.exe --list --verbose
 ```
 
-`wsl.exe --list --verbose` 中使用的发行版应显示为版本 `2`。
+The distribution shown by `wsl.exe --list --verbose` should have version `2`.
 
-### 2.2 安装共同的系统工具
+### 2.2 Install shared system tools
 
-Git 和 ripgrep 是 CLI 与 Desktop 都会使用的基础工具。`ripgrep` 提供 Maka
-Runtime 的 `Grep` 能力：
+Git and ripgrep are base tools used by both CLI and Desktop. `ripgrep` provides Maka Runtime's `Grep` capability:
 
 ```bash
 sudo apt update
 sudo apt install -y git ripgrep ca-certificates
 ```
 
-Node.js 不建议直接使用 Ubuntu 仓库中可能较旧的 `nodejs` 包。请使用你熟悉的
-Node 版本管理器安装 Node.js 22.19 或更新版本，并确认 npm 为 11：
+Installing Node.js directly from Ubuntu's repositories is not recommended because the packaged version may be old. Use a Node version manager you are familiar with to install Node.js 22.19 or later. npm 10.9.8 has been verified to work, but npm 11 is recommended:
 
 ```bash
 node --version
 npm --version
 ```
 
-如果 Node.js 已满足要求但 npm 版本较旧，可单独更新 npm：
+If Node.js meets the requirement but npm is older, update npm separately:
 
 ```bash
 npm install --global npm@11
 ```
 
-原生模块只有在没有可用预编译包或安装报编译错误时，才需要本地编译工具：
+Local compilation tools are needed only when a native module has no prebuilt package or installation reports a compilation error:
 
 ```bash
 sudo apt install -y build-essential python3 make g++
 ```
 
-这组工具可能被 `node-pty` 等原生依赖使用。如果 `npm ci` 已成功，不必为了
-“可能需要”而额外安装。
+These tools may be used by native dependencies such as `node-pty`. If `npm ci` succeeds, do not install them merely because they might be needed.
 
-### 2.3 获取代码和安装依赖
+### 2.3 Get the source and install dependencies
 
 ```bash
 mkdir -p ~/src
@@ -97,41 +165,38 @@ cd maka-agent
 npm ci
 ```
 
-如果已经有仓库，直接进入仓库目录运行 `npm ci`。不要同时维护一份 `/mnt/c`
-仓库和一份 Linux 文件系统仓库，以免在错误的副本中构建或修改代码。
+If you already have the repository, enter its directory and run `npm ci`. Do not maintain one clone under `/mnt/c` and another in the Linux filesystem at the same time, because you may build or edit the wrong copy.
 
-## 3. 运行 CLI
+## 3. Run the CLI
 
-只构建 CLI 所需工作区：
+The first build must build every workspace. The CLI loads compiled output for its internal dependencies from their respective `dist/` directories. Those directories do not exist in a fresh clone, so you cannot build only the CLI:
 
 ```bash
-npm --workspace maka-agent run build
+npm run build
 ```
 
-启动交互式 CLI：
+Start the interactive CLI:
 
 ```bash
 node packages/cli/dist/cli.js
 ```
 
-也可以通过 npm workspace 执行：
+You can also run it through the npm workspace:
 
 ```bash
 npm --workspace maka-agent exec -- maka
 npm --workspace maka-agent exec -- maka --help
 ```
 
-到这里 CLI 环境已经完成。后面的内容只适用于 Desktop，除非某一节明确标注为
-可选的通用工具。
+The CLI environment is now ready. The remaining sections apply only to Desktop unless a section is explicitly marked as an optional general-purpose tool.
 
-## 4. Desktop 额外环境
+## 4. Additional Desktop environment
 
-Desktop 是 Linux 版 Electron 应用，因此除了共同基础环境，还需要 WSLg 和
-Electron 的 Linux 运行库。
+Desktop is a Linux Electron application, so it requires WSLg and Electron's Linux runtime libraries in addition to the shared base environment.
 
-### 4.1 检查 WSLg
+### 4.1 Check WSLg
 
-Windows 11 通常随 WSL 提供 WSLg。在 WSL 中运行：
+Windows 11 normally provides WSLg with WSL. Run in WSL:
 
 ```bash
 printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nXDG_RUNTIME_DIR=%s\n' \
@@ -139,18 +204,17 @@ printf 'DISPLAY=%s\nWAYLAND_DISPLAY=%s\nXDG_RUNTIME_DIR=%s\n' \
 ls -la /mnt/wslg 2>/dev/null || true
 ```
 
-正常情况下，`DISPLAY`、`WAYLAND_DISPLAY` 不为空，并且 `/mnt/wslg` 存在。
+Normally, `DISPLAY` and `WAYLAND_DISPLAY` are non-empty and `/mnt/wslg` exists.
 
-### 4.2 安装或修复 Electron
+### 4.2 Install or repair Electron
 
-`npm ci` 首次运行会下载 Linux 版 Electron。如果安装时跳过了 Electron，或者
-下载未完成，运行：
+The first `npm ci` downloads the Linux Electron binary. If Electron was skipped during installation or the download did not finish, run:
 
 ```bash
 node node_modules/electron/install.js
 ```
 
-网络较慢时，可以仅为当前 shell 指定镜像后重新安装依赖：
+On a slow network, set mirrors for the current shell only, then reinstall dependencies:
 
 ```bash
 export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
@@ -159,25 +223,22 @@ npm ci
 node node_modules/electron/install.js
 ```
 
-不要使用下面的配置；npm 10/11 可能报告 `electron_mirror is not a valid npm
-option`：
+Do not use the following configuration; npm 10/11 may report `electron_mirror is not a valid npm option`:
 
 ```bash
 npm config set electron_mirror https://npmmirror.com/mirrors/electron/
 ```
 
-### 4.3 按缺失项安装 Electron 运行库
+### 4.3 Install missing Electron runtime libraries
 
-先检查 Electron 的直接动态库依赖。路径应从当前仓库计算，不要写死为
-`$HOME/maka-agent`：
+First, inspect Electron's direct dynamic-library dependencies. Calculate the path from the current repository instead of hard-coding `$HOME/maka-agent`:
 
 ```bash
 ELECTRON_BIN="$PWD/node_modules/electron/dist/electron"
 ldd "$ELECTRON_BIN" | grep 'not found' || echo 'Electron shared libraries: OK'
 ```
 
-只有出现 `not found` 或 Electron 启动时报缺库时，才安装相应软件包。以下是
-Ubuntu 上常见的 Electron 运行库候选，并非每台机器都必须全部安装：
+Install the corresponding packages only if `not found` appears or Electron reports a missing library at startup. The following are common Electron runtime-library candidates on Ubuntu; not every machine needs all of them:
 
 ```bash
 sudo apt update
@@ -192,34 +253,29 @@ sudo apt install -y \
   libxss1 libxtst6
 ```
 
-Ubuntu 22.04 如果找不到 `libasound2t64`，改用：
+After installation, run the `ldd` check again until `not found` no longer appears.
 
-```bash
-sudo apt install -y libasound2
-```
+### 4.4 Start Desktop
 
-安装后重新运行 `ldd` 检查，直到不再出现 `not found`。
-
-### 4.4 启动 Desktop
-
-推荐使用 HMR 开发模式：
+HMR development mode is recommended:
 
 ```bash
 npm run dev
 ```
 
-如果希望先构建所有 workspace 再启动 Electron：
+In the currently verified WSL environment, this quick-start command behaves like the XWayland path. It is the simplest option, but the UI may look slightly blurry. After configuring Fcitx5, you can also use this command directly to verify Chinese input. To explicitly fix the XWayland and input-method environment, or for troubleshooting, use the explicit command in [6.2](#62-xwayland--fcitx5).
+
+To build all workspaces before starting Electron:
 
 ```bash
 npm run dev:full
 ```
 
-## 5. Desktop 显示问题
+## 5. Desktop display issues
 
-### 5.1 窗口空白或标题带 `[WARN:COPY MODE]`
+### 5.1 Blank window or a title containing `[WARN:COPY MODE]`
 
-这通常表示 WSLg 图形呈现链退化到 RDP Copy Mode，不一定是 Maka renderer 的
-问题。先安装最小测试工具并验证通用 GUI：
+This normally means the WSLg graphics rendering chain has fallen back to RDP Copy Mode; it does not necessarily indicate a problem in the Maka renderer. Install minimal test tools and verify a generic GUI first:
 
 ```bash
 sudo apt update
@@ -227,25 +283,25 @@ sudo apt install -y x11-apps x11-utils wayland-utils
 xeyes -geometry 300x300+100+100
 ```
 
-如果 `xeyes` 也空白，关闭 GUI 程序，在 Windows PowerShell 中执行：
+If `xeyes` is also blank, close GUI applications and run the following in Windows PowerShell:
 
 ```powershell
 wsl --shutdown
 wsl --update
 ```
 
-重启 Windows 后再次测试。需要诊断时可检查 WSLg 日志：
+Restart Windows and test again. For diagnostics, inspect the WSLg logs:
 
 ```bash
 grep -Ein 'copy.?mode|shared.memory|rdp_allocate|failed|error' \
   /mnt/wslg/stderr.log /mnt/wslg/weston.log | tail -n 120
 ```
 
-先确保 `xeyes` 能正常显示，再继续排查 Maka。
+Make sure `xeyes` displays correctly before continuing to troubleshoot Maka.
 
-### 5.2 中文显示为方框
+### 5.2 Chinese characters appear as boxes
 
-这是 Ubuntu 缺少 CJK 字体时的典型表现，通常不是会话数据损坏：
+This is typical when Ubuntu lacks CJK fonts and usually does not indicate corrupted session data:
 
 ```bash
 sudo apt update
@@ -254,21 +310,20 @@ fc-cache -f
 fc-match "Noto Sans CJK SC"
 ```
 
-`fc-match` 应返回 Noto CJK 字体。完全退出并重启 Maka。项目 CSS 已将
-`Noto Sans CJK SC` 作为 Linux 中文回退字体，通常不需要修改前端。
+`fc-match` should return a Noto CJK font. Fully quit and restart Maka. The project CSS already uses `Noto Sans CJK SC` as the Linux Chinese fallback font, so frontend changes are normally unnecessary.
 
-## 6. Desktop 中文输入
+## 6. Chinese input in Desktop
 
-WSLg 下可以选择两条 Electron 显示路径：
+WSLg supports two Electron display paths:
 
-| 模式 | 特点 |
+| Mode | Characteristics |
 | --- | --- |
-| 原生 Wayland | DPI 和文字通常更清晰，但输入法依赖 WSLg 的 Wayland IME 支持 |
-| XWayland | 更容易接入 XIM/Fcitx5，但 UI 可能略模糊 |
+| Native Wayland | DPI and text are normally sharper, but the input method depends on WSLg's Wayland IME support |
+| XWayland | Easier to integrate with XIM/Fcitx5, but the UI may look slightly blurry |
 
-如果不需要中文输入，可以跳过本节。
+Skip this section if you do not need Chinese input.
 
-### 6.1 原生 Wayland
+### 6.1 Native Wayland
 
 ```bash
 npm --workspace @maka/desktop run dev:hmr -- \
@@ -279,8 +334,7 @@ npm --workspace @maka/desktop run dev:hmr -- \
 
 ### 6.2 XWayland + Fcitx5
 
-先安装输入法和 D-Bus 支持。不同 Ubuntu 版本的 Fcitx5 包名可能略有差异，若
-APT 找不到某个包，请用 `apt search fcitx5` 查找对应包：
+First install the input method and D-Bus support. Fcitx5 package names may vary slightly between Ubuntu versions. If APT cannot find a package, use `apt search fcitx5` to locate the corresponding package:
 
 ```bash
 sudo apt update
@@ -288,8 +342,7 @@ sudo apt install -y fcitx5 fcitx5-chinese-addons fcitx5-config-qt dbus-x11
 dbus-run-session -- bash
 ```
 
-在这个子 shell 中启动 Fcitx5。`-k` 可以避免 WSLg 移除主 Wayland 连接时
-Fcitx5 自动退出：
+Start Fcitx5 in this child shell. The `-k` option prevents Fcitx5 from exiting automatically when WSLg removes the primary Wayland connection:
 
 ```bash
 fcitx5 -d -k
@@ -299,10 +352,11 @@ fcitx5-remote -n
 fcitx5-configtool
 ```
 
-在配置器中添加 Pinyin，然后用 `Ctrl + Space` 切换英文和拼音。不要把 `-v`
-当作 verbose 参数；Fcitx5 的 `-v` 会显示版本并退出。
+Add Pinyin in the configuration tool, then use `Ctrl + Space` to switch between English and Pinyin. Do not treat `-v` as a verbose option; Fcitx5 uses `-v` to print its version and exit.
 
-使用 XWayland 启动 Maka：
+In the currently verified WSL environment, after completing the Fcitx5 configuration above, you can run `npm run dev` directly in this child shell and use `Ctrl + Space` to verify Pinyin input.
+
+To explicitly fix the XWayland and Fcitx5 environment, use the following command:
 
 ```bash
 GTK_IM_MODULE=fcitx \
@@ -312,15 +366,13 @@ npm --workspace @maka/desktop run dev:hmr -- \
   --ozone-platform=x11
 ```
 
-如果原生 Wayland 出现下面的错误，说明 WSLg Weston 不允许 Fcitx5 绑定输入法
-服务，应改用上面的 XWayland 方案：
+If native Wayland reports the following error, WSLg's Weston does not allow Fcitx5 to bind the input-method service. Use the XWayland approach above instead:
 
 ```text
 zwp_input_method_v1: error 0: permission to bind input_method denied
 ```
 
-如果反复运行 `dbus-launch` 产生了多个 Fcitx5 实例，可以清理当前用户实例后
-只启动一个：
+If repeatedly running `dbus-launch` creates multiple Fcitx5 instances, clean up the current user's instances and start only one:
 
 ```bash
 pkill -x fcitx5 2>/dev/null || true
@@ -330,19 +382,19 @@ sleep 2
 pgrep -af fcitx5
 ```
 
-## 7. CLI 与 Desktop 都可选的任务工具
+## 7. Optional task tools for CLI and Desktop
 
-这些软件不是 Maka 启动依赖，只在 Agent 需要处理相应任务时安装：
+These packages are not Maka startup dependencies. Install them only when an agent needs to handle the corresponding task:
 
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-pip poppler-utils
 ```
 
-- `python3`、`python3-pip`：运行 Python 脚本；
-- `poppler-utils`：提供 `pdftotext` 和 `pdfinfo`，用于提取 PDF 文本和查看元数据。
+- `python3` and `python3-pip`: run Python scripts;
+- `poppler-utils`: provides `pdftotext` and `pdfinfo` for extracting PDF text and inspecting metadata.
 
-可以检查常用命令是否已在 `PATH` 中：
+Check whether common commands are available on `PATH`:
 
 ```bash
 command -v bash
@@ -355,27 +407,26 @@ command -v pdftotext
 command -v pdfinfo
 ```
 
-未安装选装工具时，对应的 `command -v` 没有输出是正常的。
+If an optional tool is not installed, no output from its corresponding `command -v` is expected.
 
-## 8. 验收清单
+## 8. Acceptance checklist
 
-CLI：
+CLI:
 
-1. `node --version` 至少为 22.19；
-2. `npm ci` 和 CLI build 成功；
-3. `rg --version` 正常；
-4. `maka --help` 或交互式 CLI 能启动；
-5. 配置模型后，能完成一次简单任务。
+1. `node --version` is at least 22.19;
+2. `npm ci` and the CLI build succeed;
+3. `rg --version` works;
+4. `maka --help` or the interactive CLI starts;
+5. After configuring a model, Maka can complete a simple task.
 
-Desktop：
+Desktop:
 
-1. CLI 的共同检查全部通过；
-2. WSLg 环境变量和 `/mnt/wslg` 正常；
-3. Electron 的 `ldd` 检查没有缺失库；
-4. `xeyes` 和 Maka 窗口都能正常显示；
-5. 中文不显示为方框；
-6. 根据需要选择原生 Wayland 或 XWayland + Fcitx5；
-7. 最后验证模型、Shell/PTY 和内置浏览器。
+1. All shared CLI checks pass;
+2. The WSLg environment variables and `/mnt/wslg` are correct;
+3. Electron's `ldd` check reports no missing libraries;
+4. Both `xeyes` and the Maka window display correctly;
+5. Chinese characters do not appear as boxes;
+6. Select native Wayland or XWayland + Fcitx5 as needed;
+7. Finally, verify the model, Shell/PTY, and built-in browser.
 
-如果优先稳定中文输入，当前 WSL 环境建议使用 **XWayland + Fcitx5**；如果优先
-高清界面，可以使用**原生 Wayland**，但需接受输入法受 WSLg 限制。
+If stable Chinese input is the priority, **XWayland + Fcitx5** is recommended in the current WSL environment. If a sharp UI is the priority, use **native Wayland**, but accept that input-method support is limited by WSLg.
