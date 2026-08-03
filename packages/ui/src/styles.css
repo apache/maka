@@ -89,10 +89,9 @@
 .maka-message-meta { opacity: 0; transition: opacity var(--duration-quick) var(--ease-out-strong); }
 .maka-user-message:hover .maka-message-meta,
 .maka-user-message:focus-within .maka-message-meta { opacity: 1; }
-.maka-user-quotes { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; margin-top: 4px; }
-.maka-user-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.maka-user-quotes { display: flex; max-width: 100%; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
+.maka-user-attachments { display: flex; max-width: 100%; flex-wrap: wrap; gap: 6px; }
 .maka-user-attachment-tokens { display: flex; max-width: 100%; flex-wrap: wrap; gap: 4px; }
-.maka-attachment-token-size { color: var(--foreground-secondary); font-variant-numeric: tabular-nums; }
 .maka-assistant-answer-content { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 8px; }
 .maka-live-turn-footer-placeholder { height: 32px; margin-top: 2px; }
 .maka-turn-processing,

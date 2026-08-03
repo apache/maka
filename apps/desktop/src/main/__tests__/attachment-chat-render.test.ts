@@ -30,6 +30,45 @@ const activeSession: SessionSummary = {
 };
 
 describe('sent reference frontend', () => {
+  it('keeps sent references outside the authored-text bubble', () => {
+    const attachments: AttachmentRef[] = [
+      {
+        kind: 'pdf',
+        name: 'design-spec.pdf',
+        mimeType: 'application/pdf',
+        bytes: 512_000,
+        ref: { kind: 'session_file', sessionId: 's1', relativePath: 'artifact-1' },
+      },
+      {
+        kind: 'image',
+        name: 'layout.png',
+        mimeType: 'image/png',
+        bytes: 4,
+        ref: { kind: 'session_file', sessionId: 's1', relativePath: 'artifact-2' },
+      },
+    ];
+    const messages: StoredMessage[] = [{
+      type: 'user',
+      id: 'u1',
+      turnId: 't1',
+      ts: 1,
+      text: '请用 /skill:writer 检查',
+      attachments,
+      quotes: [{ text: 'reference', sourceTurnId: 't0' }],
+    }];
+    const markup = renderWithLocale(createElement(ChatView, {
+      messages,
+      activeSession,
+      onNew: () => {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    const bubbleIndex = markup.indexOf('astryx-chat-message-bubble');
+    assert.ok(markup.indexOf('astryx-token') < bubbleIndex);
+    assert.ok(markup.indexOf('maka-user-quotes') < bubbleIndex);
+    assert.ok(markup.indexOf('maka-user-attachments') < bubbleIndex);
+    assert.ok(markup.indexOf('astryx-badge') > bubbleIndex);
+  });
+
   it('renders sent Skill invocations as neutral tokens without guessing @ text', () => {
     const messages: StoredMessage[] = [
       {
@@ -50,7 +89,7 @@ describe('sent reference frontend', () => {
     assert.doesNotMatch(markup, /class="astryx-badge neutral[^"]*"[^>]*>[^<]*@notes<\/span>/);
   });
 
-  it('renders sent non-image attachment metadata in a token before the bubble', () => {
+  it('keeps sent file tokens compact while exposing size accessibly', () => {
     const attachment: AttachmentRef = {
       kind: 'pdf',
       name: 'design-spec.pdf',
@@ -73,7 +112,8 @@ describe('sent reference frontend', () => {
     assert.ok(tokenIndex < bubbleIndex);
     assert.match(markup, /lucide-file-text/);
     assert.match(markup, /design-spec\.pdf/);
-    assert.match(markup, /500\.0 KB/);
+    assert.match(markup, /aria-description="500\.0 KB"/);
+    assert.doesNotMatch(markup, />500\.0 KB</);
     assert.doesNotMatch(markup, /maka-attachment-file-card/);
   });
 

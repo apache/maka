@@ -206,11 +206,25 @@ const MessageBody = memo(function MessageBody(props: {
                 size="sm"
                 label={attachment.name}
                 icon={<AttachmentKindIcon kind={attachment.kind} />}
-                endContent={
-                  attachment.bytes !== undefined ? (
-                    <span className="maka-attachment-token-size">{formatBytes(attachment.bytes)}</span>
-                  ) : undefined
-                }
+                description={attachment.bytes !== undefined ? formatBytes(attachment.bytes) : undefined}
+              />
+            ))}
+          </div>
+        ) : null}
+        {props.quotes && props.quotes.length > 0 ? (
+          <div className="maka-user-quotes">
+            {props.quotes.map((quote, index) => (
+              <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
+            ))}
+          </div>
+        ) : null}
+        {imageAttachments.length > 0 ? (
+          <div className="maka-user-attachments">
+            {imageAttachments.map((attachment, index) => (
+              <AttachmentImage
+                key={`${attachment.name}-${index}`}
+                attachment={attachment}
+                onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             ))}
           </div>
@@ -220,24 +234,6 @@ const MessageBody = memo(function MessageBody(props: {
           metadata={userMetadata}
         >
           <ChatTokenizedText tokens={sentSkillTokens(props.text)}>{props.text}</ChatTokenizedText>
-          {props.quotes && props.quotes.length > 0 ? (
-            <div className="maka-user-quotes">
-              {props.quotes.map((quote, index) => (
-                <QuoteRefChip key={`${quote.sourceTurnId ?? 'quote'}-${index}`} quote={quote} />
-              ))}
-            </div>
-          ) : null}
-          {imageAttachments.length > 0 ? (
-            <div className="maka-user-attachments">
-              {imageAttachments.map((attachment, index) => (
-                <AttachmentImage
-                  key={`${attachment.name}-${index}`}
-                  attachment={attachment}
-                  onReadAttachmentBytes={props.onReadAttachmentBytes}
-                />
-              ))}
-            </div>
-          ) : null}
         </ChatMessageBubble>
       </>
     );

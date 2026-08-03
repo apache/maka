@@ -238,7 +238,11 @@ test('chip-only send renders a readable user message', async ({ window: page }) 
   const composer = page.locator(COMPOSER_INPUT);
   await composer.press('Enter');
 
-  await expect(page.getByLabel('你发送的消息').first()).toContainText('/skill:starter-skill');
+  const sentMessage = page.getByLabel('你发送的消息').first();
+  await expect(sentMessage).toContainText('/skill:starter-skill');
+  await expect(
+    sentMessage.locator('.maka-chat-message-bubble-user .astryx-badge'),
+  ).toHaveText('/skill:starter-skill');
 });
 
 test('a blocked Skill invocation keeps the complete composer draft', async ({
