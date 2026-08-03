@@ -31,6 +31,8 @@ _TOOLCHAIN_CHECKSUMS = _TOOLCHAIN_ROOT / "checksums.sha256"
 _OUTPUT_FILENAME = "claude-code.txt"
 _REMOTE_OUTPUT_PATH = Path("/logs/agent") / _OUTPUT_FILENAME
 _REMOTE_SESSIONS_DIR = Path("/logs/agent/sessions")
+_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
+_MANAGED_SETTINGS = {"permissions": {"deny": ["WebSearch", "WebFetch"]}}
 
 
 class MakaClaudeCodeAgent(ClaudeCode):
@@ -71,6 +73,25 @@ class MakaClaudeCodeAgent(ClaudeCode):
         await self.exec_as_root(
             environment,
             command=f"ln -sf -- {shlex.quote(str(_TOOLCHAIN_CLAUDE))} /usr/local/bin/claude",
+        )
+        await self._write_managed_settings(environment)
+
+    async def _write_managed_settings(self, environment: BaseEnvironment) -> None:
+        # Claude Code enables WebSearch and WebFetch by default. Terminal-Bench task
+        # instructions, tests, and reference solutions are public, so a search tool
+        # turns benchmark scoring into retrieval of the answer, and WebSearch runs
+        # server-side behind the provider proxy where the task container's network
+        # allowlist cannot stop it. Managed settings are the only scope the agent
+        # session cannot override (settings precedence: managed > CLI args > local
+        # > project > user).
+        settings = json.dumps(_MANAGED_SETTINGS, sort_keys=True)
+        await self.exec_as_root(
+            environment,
+            command=(
+                f"mkdir -p {shlex.quote(str(_MANAGED_SETTINGS_PATH.parent))}; "
+                f"printf '%s\\n' {shlex.quote(settings)} > "
+                f"{shlex.quote(str(_MANAGED_SETTINGS_PATH))}"
+            ),
         )
 
     def _get_env(self, key: str) -> str | None:

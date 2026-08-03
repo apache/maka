@@ -204,6 +204,15 @@ class MakaCodexAgent(Codex):
         config = "\n".join(
             (
                 'model_provider = "maka-http"',
+                # Codex 0.144's WebSearchMode defaults to "cached", so the hosted
+                # web_search tool ships unless the mode is pinned off. Terminal-Bench
+                # task instructions, tests, and reference solutions are public, so a
+                # search tool turns benchmark scoring into retrieval of the answer.
+                # The top-level key wins over the deprecated [tools].web_search
+                # toggle and over feature flags (core/src/config/mod.rs
+                # resolve_web_search_mode), and "disabled" drops the tool from the
+                # spec entirely (core/src/tools/hosted_spec.rs).
+                'web_search = "disabled"',
                 *(
                     (f'model_catalog_json = "{_DEEPSEEK_MODELS_PATH.as_posix()}"',)
                     if deepseek_catalog

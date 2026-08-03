@@ -3934,6 +3934,24 @@ with tempfile.TemporaryDirectory() as tmp:
     assert pipeline_cell["status"] == "failed", pipeline_cell
     assert pipeline_cell["errorClass"] == "infra_failed", pipeline_cell
 
+    class RecordingEnvironment:
+        def __init__(self):
+            self.root_commands = []
+            self.agent_commands = []
+
+        async def exec(self, command, env=None, as_root=False, **kwargs):
+            (self.root_commands if as_root else self.agent_commands).append(command)
+            return types.SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    install_environment = RecordingEnvironment()
+    install_agent = agent(logs)
+    install_agent._extra_env["MAKA_CLAUDE_CODE_TOOLCHAIN_FINGERPRINT"] = "fingerprint"
+    asyncio.run(install_agent.install(install_environment))
+    managed_command = install_environment.root_commands[-1]
+    assert "/etc/claude-code/managed-settings.json" in managed_command, managed_command
+    assert '"WebSearch"' in managed_command, managed_command
+    assert '"WebFetch"' in managed_command, managed_command
+
 print("claude-code adapter ok")
 `;
 }
@@ -4159,6 +4177,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert 'model_provider = "maka-http"' in http_provider_command, http_provider_command
     assert 'base_url = "http://host.docker.internal:43210"' in http_provider_command, http_provider_command
     assert 'wire_api = "responses"' in http_provider_command, http_provider_command
+    assert 'web_search = "disabled"' in http_provider_command, http_provider_command
     assert "ephemeral-token" not in http_provider_command, http_provider_command
     deepseek_agent = MakaCodexAgent(
         logs,
